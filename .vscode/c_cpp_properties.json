@@ -1,0 +1,25 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/Engine/src",
+                "${workspaceFolder}/External/include",
+                "${workspaceFolder}/External/glfw/include",
+                "${workspaceFolder}/External/glad/include",
+                "${workspaceFolder}/External/glfw/glfw-3.4/include",
+                "${workspaceFolder}/Engine/src/header"
+            ],
+            "defines": [
+                "_DEBUG"
+            ],
+            "windowsSdkVersion": "10.0.22621.0",
+            "compilerPath": "C:/msys64/mingw64/bin/g++.exe",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-gcc-x64"
+        }
+    ],
+    "version": 4
+}
