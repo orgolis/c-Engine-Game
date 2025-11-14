@@ -1,5 +1,5 @@
 #pragma once
-#include <GLFW/glfw3.h>
+#include <glfw/glfw3.h>
 
 class Window {
     public: 
@@ -8,5 +8,5 @@ class Window {
         bool isOpen();
         void Destroy();
     private:
-    GLFWindow* handle = nullptr;
-}
+    GLFWwindow* handle = nullptr;
+};
