@@ -5,7 +5,7 @@ class Window {
     public: 
         bool Create(int width, int height, const char* title);
         void PollEvents();
-        bool isOpen();
+        bool IsOpen();
         void Destroy();
     private:
     GLFWwindow* handle = nullptr;

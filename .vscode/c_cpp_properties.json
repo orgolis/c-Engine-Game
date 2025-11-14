@@ -9,7 +9,8 @@
                 "${workspaceFolder}/External/glfw/include",
                 "${workspaceFolder}/External/glad/include",
                 "${workspaceFolder}/External/glfw/glfw-3.4/include",
-                "${workspaceFolder}/Engine/src/header"
+                "${workspaceFolder}/Engine/src/header",
+                "${workspaceFolder}/External"
             ],
             "defines": [
                 "_DEBUG"
