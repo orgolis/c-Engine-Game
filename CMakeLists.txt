@@ -34,6 +34,11 @@ option(BUILD_DOCS "Build documentation" OFF)
 set(SPDLOG_WCHAR_FILENAMES ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/spdlog)
 
+# Add Catch2 for testing
+if(BUILD_TESTS)
+    add_subdirectory(third_party/catch2)
+endif()
+
 # Add subdirectories
 add_subdirectory(engine)
 add_subdirectory(editor)
@@ -42,7 +47,7 @@ add_subdirectory(game)
 # Add tests
 if(BUILD_TESTS)
     enable_testing()
-    # add_subdirectory(tests)
+    add_subdirectory(tests)
 endif()
 
 # Print configuration summary
