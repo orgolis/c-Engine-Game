@@ -1,0 +1,36 @@
+# Phase 1: Core systems (math, memory, logging, etc.)
+add_subdirectory(core)
+
+# Engine library
+add_library(engine STATIC)
+
+# Set public include directory
+target_include_directories(engine
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# Add source files
+target_sources(engine
+    PRIVATE
+        src/engine.cpp
+)
+
+# Link core libraries
+target_link_libraries(engine
+    PUBLIC
+        math
+        gws_logging
+        gws_file_io
+        gws_containers
+)
+
+# Compiler flags
+if(MSVC)
+    target_compile_options(engine PRIVATE /W4)
+else()
+    target_compile_options(engine PRIVATE -Wall -Wextra -Wpedantic)
+endif()
