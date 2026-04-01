@@ -1,0 +1,57 @@
+# Build directories
+build/
+cmake-build-debug/
+cmake-build-release/
+cmake-build-*/
+
+# IDE files
+.vs/
+.vscode/
+.idea/
+*.code-workspace
+
+# Visual Studio
+*.vcxproj.user
+*.vcxproj.filters
+*.sln
+*.suo
+*.sdf
+*.opensdf
+*.db
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+CMakeLists.txt.user
+cmake_install.cmake
+Makefile
+*.cmake
+
+# Build artifacts
+bin/
+lib/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.dll
+
+# macOS
+*.DS_Store
+.AppleDouble
+.LSOverride
+
+# Temporary files
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+*.log
+
+# User-specific VS Code settings (but not extensions)
+.vscode/settings.json
+.vscode/launch.json
+.vscode/tasks.json
