@@ -51,6 +51,9 @@ public:
     void* allocate(size_t size, size_t alignment = 16) override {
         // Pool allocator ignores size and alignment (fixed size)
         // Just returns next free object
+        (void)size;
+        (void)alignment;
+        
         if (!free_list) {
             return nullptr;  // Pool exhausted
         }

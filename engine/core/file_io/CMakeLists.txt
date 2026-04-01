@@ -2,6 +2,7 @@ add_library(gws_file_io STATIC)
 
 target_sources(gws_file_io PRIVATE
     file_io.cpp
+    asset_manager.cpp
 )
 
 target_include_directories(gws_file_io PUBLIC
