@@ -34,7 +34,17 @@ option(BUILD_DOCS "Build documentation" OFF)
 set(SPDLOG_WCHAR_FILENAMES ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/spdlog)
 
-# Add Catch2 for testing
+# GLM (header-only math library)
+add_library(glm INTERFACE)
+target_include_directories(glm INTERFACE third_party/glm)
+
+# GLFW (window and input management)
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/glfw)
+
+# Catch2 for testing
 if(BUILD_TESTS)
     add_subdirectory(third_party/catch2)
 endif()

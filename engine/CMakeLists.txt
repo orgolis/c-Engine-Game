@@ -1,6 +1,10 @@
 # Phase 1: Core systems (math, memory, logging, etc.)
 add_subdirectory(core)
 
+# Phase 2: Graphics & Rendering
+add_subdirectory(window)
+add_subdirectory(renderer)
+
 # Engine library
 add_library(engine STATIC)
 
@@ -26,6 +30,8 @@ target_link_libraries(engine
         gws_logging
         gws_file_io
         gws_containers
+        window
+        renderer
 )
 
 # Compiler flags
