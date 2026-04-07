@@ -1,4 +1,4 @@
-// GameWorldshaper Editor - Main entry point
+// Project Schizo Editor - Main entry point
 // Phase 2: Testing window and renderer foundation
 
 #include "window.h"
@@ -8,13 +8,13 @@
 
 int main() {
     try {
-        std::cout << "=== GameWorldshaper Editor ===" << std::endl;
+        std::cout << "=== Project Schizo Editor ===" << std::endl;
         std::cout << "Phase 2: Window & Renderer Test" << std::endl;
         
         // Initialize logger first
         spdlog::set_level(spdlog::level::info);
         
-        spdlog::info("=== GameWorldshaper Editor ===");
+        spdlog::info("=== Project Schizo Editor ===");
         spdlog::info("Phase 2: Window & Renderer Test");
         
         // Test window creation
@@ -22,9 +22,9 @@ int main() {
         std::cout << "Creating window..." << std::endl;
         
         schizo::window::WindowProperties props;
-        props.width = 1280;
-        props.height = 720;
-        props.title = "GameWorldshaper - Editor";
+        props.width = 1920;
+        props.height = 1080;
+        props.title = "Project Schizo - Editor";
         props.vsync = true;
         
         auto window = schizo::window::Window::Create(props);
@@ -70,7 +70,7 @@ int main() {
         std::cout << "Entering main loop... press ESC or close window to exit" << std::endl;
         
         int frame_count = 0;
-        const int max_frames = 300;  // Run for 300 frames (5 seconds at 60 FPS)
+        const int max_frames = 600;  // Run for 600 frames (10 seconds at 60 FPS)
         
         while (window->Update() && frame_count < max_frames) {
             // Get camera for rendering

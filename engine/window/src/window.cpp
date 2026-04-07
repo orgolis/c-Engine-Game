@@ -139,15 +139,13 @@ void WindowImpl::SetVsync(bool enabled) {
 }
 
 bool WindowImpl::IsKeyPressed(KeyCode key) const {
-    // TODO: Query GLFW key state
-    (void)key;  // Suppress unused parameter warning
-    return false;
+    if (!window_) return false;
+    return glfwGetKey(window_, static_cast<int>(key)) == GLFW_PRESS;
 }
 
 bool WindowImpl::IsMousePressed(MouseButton button) const {
-    // TODO: Query GLFW mouse button state
-    (void)button;  // Suppress unused parameter warning
-    return false;
+    if (!window_) return false;
+    return glfwGetMouseButton(window_, static_cast<int>(button)) == GLFW_PRESS;
 }
 
 glm::vec2 WindowImpl::GetMousePosition() const {
@@ -155,13 +153,16 @@ glm::vec2 WindowImpl::GetMousePosition() const {
 }
 
 void WindowImpl::SetMousePosition(const glm::vec2& pos) {
-    // TODO: Use glfwSetCursorPos
-    (void)pos;  // Suppress unused parameter warning
+    if (window_) {
+        glfwSetCursorPos(window_, pos.x, pos.y);
+        mouse_pos_ = pos;
+    }
 }
 
 void WindowImpl::SetMouseVisible(bool visible) {
-    // TODO: Use glfwSetInputMode with GLFW_CURSOR
-    (void)visible;  // Suppress unused parameter warning
+    if (window_) {
+        glfwSetInputMode(window_, GLFW_CURSOR, visible ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_HIDDEN);
+    }
 }
 
 bool WindowImpl::ShouldClose() const {
@@ -183,20 +184,24 @@ void WindowImpl::FramebufferSizeCallback(GLFWwindow* window, int width, int heig
 }
 
 void WindowImpl::KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-    // TODO: Implement key event handling
-    (void)window;
-    (void)key;
-    (void)scancode;
-    (void)action;
-    (void)mods;
+    auto* win = static_cast<WindowImpl*>(glfwGetWindowUserPointer(window));
+    if (win) {
+        const char* action_str = (action == GLFW_PRESS) ? "pressed" : (action == GLFW_RELEASE) ? "released" : "repeated";
+        spdlog::debug("Key {} (scancode {}) {}", key, scancode, action_str);
+        (void)mods;  // For future use: key modifiers (shift, ctrl, alt)
+    }
 }
 
 void WindowImpl::MouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
-    // TODO: Implement mouse button event handling
-    (void)window;
-    (void)button;
-    (void)action;
-    (void)mods;
+    auto* win = static_cast<WindowImpl*>(glfwGetWindowUserPointer(window));
+    if (win) {
+        const char* button_str = (button == GLFW_MOUSE_BUTTON_LEFT) ? "left" :
+                                  (button == GLFW_MOUSE_BUTTON_RIGHT) ? "right" :
+                                  (button == GLFW_MOUSE_BUTTON_MIDDLE) ? "middle" : "unknown";
+        const char* action_str = (action == GLFW_PRESS) ? "pressed" : "released";
+        spdlog::debug("Mouse {} button {}", button_str, action_str);
+        (void)mods;  // For future use: key modifiers
+    }
 }
 
 void WindowImpl::CursorPosCallback(GLFWwindow* window, double xpos, double ypos) {

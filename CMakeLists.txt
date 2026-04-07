@@ -44,6 +44,9 @@ set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/glfw)
 
+# GLAD (OpenGL function loader)
+add_subdirectory(third_party/glad)
+
 # Catch2 for testing
 if(BUILD_TESTS)
     add_subdirectory(third_party/catch2)
