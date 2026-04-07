@@ -9,15 +9,113 @@ add_library(renderer STATIC)
 target_include_directories(renderer PUBLIC include)
 target_include_directories(renderer PRIVATE src)
 
-# Header files (for IDE organization)
+# Header files - Core Graphics Abstraction
 target_sources(renderer PRIVATE
+    include/graphics.h
     include/render_device.h
     include/renderer.h
+    include/opengl_device.h
+    include/mesh.h
+    include/shader.h
+)
+
+# Header files - Textures, Materials, Framebuffers
+target_sources(renderer PRIVATE
+    include/texture.h
+    include/material.h
+    include/pbr.h
+    include/framebuffer.h
+    include/graphics_utils.h
+)
+
+# Header files - Geometry System
+target_sources(renderer PRIVATE
+    include/geometry.h
+)
+
+# Header files - Lighting System
+target_sources(renderer PRIVATE
+    include/light.h
+    include/shadow.h
+    include/ibl.h
+    include/lighting.h
+)
+
+# Header files - Deferred Rendering System
+target_sources(renderer PRIVATE
+    include/g_buffer.h
+    include/deferred_renderer.h
+)
+
+# Header files - Post-Processing System
+target_sources(renderer PRIVATE
+    include/post_processing.h
+)
+
+# Header files - Frustum Culling
+target_sources(renderer PRIVATE
+    include/frustum.h
+)
+
+# Header files - Batching System
+target_sources(renderer PRIVATE
+    include/batch.h
+)
+
+# Header files - Performance Profiling
+target_sources(renderer PRIVATE
+    include/profiler.h
 )
 
 # Source files - Core
 target_sources(renderer PRIVATE
     src/renderer.cpp
+    src/mesh.cpp
+    src/shader.cpp
+)
+
+# Source files - Textures, Materials, Framebuffers
+target_sources(renderer PRIVATE
+    src/texture.cpp
+    src/material.cpp
+    src/pbr.cpp
+    src/framebuffer.cpp
+    src/graphics_utils.cpp
+)
+
+# Source files - Geometry System
+target_sources(renderer PRIVATE
+    src/geometry.cpp
+)
+
+# Source files - Lighting System
+target_sources(renderer PRIVATE
+    src/lighting.cpp
+)
+
+# Source files - Deferred Rendering System
+target_sources(renderer PRIVATE
+    src/deferred_renderer.cpp
+)
+
+# Source files - Post-Processing System
+target_sources(renderer PRIVATE
+    src/post_processing.cpp
+)
+
+# Source files - Frustum Culling
+target_sources(renderer PRIVATE
+    src/frustum.cpp
+)
+
+# Source files - Batching System
+target_sources(renderer PRIVATE
+    src/batch.cpp
+)
+
+# Source files - Performance Profiling
+target_sources(renderer PRIVATE
+    src/profiler.cpp
 )
 
 # Source files - OpenGL implementation
@@ -30,6 +128,7 @@ target_link_libraries(renderer PUBLIC
     glm
     window
     gws_logging
+    glad
 )
 
 # OpenGL support

@@ -1,91 +1,22 @@
+#include <glad/glad.h>
+#define GLFW_INCLUDE_NONE  // Prevent GLFW from including OpenGL headers
+#include <GLFW/glfw3.h>
+#include "opengl_device.h"
 #include "render_device.h"
 #include <spdlog/spdlog.h>
 #include <glm/glm.hpp>
 #include <string>
 
-// OpenGL headers (via GLFW)
-#include <GLFW/glfw3.h>
-
 namespace schizo::renderer {
-
-/**
- * @class OpenGLDevice
- * @brief OpenGL 4.5+ implementation of RenderDevice
- */
-class OpenGLDevice : public RenderDevice {
-public:
-    OpenGLDevice() = default;
-    ~OpenGLDevice() override = default;
-    
-    bool Initialize() override;
-    void Shutdown() override;
-    
-    RenderAPI GetAPI() const override { return RenderAPI::OpenGL45; }
-    std::string GetDeviceInfo() const override;
-    
-    void SetViewport(uint32_t x, uint32_t y, uint32_t width, uint32_t height) override;
-    void BindFramebuffer(Framebuffer* fb) override;
-    void Clear(bool color, bool depth, bool stencil, const glm::vec4& color_value) override;
-    
-    uint32_t CompileShader(ShaderStage stage, const std::string& source,
-                          const char** defines = nullptr, int define_count = 0) override;
-    uint32_t LinkProgram(const uint32_t* stages, int stage_count) override;
-    void UseProgram(uint32_t program) override;
-    void DeleteShader(uint32_t handle) override;
-    
-    uint32_t CreateBuffer(uint32_t target, size_t size, const void* data, bool dynamic_draw) override;
-    void UpdateBuffer(uint32_t handle, size_t offset, size_t size, const void* data) override;
-    void DeleteBuffer(uint32_t handle) override;
-    void* MapBuffer(uint32_t handle, bool readonly = false) override;
-    void UnmapBuffer(uint32_t handle) override;
-    
-    uint32_t CreateTexture2D(uint32_t width, uint32_t height, uint32_t format, const void* data) override;
-    uint32_t CreateTextureCube(uint32_t size, uint32_t format, const void** faces) override;
-    void BindTexture(uint32_t texture, uint32_t unit) override;
-    void DeleteTexture(uint32_t handle) override;
-    
-    uint32_t CreateVertexArray() override;
-    void BindVertexArray(uint32_t vao) override;
-    void SetVertexAttribute(uint32_t attrib_index, int component_count, uint32_t type,
-                           bool normalized, uint32_t stride, const void* offset) override;
-    void AttachVertexBuffer(uint32_t vao, uint32_t vbo, uint32_t binding_index) override;
-    void DeleteVertexArray(uint32_t vao) override;
-    
-    void DrawIndexed(uint32_t mode, uint32_t index_count, uint32_t index_type,
-                    size_t index_offset, uint32_t instance_count = 1) override;
-    void Draw(uint32_t mode, uint32_t vertex_count, uint32_t vertex_offset = 0) override;
-    
-    void SetDepthTest(bool enabled) override;
-    void SetBlending(bool enabled) override;
-    void SetBlendFunc(uint32_t src_factor, uint32_t dst_factor) override;
-    void SetFaceCulling(bool enabled, bool cull_back = true) override;
-    
-    RenderStats GetStats() const override { return stats_; }
-    void ResetStats() override { stats_ = RenderStats(); }
-    
-    void EnableDebugOutput(bool enabled) override;
-    std::string GetLastError() const override { return last_error_; }
-
-private:
-    mutable std::string last_error_;
-    RenderStats stats_;
-    uint32_t current_program_ = 0;
-    uint32_t current_vao_ = 0;
-};
 
 bool OpenGLDevice::Initialize() {
     spdlog::info("Initializing OpenGL device");
     
-    // The OpenGL context should already be created by GLFW at this point
-    // Set default OpenGL state
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    
-    // Set clear color
-    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    // Load all OpenGL function pointers using GLFW's function loader
+    if (!gladLoadGL((GLADloadproc)glfwGetProcAddress)) {
+        spdlog::error("Failed to initialize GLAD - could not load OpenGL functions");
+        return false;
+    }
     
     spdlog::info("OpenGL device initialized successfully: {}", GetDeviceInfo());
     return true;
@@ -97,21 +28,20 @@ void OpenGLDevice::Shutdown() {
 }
 
 std::string OpenGLDevice::GetDeviceInfo() const {
-    const char* vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
-    const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
-    const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    const char* vendor = (const char*)glGetString(GL_VENDOR);
+    const char* renderer = (const char*)glGetString(GL_RENDERER);
+    const char* version = (const char*)glGetString(GL_VERSION);
     
-    std::string info = "OpenGL ";
-    if (version) info += version;
-    if (vendor) info += " (" + std::string(vendor);
-    if (renderer) info += " " + std::string(renderer);
-    if (vendor || renderer) info += ")";
+    if (!vendor || !renderer || !version) {
+        return "OpenGL (version info unavailable)";
+    }
     
-    return info;
+    return std::string("OpenGL ") + version + " - " + renderer + " (" + vendor + ")";
 }
 
 void OpenGLDevice::SetViewport(uint32_t x, uint32_t y, uint32_t width, uint32_t height) {
-    glViewport(static_cast<int>(x), static_cast<int>(y), static_cast<int>(width), static_cast<int>(height));
+    glViewport((GLint)x, (GLint)y, (GLsizei)width, (GLsizei)height);
+    spdlog::debug("SetViewport({}x{} @ {},{}", width, height, x, y);
 }
 
 void OpenGLDevice::BindFramebuffer(Framebuffer* fb) {
@@ -120,154 +50,254 @@ void OpenGLDevice::BindFramebuffer(Framebuffer* fb) {
 }
 
 void OpenGLDevice::Clear(bool color, bool depth, bool stencil, const glm::vec4& color_value) {
+    glClearColor(color_value.r, color_value.g, color_value.b, color_value.a);
     GLbitfield mask = 0;
-    if (color) {
-        glClearColor(color_value.r, color_value.g, color_value.b, color_value.a);
-        mask |= GL_COLOR_BUFFER_BIT;
-    }
-    if (depth) {
-        mask |= GL_DEPTH_BUFFER_BIT;
-    }
-    if (stencil) {
-        mask |= GL_STENCIL_BUFFER_BIT;
-    }
+    if (color) mask |= GL_COLOR_BUFFER_BIT;
+    if (depth) mask |= GL_DEPTH_BUFFER_BIT;
+    if (stencil) mask |= GL_STENCIL_BUFFER_BIT;
     glClear(mask);
+    spdlog::debug("Clear(color={}, depth={}, stencil={})", color, depth, stencil);
 }
 
 uint32_t OpenGLDevice::CompileShader(ShaderStage stage, const std::string& source,
                                      const char** defines, int define_count) {
-    // TODO: Implement shader compilation
-    (void)stage; (void)source; (void)defines; (void)define_count;
-    return 0;
+    // Suppress unused parameter warnings
+    (void)defines;
+    (void)define_count;
+    
+    GLenum gl_stage = GL_VERTEX_SHADER;
+    switch (stage) {
+        case ShaderStage::Vertex:      gl_stage = GL_VERTEX_SHADER; break;
+        case ShaderStage::Fragment:    gl_stage = GL_FRAGMENT_SHADER; break;
+        case ShaderStage::Geometry:    gl_stage = GL_GEOMETRY_SHADER; break;
+        case ShaderStage::TessControl: gl_stage = GL_TESS_CONTROL_SHADER; break;
+        case ShaderStage::TessEval:    gl_stage = GL_TESS_EVALUATION_SHADER; break;
+        case ShaderStage::Compute:     gl_stage = GL_COMPUTE_SHADER; break;
+    }
+    
+    GLuint shader = glCreateShader(gl_stage);
+    if (!shader) {
+        last_error_ = "Failed to create shader";
+        return 0;
+    }
+    
+    const char* src = source.c_str();
+    glShaderSource(shader, 1, &src, nullptr);
+    glCompileShader(shader);
+    
+    GLint compiled = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (!compiled) {
+        GLint log_len = 0;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &log_len);
+        if (log_len > 0) {
+            std::string log(log_len, '\0');
+            glGetShaderInfoLog(shader, log_len, nullptr, &log[0]);
+            last_error_ = "Shader compilation failed: " + log;
+            spdlog::error("{}", last_error_);
+        }
+        glDeleteShader(shader);
+        return 0;
+    }
+    
+    spdlog::debug("CompileShader: stage={}, success", (int)stage);
+    return shader;
 }
 
 uint32_t OpenGLDevice::LinkProgram(const uint32_t* stages, int stage_count) {
-    // TODO: Implement program linking
-    (void)stages; (void)stage_count;
-    return 0;
+    GLuint program = glCreateProgram();
+    if (!program) {
+        last_error_ = "Failed to create program";
+        return 0;
+    }
+    
+    for (int i = 0; i < stage_count; ++i) {
+        if (stages[i]) {
+            glAttachShader(program, stages[i]);
+        }
+    }
+    
+    glLinkProgram(program);
+    
+    GLint linked = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        GLint log_len = 0;
+        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &log_len);
+        if (log_len > 0) {
+            std::string log(log_len, '\0');
+            glGetProgramInfoLog(program, log_len, nullptr, &log[0]);
+            last_error_ = "Program linking failed: " + log;
+            spdlog::error("{}", last_error_);
+        }
+        glDeleteProgram(program);
+        return 0;
+    }
+    
+    spdlog::debug("LinkProgram: success");
+    return program;
 }
 
 void OpenGLDevice::UseProgram(uint32_t program) {
     current_program_ = program;
-    // TODO: Call glUseProgram
+    glUseProgram(program);
+    spdlog::debug("UseProgram: {}", program);
 }
 
 void OpenGLDevice::DeleteShader(uint32_t handle) {
-    // TODO: Implement deletion
-    (void)handle;
+    glDeleteShader(handle);
+    spdlog::debug("DeleteShader: {}", handle);
 }
 
 uint32_t OpenGLDevice::CreateBuffer(uint32_t target, size_t size, const void* data, bool dynamic_draw) {
-    // TODO: Implement buffer creation
-    (void)target; (void)size; (void)data; (void)dynamic_draw;
-    return 0;
+    GLuint buffer = 0;
+    glGenBuffers(1, &buffer);
+    glBindBuffer(target, buffer);
+    GLenum usage = dynamic_draw ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW;
+    glBufferData(target, (GLsizeiptr)size, data, usage);
+    spdlog::debug("CreateBuffer: id={}, size={}, dynamic={}", buffer, size, dynamic_draw);
+    return buffer;
 }
 
 void OpenGLDevice::UpdateBuffer(uint32_t handle, size_t offset, size_t size, const void* data) {
-    // TODO: Implement buffer update
-    (void)handle; (void)offset; (void)size; (void)data;
+    glBindBuffer(GL_COPY_WRITE_BUFFER, handle);
+    glBufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)offset, (GLsizeiptr)size, data);
+    spdlog::debug("UpdateBuffer: handle={}, offset={}, size={}", handle, offset, size);
 }
 
 void OpenGLDevice::DeleteBuffer(uint32_t handle) {
-    // TODO: Implement buffer deletion
-    (void)handle;
+    glDeleteBuffers(1, (const GLuint*)&handle);
+    spdlog::debug("DeleteBuffer: {}", handle);
 }
 
 void* OpenGLDevice::MapBuffer(uint32_t handle, bool readonly) {
-    // TODO: Implement buffer mapping
-    (void)handle; (void)readonly;
-    return nullptr;
+    glBindBuffer(GL_COPY_READ_BUFFER, handle);
+    GLenum access = readonly ? GL_READ_ONLY : GL_READ_WRITE;
+    void* ptr = glMapBuffer(GL_COPY_READ_BUFFER, access);
+    spdlog::debug("MapBuffer: handle={}, readonly={}", handle, readonly);
+    return ptr;
 }
 
 void OpenGLDevice::UnmapBuffer(uint32_t handle) {
-    // TODO: Implement buffer unmapping
-    (void)handle;
+    glBindBuffer(GL_COPY_READ_BUFFER, handle);
+    glUnmapBuffer(GL_COPY_READ_BUFFER);
+    spdlog::debug("UnmapBuffer: {}", handle);
 }
 
 uint32_t OpenGLDevice::CreateTexture2D(uint32_t width, uint32_t height, uint32_t format, const void* data) {
-    // TODO: Implement 2D texture creation
-    (void)width; (void)height; (void)format; (void)data;
-    return 0;
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, (GLint)format, (GLsizei)width, (GLsizei)height, 0, format, GL_UNSIGNED_BYTE, data);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    spdlog::debug("CreateTexture2D: id={}, {}x{}", texture, width, height);
+    return texture;
 }
 
 uint32_t OpenGLDevice::CreateTextureCube(uint32_t size, uint32_t format, const void** faces) {
-    // TODO: Implement cubemap creation
-    (void)size; (void)format; (void)faces;
-    return 0;
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, texture);
+    for (int i = 0; i < 6; ++i) {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, (GLint)format, (GLsizei)size, (GLsizei)size, 0, format, GL_UNSIGNED_BYTE, faces[i]);
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    spdlog::debug("CreateTextureCube: id={}, {}x{}", texture, size, size);
+    return texture;
 }
 
 void OpenGLDevice::BindTexture(uint32_t texture, uint32_t unit) {
-    // TODO: Implement texture binding
-    (void)texture; (void)unit;
+    glActiveTexture(GL_TEXTURE0 + unit);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    spdlog::debug("BindTexture: texture={}, unit={}", texture, unit);
 }
 
 void OpenGLDevice::DeleteTexture(uint32_t handle) {
-    // TODO: Implement texture deletion
-    (void)handle;
+    glDeleteTextures(1, (const GLuint*)&handle);
+    spdlog::debug("DeleteTexture: {}", handle);
 }
 
 uint32_t OpenGLDevice::CreateVertexArray() {
-    // TODO: Implement VAO creation
-    return 0;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    spdlog::debug("CreateVertexArray: id={}", vao);
+    return vao;
 }
 
 void OpenGLDevice::BindVertexArray(uint32_t vao) {
     current_vao_ = vao;
-    // TODO: Call glBindVertexArray
+    glBindVertexArray(vao);
+    spdlog::debug("BindVertexArray: {}", vao);
 }
 
 void OpenGLDevice::SetVertexAttribute(uint32_t attrib_index, int component_count, uint32_t type,
-                                      bool normalized, uint32_t stride, const void* offset) {
-    // TODO: Implement vertex attribute configuration
-    (void)attrib_index; (void)component_count; (void)type; (void)normalized; (void)stride; (void)offset;
+                           bool normalized, uint32_t stride, const void* offset) {
+    glVertexAttribPointer((GLuint)attrib_index, component_count, type, normalized, (GLsizei)stride, offset);
+    glEnableVertexAttribArray((GLuint)attrib_index);
+    spdlog::debug("SetVertexAttribute: index={}, components={}, normalized={}", attrib_index, component_count, normalized);
 }
 
 void OpenGLDevice::AttachVertexBuffer(uint32_t vao, uint32_t vbo, uint32_t binding_index) {
-    // TODO: Implement vertex buffer attachment
-    (void)vao; (void)vbo; (void)binding_index;
+    glBindVertexArray(vao);
+    glBindVertexBuffer((GLuint)binding_index, vbo, 0, 0);  // offset=0, stride=0 (use attrib pointer stride)
+    spdlog::debug("AttachVertexBuffer: vao={}, vbo={}, binding={}", vao, vbo, binding_index);
 }
 
 void OpenGLDevice::DeleteVertexArray(uint32_t vao) {
-    // TODO: Implement VAO deletion
-    (void)vao;
+    glDeleteVertexArrays(1, (const GLuint*)&vao);
+    spdlog::debug("DeleteVertexArray: {}", vao);
 }
 
 void OpenGLDevice::DrawIndexed(uint32_t mode, uint32_t index_count, uint32_t index_type,
                                size_t index_offset, uint32_t instance_count) {
-    // TODO: Call glDrawElementsInstanced
-    (void)mode; (void)index_count; (void)index_type; (void)index_offset; (void)instance_count;
+    if (instance_count > 1) {
+        glDrawElementsInstanced(mode, (GLsizei)index_count, index_type, (const void*)index_offset, (GLsizei)instance_count);
+    } else {
+        glDrawElements(mode, (GLsizei)index_count, index_type, (const void*)index_offset);
+    }
+    spdlog::debug("DrawIndexed: mode={}, count={}, instances={}", mode, index_count, instance_count);
     stats_.draw_calls++;
 }
 
 void OpenGLDevice::Draw(uint32_t mode, uint32_t vertex_count, uint32_t vertex_offset) {
-    // TODO: Call glDrawArrays
-    (void)mode; (void)vertex_count; (void)vertex_offset;
+    glDrawArrays(mode, (GLint)vertex_offset, (GLsizei)vertex_count);
+    spdlog::debug("Draw: mode={}, count={}, offset={}", mode, vertex_count, vertex_offset);
     stats_.draw_calls++;
 }
 
 void OpenGLDevice::SetDepthTest(bool enabled) {
-    // TODO: Call glEnable/glDisable(GL_DEPTH_TEST)
-    (void)enabled;
+    if (enabled) glEnable(GL_DEPTH_TEST);
+    else glDisable(GL_DEPTH_TEST);
+    spdlog::debug("SetDepthTest: {}", enabled);
 }
 
 void OpenGLDevice::SetBlending(bool enabled) {
-    // TODO: Call glEnable/glDisable(GL_BLEND)
-    (void)enabled;
+    if (enabled) glEnable(GL_BLEND);
+    else glDisable(GL_BLEND);
+    spdlog::debug("SetBlending: {}", enabled);
 }
 
 void OpenGLDevice::SetBlendFunc(uint32_t src_factor, uint32_t dst_factor) {
-    // TODO: Call glBlendFunc
-    (void)src_factor; (void)dst_factor;
+    glBlendFunc(src_factor, dst_factor);
+    spdlog::debug("SetBlendFunc: src={}, dst={}", src_factor, dst_factor);
 }
 
 void OpenGLDevice::SetFaceCulling(bool enabled, bool cull_back) {
-    // TODO: Call glEnable/glDisable(GL_CULL_FACE) and glCullFace
-    (void)enabled; (void)cull_back;
+    if (enabled) {
+        glEnable(GL_CULL_FACE);
+        glCullFace(cull_back ? GL_BACK : GL_FRONT);
+    } else {
+        glDisable(GL_CULL_FACE);
+    }
+    spdlog::debug("SetFaceCulling: enabled={}, cull_back={}", enabled, cull_back);
 }
 
 void OpenGLDevice::EnableDebugOutput(bool enabled) {
-    // TODO: Enable KHR_debug if available
     (void)enabled;
+    // TODO: Implement glDebugMessageControl once extension is loaded
+    spdlog::debug("EnableDebugOutput: {}", enabled);
 }
 
 // Factory function
@@ -281,4 +311,4 @@ std::unique_ptr<RenderDevice> RenderDevice::Create(RenderAPI api) {
     }
 }
 
-} // namespace schizo::renderer
+}  // namespace schizo::renderer

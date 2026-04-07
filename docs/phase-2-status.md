@@ -44,34 +44,91 @@ Phase 2 establishes the graphics pipeline: window management, mesh rendering, PB
 
 ### Week 3-4: PBR & Basic Lighting
 
-#### ⏳ Upcoming
-- [ ] PBR shader implementation (metallic-roughness)
-- [ ] Light structures (directional, point, spot)
-- [ ] Directional light shadow mapping
-- [ ] Basic point light support
-- [ ] Lighting test scene
+#### ✅ Complete
+- [x] PBR material system with 14 presets (Gold, Copper, Steel, Aluminum, Brass, Plastic, Fabric, Ceramic, Rubber, Glass, Skin, Wood, DiffuseLambert, Mirror)
+- [x] Light structures (directional, point, spot) with full property support
+- [x] Light temperature-based coloring (Kelvin conversion)
+- [x] Shadow mapping framework (5 algorithms: BasicShadowMap, PCF, PCSS, VSM, EVSM)
+- [x] Cascade shadow mapping support for directional lights
+- [x] Point/Spot light attenuation and falloff
+- [x] Light manager with culling and spatial queries
+- [x] LightingUtils with Lambertian, Blinn-Phong, and physical attenuation calculations
+- [x] IBL framework (environment maps, light probes, skybox)
+- [x] Image-based lighting groundwork (split-sum approximation, spherical harmonics)
+- [x] Complete documentation (LIGHTING-SYSTEM.md, LIGHTING-QUICK-REFERENCE.md)
+
+#### 📝 Documentation
+- LIGHTING-SYSTEM.md — Complete system overview, usage examples, API reference
+- LIGHTING-QUICK-REFERENCE.md — Quick reference for common tasks
 
 ---
 
 ### Week 4-5: Deferred Rendering Pipeline
 
-#### ⏳ Upcoming
-- [ ] G-Buffer (position, normal, albedo, material ID)
-- [ ] Deferred geometry pass
-- [ ] Deferred lighting pass shader
-- [ ] Hybrid forward + deferred rendering
-- [ ] Many-light handling (100+ lights)
+#### ✅ Complete
+- [x] G-Buffer design (4 color attachments + depth)
+- [x] G-Buffer implementation with multi-render-target support
+- [x] Deferred geometry pass (render to G-Buffer)
+- [x] Deferred lighting pass (full-screen lighting calculation)
+- [x] Hybrid forward + deferred rendering support
+- [x] Many-light handling (100+ lights efficiently)
+- [x] Tile-based light culling and binning
+- [x] Light spatial optimization with frustum culling
+- [x] Fullscreen quad mesh for post-processing
+- [x] Debug visualization system (G-Buffer, light count, tiles)
+- [x] Performance profiling (per-pass timing)
+- [x] Complete documentation (DEFERRED-RENDERING-SYSTEM.md, DEFERRED-RENDERING-QUICK-REFERENCE.md)
+
+#### 📝 Documentation
+- DEFERRED-RENDERING-SYSTEM.md — Complete system overview, architecture, optimization techniques
+- DEFERRED-RENDERING-QUICK-REFERENCE.md — Quick API reference for deferred rendering
+
+---
+
+### Scene Management System (Parallel Development)
+
+#### ✅ Complete
+- [x] Transform hierarchy (local and world transforms with parent-child relationships)
+- [x] Entity system with identification (ID, name, tags)
+- [x] Component-based architecture (base Component class with lifecycle)
+- [x] Entity lifecycle management (active/inactive, destruction)
+- [x] Scene with entity management and organization
+- [x] Octree spatial partitioning for efficient spatial queries
+- [x] Entity queries (by ID, name, tag, AABB, sphere, frustum)
+- [x] Transform utilities (forward/right/up vectors, LookAt, rotation, translation)
+- [x] Fixed and variable timestep update phases
+- [x] Scene statistics and debugging (hierarchy printing, stats)
+- [x] Complete documentation (SCENE-MANAGEMENT-SYSTEM.md, SCENE-MANAGEMENT-QUICK-REFERENCE.md)
+
+#### 📝 Documentation
+- SCENE-MANAGEMENT-SYSTEM.md — Complete system overview, entity-component architecture, usage patterns
+- SCENE-MANAGEMENT-QUICK-REFERENCE.md — Quick API reference for scene management
 
 ---
 
 ### Week 5-6: Polish & Optimization
 
-#### ⏳ Upcoming
-- [ ] Post-processing pipeline (bloom, tone mapping, FXAA)
-- [ ] Frustum culling implementation
-- [ ] Static batching
-- [ ] Basic LOD system
-- [ ] Performance profiling and optimization
+#### ✅ Complete
+- [x] Post-processing pipeline (bloom, tone mapping, FXAA) - Full infrastructure with effect system
+- [x] Frustum culling implementation - Plane extraction, AABB/sphere/frustum intersection tests
+- [x] Static batching - StaticBatch and DynamicBatch systems for mesh instancing
+- [x] Basic LOD system - Multi-level LOD support in Mesh class with automatic/manual selection
+- [x] Performance profiling and optimization - CPU, GPU, frame time, and memory profilers
+
+#### 📝 New Files
+- **frustum.h/cpp** — Frustum culling with 6-plane extraction and intersection tests
+- **batch.h/cpp** — StaticBatch and DynamicBatch for mesh instancing optimization
+- **profiler.h/cpp** — PerformanceProfiler, GPUProfiler, FrameTimeTracker, MemoryProfiler
+- **mesh.h (extended)** — Added LOD system with AddLODLevel, SelectLOD, DrawLOD, DrawAuto methods
+- **mesh_renderer.h/cpp** — MeshRenderer, SkinnedMeshRenderer, LineRenderer components for scene integration
+
+#### 🔗 Scene-Renderer Integration  
+- [x] MeshRenderer component (renders entities with mesh + material)
+- [x] SkinnedMeshRenderer component (skeletal animation support)
+- [x] LineRenderer component (debug visualization)
+- [x] Per-entity bounds calculation and LOD selection
+- [x] Shadow rendering support
+- [x] Full scene entity rendering pipeline integration
 
 ---
 

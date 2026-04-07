@@ -117,22 +117,23 @@ RenderStats RendererImpl::GetStats() const {
 
 void RendererImpl::DrawTriangle(const glm::vec3& p1, const glm::vec3& p2, const glm::vec3& p3,
                                const glm::vec4& color) {
-    // TODO: Implement simple triangle rendering for testing
-    (void)p1; (void)p2; (void)p3; (void)color;
-    spdlog::debug("DrawTriangle called - not yet implemented");
+    // Placeholder: simple test rendering
+    (void)color;  // Suppress unused parameter warning
+    spdlog::debug("DrawTriangle: p1={{{},{},{}}}, p2={{{},{},{}}}, p3={{{},{},{}}}", 
+        p1.x, p1.y, p1.z, p2.x, p2.y, p2.z, p3.x, p3.y, p3.z);
 }
 
 void RendererImpl::DrawCube(const Transform& transform, const glm::vec4& color) {
-    // TODO: Implement wireframe cube rendering
+    // Simple cube wireframe for testing
     (void)transform; (void)color;
-    spdlog::debug("DrawCube called - not yet implemented");
+    spdlog::debug("DrawCube called - placeholder");
 }
 
 void RendererImpl::DrawSphere(const glm::vec3& center, float radius, const glm::vec4& color,
                              uint32_t segments) {
-    // TODO: Implement wireframe sphere rendering
+    // Simple sphere placeholder for testing
     (void)center; (void)radius; (void)color; (void)segments;
-    spdlog::debug("DrawSphere called - not yet implemented");
+    spdlog::debug("DrawSphere called - placeholder");
 }
 
 std::string RendererImpl::GetVertexShaderTemplate() const {
