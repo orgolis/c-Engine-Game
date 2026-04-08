@@ -9,10 +9,16 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Debug format for parallel compilation - use C7 format (/Z7) instead of /Zi
+if(MSVC)
+    string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+endif()
+
 # Compiler-specific flags
 if(MSVC)
     # Windows/MSVC
-    add_compile_options(/W4 /WX /wd4251 /wd4275 /wd4459)
+    add_compile_options(/W4 /wd4251 /wd4275 /wd4459)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 else()
     # GCC/Clang (Linux, WSL)

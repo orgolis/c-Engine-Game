@@ -303,7 +303,7 @@ public:
     }
     
     uint32_t GetAllocationCount() const override {
-        return allocations_.size();
+        return static_cast<uint32_t>(allocations_.size());
     }
     
     void PrintReport() const override {

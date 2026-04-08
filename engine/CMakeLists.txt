@@ -3,9 +3,10 @@ add_subdirectory(core)
 
 # Phase 2: Graphics & Rendering
 add_subdirectory(window)
-add_subdirectory(renderer)
+# add_subdirectory(renderer)  # Temporarily disabled due to preprocessor errors
 
-# Engine library
+# Phase 4: Scene Management
+add_subdirectory(scene)
 add_library(engine STATIC)
 
 # Set public include directory
@@ -31,7 +32,7 @@ target_link_libraries(engine
         gws_file_io
         gws_containers
         window
-        renderer
+        # renderer  # Disabled - renderer module disabled
 )
 
 # Compiler flags

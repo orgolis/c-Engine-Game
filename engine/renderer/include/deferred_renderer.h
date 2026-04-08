@@ -2,8 +2,10 @@
 
 #include <memory>
 #include <vector>
+#include <string>
 #include <glm/glm.hpp>
 #include <cstdint>
+#include <glad/glad.h>
 
 namespace schizo::renderer {
 

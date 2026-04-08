@@ -10,6 +10,8 @@ add_executable(gws_tests
     memory/test_general_allocator.cpp
     memory/test_stack_allocator.cpp
     memory/test_pool_allocator.cpp
+    test_physics_integration.cpp
+    test_animation_integration.cpp
 )
 
 # C++20 standard
@@ -31,3 +33,19 @@ target_include_directories(gws_tests PRIVATE
 include(CTest)
 include(Catch)
 catch_discover_tests(gws_tests)
+
+# Physics demo executable (simple console test) - DISABLED since physics module is disabled
+# add_executable(physics_demo
+#     physics_demo.cpp
+# )
+# 
+# target_compile_features(physics_demo PRIVATE cxx_std_20)
+# 
+# target_link_libraries(physics_demo PRIVATE
+#     physics
+#     math
+# )
+# 
+# target_include_directories(physics_demo PRIVATE
+#     ${CMAKE_SOURCE_DIR}/engine
+# )

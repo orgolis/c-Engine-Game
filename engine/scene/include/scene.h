@@ -8,9 +8,6 @@
 
 namespace schizo::scene {
 
-// Forward declarations
-class Octree;
-
 // ============================================================================
 // Scene Configuration
 // ============================================================================
@@ -197,9 +194,7 @@ protected:
     std::vector<std::shared_ptr<Entity>> entities_;
     std::unordered_map<uint32_t, std::shared_ptr<Entity>> entities_by_id_;
     std::unordered_map<std::string, std::vector<std::shared_ptr<Entity>>> entities_by_tag_;
-    
-    // Spatial partitioning
-    std::unique_ptr<Octree> octree_;
+
     
     // Timing
     float accumulated_time_ = 0.0f;

@@ -1,6 +1,6 @@
-#include "scene/include/octree.h"
-#include "scene/include/entity.h"
-#include "scene/include/transform.h"
+#include "octree.h"
+#include "entity.h"
+#include "transform.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
 
