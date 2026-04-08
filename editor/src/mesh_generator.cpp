@@ -206,4 +206,90 @@ std::pair<std::vector<Vertex>, std::vector<uint32_t>> MeshGenerator::GeneratePla
     return {vertices, indices};
 }
 
+std::pair<std::vector<Vertex>, std::vector<uint32_t>> MeshGenerator::GenerateCapsule(float radius, float height, uint32_t segments) {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    
+    const float pi = 3.14159265359f;
+    float h = height * 0.5f;
+    uint32_t rings = segments / 2;  // Fewer rings for hemisphere
+    
+    // Generate top hemisphere vertices
+    for (uint32_t i = 0; i <= rings; ++i) {
+        float phi = pi * 0.5f * static_cast<float>(i) / static_cast<float>(rings);
+        
+        for (uint32_t j = 0; j <= segments; ++j) {
+            float theta = 2.0f * pi * static_cast<float>(j) / static_cast<float>(segments);
+            
+            float x = radius * cos(phi) * cos(theta);
+            float z = radius * cos(phi) * sin(theta);
+            float y = h + radius * sin(phi);
+            
+            glm::vec3 color(
+                (sin(theta) + 1.0f) * 0.5f,
+                (cos(phi) + 1.0f) * 0.5f,
+                (cos(theta) + 1.0f) * 0.5f
+            );
+            
+            vertices.emplace_back(glm::vec3(x, y, z), color);
+        }
+    }
+    
+    // Generate bottom hemisphere vertices
+    for (uint32_t i = rings; i <= 2 * rings; ++i) {
+        float phi = pi * 0.5f * static_cast<float>(i - rings) / static_cast<float>(rings);
+        
+        for (uint32_t j = 0; j <= segments; ++j) {
+            float theta = 2.0f * pi * static_cast<float>(j) / static_cast<float>(segments);
+            
+            float x = radius * cos(phi) * cos(theta);
+            float z = radius * cos(phi) * sin(theta);
+            float y = -h - radius * sin(phi);
+            
+            glm::vec3 color(
+                (sin(theta) + 1.0f) * 0.5f,
+                (cos(phi) + 1.0f) * 0.5f,
+                (cos(theta) + 1.0f) * 0.5f
+            );
+            
+            vertices.emplace_back(glm::vec3(x, y, z), color);
+        }
+    }
+    
+    // Top hemisphere indices
+    for (uint32_t i = 0; i < rings; ++i) {
+        for (uint32_t j = 0; j < segments; ++j) {
+            uint32_t a = i * (segments + 1) + j;
+            uint32_t b = a + segments + 1;
+            
+            indices.push_back(a);
+            indices.push_back(b);
+            indices.push_back(a + 1);
+            
+            indices.push_back(a + 1);
+            indices.push_back(b);
+            indices.push_back(b + 1);
+        }
+    }
+    
+    // Bottom hemisphere indices
+    uint32_t offset = (rings + 1) * (segments + 1);
+    for (uint32_t i = 0; i < rings; ++i) {
+        for (uint32_t j = 0; j < segments; ++j) {
+            uint32_t a = offset + i * (segments + 1) + j;
+            uint32_t b = a + segments + 1;
+            
+            indices.push_back(a);
+            indices.push_back(a + 1);
+            indices.push_back(b);
+            
+            indices.push_back(a + 1);
+            indices.push_back(b + 1);
+            indices.push_back(b);
+        }
+    }
+    
+    return {vertices, indices};
+}
+
 } // namespace schizo::editor

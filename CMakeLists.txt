@@ -53,6 +53,9 @@ add_subdirectory(third_party/glfw)
 # GLAD (OpenGL function loader)
 add_subdirectory(third_party/glad)
 
+# tinygltf (glTF 2.0 loader)
+add_subdirectory(third_party/tinygltf)
+
 # Catch2 for testing
 if(BUILD_TESTS)
     add_subdirectory(third_party/catch2)

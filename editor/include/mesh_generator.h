@@ -57,6 +57,12 @@ public:
      * @return Pair of (vertices, indices)
      */
     static std::pair<std::vector<Vertex>, std::vector<uint32_t>> GeneratePlane(float size = 1.0f);
+    
+    /**
+     * @brief Generate a capsule mesh
+     * @return Pair of (vertices, indices)
+     */
+    static std::pair<std::vector<Vertex>, std::vector<uint32_t>> GenerateCapsule(float radius = 0.5f, float height = 2.0f, uint32_t segments = 16);
 };
 
 } // namespace schizo::editor

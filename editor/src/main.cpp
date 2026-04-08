@@ -15,12 +15,14 @@
 #include "window.h"
 #include "editor_scene.h"
 #include "scene.h"
+#include "entity_factory.h"
 #include "transform_component.h"
 #include "viewport_camera.h"
 #include "mesh_renderer_component.h"
 #include "simple_renderer.h"
 #include "transform_gizmo.h"
 #include "undo_redo_manager.h"
+#include "asset_manager.h"
 #include <spdlog/spdlog.h>
 #include <iostream>
 #include <functional>
@@ -91,7 +93,34 @@ struct EditorState {
     
     // Undo/Redo
     schizo::editor::UndoRedoManager undo_redo_manager;
+    
+    // Drag and drop
+    std::vector<std::string> dropped_files;
 };
+
+// ============================================================================
+// Global State for GLFW Callbacks
+// ============================================================================
+
+static EditorState* g_editor_state = nullptr;
+
+// GLFW drop callback for drag-and-drop file support
+static void DropCallback(GLFWwindow* window, int count, const char** paths) {
+    if (!g_editor_state) return;
+    
+    spdlog::info("Dropped {} files into editor", count);
+    for (int i = 0; i < count; ++i) {
+        std::string full_path(paths[i]);
+        
+        // Extract just the filename for display
+        size_t last_slash = full_path.find_last_of("/\\");
+        std::string filename = (last_slash != std::string::npos) ? full_path.substr(last_slash + 1) : full_path;
+        
+        spdlog::info("  - File {}: {} (full path: {})", i + 1, filename, full_path);
+        // Store the full path so asset manager can find the file
+        g_editor_state->dropped_files.push_back(full_path);
+    }
+}
 
 // ============================================================================
 // File Dialog Functions
@@ -334,27 +363,183 @@ void ShowSceneHierarchy(EditorState& editor_state) {
         ImGui::Text("Scene: %s", scene->GetName().c_str());
         ImGui::Separator();
         
-        // Create entity button
-        if (ImGui::Button("+ Create Entity")) {
-            auto entity_name = "Entity_" + std::to_string(scene->GetEntityCount());
+        // Create entity button dropdown
+        if (ImGui::Button("+ Add Entity")) {
+            ImGui::OpenPopup("AddEntityPopup");
+        }
+        
+        if (ImGui::BeginPopup("AddEntityPopup")) {
+            // Primitive entities
+            if (ImGui::MenuItem("Cube")) {
+                auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                    [scene, &editor_state]() {
+                        auto ent = schizo::scene::EntityFactory::CreateCube(scene);
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Created Cube entity");
+                    },
+                    [scene, &editor_state]() {
+                        auto ent = scene->GetEntityByName("Cube");
+                        if (ent) {
+                            scene->RemoveEntity(ent);
+                            spdlog::info("Removed Cube entity");
+                        }
+                    },
+                    "Create Cube"
+                );
+                editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
+                ImGui::CloseCurrentPopup();
+            }
             
-            // Create undo/redo command for entity creation
-            auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                [scene, entity_name]() {
-                    auto ent = scene->CreateEntity(entity_name);
-                    spdlog::info("Created entity: {}", entity_name);
-                },
-                [scene, entity_name]() {
-                    // Find and remove entity by name
-                    auto ent = scene->GetEntityByName(entity_name);
-                    if (ent) {
-                        scene->RemoveEntity(ent);
-                        spdlog::info("Removed entity: {}", entity_name);
-                    }
-                },
-                "Create entity: " + entity_name
-            );
-            editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
+            if (ImGui::MenuItem("Sphere")) {
+                auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                    [scene, &editor_state]() {
+                        auto ent = schizo::scene::EntityFactory::CreateSphere(scene);
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Created Sphere entity");
+                    },
+                    [scene, &editor_state]() {
+                        auto ent = scene->GetEntityByName("Sphere");
+                        if (ent) {
+                            scene->RemoveEntity(ent);
+                            spdlog::info("Removed Sphere entity");
+                        }
+                    },
+                    "Create Sphere"
+                );
+                editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
+                ImGui::CloseCurrentPopup();
+            }
+            
+            if (ImGui::MenuItem("Capsule")) {
+                auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                    [scene, &editor_state]() {
+                        auto ent = schizo::scene::EntityFactory::CreateCapsule(scene);
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Created Capsule entity");
+                    },
+                    [scene, &editor_state]() {
+                        auto ent = scene->GetEntityByName("Capsule");
+                        if (ent) {
+                            scene->RemoveEntity(ent);
+                            spdlog::info("Removed Capsule entity");
+                        }
+                    },
+                    "Create Capsule"
+                );
+                editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
+                ImGui::CloseCurrentPopup();
+            }
+            
+            if (ImGui::MenuItem("Cylinder")) {
+                auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                    [scene, &editor_state]() {
+                        auto ent = schizo::scene::EntityFactory::CreateCylinder(scene);
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Created Cylinder entity");
+                    },
+                    [scene, &editor_state]() {
+                        auto ent = scene->GetEntityByName("Cylinder");
+                        if (ent) {
+                            scene->RemoveEntity(ent);
+                            spdlog::info("Removed Cylinder entity");
+                        }
+                    },
+                    "Create Cylinder"
+                );
+                editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
+                ImGui::CloseCurrentPopup();
+            }
+            
+            if (ImGui::MenuItem("Plane")) {
+                auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                    [scene, &editor_state]() {
+                        auto ent = schizo::scene::EntityFactory::CreatePlane(scene);
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Created Plane entity");
+                    },
+                    [scene, &editor_state]() {
+                        auto ent = scene->GetEntityByName("Plane");
+                        if (ent) {
+                            scene->RemoveEntity(ent);
+                            spdlog::info("Removed Plane entity");
+                        }
+                    },
+                    "Create Plane"
+                );
+                editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
+                ImGui::CloseCurrentPopup();
+            }
+            
+            ImGui::Separator();
+            
+            // Special entities
+            if (ImGui::MenuItem("Player")) {
+                auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                    [scene, &editor_state]() {
+                        auto ent = schizo::scene::EntityFactory::CreatePlayer(scene);
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Created Player entity");
+                    },
+                    [scene, &editor_state]() {
+                        auto ent = scene->GetEntityByName("Player");
+                        if (ent) {
+                            scene->RemoveEntity(ent);
+                            spdlog::info("Removed Player entity");
+                        }
+                    },
+                    "Create Player"
+                );
+                editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
+                ImGui::CloseCurrentPopup();
+            }
+            
+            if (ImGui::MenuItem("Camera")) {
+                auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                    [scene, &editor_state]() {
+                        auto ent = schizo::scene::EntityFactory::CreateCamera(scene);
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Created Camera entity");
+                    },
+                    [scene, &editor_state]() {
+                        auto ent = scene->GetEntityByName("Camera");
+                        if (ent) {
+                            scene->RemoveEntity(ent);
+                            spdlog::info("Removed Camera entity");
+                        }
+                    },
+                    "Create Camera"
+                );
+                editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
+                ImGui::CloseCurrentPopup();
+            }
+            
+            ImGui::Separator();
+            
+            if (ImGui::MenuItem("Empty Entity")) {
+                auto entity_name = "Entity_" + std::to_string(scene->GetEntityCount());
+                
+                // Create undo/redo command for entity creation
+                auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                    [scene, entity_name, &editor_state]() {
+                        auto ent = scene->CreateEntity(entity_name);
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Created entity: {}", entity_name);
+                    },
+                    [scene, entity_name, &editor_state]() {
+                        // Find and remove entity by name
+                        auto ent = scene->GetEntityByName(entity_name);
+                        if (ent) {
+                            scene->RemoveEntity(ent);
+                            spdlog::info("Removed entity: {}", entity_name);
+                        }
+                    },
+                    "Create entity: " + entity_name
+                );
+                editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
+                ImGui::CloseCurrentPopup();
+            }
+            
+            ImGui::EndPopup();
         }
         
         ImGui::SameLine();
@@ -630,9 +815,111 @@ void ShowAssetBrowser(EditorState& editor_state) {
     if (!editor_state.show_asset_browser) return;
     
     if (ImGui::Begin("Asset Browser", &editor_state.show_asset_browser)) {
-        ImGui::Text("Assets folder: assets/");
+        ImGui::Text("Mesh Assets");
         ImGui::Separator();
-        ImGui::Text("[No assets loaded]");
+        
+        // Drag and drop info
+        const ImVec4 hint_color(0.5f, 0.7f, 1.0f, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, hint_color);
+        ImGui::TextWrapped("Tip: Drag .gltf, .glb, or .obj files from your file explorer into this editor");
+        ImGui::PopStyleColor();
+        ImGui::Separator();
+        
+        // Display persistently - this is the key fix!
+        ImGui::Text("Loaded Meshes:");
+        auto& asset_mgr = schizo::assets::AssetManager::GetInstance();
+        auto loaded_meshes = asset_mgr.GetLoadedMeshes();
+        
+        if (loaded_meshes.empty()) {
+            ImGui::TextDisabled("[None loaded yet]");
+        } else {
+            if (ImGui::BeginChild("MeshList", ImVec2(0, 100), true)) {
+                for (const auto& mesh_path : loaded_meshes) {
+                    if (ImGui::Selectable(mesh_path.c_str())) {
+                        auto scene = editor_state.editor_scene->GetScene();
+                        if (scene && editor_state.selected_entity_id != 0) {
+                            auto entity = scene->GetEntityById(editor_state.selected_entity_id);
+                            if (entity) {
+                                entity->SetMesh(mesh_path);
+                                spdlog::info("Assigned '{}' to entity '{}'", mesh_path, entity->GetName());
+                            }
+                        } else {
+                            ImGui::OpenPopup("NoEntitySelected");
+                        }
+                    }
+                }
+                ImGui::EndChild();
+            }
+        }
+        ImGui::Separator();
+        
+        // Show status of dropped files
+        if (!editor_state.dropped_files.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 1.0f, 0.3f, 1.0f));
+            ImGui::Text("Processing %zu dropped file(s)...", editor_state.dropped_files.size());
+            ImGui::PopStyleColor();
+            
+            int ok = 0, fail = 0;
+            for (const auto& f : editor_state.dropped_files) {
+                auto mesh = asset_mgr.LoadMesh(f);
+                if (mesh) { ok++; spdlog::info("Loaded: {}", f); }
+                else { fail++; spdlog::warn("Failed: {}", f); }
+            }
+            ImGui::Text("Result: %d OK, %d failed", ok, fail);
+            ImGui::Separator();
+        }
+        
+        // Load mesh input
+        static char mesh_path_buffer[256] = "";
+        ImGui::InputText("Mesh Path (e.g., model.gltf)", mesh_path_buffer, sizeof(mesh_path_buffer));
+        ImGui::SameLine();
+        if (ImGui::Button("Load")) {
+            if (mesh_path_buffer[0] != '\0') {
+                auto& asset_mgr = schizo::assets::AssetManager::GetInstance();
+                auto mesh = asset_mgr.LoadMesh(std::string(mesh_path_buffer));
+                if (mesh) {
+                    spdlog::info("Loaded mesh: {} ({} primitives)", mesh_path_buffer, mesh->GetPrimitives().size());
+                } else {
+                    spdlog::warn("Failed to load mesh: {}", mesh_path_buffer);
+                }
+                mesh_path_buffer[0] = '\0';
+            }
+        }
+        
+        ImGui::Separator();
+        ImGui::Text("Entity's Current Mesh:");
+        
+        // Show current assignment
+        auto scene = editor_state.editor_scene->GetScene();
+        if (scene && editor_state.selected_entity_id != 0) {
+            auto entity = scene->GetEntityById(editor_state.selected_entity_id);
+            if (entity) {
+                auto mesh_comp = entity->GetMeshComponent();
+                if (mesh_comp && !mesh_comp->mesh_path.empty()) {
+                    ImGui::Text("Mesh: %s", mesh_comp->mesh_path.c_str());
+                    if (ImGui::Button("Clear Mesh")) {
+                        entity->SetMesh("");
+                        spdlog::info("Cleared mesh from entity '{}'", entity->GetName());
+                    }
+                } else {
+                    ImGui::Text("Using default cube");
+                }
+            }
+        } else {
+            ImGui::Text("Select an entity");
+        }
+        
+        // Popup for no entity selected
+        if (ImGui::BeginPopupModal("NoEntitySelected", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Please select an entity first!");
+            ImGui::Spacing();
+            ImGui::Text("Go to the Scene Hierarchy and click an entity to select it.");
+            ImGui::Separator();
+            if (ImGui::Button("OK")) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
     }
     ImGui::End();
 }
@@ -724,9 +1011,22 @@ void ShowViewport(EditorState& editor_state) {
                         
                         // Create model matrix
                         glm::mat4 model = glm::translate(glm::mat4(1.0f), pos);
-                        model = glm::scale(model, local_scale * 0.5f);  // Scale down cubes
+                        model = glm::scale(model, local_scale * 0.5f);  // Scale down
                         
-                        // Render cube for entity
+                        // Try to render mesh asset if available
+                        auto mesh_component = entity->GetMeshComponent();
+                        if (mesh_component && mesh_component->use_asset_mesh) {
+                            auto mesh_asset = mesh_component->GetMeshAsset();
+                            if (mesh_asset) {
+                                editor_state.simple_renderer->RenderMeshAsset(
+                                    *mesh_asset, model, view_matrix, proj_matrix,
+                                    editor_state.wireframe_mode
+                                );
+                                continue;  // Skip default cube rendering
+                            }
+                        }
+                        
+                        // Fallback: Render default cube for entity
                         if (editor_state.wireframe_mode) {
                             editor_state.simple_renderer->RenderMeshWireframe(
                                 editor_state.simple_renderer->GetCubeMesh(),
@@ -944,6 +1244,11 @@ int main() {
         // Editor state
         EditorState editor_state;
         editor_state.editor_scene = &editor_scene;
+        
+        // Set up drag-and-drop callback
+        g_editor_state = &editor_state;
+        glfwSetDropCallback(window->GetNativeHandle(), DropCallback);
+        spdlog::info("Drag-and-drop support enabled");
         
         // Initialize 3D renderer
         spdlog::info("Initializing SimpleRenderer...");
