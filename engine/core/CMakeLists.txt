@@ -7,3 +7,4 @@ add_subdirectory(physics)  # Physics module enabled
 add_subdirectory(logging)
 add_subdirectory(file_io)
 add_subdirectory(containers)
+add_subdirectory(assets)

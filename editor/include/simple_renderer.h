@@ -8,6 +8,11 @@
 #include <memory>
 #include <cstdint>
 
+// Forward declarations
+namespace schizo::assets {
+    class MeshAsset;
+}
+
 namespace schizo::editor {
 
 /**
@@ -121,6 +126,15 @@ public:
     void RenderAxes(const glm::mat4& view,
                    const glm::mat4& projection,
                    float length = 1.0f);
+    
+    /**
+     * Render a mesh asset
+     */
+    void RenderMeshAsset(const schizo::assets::MeshAsset& asset,
+                        const glm::mat4& transform,
+                        const glm::mat4& view,
+                        const glm::mat4& projection,
+                        bool wireframe = false);
     
     /**
      * Get simple cube mesh (cached)

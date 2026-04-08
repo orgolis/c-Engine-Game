@@ -1,6 +1,7 @@
 #pragma once
 
 #include "transform.h"
+#include "mesh_component.h"
 #include <memory>
 #include <vector>
 #include <string>
@@ -125,6 +126,19 @@ public:
      */
     Transform* GetTransform() { return &transform_; }
     const Transform* GetTransform() const { return &transform_; }
+    
+    /**
+     * @brief Get mesh component
+     */
+    MeshComponent* GetMeshComponent() { return &mesh_component_; }
+    const MeshComponent* GetMeshComponent() const { return &mesh_component_; }
+    
+    /**
+     * @brief Set mesh on entity
+     */
+    void SetMesh(const std::string& mesh_path) {
+        mesh_component_.SetMesh(mesh_path);
+    }
     
     // ========== Hierarchy ==========
     
@@ -295,6 +309,9 @@ protected:
     
     // Transform
     Transform transform_;
+    
+    // Mesh component
+    MeshComponent mesh_component_;
     
     // Components
     std::vector<std::shared_ptr<Component>> components_;

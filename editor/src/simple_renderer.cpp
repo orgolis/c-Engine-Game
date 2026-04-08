@@ -1,5 +1,6 @@
 #include "simple_renderer.h"
 #include "mesh_generator.h"
+#include "mesh_asset.h"
 #include <glad/glad.h>
 #include <glm/gtc/type_ptr.hpp>
 #include <spdlog/spdlog.h>
@@ -415,6 +416,60 @@ void SimpleRenderer::RenderAxes(const glm::mat4& view,
     glBindVertexArray(axes_mesh_.vao);
     glDrawElements(0x0001, axes_mesh_.index_count, 0x1405, nullptr);  // GL_LINES, GL_UNSIGNED_INT
     glBindVertexArray(0);
+}
+
+void SimpleRenderer::RenderMeshAsset(const schizo::assets::MeshAsset& asset,
+                                     const glm::mat4& transform,
+                                     const glm::mat4& view,
+                                     const glm::mat4& projection,
+                                     bool wireframe) {
+    glUseProgram(shader_program_);
+    
+    GLint model_loc = glGetUniformLocation(shader_program_, "model");
+    GLint view_loc = glGetUniformLocation(shader_program_, "view");
+    GLint proj_loc = glGetUniformLocation(shader_program_, "projection");
+    
+    glUniformMatrix4fv(model_loc, 1, 0, glm::value_ptr(transform));
+    glUniformMatrix4fv(view_loc, 1, 0, glm::value_ptr(view));
+    glUniformMatrix4fv(proj_loc, 1, 0, glm::value_ptr(projection));
+    
+    if (wireframe) {
+        glPolygonMode(0x0408, 0x1B01);  // GL_FRONT_AND_BACK, GL_LINE
+    }
+    
+    // Render each primitive in the asset
+    const auto& primitives = asset.GetPrimitives();
+    for (const auto& prim : primitives) {
+        // For now, we need to create temporary meshes from asset data
+        // This is a placeholder - full implementation would cache GPU meshes
+        if (!prim.vertices.empty() && !prim.indices.empty()) {
+            std::vector<glm::vec3> positions;
+            std::vector<glm::vec3> colors;
+            std::vector<uint32_t> indices = prim.indices;
+            
+            for (const auto& vertex : prim.vertices) {
+                positions.push_back(vertex.position);
+                colors.push_back(vertex.color);
+            }
+            
+            // Create temporary mesh (inefficient - should be cached)
+            SimpleMesh temp_mesh = CreateMesh(positions, colors, indices);
+            
+            // Render the primitive
+            glBindVertexArray(temp_mesh.vao);
+            glDrawElements(0x0004, temp_mesh.index_count, 0x1405, nullptr);  // GL_TRIANGLES
+            glBindVertexArray(0);
+            
+            // Clean up temporary mesh
+            if (temp_mesh.vao != 0) glDeleteVertexArrays(1, &temp_mesh.vao);
+            if (temp_mesh.vbo != 0) glDeleteBuffers(1, &temp_mesh.vbo);
+            if (temp_mesh.ebo != 0) glDeleteBuffers(1, &temp_mesh.ebo);
+        }
+    }
+    
+    if (wireframe) {
+        glPolygonMode(0x0408, 0x1B02);  // GL_FILL
+    }
 }
 
 } // namespace schizo::editor

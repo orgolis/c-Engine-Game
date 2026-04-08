@@ -19,7 +19,8 @@ enum class MeshType {
     Sphere,
     Cylinder,
     Plane,
-    Pyramid
+    Pyramid,
+    Capsule
 };
 
 /**
