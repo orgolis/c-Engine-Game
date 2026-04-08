@@ -340,7 +340,7 @@ std::unique_ptr<Mesh> Mesh::CreateCylinder(RenderDevice* device, float radius, f
     }
     
     if (include_caps) {
-        uint32_t top_center = vertices.size();
+        uint32_t top_center = static_cast<uint32_t>(vertices.size());
         uint32_t bot_center = top_center + 1;
         
         vertices.emplace_back(glm::vec3(0, h, 0), glm::vec4(1, 1, 1, 1));
@@ -402,7 +402,7 @@ std::unique_ptr<Mesh> Mesh::CreateCapsule(RenderDevice* device, float radius, fl
     }
     
     // Bottom hemisphere
-    uint32_t bottom_start = vertices.size();
+    uint32_t bottom_start = static_cast<uint32_t>(vertices.size());
     for (uint32_t r = rings / 2; r <= rings; ++r) {
         float phi = glm::pi<float>() * r / rings;
         float sin_phi = std::sin(phi);
@@ -463,7 +463,7 @@ std::unique_ptr<Mesh> Mesh::CreateCone(RenderDevice* device, float radius, float
     }
     
     // Apex
-    uint32_t apex_idx = vertices.size();
+    uint32_t apex_idx = static_cast<uint32_t>(vertices.size());
     vertices.emplace_back(glm::vec3(0, height, 0), glm::vec4(1, 1, 1, 1));
     
     // Side faces
@@ -478,7 +478,7 @@ std::unique_ptr<Mesh> Mesh::CreateCone(RenderDevice* device, float radius, float
     
     // Base cap
     if (include_cap) {
-        uint32_t center = vertices.size();
+        uint32_t center = static_cast<uint32_t>(vertices.size());
         vertices.emplace_back(glm::vec3(0, 0, 0), glm::vec4(0.5f, 0.5f, 0.5f, 1.0f));
         
         for (uint32_t i = 0; i < segments; ++i) {
@@ -576,7 +576,7 @@ std::unique_ptr<Mesh> Mesh::CreateIcosphere(RenderDevice* device, float radius, 
             }
             
             glm::vec3 mid = glm::normalize((vertices[a].position + vertices[b].position) * 0.5f) * radius;
-            uint32_t idx = vertices.size();
+            uint32_t idx = static_cast<uint32_t>(vertices.size());
             vertices.emplace_back(mid, glm::vec4(0.5f, 0.5f, 0.5f, 1.0f));
             edge_map[key] = idx;
             return idx;

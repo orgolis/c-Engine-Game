@@ -1,5 +1,5 @@
-#include "scene/include/entity.h"
-#include "scene/include/scene.h"
+#include "entity.h"
+#include "scene.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
 
@@ -159,18 +159,20 @@ void Entity::Destroy() {
 // Scene Implementation (partial - main file has full implementation)
 // ============================================================================
 
+Scene::Scene(const std::string& name) : name_(name) {
+    spdlog::debug("Scene constructor: {}", name_);
+}
+
+Scene::~Scene() {
+    Shutdown();
+    spdlog::debug("Scene destructor: {}", name_);
+}
+
 std::shared_ptr<Scene> Scene::Create(const SceneConfig& config) {
     auto scene = std::make_shared<Scene>(config.name);
     scene->config_ = config;
     
-    if (config.use_spatial_partitioning) {
-        scene->octree_ = std::make_unique<Octree>(
-            config.world_bounds_min,
-            config.world_bounds_max,
-            config.octree_max_depth,
-            config.octree_objects_per_node
-        );
-    }
+    // Octree spatial partitioning disabled for MVP
     
     spdlog::info("Created scene: {}", config.name);
     return scene;
@@ -193,10 +195,6 @@ void Scene::AddEntity(std::shared_ptr<Entity> entity) {
         entities_by_tag_[tag].push_back(entity);
     }
     
-    if (octree_) {
-        octree_->Insert(entity);
-    }
-    
     spdlog::debug("Added entity to scene: {} (ID: {})", entity->GetName(), entity->GetId());
 }
 
@@ -217,10 +215,6 @@ void Scene::RemoveEntity(std::shared_ptr<Entity> entity) {
         if (tag_it != tagged.end()) {
             tagged.erase(tag_it);
         }
-    }
-    
-    if (octree_) {
-        octree_->Remove(entity);
     }
     
     spdlog::debug("Removed entity from scene: {} (ID: {})", entity->GetName(), entity->GetId());
@@ -246,17 +240,13 @@ std::vector<std::shared_ptr<Entity>> Scene::GetEntitiesByTag(const std::string& 
 }
 
 std::vector<std::shared_ptr<Entity>> Scene::QueryAABB(const glm::vec3& min, const glm::vec3& max) const {
-    if (octree_) {
-        return octree_->QueryAABB(min, max);
-    }
-    return entities_;
+    // Spatial queries disabled for MVP
+    return {};
 }
 
 std::vector<std::shared_ptr<Entity>> Scene::QuerySphere(const glm::vec3& center, float radius) const {
-    if (octree_) {
-        return octree_->QuerySphere(center, radius);
-    }
-    return entities_;
+    // Spatial queries disabled for MVP
+    return {};
 }
 
 std::vector<std::shared_ptr<Entity>> Scene::QueryFrustum(const glm::mat4& view_proj) const {
@@ -317,10 +307,6 @@ void Scene::Clear() {
     entities_by_id_.clear();
     entities_by_tag_.clear();
     
-    if (octree_) {
-        octree_->Clear();
-    }
-    
     spdlog::info("Cleared scene: {}", name_);
 }
 
@@ -355,23 +341,19 @@ Scene::Stats Scene::GetStats() const {
         stats.component_count += static_cast<uint32_t>(entity->GetComponents().size());
     }
     
-    if (octree_) {
-        auto oct_stats = octree_->GetStats();
-        stats.octree_nodes = oct_stats.node_count;
-        stats.octree_depth = oct_stats.max_depth;
-    }
+    stats.octree_nodes = 0;
+    stats.octree_depth = 0;
     
     return stats;
 }
 
 void Scene::UpdateSpatialPartitioning() {
-    if (!octree_) return;
-    
-    // For now, simply rebuild (in production, would use incremental updates)
-    octree_->Clear();
-    for (const auto& entity : entities_) {
-        octree_->Insert(entity);
-    }
+    // DISABLED: octree spatial partitioning temporarily disabled
+    // if (!octree_) return;
+    // octree_->Clear();
+    // for (const auto& entity : entities_) {
+    //     octree_->Insert(entity);
+    // }
 }
 
 void Scene::ProcessDestroyedEntities() {

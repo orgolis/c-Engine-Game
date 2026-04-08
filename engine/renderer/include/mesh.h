@@ -85,6 +85,51 @@ struct VertexPNTUV {
 };
 
 /**
+ * @struct VertexSkinned
+ * @brief Vertex for skeletal animation with bone weights/indices (up to 4 bones per vertex)
+ */
+struct VertexSkinned {
+    glm::vec3 position;
+    glm::vec3 normal;
+    glm::vec2 uv;
+    glm::ivec4 bone_indices = glm::ivec4(-1, -1, -1, -1);   // Bone IDs
+    glm::vec4 bone_weights = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);  // Weight per bone (normalized)
+    
+    VertexSkinned() = default;
+    VertexSkinned(const glm::vec3& pos, const glm::vec3& norm, const glm::vec2& tex)
+        : position(pos), normal(norm), uv(tex) {}
+    
+    // Add bone influence (automatically normalizes weights)
+    void AddBoneInfluence(int bone_index, float weight) {
+        // Find empty slot
+        for (int i = 0; i < 4; i++) {
+            if (bone_indices[i] == -1) {
+                bone_indices[i] = bone_index;
+                bone_weights[i] = weight;
+                return;
+            }
+        }
+        // If all slots filled, replace the one with smallest weight
+        int min_index = 0;
+        for (int i = 1; i < 4; i++) {
+            if (bone_weights[i] < bone_weights[min_index]) {
+                min_index = i;
+            }
+        }
+        bone_indices[min_index] = bone_index;
+        bone_weights[min_index] = weight;
+    }
+    
+    // Normalize bone weights to sum to 1.0
+    void NormalizeWeights() {
+        float sum = bone_weights.x + bone_weights.y + bone_weights.z + bone_weights.w;
+        if (sum > 0.0001f) {
+            bone_weights /= sum;
+        }
+    }
+};
+
+/**
  * @class Mesh
  * @brief Manages vertex/index buffers and rendering
  */
@@ -219,7 +264,7 @@ public:
     /**
      * Get number of LOD levels
      */
-    uint32_t GetLODCount() const { return lod_levels_.size(); }
+    uint32_t GetLODCount() const { return static_cast<uint32_t>(lod_levels_.size()); }
     
     /**
      * Select LOD based on camera distance

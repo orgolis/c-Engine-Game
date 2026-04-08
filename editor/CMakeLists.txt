@@ -6,21 +6,43 @@ target_include_directories(editor
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/../engine/window/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/../engine/renderer/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../engine/scene/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../engine/include
+        ${CMAKE_SOURCE_DIR}/third_party/imgui
+        ${CMAKE_SOURCE_DIR}/third_party/imgui/backends
+        ${CMAKE_SOURCE_DIR}/third_party/glfw/include
+        ${CMAKE_SOURCE_DIR}/third_party/glad/include
 )
 
 # Link libraries
 target_link_libraries(editor
     PRIVATE
         engine
+        scene
         window
-        renderer
+        glad
+        opengl32
 )
 
 # Add source files
 target_sources(editor
     PRIVATE
         src/main.cpp
+        src/editor_scene.cpp
+        src/scene_serializer.cpp
+        src/mesh_generator.cpp
+        src/simple_renderer.cpp
+        src/transform_gizmo.cpp
+        src/undo_redo_manager.cpp
+        # ImGui core
+        ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_demo.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_draw.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_tables.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_widgets.cpp
+        # ImGui backends
+        ${CMAKE_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_glfw.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_opengl3.cpp
 )
 
 # Compiler flags

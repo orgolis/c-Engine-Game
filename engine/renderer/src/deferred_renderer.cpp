@@ -1,13 +1,13 @@
-#include "renderer/include/deferred_renderer.h"
-#include "renderer/include/g_buffer.h"
-#include "renderer/include/render_device.h"
-#include "renderer/include/framebuffer.h"
-#include "renderer/include/texture.h"
-#include "renderer/include/shader.h"
-#include "renderer/include/mesh.h"
-#include "renderer/include/material.h"
-#include "renderer/include/light.h"
-#include "renderer/include/lighting.h"
+#include "deferred_renderer.h"
+#include "g_buffer.h"
+#include "render_device.h"
+#include "framebuffer.h"
+#include "texture.h"
+#include "shader.h"
+#include "mesh.h"
+#include "material.h"
+#include "light.h"
+#include "lighting.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>

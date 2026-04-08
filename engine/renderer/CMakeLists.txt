@@ -67,6 +67,22 @@ target_sources(renderer PRIVATE
     include/profiler.h
 )
 
+# Header files - Physics Integration (Scene-level components) - DISABLED since physics module is disabled
+# target_sources(renderer PRIVATE
+#     include/physics_component.h
+#     include/physics_system.h
+# )
+
+# Header files - Animation System
+target_sources(renderer PRIVATE
+    include/skeleton.h
+    include/animation.h
+    include/animator.h
+    include/blend_tree.h
+    include/animation_component.h
+    include/skeletal_mesh_component.h
+)
+
 # Source files - Core
 target_sources(renderer PRIVATE
     src/renderer.cpp
@@ -118,6 +134,22 @@ target_sources(renderer PRIVATE
     src/profiler.cpp
 )
 
+# Source files - Physics Integration (Scene-level components) - DISABLED since physics module is disabled
+# target_sources(renderer PRIVATE
+#     src/physics_component.cpp
+#     src/physics_system.cpp
+# )
+
+# Source files - Animation System
+target_sources(renderer PRIVATE
+    src/skeleton.cpp
+    src/animation.cpp
+    src/animator.cpp
+    src/blend_tree.cpp
+    src/animation_component.cpp
+    src/skeletal_mesh_component.cpp
+)
+
 # Source files - OpenGL implementation
 target_sources(renderer PRIVATE
     src/opengl/opengl_device.cpp
@@ -129,6 +161,8 @@ target_link_libraries(renderer PUBLIC
     window
     gws_logging
     glad
+    physics
+    scene
 )
 
 # OpenGL support
