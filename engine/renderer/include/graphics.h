@@ -78,7 +78,7 @@ namespace schizo::graphics {
     using RenderStats = schizo::renderer::RenderStats;
     
     using Camera = schizo::renderer::Camera;
-    using Light = schizo::renderer::Light;
+    using LightData = schizo::renderer::LightData;
     using Transform = schizo::renderer::Transform;
     
     // New texture and material types
@@ -90,4 +90,3 @@ namespace schizo::graphics {
     
 } // namespace schizo::graphics
 
-#endif // GRAPHICS_H

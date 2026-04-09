@@ -242,4 +242,3 @@ protected:
 
 } // namespace schizo::renderer
 
-#endif // LIGHTING_H

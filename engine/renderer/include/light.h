@@ -37,7 +37,7 @@ enum class ShadowQuality : uint8_t {
  * @class Light
  * @brief Advanced light source with shadow support and physical properties
  */
-class Light {
+struct Light {
 public:
     /**
      * Create a light of the specified type
@@ -198,4 +198,3 @@ protected:
 
 } // namespace schizo::renderer
 
-#endif // LIGHT_H

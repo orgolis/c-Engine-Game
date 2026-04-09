@@ -144,4 +144,3 @@ protected:
 
 } // namespace schizo::renderer
 
-#endif // FRAMEBUFFER_H

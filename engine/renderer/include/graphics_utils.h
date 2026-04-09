@@ -151,4 +151,3 @@ std::string FilterModeToString(uint32_t filter_mode);
 
 } // namespace schizo::graphics
 
-#endif // GRAPHICS_UTILS_H

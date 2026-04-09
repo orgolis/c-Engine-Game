@@ -1,6 +1,7 @@
 #include "entity_factory.h"
 #include "scene.h"
 #include "mesh_renderer_component.h"
+#include "light_component.h"
 
 namespace schizo::scene {
 
@@ -139,6 +140,54 @@ std::shared_ptr<Entity> EntityFactory::CreateCamera(
         entity->GetTransform()->LookAt(look_at);
         
         entity->SetTag("Camera");
+    }
+    
+    return entity;
+}
+
+std::shared_ptr<Entity> EntityFactory::CreateDirectionalLight(
+    std::shared_ptr<Scene> scene,
+    const std::string& name,
+    const glm::vec3& direction,
+    const glm::vec3& color,
+    float intensity) {
+    
+    if (!scene) return nullptr;
+    
+    // Create empty entity for the light
+    auto entity = scene->CreateEntity(name);
+    
+    if (entity) {
+        // Orient the entity toward the light direction
+        entity->GetTransform()->LookAt(entity->GetTransform()->GetWorldPosition() + direction);
+        
+        // Add directional light component
+        entity->AddComponent<DirectionalLightComponent>(color, intensity, true);
+        
+        // Set tag for identification
+        entity->SetTag("DirectionalLight");
+    }
+    
+    return entity;
+}
+
+std::shared_ptr<Entity> EntityFactory::CreateGlobalLight(
+    std::shared_ptr<Scene> scene,
+    const std::string& name,
+    const glm::vec3& color,
+    float intensity) {
+    
+    if (!scene) return nullptr;
+    
+    // Create empty entity for the light
+    auto entity = scene->CreateEntity(name);
+    
+    if (entity) {
+        // Add global light component
+        entity->AddComponent<GlobalLightComponent>(color, intensity);
+        
+        // Set tag for identification
+        entity->SetTag("GlobalLight");
     }
     
     return entity;

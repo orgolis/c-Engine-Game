@@ -7,8 +7,6 @@
 #include <vector>
 #include <memory>
 #include <cstdint>
-#include <map>
-#include <string>
 
 // Forward declarations
 namespace schizo::assets {
@@ -35,7 +33,6 @@ struct Mesh {
     GLuint vbo = 0;
     GLuint ebo = 0;
     uint32_t index_count = 0;
-    GLenum primitive_mode = 0x0004;  // GL_TRIANGLES (0x0001 = GL_LINES)
 };
 
 /**
@@ -60,25 +57,16 @@ public:
     // Rendering
     void ClearFramebuffer(const glm::vec4& color);
     void RenderMesh(const Mesh& mesh, const glm::mat4& model, const glm::mat4& view, const glm::mat4& proj);
-    void RenderMesh(const Mesh& mesh, const glm::mat4& model, const glm::mat4& view, const glm::mat4& proj, const glm::vec4& color);
     
     // Built-in mesh creation
     Mesh CreateGridMesh();
     Mesh CreateAxesMesh();
     Mesh CreateCubeMesh();
-    Mesh CreateRotationGizmoMesh();
-    Mesh CreateWireframeBoxMesh();
-    
-    // Mesh asset support
-    Mesh GetOrCreateMeshFromAsset(const schizo::assets::MeshAsset& asset);
-    void ClearMeshAssetCache();
     
     // Public mesh references
     Mesh grid_mesh;
     Mesh axes_mesh;
     Mesh cube_mesh;
-    Mesh rotation_gizmo_mesh;
-    Mesh wireframe_box_mesh;
 
 private:
     // Shader program
@@ -90,9 +78,6 @@ private:
     GLuint fb_depth_texture_ = 0;
     uint32_t fb_width_ = 0;
     uint32_t fb_height_ = 0;
-    
-    // Mesh asset cache (filepath -> compiled mesh)
-    std::map<std::string, Mesh> mesh_asset_cache_;
     
     // Helper: Create shader
     GLuint CreateShaderProgram(const char* vs_src, const char* fs_src);

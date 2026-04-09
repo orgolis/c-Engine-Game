@@ -45,10 +45,10 @@ struct Camera {
 };
 
 /**
- * @struct Light
- * @brief Light source definition
+ * @struct LightData
+ * @brief Simple light source data for shader parameters
  */
-struct Light {
+struct LightData {
     enum class Type : uint8_t {
         Directional,
         Point,

@@ -322,4 +322,3 @@ MeshQuality CalculateMeshQuality(const std::vector<glm::vec3>& positions,
 
 } // namespace schizo::geometry
 
-#endif // GEOMETRY_H

@@ -260,9 +260,7 @@ public:
     virtual glm::vec3 GetF0() const = 0;  // Fresnel at zero degrees
 
 protected:
-    PBRMaterial() = default
+    PBRMaterial() = default;
 };
 
 } // namespace schizo::renderer
-
-#endif // MATERIAL_H

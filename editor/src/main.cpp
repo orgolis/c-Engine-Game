@@ -20,6 +20,10 @@
 #include "viewport_camera.h"
 #include "mesh_renderer_component.h"
 #include "simple_renderer.h"
+#include "viewport_renderer_3d.h"
+#include "asset_browser_panel.h"
+#include "material_editor_panel.h"
+#include "asset_import_dialog.h"
 #include "transform_gizmo.h"
 #include "undo_redo_manager.h"
 #include "asset_manager.h"
@@ -82,10 +86,26 @@ struct EditorState {
     
     // 3D Renderer
     std::unique_ptr<schizo::editor::SimpleRenderer> simple_renderer;
+    std::unique_ptr<schizo::editor::ViewportRenderer3D> viewport_renderer_3d;
     
     // Transform Gizmo
     schizo::editor::TransformGizmo transform_gizmo;
     bool show_gizmo = true;
+    
+    // Asset Browser
+    std::unique_ptr<schizo::editor::AssetBrowserPanel> asset_browser;
+    
+    // Material Editor
+    std::unique_ptr<schizo::editor::MaterialEditorPanel> material_editor;
+    
+    // Asset Import Dialog
+    std::unique_ptr<schizo::editor::AssetImportDialog> asset_import_dialog;
+    
+    // Gizmo dragging state
+    bool gizmo_dragging = false;
+    char gizmo_axis = 0;  // 0=none, 'x', 'y', 'z'
+    glm::vec2 gizmo_drag_start = glm::vec2(0.0f);
+    glm::vec3 gizmo_drag_offset = glm::vec3(0.0f);
     
     // Play Mode
     bool is_playing = false;
@@ -352,7 +372,12 @@ void ShowMainMenuBar(EditorState& editor_state) {
 void ShowSceneHierarchy(EditorState& editor_state) {
     if (!editor_state.show_scene_hierarchy) return;
     
-    if (ImGui::Begin("Scene Hierarchy", &editor_state.show_scene_hierarchy)) {
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove;  // Fixed position
+    if (editor_state.gizmo_dragging) {
+        flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
+    }
+    
+    if (ImGui::Begin("Scene Hierarchy", &editor_state.show_scene_hierarchy, flags)) {
         auto scene = editor_state.editor_scene->GetScene();
         if (!scene) {
             ImGui::Text("No scene loaded");
@@ -515,6 +540,49 @@ void ShowSceneHierarchy(EditorState& editor_state) {
             
             ImGui::Separator();
             
+            // Light sources
+            if (ImGui::MenuItem("Directional Light")) {
+                auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                    [scene, &editor_state]() {
+                        auto ent = schizo::scene::EntityFactory::CreateDirectionalLight(scene);
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Created DirectionalLight entity");
+                    },
+                    [scene, &editor_state]() {
+                        auto ent = scene->GetEntityByName("DirectionalLight");
+                        if (ent) {
+                            scene->RemoveEntity(ent);
+                            spdlog::info("Removed DirectionalLight entity");
+                        }
+                    },
+                    "Create Directional Light"
+                );
+                editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
+                ImGui::CloseCurrentPopup();
+            }
+            
+            if (ImGui::MenuItem("Global Light")) {
+                auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                    [scene, &editor_state]() {
+                        auto ent = schizo::scene::EntityFactory::CreateGlobalLight(scene);
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Created GlobalLight entity");
+                    },
+                    [scene, &editor_state]() {
+                        auto ent = scene->GetEntityByName("GlobalLight");
+                        if (ent) {
+                            scene->RemoveEntity(ent);
+                            spdlog::info("Removed GlobalLight entity");
+                        }
+                    },
+                    "Create Global Light"
+                );
+                editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
+                ImGui::CloseCurrentPopup();
+            }
+            
+            ImGui::Separator();
+            
             if (ImGui::MenuItem("Empty Entity")) {
                 auto entity_name = "Entity_" + std::to_string(scene->GetEntityCount());
                 
@@ -576,6 +644,41 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 if (ImGui::IsItemClicked()) {
                     editor_state.selected_entity_id = entity->GetId();
                     spdlog::debug("Selected entity: {} (ID: {})", entity->GetName(), entity->GetId());
+                }
+                
+                // DRAG SOURCE - Entity can be dragged to reparent
+                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+                    // Store entity ID as payload
+                    uint32_t entity_id = entity->GetId();
+                    ImGui::SetDragDropPayload("ENTITY_NODE", &entity_id, sizeof(uint32_t));
+                    ImGui::Text("Reparenting: %s", entity->GetName().c_str());
+                    ImGui::EndDragDropSource();
+                }
+                
+                // DROP TARGET - Entity can receive other entities as children
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ENTITY_NODE")) {
+                        IM_ASSERT(payload->DataSize == sizeof(uint32_t));
+                        uint32_t dragged_entity_id = *(const uint32_t*)payload->Data;
+                        
+                        // Find and reparent the dragged entity
+                        auto dragged = scene->GetEntityById(dragged_entity_id);
+                        if (dragged && dragged != entity) {  // Can't parent to self
+                            dragged->SetParent(entity);
+                            spdlog::info("Reparented {} to {}", dragged->GetName(), entity->GetName());
+                            editor_state.editor_scene->MarkModified();
+                        }
+                    }
+                    
+                    // Also accept mesh assets
+                    if (const ImGuiPayload* mesh_payload = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
+                        const char* mesh_path = (const char*)mesh_payload->Data;
+                        entity->SetMesh(mesh_path);
+                        spdlog::info("Assigned mesh '{}' to entity '{}'", mesh_path, entity->GetName());
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    
+                    ImGui::EndDragDropTarget();
                 }
                 
                 // Right-click context menu
@@ -662,14 +765,19 @@ void ShowSceneHierarchy(EditorState& editor_state) {
         }
         
         ImGui::EndChild();
+        ImGui::End();
     }
-    ImGui::End();
 }
 
 void ShowInspector(EditorState& editor_state) {
     if (!editor_state.show_inspector) return;
     
-    if (ImGui::Begin("Inspector", &editor_state.show_inspector)) {
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove;  // Fixed position
+    if (editor_state.gizmo_dragging) {
+        flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
+    }
+    
+    if (ImGui::Begin("Inspector", &editor_state.show_inspector, flags)) {
         auto scene = editor_state.editor_scene->GetScene();
         if (!scene || editor_state.selected_entity_id == 0) {
             ImGui::Text("No entity selected");
@@ -688,6 +796,15 @@ void ShowInspector(EditorState& editor_state) {
         ImGui::Text("Entity: %s (ID: %u)", selected_entity->GetName().c_str(), selected_entity->GetId());
         ImGui::Separator();
         
+        // Display current mesh model
+        auto mesh_comp = selected_entity->GetMeshComponent();
+        if (mesh_comp && !mesh_comp->mesh_path.empty()) {
+            ImGui::Text("Model: %s", mesh_comp->mesh_path.c_str());
+        } else {
+            ImGui::TextDisabled("Model: [default cube]");
+        }
+        ImGui::Separator();
+        
         // Entity name editing
         static char entity_name_buf[256];
         if (ImGui::InputText("Name", entity_name_buf, sizeof(entity_name_buf))) {
@@ -700,6 +817,40 @@ void ShowInspector(EditorState& editor_state) {
         if (ImGui::Checkbox("Active", &is_active)) {
             selected_entity->SetActive(is_active);
             editor_state.editor_scene->MarkModified();
+        }
+        
+        ImGui::Separator();
+        
+        // Model and Texture Preview Section
+        if (ImGui::TreeNode("Model Preview")) {
+            ImGui::Columns(2, "model_preview_cols", true);
+            
+            // Left column: preview area
+            ImVec2 preview_size(150, 150);
+            ImGui::BeginChild("ModelPreview", preview_size, true, ImGuiWindowFlags_NoScrollbar);
+            
+            // Display a simple representation of the model
+            if (mesh_comp && !mesh_comp->mesh_path.empty()) {
+                ImGui::Text("Model: %s", mesh_comp->mesh_path.c_str());
+            } else {
+                ImGui::TextDisabled("[Default Cube]");
+            }
+            
+            ImGui::EndChild();
+            ImGui::NextColumn();
+            
+            // Right column: controls
+            ImGui::Text("Model Scale");
+            static float mesh_scale = 1.0f;
+            if (ImGui::SliderFloat("Mesh Scale##separate", &mesh_scale, 0.1f, 5.0f)) {
+                // This scale affects only the mesh rendering, not the entity transform
+                // Store in mesh component or as a separate property
+                editor_state.editor_scene->MarkModified();
+            }
+            ImGui::TextWrapped("Adjusts model size without affecting entity transform or colliders.");
+            
+            ImGui::Columns(1);
+            ImGui::TreePop();
         }
         
         ImGui::Separator();
@@ -775,7 +926,6 @@ void ShowInspector(EditorState& editor_state) {
                 ImGui::Separator();
                 ImGui::Text("Attached Components:");
                 for (size_t i = 0; i < components.size(); ++i) {
-                    // Display component type info (C++ RTTI)
                     ImGui::Text("  [%zu] %s", i, typeid(*components[i]).name());
                 }
             }
@@ -800,6 +950,123 @@ void ShowInspector(EditorState& editor_state) {
             ImGui::TreePop();
         }
         
+        // Material Editor Section
+        ImGui::Separator();
+        if (ImGui::TreeNode("Mesh##inspector")) {
+            ImGui::Text("Mesh Component");
+            ImGui::Separator();
+            
+            // Mesh selector with drag-drop support
+            ImGui::Text("Assign Mesh:");
+            ImGui::InputText("Current Mesh##mesh_selector", const_cast<char*>("(drag asset here)"), 256, ImGuiInputTextFlags_ReadOnly);
+            
+            // Drag-drop target for mesh assignment
+            if (ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
+                    size_t asset_idx = *reinterpret_cast<const size_t*>(payload->Data);
+                    if (editor_state.asset_browser) {
+                        const auto* dragged_asset = editor_state.asset_browser->GetAssetByIndex(asset_idx);
+                        if (dragged_asset && dragged_asset->asset_type == "Mesh") {
+                            if (mesh_comp) {
+                                // Use the full path (supports absolute paths from outside project)
+                                mesh_comp->SetMesh(dragged_asset->path);
+                                spdlog::info("[Inspector] Assigned mesh: {}", dragged_asset->path);
+                                editor_state.editor_scene->MarkModified();
+                            }
+                        }
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
+            
+            // Show current mesh info
+            if (mesh_comp && !mesh_comp->mesh_path.empty()) {
+                ImGui::Separator();
+                ImGui::Text("Current Mesh: %s", mesh_comp->mesh_path.c_str());
+                ImGui::Text("Vertices: %u (if loaded)", mesh_comp->GetMeshAsset() ? 0 : 0);
+                
+                if (ImGui::Button("Clear Mesh##mesh", ImVec2(-1, 0))) {
+                    mesh_comp->SetMesh("");
+                    editor_state.editor_scene->MarkModified();
+                    spdlog::info("[Inspector] Cleared mesh assignment");
+                }
+            } else {
+                ImGui::TextDisabled("No mesh assigned");
+            }
+            
+            ImGui::TreePop();
+        }
+        
+        // Material Editor Section
+        ImGui::Separator();
+        if (ImGui::TreeNode("Material##inspector")) {
+            if (editor_state.material_editor) {
+                editor_state.material_editor->Render(selected_entity);
+            } else {
+                ImGui::Text("Material editor not initialized");
+            }
+            ImGui::TreePop();
+        }
+        
+        // Physics Section
+        ImGui::Separator();
+        if (ImGui::TreeNode("Physics")) {
+            static bool use_physics = false;
+            if (ImGui::Checkbox("Enable Physics##phys", &use_physics)) {
+                editor_state.editor_scene->MarkModified();
+            }
+            
+            if (use_physics) {
+                ImGui::Separator();
+                ImGui::Text("Rigidbody:");
+                static float mass = 1.0f;
+                static bool gravity = true;
+                
+                if (ImGui::DragFloat("Mass##phys", &mass, 0.1f, 0.01f, 100.0f)) {
+                    editor_state.editor_scene->MarkModified();
+                }
+                
+                if (ImGui::Checkbox("Use Gravity##phys", &gravity)) {
+                    editor_state.editor_scene->MarkModified();
+                }
+                
+                ImGui::Separator();
+                ImGui::Text("Collider:");
+                static int collider_type = 0;
+                const char* collider_types[] = { "None", "Box", "Sphere", "Capsule", "Mesh" };
+                
+                if (ImGui::Combo("Collider Type##phys", &collider_type, collider_types, IM_ARRAYSIZE(collider_types))) {
+                    editor_state.editor_scene->MarkModified();
+                    spdlog::info("Set collider type to: {}", collider_types[collider_type]);
+                }
+                
+                if (collider_type > 0) {
+                    static glm::vec3 collider_scale(1.0f, 1.0f, 1.0f);
+                    static bool is_trigger = false;
+                    
+                    ImGui::DragFloat3("Collider Scale##phys", &collider_scale[0], 0.1f);
+                    ImGui::Checkbox("Is Trigger##phys", &is_trigger);
+                }
+            }
+            
+            ImGui::TreePop();
+        }
+        
+        // Gizmo Controls Section
+        ImGui::Separator();
+        if (ImGui::TreeNode("Gizmo")) {
+            const char* gizmo_modes[] = { "None", "Translate", "Rotate", "Scale" };
+            int current_mode = static_cast<int>(editor_state.transform_gizmo.GetMode());
+            
+            if (ImGui::Combo("Gizmo Mode##insp", &current_mode, gizmo_modes, IM_ARRAYSIZE(gizmo_modes))) {
+                editor_state.transform_gizmo.SetMode(static_cast<schizo::editor::GizmoMode>(current_mode));
+            }
+            
+            ImGui::Text("Hint: Use T/R/S keys in viewport to toggle modes");
+            ImGui::Text("Drag to transform, right-click to cancel");
+            ImGui::TreePop();
+        }
+        
         ImGui::Separator();
         
         if (ImGui::Button("Delete Entity", ImVec2(-1, 0))) {
@@ -807,119 +1074,29 @@ void ShowInspector(EditorState& editor_state) {
             editor_state.selected_entity_id = 0;
             spdlog::info("Deleted entity: {}", selected_entity->GetName());
         }
+        
+        ImGui::End();
     }
-    ImGui::End();
 }
 
 void ShowAssetBrowser(EditorState& editor_state) {
     if (!editor_state.show_asset_browser) return;
     
-    if (ImGui::Begin("Asset Browser", &editor_state.show_asset_browser)) {
-        ImGui::Text("Mesh Assets");
-        ImGui::Separator();
-        
-        // Drag and drop info
-        const ImVec4 hint_color(0.5f, 0.7f, 1.0f, 1.0f);
-        ImGui::PushStyleColor(ImGuiCol_Text, hint_color);
-        ImGui::TextWrapped("Tip: Drag .gltf, .glb, or .obj files from your file explorer into this editor");
-        ImGui::PopStyleColor();
-        ImGui::Separator();
-        
-        // Display persistently - this is the key fix!
-        ImGui::Text("Loaded Meshes:");
-        auto& asset_mgr = schizo::assets::AssetManager::GetInstance();
-        auto loaded_meshes = asset_mgr.GetLoadedMeshes();
-        
-        if (loaded_meshes.empty()) {
-            ImGui::TextDisabled("[None loaded yet]");
-        } else {
-            if (ImGui::BeginChild("MeshList", ImVec2(0, 100), true)) {
-                for (const auto& mesh_path : loaded_meshes) {
-                    if (ImGui::Selectable(mesh_path.c_str())) {
-                        auto scene = editor_state.editor_scene->GetScene();
-                        if (scene && editor_state.selected_entity_id != 0) {
-                            auto entity = scene->GetEntityById(editor_state.selected_entity_id);
-                            if (entity) {
-                                entity->SetMesh(mesh_path);
-                                spdlog::info("Assigned '{}' to entity '{}'", mesh_path, entity->GetName());
-                            }
-                        } else {
-                            ImGui::OpenPopup("NoEntitySelected");
-                        }
-                    }
-                }
-                ImGui::EndChild();
-            }
-        }
-        ImGui::Separator();
-        
-        // Show status of dropped files
-        if (!editor_state.dropped_files.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 1.0f, 0.3f, 1.0f));
-            ImGui::Text("Processing %zu dropped file(s)...", editor_state.dropped_files.size());
-            ImGui::PopStyleColor();
-            
-            int ok = 0, fail = 0;
-            for (const auto& f : editor_state.dropped_files) {
-                auto mesh = asset_mgr.LoadMesh(f);
-                if (mesh) { ok++; spdlog::info("Loaded: {}", f); }
-                else { fail++; spdlog::warn("Failed: {}", f); }
-            }
-            ImGui::Text("Result: %d OK, %d failed", ok, fail);
-            ImGui::Separator();
-        }
-        
-        // Load mesh input
-        static char mesh_path_buffer[256] = "";
-        ImGui::InputText("Mesh Path (e.g., model.gltf)", mesh_path_buffer, sizeof(mesh_path_buffer));
-        ImGui::SameLine();
-        if (ImGui::Button("Load")) {
-            if (mesh_path_buffer[0] != '\0') {
-                auto& asset_mgr = schizo::assets::AssetManager::GetInstance();
-                auto mesh = asset_mgr.LoadMesh(std::string(mesh_path_buffer));
-                if (mesh) {
-                    spdlog::info("Loaded mesh: {} ({} primitives)", mesh_path_buffer, mesh->GetPrimitives().size());
-                } else {
-                    spdlog::warn("Failed to load mesh: {}", mesh_path_buffer);
-                }
-                mesh_path_buffer[0] = '\0';
-            }
-        }
-        
-        ImGui::Separator();
-        ImGui::Text("Entity's Current Mesh:");
-        
-        // Show current assignment
+    if (!editor_state.asset_browser) {
+        ImGui::Begin("Asset Browser", &editor_state.show_asset_browser);
+        ImGui::Text("Asset browser not initialized");
+        ImGui::End();
+        return;
+    }
+    
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove;
+    if (editor_state.gizmo_dragging) {
+        flags |= ImGuiWindowFlags_NoInputs;
+    }
+    
+    if (ImGui::Begin("Asset Browser", &editor_state.show_asset_browser, flags)) {
         auto scene = editor_state.editor_scene->GetScene();
-        if (scene && editor_state.selected_entity_id != 0) {
-            auto entity = scene->GetEntityById(editor_state.selected_entity_id);
-            if (entity) {
-                auto mesh_comp = entity->GetMeshComponent();
-                if (mesh_comp && !mesh_comp->mesh_path.empty()) {
-                    ImGui::Text("Mesh: %s", mesh_comp->mesh_path.c_str());
-                    if (ImGui::Button("Clear Mesh")) {
-                        entity->SetMesh("");
-                        spdlog::info("Cleared mesh from entity '{}'", entity->GetName());
-                    }
-                } else {
-                    ImGui::Text("Using default cube");
-                }
-            }
-        } else {
-            ImGui::Text("Select an entity");
-        }
-        
-        // Popup for no entity selected
-        if (ImGui::BeginPopupModal("NoEntitySelected", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::Text("Please select an entity first!");
-            ImGui::Spacing();
-            ImGui::Text("Go to the Scene Hierarchy and click an entity to select it.");
-            ImGui::Separator();
-            if (ImGui::Button("OK")) {
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::EndPopup();
-        }
+        editor_state.asset_browser->Render(scene);
     }
     ImGui::End();
 }
@@ -927,7 +1104,7 @@ void ShowAssetBrowser(EditorState& editor_state) {
 void ShowViewport(EditorState& editor_state) {
     if (!editor_state.show_viewport) return;
     
-    if (ImGui::Begin("Viewport", &editor_state.show_viewport)) {
+    if (ImGui::Begin("Viewport", &editor_state.show_viewport, ImGuiWindowFlags_NoMove)) {
         ImVec2 content_area = ImGui::GetContentRegionAvail();
         
         // Play mode indicator and controls
@@ -957,6 +1134,9 @@ void ShowViewport(EditorState& editor_state) {
         ImGui::Text("Viewport: %.0f x %.0f", content_area.x, content_area.y);
         auto cam_pos = editor_state.viewport_camera.GetPosition();
         ImGui::Text("Camera: (%.1f, %.1f, %.1f)", cam_pos.x, cam_pos.y, cam_pos.z);
+        float normalized_yaw = fmod(editor_state.viewport_camera.GetYaw(), 360.0f);
+        if (normalized_yaw < 0.0f) normalized_yaw += 360.0f;
+        ImGui::Text("Rotation: Yaw %.1f° Pitch %.1f°", normalized_yaw, editor_state.viewport_camera.GetPitch());
         ImGui::Text("Entities: %zu", scene ? scene->GetEntityCount() : 0);
         
         ImGui::Separator();
@@ -993,17 +1173,27 @@ void ShowViewport(EditorState& editor_state) {
             try {
                 editor_state.simple_renderer->ResizeFramebuffer(fb_width, fb_height);
                 editor_state.simple_renderer->BindFramebuffer();
-                editor_state.simple_renderer->ClearFramebuffer(glm::vec4(0.15f, 0.15f, 0.15f, 1.0f));
+                // Gray background
+                editor_state.simple_renderer->ClearFramebuffer(glm::vec4(0.2f, 0.2f, 0.2f, 1.0f));
                 
-                // Render grid
-                editor_state.simple_renderer->RenderGrid(view_matrix, proj_matrix, 1.0f, 10);
+                // Render grid (identity transform)
+                glm::mat4 identity = glm::mat4(1.0f);
+                editor_state.simple_renderer->RenderMesh(
+                    editor_state.simple_renderer->grid_mesh,
+                    identity, view_matrix, proj_matrix
+                );
                 
-                // Render axes
-                editor_state.simple_renderer->RenderAxes(view_matrix, proj_matrix, 5.0f);
+                // Render axes (scale for visibility)
+                glm::mat4 axes_transform = glm::scale(glm::mat4(1.0f), glm::vec3(5.0f));
+                editor_state.simple_renderer->RenderMesh(
+                    editor_state.simple_renderer->axes_mesh,
+                    axes_transform, view_matrix, proj_matrix
+                );
                 
                 // Render entities as cubes
                 if (scene) {
                     const auto& entities = scene->GetEntities();
+                    spdlog::info("=== VIEWPORT RENDER: {} entities ===", entities.size());
                     for (const auto& entity : entities) {
                         auto transform = entity->GetTransform();
                         auto pos = transform->GetWorldPosition();
@@ -1011,32 +1201,135 @@ void ShowViewport(EditorState& editor_state) {
                         
                         // Create model matrix
                         glm::mat4 model = glm::translate(glm::mat4(1.0f), pos);
-                        model = glm::scale(model, local_scale * 0.5f);  // Scale down
+                        model = glm::scale(model, local_scale);
                         
-                        // Try to render mesh asset if available
+                        // Skip rendering Camera entities as boxes - they'll be rendered as gizmos
+                        if (entity->GetName() == "Camera") {
+                            continue;
+                        }
+                        
+                        // Check for mesh component with custom mesh
+                        bool rendered = false;
                         auto mesh_component = entity->GetMeshComponent();
                         if (mesh_component && mesh_component->use_asset_mesh) {
                             auto mesh_asset = mesh_component->GetMeshAsset();
                             if (mesh_asset) {
-                                editor_state.simple_renderer->RenderMeshAsset(
-                                    *mesh_asset, model, view_matrix, proj_matrix,
-                                    editor_state.wireframe_mode
+                                spdlog::info("[VIEWPORT] Rendering custom mesh for entity '{}'", entity->GetName());
+                                // Convert mesh asset to GPU mesh and render
+                                auto asset_mesh = editor_state.simple_renderer->GetOrCreateMeshFromAsset(*mesh_asset);
+                                editor_state.simple_renderer->RenderMesh(
+                                    asset_mesh,
+                                    model, view_matrix, proj_matrix
                                 );
-                                continue;  // Skip default cube rendering
+                                rendered = true;
                             }
                         }
                         
-                        // Fallback: Render default cube for entity
-                        if (editor_state.wireframe_mode) {
-                            editor_state.simple_renderer->RenderMeshWireframe(
-                                editor_state.simple_renderer->GetCubeMesh(),
-                                model, view_matrix, proj_matrix,
-                                glm::vec4(1.0f, 1.0f, 1.0f, 1.0f)  // White wireframe
-                            );
-                        } else {
+                        // Fallback to cube if no custom mesh or render as normal cube
+                        if (!rendered) {
                             editor_state.simple_renderer->RenderMesh(
-                                editor_state.simple_renderer->GetCubeMesh(),
+                                editor_state.simple_renderer->cube_mesh,
                                 model, view_matrix, proj_matrix
+                            );
+                        }
+                    }
+                    
+                    // Render camera gizmos and other entities
+                    for (const auto& entity : entities) {
+                        // Render camera entities as pyramid gizmos
+                        if (entity->GetName() == "Camera") {
+                            auto transform = entity->GetTransform();
+                            auto entity_cam_pos = transform->GetWorldPosition();
+                            
+                            // Camera gizmo: small pyramid pointing forward
+                            glm::mat4 cam_gizmo = glm::translate(glm::mat4(1.0f), entity_cam_pos);
+                            cam_gizmo = glm::scale(cam_gizmo, glm::vec3(0.2f));
+                            
+                            // Create pyramid outline for camera visualization
+                            // For now, use small axes to show camera orientation
+                            glm::mat4 cam_axes = glm::translate(glm::mat4(1.0f), entity_cam_pos);
+                            cam_axes = glm::scale(cam_axes, glm::vec3(0.3f));
+                            editor_state.simple_renderer->RenderMesh(
+                                editor_state.simple_renderer->axes_mesh,
+                                cam_axes, view_matrix, proj_matrix
+                            );
+                        }
+                    }
+                    
+                    // Render transform gizmo for selected entity
+                    if (editor_state.show_gizmo && editor_state.selected_entity_id != 0) {
+                        auto selected_entity = scene->GetEntityById(editor_state.selected_entity_id);
+                        if (selected_entity) {
+                            spdlog::info("[GIZMO] Rendering gizmo for entity '{}' at mode {}", 
+                                selected_entity->GetName(), static_cast<int>(editor_state.transform_gizmo.GetMode()));
+                            auto selected_transform = selected_entity->GetTransform();
+                            auto selected_pos = selected_transform->GetWorldPosition();
+                            
+                            // Create gizmo visualizations based on mode
+                            glm::mat4 gizmo_model = glm::translate(glm::mat4(1.0f), selected_pos);
+                            gizmo_model = glm::scale(gizmo_model, glm::vec3(0.3f));
+                            
+                            switch (editor_state.transform_gizmo.GetMode()) {
+                                case schizo::editor::GizmoMode::Translate: {
+                                    // Render XYZ translation axes (red, green, blue lines from selected entity)
+                                    // Render gizmo axes scaled up to be visible
+                                    glm::mat4 gizmo_axes = glm::translate(glm::mat4(1.0f), selected_pos);
+                                    gizmo_axes = glm::scale(gizmo_axes, glm::vec3(3.5f));  // Thick manipulation handles
+                                    spdlog::debug("[GIZMO] Rendering axes at ({}, {}, {})", selected_pos.x, selected_pos.y, selected_pos.z);
+                                    editor_state.simple_renderer->RenderMesh(
+                                        editor_state.simple_renderer->axes_mesh,
+                                        gizmo_axes, view_matrix, proj_matrix
+                                    );
+                                    break;
+                                }
+                                case schizo::editor::GizmoMode::Rotate: {
+                                    // Render gizmo axes for rotation mode (ring gizmos)
+                                    glm::mat4 gizmo_rings = glm::translate(glm::mat4(1.0f), selected_pos);
+                                    gizmo_rings = glm::scale(gizmo_rings, glm::vec3(3.5f));
+                                    editor_state.simple_renderer->RenderMesh(
+                                        editor_state.simple_renderer->rotation_gizmo_mesh,
+                                        gizmo_rings, view_matrix, proj_matrix
+                                    );
+                                    break;
+                                }
+                                case schizo::editor::GizmoMode::Scale: {
+                                    // Render gizmo axes for scale mode
+                                    glm::mat4 gizmo_axes = glm::translate(glm::mat4(1.0f), selected_pos);
+                                    gizmo_axes = glm::scale(gizmo_axes, glm::vec3(3.5f));
+                                    editor_state.simple_renderer->RenderMesh(
+                                        editor_state.simple_renderer->axes_mesh,
+                                        gizmo_axes, view_matrix, proj_matrix
+                                    );
+                                    break;
+                                }
+                                default:
+                                    spdlog::info("[GIZMO] Mode is None, not rendering");
+                                    break;
+                            }
+                        } else {
+                            spdlog::warn("[GIZMO] Selected entity ID {} not found", editor_state.selected_entity_id);
+                        }
+                    } else {
+                        spdlog::debug("[GIZMO] Not rendering: show_gizmo={}, selected_id={}", 
+                            editor_state.show_gizmo, editor_state.selected_entity_id);
+                    }
+                    
+                    // Render selection highlight box around selected entity
+                    if (editor_state.selected_entity_id != 0) {
+                        auto selected_entity = scene->GetEntityById(editor_state.selected_entity_id);
+                        if (selected_entity) {
+                            auto selected_transform = selected_entity->GetTransform();
+                            auto selected_pos = selected_transform->GetWorldPosition();
+                            auto selected_scale = selected_transform->GetLocalScale();
+                            
+                            // Create selection box (wireframe cube outline at entity position)
+                            glm::mat4 selection_box = glm::translate(glm::mat4(1.0f), selected_pos);
+                            selection_box = glm::scale(selection_box, selected_scale * 0.5f);
+                            
+                            // Render as wireframe to show selection
+                            editor_state.simple_renderer->RenderMesh(
+                                editor_state.simple_renderer->wireframe_box_mesh,
+                                selection_box, view_matrix, proj_matrix
                             );
                         }
                     }
@@ -1044,17 +1337,22 @@ void ShowViewport(EditorState& editor_state) {
                 
                 editor_state.simple_renderer->UnbindFramebuffer();
                 
+                // TEMPORARY TEST: Render frame to window instead of displaying framebuffer texture
+                spdlog::info("[VIEWPORT] Unbind complete - would display framebuffer texture ID: {}", 
+                    editor_state.simple_renderer->GetFramebufferTexture());
+                
                 // Display framebuffer texture in ImGui
                 GLuint fb_texture = editor_state.simple_renderer->GetFramebufferTexture();
                 if (fb_texture != 0) {
+                    // Display with different UV coords
                     ImGui::Image(
                         reinterpret_cast<void*>(static_cast<uintptr_t>(fb_texture)),
                         viewport_size,
-                        ImVec2(0, 1),  // Invert Y for OpenGL texture
+                        ImVec2(0, 1),
                         ImVec2(1, 0)
                     );
                 } else {
-                    ImGui::Text("Framebuffer texture not initialized");
+                    ImGui::Text("Framebuffer texture not initialized (ID=0)");
                 }
             } catch (const std::exception& e) {
                 ImGui::TextColored(ImVec4(1, 0, 0, 1), "Viewport error: %s", e.what());
@@ -1062,23 +1360,25 @@ void ShowViewport(EditorState& editor_state) {
             }
         }
         
-        // Camera controls
-        if (ImGui::IsWindowHovered()) {
+        // Camera controls - only process when viewport is hovered
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) {
             ImGuiIO& io = ImGui::GetIO();
             
-            // Handle entity selection through picking
+            // Handle entity selection through picking and gizmo interaction
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && scene) {
                 ImVec2 mouse_pos = io.MousePos;
-                ImVec2 window_pos = ImGui::GetWindowPos();
                 ImVec2 viewport_canvas_pos = ImGui::GetCursorScreenPos();
                 
-                // Calculate relative position within viewport
-                float viewport_x = mouse_pos.x - (window_pos.x + 10.0f);
-                float viewport_y = mouse_pos.y - (window_pos.y + 100.0f);
+                // Calculate relative position within viewport (from actual image position)
+                float viewport_x = mouse_pos.x - viewport_canvas_pos.x;
+                float viewport_y = mouse_pos.y - viewport_canvas_pos.y;
                 
                 // Clamp to viewport bounds
                 viewport_x = std::max(0.0f, std::min(viewport_x, viewport_size.x));
                 viewport_y = std::max(0.0f, std::min(viewport_y, viewport_size.y));
+                
+                spdlog::debug("[CLICK] Mouse: ({}, {}), Canvas: ({}, {}), Viewport: ({}, {})", 
+                    mouse_pos.x, mouse_pos.y, viewport_canvas_pos.x, viewport_canvas_pos.y, viewport_x, viewport_y);
                 
                 if (viewport_x >= 0 && viewport_y >= 0 && viewport_x < viewport_size.x && viewport_y < viewport_size.y) {
                     // Get picking ray
@@ -1086,36 +1386,158 @@ void ShowViewport(EditorState& editor_state) {
                         viewport_x, viewport_y, viewport_size.x, viewport_size.y
                     );
                     
-                    // Test ray intersection with entities
-                    uint32_t closest_entity_id = 0;
-                    float closest_distance = std::numeric_limits<float>::max();
-                    
-                    const auto& entities = scene->GetEntities();
-                    for (const auto& entity : entities) {
-                        auto transform = entity->GetTransform();
-                        auto pos = transform->GetWorldPosition();
-                        auto scale = transform->GetLocalScale() * 0.5f;
+                    // First check if gizmo is visible and try to hit an axis
+                    if (editor_state.show_gizmo && editor_state.selected_entity_id != 0) {
+                        auto selected_entity = scene->GetEntityById(editor_state.selected_entity_id);
+                        if (selected_entity) {
+                            auto selected_transform = selected_entity->GetTransform();
+                            auto selected_pos = selected_transform->GetWorldPosition();
+                            const float gizmo_render_scale = 3.5f;  // Matches rendering scale
+                            const float gizmo_axis_length = 1.0f;   // Base axis length in mesh
+                            const float gizmo_size = gizmo_render_scale * gizmo_axis_length;  // Actual visible size
+                            
+                            // Check intersection with X axis (red)
+                            glm::vec3 x_start = selected_pos;
+                            glm::vec3 x_end = selected_pos + glm::vec3(gizmo_size, 0.0f, 0.0f);
+                            float x_dist = schizo::editor::ViewportCamera::RayLineDistanceSq(
+                                ray_origin, ray_direction, x_start, x_end
+                            );
+                            
+                            // Check intersection with Y axis (green)
+                            glm::vec3 y_start = selected_pos;
+                            glm::vec3 y_end = selected_pos + glm::vec3(0.0f, gizmo_size, 0.0f);
+                            float y_dist = schizo::editor::ViewportCamera::RayLineDistanceSq(
+                                ray_origin, ray_direction, y_start, y_end
+                            );
+                            
+                            // Check intersection with Z axis (blue)
+                            glm::vec3 z_start = selected_pos;
+                            glm::vec3 z_end = selected_pos + glm::vec3(0.0f, 0.0f, gizmo_size);
+                            float z_dist = schizo::editor::ViewportCamera::RayLineDistanceSq(
+                                ray_origin, ray_direction, z_start, z_end
+                            );
+                            
+                            // Determine which axis was hit (closest)
+                            // Use axis thickness (0.05f * 3.5f = 0.175f) as hit threshold buffer
+                            float hit_threshold = 0.1f;  // Generous hit zone
+                            if (x_dist < hit_threshold || (x_dist < y_dist && x_dist < z_dist && x_dist < hit_threshold * 10)) {
+                                editor_state.gizmo_dragging = true;
+                                editor_state.gizmo_axis = 'x';
+                                editor_state.gizmo_drag_start = glm::vec2(mouse_pos.x, mouse_pos.y);
+                                editor_state.gizmo_drag_offset = glm::vec3(0.0f);
+                                spdlog::info("Gizmo X-axis grabbed");
+                            } else if (y_dist < hit_threshold || (y_dist < x_dist && y_dist < z_dist && y_dist < hit_threshold * 10)) {
+                                editor_state.gizmo_dragging = true;
+                                editor_state.gizmo_axis = 'y';
+                                editor_state.gizmo_drag_start = glm::vec2(mouse_pos.x, mouse_pos.y);
+                                editor_state.gizmo_drag_offset = glm::vec3(0.0f);
+                                spdlog::info("Gizmo Y-axis grabbed");
+                            } else if (z_dist < hit_threshold || (z_dist < x_dist && z_dist < y_dist && z_dist < hit_threshold * 10)) {
+                                editor_state.gizmo_dragging = true;
+                                editor_state.gizmo_axis = 'z';
+                                editor_state.gizmo_drag_start = glm::vec2(mouse_pos.x, mouse_pos.y);
+                                editor_state.gizmo_drag_offset = glm::vec3(0.0f);
+                                spdlog::info("Gizmo Z-axis grabbed");
+                            } else {
+                                // No gizmo hit, select entity normally
+                                uint32_t closest_entity_id = 0;
+                                float closest_distance = std::numeric_limits<float>::max();
+                                
+                                const auto& entities = scene->GetEntities();
+                                for (const auto& entity : entities) {
+                                    auto transform = entity->GetTransform();
+                                    auto pos = transform->GetWorldPosition();
+                                    auto scale = transform->GetLocalScale() * 0.5f;
+                                    
+                                    // AABB bounds
+                                    glm::vec3 aabb_min = pos - scale;
+                                    glm::vec3 aabb_max = pos + scale;
+                                    
+                                    // Test intersection
+                                    float distance = schizo::editor::ViewportCamera::RayAABBIntersection(
+                                        ray_origin, ray_direction, aabb_min, aabb_max
+                                    );
+                                    
+                                    if (distance > 0 && distance < closest_distance) {
+                                        closest_distance = distance;
+                                        closest_entity_id = entity->GetId();
+                                    }
+                                }
+                                
+                                if (closest_entity_id != 0) {
+                                    editor_state.selected_entity_id = closest_entity_id;
+                                    spdlog::info("Entity selected via picking: ID {}", closest_entity_id);
+                                }
+                            }
+                        }
+                    } else {
+                        // No gizmo visible or no selection, do normal entity picking
+                        uint32_t closest_entity_id = 0;
+                        float closest_distance = std::numeric_limits<float>::max();
                         
-                        // AABB bounds
-                        glm::vec3 aabb_min = pos - scale;
-                        glm::vec3 aabb_max = pos + scale;
+                        const auto& entities = scene->GetEntities();
+                        for (const auto& entity : entities) {
+                            auto transform = entity->GetTransform();
+                            auto pos = transform->GetWorldPosition();
+                            auto scale = transform->GetLocalScale() * 0.5f;
+                            
+                            // AABB bounds
+                            glm::vec3 aabb_min = pos - scale;
+                            glm::vec3 aabb_max = pos + scale;
+                            
+                            // Test intersection
+                            float distance = schizo::editor::ViewportCamera::RayAABBIntersection(
+                                ray_origin, ray_direction, aabb_min, aabb_max
+                            );
+                            
+                            if (distance > 0 && distance < closest_distance) {
+                                closest_distance = distance;
+                                closest_entity_id = entity->GetId();
+                            }
+                        }
                         
-                        // Test intersection
-                        float distance = schizo::editor::ViewportCamera::RayAABBIntersection(
-                            ray_origin, ray_direction, aabb_min, aabb_max
-                        );
-                        
-                        if (distance > 0 && distance < closest_distance) {
-                            closest_distance = distance;
-                            closest_entity_id = entity->GetId();
+                        if (closest_entity_id != 0) {
+                            editor_state.selected_entity_id = closest_entity_id;
+                            spdlog::info("Entity selected via picking: ID {}", closest_entity_id);
                         }
                     }
-                    
-                    if (closest_entity_id != 0) {
-                        editor_state.selected_entity_id = closest_entity_id;
-                        spdlog::info("Entity selected via picking: ID {}", closest_entity_id);
-                    }
                 }
+            }
+            
+            // Handle gizmo dragging
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && editor_state.gizmo_dragging && scene) {
+                ImVec2 current_mouse = io.MousePos;
+                ImVec2 drag_delta = ImVec2(
+                    (current_mouse.x - editor_state.gizmo_drag_start.x) / viewport_size.x,
+                    (current_mouse.y - editor_state.gizmo_drag_start.y) / viewport_size.y
+                );
+                
+                auto selected_entity = scene->GetEntityById(editor_state.selected_entity_id);
+                if (selected_entity) {
+                    auto selected_transform = selected_entity->GetTransform();
+                    auto original_pos = selected_transform->GetLocalPosition();
+                    glm::vec3 new_pos = original_pos;
+                    
+                    // Apply movement based on gizmo mode and axis
+                    float movement_scale = 5.0f;  // Sensitivity
+                    
+                    if (editor_state.transform_gizmo.GetMode() == schizo::editor::GizmoMode::Translate) {
+                        if (editor_state.gizmo_axis == 'x') {
+                            new_pos.x += drag_delta.x * movement_scale;
+                        } else if (editor_state.gizmo_axis == 'y') {
+                            new_pos.y -= drag_delta.y * movement_scale;  // Negative for up
+                        } else if (editor_state.gizmo_axis == 'z') {
+                            new_pos.z += drag_delta.y * movement_scale;
+                        }
+                        selected_transform->SetLocalPosition(new_pos);
+                    }
+                    
+                    editor_state.editor_scene->MarkModified();
+                }
+            } else if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                // Mouse released, stop gizmo dragging
+                editor_state.gizmo_dragging = false;
+                editor_state.gizmo_axis = 0;
             }
             
             // Middle mouse drag to rotate
@@ -1133,13 +1555,34 @@ void ShowViewport(EditorState& editor_state) {
                 editor_state.viewport_camera_rotating = false;
             }
             
-            // Scroll to zoom
-            if (io.MouseWheel != 0.0f) {
+            // Scroll to zoom (only if not dragging gizmo)
+            if (io.MouseWheel != 0.0f && !editor_state.gizmo_dragging) {
                 editor_state.viewport_camera.Zoom(io.MouseWheel);
             }
             
-            // Right mouse drag to pan
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+            // Arrow key camera movement (camera speed = 1.0)
+            // Only when viewport is focused (active window) and not dragging gizmo
+            if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !editor_state.gizmo_dragging) {
+                if (ImGui::IsKeyDown(ImGuiKey_UpArrow)) {
+                    spdlog::debug("[ARROW] Up key - pan forward");
+                    editor_state.viewport_camera.Pan(0.0f, 1.0f);  // Forward
+                }
+                if (ImGui::IsKeyDown(ImGuiKey_DownArrow)) {
+                    spdlog::debug("[ARROW] Down key - pan backward");
+                    editor_state.viewport_camera.Pan(0.0f, -1.0f);  // Backward
+                }
+                if (ImGui::IsKeyDown(ImGuiKey_LeftArrow)) {
+                    spdlog::debug("[ARROW] Left key - pan left");
+                    editor_state.viewport_camera.Pan(-1.0f, 0.0f);  // Left
+                }
+                if (ImGui::IsKeyDown(ImGuiKey_RightArrow)) {
+                    spdlog::debug("[ARROW] Right key - pan right");
+                    editor_state.viewport_camera.Pan(1.0f, 0.0f);   // Right
+                }
+            }
+            
+            // Right mouse drag to pan (only if not dragging gizmo)
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Right) && !editor_state.gizmo_dragging) {
                 ImVec2 current_mouse = io.MousePos;
                 ImVec2 delta = ImVec2(
                     (io.MousePos.x - io.MousePosPrev.x) / viewport_size.x,
@@ -1167,15 +1610,38 @@ void ShowViewport(EditorState& editor_state) {
                     editor_state.transform_gizmo.EndDrag();
                 }
             }
+            
+            // DROP TARGET - Viewport can receive mesh assets
+            if (ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* mesh_payload = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
+                    const char* mesh_path = (const char*)mesh_payload->Data;
+                    if (scene && editor_state.selected_entity_id != 0) {
+                        auto entity = scene->GetEntityById(editor_state.selected_entity_id);
+                        if (entity) {
+                            entity->SetMesh(mesh_path);
+                            spdlog::info("Assigned mesh '{}' to entity '{}' via viewport drop", mesh_path, entity->GetName());
+                            editor_state.editor_scene->MarkModified();
+                        }
+                    } else {
+                        spdlog::warn("Cannot assign mesh: no entity selected");
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
         }
+        ImGui::End();
     }
-    ImGui::End();
 }
 
 void ShowPreferences(EditorState& editor_state) {
     if (!editor_state.show_preferences) return;
     
-    if (ImGui::Begin("Preferences", &editor_state.show_preferences, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove;  // Fixed position
+    if (editor_state.gizmo_dragging) {
+        flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
+    }
+    
+    if (ImGui::Begin("Preferences", &editor_state.show_preferences, flags)) {
         ImGui::Text("Editor Settings");
         ImGui::Separator();
         ImGui::Checkbox("Vsync", nullptr);
@@ -1186,8 +1652,9 @@ void ShowPreferences(EditorState& editor_state) {
         if (ImGui::Button("Close")) {
             editor_state.show_preferences = false;
         }
+        
+        ImGui::End();
     }
-    ImGui::End();
 }
 
 int main() {
@@ -1255,6 +1722,27 @@ int main() {
         editor_state.simple_renderer = std::make_unique<schizo::editor::SimpleRenderer>();
         editor_state.simple_renderer->Initialize();
         
+        // Initialize 3D Viewport Renderer
+        spdlog::info("Initializing 3D Viewport Renderer...");
+        editor_state.viewport_renderer_3d = std::make_unique<schizo::editor::ViewportRenderer3D>();
+        editor_state.viewport_renderer_3d->Initialize(nullptr, 1024, 768);
+        spdlog::info("ViewportRenderer3D initialized");
+        
+        // Initialize Asset Browser Panel
+        spdlog::info("Initializing Asset Browser Panel...");
+        editor_state.asset_browser = std::make_unique<schizo::editor::AssetBrowserPanel>();
+        spdlog::info("Asset Browser Panel initialized");
+        
+        // Initialize Material Editor Panel
+        spdlog::info("Initializing Material Editor Panel...");
+        editor_state.material_editor = std::make_unique<schizo::editor::MaterialEditorPanel>();
+        spdlog::info("Material Editor Panel initialized");
+        
+        // Initialize Asset Import Dialog
+        spdlog::info("Initializing Asset Import Dialog...");
+        editor_state.asset_import_dialog = std::make_unique<schizo::editor::AssetImportDialog>();
+        spdlog::info("Asset Import Dialog initialized");
+        
         // Main loop
         spdlog::info("Entering editor loop...");
         int frame_count = 0;
@@ -1288,6 +1776,27 @@ int main() {
                 editor_state.is_playing = !editor_state.is_playing;
                 editor_state.play_time = 0.0f;
                 spdlog::info(editor_state.is_playing ? "Play mode started (F5)" : "Play mode stopped (F5)");
+            }
+            
+            // Flythrough camera controls (WASD keys)
+            float camera_movement = 0.1f;
+            if (window->IsKeyPressed(schizo::window::KeyCode::W)) {
+                editor_state.viewport_camera.MoveLocal(camera_movement, 0.0f, 0.0f);
+            }
+            if (window->IsKeyPressed(schizo::window::KeyCode::S)) {
+                editor_state.viewport_camera.MoveLocal(-camera_movement, 0.0f, 0.0f);
+            }
+            if (window->IsKeyPressed(schizo::window::KeyCode::A)) {
+                editor_state.viewport_camera.MoveLocal(0.0f, -camera_movement, 0.0f);
+            }
+            if (window->IsKeyPressed(schizo::window::KeyCode::D)) {
+                editor_state.viewport_camera.MoveLocal(0.0f, camera_movement, 0.0f);
+            }
+            if (window->IsKeyPressed(schizo::window::KeyCode::SPACE)) {
+                editor_state.viewport_camera.MoveLocal(0.0f, 0.0f, camera_movement);
+            }
+            if (window->IsKeyPressed(schizo::window::KeyCode::LEFT_CONTROL)) {
+                editor_state.viewport_camera.MoveLocal(0.0f, 0.0f, -camera_movement);
             }
             
             // Update play time if in play mode
@@ -1329,6 +1838,12 @@ int main() {
             ShowSceneHierarchy(editor_state);
             ShowInspector(editor_state);
             ShowAssetBrowser(editor_state);
+            
+            // Render import dialog if open
+            if (editor_state.asset_import_dialog && editor_state.asset_import_dialog->IsOpen()) {
+                editor_state.asset_import_dialog->RenderDialog();
+            }
+            
             ShowPreferences(editor_state);
             
             // Render ImGui
