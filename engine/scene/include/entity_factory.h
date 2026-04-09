@@ -127,6 +127,40 @@ public:
         const glm::vec3& position = glm::vec3(0.0f, 2.0f, 5.0f),
         const glm::vec3& look_at = glm::vec3(0.0f, 0.0f, 0.0f)
     );
+    
+    // ========== Light Entities ==========
+    
+    /**
+     * @brief Create a directional light entity
+     * @param scene Target scene
+     * @param name Entity name
+     * @param direction Light direction
+     * @param color Light color
+     * @param intensity Light intensity
+     * @return Shared pointer to created entity
+     */
+    static std::shared_ptr<Entity> CreateDirectionalLight(
+        std::shared_ptr<Scene> scene,
+        const std::string& name = "DirectionalLight",
+        const glm::vec3& direction = glm::vec3(-0.3f, -1.0f, -0.3f),
+        const glm::vec3& color = glm::vec3(1.0f, 0.95f, 0.8f),
+        float intensity = 1.0f
+    );
+    
+    /**
+     * @brief Create a global/ambient light entity
+     * @param scene Target scene
+     * @param name Entity name
+     * @param color Ambient light color
+     * @param intensity Light intensity
+     * @return Shared pointer to created entity
+     */
+    static std::shared_ptr<Entity> CreateGlobalLight(
+        std::shared_ptr<Scene> scene,
+        const std::string& name = "GlobalLight",
+        const glm::vec3& color = glm::vec3(0.5f, 0.5f, 0.6f),
+        float intensity = 0.5f
+    );
 };
 
 } // namespace schizo::scene

@@ -36,6 +36,16 @@ public:
     const glm::vec3& GetPosition() const { return position_; }
     
     /**
+     * @brief Get camera yaw angle (in degrees)
+     */
+    float GetYaw() const { return yaw_; }
+    
+    /**
+     * @brief Get camera pitch angle (in degrees)
+     */
+    float GetPitch() const { return pitch_; }
+    
+    /**
      * @brief Pan camera (move in X-Y plane)
      */
     void Pan(float dx, float dy) {
@@ -85,7 +95,7 @@ public:
     void Reset() {
         position_ = glm::vec3(0.0f, 1.0f, 5.0f);
         yaw_ = -90.0f;
-        pitch_ = -20.0f;
+        pitch_ = -11.5f;  // Corrected pitch to point toward origin
         RecalculateViewMatrix();
     }
     
@@ -121,6 +131,29 @@ public:
         
         return tmin > 0.0001f ? tmin : -1.0f;
     }
+    
+    /**
+     * @brief Move camera in local directions (for flythrough mode)
+     * @param forward Forward movement (positive = forward, negative = backward)
+     * @param right Right movement (positive = right, negative = left)
+     * @param up Up movement (positive = up, negative = down)
+     */
+    void MoveLocal(float forward, float right, float up) {
+        position_ += front_ * forward * movement_speed_;
+        position_ += right_ * right * movement_speed_;
+        position_ += up * glm::vec3(0.0f, 1.0f, 0.0f) * movement_speed_;
+        RecalculateViewMatrix();
+    }
+    
+    /**
+     * @brief Set flythrough movement speed
+     */
+    void SetMovementSpeed(float speed) { movement_speed_ = speed; }
+    
+    /**
+     * @brief Get flythrough movement speed
+     */
+    float GetMovementSpeed() const { return movement_speed_; }
     
     /**
      * @brief Get a ray through screen coordinates for picking
@@ -168,6 +201,39 @@ public:
         return {ray_origin, ray_direction};
     }
     
+    /**
+     * @brief Calculate squared distance from ray to line segment
+     * @return Squared distance to line segment
+     */
+    static float RayLineDistanceSq(const glm::vec3& ray_origin, const glm::vec3& ray_dir,
+                                   const glm::vec3& line_start, const glm::vec3& line_end) {
+        glm::vec3 line_dir = line_end - line_start;
+        glm::vec3 w = ray_origin - line_start;
+        
+        float a = glm::dot(ray_dir, ray_dir);      // |ray_dir|^2
+        float b = glm::dot(ray_dir, line_dir);     // ray_dir · line_dir
+        float c = glm::dot(line_dir, line_dir);    // |line_dir|^2
+        float d = glm::dot(ray_dir, w);            // ray_dir · w
+        float e = glm::dot(line_dir, w);           // line_dir · w
+        
+        float denom = a * c - b * b;
+        if (std::abs(denom) < 0.0001f) {
+            // Ray and line are parallel, return distance from ray origin to line start
+            return glm::dot(w, w);
+        }
+        
+        float t = (b * e - c * d) / denom;
+        float s = (a * e - b * d) / denom;
+        
+        // Clamp s to [0, 1] to stay on line segment
+        s = std::max(0.0f, std::min(1.0f, s));
+        
+        glm::vec3 closest_on_ray = ray_origin + ray_dir * t;
+        glm::vec3 closest_on_line = line_start + line_dir * s;
+        
+        return glm::dot(closest_on_ray - closest_on_line, closest_on_ray - closest_on_line);
+    }
+    
 private:
     void RecalculateViewMatrix() {
         // Calculate front vector from yaw and pitch
@@ -191,12 +257,13 @@ private:
     glm::vec3 up_ = glm::vec3(0.0f, 1.0f, 0.0f);
     
     float yaw_ = -90.0f;
-    float pitch_ = -20.0f;
+    float pitch_ = -11.5f;  // Fixed: was -20, now points toward origin at (0,0,0)
     float fov_ = 45.0f;
     
     float pan_speed_ = 0.01f;
     float zoom_speed_ = 0.1f;
     float rotation_speed_ = 0.5f;
+    float movement_speed_ = 0.05f;  // For flythrough mode
     
     glm::mat4 view_ = glm::mat4(1.0f);
 };

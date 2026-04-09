@@ -230,5 +230,3 @@ protected:
 };
 
 } // namespace schizo::renderer
-
-#endif // TEXTURE_H

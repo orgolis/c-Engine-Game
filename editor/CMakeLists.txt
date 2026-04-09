@@ -7,6 +7,7 @@ target_include_directories(editor
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/../engine/window/include
         ${CMAKE_CURRENT_SOURCE_DIR}/../engine/scene/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../engine/renderer/include
         ${CMAKE_CURRENT_SOURCE_DIR}/../engine/include
         ${CMAKE_SOURCE_DIR}/third_party/imgui
         ${CMAKE_SOURCE_DIR}/third_party/imgui/backends
@@ -32,8 +33,12 @@ target_sources(editor
         src/scene_serializer.cpp
         src/mesh_generator.cpp
         src/simple_renderer.cpp
+        src/viewport_renderer_3d_minimal.cpp
         src/transform_gizmo.cpp
         src/undo_redo_manager.cpp
+        src/asset_browser_panel.cpp
+        src/material_editor_panel.cpp
+        src/asset_import_dialog.cpp
         # ImGui core
         ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui.cpp
         ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_demo.cpp

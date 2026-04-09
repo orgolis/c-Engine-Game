@@ -10,7 +10,7 @@ namespace schizo::renderer {
 // Forward declarations
 class RenderDevice;
 class Framebuffer;
-class Light;
+struct Light;
 
 /**
  * @enum ShadowAlgorithm
@@ -239,4 +239,3 @@ protected:
 
 } // namespace schizo::renderer
 
-#endif // SHADOW_H

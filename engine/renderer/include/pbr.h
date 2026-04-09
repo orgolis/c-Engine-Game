@@ -320,5 +320,3 @@ public:
 };
 
 } // namespace schizo::renderer
-
-#endif // PBR_H

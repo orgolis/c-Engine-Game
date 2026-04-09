@@ -12,7 +12,7 @@ namespace schizo::renderer {
 // Forward declarations
 class RenderDevice;
 class GBuffer;
-class Light;
+struct Light;
 class LightManager;
 class Framebuffer;
 class Shader;

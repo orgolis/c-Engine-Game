@@ -261,4 +261,3 @@ protected:
 
 } // namespace schizo::renderer
 
-#endif // IBL_H

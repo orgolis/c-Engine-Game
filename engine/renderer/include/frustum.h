@@ -7,7 +7,7 @@
 namespace schizo::renderer {
 
 // Forward declaration
-class Camera;
+struct Camera;
 
 // ============================================================================
 // Frustum Culling
