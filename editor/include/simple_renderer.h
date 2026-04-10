@@ -68,6 +68,8 @@ public:
     Mesh CreateCubeMesh();
     Mesh CreateRotationGizmoMesh();
     Mesh CreateWireframeBoxMesh();
+    Mesh CreateTranslationGizmoMesh(char axis);  // 'x', 'y', 'z' - creates arrow for that axis
+    Mesh CreateScaleGizmoMesh(char axis);        // 'x', 'y', 'z' - creates cube handle for that axis
     
     // Mesh asset support
     Mesh GetOrCreateMeshFromAsset(const schizo::assets::MeshAsset& asset);

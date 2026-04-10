@@ -17,6 +17,7 @@
 #include "scene.h"
 #include "entity_factory.h"
 #include "transform_component.h"
+#include "light_component.h"
 #include "viewport_camera.h"
 #include "mesh_renderer_component.h"
 #include "simple_renderer.h"
@@ -944,10 +945,241 @@ void ShowInspector(EditorState& editor_state) {
                     spdlog::info("Added TransformComponent to entity: {}", selected_entity->GetName());
                     ImGui::CloseCurrentPopup();
                 }
+                
+                if (ImGui::BeginMenu("Light##add_light")) {
+                    if (ImGui::MenuItem("Directional Light")) {
+                        selected_entity->AddComponent<schizo::scene::LightComponent>(
+                            schizo::scene::LightType::Directional,
+                            "Directional Light"
+                        );
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Added Directional LightComponent to entity: {}", selected_entity->GetName());
+                        ImGui::CloseCurrentPopup();
+                    }
+                    if (ImGui::MenuItem("Point Light")) {
+                        selected_entity->AddComponent<schizo::scene::LightComponent>(
+                            schizo::scene::LightType::Point,
+                            "Point Light"
+                        );
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Added Point LightComponent to entity: {}", selected_entity->GetName());
+                        ImGui::CloseCurrentPopup();
+                    }
+                    if (ImGui::MenuItem("Spot Light")) {
+                        selected_entity->AddComponent<schizo::scene::LightComponent>(
+                            schizo::scene::LightType::Spot,
+                            "Spot Light"
+                        );
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Added Spot LightComponent to entity: {}", selected_entity->GetName());
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndMenu();
+                }
+                
                 ImGui::EndPopup();
             }
             
             ImGui::TreePop();
+        }
+        
+        // Light Component Properties
+        ImGui::Separator();
+        auto light_comp = selected_entity->GetComponent<schizo::scene::LightComponent>();
+        if (light_comp) {
+            if (ImGui::TreeNode("Light")) {
+                // Light type display
+                const char* light_type_str;
+                if (light_comp->GetType() == schizo::scene::LightType::Directional) {
+                    light_type_str = "Directional (Sun)";
+                } else if (light_comp->GetType() == schizo::scene::LightType::Point) {
+                    light_type_str = "Point Light";
+                } else {
+                    light_type_str = "Spot Light";
+                }
+                ImGui::Text("Type: %s", light_type_str);
+                
+                // Enable/Disable
+                bool enabled = light_comp->IsEnabled();
+                if (ImGui::Checkbox("Enabled##light", &enabled)) {
+                    light_comp->SetEnabled(enabled);
+                    editor_state.editor_scene->MarkModified();
+                }
+                    
+                    ImGui::Separator();
+                    ImGui::Text("Color & Intensity");
+                    
+                    // Color picker
+                    glm::vec3 color = light_comp->GetColor();
+                    float color_arr[3] = {color.r, color.g, color.b};
+                    if (ImGui::ColorEdit3("Color##light", color_arr)) {
+                        light_comp->SetColor(color_arr[0], color_arr[1], color_arr[2]);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    
+                    // Intensity
+                    float intensity = light_comp->GetIntensity();
+                    if (ImGui::SliderFloat("Intensity##light", &intensity, 0.0f, 5.0f)) {
+                        light_comp->SetIntensity(intensity);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    
+                    // Temperature
+                    float temperature = light_comp->GetTemperature();
+                    if (ImGui::SliderFloat("Temperature (K)##light", &temperature, 1000.0f, 10000.0f)) {
+                        light_comp->SetTemperature(temperature);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(?)");
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Color temperature in Kelvin\n1000K=Fire | 3000K=Warm | 6500K=Daylight | 9000K=Cool");
+                    }
+                    
+                    // Light-specific properties
+                    if (light_comp->GetType() != schizo::scene::LightType::Directional) {
+                        ImGui::Separator();
+                        ImGui::Text("Range");
+                        
+                        float range = light_comp->GetRange();
+                        if (ImGui::SliderFloat("Range##light", &range, 0.1f, 100.0f)) {
+                            light_comp->SetRange(range);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                    }
+                    
+                    if (light_comp->GetType() == schizo::scene::LightType::Spot) {
+                        ImGui::Separator();
+                        ImGui::Text("Spot Light");
+                        
+                        glm::vec2 angles = light_comp->GetSpotAngles();
+                        if (ImGui::SliderFloat("Inner Angle##spot", &angles.x, 0.0f, 90.0f)) {
+                            light_comp->SetSpotAngles(angles.x, angles.y);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                        if (ImGui::SliderFloat("Outer Angle##spot", &angles.y, 0.0f, 90.0f)) {
+                            light_comp->SetSpotAngles(angles.x, angles.y);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                        
+                        float falloff = light_comp->GetSpotFalloff();
+                        if (ImGui::SliderFloat("Falloff##spot", &falloff, 0.1f, 10.0f)) {
+                            light_comp->SetSpotFalloff(falloff);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                    }
+                    
+                    // Shadows section
+                    ImGui::Separator();
+                    if (ImGui::TreeNode("Shadows##light")) {
+                        bool cast_shadow = light_comp->GetCastShadow();
+                        if (ImGui::Checkbox("Cast Shadows##light", &cast_shadow)) {
+                            light_comp->SetCastShadow(cast_shadow);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                        
+                        if (cast_shadow) {
+                            // Shadow quality
+                            static const char* shadow_quality_names[] = {
+                                "None", "Low (512x512)", "Medium (1024x1024)", "High (2048x2048)", "Ultra (4096x4096)"
+                            };
+                            static int shadow_quality_idx = 2;  // Default: Medium
+                            
+                        if (light_comp->GetShadowQuality() == schizo::scene::ShadowQuality::None) {
+                            shadow_quality_idx = 0;
+                        } else if (light_comp->GetShadowQuality() == schizo::scene::ShadowQuality::Low) {
+                            shadow_quality_idx = 1;
+                        } else if (light_comp->GetShadowQuality() == schizo::scene::ShadowQuality::Medium) {
+                            shadow_quality_idx = 2;
+                        } else if (light_comp->GetShadowQuality() == schizo::scene::ShadowQuality::High) {
+                            shadow_quality_idx = 3;
+                        } else if (light_comp->GetShadowQuality() == schizo::scene::ShadowQuality::Ultra) {
+                            shadow_quality_idx = 4;
+                        }
+                        
+                        if (ImGui::Combo("Resolution##shadow_quality", &shadow_quality_idx, shadow_quality_names, IM_ARRAYSIZE(shadow_quality_names))) {
+                            schizo::scene::ShadowQuality qualities[] = {
+                                schizo::scene::ShadowQuality::None,
+                                schizo::scene::ShadowQuality::Low,
+                                schizo::scene::ShadowQuality::Medium,
+                                schizo::scene::ShadowQuality::High,
+                                schizo::scene::ShadowQuality::Ultra
+                            };
+                            light_comp->SetShadowQuality(qualities[shadow_quality_idx]);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                        
+                        ImGui::Separator();
+                        ImGui::Text("Shadow Parameters");
+                            
+                            // Shadow bias
+                            glm::vec2 shadow_bias = light_comp->GetShadowBias();
+                            if (ImGui::SliderFloat("Bias##shadow", &shadow_bias.x, 0.0f, 0.1f)) {
+                                light_comp->SetShadowBias(shadow_bias.x, shadow_bias.y);
+                                editor_state.editor_scene->MarkModified();
+                            }
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(?)");
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip("Reduces shadow acne artifacts");
+                            }
+                            
+                            // Shadow filter radius
+                            float filter_radius = light_comp->GetShadowFilterRadius();
+                            if (ImGui::SliderFloat("Filter Radius##shadow", &filter_radius, 0.5f, 4.0f)) {
+                                light_comp->SetShadowFilterRadius(filter_radius);
+                                editor_state.editor_scene->MarkModified();
+                            }
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(?)");
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip("Softness of shadow edges (PCF)");
+                            }
+                            
+                            // Shadow planes
+                            glm::vec2 shadow_planes = light_comp->GetShadowPlanes();
+                            if (ImGui::SliderFloat("Near Plane##shadow", &shadow_planes.x, 0.01f, 10.0f)) {
+                                light_comp->SetShadowPlanes(shadow_planes.x, shadow_planes.y);
+                                editor_state.editor_scene->MarkModified();
+                            }
+                            if (ImGui::SliderFloat("Far Plane##shadow", &shadow_planes.y, 10.0f, 1000.0f)) {
+                                light_comp->SetShadowPlanes(shadow_planes.x, shadow_planes.y);
+                                editor_state.editor_scene->MarkModified();
+                            }
+                            
+                            // Cascade count for directional lights
+                            if (light_comp->GetType() == schizo::scene::LightType::Directional) {
+                                uint32_t cascade_count = light_comp->GetCascadeCount();
+                                int cascade_idx = static_cast<int>(cascade_count);
+                                if (ImGui::SliderInt("Cascades##shadow", &cascade_idx, 1, 4)) {
+                                    light_comp->SetCascadeCount(static_cast<uint32_t>(cascade_idx));
+                                    editor_state.editor_scene->MarkModified();
+                                }
+                            }
+                        }
+                        
+                        ImGui::TreePop();
+                    }
+                    
+                    // Advanced features
+                    ImGui::Separator();
+                    if (ImGui::TreeNode("Advanced##light")) {
+                        float volumetric = light_comp->GetVolumetricIntensity();
+                        if (ImGui::SliderFloat("Volumetric Intensity##light", &volumetric, 0.0f, 1.0f)) {
+                            light_comp->SetVolumetricIntensity(volumetric);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(?)");
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("God rays / Light shafts intensity");
+                        }
+                        
+                        ImGui::TreePop();
+                    }
+                
+                ImGui::TreePop();
+            }
         }
         
         // Material Editor Section
@@ -1260,58 +1492,20 @@ void ShowViewport(EditorState& editor_state) {
                     if (editor_state.show_gizmo && editor_state.selected_entity_id != 0) {
                         auto selected_entity = scene->GetEntityById(editor_state.selected_entity_id);
                         if (selected_entity) {
-                            spdlog::info("[GIZMO] Rendering gizmo for entity '{}' at mode {}", 
-                                selected_entity->GetName(), static_cast<int>(editor_state.transform_gizmo.GetMode()));
                             auto selected_transform = selected_entity->GetTransform();
                             auto selected_pos = selected_transform->GetWorldPosition();
+                            auto selected_scale = selected_transform->GetLocalScale();
                             
-                            // Create gizmo visualizations based on mode
-                            glm::mat4 gizmo_model = glm::translate(glm::mat4(1.0f), selected_pos);
-                            gizmo_model = glm::scale(gizmo_model, glm::vec3(0.3f));
-                            
-                            switch (editor_state.transform_gizmo.GetMode()) {
-                                case schizo::editor::GizmoMode::Translate: {
-                                    // Render XYZ translation axes (red, green, blue lines from selected entity)
-                                    // Render gizmo axes scaled up to be visible
-                                    glm::mat4 gizmo_axes = glm::translate(glm::mat4(1.0f), selected_pos);
-                                    gizmo_axes = glm::scale(gizmo_axes, glm::vec3(3.5f));  // Thick manipulation handles
-                                    spdlog::debug("[GIZMO] Rendering axes at ({}, {}, {})", selected_pos.x, selected_pos.y, selected_pos.z);
-                                    editor_state.simple_renderer->RenderMesh(
-                                        editor_state.simple_renderer->axes_mesh,
-                                        gizmo_axes, view_matrix, proj_matrix
-                                    );
-                                    break;
-                                }
-                                case schizo::editor::GizmoMode::Rotate: {
-                                    // Render gizmo axes for rotation mode (ring gizmos)
-                                    glm::mat4 gizmo_rings = glm::translate(glm::mat4(1.0f), selected_pos);
-                                    gizmo_rings = glm::scale(gizmo_rings, glm::vec3(3.5f));
-                                    editor_state.simple_renderer->RenderMesh(
-                                        editor_state.simple_renderer->rotation_gizmo_mesh,
-                                        gizmo_rings, view_matrix, proj_matrix
-                                    );
-                                    break;
-                                }
-                                case schizo::editor::GizmoMode::Scale: {
-                                    // Render gizmo axes for scale mode
-                                    glm::mat4 gizmo_axes = glm::translate(glm::mat4(1.0f), selected_pos);
-                                    gizmo_axes = glm::scale(gizmo_axes, glm::vec3(3.5f));
-                                    editor_state.simple_renderer->RenderMesh(
-                                        editor_state.simple_renderer->axes_mesh,
-                                        gizmo_axes, view_matrix, proj_matrix
-                                    );
-                                    break;
-                                }
-                                default:
-                                    spdlog::info("[GIZMO] Mode is None, not rendering");
-                                    break;
-                            }
-                        } else {
-                            spdlog::warn("[GIZMO] Selected entity ID {} not found", editor_state.selected_entity_id);
+                            // Render the gizmo
+                            editor_state.transform_gizmo.Render(
+                                editor_state.simple_renderer.get(),
+                                selected_pos, 
+                                glm::vec3(0.0f),  // rotation (not used yet)
+                                selected_scale,
+                                view_matrix, proj_matrix,
+                                2.0f  // gizmo size
+                            );
                         }
-                    } else {
-                        spdlog::debug("[GIZMO] Not rendering: show_gizmo={}, selected_id={}", 
-                            editor_state.show_gizmo, editor_state.selected_entity_id);
                     }
                     
                     // Render selection highlight box around selected entity
@@ -1418,26 +1612,26 @@ void ShowViewport(EditorState& editor_state) {
                             );
                             
                             // Determine which axis was hit (closest)
-                            // Use axis thickness (0.05f * 3.5f = 0.175f) as hit threshold buffer
-                            float hit_threshold = 0.1f;  // Generous hit zone
-                            if (x_dist < hit_threshold || (x_dist < y_dist && x_dist < z_dist && x_dist < hit_threshold * 10)) {
+                            // Select the closest axis within threshold
+                            float hit_threshold = 2.0f;  // Generous hit zone
+                            float min_dist = std::min({x_dist, y_dist, z_dist});
+                            
+                            if (min_dist < hit_threshold) {
                                 editor_state.gizmo_dragging = true;
-                                editor_state.gizmo_axis = 'x';
                                 editor_state.gizmo_drag_start = glm::vec2(mouse_pos.x, mouse_pos.y);
                                 editor_state.gizmo_drag_offset = glm::vec3(0.0f);
-                                spdlog::info("Gizmo X-axis grabbed");
-                            } else if (y_dist < hit_threshold || (y_dist < x_dist && y_dist < z_dist && y_dist < hit_threshold * 10)) {
-                                editor_state.gizmo_dragging = true;
-                                editor_state.gizmo_axis = 'y';
-                                editor_state.gizmo_drag_start = glm::vec2(mouse_pos.x, mouse_pos.y);
-                                editor_state.gizmo_drag_offset = glm::vec3(0.0f);
-                                spdlog::info("Gizmo Y-axis grabbed");
-                            } else if (z_dist < hit_threshold || (z_dist < x_dist && z_dist < y_dist && z_dist < hit_threshold * 10)) {
-                                editor_state.gizmo_dragging = true;
-                                editor_state.gizmo_axis = 'z';
-                                editor_state.gizmo_drag_start = glm::vec2(mouse_pos.x, mouse_pos.y);
-                                editor_state.gizmo_drag_offset = glm::vec3(0.0f);
-                                spdlog::info("Gizmo Z-axis grabbed");
+                                
+                                // Select the closest axis
+                                if (x_dist == min_dist) {
+                                    editor_state.gizmo_axis = 'x';
+                                    spdlog::info("Gizmo X-axis grabbed (dist: {:.3f})", x_dist);
+                                } else if (y_dist == min_dist) {
+                                    editor_state.gizmo_axis = 'y';
+                                    spdlog::info("Gizmo Y-axis grabbed (dist: {:.3f})", y_dist);
+                                } else {
+                                    editor_state.gizmo_axis = 'z';
+                                    spdlog::info("Gizmo Z-axis grabbed (dist: {:.3f})", z_dist);
+                                }
                             } else {
                                 // No gizmo hit, select entity normally
                                 uint32_t closest_entity_id = 0;
@@ -1507,35 +1701,50 @@ void ShowViewport(EditorState& editor_state) {
             // Handle gizmo dragging
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && editor_state.gizmo_dragging && scene) {
                 ImVec2 current_mouse = io.MousePos;
-                ImVec2 drag_delta = ImVec2(
-                    (current_mouse.x - editor_state.gizmo_drag_start.x) / viewport_size.x,
-                    (current_mouse.y - editor_state.gizmo_drag_start.y) / viewport_size.y
-                );
+                glm::vec2 current_mouse_glm(current_mouse.x, current_mouse.y);
                 
                 auto selected_entity = scene->GetEntityById(editor_state.selected_entity_id);
                 if (selected_entity) {
                     auto selected_transform = selected_entity->GetTransform();
-                    auto original_pos = selected_transform->GetLocalPosition();
-                    glm::vec3 new_pos = original_pos;
                     
-                    // Apply movement based on gizmo mode and axis
-                    float movement_scale = 5.0f;  // Sensitivity
+                    // Determine axis from gizmo_axis character
+                    schizo::editor::GizmoAxis axis = schizo::editor::GizmoAxis::None;
+                    if (editor_state.gizmo_axis == 'x') {
+                        axis = schizo::editor::GizmoAxis::X;
+                    } else if (editor_state.gizmo_axis == 'y') {
+                        axis = schizo::editor::GizmoAxis::Y;
+                    } else if (editor_state.gizmo_axis == 'z') {
+                        axis = schizo::editor::GizmoAxis::Z;
+                    }
                     
+                    // Begin drag on first frame
+                    if (!editor_state.transform_gizmo.IsDragging()) {
+                        editor_state.transform_gizmo.BeginDrag(axis, editor_state.gizmo_drag_start);
+                    }
+                    
+                    // Get mode-specific updates
                     if (editor_state.transform_gizmo.GetMode() == schizo::editor::GizmoMode::Translate) {
-                        if (editor_state.gizmo_axis == 'x') {
-                            new_pos.x += drag_delta.x * movement_scale;
-                        } else if (editor_state.gizmo_axis == 'y') {
-                            new_pos.y -= drag_delta.y * movement_scale;  // Negative for up
-                        } else if (editor_state.gizmo_axis == 'z') {
-                            new_pos.z += drag_delta.y * movement_scale;
-                        }
+                        glm::vec3 current_pos = selected_transform->GetLocalPosition();
+                        glm::vec3 new_pos = editor_state.transform_gizmo.UpdateDrag(current_mouse_glm, current_pos);
                         selected_transform->SetLocalPosition(new_pos);
+                    } else if (editor_state.transform_gizmo.GetMode() == schizo::editor::GizmoMode::Rotate) {
+                        // Rotation support will be added once we refactor to handle quaternions properly
+                        // For now, skip rotation updates
+                    } else if (editor_state.transform_gizmo.GetMode() == schizo::editor::GizmoMode::Scale) {
+                        glm::vec3 current_scale = selected_transform->GetLocalScale();
+                        glm::vec3 new_scale = editor_state.transform_gizmo.UpdateDrag(current_mouse_glm, current_scale);
+                        // Ensure scale doesn't go below minimum
+                        new_scale = glm::max(new_scale, glm::vec3(0.01f));
+                        selected_transform->SetLocalScale(new_scale);
                     }
                     
                     editor_state.editor_scene->MarkModified();
                 }
             } else if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                 // Mouse released, stop gizmo dragging
+                if (editor_state.gizmo_dragging) {
+                    editor_state.transform_gizmo.EndDrag();
+                }
                 editor_state.gizmo_dragging = false;
                 editor_state.gizmo_axis = 0;
             }
@@ -1592,24 +1801,6 @@ void ShowViewport(EditorState& editor_state) {
             }
             
             // Gizmo drag handling
-            if (editor_state.transform_gizmo.IsDragging()) {
-                if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                    ImVec2 mouse_pos = io.MousePos;
-                    if (scene && editor_state.selected_entity_id != 0) {
-                        auto entity = scene->GetEntityById(editor_state.selected_entity_id);
-                        if (entity) {
-                            auto transform = entity->GetTransform();
-                            auto pos = transform->GetLocalPosition();
-                            auto new_pos = editor_state.transform_gizmo.UpdateDrag(
-                                glm::vec2(mouse_pos.x, mouse_pos.y), pos);
-                            transform->SetLocalPosition(new_pos);
-                            editor_state.editor_scene->MarkModified();
-                        }
-                    }
-                } else {
-                    editor_state.transform_gizmo.EndDrag();
-                }
-            }
             
             // DROP TARGET - Viewport can receive mesh assets
             if (ImGui::BeginDragDropTarget()) {

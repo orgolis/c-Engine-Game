@@ -3,7 +3,7 @@ add_subdirectory(core)
 
 # Phase 2: Graphics & Rendering
 add_subdirectory(window)
-# add_subdirectory(renderer)  # Temporarily disabled due to preprocessor errors
+# add_subdirectory(renderer)  # Disabled - renderer module has compilation errors, use simplified light component instead
 
 # Phase 4: Scene Management
 add_subdirectory(scene)
@@ -31,8 +31,10 @@ target_link_libraries(engine
         gws_logging
         gws_file_io
         gws_containers
+        input
+        gameplay
         window
-        # renderer  # Disabled - renderer module disabled
+        # renderer  # Disabled - renderer module has compilation errors
 )
 
 # Compiler flags
