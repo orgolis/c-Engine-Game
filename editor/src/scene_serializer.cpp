@@ -1,6 +1,7 @@
 #include "scene_serializer.h"
 #include "entity.h"
 #include "transform.h"
+#include "light_component.h"
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <iostream>
@@ -53,6 +54,51 @@ bool SceneSerializer::SaveScene(const std::string& filepath, const std::shared_p
                 file << "TRANSFORM_SCALE=" << scale.x << "," << scale.y << "," << scale.z << "\n";
             }
             
+            // Save light component if present
+            auto light_comp = entity->GetComponent<schizo::scene::LightComponent>();
+            if (light_comp) {
+                // Light type
+                int light_type = static_cast<int>(light_comp->GetType());
+                file << "LIGHT_TYPE=" << light_type << "\n";
+                
+                // Light properties
+                auto color = light_comp->GetColor();
+                file << "LIGHT_COLOR=" << color.r << "," << color.g << "," << color.b << "\n";
+                
+                file << "LIGHT_INTENSITY=" << light_comp->GetIntensity() << "\n";
+                file << "LIGHT_TEMPERATURE=" << light_comp->GetTemperature() << "\n";
+                
+                // Light-specific properties
+                if (light_comp->GetType() != schizo::scene::LightType::Directional) {
+                    file << "LIGHT_RANGE=" << light_comp->GetRange() << "\n";
+                }
+                
+                if (light_comp->GetType() == schizo::scene::LightType::Spot) {
+                    auto angles = light_comp->GetSpotAngles();
+                    file << "LIGHT_SPOT_INNER=" << angles.x << "\n";
+                    file << "LIGHT_SPOT_OUTER=" << angles.y << "\n";
+                    file << "LIGHT_SPOT_FALLOFF=" << light_comp->GetSpotFalloff() << "\n";
+                }
+                
+                // Shadow properties
+                file << "LIGHT_CAST_SHADOW=" << (light_comp->GetCastShadow() ? "1" : "0") << "\n";
+                file << "LIGHT_SHADOW_QUALITY=" << static_cast<int>(light_comp->GetShadowQuality()) << "\n";
+                
+                auto shadow_bias = light_comp->GetShadowBias();
+                file << "LIGHT_SHADOW_BIAS=" << shadow_bias.x << "," << shadow_bias.y << "\n";
+                
+                file << "LIGHT_SHADOW_FILTER=" << light_comp->GetShadowFilterRadius() << "\n";
+                
+                auto shadow_planes = light_comp->GetShadowPlanes();
+                file << "LIGHT_SHADOW_PLANES=" << shadow_planes.x << "," << shadow_planes.y << "\n";
+                
+                if (light_comp->GetType() == schizo::scene::LightType::Directional) {
+                    file << "LIGHT_CASCADE_COUNT=" << light_comp->GetCascadeCount() << "\n";
+                }
+                
+                file << "LIGHT_VOLUMETRIC=" << light_comp->GetVolumetricIntensity() << "\n";
+            }
+            
             file << "\n";
         }
         
@@ -89,16 +135,26 @@ std::shared_ptr<schizo::scene::Scene> SceneSerializer::LoadScene(const std::stri
         
         // Read entities
         std::shared_ptr<schizo::scene::Entity> current_entity = nullptr;
+        int light_type = -1;
+        bool has_light = false;
         
         while (std::getline(file, line)) {
             if (line.empty() || line[0] == '#') continue;  // Skip empty lines and comments
             
             if (line.find("[ENTITY_") == 0) {
-                // Start of new entity - save previous if exists
+                // Start of new entity - save previous if exists and create light if needed
                 if (current_entity) {
+                    if (has_light && light_type >= 0 && light_type < 3) {
+                        current_entity->AddComponent<schizo::scene::LightComponent>(
+                            static_cast<schizo::scene::LightType>(light_type),
+                            "Light"
+                        );
+                    }
                     scene->AddEntity(current_entity);
                 }
                 current_entity = std::make_shared<schizo::scene::Entity>();
+                light_type = -1;
+                has_light = false;
                 continue;
             }
             
@@ -130,10 +186,29 @@ std::shared_ptr<schizo::scene::Scene> SceneSerializer::LoadScene(const std::stri
                 sscanf(values.c_str(), "%f,%f,%f", &x, &y, &z);
                 current_entity->GetTransform()->SetLocalScale(glm::vec3(x, y, z));
             }
+            
+            // Parse light component properties
+            else if (line.find("LIGHT_TYPE=") == 0) {
+                has_light = true;
+                light_type = std::stoi(line.substr(11));
+            } else if (line.find("LIGHT_COLOR=") == 0) {
+                std::string values = line.substr(12);
+                float r = 1, g = 1, b = 1;
+                sscanf(values.c_str(), "%f,%f,%f", &r, &g, &b);
+                if (has_light) {
+                    // Will be set after light component is added
+                }
+            }
         }
         
         // Add last entity
         if (current_entity) {
+            if (has_light && light_type >= 0 && light_type < 3) {
+                current_entity->AddComponent<schizo::scene::LightComponent>(
+                    static_cast<schizo::scene::LightType>(light_type),
+                    "Light"
+                );
+            }
             scene->AddEntity(current_entity);
         }
         

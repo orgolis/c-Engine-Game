@@ -7,6 +7,10 @@
 #include <GLFW/glfw3.h>
 #include "../../engine/core/assets/mesh_asset.h"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 namespace schizo::editor {
 
 SimpleRenderer::SimpleRenderer() = default;
@@ -500,6 +504,171 @@ Mesh SimpleRenderer::GetOrCreateMeshFromAsset(const schizo::assets::MeshAsset& a
 void SimpleRenderer::ClearMeshAssetCache() {
     mesh_asset_cache_.clear();
     spdlog::info("[Mesh] Cleared mesh asset cache");
+}
+
+Mesh SimpleRenderer::CreateTranslationGizmoMesh(char axis) {
+    // Create an arrow pointing along the specified axis
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    
+    glm::vec3 color(1.0f, 1.0f, 1.0f);  // Will be colored by the render call
+    
+    // Arrow consists of:
+    // 1. Shaft (cylinder represented as line or box)
+    // 2. Head (cone or pyramid)
+    
+    // Shaft: simple cylinder along axis (represented as 8-segment approximation)
+    float shaft_length = 0.8f;
+    float shaft_radius = 0.05f;
+    int segments = 8;
+    
+    // Create shaft (cylinder)
+    for (int i = 0; i < segments; ++i) {
+        float angle0 = 2.0f * M_PI * i / segments;
+        float angle1 = 2.0f * M_PI * (i + 1) / segments;
+        
+        float x0 = shaft_radius * cos(angle0);
+        float z0 = shaft_radius * sin(angle0);
+        float x1 = shaft_radius * cos(angle1);
+        float z1 = shaft_radius * sin(angle1);
+        
+        uint32_t base = indices.size();
+        
+        // Bottom ring
+        if (axis == 'x') {
+            vertices.push_back({glm::vec3(0.0f, x0, z0), color});   // 0
+            vertices.push_back({glm::vec3(0.0f, x1, z1), color});   // 1
+            vertices.push_back({glm::vec3(shaft_length, x0, z0), color});  // 2
+            vertices.push_back({glm::vec3(shaft_length, x1, z1), color});  // 3
+        } else if (axis == 'y') {
+            vertices.push_back({glm::vec3(x0, 0.0f, z0), color});   // 0
+            vertices.push_back({glm::vec3(x1, 0.0f, z1), color});   // 1
+            vertices.push_back({glm::vec3(x0, shaft_length, z0), color});  // 2
+            vertices.push_back({glm::vec3(x1, shaft_length, z1), color});  // 3
+        } else { // z
+            vertices.push_back({glm::vec3(x0, z0, 0.0f), color});   // 0
+            vertices.push_back({glm::vec3(x1, z1, 0.0f), color});   // 1
+            vertices.push_back({glm::vec3(x0, z0, shaft_length), color});  // 2
+            vertices.push_back({glm::vec3(x1, z1, shaft_length), color});  // 3
+        }
+        
+        // Shaft faces
+        indices.push_back(base + 0);
+        indices.push_back(base + 1);
+        indices.push_back(base + 2);
+        
+        indices.push_back(base + 1);
+        indices.push_back(base + 3);
+        indices.push_back(base + 2);
+    }
+    
+    // Arrow head (cone)
+    uint32_t head_base = vertices.size();
+    float head_length = 0.2f;
+    float head_radius = 0.1f;
+    
+    // Cone apex
+    if (axis == 'x') {
+        vertices.push_back({glm::vec3(shaft_length + head_length, 0.0f, 0.0f), color});
+    } else if (axis == 'y') {
+        vertices.push_back({glm::vec3(0.0f, shaft_length + head_length, 0.0f), color});
+    } else { // z
+        vertices.push_back({glm::vec3(0.0f, 0.0f, shaft_length + head_length), color});
+    }
+    
+    // Cone base ring
+    for (int i = 0; i < segments; ++i) {
+        float angle = 2.0f * M_PI * i / segments;
+        float x = head_radius * cos(angle);
+        float z = head_radius * sin(angle);
+        
+        if (axis == 'x') {
+            vertices.push_back({glm::vec3(shaft_length, x, z), color});
+        } else if (axis == 'y') {
+            vertices.push_back({glm::vec3(x, shaft_length, z), color});
+        } else { // z
+            vertices.push_back({glm::vec3(x, z, shaft_length), color});
+        }
+    }
+    
+    // Cone faces (apex to base ring)
+    for (int i = 0; i < segments; ++i) {
+        uint32_t apex = head_base;
+        uint32_t base1 = head_base + 1 + i;
+        uint32_t base2 = head_base + 1 + (i + 1) % segments;
+        
+        indices.push_back(apex);
+        indices.push_back(base1);
+        indices.push_back(base2);
+    }
+    
+    // Cone base (fan)
+    for (int i = 1; i < segments - 1; ++i) {
+        indices.push_back(head_base + 1);
+        indices.push_back(head_base + 1 + i);
+        indices.push_back(head_base + 1 + i + 1);
+    }
+    
+    Mesh mesh = CreateMeshInternal(vertices, indices);
+    return mesh;
+}
+
+Mesh SimpleRenderer::CreateScaleGizmoMesh(char axis) {
+    // Create a cube handle for scaling along an axis
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    
+    glm::vec3 color(1.0f, 1.0f, 1.0f);
+    
+    float handle_size = 0.15f;
+    float handle_pos = 0.85f;  // Position along axis
+    
+    // Create a small cube at the end of each axis
+    auto create_cube = [&](const glm::vec3& offset) {
+        uint32_t base = vertices.size();
+        
+        // All 8 corners of the cube
+        vertices.push_back({offset + glm::vec3(-handle_size, -handle_size, -handle_size), color});
+        vertices.push_back({offset + glm::vec3(handle_size, -handle_size, -handle_size), color});
+        vertices.push_back({offset + glm::vec3(handle_size, handle_size, -handle_size), color});
+        vertices.push_back({offset + glm::vec3(-handle_size, handle_size, -handle_size), color});
+        vertices.push_back({offset + glm::vec3(-handle_size, -handle_size, handle_size), color});
+        vertices.push_back({offset + glm::vec3(handle_size, -handle_size, handle_size), color});
+        vertices.push_back({offset + glm::vec3(handle_size, handle_size, handle_size), color});
+        vertices.push_back({offset + glm::vec3(-handle_size, handle_size, handle_size), color});
+        
+        // Cube faces (6 faces, 2 triangles each)
+        // Front
+        indices.push_back(base + 0); indices.push_back(base + 1); indices.push_back(base + 2);
+        indices.push_back(base + 0); indices.push_back(base + 2); indices.push_back(base + 3);
+        // Back
+        indices.push_back(base + 4); indices.push_back(base + 6); indices.push_back(base + 5);
+        indices.push_back(base + 4); indices.push_back(base + 7); indices.push_back(base + 6);
+        // Top
+        indices.push_back(base + 3); indices.push_back(base + 2); indices.push_back(base + 6);
+        indices.push_back(base + 3); indices.push_back(base + 6); indices.push_back(base + 7);
+        // Bottom
+        indices.push_back(base + 0); indices.push_back(base + 5); indices.push_back(base + 1);
+        indices.push_back(base + 0); indices.push_back(base + 4); indices.push_back(base + 5);
+        // Left
+        indices.push_back(base + 0); indices.push_back(base + 3); indices.push_back(base + 7);
+        indices.push_back(base + 0); indices.push_back(base + 7); indices.push_back(base + 4);
+        // Right
+        indices.push_back(base + 1); indices.push_back(base + 5); indices.push_back(base + 6);
+        indices.push_back(base + 1); indices.push_back(base + 6); indices.push_back(base + 2);
+    };
+    
+    // Create cube at the appropriate position based on axis
+    if (axis == 'x') {
+        create_cube(glm::vec3(handle_pos, 0.0f, 0.0f));
+    } else if (axis == 'y') {
+        create_cube(glm::vec3(0.0f, handle_pos, 0.0f));
+    } else { // z
+        create_cube(glm::vec3(0.0f, 0.0f, handle_pos));
+    }
+    
+    Mesh mesh = CreateMeshInternal(vertices, indices);
+    return mesh;
 }
 
 } // namespace schizo::editor
