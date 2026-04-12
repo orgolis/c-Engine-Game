@@ -10,6 +10,9 @@ add_executable(gws_tests
     memory/test_general_allocator.cpp
     memory/test_stack_allocator.cpp
     memory/test_pool_allocator.cpp
+    test_character_integration.cpp
+    test_ability_integration.cpp
+    test_network_integration.cpp
     # test_physics_integration.cpp  # TODO: Fix circular dependency with scene module
     # test_animation_integration.cpp  # TODO: Fix circular dependency with renderer
 )
@@ -20,6 +23,9 @@ target_compile_features(gws_tests PRIVATE cxx_std_20)
 # Link against engine (which includes all dependencies)
 target_link_libraries(gws_tests PRIVATE
     engine
+    character
+    ability
+    network
     Catch2::Catch2WithMain
 )
 
