@@ -44,6 +44,10 @@ add_subdirectory(third_party/spdlog)
 add_library(glm INTERFACE)
 target_include_directories(glm INTERFACE third_party/glm)
 
+# EnTT (Entity Component System - header-only)
+add_library(entt INTERFACE)
+target_include_directories(entt INTERFACE third_party/entt/src)
+
 # GLFW (window and input management)
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)

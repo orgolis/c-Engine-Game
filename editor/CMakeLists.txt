@@ -21,6 +21,9 @@ target_link_libraries(editor
         engine
         scene
         window
+        character
+        ability
+        network
         glad
         opengl32
 )
@@ -39,6 +42,10 @@ target_sources(editor
         src/asset_browser_panel.cpp
         src/material_editor_panel.cpp
         src/asset_import_dialog.cpp
+        src/character_controller_panel.cpp
+        src/ability_system_panel.cpp
+        src/network_system_panel.cpp
+        src/scene_playback_manager.cpp
         # ImGui core
         ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui.cpp
         ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_demo.cpp

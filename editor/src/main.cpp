@@ -28,6 +28,10 @@
 #include "transform_gizmo.h"
 #include "undo_redo_manager.h"
 #include "asset_manager.h"
+#include "scene_playback_manager.h"
+#include "character_controller_panel.h"
+#include "ability_system_panel.h"
+#include "network_system_panel.h"
 #include <spdlog/spdlog.h>
 #include <iostream>
 #include <functional>
@@ -117,6 +121,21 @@ struct EditorState {
     
     // Drag and drop
     std::vector<std::string> dropped_files;
+    
+    // Scene Playback System
+    std::unique_ptr<schizo::editor::ScenePlaybackManager> scene_playback_manager;
+    bool show_playback_controls = true;
+    bool show_debug_panels = true;
+    
+    // Debug Panels
+    std::unique_ptr<schizo::editor::CharacterControllerPanel> character_panel;
+    std::unique_ptr<schizo::editor::AbilitySystemPanel> ability_panel;
+    std::unique_ptr<schizo::editor::NetworkSystemPanel> network_panel;
+    
+    // Placeholder pointers for demo (would come from scene entities)
+    engine::character::CharacterController* selected_character_controller = nullptr;
+    engine::ability::AbilitySystem* selected_ability_system = nullptr;
+    engine::network::NetworkManager* network_manager = nullptr;
 };
 
 // ============================================================================
@@ -328,6 +347,9 @@ void ShowMainMenuBar(EditorState& editor_state) {
             ImGui::MenuItem("Inspector", nullptr, &editor_state.show_inspector);
             ImGui::MenuItem("Asset Browser", nullptr, &editor_state.show_asset_browser);
             ImGui::MenuItem("Viewport", nullptr, &editor_state.show_viewport);
+            ImGui::Separator();
+            ImGui::MenuItem("Playback Controls", nullptr, &editor_state.show_playback_controls);
+            ImGui::MenuItem("Debug Panels (Phase 6)", nullptr, &editor_state.show_debug_panels);
             ImGui::Separator();
             if (ImGui::MenuItem("Reset Layout")) {
                 spdlog::info("Reset layout");
@@ -1848,6 +1870,118 @@ void ShowPreferences(EditorState& editor_state) {
     }
 }
 
+// ============================================================================
+// Scene Playback Controls
+// ============================================================================
+
+void ShowPlaybackControls(EditorState& editor_state) {
+    if (!editor_state.show_playback_controls) return;
+    
+    ImGuiWindow* parent = ImGui::GetCurrentWindow();
+    
+    // Playback controls in toolbar style
+    ImGui::SetNextWindowPos(ImVec2(10, 40), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(400, 80), ImGuiCond_FirstUseEver);
+    
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
+    if (ImGui::Begin("Scene Playback", &editor_state.show_playback_controls, flags)) {
+        ImGui::TextUnformatted("Scene Playback Controls:");
+        ImGui::Separator();
+        
+        auto scene = editor_state.editor_scene->GetScene();
+        bool can_play = scene && !editor_state.scene_playback_manager->IsPlaying();
+        
+        // Play button
+        ImGui::BeginDisabled(!can_play);
+        if (ImGui::Button("Play (F5)##playback", ImVec2(80, 0))) {
+            if (editor_state.scene_playback_manager->StartPlayback(scene)) {
+                spdlog::info("Scene playback started");
+            } else {
+                spdlog::warn("Failed to start scene playback");
+            }
+        }
+        ImGui::EndDisabled();
+        
+        ImGui::SameLine();
+        
+        // Pause button
+        ImGui::BeginDisabled(!editor_state.scene_playback_manager->IsPlaying());
+        if (ImGui::Button("Pause##playback", ImVec2(80, 0))) {
+            bool is_paused = editor_state.scene_playback_manager->IsPaused();
+            editor_state.scene_playback_manager->SetPaused(!is_paused);
+            spdlog::info(is_paused ? "Resumed playback" : "Paused playback");
+        }
+        ImGui::EndDisabled();
+        
+        ImGui::SameLine();
+        
+        // Stop button
+        ImGui::BeginDisabled(!editor_state.scene_playback_manager->IsPlaying());
+        if (ImGui::Button("Stop##playback", ImVec2(80, 0))) {
+            editor_state.scene_playback_manager->StopPlayback();
+            spdlog::info("Scene playback stopped");
+        }
+        ImGui::EndDisabled();
+        
+        // Status display
+        ImGui::Spacing();
+        if (editor_state.scene_playback_manager->IsPlaying()) {
+            ImGui::TextColored(ImVec4(0, 1, 0, 1), "Status: Playing");
+        } else if (editor_state.scene_playback_manager->IsPaused()) {
+            ImGui::TextColored(ImVec4(1, 1, 0, 1), "Status: Paused");
+        } else {
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1), "Status: Stopped");
+        }
+        
+        ImGui::End();
+    }
+}
+
+// ============================================================================
+// Debug Panels Window
+// ============================================================================
+
+void ShowDebugPanels(EditorState& editor_state) {
+    if (!editor_state.show_debug_panels) return;
+    
+    ImGui::SetNextWindowPos(ImVec2(1500, 40), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(400, 800), ImGuiCond_FirstUseEver);
+    
+    if (ImGui::Begin("Debug Systems", &editor_state.show_debug_panels)) {
+        ImGui::TextUnformatted("Phase 6 System Debug Tools:");
+        ImGui::Separator();
+        
+        // Character Controller Panel
+        if (editor_state.character_panel) {
+            if (ImGui::CollapsingHeader("Character Controller##debug", ImGuiTreeNodeFlags_DefaultOpen)) {
+                editor_state.character_panel->Render(editor_state.selected_character_controller);
+            }
+        }
+        
+        ImGui::Spacing();
+        ImGui::Separator();
+        
+        // Ability System Panel
+        if (editor_state.ability_panel) {
+            if (ImGui::CollapsingHeader("Ability System##debug", ImGuiTreeNodeFlags_DefaultOpen)) {
+                editor_state.ability_panel->Render(editor_state.selected_ability_system);
+            }
+        }
+        
+        ImGui::Spacing();
+        ImGui::Separator();
+        
+        // Network System Panel
+        if (editor_state.network_panel) {
+            if (ImGui::CollapsingHeader("Network System##debug", ImGuiTreeNodeFlags_DefaultOpen)) {
+                editor_state.network_panel->Render(editor_state.network_manager);
+            }
+        }
+        
+        ImGui::End();
+    }
+}
+
 int main() {
     try {
         spdlog::set_level(spdlog::level::info);
@@ -1934,6 +2068,18 @@ int main() {
         editor_state.asset_import_dialog = std::make_unique<schizo::editor::AssetImportDialog>();
         spdlog::info("Asset Import Dialog initialized");
         
+        // Initialize Scene Playback Manager
+        spdlog::info("Initializing Scene Playback Manager...");
+        editor_state.scene_playback_manager = std::make_unique<schizo::editor::ScenePlaybackManager>();
+        spdlog::info("Scene Playback Manager initialized");
+        
+        // Initialize Debug Panels
+        spdlog::info("Initializing Debug Panels...");
+        editor_state.character_panel = std::make_unique<schizo::editor::CharacterControllerPanel>();
+        editor_state.ability_panel = std::make_unique<schizo::editor::AbilitySystemPanel>();
+        editor_state.network_panel = std::make_unique<schizo::editor::NetworkSystemPanel>();
+        spdlog::info("Debug Panels initialized (Character, Ability, Network)");
+        
         // Main loop
         spdlog::info("Entering editor loop...");
         int frame_count = 0;
@@ -1964,9 +2110,17 @@ int main() {
             
             // F5 to toggle play mode
             if (window->IsKeyPressed(schizo::window::KeyCode::F5)) {
-                editor_state.is_playing = !editor_state.is_playing;
-                editor_state.play_time = 0.0f;
-                spdlog::info(editor_state.is_playing ? "Play mode started (F5)" : "Play mode stopped (F5)");
+                if (editor_state.scene_playback_manager->IsPlaying()) {
+                    editor_state.scene_playback_manager->StopPlayback();
+                    spdlog::info("Play mode stopped (F5)");
+                } else {
+                    auto scene = editor_state.editor_scene->GetScene();
+                    if (scene && editor_state.scene_playback_manager->StartPlayback(scene)) {
+                        spdlog::info("Play mode started (F5)");
+                    } else {
+                        spdlog::warn("Failed to start playback - no valid scene");
+                    }
+                }
             }
             
             // Flythrough camera controls (WASD keys)
@@ -1993,6 +2147,11 @@ int main() {
             // Update play time if in play mode
             if (editor_state.is_playing) {
                 editor_state.play_time += 0.016f;  // Approximate 60 FPS delta time
+            }
+            
+            // Update scene playback if running
+            if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
+                editor_state.scene_playback_manager->Update(0.016f);  // Approximate 60 FPS delta time
             }
             
             // Start ImGui frame
@@ -2029,6 +2188,10 @@ int main() {
             ShowSceneHierarchy(editor_state);
             ShowInspector(editor_state);
             ShowAssetBrowser(editor_state);
+            
+            // Phase 6 Systems - Playback and Debug Tools
+            ShowPlaybackControls(editor_state);
+            ShowDebugPanels(editor_state);
             
             // Render import dialog if open
             if (editor_state.asset_import_dialog && editor_state.asset_import_dialog->IsOpen()) {
