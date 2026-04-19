@@ -48,6 +48,12 @@ lib/
 *.swo
 *~
 *.bak
+
+# Build logs
+build*.log
+build*.txt
+*_build.txt
+final_build.txt
 *.tmp
 *.log
 
