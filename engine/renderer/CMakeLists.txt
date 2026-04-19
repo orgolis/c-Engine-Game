@@ -155,34 +155,71 @@ target_sources(renderer PRIVATE
     src/opengl/opengl_device.cpp
 )
 
-# Link dependencies
-target_link_libraries(renderer PUBLIC
-    glm
-    window
-    gws_logging
-    glad
-    physics
-    scene
-)
+# ============================================================================
+# Graphics API Selection (Vulkan or OpenGL)
+# ============================================================================
 
-# OpenGL support
-find_package(OpenGL REQUIRED)
-target_link_libraries(renderer PRIVATE OpenGL::GL)
+option(GWS_GRAPHICS_API "Target graphics API: vulkan or opengl" "vulkan")
 
-# GLEW for OpenGL function loading
-# Try to find GLEW, if not found use glfw's built-in support
-if(WIN32)
-    # Windows: GLEW might not be available, use system OpenGL + glad or glfw
-    # For now, we'll rely on glfw's OpenGL support (requires glfwMakeContextCurrent first)
-    message(STATUS "Using OpenGL via CMake find_package")
-else()
-    # Linux: Look for GLEW
-    find_package(GLEW QUIET)
-    if(GLEW_FOUND)
-        target_link_libraries(renderer PRIVATE GLEW::GLEW)
+message(STATUS "GameWorldshaper Graphics API: ${GWS_GRAPHICS_API}")
+
+if(GWS_GRAPHICS_API STREQUAL "vulkan")
+    message(STATUS "Configuring Vulkan renderer backend")
+    
+    # Find Vulkan SDK
+    find_package(Vulkan REQUIRED)
+    
+    # Link dependencies
+    target_link_libraries(renderer PUBLIC
+        glm
+        window
+        gws_logging
+        physics
+        scene
+        Vulkan::Vulkan
+    )
+    
+    # Vulkan-specific compile definitions
+    target_compile_definitions(renderer PRIVATE GWS_USE_VULKAN=1)
+    
+    # Optional: Enable volk for dynamic loading (if available)
+    # find_package(volk QUIET)
+    # if(volk_FOUND)
+    #     target_link_libraries(renderer PRIVATE volk::volk)
+    #     target_compile_definitions(renderer PRIVATE GWS_USE_VOLK=1)
+    # endif()
+
+elseif(GWS_GRAPHICS_API STREQUAL "opengl")
+    message(STATUS "Configuring OpenGL renderer backend (legacy)")
+    
+    # Link dependencies
+    target_link_libraries(renderer PUBLIC
+        glm
+        window
+        gws_logging
+        glad
+        physics
+        scene
+    )
+    
+    # OpenGL support
+    find_package(OpenGL REQUIRED)
+    target_link_libraries(renderer PRIVATE OpenGL::GL)
+    
+    # GLEW for OpenGL function loading (optional)
+    if(WIN32)
+        message(STATUS "Using OpenGL via CMake find_package")
     else()
-        message(WARNING "GLEW not found, will use glfw OpenGL support only")
+        find_package(GLEW QUIET)
+        if(GLEW_FOUND)
+            target_link_libraries(renderer PRIVATE GLEW::GLEW)
+        endif()
     endif()
+    
+    target_compile_definitions(renderer PRIVATE RENDERER_OPENGL=1)
+
+else()
+    message(FATAL_ERROR "Invalid GWS_GRAPHICS_API: ${GWS_GRAPHICS_API}. Use 'vulkan' or 'opengl'")
 endif()
 
 # Compiler settings
@@ -196,9 +233,6 @@ if(MSVC)
 else()
     target_compile_options(renderer PRIVATE -Wall -Wextra -pedantic)
 endif()
-
-# Define which graphics API is being used
-target_compile_definitions(renderer PRIVATE RENDERER_OPENGL=1)
 
 # Unit tests (add as we implement features)
 # add_executable(renderer_tests 
