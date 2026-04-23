@@ -9,6 +9,20 @@ InputSynchronizer::InputSynchronizer() {
     input_history_.reserve(MAX_BUFFERED_INPUTS);
 }
 
+// ============ Helper Methods (defined before use) ============
+
+auto InputSynchronizer::FindInputForTick(uint64_t tick) {
+    return std::find_if(input_history_.begin(), input_history_.end(),
+        [tick](const BufferedInput& bi) { return bi.tick == tick; });
+}
+
+auto InputSynchronizer::FindInputForTick(uint64_t tick) const {
+    return std::find_if(input_history_.begin(), input_history_.end(),
+        [tick](const BufferedInput& bi) { return bi.tick == tick; });
+}
+
+// ============ Public Interface ============
+
 void InputSynchronizer::BufferLocalInput(const engine::character::InputAction& input, uint64_t tick_number) {
     // Check if we're inserting in order (should be monotonically increasing)
     if (!input_history_.empty() && tick_number <= input_history_.back().tick) {
@@ -76,16 +90,6 @@ void InputSynchronizer::PruneOldInputs(uint64_t keep_from_tick) {
 void InputSynchronizer::Reset() {
     input_history_.clear();
     last_confirmed_tick_ = 0;
-}
-
-auto InputSynchronizer::FindInputForTick(uint64_t tick) {
-    return std::find_if(input_history_.begin(), input_history_.end(),
-        [tick](const BufferedInput& bi) { return bi.tick == tick; });
-}
-
-auto InputSynchronizer::FindInputForTick(uint64_t tick) const {
-    return std::find_if(input_history_.begin(), input_history_.end(),
-        [tick](const BufferedInput& bi) { return bi.tick == tick; });
 }
 
 } // namespace engine::network

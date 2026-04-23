@@ -54,6 +54,15 @@ set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/glfw)
 
+# Vulkan SDK (graphics API)
+find_package(Vulkan REQUIRED)
+
+# Vulkan Memory Allocator (header-only)
+add_subdirectory(third_party/vma)
+
+# glslang (shader compilation)
+add_subdirectory(third_party/glslang)
+
 # GLAD (OpenGL function loader)
 add_subdirectory(third_party/glad)
 

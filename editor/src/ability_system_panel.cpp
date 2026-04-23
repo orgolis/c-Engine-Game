@@ -26,13 +26,13 @@ void AbilitySystemPanel::Render(engine::ability::AbilitySystem* ability_system) 
     
     ImGui::TextUnformatted("Ability Management:");
     
-    if (ImGui::BeginChildFrame(ImGui::GetID("AbilitySystemPanel"), ImVec2(-1, 300))) {
+    if (ImGui::BeginChild("AbilitySystemPanel", ImVec2(-1, 300), true)) {
         if (ability_system) {
             RenderAbilityListbox(ability_system);
         } else {
             ImGui::TextDisabled("No ability system loaded");
         }
-        ImGui::EndChildFrame();
+        ImGui::EndChild();
     }
     
     ImGui::Spacing();

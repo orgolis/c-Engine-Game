@@ -7,7 +7,59 @@ add_library(renderer STATIC)
 
 # Include directories
 target_include_directories(renderer PUBLIC include)
+target_include_directories(renderer PUBLIC gpu)
 target_include_directories(renderer PRIVATE src)
+
+# Header files - GPU Abstraction Layer
+target_sources(renderer PRIVATE
+    gpu/render_device.h
+)
+
+# Header files - Vulkan Implementation
+target_sources(renderer PRIVATE
+    gpu/vulkan/vulkan_device.h
+    gpu/vulkan/vulkan_swapchain.h
+    gpu/vulkan/vulkan_command_buffer.h
+    gpu/vulkan/vulkan_descriptor_set.h
+    gpu/vulkan/vulkan_surface.h
+    gpu/vulkan/shader_compiler.h
+    gpu/vulkan/render_pass.h
+    gpu/vulkan/graphics_pipeline.h
+    gpu/vulkan/barriers.h
+    gpu/vulkan/buffer.h
+    gpu/vulkan/image.h
+    gpu/vulkan/mesh.h
+    gpu/vulkan/material.h
+    gpu/vulkan/gltf_loader.h
+    gpu/vulkan/vulkan_g_buffer.h
+    gpu/vulkan/vulkan_lighting_pass.h
+    gpu/vulkan/vulkan_shadow_map.h
+    gpu/vulkan/vulkan_post_processing.h
+    gpu/vulkan/vulkan_shader_registry.h
+)
+
+# Source files - Vulkan Implementation
+target_sources(renderer PRIVATE
+    gpu/vulkan/vulkan_device.cpp
+    gpu/vulkan/vulkan_swapchain.cpp
+    gpu/vulkan/vulkan_command_buffer.cpp
+    gpu/vulkan/vulkan_descriptor_set.cpp
+    gpu/vulkan/vulkan_surface.cpp
+    gpu/vulkan/shader_compiler.cpp
+    gpu/vulkan/render_pass.cpp
+    gpu/vulkan/graphics_pipeline.cpp
+    gpu/vulkan/barriers.cpp
+    gpu/vulkan/buffer.cpp
+    gpu/vulkan/image.cpp
+    gpu/vulkan/mesh.cpp
+    gpu/vulkan/material.cpp
+    gpu/vulkan/gltf_loader.cpp
+    gpu/vulkan/vulkan_g_buffer.cpp
+    gpu/vulkan/vulkan_lighting_pass.cpp
+    gpu/vulkan/vulkan_shadow_map.cpp
+    gpu/vulkan/vulkan_post_processing.cpp
+    gpu/vulkan/vulkan_shader_registry.cpp
+)
 
 # Header files - Core Graphics Abstraction
 target_sources(renderer PRIVATE
@@ -177,6 +229,8 @@ if(GWS_GRAPHICS_API STREQUAL "vulkan")
         physics
         scene
         Vulkan::Vulkan
+        vma
+        glslang_wrapper
     )
     
     # Vulkan-specific compile definitions

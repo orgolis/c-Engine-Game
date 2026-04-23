@@ -3,11 +3,7 @@
 #include <cstdint>
 #include <queue>
 #include <vector>
-
-// Forward declaration
-namespace engine::character {
-    struct InputAction;
-}
+#include "input_buffer.h"
 
 namespace engine::network {
 

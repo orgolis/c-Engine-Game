@@ -13,6 +13,7 @@ add_executable(gws_tests
     test_character_integration.cpp
     test_ability_integration.cpp
     test_network_integration.cpp
+    deferred_rendering_test.cpp
     # test_physics_integration.cpp  # TODO: Fix circular dependency with scene module
     # test_animation_integration.cpp  # TODO: Fix circular dependency with renderer
 )
@@ -55,3 +56,26 @@ catch_discover_tests(gws_tests)
 # target_include_directories(physics_demo PRIVATE
 #     ${CMAKE_SOURCE_DIR}/engine
 # )
+
+# ============================================================================
+# Vulkan Window Test - Phase 1 Milestone
+# ============================================================================
+# Tests basic Vulkan initialization and window rendering
+# Build: cmake --build . --target vulkan_window_test
+# Run: ./bin/vulkan_window_test
+
+add_executable(vulkan_window_test
+    vulkan_window_test.cpp
+)
+
+target_compile_features(vulkan_window_test PRIVATE cxx_std_20)
+
+target_link_libraries(vulkan_window_test PRIVATE
+    window
+    Vulkan::Vulkan
+    glfw
+)
+
+target_include_directories(vulkan_window_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine
+)

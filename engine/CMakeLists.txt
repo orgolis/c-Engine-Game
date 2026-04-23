@@ -3,7 +3,7 @@ add_subdirectory(core)
 
 # Phase 2: Graphics & Rendering
 add_subdirectory(window)
-# add_subdirectory(renderer)  # Disabled - renderer module has compilation errors, use simplified light component instead
+add_subdirectory(renderer)
 
 # Phase 4: Scene Management
 add_subdirectory(scene)
@@ -34,7 +34,7 @@ target_link_libraries(engine
         input
         gameplay
         window
-        # renderer  # Disabled - renderer module has compilation errors
+        renderer
 )
 
 # Compiler flags

@@ -291,7 +291,7 @@ void NetworkSystemPanel::RenderNetworkPacketInspection(engine::network::NetworkM
     
     ImGui::TextUnformatted("Recent Packets:");
     
-    if (ImGui::BeginChildFrame(ImGui::GetID("PacketList"), ImVec2(-1, 150))) {
+    if (ImGui::BeginChild("PacketList", ImVec2(-1, 150), true)) {
         // Display recent packets
         ImGui::TextColored(ImVec4(0, 1, 0, 1), "[1223] PlayerInput - size: 64 bytes");
         ImGui::TextColored(ImVec4(0, 1, 0, 1), "[1222] StateUpdate - size: 256 bytes");
@@ -299,7 +299,7 @@ void NetworkSystemPanel::RenderNetworkPacketInspection(engine::network::NetworkM
         ImGui::TextColored(ImVec4(0, 1, 0, 1), "[1220] AbilityEvent - size: 128 bytes");
         ImGui::TextColored(ImVec4(0, 1, 0, 1), "[1219] PlayerInput - size: 64 bytes");
         
-        ImGui::EndChildFrame();
+        ImGui::EndChild();
     }
     
     ImGui::Spacing();

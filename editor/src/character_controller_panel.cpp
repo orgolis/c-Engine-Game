@@ -32,7 +32,7 @@ void CharacterControllerPanel::Render(engine::character::CharacterController* co
         ImGui::Separator();
         ImGui::TextUnformatted("Runtime Status:");
         
-        if (auto* stats = controller->GetStats()) {
+        if (auto* stats = controller->GetCharacterStats()) {
             RenderCharacterStats(stats);
         }
         
@@ -45,7 +45,7 @@ void CharacterControllerPanel::Render(engine::character::CharacterController* co
         // Debug tools
         ImGui::Separator();
         if (ImGui::CollapsingHeader("Debug Tools##char", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (auto* stats = controller->GetStats()) {
+            if (auto* stats = controller->GetCharacterStats()) {
                 RenderStatsDebugEditor(stats);
                 ImGui::Spacing();
             }
@@ -96,7 +96,7 @@ void CharacterControllerPanel::RenderCharacterStats(engine::character::Character
     
     // Level and XP
     ImGui::Text("Level: %d", stats->GetLevel());
-    ImGui::Text("Experience: %.0f/%.0f", stats->GetExperience(), stats->GetNextLevelXP());
+    ImGui::Text("Experience: %.0f/%.0f", stats->GetExperience(), stats->GetExperienceForNextLevel());
 }
 
 void CharacterControllerPanel::RenderCurrentState(engine::character::CharacterController* controller) {

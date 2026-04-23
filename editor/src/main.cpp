@@ -1416,8 +1416,43 @@ void ShowViewport(EditorState& editor_state) {
         ImVec2 viewport_size = ImGui::GetContentRegionAvail();
         float aspect = viewport_size.x > 0 ? viewport_size.x / viewport_size.y : 1.0f;
         
-        auto view_matrix = editor_state.viewport_camera.GetViewMatrix();
-        auto proj_matrix = editor_state.viewport_camera.GetProjectionMatrix(aspect);
+        glm::mat4 view_matrix;
+        glm::mat4 proj_matrix;
+        
+        // Use playback camera if scene is playing
+        if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
+            auto playback_camera = editor_state.scene_playback_manager->GetPlaybackCamera();
+            
+            if (!playback_camera) {
+                spdlog::warn("⚠️ IsPlaying=true but GetPlaybackCamera() returned nullptr!");
+                view_matrix = editor_state.viewport_camera.GetViewMatrix();
+                proj_matrix = editor_state.viewport_camera.GetProjectionMatrix(aspect);
+            } else {
+                auto camera_transform = playback_camera->GetTransform();
+                if (!camera_transform) {
+                    spdlog::warn("⚠️ Playback camera exists but has no Transform!");
+                    view_matrix = editor_state.viewport_camera.GetViewMatrix();
+                    proj_matrix = editor_state.viewport_camera.GetProjectionMatrix(aspect);
+                } else {
+                    // Get camera position and compute view matrix from player camera
+                    glm::vec3 cam_pos = camera_transform->GetWorldPosition();
+                    glm::vec3 cam_forward = camera_transform->GetForward();
+                    glm::vec3 cam_up = glm::vec3(0.0f, 1.0f, 0.0f);
+                    
+                    view_matrix = glm::lookAt(cam_pos, cam_pos + cam_forward, cam_up);
+                    proj_matrix = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 1000.0f);
+                    
+                    spdlog::info("🎥 VIEWPORT using camera '{}' at ({:.2f}, {:.2f}, {:.2f})", 
+                        playback_camera->GetName(),
+                        cam_pos.x, cam_pos.y, cam_pos.z);
+                }
+            }
+        } else {
+            // Normal editor camera
+            spdlog::debug("🎥 VIEWPORT using editor camera (not playing)");
+            view_matrix = editor_state.viewport_camera.GetViewMatrix();
+            proj_matrix = editor_state.viewport_camera.GetProjectionMatrix(aspect);
+        }
         
         // Render to framebuffer
         if (viewport_size.x > 50.0f && viewport_size.y > 50.0f && editor_state.simple_renderer) {
@@ -1450,15 +1485,12 @@ void ShowViewport(EditorState& editor_state) {
                     spdlog::info("=== VIEWPORT RENDER: {} entities ===", entities.size());
                     for (const auto& entity : entities) {
                         auto transform = entity->GetTransform();
-                        auto pos = transform->GetWorldPosition();
-                        auto local_scale = transform->GetLocalScale();
                         
-                        // Create model matrix
-                        glm::mat4 model = glm::translate(glm::mat4(1.0f), pos);
-                        model = glm::scale(model, local_scale);
+                        // Create model matrix - use GetWorldMatrix which includes position, rotation, and scale
+                        glm::mat4 model = transform->GetWorldMatrix();
                         
-                        // Skip rendering Camera entities as boxes - they'll be rendered as gizmos
-                        if (entity->GetName() == "Camera") {
+                        // Skip rendering Camera entities as boxes - they're UI elements, not gameworld objects
+                        if (entity->GetName() == "Camera" || entity->GetName() == "PlayerCamera") {
                             continue;
                         }
                         
@@ -1877,8 +1909,6 @@ void ShowPreferences(EditorState& editor_state) {
 void ShowPlaybackControls(EditorState& editor_state) {
     if (!editor_state.show_playback_controls) return;
     
-    ImGuiWindow* parent = ImGui::GetCurrentWindow();
-    
     // Playback controls in toolbar style
     ImGui::SetNextWindowPos(ImVec2(10, 40), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(400, 80), ImGuiCond_FirstUseEver);
@@ -1895,7 +1925,8 @@ void ShowPlaybackControls(EditorState& editor_state) {
         ImGui::BeginDisabled(!can_play);
         if (ImGui::Button("Play (F5)##playback", ImVec2(80, 0))) {
             if (editor_state.scene_playback_manager->StartPlayback(scene)) {
-                spdlog::info("Scene playback started");
+                spdlog::info("Scene playback started - hiding cursor");
+                ImGui::GetIO().MouseDrawCursor = false;  // Hide ImGui cursor
             } else {
                 spdlog::warn("Failed to start scene playback");
             }
@@ -1919,7 +1950,8 @@ void ShowPlaybackControls(EditorState& editor_state) {
         ImGui::BeginDisabled(!editor_state.scene_playback_manager->IsPlaying());
         if (ImGui::Button("Stop##playback", ImVec2(80, 0))) {
             editor_state.scene_playback_manager->StopPlayback();
-            spdlog::info("Scene playback stopped");
+            ImGui::GetIO().MouseDrawCursor = true;  // Show ImGui cursor
+            spdlog::info("Scene playback stopped - showing cursor");
         }
         ImGui::EndDisabled();
         
@@ -2112,11 +2144,13 @@ int main() {
             if (window->IsKeyPressed(schizo::window::KeyCode::F5)) {
                 if (editor_state.scene_playback_manager->IsPlaying()) {
                     editor_state.scene_playback_manager->StopPlayback();
+                    ImGui::GetIO().MouseDrawCursor = true;  // Show ImGui cursor
                     spdlog::info("Play mode stopped (F5)");
                 } else {
                     auto scene = editor_state.editor_scene->GetScene();
                     if (scene && editor_state.scene_playback_manager->StartPlayback(scene)) {
-                        spdlog::info("Play mode started (F5)");
+                        spdlog::info("Play mode started (F5) - hiding cursor");
+                        ImGui::GetIO().MouseDrawCursor = false;  // Hide ImGui cursor
                     } else {
                         spdlog::warn("Failed to start playback - no valid scene");
                     }
