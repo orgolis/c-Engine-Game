@@ -1,9 +1,19 @@
-#include "vulkan_surface.h"
-#include "gws/core/logging/logger.h"
-
+// Define VK_USE_PLATFORM_WIN32_KHR + <windows.h> before any Vulkan header so
+// that vulkan.h (transitively included via vulkan_surface.h) pulls in
+// vulkan_win32.h after Windows + Vk* types are already declared.
 #ifdef _WIN32
-#include <vulkan/vulkan_win32.h>
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#  define VK_USE_PLATFORM_WIN32_KHR
 #endif
+
+#include "vulkan_surface.h"
+#include "logging/logger.h"
 
 namespace gws::renderer::gpu {
 

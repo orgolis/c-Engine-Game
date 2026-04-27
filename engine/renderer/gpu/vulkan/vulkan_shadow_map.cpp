@@ -5,8 +5,12 @@
 
 #include "vulkan_shadow_map.h"
 #include "vulkan_device.h"
+#include "vulkan_shader_registry.h"
+#include "vulkan_scene_mesh.h"
+#include "vulkan_render_graph.h" // for DrawItem
 #include <spdlog/spdlog.h>
 #include <stdexcept>
+#include <array>
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace gws::renderer::gpu {
@@ -30,8 +34,16 @@ std::unique_ptr<VulkanShadowMap> VulkanShadowMap::create(VulkanDevice* device,
         if (config.type == ShadowMapType::Cascaded2D) {
             shadow_map->create_cascade_matrices();
         }
-        
-        spdlog::info("VulkanShadowMap created: {}x{}, type={}", 
+
+        // Depth-only caster pipeline so the shadow stage can rasterise
+        // the same draw list as the geometry stage.
+        shadow_map->shader_registry_ = std::make_unique<VulkanShaderRegistry>();
+        if (!shadow_map->shader_registry_->initialize(device)) {
+            throw std::runtime_error("Failed to initialise shadow shader registry");
+        }
+        shadow_map->create_caster_pipeline();
+
+        spdlog::info("VulkanShadowMap created: {}x{}, type={}",
                     config.width, config.height, static_cast<int>(config.type));
         return shadow_map;
     } catch (const std::exception& e) {
@@ -153,7 +165,7 @@ void VulkanShadowMap::create_render_pass() {
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
     dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependency.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
     dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
@@ -175,38 +187,39 @@ void VulkanShadowMap::create_render_pass() {
 
 void VulkanShadowMap::create_framebuffer() {
     VkDevice vk_device = device_->get_device();
-    
-    // Create depth view for framebuffer
+
+    // Create depth view in `shadow_view_` so the framebuffer holds a live
+    // reference for its lifetime. Destroying this view immediately after
+    // vkCreateFramebuffer (as the original code did) leaves the framebuffer
+    // with a dangling internal handle and segfaults when any later
+    // vkCmdBeginRenderPass dereferences it.
     VkImageViewCreateInfo view_info{};
-    view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    view_info.image = shadow_image_;
+    view_info.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view_info.image    = shadow_image_;
     view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    view_info.format = VK_FORMAT_D32_SFLOAT;
-    view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    view_info.subresourceRange.baseMipLevel = 0;
-    view_info.subresourceRange.levelCount = 1;
+    view_info.format   = VK_FORMAT_D32_SFLOAT;
+    view_info.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT;
+    view_info.subresourceRange.baseMipLevel   = 0;
+    view_info.subresourceRange.levelCount     = 1;
     view_info.subresourceRange.baseArrayLayer = 0;
-    view_info.subresourceRange.layerCount = 1;
-    
-    VkImageView depth_view;
-    if (vkCreateImageView(vk_device, &view_info, nullptr, &depth_view) != VK_SUCCESS) {
+    view_info.subresourceRange.layerCount     = 1;
+
+    if (vkCreateImageView(vk_device, &view_info, nullptr, &shadow_view_) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create depth view for shadow framebuffer");
     }
-    
+
     VkFramebufferCreateInfo framebuffer_info{};
-    framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    framebuffer_info.renderPass = render_pass_;
+    framebuffer_info.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebuffer_info.renderPass      = render_pass_;
     framebuffer_info.attachmentCount = 1;
-    framebuffer_info.pAttachments = &depth_view;
-    framebuffer_info.width = config_.width;
-    framebuffer_info.height = config_.height;
-    framebuffer_info.layers = 1;
-    
+    framebuffer_info.pAttachments    = &shadow_view_;
+    framebuffer_info.width           = config_.width;
+    framebuffer_info.height          = config_.height;
+    framebuffer_info.layers          = 1;
+
     if (vkCreateFramebuffer(vk_device, &framebuffer_info, nullptr, &framebuffer_) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create shadow framebuffer");
     }
-    
-    vkDestroyImageView(vk_device, depth_view, nullptr);
 }
 
 void VulkanShadowMap::create_cascade_matrices() {
@@ -240,7 +253,7 @@ void VulkanShadowMap::begin_directional_pass(VkCommandBuffer cmd, uint32_t casca
     begin_info.clearValueCount = 1;
     begin_info.pClearValues = &clear_value;
     
-    vkCmdBeginRenderPass(cmd, &begin_info, VK_SUBPASS_INLINE);
+    vkCmdBeginRenderPass(cmd, &begin_info, VK_SUBPASS_CONTENTS_INLINE);
 }
 
 void VulkanShadowMap::end_pass(VkCommandBuffer cmd) {
@@ -270,36 +283,235 @@ void VulkanShadowMap::update_cascade_splits(const std::vector<float>& splits) {
     cascade_splits_ = splits;
 }
 
+// ----------------------------------------------------------------------------
+// Caster (depth-only) pipeline
+// ----------------------------------------------------------------------------
+
+namespace {
+
+constexpr const char* kCasterVertSrc = R"GLSL(
+#version 450
+layout(location = 0) in vec3 inPosition;
+// Other SceneVertex attributes (normal/uv/tangent) are bound but not read.
+layout(location = 1) in vec3 inNormal;
+layout(location = 2) in vec2 inUV;
+layout(location = 3) in vec4 inTangent;
+layout(push_constant) uniform PC { mat4 mvp; } pc;
+void main() {
+    gl_Position = pc.mvp * vec4(inPosition, 1.0);
+}
+)GLSL";
+
+constexpr const char* kCasterFragSrc = R"GLSL(
+#version 450
+void main() {}
+)GLSL";
+
+} // namespace
+
+void VulkanShadowMap::create_caster_pipeline() {
+    VkDevice vk = device_->get_device();
+
+    auto vert = shader_registry_->compile_glsl(kCasterVertSrc, ShaderStage::Vertex,   "shadow_caster.vert");
+    auto frag = shader_registry_->compile_glsl(kCasterFragSrc, ShaderStage::Fragment, "shadow_caster.frag");
+    if (!vert || !frag) throw std::runtime_error("Failed to compile shadow caster shaders");
+
+    VkPushConstantRange pc{};
+    pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pc.offset     = 0;
+    pc.size       = sizeof(glm::mat4);
+
+    VkPipelineLayoutCreateInfo plinfo{};
+    plinfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plinfo.pushConstantRangeCount = 1;
+    plinfo.pPushConstantRanges    = &pc;
+    if (vkCreatePipelineLayout(vk, &plinfo, nullptr, &caster_pipeline_layout_) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create shadow caster pipeline layout");
+    }
+
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
+    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vert->handle;
+    stages[0].pName  = "main";
+    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = frag->handle;
+    stages[1].pName  = "main";
+
+    auto binding = Mesh::vertex_binding();
+    auto attrs   = Mesh::vertex_attributes();
+
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vi.vertexBindingDescriptionCount   = 1;
+    vi.pVertexBindingDescriptions      = &binding;
+    vi.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrs.size());
+    vi.pVertexAttributeDescriptions    = attrs.data();
+
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    std::array<VkDynamicState, 2> dyn_states{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn{};
+    dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = static_cast<uint32_t>(dyn_states.size());
+    dyn.pDynamicStates    = dyn_states.data();
+
+    VkPipelineViewportStateCreateInfo vp{};
+    vp.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vp.viewportCount = 1;
+    vp.scissorCount  = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode             = VK_POLYGON_MODE_FILL;
+    rs.cullMode                = VK_CULL_MODE_FRONT_BIT; // standard shadow trick to avoid acne
+    rs.frontFace               = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth               = 1.0f;
+    rs.depthBiasEnable         = VK_TRUE;
+    rs.depthBiasConstantFactor = 1.25f;
+    rs.depthBiasSlopeFactor    = 1.75f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable  = VK_TRUE;
+    ds.depthWriteEnable = VK_TRUE;
+    ds.depthCompareOp   = VK_COMPARE_OP_LESS;
+
+    // No color attachments — the shadow render pass is depth-only.
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 0;
+
+    VkGraphicsPipelineCreateInfo info{};
+    info.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    info.stageCount          = static_cast<uint32_t>(stages.size());
+    info.pStages             = stages.data();
+    info.pVertexInputState   = &vi;
+    info.pInputAssemblyState = &ia;
+    info.pViewportState      = &vp;
+    info.pRasterizationState = &rs;
+    info.pMultisampleState   = &ms;
+    info.pDepthStencilState  = &ds;
+    info.pColorBlendState    = &cb;
+    info.pDynamicState       = &dyn;
+    info.layout              = caster_pipeline_layout_;
+    info.renderPass          = render_pass_;
+    info.subpass             = 0;
+    if (vkCreateGraphicsPipelines(vk, VK_NULL_HANDLE, 1, &info, nullptr,
+                                  &caster_pipeline_) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create shadow caster pipeline");
+    }
+}
+
+void VulkanShadowMap::draw_items(VkCommandBuffer cmd,
+                                 const glm::mat4& view,
+                                 const glm::mat4& proj,
+                                 const glm::vec3& light_position,
+                                 const DrawItem* draws,
+                                 size_t draw_count,
+                                 uint32_t* out_draw_calls,
+                                 uint32_t* out_triangles) {
+    if (out_draw_calls) *out_draw_calls = 0;
+    if (out_triangles)  *out_triangles  = 0;
+    if (caster_pipeline_ == VK_NULL_HANDLE || draws == nullptr || draw_count == 0) {
+        return;
+    }
+
+    VkViewport vp{};
+    vp.width    = static_cast<float>(config_.width);
+    vp.height   = static_cast<float>(config_.height);
+    vp.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+
+    VkRect2D scissor{};
+    scissor.extent = {config_.width, config_.height};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, caster_pipeline_);
+
+    const glm::mat4 view_proj = proj * view;
+    const Mesh* last_mesh = nullptr;
+
+    for (size_t i = 0; i < draw_count; ++i) {
+        const DrawItem& d = draws[i];
+        if (!d.mesh) continue;
+
+        if (d.mesh != last_mesh) {
+            d.mesh->bind(cmd);
+            last_mesh = d.mesh;
+        }
+        glm::mat4 mvp = view_proj * d.model;
+        vkCmdPushConstants(cmd, caster_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(mvp), &mvp);
+
+        // Shadow LOD = base LOD + 1, capped at the last available tier.
+        // Shadow silhouettes hide LOD pops far better than the primary view.
+        const glm::vec3 origin = glm::vec3(d.model[3]);
+        const float distance = glm::length(origin - light_position);
+        const size_t base_lod = d.mesh->select_lod(d.submesh_index, distance);
+        const size_t shadow_lod = base_lod + 1; // draw_submesh clamps internally
+
+        d.mesh->draw_submesh(cmd, d.submesh_index, shadow_lod);
+
+        if (out_draw_calls) ++(*out_draw_calls);
+        if (out_triangles && d.submesh_index < d.mesh->submeshes().size()) {
+            const auto& sm = d.mesh->submeshes()[d.submesh_index];
+            const size_t li = std::min(shadow_lod,
+                                       sm.lods.empty() ? 0 : sm.lods.size() - 1);
+            if (!sm.lods.empty()) {
+                *out_triangles += sm.lods[li].index_count / 3;
+            }
+        }
+    }
+}
+
 void VulkanShadowMap::cleanup() {
     if (!device_) return;
-    
+
     VkDevice vk_device = device_->get_device();
-    
+
+    if (caster_pipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(vk_device, caster_pipeline_, nullptr);
+        caster_pipeline_ = VK_NULL_HANDLE;
+    }
+    if (caster_pipeline_layout_ != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(vk_device, caster_pipeline_layout_, nullptr);
+        caster_pipeline_layout_ = VK_NULL_HANDLE;
+    }
+    shader_registry_.reset();
+
     if (framebuffer_ != VK_NULL_HANDLE) {
         vkDestroyFramebuffer(vk_device, framebuffer_, nullptr);
         framebuffer_ = VK_NULL_HANDLE;
     }
-    
+
     if (render_pass_ != VK_NULL_HANDLE) {
         vkDestroyRenderPass(vk_device, render_pass_, nullptr);
         render_pass_ = VK_NULL_HANDLE;
     }
-    
+
     if (shadow_sampler_ != VK_NULL_HANDLE) {
         vkDestroySampler(vk_device, shadow_sampler_, nullptr);
         shadow_sampler_ = VK_NULL_HANDLE;
     }
-    
+
     if (shadow_view_ != VK_NULL_HANDLE) {
         vkDestroyImageView(vk_device, shadow_view_, nullptr);
         shadow_view_ = VK_NULL_HANDLE;
     }
-    
+
     if (shadow_image_ != VK_NULL_HANDLE) {
         vkDestroyImage(vk_device, shadow_image_, nullptr);
         shadow_image_ = VK_NULL_HANDLE;
     }
-    
+
     if (shadow_memory_ != VK_NULL_HANDLE) {
         vkFreeMemory(vk_device, shadow_memory_, nullptr);
         shadow_memory_ = VK_NULL_HANDLE;

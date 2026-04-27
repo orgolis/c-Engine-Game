@@ -1,6 +1,9 @@
 #pragma once
 
-#include "render_device.h"
+// Use a relative path so we always pick up the new gpu/render_device.h
+// (the legacy renderer/include/render_device.h shares a filename and is
+// resolved first when we use a bare include).
+#include "../render_device.h"
 #include <vulkan/vulkan.h>
 #include <memory>
 #include <vector>
@@ -240,15 +243,38 @@ public:
     
     /// Get Vulkan instance
     VkInstance get_vk_instance() const { return instance; }
-    
+
     /// Get Vulkan physical device
     VkPhysicalDevice get_vk_physical_device() const { return physical_device; }
-    
+
     /// Get Vulkan logical device
     VkDevice get_vk_device() const { return device; }
-    
+
+    /// Short-form accessors used by Phase 3+ components.
+    VkDevice get_device() const { return device; }
+    VkPhysicalDevice get_physical_device() const { return physical_device; }
+
     /// Get graphics queue
     VkQueue get_graphics_queue() const { return graphics_queue; }
+    uint32_t get_graphics_queue_family() const { return graphics_queue_family; }
+    VkCommandPool get_command_pool() const { return command_pool; }
+
+    /// Find a memory type matching the requested property flags. Throws on failure.
+    uint32_t find_memory_type(uint32_t type_filter,
+                              VkMemoryPropertyFlags properties) const;
+
+    /// Attach an externally-created surface (typically from `glfwCreateWindowSurface`).
+    /// The device takes ownership for shutdown — the caller must NOT destroy it.
+    /// Returns false if attached after a previous surface or if the graphics queue
+    /// family doesn't support presentation on the given surface.
+    bool attach_surface(VkSurfaceKHR new_surface);
+
+    /// Create a `VulkanSwapchain` on the previously attached surface.
+    /// Must be called after `attach_surface`. Returns false if no surface is attached.
+    bool create_window_swapchain(uint32_t width, uint32_t height);
+
+    /// Access the owned swapchain (null until `create_window_swapchain` succeeds).
+    VulkanSwapchain* get_swapchain() const { return swapchain.get(); }
     
 private:
     // ========================================================================

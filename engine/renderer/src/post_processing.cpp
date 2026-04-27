@@ -63,7 +63,7 @@ bool PostProcessor::Initialize() {
         }
     )";
     
-    blit_shader_ = std::make_shared<Shader>();
+    blit_shader_ = std::make_shared<ShaderProgram>();
     if (!blit_shader_->Compile(device_, blit_vs, blit_fs)) {
         return false;
     }
@@ -431,7 +431,7 @@ bool ToneMappingEffect::Initialize(RenderDevice* device, PostProcessingEffectCon
         }
     )";
     
-    shader_ = std::make_shared<Shader>();
+    shader_ = std::make_shared<ShaderProgram>();
     return shader_->Compile(device, vs, fs);
 }
 
@@ -521,7 +521,7 @@ bool BloomEffect::Initialize(RenderDevice* device, PostProcessingEffectConfig* c
         }
     )";
     
-    threshold_shader_ = std::make_shared<Shader>();
+    threshold_shader_ = std::make_shared<ShaderProgram>();
     if (!threshold_shader_->Compile(device, threshold_vs, threshold_fs)) {
         return false;
     }
@@ -569,7 +569,7 @@ bool BloomEffect::Initialize(RenderDevice* device, PostProcessingEffectConfig* c
         }
     )";
     
-    blur_shader_ = std::make_shared<Shader>();
+    blur_shader_ = std::make_shared<ShaderProgram>();
     if (!blur_shader_->Compile(device, blur_vs, blur_fs)) {
         return false;
     }
@@ -607,7 +607,7 @@ bool BloomEffect::Initialize(RenderDevice* device, PostProcessingEffectConfig* c
         }
     )";
     
-    composite_shader_ = std::make_shared<Shader>();
+    composite_shader_ = std::make_shared<ShaderProgram>();
     return composite_shader_->Compile(device, comp_vs, comp_fs);
 }
 
@@ -701,7 +701,7 @@ bool FXAAEffect::Initialize(RenderDevice* device, PostProcessingEffectConfig* co
         }
     )";
     
-    shader_ = std::make_shared<Shader>();
+    shader_ = std::make_shared<ShaderProgram>();
     return shader_->Compile(device, vs, fs);
 }
 
@@ -773,7 +773,7 @@ bool VignetteEffect::Initialize(RenderDevice* device, PostProcessingEffectConfig
         }
     )";
     
-    shader_ = std::make_shared<Shader>();
+    shader_ = std::make_shared<ShaderProgram>();
     return shader_->Compile(device, vs, fs);
 }
 
@@ -855,7 +855,7 @@ bool SharpenEffect::Initialize(RenderDevice* device, PostProcessingEffectConfig*
         }
     )";
     
-    shader_ = std::make_shared<Shader>();
+    shader_ = std::make_shared<ShaderProgram>();
     return shader_->Compile(device, vs, fs);
 }
 
@@ -926,7 +926,7 @@ bool ChromaticAberrationEffect::Initialize(RenderDevice* device, PostProcessingE
         }
     )";
     
-    shader_ = std::make_shared<Shader>();
+    shader_ = std::make_shared<ShaderProgram>();
     return shader_->Compile(device, vs, fs);
 }
 
@@ -1008,7 +1008,7 @@ bool FilmGrainEffect::Initialize(RenderDevice* device, PostProcessingEffectConfi
         }
     )";
     
-    shader_ = std::make_shared<Shader>();
+    shader_ = std::make_shared<ShaderProgram>();
     return shader_->Compile(device, vs, fs);
 }
 
@@ -1090,7 +1090,7 @@ bool ColorGradingEffect::Initialize(RenderDevice* device, PostProcessingEffectCo
         }
     )";
     
-    shader_ = std::make_shared<Shader>();
+    shader_ = std::make_shared<ShaderProgram>();
     return shader_->Compile(device, vs, fs);
 }
 

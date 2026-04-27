@@ -1,5 +1,5 @@
 #include "vulkan_descriptor_set.h"
-#include "gws/core/logging/logger.h"
+#include "logging/logger.h"
 
 namespace gws::renderer::gpu {
 

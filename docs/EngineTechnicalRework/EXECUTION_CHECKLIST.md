@@ -24,8 +24,8 @@
 | **3** | Weeks 9-12 | ✅ Complete | Mesh loading, materials, batch rendering |
 | **4** | Weeks 13-16 | ✅ Complete | Full deferred pipeline (G-Buffer, lighting, shadows, render graph, end-to-end window present) |
 | **5** | Weeks 17-20 | ✅ Complete | Scene/draw-list API, LOD system, frustum culling (60-70% reduction) |
-| **6** | Weeks 21-24 | ⏳ In Progress (Weeks 21-23 ✅) | ImGui integration ✅, scene hierarchy ✅, profiling ✅ (Week 24: HZB culling) |
-| **7** | Weeks 25-28 | ⏳ Planned | Final optimization, documentation complete |
+| **6** | Weeks 21-24 | ✅ Complete | ImGui ✅, hierarchy ✅, profiler ✅, HZB ✅ (75-90% draw reduction) |
+| **7** | Weeks 25-28 | ⏳ In Progress | GPU profiler queries, gizmo rendering, performance optimization |
 
 ---
 

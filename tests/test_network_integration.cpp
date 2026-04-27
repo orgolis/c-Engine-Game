@@ -1,9 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include <entt/entt.hpp>
 #include "network_systems.h"
 
 using namespace engine::network;
 using InputAction = engine::character::InputAction;
+using Catch::Approx;
 
 TEST_CASE("Network - Deterministic Simulation", "[network][deterministic]") {
     DeterministicSimulation sim;

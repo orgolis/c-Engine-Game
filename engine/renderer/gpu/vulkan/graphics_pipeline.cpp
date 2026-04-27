@@ -1,5 +1,5 @@
 #include "graphics_pipeline.h"
-#include "gws/core/logging/logger.h"
+#include "logging/logger.h"
 #include <cassert>
 
 namespace gws::renderer::gpu {

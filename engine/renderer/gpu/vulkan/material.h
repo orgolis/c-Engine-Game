@@ -12,6 +12,7 @@
 #include "image.h"
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
+#include <array>
 #include <unordered_map>
 #include <string>
 #include <memory>

@@ -13,7 +13,16 @@ namespace gws::renderer::gpu {
 // ============================================================================
 
 class RenderDevice;
-class CommandBuffer;
+
+/// Polymorphic base for backend command-buffer wrappers. Backends derive from
+/// this so callers can pass `CommandBuffer*` through the abstract interface.
+class CommandBuffer {
+public:
+    virtual ~CommandBuffer() = default;
+};
+
+// Resource types are referenced via Handle<T> below; they remain incomplete
+// at the abstract-interface level since handles only carry an opaque id.
 class Buffer;
 class Image;
 class Shader;

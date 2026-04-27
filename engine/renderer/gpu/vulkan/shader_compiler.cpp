@@ -1,6 +1,7 @@
 #include "shader_compiler.h"
-#include "gws/core/logging/logger.h"
-#include <glslang/Public/glslang.h>
+#include "logging/logger.h"
+#include <glslang/Public/ShaderLang.h>
+#include <glslang/Public/ResourceLimits.h>
 #include <glslang/SPIRV/GlslangToSpv.h>
 #include <fstream>
 
@@ -152,7 +153,7 @@ ShaderCompileResult ShaderCompiler::compile_internal(const std::string& glsl_cod
         (validation_enabled ? EShMsgDefault : 0)
     );
     
-    if (!shader.parse(&glslang::DefaultTBuiltInResource, 100, false, messages)) {
+    if (!shader.parse(GetDefaultResources(), 100, false, messages)) {
         // Collect compilation errors
         result.errors.push_back({
             shader.getInfoLog(),
@@ -184,7 +185,7 @@ ShaderCompileResult ShaderCompiler::compile_internal(const std::string& glsl_cod
     // Convert to SPIR-V
     std::vector<uint32_t> spirv;
     glslang::SpvOptions spv_options;
-    spv_options.generate_debug_info = validation_enabled;
+    spv_options.generateDebugInfo = validation_enabled;
     spv_options.disableOptimizer = (optimize == 0);
     spv_options.optimizeSize = (optimize >= 3);
     

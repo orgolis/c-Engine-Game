@@ -149,6 +149,10 @@ float AbilitySystem::GetChannelPower() const {
     return channeled->GetChannelPower();
 }
 
+float AbilitySystem::GetAbilityCooldown(const std::string& ability_name) const {
+    return cooldown_manager_.GetRemainingCooldown(ability_name);
+}
+
 void AbilitySystem::AddTemporaryModifier(const std::string& stat_name, const Modifier& modifier) {
     modifier_db_.AddModifier(stat_name, modifier);
 }

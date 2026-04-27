@@ -24,6 +24,20 @@ namespace gws::renderer::gpu {
 class VulkanImage;
 class VulkanRenderPass;
 class VulkanDevice;
+class VulkanShaderRegistry;
+struct DrawItem;
+
+/**
+ * @struct GeometryPushConstants
+ * @brief Per-draw constants pushed to the geometry shader.
+ *
+ * One mat4 MVP fits comfortably under the 128-byte spec guarantee with
+ * room left over for material parameters.
+ */
+struct GeometryPushConstants {
+    glm::mat4 mvp;            // 64 bytes
+    glm::vec4 albedo_metallic; // RGB albedo + A metallic — 16 bytes
+};
 
 /**
  * @enum GBufferFormat
@@ -46,16 +60,22 @@ enum class GBufferFormat {
 struct GBufferConfig {
     uint32_t width = 1920;
     uint32_t height = 1080;
-    
+
     // Attachment formats
     GBufferFormat position_format = GBufferFormat::RGBA16F;      // World position + padding
     GBufferFormat normal_format = GBufferFormat::RGBA16F;        // Normal + roughness
     GBufferFormat albedo_format = GBufferFormat::RGBA8;          // Albedo + metallic
     GBufferFormat material_format = GBufferFormat::RGBA8;        // Material ID + AO + emission
-    
+
     // Options
     bool use_msaa = false;
     uint32_t msaa_samples = 4;
+
+    /// Optional per-material descriptor set layout (set=1) that the textured
+    /// scene pipeline will be built against. Pass `Material::create_descriptor_set_layout(...)`
+    /// and keep the layout alive for the G-Buffer's lifetime. When null, only
+    /// the demo pipeline is built — `draw_items` will be a no-op.
+    VkDescriptorSetLayout material_set_layout = VK_NULL_HANDLE;
 };
 
 /**
@@ -147,11 +167,41 @@ public:
      * @brief Get framebuffer handle
      */
     VkFramebuffer get_framebuffer() const { return framebuffer_; }
-    
+
     /**
      * @brief Get render pass handle
      */
     VkRenderPass get_render_pass() const { return render_pass_; }
+
+    /**
+     * @brief Bind the demo geometry pipeline + draw a single hardcoded
+     *        triangle into the G-Buffer. Intended as a smoke-test
+     *        surrogate for real scene submission. The MVP push constant
+     *        is built from the supplied view/proj matrices.
+     */
+    void draw_demo_triangle(VkCommandBuffer cmd,
+                            const glm::mat4& view,
+                            const glm::mat4& proj);
+
+    /**
+     * @brief Bind the textured scene pipeline and iterate the supplied
+     *        DrawItems, binding each item's Material at set=1 and pushing
+     *        its MVP. No-op if `material_set_layout` was null at create time.
+     *
+     * `camera_position` is used for per-draw LOD selection: the LOD tier
+     * with the highest `distance_threshold` not exceeding the world-space
+     * distance from camera to draw origin is chosen. Items are issued in
+     * submission order — caller is responsible for sorting (front-to-back,
+     * by-material, etc.) if it matters.
+     */
+    void draw_items(VkCommandBuffer cmd,
+                    const glm::mat4& view,
+                    const glm::mat4& proj,
+                    const glm::vec3& camera_position,
+                    const DrawItem* draws,
+                    size_t draw_count,
+                    uint32_t* out_draw_calls = nullptr,
+                    uint32_t* out_triangles  = nullptr);
     
     /**
      * @brief Get width
@@ -192,11 +242,26 @@ private:
     // Render pass and framebuffer
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
     VkFramebuffer framebuffer_ = VK_NULL_HANDLE;
-    
+
+    // Geometry pipelines. Two of them: a demo pipeline (legacy, no UV, no
+    // material descriptor) and a scene pipeline (full PBR vertex format,
+    // per-material descriptor set at set=1, samples textures into the
+    // G-Buffer). Both target the same render pass.
+    std::unique_ptr<VulkanShaderRegistry> shader_registry_;
+    VkPipeline       demo_pipeline_              = VK_NULL_HANDLE;
+    VkPipelineLayout demo_pipeline_layout_       = VK_NULL_HANDLE;
+    VkBuffer         demo_vertex_buffer_         = VK_NULL_HANDLE;
+    VkDeviceMemory   demo_vertex_buffer_memory_  = VK_NULL_HANDLE;
+    VkPipeline       scene_pipeline_             = VK_NULL_HANDLE;
+    VkPipelineLayout scene_pipeline_layout_      = VK_NULL_HANDLE;
+
     // Helper functions
     VkFormat format_to_vk(GBufferFormat fmt);
     void create_render_pass();
     void create_framebuffer();
+    void create_demo_pipeline();
+    void create_scene_pipeline();
+    void create_demo_vertex_buffer();
     void cleanup();
 };
 

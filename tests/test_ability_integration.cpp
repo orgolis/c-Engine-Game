@@ -1,8 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include <entt/entt.hpp>
 #include "ability_systems.h"
 
 using namespace engine::ability;
+using Catch::Approx;
 
 TEST_CASE("Ability System - Active Ability Casting", "[ability][active]") {
     AbilityConfig config;
@@ -140,8 +142,8 @@ TEST_CASE("Ability System - Modifier Pipeline", "[ability][modifiers]") {
     }
 
     SECTION("Remove modifiers by source") {
-        stack.AddModifier({"damage", {"Firepower Potion", 10.0f, ModifierOperation::Add, "Potion", 5.0f}});
-        stack.AddModifier({"damage", {"Shield Buff", 5.0f, ModifierOperation::Add, "Ability", 0.0f}});
+        stack.AddModifier({"damage", 10.0f, ModifierOperation::Add, "Potion", 5.0f});
+        stack.AddModifier({"damage", 5.0f, ModifierOperation::Add, "Ability", 0.0f});
         
         REQUIRE(stack.GetModifierCount() == 2);
         

@@ -17,6 +17,8 @@
 namespace gws::renderer::gpu {
 
 class VulkanDevice;
+class VulkanShaderRegistry;
+struct DrawItem;
 
 /**
  * @enum ShadowMapType
@@ -87,6 +89,26 @@ public:
      * @brief Begin spot light shadow pass
      */
     void begin_spot_pass(VkCommandBuffer cmd);
+
+    /**
+     * @brief Iterate the supplied draw list with the depth-only pipeline,
+     *        binding each item's mesh and pushing its MVP. Caller must have
+     *        already called `begin_directional_pass` (or similar).
+     *
+     * Shadow stage uses one LOD coarser than the camera selection (an LOD
+     * "bias" of +1) since shadow detail loss is much less visible than
+     * primary-view detail loss. `light_position` drives the distance
+     * heuristic (pass the camera position for now if you don't track a
+     * separate shadow caster origin).
+     */
+    void draw_items(VkCommandBuffer cmd,
+                    const glm::mat4& view,
+                    const glm::mat4& proj,
+                    const glm::vec3& light_position,
+                    const DrawItem* draws,
+                    size_t draw_count,
+                    uint32_t* out_draw_calls = nullptr,
+                    uint32_t* out_triangles  = nullptr);
     
     /**
      * @brief Get shadow map view for sampling
@@ -146,13 +168,20 @@ private:
     std::vector<glm::mat4> cascade_view_matrices_;
     std::vector<glm::mat4> cascade_proj_matrices_;
     std::vector<float> cascade_splits_;
-    
+
+    // Depth-only caster pipeline. Reuses the SceneVertex layout, binds no
+    // descriptor sets, and pushes a single mat4 (light-space MVP).
+    std::unique_ptr<VulkanShaderRegistry> shader_registry_;
+    VkPipeline       caster_pipeline_         = VK_NULL_HANDLE;
+    VkPipelineLayout caster_pipeline_layout_  = VK_NULL_HANDLE;
+
     // Helper functions
     void create_shadow_image();
     void create_shadow_sampler();
     void create_render_pass();
     void create_framebuffer();
     void create_cascade_matrices();
+    void create_caster_pipeline();
     void cleanup();
 };
 

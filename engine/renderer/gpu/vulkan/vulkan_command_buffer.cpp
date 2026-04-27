@@ -1,5 +1,5 @@
 #include "vulkan_command_buffer.h"
-#include "gws/core/logging/logger.h"
+#include "logging/logger.h"
 #include <cassert>
 
 namespace gws::renderer::gpu {

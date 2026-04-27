@@ -1,5 +1,5 @@
 #include "vulkan_swapchain.h"
-#include "gws/core/logging/logger.h"
+#include "logging/logger.h"
 #include <algorithm>
 
 namespace gws::renderer::gpu {
@@ -153,7 +153,7 @@ uint32_t VulkanSwapchain::acquire_next_image(VkSemaphore signal_semaphore) {
             // Swapchain is out of date, needs recreation
             GWS_LOG_WARN("Swapchain out of date, needs recreation");
         } else {
-            GWS_LOG_ERROR("Failed to acquire next image: {}", result);
+            GWS_LOG_ERROR("Failed to acquire next image: {}", static_cast<int>(result));
         }
         return ~0u;
     }
@@ -177,7 +177,7 @@ void VulkanSwapchain::present_image(uint32_t image_index, VkSemaphore wait_semap
         if (result == VK_ERROR_OUT_OF_DATE_KHR) {
             GWS_LOG_WARN("Swapchain out of date during present");
         } else {
-            GWS_LOG_ERROR("Failed to present: {}", result);
+            GWS_LOG_ERROR("Failed to present: {}", static_cast<int>(result));
         }
     }
 }

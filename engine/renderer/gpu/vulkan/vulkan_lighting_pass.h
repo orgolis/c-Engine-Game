@@ -18,6 +18,7 @@ namespace gws::renderer::gpu {
 
 class VulkanDevice;
 class VulkanGBuffer;
+class VulkanShaderRegistry;
 
 /**
  * @enum LightType
@@ -89,7 +90,35 @@ public:
      * @brief Add a light to the scene
      */
     void add_light(const Light& light);
-    
+
+    /// Convenience: add a directional (sun-style) light. Direction is
+    /// normalised internally; intensity is stored in direction.w.
+    /// @return Index of the inserted light, or UINT32_MAX if the cap was hit.
+    uint32_t add_directional_light(const glm::vec3& direction,
+                                   const glm::vec3& color,
+                                   float intensity,
+                                   bool casts_shadow = true);
+
+    /// Convenience: add an omnidirectional point light with smooth-falloff
+    /// quadratic attenuation.
+    uint32_t add_point_light(const glm::vec3& position,
+                             const glm::vec3& color,
+                             float intensity,
+                             float radius,
+                             bool casts_shadow = false);
+
+    /// Convenience: add a spot light. @p inner_cone_cos and @p outer_cone_cos
+    /// describe the cosine of the inner/outer cone half-angles for smooth
+    /// edge falloff (the outer cosine is packed into attenuation.w to match
+    /// the lighting shader).
+    uint32_t add_spot_light(const glm::vec3& position,
+                            const glm::vec3& direction,
+                            const glm::vec3& color,
+                            float intensity,
+                            float range,
+                            float outer_cone_cos,
+                            bool casts_shadow = false);
+
     /**
      * @brief Update light at index
      */
@@ -145,6 +174,30 @@ public:
      */
     void resize(uint32_t width, uint32_t height);
 
+    /// Bind a 2D-array shadow map view (cascaded directional shadows).
+    /// Triggers a descriptor-set update so the binding is live for the
+    /// next render. Pass VK_NULL_HANDLE to fall back to the dummy 1×1.
+    void set_directional_shadow_map(VkImageView view, VkSampler sampler);
+
+    /// Bind a cubemap shadow map view (point-light shadows). Triggers a
+    /// descriptor-set update; pass VK_NULL_HANDLE to fall back to the dummy.
+    void set_point_shadow_map(VkImageView view, VkSampler sampler);
+
+    /// Set the camera world-space position used for view-direction reconstruction.
+    void set_camera_position(const glm::vec3& position) { camera_position_ = position; }
+
+    /// HDR output of this pass (R16G16B16A16_SFLOAT, in SHADER_READ_ONLY_OPTIMAL
+    /// after `end_pass`). Downstream passes (post-processing) sample this.
+    VkImageView get_output_view() const { return output_view_; }
+
+    /// Was a directional shadow map bound? Useful for tests / debug overlays.
+    bool has_directional_shadow_map() const {
+        return directional_shadow_view_ != VK_NULL_HANDLE;
+    }
+    bool has_point_shadow_map() const {
+        return point_shadow_view_ != VK_NULL_HANDLE;
+    }
+
 private:
     VulkanDevice* device_ = nullptr;
     VulkanGBuffer* gbuffer_ = nullptr;
@@ -172,12 +225,49 @@ private:
     
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
     VkFramebuffer framebuffer_ = VK_NULL_HANDLE;
-    
+
+    // Sampler used when reading G-Buffer attachments in the fragment shader.
+    VkSampler gbuffer_sampler_ = VK_NULL_HANDLE;
+
+    // Sampler used when reading shadow map textures (depth-format, linear filter).
+    VkSampler shadow_sampler_ = VK_NULL_HANDLE;
+
+    // Dummy 1×1 shadow textures used when no real shadow map is bound.
+    // The PBR fragment shader unconditionally samples both shadowMap (2D
+    // array) and pointShadowMap (cube), so the descriptor set must always
+    // have something valid bound at bindings 5 + 6.
+    VkImage      dummy_shadow_2d_array_image_  = VK_NULL_HANDLE;
+    VkImageView  dummy_shadow_2d_array_view_   = VK_NULL_HANDLE;
+    VkDeviceMemory dummy_shadow_2d_array_mem_  = VK_NULL_HANDLE;
+    VkImage      dummy_shadow_cube_image_      = VK_NULL_HANDLE;
+    VkImageView  dummy_shadow_cube_view_       = VK_NULL_HANDLE;
+    VkDeviceMemory dummy_shadow_cube_mem_      = VK_NULL_HANDLE;
+
+    // Camera position pushed to the shader each frame for view-direction
+    // computation. Set via `set_camera_position`; defaults to origin.
+    glm::vec3 camera_position_ = glm::vec3(0.0f);
+
+    // Owned shader registry for compiling the lighting shaders at startup.
+    std::unique_ptr<VulkanShaderRegistry> shader_registry_;
+
+    // Shadow map descriptors (owned by VulkanShadowMap, not destroyed here).
+    VkImageView directional_shadow_view_ = VK_NULL_HANDLE;
+    VkSampler directional_shadow_sampler_ = VK_NULL_HANDLE;
+    VkImageView point_shadow_view_ = VK_NULL_HANDLE;
+    VkSampler point_shadow_sampler_ = VK_NULL_HANDLE;
+
     // Helper functions
     void create_light_buffer();
     void create_pipeline();
     void create_descriptor_sets();
     void create_output_image(uint32_t width, uint32_t height);
+    void create_render_pass();
+    void create_framebuffer(uint32_t width, uint32_t height);
+    void create_gbuffer_sampler();
+    void create_shadow_sampler();
+    void create_dummy_shadow_textures();
+    void update_descriptor_set();
+    void upload_lights();
     void cleanup();
 };
 

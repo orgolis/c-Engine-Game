@@ -1,85 +1,86 @@
 #pragma once
 
-#include <string_view>
+#include <spdlog/spdlog.h>
+
 #include <memory>
 #include <string>
-
-// Forward declare spdlog types to keep it internal
-namespace spdlog {
-    class logger;
-}
+#include <string_view>
+#include <utility>
 
 namespace gws::logging {
 
-// ====================
-// Logger
-// Thread-safe logging system backed by spdlog
-// Provides simple interface: debug, info, warn, error, critical
-// ====================
+namespace detail {
+    spdlog::logger* default_spdlog_logger();
+}
 
 class Logger {
 public:
-    // Initialize logging system
-    // Creates console sink by default, optionally adds file sink
     static void Initialize(std::string_view app_name, bool enable_file_logging = false);
-    
-    // Shutdown and flush all loggers
     static void Shutdown();
-    
-    // Get or create a named logger
     static std::shared_ptr<Logger> GetLogger(std::string_view name);
-    
-    // Get the default logger
     static std::shared_ptr<Logger> GetDefault();
-    
-    // Logging methods (variadic, printf-style)
+
     template<typename... Args>
-    void Debug(std::string_view fmt, Args&&... args);
-    
+    void Debug(std::string_view fmt, Args&&... args) {
+        if (impl) impl->debug(SPDLOG_FMT_RUNTIME(fmt), std::forward<Args>(args)...);
+    }
+
     template<typename... Args>
-    void Info(std::string_view fmt, Args&&... args);
-    
+    void Info(std::string_view fmt, Args&&... args) {
+        if (impl) impl->info(SPDLOG_FMT_RUNTIME(fmt), std::forward<Args>(args)...);
+    }
+
     template<typename... Args>
-    void Warn(std::string_view fmt, Args&&... args);
-    
+    void Warn(std::string_view fmt, Args&&... args) {
+        if (impl) impl->warn(SPDLOG_FMT_RUNTIME(fmt), std::forward<Args>(args)...);
+    }
+
     template<typename... Args>
-    void Error(std::string_view fmt, Args&&... args);
-    
+    void Error(std::string_view fmt, Args&&... args) {
+        if (impl) impl->error(SPDLOG_FMT_RUNTIME(fmt), std::forward<Args>(args)...);
+    }
+
     template<typename... Args>
-    void Critical(std::string_view fmt, Args&&... args);
-    
-    // Set log level for this logger
-    void SetLevel(int level);  // 0=trace, 1=debug, 2=info, 3=warn, 4=error, 5=critical
-    
-    // Flush pending logs
+    void Critical(std::string_view fmt, Args&&... args) {
+        if (impl) impl->critical(SPDLOG_FMT_RUNTIME(fmt), std::forward<Args>(args)...);
+    }
+
+    void SetLevel(int level);
     void Flush();
-    
-    // For internal use only - creates a Logger wrapping a spdlog logger
+
     explicit Logger(std::shared_ptr<spdlog::logger> spdlog_impl);
 
 private:
     std::shared_ptr<spdlog::logger> impl;
 };
 
-// Global convenience functions
 template<typename... Args>
-void Debug(std::string_view fmt, Args&&... args);
+void Debug(std::string_view fmt, Args&&... args) {
+    if (auto* l = detail::default_spdlog_logger()) l->debug(SPDLOG_FMT_RUNTIME(fmt), std::forward<Args>(args)...);
+}
 
 template<typename... Args>
-void Info(std::string_view fmt, Args&&... args);
+void Info(std::string_view fmt, Args&&... args) {
+    if (auto* l = detail::default_spdlog_logger()) l->info(SPDLOG_FMT_RUNTIME(fmt), std::forward<Args>(args)...);
+}
 
 template<typename... Args>
-void Warn(std::string_view fmt, Args&&... args);
+void Warn(std::string_view fmt, Args&&... args) {
+    if (auto* l = detail::default_spdlog_logger()) l->warn(SPDLOG_FMT_RUNTIME(fmt), std::forward<Args>(args)...);
+}
 
 template<typename... Args>
-void Error(std::string_view fmt, Args&&... args);
+void Error(std::string_view fmt, Args&&... args) {
+    if (auto* l = detail::default_spdlog_logger()) l->error(SPDLOG_FMT_RUNTIME(fmt), std::forward<Args>(args)...);
+}
 
 template<typename... Args>
-void Critical(std::string_view fmt, Args&&... args);
+void Critical(std::string_view fmt, Args&&... args) {
+    if (auto* l = detail::default_spdlog_logger()) l->critical(SPDLOG_FMT_RUNTIME(fmt), std::forward<Args>(args)...);
+}
 
 }  // namespace gws::logging
 
-// Convenience macros for common patterns
 #define GWS_LOG_DEBUG(...) gws::logging::Debug(__VA_ARGS__)
 #define GWS_LOG_INFO(...) gws::logging::Info(__VA_ARGS__)
 #define GWS_LOG_WARN(...) gws::logging::Warn(__VA_ARGS__)

@@ -253,7 +253,7 @@ protected:
  */
 struct PostProcessPass {
     std::string name;
-    std::shared_ptr<Shader> shader;
+    std::shared_ptr<ShaderProgram> shader;
     std::shared_ptr<Framebuffer> target;
     uint32_t order = 0;
 };
@@ -427,7 +427,7 @@ private:
     std::shared_ptr<Mesh> fullscreen_quad_;
     
     // Blit shader for simple texture copy
-    std::shared_ptr<Shader> blit_shader_;
+    std::shared_ptr<ShaderProgram> blit_shader_;
 };
 
 // ============================================================================
@@ -451,7 +451,7 @@ public:
     void SetGamma(float gamma);
     
 private:
-    std::shared_ptr<Shader> shader_;
+    std::shared_ptr<ShaderProgram> shader_;
     ToneMapConfig* config_ = nullptr;
 };
 
@@ -471,9 +471,9 @@ public:
     void SetStrength(float strength);
     
 private:
-    std::shared_ptr<Shader> threshold_shader_;
-    std::shared_ptr<Shader> blur_shader_;
-    std::shared_ptr<Shader> composite_shader_;
+    std::shared_ptr<ShaderProgram> threshold_shader_;
+    std::shared_ptr<ShaderProgram> blur_shader_;
+    std::shared_ptr<ShaderProgram> composite_shader_;
     BloomConfig* config_ = nullptr;
 };
 
@@ -490,7 +490,7 @@ public:
     std::string GetName() const override { return "FXAA"; }
     
 private:
-    std::shared_ptr<Shader> shader_;
+    std::shared_ptr<ShaderProgram> shader_;
     FXAAConfig* config_ = nullptr;
 };
 
@@ -507,7 +507,7 @@ public:
     std::string GetName() const override { return "Vignette"; }
     
 private:
-    std::shared_ptr<Shader> shader_;
+    std::shared_ptr<ShaderProgram> shader_;
     VignetteConfig* config_ = nullptr;
 };
 
@@ -524,7 +524,7 @@ public:
     std::string GetName() const override { return "Sharpen"; }
     
 private:
-    std::shared_ptr<Shader> shader_;
+    std::shared_ptr<ShaderProgram> shader_;
     SharpenConfig* config_ = nullptr;
 };
 
@@ -541,7 +541,7 @@ public:
     std::string GetName() const override { return "ChromaticAberration"; }
     
 private:
-    std::shared_ptr<Shader> shader_;
+    std::shared_ptr<ShaderProgram> shader_;
     ChromaticAberrationConfig* config_ = nullptr;
 };
 
@@ -558,7 +558,7 @@ public:
     std::string GetName() const override { return "FilmGrain"; }
     
 private:
-    std::shared_ptr<Shader> shader_;
+    std::shared_ptr<ShaderProgram> shader_;
     FilmGrainConfig* config_ = nullptr;
 };
 
@@ -577,7 +577,7 @@ public:
     void SetLUT(std::shared_ptr<Texture> lut);
     
 private:
-    std::shared_ptr<Shader> shader_;
+    std::shared_ptr<ShaderProgram> shader_;
     ColorGradingConfig* config_ = nullptr;
 };
 

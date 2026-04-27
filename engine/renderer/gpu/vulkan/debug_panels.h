@@ -47,6 +47,10 @@ public:
 
     /// Register the culling statistics panel.
     static void register_culling_stats_panel(UIManager* ui, VulkanRenderGraph* graph);
+
+    /// Register the GPU profiler chart panel — plots per-stage µs over the
+    /// last 60 frames so spikes and stage-imbalance jump out visually.
+    static void register_gpu_profiler_panel(UIManager* ui, VulkanRenderGraph* graph);
 };
 
 } // namespace gws::renderer::gpu

@@ -1,8 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include <entt/entt.hpp>
 #include "character_systems.h"
 
 using namespace engine::character;
+using Catch::Approx;
 
 // Mock Transform component for testing
 struct Transform {
@@ -205,7 +207,7 @@ TEST_CASE("Locomotion System - Animation Blending", "[character][animation]") {
         // Walk
         locomotion.Update(5.0f, 0.0f, 0.016f);
         float walk_param = locomotion.GetLocomotionParameter();
-        REQUIRE(walk_param > 0.0f && walk_param < 1.0f);
+        REQUIRE((walk_param > 0.0f && walk_param < 1.0f));
 
         // Sprint
         locomotion.Update(10.0f, 0.0f, 0.016f);

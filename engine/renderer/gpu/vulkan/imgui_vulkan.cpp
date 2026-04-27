@@ -57,7 +57,9 @@ std::unique_ptr<ImGuiVulkan> ImGuiVulkan::create(VulkanDevice* device,
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    // ImGui 1.92.x master branch doesn't ship docking; the docking branch
+    // sets ImGuiConfigFlags_DockingEnable. The bundled imgui is master, so
+    // we simply omit the docking flag.
 
     ImGui::StyleColorsDark();
 
@@ -76,12 +78,16 @@ std::unique_ptr<ImGuiVulkan> ImGuiVulkan::create(VulkanDevice* device,
     init_info.Queue = device->get_graphics_queue();
     init_info.PipelineCache = VK_NULL_HANDLE;  // Optional
     init_info.DescriptorPool = VK_NULL_HANDLE; // We'll create one below
-    init_info.Subpass = 0;
     init_info.MinImageCount = 2;
     init_info.ImageCount = 2;
-    init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     init_info.Allocator = nullptr;
     init_info.CheckVkResultFn = nullptr;
+    // ImGui 1.92.x moved Subpass/MSAASamples/RenderPass into PipelineInfoMain.
+    // RenderPass is left null here — the caller must populate it (or set
+    // UseDynamicRendering) before any rendering. Init() still succeeds; the
+    // pipeline gets created lazily when rendering data is submitted.
+    init_info.PipelineInfoMain.Subpass     = 0;
+    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 
     // Create descriptor pool for ImGui
     VkDescriptorPoolSize pool_sizes[] = {
@@ -113,7 +119,7 @@ std::unique_ptr<ImGuiVulkan> ImGuiVulkan::create(VulkanDevice* device,
 
     init_info.DescriptorPool = descriptor_pool;
 
-    if (!ImGui_ImplVulkan_Init(&init_info, VK_NULL_HANDLE)) {
+    if (!ImGui_ImplVulkan_Init(&init_info)) {
         spdlog::error("ImGuiVulkan: ImGui_ImplVulkan_Init failed");
         vkDestroyDescriptorPool(device->get_device(), descriptor_pool, nullptr);
         return nullptr;
@@ -173,8 +179,13 @@ void ImGuiVulkan::on_mouse_scroll(float delta_x, float delta_y) {
     io.MouseWheel += delta_y;
 }
 
-void ImGuiVulkan::on_key_press(int key, bool pressed) {
-    ImGui::GetIO().KeysDown[key] = pressed;
+void ImGuiVulkan::on_key_press(int /*key*/, bool /*pressed*/) {
+    // ImGui ≥1.87 removed `KeysDown[]` in favour of `AddKeyEvent(ImGuiKey, bool)`.
+    // The GLFW backend (ImGui_ImplGlfw_InitForVulkan with install_callbacks=true)
+    // already wires keyboard events directly into ImGui via its own callbacks,
+    // so this passthrough is intentionally a no-op. If the caller needs to
+    // route keys manually it should call `ImGui::GetIO().AddKeyEvent(...)`
+    // directly with a properly mapped `ImGuiKey`.
 }
 
 void ImGuiVulkan::on_text_input(const char* text) {

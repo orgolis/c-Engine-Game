@@ -5,7 +5,7 @@
 #include <string>
 #include <memory>
 
-namespace gws {
+namespace schizo::renderer {
 
 // ============================================================================
 // Keyframe Animation

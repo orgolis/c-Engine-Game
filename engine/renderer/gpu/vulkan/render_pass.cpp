@@ -1,5 +1,5 @@
 #include "render_pass.h"
-#include "gws/core/logging/logger.h"
+#include "logging/logger.h"
 #include <cassert>
 
 namespace gws::renderer::gpu {

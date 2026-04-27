@@ -54,6 +54,9 @@ target_sources(renderer PRIVATE
     gpu/vulkan/hzb_culler.h
     gpu/vulkan/indirect_dispatcher.h
     gpu/vulkan/transform_gizmo.h
+    gpu/vulkan/query_pool.h
+    gpu/vulkan/gpu_profiler.h
+    gpu/vulkan/gpu_profiler_panels.h
 )
 
 # Source files - Vulkan Implementation
@@ -94,6 +97,9 @@ target_sources(renderer PRIVATE
     gpu/vulkan/hzb_culler.cpp
     gpu/vulkan/indirect_dispatcher.cpp
     gpu/vulkan/transform_gizmo.cpp
+    gpu/vulkan/query_pool.cpp
+    gpu/vulkan/gpu_profiler.cpp
+    gpu/vulkan/gpu_profiler_panels.cpp
 )
 
 # Header files - Core Graphics Abstraction

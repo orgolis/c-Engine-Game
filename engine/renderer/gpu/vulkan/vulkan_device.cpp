@@ -1,8 +1,24 @@
+// Bring in Win32 Vulkan extension symbols (VK_KHR_WIN32_SURFACE_EXTENSION_NAME).
+// Define VK_USE_PLATFORM_WIN32_KHR before including vulkan.h so the SDK pulls
+// in vulkan_win32.h *with* the Vk* types already declared. <windows.h> must
+// come first because vulkan_win32.h references HINSTANCE / HWND / HANDLE.
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#  define VK_USE_PLATFORM_WIN32_KHR
+#endif
+
 #include "vulkan_device.h"
 #include "vulkan_swapchain.h"
-#include "gws/core/logging/logger.h"
+#include "logging/logger.h"
 #include <algorithm>
 #include <set>
+#include <stdexcept>
 
 namespace gws::renderer::gpu {
 
@@ -119,6 +135,67 @@ void VulkanDevice::wait_idle() {
     }
 }
 
+bool VulkanDevice::attach_surface(VkSurfaceKHR new_surface) {
+    if (instance == VK_NULL_HANDLE || physical_device == VK_NULL_HANDLE) {
+        GWS_LOG_ERROR("attach_surface called before VulkanDevice::initialize");
+        return false;
+    }
+    if (new_surface == VK_NULL_HANDLE) {
+        GWS_LOG_ERROR("attach_surface called with VK_NULL_HANDLE");
+        return false;
+    }
+    if (this->surface != VK_NULL_HANDLE) {
+        GWS_LOG_WARN("attach_surface: replacing existing surface (resetting swapchain)");
+        if (swapchain) swapchain.reset();
+        vkDestroySurfaceKHR(instance, this->surface, nullptr);
+        this->surface = VK_NULL_HANDLE;
+    }
+
+    VkBool32 supported = VK_FALSE;
+    vkGetPhysicalDeviceSurfaceSupportKHR(physical_device, graphics_queue_family,
+                                        new_surface, &supported);
+    if (!supported) {
+        GWS_LOG_ERROR("attach_surface: graphics queue family {} doesn't support presentation",
+                        graphics_queue_family);
+        return false;
+    }
+
+    this->surface = new_surface;
+    return true;
+}
+
+bool VulkanDevice::create_window_swapchain(uint32_t width, uint32_t height) {
+    if (surface == VK_NULL_HANDLE) {
+        GWS_LOG_ERROR("create_window_swapchain called before attach_surface");
+        return false;
+    }
+    if (swapchain) {
+        swapchain.reset();
+    }
+    swapchain = std::make_unique<VulkanSwapchain>(
+        device, physical_device, surface,
+        graphics_queue, present_queue,
+        graphics_queue_family, present_queue_family);
+    swapchain->initialize(width, height);
+    return swapchain->get_vk_swapchain() != VK_NULL_HANDLE;
+}
+
+uint32_t VulkanDevice::find_memory_type(uint32_t type_filter,
+                                        VkMemoryPropertyFlags properties) const {
+    VkPhysicalDeviceMemoryProperties mem_props{};
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_props);
+
+    for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
+        const bool type_ok = (type_filter & (1u << i)) != 0u;
+        const bool props_ok =
+            (mem_props.memoryTypes[i].propertyFlags & properties) == properties;
+        if (type_ok && props_ok) {
+            return i;
+        }
+    }
+    throw std::runtime_error("VulkanDevice::find_memory_type: no suitable memory type");
+}
+
 // ============================================================================
 // Swapchain Management
 // ============================================================================
@@ -141,7 +218,7 @@ uint32_t VulkanDevice::acquire_next_image(Handle<Semaphore> signal_semaphore) {
     }
     
     VulkanSemaphore* sem = get_resource<VulkanSemaphore>(
-        *reinterpret_cast<Handle<Semaphore>*>(&signal_semaphore));
+        *reinterpret_cast<Handle<VulkanSemaphore>*>(&signal_semaphore));
     
     return swapchain->acquire_next_image(
         sem ? sem->get_vk_semaphore() : VK_NULL_HANDLE);
@@ -155,7 +232,7 @@ void VulkanDevice::present_image(uint32_t image_index,
     }
     
     VulkanSemaphore* sem = get_resource<VulkanSemaphore>(
-        *reinterpret_cast<Handle<Semaphore>*>(&wait_semaphore));
+        *reinterpret_cast<Handle<VulkanSemaphore>*>(&wait_semaphore));
     
     swapchain->present_image(image_index,
                             sem ? sem->get_vk_semaphore() : VK_NULL_HANDLE);
@@ -240,15 +317,15 @@ void VulkanDevice::submit_command_buffer(CommandBuffer* cmd_buffer,
     submit_info.pCommandBuffers = &vk_cmd->command_buffer;
     
     VulkanFence* fence = get_resource<VulkanFence>(
-        *reinterpret_cast<Handle<Fence>*>(&signal_fence));
+        *reinterpret_cast<Handle<VulkanFence>*>(&signal_fence));
     
     vkQueueSubmit(graphics_queue, 1, &submit_info,
-                 fence ? fence->get_vk_fence() : VK_NULL_HANDLE);
+                fence ? fence->get_vk_fence() : VK_NULL_HANDLE);
 }
 
 void VulkanDevice::wait_fence(Handle<Fence> fence) {
     VulkanFence* vk_fence = get_resource<VulkanFence>(
-        *reinterpret_cast<Handle<Fence>*>(&fence));
+        *reinterpret_cast<Handle<VulkanFence>*>(&fence));
     
     if (!vk_fence) {
         return;
@@ -259,7 +336,7 @@ void VulkanDevice::wait_fence(Handle<Fence> fence) {
 
 void VulkanDevice::reset_fence(Handle<Fence> fence) {
     VulkanFence* vk_fence = get_resource<VulkanFence>(
-        *reinterpret_cast<Handle<Fence>*>(&fence));
+        *reinterpret_cast<Handle<VulkanFence>*>(&fence));
     
     if (!vk_fence) {
         return;
@@ -335,14 +412,14 @@ Handle<Fence> VulkanDevice::create_fence(bool signaled) {
 
 void VulkanDevice::destroy_fence(Handle<Fence> fence) {
     VulkanFence* vk_fence = get_resource<VulkanFence>(
-        *reinterpret_cast<Handle<Fence>*>(&fence));
+        *reinterpret_cast<Handle<VulkanFence>*>(&fence));
     
     if (!vk_fence) {
         return;
     }
     
     vkDestroyFence(device, vk_fence->fence, nullptr);
-    free_resource<VulkanFence>(*reinterpret_cast<Handle<Fence>*>(&fence));
+    free_resource<VulkanFence>(*reinterpret_cast<Handle<VulkanFence>*>(&fence));
 }
 
 Handle<Semaphore> VulkanDevice::create_semaphore() {
@@ -361,14 +438,14 @@ Handle<Semaphore> VulkanDevice::create_semaphore() {
 
 void VulkanDevice::destroy_semaphore(Handle<Semaphore> semaphore) {
     VulkanSemaphore* vk_sem = get_resource<VulkanSemaphore>(
-        *reinterpret_cast<Handle<Semaphore>*>(&semaphore));
+        *reinterpret_cast<Handle<VulkanSemaphore>*>(&semaphore));
     
     if (!vk_sem) {
         return;
     }
     
     vkDestroySemaphore(device, vk_sem->semaphore, nullptr);
-    free_resource<VulkanSemaphore>(*reinterpret_cast<Handle<Semaphore>*>(&semaphore));
+    free_resource<VulkanSemaphore>(*reinterpret_cast<Handle<VulkanSemaphore>*>(&semaphore));
 }
 
 // ============================================================================

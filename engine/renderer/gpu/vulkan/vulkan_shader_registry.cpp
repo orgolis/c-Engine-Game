@@ -9,7 +9,8 @@
 #include <fstream>
 #include <sstream>
 #include <glslang/Public/ShaderLang.h>
-#include <SPIRV/GlslangToSpv.h>
+#include <glslang/Public/ResourceLimits.h>
+#include <glslang/SPIRV/GlslangToSpv.h>
 
 namespace gws::renderer::gpu {
 
@@ -286,7 +287,7 @@ std::vector<uint32_t> VulkanShaderRegistry::compile_glsl_to_spirv(const std::str
     shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_5);
     
     // Compile
-    if (!shader.parse(&glslang::DefaultTBuiltInResource, 450, false, EShMsgDefault)) {
+    if (!shader.parse(GetDefaultResources(), 450, false, EShMsgDefault)) {
         std::string error = "Shader compilation failed:\n";
         error += shader.getInfoLog();
         error += "\n";

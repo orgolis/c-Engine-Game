@@ -169,6 +169,68 @@ struct Asset {
     std::string generator;
 };
 
+// Image source. Either inline (bufferView+mimeType, .glb-embedded) or external (uri).
+struct Image {
+    std::string name;
+    std::string uri;       // Empty if inline-embedded
+    std::string mimeType;  // "image/png", "image/jpeg" — when bufferView is set
+    int bufferView = -1;
+    int width  = 0;        // Filled by stb_image after decode (caller-side)
+    int height = 0;
+};
+
+// Sampler — glTF only carries filter/wrap modes, no image binding here.
+struct Sampler {
+    int magFilter = 9729;  // LINEAR
+    int minFilter = 9729;  // LINEAR
+    int wrapS     = 10497; // REPEAT
+    int wrapT     = 10497; // REPEAT
+};
+
+// Texture = (image, sampler) pair.
+struct Texture {
+    int source  = -1; // index into Model::images
+    int sampler = -1; // index into Model::samplers (-1 = default)
+    std::string name;
+};
+
+struct TextureInfo {
+    int index   = -1; // index into Model::textures
+    int texCoord = 0; // TEXCOORD_<n> attribute selector
+};
+
+struct NormalTextureInfo {
+    int index   = -1;
+    int texCoord = 0;
+    float scale = 1.0f;
+};
+
+struct OcclusionTextureInfo {
+    int index   = -1;
+    int texCoord = 0;
+    float strength = 1.0f;
+};
+
+struct PbrMetallicRoughness {
+    std::vector<float> baseColorFactor = {1.0f, 1.0f, 1.0f, 1.0f}; // RGBA
+    TextureInfo baseColorTexture;
+    float metallicFactor  = 1.0f;
+    float roughnessFactor = 1.0f;
+    TextureInfo metallicRoughnessTexture;
+};
+
+struct Material {
+    std::string name;
+    PbrMetallicRoughness pbrMetallicRoughness;
+    NormalTextureInfo normalTexture;
+    OcclusionTextureInfo occlusionTexture;
+    TextureInfo emissiveTexture;
+    std::vector<float> emissiveFactor = {0.0f, 0.0f, 0.0f};
+    std::string alphaMode = "OPAQUE";
+    float alphaCutoff = 0.5f;
+    bool doubleSided = false;
+};
+
 struct Model {
     Asset asset;
     std::vector<Accessor> accessors;
@@ -177,6 +239,10 @@ struct Model {
     std::vector<Mesh> meshes;
     std::vector<Node> nodes;
     std::vector<Scene> scenes;
+    std::vector<Image> images;
+    std::vector<Sampler> samplers;
+    std::vector<Texture> textures;
+    std::vector<Material> materials;
     int scene = 0;
     std::string path;
 
@@ -649,6 +715,113 @@ private:
 
         if (json_data.Has("scene")) {
             model->scene = json_data.GetNumberAsInt("scene", 0);
+        }
+
+        // Parse images
+        if (json_data.Has("images")) {
+            const auto& imgs_json = json_data.GetArrayAsArray("images");
+            for (const auto& img_json : imgs_json) {
+                Image image;
+                image.name       = img_json.GetStringAsString("name", "");
+                image.uri        = img_json.GetStringAsString("uri", "");
+                image.mimeType   = img_json.GetStringAsString("mimeType", "");
+                image.bufferView = img_json.GetNumberAsInt("bufferView", -1);
+                model->images.push_back(image);
+            }
+        }
+
+        // Parse samplers
+        if (json_data.Has("samplers")) {
+            const auto& samps_json = json_data.GetArrayAsArray("samplers");
+            for (const auto& s_json : samps_json) {
+                Sampler s;
+                s.magFilter = s_json.GetNumberAsInt("magFilter", 9729);
+                s.minFilter = s_json.GetNumberAsInt("minFilter", 9729);
+                s.wrapS     = s_json.GetNumberAsInt("wrapS", 10497);
+                s.wrapT     = s_json.GetNumberAsInt("wrapT", 10497);
+                model->samplers.push_back(s);
+            }
+        }
+
+        // Parse textures (image + sampler index pairs)
+        if (json_data.Has("textures")) {
+            const auto& tex_json = json_data.GetArrayAsArray("textures");
+            for (const auto& t_json : tex_json) {
+                Texture t;
+                t.source  = t_json.GetNumberAsInt("source", -1);
+                t.sampler = t_json.GetNumberAsInt("sampler", -1);
+                t.name    = t_json.GetStringAsString("name", "");
+                model->textures.push_back(t);
+            }
+        }
+
+        // Parse materials
+        if (json_data.Has("materials")) {
+            const auto& mats_json = json_data.GetArrayAsArray("materials");
+            for (const auto& m_json : mats_json) {
+                Material mat;
+                mat.name        = m_json.GetStringAsString("name", "");
+                mat.alphaMode   = m_json.GetStringAsString("alphaMode", "OPAQUE");
+                mat.alphaCutoff = static_cast<float>(m_json.GetNumberAsDouble("alphaCutoff", 0.5));
+
+                // doubleSided
+                if (m_json.Has("doubleSided")) {
+                    const auto& v = m_json.Get("doubleSided");
+                    if (v.type == json::BOOLEAN_TYPE) mat.doubleSided = v.bool_value;
+                }
+
+                // pbrMetallicRoughness
+                if (m_json.Has("pbrMetallicRoughness")) {
+                    const auto& pbr = m_json.Get("pbrMetallicRoughness");
+                    auto& out = mat.pbrMetallicRoughness;
+
+                    if (pbr.Has("baseColorFactor")) {
+                        const auto& f = pbr.GetArrayAsArray("baseColorFactor");
+                        out.baseColorFactor.clear();
+                        for (const auto& v : f) out.baseColorFactor.push_back(static_cast<float>(v.number_value));
+                        while (out.baseColorFactor.size() < 4) out.baseColorFactor.push_back(1.0f);
+                    }
+                    out.metallicFactor  = static_cast<float>(pbr.GetNumberAsDouble("metallicFactor",  1.0));
+                    out.roughnessFactor = static_cast<float>(pbr.GetNumberAsDouble("roughnessFactor", 1.0));
+
+                    if (pbr.Has("baseColorTexture")) {
+                        const auto& t = pbr.Get("baseColorTexture");
+                        out.baseColorTexture.index    = t.GetNumberAsInt("index", -1);
+                        out.baseColorTexture.texCoord = t.GetNumberAsInt("texCoord", 0);
+                    }
+                    if (pbr.Has("metallicRoughnessTexture")) {
+                        const auto& t = pbr.Get("metallicRoughnessTexture");
+                        out.metallicRoughnessTexture.index    = t.GetNumberAsInt("index", -1);
+                        out.metallicRoughnessTexture.texCoord = t.GetNumberAsInt("texCoord", 0);
+                    }
+                }
+
+                if (m_json.Has("normalTexture")) {
+                    const auto& t = m_json.Get("normalTexture");
+                    mat.normalTexture.index    = t.GetNumberAsInt("index", -1);
+                    mat.normalTexture.texCoord = t.GetNumberAsInt("texCoord", 0);
+                    mat.normalTexture.scale    = static_cast<float>(t.GetNumberAsDouble("scale", 1.0));
+                }
+                if (m_json.Has("occlusionTexture")) {
+                    const auto& t = m_json.Get("occlusionTexture");
+                    mat.occlusionTexture.index    = t.GetNumberAsInt("index", -1);
+                    mat.occlusionTexture.texCoord = t.GetNumberAsInt("texCoord", 0);
+                    mat.occlusionTexture.strength = static_cast<float>(t.GetNumberAsDouble("strength", 1.0));
+                }
+                if (m_json.Has("emissiveTexture")) {
+                    const auto& t = m_json.Get("emissiveTexture");
+                    mat.emissiveTexture.index    = t.GetNumberAsInt("index", -1);
+                    mat.emissiveTexture.texCoord = t.GetNumberAsInt("texCoord", 0);
+                }
+                if (m_json.Has("emissiveFactor")) {
+                    const auto& f = m_json.GetArrayAsArray("emissiveFactor");
+                    mat.emissiveFactor.clear();
+                    for (const auto& v : f) mat.emissiveFactor.push_back(static_cast<float>(v.number_value));
+                    while (mat.emissiveFactor.size() < 3) mat.emissiveFactor.push_back(0.0f);
+                }
+
+                model->materials.push_back(mat);
+            }
         }
 
         return true;

@@ -113,9 +113,14 @@ public:
     void set_input_image(VkImageView image_view);
     
     /**
-     * @brief Get output image (after post-processing)
+     * @brief Get output image view (after post-processing) — for sampling.
      */
     VkImageView get_output_image() const { return output_view_; }
+
+    /**
+     * @brief Get the underlying output VkImage — for blits / transfers.
+     */
+    VkImage get_output_vk_image() const { return output_image_; }
     
     /**
      * @brief Execute bloom effect
@@ -175,7 +180,13 @@ public:
 private:
     VulkanDevice* device_ = nullptr;
     PostProcessingConfig config_;
-    
+
+    // Shader registry (owned). Compiles GLSL to SPIR-V at runtime.
+    std::unique_ptr<class VulkanShaderRegistry> shader_registry_;
+
+    // Sampler used for reading the input HDR texture.
+    VkSampler input_sampler_ = VK_NULL_HANDLE;
+
     // Input/output images
     VkImageView input_view_ = VK_NULL_HANDLE;
     VkImage output_image_ = VK_NULL_HANDLE;
@@ -202,9 +213,38 @@ private:
     
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
     VkFramebuffer framebuffer_ = VK_NULL_HANDLE;
-    
+
     std::vector<VkPipeline> pipelines_;
     std::vector<VkPipelineLayout> pipeline_layouts_;
+
+    // TAA: blends current input with `taa_history_` (initially zero) and
+    // writes to `taa_output_image_`. This is a *temporal smear*, not real
+    // TAA — without motion vectors there's no reprojection, so moving
+    // pixels just ghost. The pass exists to validate the GPU machinery
+    // and slots into the post-process chain so a future motion-vector
+    // implementation can swap the shader without re-plumbing.
+    VkRenderPass     taa_render_pass_         = VK_NULL_HANDLE;
+    VkFramebuffer    taa_framebuffer_         = VK_NULL_HANDLE;
+    VkDescriptorSetLayout taa_descriptor_layout_ = VK_NULL_HANDLE;
+    VkDescriptorPool taa_descriptor_pool_     = VK_NULL_HANDLE;
+    VkDescriptorSet  taa_descriptor_set_      = VK_NULL_HANDLE;
+    VkPipelineLayout taa_pipeline_layout_     = VK_NULL_HANDLE;
+    VkPipeline       taa_pipeline_            = VK_NULL_HANDLE;
+    VkImage          taa_output_image_        = VK_NULL_HANDLE;
+    VkImageView      taa_output_view_         = VK_NULL_HANDLE;
+    VkDeviceMemory   taa_output_memory_       = VK_NULL_HANDLE;
+
+    // Bloom: bright-pass + Gaussian blur into bloom_mips_[0] (1/2 res).
+    // Tone mapping samples this with linear filtering for automatic upsample.
+    VkRenderPass bloom_render_pass_ = VK_NULL_HANDLE;
+    VkFramebuffer bloom_framebuffer_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout bloom_descriptor_layout_ = VK_NULL_HANDLE;
+    VkDescriptorPool bloom_descriptor_pool_ = VK_NULL_HANDLE;
+    VkDescriptorSet bloom_descriptor_set_ = VK_NULL_HANDLE;
+    VkPipelineLayout bloom_pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline bloom_pipeline_ = VK_NULL_HANDLE;
+    uint32_t bloom_width_ = 0;
+    uint32_t bloom_height_ = 0;
     
     // Effect state
     bool bloom_enabled_ = true;
@@ -220,6 +260,23 @@ private:
     void create_taa_resources();
     void create_descriptor_sets();
     void create_pipelines();
+    void create_tonemap_render_pass();
+    void create_tonemap_framebuffer();
+    void create_tonemap_sampler();
+    void create_tonemap_pipeline();
+    void update_input_descriptor();
+    void create_bloom_render_pass();
+    void create_bloom_framebuffer();
+    void create_bloom_descriptor();
+    void create_bloom_pipeline();
+    void update_bloom_descriptor();
+    void create_taa_output_image();
+    void create_taa_render_pass();
+    void create_taa_framebuffer();
+    void create_taa_descriptor();
+    void create_taa_pipeline();
+    void update_taa_descriptor();
+    void prime_taa_history();
     void cleanup();
 };
 
