@@ -45,6 +45,9 @@ target_sources(renderer PRIVATE
     gpu/vulkan/imgui_vulkan.h
     gpu/vulkan/ui_manager.h
     gpu/vulkan/debug_panels.h
+    gpu/vulkan/scene_hierarchy_panel.h
+    gpu/vulkan/reflection.h
+    gpu/vulkan/inspector_panel.h
 )
 
 # Source files - Vulkan Implementation
@@ -77,6 +80,8 @@ target_sources(renderer PRIVATE
     gpu/vulkan/imgui_vulkan.cpp
     gpu/vulkan/ui_manager.cpp
     gpu/vulkan/debug_panels.cpp
+    gpu/vulkan/scene_hierarchy_panel.cpp
+    gpu/vulkan/inspector_panel.cpp
 )
 
 # Header files - Core Graphics Abstraction
