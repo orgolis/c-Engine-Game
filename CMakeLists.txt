@@ -69,6 +69,35 @@ add_subdirectory(third_party/glad)
 # tinygltf (glTF 2.0 loader)
 add_subdirectory(third_party/tinygltf)
 
+# stb_image (single-header image loader, PNG/JPG/BMP/etc.)
+add_subdirectory(third_party/stb)
+
+# meshoptimizer (LOD simplification + cache optimization)
+add_subdirectory(third_party/meshoptimizer)
+
+# Dear ImGui (immediate-mode GUI library)
+add_library(imgui STATIC)
+target_sources(imgui PRIVATE
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_demo.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/backends/imgui_impl_vulkan.cpp
+    third_party/imgui/backends/imgui_impl_glfw.cpp
+)
+target_include_directories(imgui PUBLIC
+    third_party/imgui
+    third_party/imgui/backends
+)
+target_link_libraries(imgui PUBLIC
+    Vulkan::Vulkan
+    glfw
+)
+set_target_properties(imgui PROPERTIES
+    CXX_STANDARD 20
+)
+
 # Catch2 for testing
 if(BUILD_TESTS)
     add_subdirectory(third_party/catch2)

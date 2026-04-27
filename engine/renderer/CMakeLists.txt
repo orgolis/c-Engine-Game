@@ -36,6 +36,15 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_shadow_map.h
     gpu/vulkan/vulkan_post_processing.h
     gpu/vulkan/vulkan_shader_registry.h
+    gpu/vulkan/vulkan_render_graph.h
+    gpu/vulkan/vulkan_texture.h
+    gpu/vulkan/vulkan_scene_mesh.h
+    gpu/vulkan/vulkan_scene_material.h
+    gpu/vulkan/vulkan_gltf_loader.h
+    gpu/vulkan/culling.h
+    gpu/vulkan/imgui_vulkan.h
+    gpu/vulkan/ui_manager.h
+    gpu/vulkan/debug_panels.h
 )
 
 # Source files - Vulkan Implementation
@@ -59,6 +68,15 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_shadow_map.cpp
     gpu/vulkan/vulkan_post_processing.cpp
     gpu/vulkan/vulkan_shader_registry.cpp
+    gpu/vulkan/vulkan_render_graph.cpp
+    gpu/vulkan/vulkan_texture.cpp
+    gpu/vulkan/vulkan_scene_mesh.cpp
+    gpu/vulkan/vulkan_scene_material.cpp
+    gpu/vulkan/vulkan_gltf_loader.cpp
+    gpu/vulkan/culling.cpp
+    gpu/vulkan/imgui_vulkan.cpp
+    gpu/vulkan/ui_manager.cpp
+    gpu/vulkan/debug_panels.cpp
 )
 
 # Header files - Core Graphics Abstraction
@@ -139,17 +157,31 @@ target_sources(renderer PRIVATE
 target_sources(renderer PRIVATE
     src/renderer.cpp
     src/mesh.cpp
-    src/shader.cpp
 )
+# shader.cpp uses glad directly; only compile it for the OpenGL backend.
+if(GWS_GRAPHICS_API STREQUAL "opengl")
+    target_sources(renderer PRIVATE src/shader.cpp)
+endif()
 
 # Source files - Textures, Materials, Framebuffers
 target_sources(renderer PRIVATE
-    src/texture.cpp
-    src/material.cpp
     src/pbr.cpp
-    src/framebuffer.cpp
-    src/graphics_utils.cpp
 )
+# Legacy material.cpp depends on the OpenGL ShaderProgram API and has
+# pre-existing build bugs. Vulkan backend uses gpu/vulkan/material.* instead.
+if(GWS_GRAPHICS_API STREQUAL "opengl")
+    target_sources(renderer PRIVATE src/material.cpp)
+endif()
+# texture.cpp / framebuffer.cpp / graphics_utils.cpp belong to the legacy
+# OpenGL renderer (they pull in stb_image and OpenGL types). Compile only
+# when targeting that backend; the Vulkan path uses gpu/vulkan/image.* etc.
+if(GWS_GRAPHICS_API STREQUAL "opengl")
+    target_sources(renderer PRIVATE
+        src/texture.cpp
+        src/framebuffer.cpp
+        src/graphics_utils.cpp
+    )
+endif()
 
 # Source files - Geometry System
 target_sources(renderer PRIVATE
@@ -157,19 +189,26 @@ target_sources(renderer PRIVATE
 )
 
 # Source files - Lighting System
-target_sources(renderer PRIVATE
-    src/lighting.cpp
-)
+# Legacy lighting renderer references the OpenGL Framebuffer API and has
+# pre-existing build issues. Compile only on the OpenGL backend; the Vulkan
+# backend uses gpu/vulkan/vulkan_lighting_pass instead.
+if(GWS_GRAPHICS_API STREQUAL "opengl")
+    target_sources(renderer PRIVATE src/lighting.cpp)
+endif()
 
 # Source files - Deferred Rendering System
-target_sources(renderer PRIVATE
-    src/deferred_renderer.cpp
-)
+# Legacy OpenGL deferred renderer; the Vulkan backend has its own under
+# gpu/vulkan/. Compile only when targeting the legacy OpenGL path.
+if(GWS_GRAPHICS_API STREQUAL "opengl")
+    target_sources(renderer PRIVATE src/deferred_renderer.cpp)
+endif()
 
 # Source files - Post-Processing System
-target_sources(renderer PRIVATE
-    src/post_processing.cpp
-)
+# Legacy post-processing implementation has pre-existing legacy-API issues.
+# Vulkan backend uses gpu/vulkan/vulkan_post_processing instead.
+if(GWS_GRAPHICS_API STREQUAL "opengl")
+    target_sources(renderer PRIVATE src/post_processing.cpp)
+endif()
 
 # Source files - Frustum Culling
 target_sources(renderer PRIVATE
@@ -177,9 +216,12 @@ target_sources(renderer PRIVATE
 )
 
 # Source files - Batching System
-target_sources(renderer PRIVATE
-    src/batch.cpp
-)
+# Legacy CPU-side batching uses the old Material API and has pre-existing
+# include/argument-count issues. Vulkan backend will gain its own batcher
+# in Phase 5; for now compile only on the legacy OpenGL path.
+if(GWS_GRAPHICS_API STREQUAL "opengl")
+    target_sources(renderer PRIVATE src/batch.cpp)
+endif()
 
 # Source files - Performance Profiling
 target_sources(renderer PRIVATE
@@ -202,16 +244,21 @@ target_sources(renderer PRIVATE
     src/skeletal_mesh_component.cpp
 )
 
-# Source files - OpenGL implementation
-target_sources(renderer PRIVATE
-    src/opengl/opengl_device.cpp
-)
+# Source files - OpenGL implementation (only when targeting OpenGL).
+if(GWS_GRAPHICS_API STREQUAL "opengl")
+    target_sources(renderer PRIVATE src/opengl/opengl_device.cpp)
+endif()
 
 # ============================================================================
 # Graphics API Selection (Vulkan or OpenGL)
 # ============================================================================
 
-option(GWS_GRAPHICS_API "Target graphics API: vulkan or opengl" "vulkan")
+set(GWS_GRAPHICS_API "vulkan" CACHE STRING "Target graphics API: vulkan or opengl")
+set_property(CACHE GWS_GRAPHICS_API PROPERTY STRINGS vulkan opengl)
+
+# GLM_ENABLE_EXPERIMENTAL: legacy renderer code (lighting.cpp et al.) pulls in
+# glm/gtx/quaternion.hpp which transitively includes experimental extensions.
+target_compile_definitions(renderer PUBLIC GLM_ENABLE_EXPERIMENTAL)
 
 message(STATUS "GameWorldshaper Graphics API: ${GWS_GRAPHICS_API}")
 
@@ -231,6 +278,12 @@ if(GWS_GRAPHICS_API STREQUAL "vulkan")
         Vulkan::Vulkan
         vma
         glslang_wrapper
+    )
+    target_link_libraries(renderer PRIVATE
+        tinygltf
+        stb_image
+        meshoptimizer
+        imgui
     )
     
     # Vulkan-specific compile definitions

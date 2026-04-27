@@ -14,6 +14,7 @@ add_executable(gws_tests
     test_ability_integration.cpp
     test_network_integration.cpp
     deferred_rendering_test.cpp
+    imgui_integration_test.cpp
     # test_physics_integration.cpp  # TODO: Fix circular dependency with scene module
     # test_animation_integration.cpp  # TODO: Fix circular dependency with renderer
 )
@@ -27,6 +28,8 @@ target_link_libraries(gws_tests PRIVATE
     character
     ability
     network
+    renderer
+    imgui
     Catch2::Catch2WithMain
 )
 
@@ -77,5 +80,83 @@ target_link_libraries(vulkan_window_test PRIVATE
 )
 
 target_include_directories(vulkan_window_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine
+)
+
+# ============================================================================
+# Deferred Smoke Test - Phase 4 Week 3 live-GPU integration
+# ============================================================================
+# Constructs G-Buffer + LightingPass + RenderGraph against a real
+# VulkanDevice and submits a recorded command buffer to the graphics queue.
+add_executable(deferred_smoke_test
+    deferred_smoke_test.cpp
+)
+
+target_compile_features(deferred_smoke_test PRIVATE cxx_std_20)
+
+target_link_libraries(deferred_smoke_test PRIVATE
+    renderer
+    Vulkan::Vulkan
+)
+
+target_include_directories(deferred_smoke_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine
+)
+
+# ============================================================================
+# Deferred Scene Test - Phase 5 Week 1 draw-list / Material / Mesh / glTF
+# ============================================================================
+add_executable(deferred_scene_test
+    deferred_scene_test.cpp
+)
+
+target_compile_features(deferred_scene_test PRIVATE cxx_std_20)
+
+target_link_libraries(deferred_scene_test PRIVATE
+    renderer
+    Vulkan::Vulkan
+)
+
+target_include_directories(deferred_scene_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine
+)
+
+# ============================================================================
+# Engine Window Test - Phase 4 Week 4 surface + swapchain
+# ============================================================================
+# Validates VulkanDevice::attach_surface + create_window_swapchain against
+# a GLFW-created VkSurfaceKHR.
+add_executable(engine_window_test
+    engine_window_test.cpp
+)
+
+target_compile_features(engine_window_test PRIVATE cxx_std_20)
+
+target_link_libraries(engine_window_test PRIVATE
+    renderer
+    Vulkan::Vulkan
+    glfw
+)
+
+target_include_directories(engine_window_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine
+)
+
+# ============================================================================
+# Culling Test - Phase 5 Week 3 frustum culling
+# ============================================================================
+# Validates frustum extraction, AABB visibility tests, and draw-list filtering.
+add_executable(culling_test
+    culling_test.cpp
+)
+
+target_compile_features(culling_test PRIVATE cxx_std_20)
+
+target_link_libraries(culling_test PRIVATE
+    renderer
+    Vulkan::Vulkan
+)
+
+target_include_directories(culling_test PRIVATE
     ${CMAKE_SOURCE_DIR}/engine
 )
