@@ -63,18 +63,22 @@ private:
 
     // Compute pipeline for HZB mipmap building
     VkPipeline hzb_build_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline hzb_test_pipeline_ = VK_NULL_HANDLE;
     VkPipelineLayout hzb_build_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout hzb_test_layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout hzb_descriptor_layout_ = VK_NULL_HANDLE;
 
     // Indirect draw buffer (GPU-generated)
     std::unique_ptr<class VulkanBuffer> indirect_buffer_;
     std::unique_ptr<class VulkanBuffer> visible_count_buffer_;  // GPU counter
+    std::unique_ptr<class VulkanBuffer> aabb_buffer_;           // AABB bounds for culling
 
     // Helper functions
     void create_hzb_texture(VkExtent2D initial_size);
-    void create_compute_pipeline();
+    void create_compute_pipelines();
     void create_descriptor_layout();
-    void build_hzb_mipmap_level(VkCommandBuffer cmd, uint32_t src_level, uint32_t dst_level);
+    void build_hzb_mipmap_level(VkCommandBuffer cmd, uint32_t src_level, uint32_t dst_level,
+                                VkImage depth_texture, VkExtent2D src_size, VkExtent2D dst_size);
 };
 
 }  // namespace gws

@@ -1,18 +1,22 @@
 #version 450
 
-// Hierarchical Z-Buffer (HZB) Compute Shader
-// Builds mipmap chain from input depth texture for occlusion culling
-// Each level stores maximum depth to be conservative
+// Hierarchical Z-Buffer (HZB) Build Shader
+// Builds mipmap chain from depth texture for GPU occlusion culling
+// Each level stores maximum depth for conservative visibility testing
 
 layout (local_size_x = 16, local_size_y = 16) in;
 
+// Input: Depth texture from previous level (or initial G-Buffer depth)
 layout(set = 0, binding = 0) uniform sampler2D input_depth;
-layout(set = 0, binding = 1, rgba32f) uniform image2D output_hzb;
+
+// Output: Current mipmap level of HZB
+layout(set = 0, binding = 1, r32f) uniform image2D output_hzb;
 
 layout(push_constant) uniform HZBConstants {
-    ivec2 src_size;    // Resolution of source (previous level or initial depth)
-    ivec2 dst_size;    // Resolution of destination (current level)
-    uint mip_level;    // Current mip level being generated
+    ivec2 src_size;       // Resolution of source texture
+    ivec2 dst_size;       // Resolution of destination (output)
+    uint mip_level;       // Current mip level (0 = initial)
+    uint pad;
 } pc;
 
 void main() {
@@ -23,23 +27,25 @@ void main() {
         return;
     }
     
-    // Sample 4 texels from previous level (2x2 neighborhood)
+    // Compute source coordinates (2x2 neighborhood from previous level)
     ivec2 src_coord = dst_coord * 2;
     
-    // Sample from texture (converts to normalized coordinates)
+    // Compute normalized texture coordinates
     vec2 texel_size = 1.0 / vec2(pc.src_size);
     vec2 uv_base = (vec2(src_coord) + 0.5) * texel_size;
     
-    // Sample the 4 corners of 2x2 neighborhood
-    float d0 = texture(input_depth, uv_base).r;
-    float d1 = texture(input_depth, uv_base + vec2(texel_size.x, 0.0)).r;
-    float d2 = texture(input_depth, uv_base + vec2(0.0, texel_size.y)).r;
-    float d3 = texture(input_depth, uv_base + texel_size).r;
+    // Sample 2x2 neighborhood from source
+    // In reversed depth (where 0 = far, 1 = near), take maximum
+    // This is conservative: if ANY texel in 2x2 is visible, result is visible
     
-    // Conservative: take maximum depth (farthest = largest Z in [0,1])
-    float max_depth = max(max(max(d0, d1), d2), d3);
+    float d00 = texture(input_depth, uv_base).r;
+    float d10 = texture(input_depth, uv_base + vec2(texel_size.x, 0.0)).r;
+    float d01 = texture(input_depth, uv_base + vec2(0.0, texel_size.y)).r;
+    float d11 = texture(input_depth, uv_base + texel_size).r;
     
-    // Store result in output mip level
-    // For HZB, we typically store depth in each channel for multiple uses
-    imageStore(output_hzb, dst_coord, vec4(max_depth, max_depth, max_depth, 1.0));
+    // Take maximum depth (furthest = most conservative for occlusion)
+    float max_depth = max(max(max(d00, d10), d01), d11);
+    
+    // Store in output HZB level
+    imageStore(output_hzb, dst_coord, vec4(max_depth));
 }

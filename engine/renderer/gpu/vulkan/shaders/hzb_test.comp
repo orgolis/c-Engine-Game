@@ -1,0 +1,126 @@
+#version 450
+
+// HZB Occlusion Test Shader
+// Tests mesh AABBs for visibility against HZB pyramid
+// Outputs filtered indirect draw buffer for visible items only
+
+layout (local_size_x = 256) in;
+
+// Input: Array of mesh AABBs (bounds in world space)
+layout(set = 0, binding = 0, std430) readonly buffer AABBBuffer {
+    vec4 aabb_bounds[];  // (min_xyz, max_x | min_y | min_z packed)
+};
+
+// Input: Frustum culling results (which meshes passed frustum test)
+layout(set = 0, binding = 1, std430) readonly buffer FrustumResultBuffer {
+    uint frustum_visible[];  // Bitfield or bool per mesh
+};
+
+// Input: Original indirect draw commands
+layout(set = 0, binding = 2, std430) readonly buffer IndirectDrawBuffer {
+    uint indirect_draws[];  // VkDrawIndirectCommand entries
+};
+
+// Input: HZB mipmap pyramid
+layout(set = 0, binding = 3) uniform sampler2D hzb_pyramid;
+
+// Output: Filtered indirect draw buffer (visible items only)
+layout(set = 0, binding = 4, std430) writeonly buffer VisibleDrawBuffer {
+    uint visible_draws[];
+};
+
+// Output: Counter of visible items (for vkCmdDrawIndirectCount)
+layout(set = 0, binding = 5, std430) coherent buffer CounterBuffer {
+    uint visible_count;
+};
+
+layout(push_constant) uniform OcclusionTestConstants {
+    mat4 view_proj;           // View-projection matrix
+    uint max_items;           // Number of items to test
+    uint mip_start;           // Starting mip level for HZB test
+    uint pad;
+} pc;
+
+// Test AABB visibility against HZB
+// Returns true if any corner of AABB is potentially visible
+bool test_aabb_visibility(vec3 aabb_min, vec3 aabb_max) {
+    // Project AABB corners to screen space
+    // Test 8 corners, if any is visible, the mesh is visible
+    
+    vec3 corners[8] = vec3[](
+        vec3(aabb_min.x, aabb_min.y, aabb_min.z),
+        vec3(aabb_max.x, aabb_min.y, aabb_min.z),
+        vec3(aabb_min.x, aabb_max.y, aabb_min.z),
+        vec3(aabb_max.x, aabb_max.y, aabb_min.z),
+        vec3(aabb_min.x, aabb_min.y, aabb_max.z),
+        vec3(aabb_max.x, aabb_min.y, aabb_max.z),
+        vec3(aabb_min.x, aabb_max.y, aabb_max.z),
+        vec3(aabb_max.x, aabb_max.y, aabb_max.z)
+    );
+    
+    // Test each corner
+    for (int i = 0; i < 8; i++) {
+        vec4 clip_pos = pc.view_proj * vec4(corners[i], 1.0);
+        
+        // Perspective divide
+        vec3 ndc = clip_pos.xyz / clip_pos.w;
+        
+        // Convert to screen coordinates [0,1]
+        vec2 screen_uv = ndc.xy * 0.5 + 0.5;
+        
+        // Out of frustum
+        if (screen_uv.x < 0.0 || screen_uv.x > 1.0 ||
+            screen_uv.y < 0.0 || screen_uv.y > 1.0) {
+            continue;
+        }
+        
+        // Sample HZB at this position
+        // Depth value in clip space (0 = near, 1 = far in reverse depth)
+        float ndc_depth = ndc.z;  // In [-1, 1] for reverse depth
+        
+        // Convert to [0, 1] for HZB (depends on depth convention)
+        float hzb_depth = (ndc_depth + 1.0) * 0.5;  // Adjust based on engine convention
+        
+        // Sample HZB pyramid (typically at mip_start for coarse test)
+        float pyramid_depth = texture(hzb_pyramid, screen_uv).r;
+        
+        // If mesh depth is in front of HZB, it's visible
+        if (ndc_depth < pyramid_depth) {
+            return true;  // Corner is visible
+        }
+    }
+    
+    return false;  // All corners occluded
+}
+
+void main() {
+    uint mesh_index = gl_GlobalInvocationID.x;
+    
+    if (mesh_index >= pc.max_items) {
+        return;
+    }
+    
+    // Check if mesh passed frustum culling
+    if (frustum_visible[mesh_index] == 0) {
+        return;  // Already culled by frustum
+    }
+    
+    // Extract AABB bounds
+    vec3 aabb_min = aabb_bounds[mesh_index * 2].xyz;
+    vec3 aabb_max = aabb_bounds[mesh_index * 2 + 1].xyz;
+    
+    // Test against HZB
+    if (test_aabb_visibility(aabb_min, aabb_max)) {
+        // Visible: add to indirect draw buffer
+        uint write_index = atomicAdd(visible_count, 1);
+        
+        if (write_index < 4096) {  // Safety check
+            // Copy indirect draw command to output buffer
+            // Assuming VkDrawIndirectCommand layout: vertexCount, instanceCount, firstVertex, firstInstance
+            visible_draws[write_index * 4 + 0] = indirect_draws[mesh_index * 4 + 0];  // vertexCount
+            visible_draws[write_index * 4 + 1] = indirect_draws[mesh_index * 4 + 1];  // instanceCount
+            visible_draws[write_index * 4 + 2] = indirect_draws[mesh_index * 4 + 2];  // firstVertex
+            visible_draws[write_index * 4 + 3] = indirect_draws[mesh_index * 4 + 3];  // firstInstance
+        }
+    }
+}
