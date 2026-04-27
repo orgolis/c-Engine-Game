@@ -48,6 +48,9 @@ target_sources(renderer PRIVATE
     gpu/vulkan/scene_hierarchy_panel.h
     gpu/vulkan/reflection.h
     gpu/vulkan/inspector_panel.h
+    gpu/vulkan/profiler.h
+    gpu/vulkan/profiler_panels.h
+    gpu/vulkan/debug_visualization.h
 )
 
 # Source files - Vulkan Implementation
@@ -82,6 +85,9 @@ target_sources(renderer PRIVATE
     gpu/vulkan/debug_panels.cpp
     gpu/vulkan/scene_hierarchy_panel.cpp
     gpu/vulkan/inspector_panel.cpp
+    gpu/vulkan/profiler.cpp
+    gpu/vulkan/profiler_panels.cpp
+    gpu/vulkan/debug_visualization.cpp
 )
 
 # Header files - Core Graphics Abstraction
