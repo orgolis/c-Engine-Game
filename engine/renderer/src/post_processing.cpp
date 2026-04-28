@@ -13,8 +13,8 @@ namespace schizo::renderer {
 // ============================================================================
 
 std::unique_ptr<PostProcessor> PostProcessor::Create(RenderDevice* device,
-                                                       uint32_t width,
-                                                       uint32_t height) {
+                                                        uint32_t width,
+                                                        uint32_t height) {
     return std::make_unique<PostProcessor>(device, width, height);
 }
 
@@ -102,7 +102,7 @@ void PostProcessor::CreateFramebuffers() {
         intermediate_textures_[i] = Texture::Create(device_, width_, height_,
                                                     TextureFormat::RGBA16F);
         intermediate_fbs_[i] = Framebuffer::Create(device_, width_, height_,
-                                                   TextureFormat::RGBA16F, TextureFormat::Depth24);
+                                                    TextureFormat::RGBA16F, TextureFormat::Depth24);
     }
 }
 
@@ -112,7 +112,7 @@ void PostProcessor::CreateBlitQuad() {
 }
 
 bool PostProcessor::AddEffect(std::unique_ptr<PostProcessingEffect> effect,
-                              PostProcessingEffectConfig* config) {
+                                PostProcessingEffectConfig* config) {
     if (!effect || !config) {
         return false;
     }

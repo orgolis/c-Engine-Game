@@ -19,6 +19,7 @@
 #include "renderer/gpu/vulkan/vulkan_post_processing.h"
 #include "renderer/gpu/vulkan/vulkan_render_graph.h"
 #include "renderer/gpu/vulkan/vulkan_shadow_map.h"
+#include "renderer/gpu/vulkan/gpu_profiler.h"
 
 #include <vulkan/vulkan.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -242,6 +243,23 @@ int main() {
                   << " geometry=" << stats.geometry_us
                   << " lighting=" << stats.lighting_us
                   << " post=" << stats.post_process_us << "\n";
+
+        // Feed resolved timings to the GPU profiler
+        graph->update_gpu_profiler();
+
+        // Verify profiler received the data
+        auto& profiler = engine::vulkan::GPUProfiler::instance();
+        if (auto* shadow_timing = profiler.get_pass_timing("Shadow")) {
+            std::cout << "[OK] GPU Profiler: Shadow pass = " << shadow_timing->duration_ms << " ms\n";
+        }
+        if (auto* geom_timing = profiler.get_pass_timing("Geometry")) {
+            std::cout << "[OK] GPU Profiler: Geometry pass = " << geom_timing->duration_ms << " ms\n";
+        }
+        if (auto* light_timing = profiler.get_pass_timing("Lighting")) {
+            std::cout << "[OK] GPU Profiler: Lighting pass = " << light_timing->duration_ms << " ms\n";
+        }
+        float total_time = profiler.get_total_gpu_time_ms();
+        std::cout << "[OK] GPU Profiler: Total GPU time = " << total_time << " ms\n";
     } else {
         std::cout << "[--] GPU timings unavailable on this device\n";
     }

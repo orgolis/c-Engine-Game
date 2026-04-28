@@ -203,6 +203,11 @@ public:
     /// or if no frame has run yet.
     bool resolve_timings();
 
+    /// Feed resolved GPU timings to the GPUProfiler for display.
+    /// Call this after resolve_timings() to push the resolved stage times
+    /// to the profiler. No-op if timestamps aren't supported.
+    void update_gpu_profiler();
+
     /// Resize all owned attachments. No-op if dimensions match.
     void resize(uint32_t width, uint32_t height);
 

@@ -12,6 +12,7 @@
 #include "vulkan_shadow_map.h"
 #include "vulkan_scene_mesh.h"
 #include "vulkan_scene_material.h"
+#include "gpu_profiler.h"
 #include "culling.h"
 
 #include <spdlog/spdlog.h>
@@ -250,6 +251,66 @@ bool VulkanRenderGraph::resolve_timings() {
     }
     return true;
 }
+
+void VulkanRenderGraph::update_gpu_profiler() {
+    if (!timestamps_supported_ || stats_.frame_index == 0) {
+        return;
+    }
+
+    auto& profiler = engine::vulkan::GPUProfiler::instance();
+
+    // Record stage indices (not query pool indices) for each stage that ran.
+    // The profiler multiplies these by 2 to find the query pool locations.
+    // Shadow=0, Geometry=1, Lighting=2, PostProcess=3
+    if (stats_.shadow_passes_run > 0) {
+        profiler.record_pass_start("Shadow", static_cast<uint32_t>(RenderGraphStage::Shadow));
+        profiler.record_pass_end("Shadow", static_cast<uint32_t>(RenderGraphStage::Shadow));
+    }
+    if (stats_.geometry_passes_run > 0) {
+        profiler.record_pass_start("Geometry", static_cast<uint32_t>(RenderGraphStage::Geometry));
+        profiler.record_pass_end("Geometry", static_cast<uint32_t>(RenderGraphStage::Geometry));
+    }
+    if (stats_.lighting_passes_run > 0) {
+        profiler.record_pass_start("Lighting", static_cast<uint32_t>(RenderGraphStage::Lighting));
+        profiler.record_pass_end("Lighting", static_cast<uint32_t>(RenderGraphStage::Lighting));
+    }
+    if (stats_.post_process_passes_run > 0) {
+        profiler.record_pass_start("PostProcess", static_cast<uint32_t>(RenderGraphStage::PostProcess));
+        profiler.record_pass_end("PostProcess", static_cast<uint32_t>(RenderGraphStage::PostProcess));
+    }
+
+    // Convert resolved microseconds to GPU ticks and build timestamps array.
+    // The profiler accesses timestamps[2*idx] and timestamps[2*idx+1] for each stage index.
+    std::vector<uint64_t> timestamps;
+    timestamps.resize(kTimestampPoolSize, 0);
+
+    // For each stage that ran, compute the duration in GPU ticks and store as (begin, end).
+    // The profiler will compute delta_ticks = end - begin and convert to milliseconds.
+    if (stats_.shadow_passes_run > 0 && stats_.shadow_us > 0.0) {
+        uint64_t duration_ticks = static_cast<uint64_t>(stats_.shadow_us * 1000.0 / timestamp_period_ns_);
+        timestamps[2 * static_cast<uint32_t>(RenderGraphStage::Shadow)] = 0;
+        timestamps[2 * static_cast<uint32_t>(RenderGraphStage::Shadow) + 1] = duration_ticks;
+    }
+    if (stats_.geometry_passes_run > 0 && stats_.geometry_us > 0.0) {
+        uint64_t duration_ticks = static_cast<uint64_t>(stats_.geometry_us * 1000.0 / timestamp_period_ns_);
+        timestamps[2 * static_cast<uint32_t>(RenderGraphStage::Geometry)] = 0;
+        timestamps[2 * static_cast<uint32_t>(RenderGraphStage::Geometry) + 1] = duration_ticks;
+    }
+    if (stats_.lighting_passes_run > 0 && stats_.lighting_us > 0.0) {
+        uint64_t duration_ticks = static_cast<uint64_t>(stats_.lighting_us * 1000.0 / timestamp_period_ns_);
+        timestamps[2 * static_cast<uint32_t>(RenderGraphStage::Lighting)] = 0;
+        timestamps[2 * static_cast<uint32_t>(RenderGraphStage::Lighting) + 1] = duration_ticks;
+    }
+    if (stats_.post_process_passes_run > 0 && stats_.post_process_us > 0.0) {
+        uint64_t duration_ticks = static_cast<uint64_t>(stats_.post_process_us * 1000.0 / timestamp_period_ns_);
+        timestamps[2 * static_cast<uint32_t>(RenderGraphStage::PostProcess)] = 0;
+        timestamps[2 * static_cast<uint32_t>(RenderGraphStage::PostProcess) + 1] = duration_ticks;
+    }
+
+    profiler.update_from_query_results(timestamps);
+}
+
+
 
 void VulkanRenderGraph::execute_stage(VkCommandBuffer cmd,
                                       RenderGraphStage stage,
