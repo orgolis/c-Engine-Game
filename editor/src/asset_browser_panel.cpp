@@ -3,7 +3,6 @@
 #include "scene.h"
 #include "entity.h"
 #include <imgui.h>
-#include <glad/glad.h>
 #include <spdlog/spdlog.h>
 #include <filesystem>
 #include <algorithm>
@@ -11,6 +10,14 @@
 #include <vector>
 #include <cstdlib>
 #include <fstream>
+
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#  include <commdlg.h>
+#  include <shellapi.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -25,10 +32,10 @@ AssetBrowserPanel::AssetBrowserPanel() {
 
 AssetBrowserPanel::~AssetBrowserPanel() = default;
 
-void AssetBrowserPanel::Render(const std::shared_ptr<schizo::scene::Scene>& scene) {
+void AssetBrowserPanel::Render(const std::shared_ptr<schizo::scene::Scene>& scene, bool* open) {
     ImGuiWindowFlags flags = ImGuiWindowFlags_None;
-    
-    if (ImGui::Begin("Asset Browser##panel", nullptr, flags)) {
+
+    if (ImGui::Begin("Asset Browser##panel", open, flags)) {
         // Toolbar
         RenderToolbar();
         
@@ -379,77 +386,12 @@ void AssetBrowserPanel::LoadAssetMetadata(const std::string& path, AssetMetadata
     }
 }
 
-void AssetBrowserPanel::LoadTexturePreview(const std::string& path, AssetMetadata& metadata) {
-    try {
-        // Create a simple colored placeholder texture for now
-        // TODO: Implement actual image loading (stbi_load or similar)
-        
-        // Create a test texture (simple gradient)
-        GLuint texture = 0;
-        glGenTextures(1, &texture);
-        glBindTexture(0x0DE1, texture);  // GL_TEXTURE_2D
-        
-        // Generate simple preview texture data
-        const int size = 64;
-        std::vector<unsigned char> data(size * size * 4);
-        
-        // Create a simple pattern based on file extension
-        unsigned char r = 100, g = 120, b = 140;
-        if (path.find(".png") != std::string::npos) {
-            r = 80; g = 160; b = 240;  // Blue for PNG
-        } else if (path.find(".jpg") != std::string::npos || path.find(".jpeg") != std::string::npos) {
-            r = 220; g = 140; b = 80;  // Orange for JPG
-        } else if (path.find(".tga") != std::string::npos) {
-            r = 160; g = 100; b = 200; // Purple for TGA
-        }
-        
-        for (int i = 0; i < size * size * 4; i += 4) {
-            data[i]     = r;
-            data[i + 1] = g;
-            data[i + 2] = b;
-            data[i + 3] = 255;
-        }
-        
-        glTexImage2D(0x0DE1, 0, 0x1908, size, size, 0, 0x1908, 0x1401, data.data());  // GL_TEXTURE_2D, GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE
-        glTexParameteri(0x0DE1, 0x2801, 0x2601);  // GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR
-        glTexParameteri(0x0DE1, 0x2800, 0x2601);  // GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR
-        
-        metadata.preview_texture = texture;
-        metadata.preview_ready = true;
-        
-        spdlog::debug("[AssetBrowser] Generated texture preview: {}", path);
-    } catch (const std::exception& e) {
-        spdlog::warn("[AssetBrowser] Failed to load texture preview: {}", e.what());
-    }
+void AssetBrowserPanel::LoadTexturePreview(const std::string& /*path*/, AssetMetadata& /*metadata*/) {
+    // Texture previews require Vulkan image upload — not yet implemented.
 }
 
-void AssetBrowserPanel::GeneratePreviewTexture(AssetMetadata& asset) {
-    // Generate a placeholder preview texture
-    // This would be enhanced to generate proper mesh thumbnails
-    
-    GLuint texture;
-    glGenTextures(1, &texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    
-    // Create a simple gradient texture as placeholder
-    unsigned char data[16 * 16 * 4];
-    for (int i = 0; i < 16 * 16; ++i) {
-        data[i * 4 + 0] = (i % 16) * 16;  // Red
-        data[i * 4 + 1] = (i / 16) * 16;  // Green
-        data[i * 4 + 2] = 128;            // Blue
-        data[i * 4 + 3] = 255;            // Alpha
-    }
-    
-    // TODO: Implement preview texture generation with proper OpenGL calls
-    // For now: placeholder
-    /*
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    */
-    
-    asset.preview_texture = texture;
-    asset.preview_ready = true;
+void AssetBrowserPanel::GeneratePreviewTexture(AssetMetadata& /*asset*/) {
+    // Preview texture generation requires Vulkan — not yet implemented.
 }
 
 void AssetBrowserPanel::RenderImportDialog() {
@@ -496,43 +438,35 @@ void AssetBrowserPanel::RenderImportDialog() {
 }
 
 std::string AssetBrowserPanel::ShowOpenFileDialog() {
-    // Use Windows native file dialog (COMDLG32.DLL)
-    // For now, use a simpler system cmd approach
-    
-    // Create a temporary batch file to handle file selection
-    const char* batch_file = "temp_file_dialog.bat";
-    const char* result_file = "temp_file_result.txt";
-    
-    // Write batch file that opens file dialog and saves result
-    FILE* f = fopen(batch_file, "w");
-    if (!f) {
-        spdlog::warn("[AssetBrowser] Could not create batch file for file dialog");
-        return "";
+#ifdef _WIN32
+    // Native Win32 common-dialog open. Filter format is documented in
+    // GetOpenFileName: "Display\0Pattern\0Display\0Pattern\0\0".
+    char file_buf[MAX_PATH] = {0};
+    OPENFILENAMEA ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = nullptr;
+    ofn.lpstrFile   = file_buf;
+    ofn.nMaxFile    = sizeof(file_buf);
+    ofn.lpstrFilter =
+        "3D Models (*.obj;*.gltf;*.glb;*.fbx)\0*.obj;*.gltf;*.glb;*.fbx\0"
+        "Textures (*.png;*.jpg;*.jpeg;*.tga)\0*.png;*.jpg;*.jpeg;*.tga\0"
+        "All Files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrTitle   = "Import Asset";
+    ofn.Flags        = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+
+    if (GetOpenFileNameA(&ofn) == TRUE) {
+        return std::string(file_buf);
     }
-    
-    fprintf(f, "@echo off\n");
-    fprintf(f, "set \"filter=3D Models (*.obj;*.gltf;*.glb)|*.obj;*.gltf;*.glb|\"\n");
-    fprintf(f, "for /f \"delims=\" %%%%A in ('mshta \"about:<input id=FILE type=file><script>FILE.click();new ActiveXObject('Scripting.FileSystemObject').CreateTextFile('temp_file_result.txt').WriteLine(FILE.value);close();</script>\"') do set \"file=%%%%A\"\n");
-    fprintf(f, "if defined file echo %%%%file%%%%>%s\n", result_file);
-    fclose(f);
-    
-    // Execute batch file
-    int result = system(batch_file);
-    
-    std::string selected_path;
-    if (result == 0 && fs::exists(result_file)) {
-        std::ifstream result_stream(result_file);
-        std::getline(result_stream, selected_path);
-        result_stream.close();
-        
-        // Clean up result file
-        fs::remove(result_file);
+    DWORD err = CommDlgExtendedError();
+    if (err != 0) {
+        spdlog::warn("[AssetBrowser] GetOpenFileName failed (0x{:X})", err);
     }
-    
-    // Clean up batch file
-    fs::remove(batch_file);
-    
-    return selected_path;
+    return "";
+#else
+    spdlog::warn("[AssetBrowser] Native file dialog not implemented for this platform");
+    return "";
+#endif
 }
 
 void AssetBrowserPanel::ImportFile(const std::string& file_path, const std::string& target_path) {

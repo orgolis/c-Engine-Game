@@ -6,6 +6,8 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 namespace schizo::editor {
 
@@ -43,6 +45,9 @@ bool ScenePlaybackManager::StartPlayback(std::shared_ptr<schizo::scene::Scene> s
     
     is_playing_ = true;
     is_paused_ = false;
+    is_cursor_captured_ = true;  // Host will hide+lock the OS cursor
+    mouse_delta_x_ = 0.0f;
+    mouse_delta_y_ = 0.0f;
     playback_time_ = 0.0f;
     player_velocity_ = glm::vec3(0.0f);
     is_on_ground_ = false;
@@ -64,6 +69,9 @@ bool ScenePlaybackManager::StartPlayback(std::shared_ptr<schizo::scene::Scene> s
 void ScenePlaybackManager::StopPlayback() {
     is_playing_ = false;
     is_paused_ = false;
+    is_cursor_captured_ = false;  // Host will restore the OS cursor
+    mouse_delta_x_ = 0.0f;
+    mouse_delta_y_ = 0.0f;
     playback_time_ = 0.0f;
     player_velocity_ = glm::vec3(0.0f);
     is_on_ground_ = false;
@@ -131,63 +139,39 @@ bool ScenePlaybackManager::AttachCharacterController() {
 }
 
 void ScenePlaybackManager::UpdateCamera() {
-    auto logger = spdlog::get("editor");
-    
-    // Check player
-    if (!player_entity_) {
-        if (logger) logger->error("❌ UpdateCamera FAILED: player_entity_ is nullptr");
-        return;
-    }
-    
-    // Check camera
-    if (!playback_camera_) {
-        if (logger) logger->error("❌ UpdateCamera FAILED: playback_camera_ is nullptr");
-        return;
-    }
-    
-    // Get player transform
+    if (!player_entity_ || !playback_camera_) return;
+
     auto player_transform = player_entity_->GetTransform();
-    if (!player_transform) {
-        if (logger) logger->error("❌ UpdateCamera FAILED: player_entity_ has no Transform");
-        return;
-    }
-    
-    // Get camera transform
     auto camera_transform = playback_camera_->GetTransform();
-    if (!camera_transform) {
-        if (logger) logger->error("❌ UpdateCamera FAILED: playback_camera_ has no Transform");
+    if (!player_transform || !camera_transform) return;
+
+    // First-person camera is parented to the player and rides at a fixed local
+    // offset (set by PlayerEntity::Create). The transform hierarchy already
+    // places it correctly — no per-frame override needed.
+    if (playback_camera_->GetName() == "FirstPersonCamera") {
+        camera_position_ = camera_transform->GetWorldPosition();
         return;
     }
-    
-    // Get positions
+
+    // Third-person and legacy cameras: orbit behind the player using the
+    // configured distance/height, with smoothing.
     glm::vec3 player_pos = player_transform->GetWorldPosition();
     glm::vec3 player_forward = player_transform->GetForward();
-    
-    // Calculate camera position
     glm::vec3 backward = -player_forward;
-    glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
+    glm::vec3 up(0.0f, 1.0f, 0.0f);
     glm::vec3 camera_target = player_pos + (backward * camera_distance_) + (up * camera_height_);
-    
-    // Smooth follow
+
     camera_position_ = glm::mix(camera_position_, camera_target, camera_smoothing_);
-    
-    // CRITICAL: Update the camera entity's world position
-    if (logger) logger->info("🎥 Setting camera world pos from ({:.2f}, {:.2f}, {:.2f}) to ({:.2f}, {:.2f}, {:.2f})",
-        camera_transform->GetWorldPosition().x,
-        camera_transform->GetWorldPosition().y,
-        camera_transform->GetWorldPosition().z,
-        camera_position_.x, camera_position_.y, camera_position_.z);
-    
     camera_transform->SetWorldPosition(camera_position_);
-    
-    // Verify the update
-    glm::vec3 verified_pos = camera_transform->GetWorldPosition();
-    if (logger) logger->info("✅ Verified camera pos: ({:.2f}, {:.2f}, {:.2f})",
-        verified_pos.x, verified_pos.y, verified_pos.z);
-    
-    if (glm::distance(verified_pos, camera_position_) > 0.01f) {
-        if (logger) logger->error("❌ WARNING: SetWorldPosition didn't work! Distance: {:.3f}",
-            glm::distance(verified_pos, camera_position_));
+
+    // Aim the camera at the player so the viewport's lookAt math (which uses
+    // the camera's world rotation) renders the player in front of the lens.
+    glm::vec3 to_player = player_pos + glm::vec3(0.0f, 1.0f, 0.0f) - camera_position_;
+    if (glm::length(to_player) > 0.0001f) {
+        glm::vec3 fwd = glm::normalize(to_player);
+        // Build a rotation whose -Z (camera forward) points toward the player.
+        glm::quat look = glm::quatLookAt(fwd, up);
+        camera_transform->SetWorldRotation(look);
     }
 }
 
@@ -202,35 +186,17 @@ void ScenePlaybackManager::UpdateCharacterMovement(float delta_time) {
     if (!player_transform) return;
     
     // ========== MOUSE LOOK / CAMERA ROTATION ==========
-    // Handle mouse input to rotate the player
-    // Rotation is applied around Y axis (yaw) based on mouse X movement
-    if (!ImGui::IsAnyItemHovered() && !ImGui::IsAnyItemActive()) {
-        static glm::vec2 last_mouse_pos = glm::vec2(io.MousePos.x, io.MousePos.y);
-        glm::vec2 curr_mouse_pos = glm::vec2(io.MousePos.x, io.MousePos.y);
-        
-        if (io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2]) {
-            // Right-click or any mouse button: enable mouse look
-            glm::vec2 mouse_delta = curr_mouse_pos - last_mouse_pos;
-            
-            // Mouse sensitivity (adjust for feel)
-            const float MOUSE_SENSITIVITY = 0.01f;  // radians per pixel
-            
-            // Yaw rotation around Y axis (horizontal mouse movement)
-            if (glm::abs(mouse_delta.x) > 0.1f) {
-                float yaw_angle = -mouse_delta.x * MOUSE_SENSITIVITY;
-                player_transform->Rotate(glm::vec3(0.0f, 1.0f, 0.0f), yaw_angle);
-                
-                auto logger = spdlog::get("editor");
-                if (logger) {
-                    auto player_rot = player_transform->GetLocalRotation();
-                    logger->info("🔄 Player rotated: yaw={:.3f}rad, quat=({:.3f}, {:.3f}, {:.3f}, {:.3f})", 
-                        yaw_angle, player_rot.x, player_rot.y, player_rot.z, player_rot.w);
-                }
-            }
-        }
-        
-        last_mouse_pos = curr_mouse_pos;
+    // While the cursor is captured the host (main.cpp) feeds raw GLFW deltas
+    // through OnMouseDelta() — ImGui's NoMouse flag zeros io.MousePos so we
+    // cannot read it here. Yaw is applied unconditionally; pitch could be
+    // hooked onto an attached camera child later.
+    if (is_cursor_captured_ && std::abs(mouse_delta_x_) > 0.0f) {
+        const float MOUSE_SENSITIVITY = 0.0025f;  // radians per pixel
+        float yaw_angle = -mouse_delta_x_ * MOUSE_SENSITIVITY;
+        player_transform->Rotate(glm::vec3(0.0f, 1.0f, 0.0f), yaw_angle);
     }
+    mouse_delta_x_ = 0.0f;
+    mouse_delta_y_ = 0.0f;
     
     // Create input action from keyboard
     struct InputAction {
@@ -302,72 +268,72 @@ void ScenePlaybackManager::UpdateCharacterMovement(float delta_time) {
 
 void ScenePlaybackManager::SetupPlaybackCamera() {
     auto logger = spdlog::get("editor");
-    if (logger) logger->warn("⚙️ =================  SetupPlaybackCamera START  =================");
-    
-    if (!player_entity_) {
-        if (logger) logger->error("❌ FATAL: player_entity_ is nullptr!");
+    if (!player_entity_ || !scene_) {
+        if (logger) logger->error("SetupPlaybackCamera: player or scene is null");
         return;
     }
-    if (logger) logger->info("✅ player_entity_ exists: {}", player_entity_->GetName());
-    
-    if (!scene_) {
-        if (logger) logger->error("❌ FATAL: scene_ is nullptr!");
+
+    // Preference order: FirstPersonCamera → ThirdPersonCamera → any "Camera"/
+    // "PlayerCamera" child created by older saves. Fall back to creating a
+    // PlayerCamera child as a last resort (legacy scenes).
+    auto find_child = [this](const std::string& name) -> std::shared_ptr<schizo::scene::Entity> {
+        for (const auto& child : player_entity_->GetChildren()) {
+            if (child && child->GetName() == name) return child;
+        }
+        return nullptr;
+    };
+
+    if (auto fp = find_child("FirstPersonCamera")) {
+        playback_camera_ = fp;
+        if (logger) logger->info("Playback camera: FirstPersonCamera (default)");
         return;
     }
-    if (logger) logger->info("✅ scene_ exists");
-    
-    // Try to find existing camera child
-    if (logger) logger->info("🔍 Checking for existing camera children...");
-    auto children = player_entity_->GetChildren();
-    if (logger) logger->info("   Player has {} children", children.size());
-    
-    for (const auto& child : children) {
-        if (child) {
-            std::string child_name = child->GetName();
-            if (logger) logger->info("   - Found child: '{}'", child_name);
-            if (child_name == "Camera" || child_name == "PlayerCamera") {
-                playback_camera_ = child;
-                if (logger) logger->warn("✅ Using EXISTING camera: {}", child_name);
-                return;
-            }
+    if (auto tp = find_child("ThirdPersonCamera")) {
+        playback_camera_ = tp;
+        if (logger) logger->info("Playback camera: ThirdPersonCamera (no FirstPerson child found)");
+        return;
+    }
+    if (auto legacy = find_child("Camera")) { playback_camera_ = legacy; return; }
+    if (auto legacy = find_child("PlayerCamera")) { playback_camera_ = legacy; return; }
+
+    // Legacy fallback: spawn a PlayerCamera child so older scenes still work.
+    auto camera_entity = scene_->CreateEntity("PlayerCamera");
+    if (!camera_entity) return;
+    camera_entity->SetParent(player_entity_);
+    if (auto t = camera_entity->GetTransform()) {
+        t->SetLocalPosition(glm::vec3(0.0f, 0.45f, 0.0f));
+    }
+    playback_camera_ = camera_entity;
+    if (logger) logger->info("Playback camera: created fallback PlayerCamera");
+}
+
+void ScenePlaybackManager::SwitchToFirstPerson() {
+    if (!player_entity_) return;
+    for (const auto& child : player_entity_->GetChildren()) {
+        if (child && child->GetName() == "FirstPersonCamera") {
+            playback_camera_ = child;
+            return;
         }
     }
-    
-    if (logger) logger->info("   No existing camera found");
-    
-    // Create new camera entity
-    if (logger) logger->info("➕ Creating new PlayerCamera entity...");
-    auto camera_entity = scene_->CreateEntity("PlayerCamera");
-    
-    if (!camera_entity) {
-        if (logger) logger->error("❌ FATAL: CreateEntity() returned nullptr!");
-        return;
+}
+
+void ScenePlaybackManager::SwitchToThirdPerson() {
+    if (!player_entity_) return;
+    for (const auto& child : player_entity_->GetChildren()) {
+        if (child && child->GetName() == "ThirdPersonCamera") {
+            playback_camera_ = child;
+            return;
+        }
     }
-    if (logger) logger->info("✅ PlayerCamera entity created successfully");
-    
-    // Store it immediately
-    playback_camera_ = camera_entity;
-    if (logger) logger->info("✅ playback_camera_ assigned to new entity");
-    
-    // Get transform
-    auto camera_transform = camera_entity->GetTransform();
-    if (!camera_transform) {
-        if (logger) logger->error("❌ FATAL: Camera entity has NO Transform component!");
-        return;
+}
+
+void ScenePlaybackManager::ToggleCameraView() {
+    if (!playback_camera_) return;
+    if (playback_camera_->GetName() == "FirstPersonCamera") {
+        SwitchToThirdPerson();
+    } else {
+        SwitchToFirstPerson();
     }
-    if (logger) logger->info("✅ Camera has Transform component");
-    
-    // Set local position
-    glm::vec3 local_pos(0.0f, 0.8f, 0.0f);
-    if (logger) logger->info("📍 Setting local position to ({:.2f}, {:.2f}, {:.2f})", 
-        local_pos.x, local_pos.y, local_pos.z);
-    camera_transform->SetLocalPosition(local_pos);
-    if (logger) logger->info("✅ SetLocalPosition() called");
-    
-    if (logger) logger->warn("⚙️ =================  SetupPlaybackCamera END  =================");
-    
-    auto logger = spdlog::get("editor");
-    if (logger) logger->info("Created new camera child: PlayerCamera");
 }
 
 void ScenePlaybackManager::ApplyGravity(float delta_time) {

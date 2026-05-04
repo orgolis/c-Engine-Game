@@ -60,11 +60,13 @@ public:
     /// @param window Native GLFW window handle for input handling
     /// @param width Initial window width
     /// @param height Initial window height
+    /// @param render_pass VkRenderPass ImGui will render into (swapchain overlay pass)
     static std::unique_ptr<ImGuiVulkan> create(VulkanDevice* device,
                                                 VulkanRenderGraph* graph,
                                                 void* window,  // GLFWwindow*
                                                 uint32_t width,
-                                                uint32_t height);
+                                                uint32_t height,
+                                                VkRenderPass render_pass = VK_NULL_HANDLE);
 
     /// Prepare ImGui for the new frame (call once per frame before UI code).
     /// Integrates with the supplied IO structure for input handling.

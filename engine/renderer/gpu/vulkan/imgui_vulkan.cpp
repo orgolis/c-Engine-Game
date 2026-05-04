@@ -42,7 +42,8 @@ std::unique_ptr<ImGuiVulkan> ImGuiVulkan::create(VulkanDevice* device,
                                                    VulkanRenderGraph* graph,
                                                    void* window,
                                                    uint32_t width,
-                                                   uint32_t height) {
+                                                   uint32_t height,
+                                                   VkRenderPass render_pass) {
     if (!device || !graph || !window) {
         spdlog::error("ImGuiVulkan::create: invalid device, graph, or window");
         return nullptr;
@@ -83,11 +84,9 @@ std::unique_ptr<ImGuiVulkan> ImGuiVulkan::create(VulkanDevice* device,
     init_info.Allocator = nullptr;
     init_info.CheckVkResultFn = nullptr;
     // ImGui 1.92.x moved Subpass/MSAASamples/RenderPass into PipelineInfoMain.
-    // RenderPass is left null here — the caller must populate it (or set
-    // UseDynamicRendering) before any rendering. Init() still succeeds; the
-    // pipeline gets created lazily when rendering data is submitted.
     init_info.PipelineInfoMain.Subpass     = 0;
     init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    init_info.PipelineInfoMain.RenderPass  = render_pass;  // VK_NULL_HANDLE → lazy creation
 
     // Create descriptor pool for ImGui
     VkDescriptorPoolSize pool_sizes[] = {
@@ -131,7 +130,7 @@ std::unique_ptr<ImGuiVulkan> ImGuiVulkan::create(VulkanDevice* device,
     impl->initialized = true;
     spdlog::info("ImGuiVulkan: Initialized successfully");
 
-    return std::make_unique<ImGuiVulkan>(std::move(impl));
+    return std::unique_ptr<ImGuiVulkan>(new ImGuiVulkan(std::move(impl)));
 }
 
 void ImGuiVulkan::begin_frame() {

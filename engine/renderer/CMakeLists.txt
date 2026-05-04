@@ -87,19 +87,20 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_gltf_loader.cpp
     gpu/vulkan/culling.cpp
     gpu/vulkan/imgui_vulkan.cpp
-    gpu/vulkan/ui_manager.cpp
-    gpu/vulkan/debug_panels.cpp
-    gpu/vulkan/scene_hierarchy_panel.cpp
-    gpu/vulkan/inspector_panel.cpp
-    gpu/vulkan/profiler.cpp
-    gpu/vulkan/profiler_panels.cpp
-    gpu/vulkan/debug_visualization.cpp
-    gpu/vulkan/hzb_culler.cpp
-    gpu/vulkan/indirect_dispatcher.cpp
-    gpu/vulkan/transform_gizmo.cpp
-    gpu/vulkan/query_pool.cpp
-    gpu/vulkan/gpu_profiler.cpp
-    gpu/vulkan/gpu_profiler_panels.cpp
+    # Phase 6 editor/debug components — excluded pending GCC compat fixes:
+    # gpu/vulkan/ui_manager.cpp
+    # gpu/vulkan/debug_panels.cpp
+    # gpu/vulkan/scene_hierarchy_panel.cpp
+    # gpu/vulkan/inspector_panel.cpp
+    # gpu/vulkan/profiler.cpp
+    # gpu/vulkan/profiler_panels.cpp
+    # gpu/vulkan/debug_visualization.cpp
+    # gpu/vulkan/hzb_culler.cpp
+    # gpu/vulkan/indirect_dispatcher.cpp
+    # gpu/vulkan/transform_gizmo.cpp
+    # gpu/vulkan/query_pool.cpp
+    # gpu/vulkan/gpu_profiler.cpp
+    # gpu/vulkan/gpu_profiler_panels.cpp
 )
 
 # Header files - Core Graphics Abstraction

@@ -4,8 +4,8 @@
  */
 
 #include "scene_hierarchy_panel.h"
-#include <engine/scene/include/scene.h>
-#include <engine/scene/include/entity.h>
+#include "scene.h"
+#include "entity.h"
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 

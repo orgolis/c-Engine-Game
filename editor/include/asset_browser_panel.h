@@ -4,7 +4,7 @@
 #include <vector>
 #include <memory>
 #include <glm/glm.hpp>
-#include <glad/glad.h>
+#include <cstdint>
 
 // Forward declarations
 namespace schizo::assets {
@@ -34,7 +34,7 @@ struct AssetMetadata {
     uint32_t mesh_count = 0;
     
     // Preview data
-    GLuint preview_texture = 0;
+    uint32_t preview_texture = 0;
     bool preview_ready = false;
 };
 
@@ -83,8 +83,9 @@ public:
     /**
      * @brief Render the asset browser UI
      * @param scene Current scene for asset assignment
+     * @param open Optional pointer to visibility flag (close button)
      */
-    void Render(const std::shared_ptr<schizo::scene::Scene>& scene);
+    void Render(const std::shared_ptr<schizo::scene::Scene>& scene, bool* open = nullptr);
     
     /**
      * @brief Get the state of the asset browser

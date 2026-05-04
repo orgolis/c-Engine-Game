@@ -8,6 +8,7 @@
 #include "vulkan_shader_registry.h"
 #include "vulkan_scene_mesh.h"
 #include "vulkan_render_graph.h" // for DrawItem
+#include "shadow_caster_spirv.h" // pre-compiled SPIR-V fallback for GCC builds
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <array>
@@ -313,7 +314,15 @@ void VulkanShadowMap::create_caster_pipeline() {
     VkDevice vk = device_->get_device();
 
     auto vert = shader_registry_->compile_glsl(kCasterVertSrc, ShaderStage::Vertex,   "shadow_caster.vert");
+    if (!vert) {
+        vert = shader_registry_->create_from_spirv(kShadowCasterVertSpv, kShadowCasterVertSpv_size,
+                                                   ShaderStage::Vertex, "shadow_caster.vert");
+    }
     auto frag = shader_registry_->compile_glsl(kCasterFragSrc, ShaderStage::Fragment, "shadow_caster.frag");
+    if (!frag) {
+        frag = shader_registry_->create_from_spirv(kShadowCasterFragSpv, kShadowCasterFragSpv_size,
+                                                   ShaderStage::Fragment, "shadow_caster.frag");
+    }
     if (!vert || !frag) throw std::runtime_error("Failed to compile shadow caster shaders");
 
     VkPushConstantRange pc{};

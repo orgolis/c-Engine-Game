@@ -8,11 +8,11 @@ target_include_directories(editor
         ${CMAKE_CURRENT_SOURCE_DIR}/../engine/window/include
         ${CMAKE_CURRENT_SOURCE_DIR}/../engine/scene/include
         ${CMAKE_CURRENT_SOURCE_DIR}/../engine/renderer/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../engine/renderer/gpu
         ${CMAKE_CURRENT_SOURCE_DIR}/../engine/include
         ${CMAKE_SOURCE_DIR}/third_party/imgui
         ${CMAKE_SOURCE_DIR}/third_party/imgui/backends
         ${CMAKE_SOURCE_DIR}/third_party/glfw/include
-        ${CMAKE_SOURCE_DIR}/third_party/glad/include
 )
 
 # Link libraries
@@ -24,8 +24,7 @@ target_link_libraries(editor
         character
         ability
         network
-        glad
-        opengl32
+        renderer
 )
 
 # Add source files
@@ -35,8 +34,6 @@ target_sources(editor
         src/editor_scene.cpp
         src/scene_serializer.cpp
         src/mesh_generator.cpp
-        src/simple_renderer.cpp
-        src/viewport_renderer_3d_minimal.cpp
         src/transform_gizmo.cpp
         src/undo_redo_manager.cpp
         src/asset_browser_panel.cpp
@@ -54,7 +51,7 @@ target_sources(editor
         ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_widgets.cpp
         # ImGui backends
         ${CMAKE_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_glfw.cpp
-        ${CMAKE_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_opengl3.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_vulkan.cpp
 )
 
 # Compiler flags

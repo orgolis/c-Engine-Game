@@ -1,18 +1,29 @@
 // Project Schizo Editor - Main entry point
-// Phase 5: In-engine editor with ImGui
+// Phase 6: Vulkan renderer backend
 
 #define GLM_ENABLE_EXPERIMENTAL
-
-// Glad header for OpenGL loading - must be included before GLFW
-#include <glad/glad.h>
-
-// Prevent GLFW from including the native GL header (we're using glad instead)
-#define GLFW_INCLUDE_NONE
-
-// GLFW header
+#define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
+#include <vulkan/vulkan.h>
 
-#include "window.h"
+// gws Vulkan renderer
+#include "vulkan/vulkan_device.h"
+#include "vulkan/vulkan_swapchain.h"
+#include "vulkan/vulkan_g_buffer.h"
+#include "vulkan/vulkan_lighting_pass.h"
+#include "vulkan/vulkan_shadow_map.h"
+#include "vulkan/vulkan_post_processing.h"
+#include "vulkan/vulkan_render_graph.h"
+#include "vulkan/vulkan_scene_mesh.h"
+#include "vulkan/vulkan_scene_material.h"
+#include "vulkan/imgui_vulkan.h"
+
+// ImGui headers
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
+
+// Editor / scene headers
 #include "editor_scene.h"
 #include "scene.h"
 #include "entity_factory.h"
@@ -20,8 +31,6 @@
 #include "light_component.h"
 #include "viewport_camera.h"
 #include "mesh_renderer_component.h"
-#include "simple_renderer.h"
-#include "viewport_renderer_3d.h"
 #include "asset_browser_panel.h"
 #include "material_editor_panel.h"
 #include "asset_import_dialog.h"
@@ -29,9 +38,12 @@
 #include "undo_redo_manager.h"
 #include "asset_manager.h"
 #include "scene_playback_manager.h"
+#include "primitive_meshes.h"
+#include "scene_render_bridge.h"
 #include "character_controller_panel.h"
 #include "ability_system_panel.h"
 #include "network_system_panel.h"
+
 #include <spdlog/spdlog.h>
 #include <iostream>
 #include <functional>
@@ -39,14 +51,16 @@
 #include <memory>
 #include <limits>
 #include <algorithm>
-
-// ImGui headers
-#include <imgui.h>
-#include <imgui_impl_glfw.h>
-#include <imgui_impl_opengl3.h>
+#include <vector>
+#include <filesystem>
+#include <cctype>
+#include <system_error>
 
 // GLM headers
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/euler_angles.hpp>
+
+using namespace gws::renderer::gpu;
 
 // Editor state
 struct EditorState {
@@ -61,22 +75,18 @@ struct EditorState {
     
     // Scene/Entity data
     uint32_t selected_entity_id = 0;  // 0 = no selection
-    float clear_color[4] = {0.1f, 0.1f, 0.1f, 1.0f};
-    
-    // Viewport data
+
+    // Viewport camera + input state
     schizo::editor::ViewportCamera viewport_camera;
     bool viewport_camera_rotating = false;
     glm::vec2 last_mouse_pos = glm::vec2(0.0f);
-    
+
+    // Actual viewport panel size (updated each frame by ShowViewport)
+    glm::vec2 viewport_panel_size = glm::vec2(1920.0f, 1080.0f);
+
     // Viewport display options
     bool show_grid = true;
-    bool show_axes = true;
     bool wireframe_mode = false;
-    bool show_entity_names = true;
-    int viewport_width = 800;
-    int viewport_height = 600;
-    float grid_spacing = 1.0f;
-    int grid_size = 20;
     
     // File dialog state
     bool show_save_dialog = false;
@@ -89,10 +99,9 @@ struct EditorState {
     uint32_t rename_entity_id = 0;
     char rename_buffer[256] = "";
     
-    // 3D Renderer
-    std::unique_ptr<schizo::editor::SimpleRenderer> simple_renderer;
-    std::unique_ptr<schizo::editor::ViewportRenderer3D> viewport_renderer_3d;
-    
+    // Viewport texture (Vulkan post-processing output displayed in ImGui)
+    VkDescriptorSet viewport_texture_id = VK_NULL_HANDLE;
+
     // Transform Gizmo
     schizo::editor::TransformGizmo transform_gizmo;
     bool show_gizmo = true;
@@ -693,12 +702,20 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                         }
                     }
                     
-                    // Also accept mesh assets
+                    // Also accept mesh assets — payload is a size_t index
+                    // into the asset browser's discovered list.
                     if (const ImGuiPayload* mesh_payload = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
-                        const char* mesh_path = (const char*)mesh_payload->Data;
-                        entity->SetMesh(mesh_path);
-                        spdlog::info("Assigned mesh '{}' to entity '{}'", mesh_path, entity->GetName());
-                        editor_state.editor_scene->MarkModified();
+                        IM_ASSERT(mesh_payload->DataSize == sizeof(size_t));
+                        size_t asset_idx = *(const size_t*)mesh_payload->Data;
+                        if (editor_state.asset_browser) {
+                            const auto* asset = editor_state.asset_browser->GetAssetByIndex(asset_idx);
+                            if (asset && asset->asset_type == "Mesh") {
+                                entity->SetMesh(asset->path);
+                                spdlog::info("Assigned mesh '{}' to entity '{}'",
+                                             asset->path, entity->GetName());
+                                editor_state.editor_scene->MarkModified();
+                            }
+                        }
                     }
                     
                     ImGui::EndDragDropTarget();
@@ -1324,9 +1341,10 @@ void ShowInspector(EditorState& editor_state) {
         ImGui::Separator();
         
         if (ImGui::Button("Delete Entity", ImVec2(-1, 0))) {
+            spdlog::info("Deleted entity: {}", selected_entity->GetName());
             scene->RemoveEntity(selected_entity);
             editor_state.selected_entity_id = 0;
-            spdlog::info("Deleted entity: {}", selected_entity->GetName());
+            editor_state.editor_scene->MarkModified();
         }
         
         ImGui::End();
@@ -1335,24 +1353,18 @@ void ShowInspector(EditorState& editor_state) {
 
 void ShowAssetBrowser(EditorState& editor_state) {
     if (!editor_state.show_asset_browser) return;
-    
+
     if (!editor_state.asset_browser) {
         ImGui::Begin("Asset Browser", &editor_state.show_asset_browser);
         ImGui::Text("Asset browser not initialized");
         ImGui::End();
         return;
     }
-    
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove;
-    if (editor_state.gizmo_dragging) {
-        flags |= ImGuiWindowFlags_NoInputs;
-    }
-    
-    if (ImGui::Begin("Asset Browser", &editor_state.show_asset_browser, flags)) {
-        auto scene = editor_state.editor_scene->GetScene();
-        editor_state.asset_browser->Render(scene);
-    }
-    ImGui::End();
+
+    // The panel opens its own ImGui window ("Asset Browser##panel"); don't
+    // wrap it in another Begin/End or two windows render side by side.
+    auto scene = editor_state.editor_scene->GetScene();
+    editor_state.asset_browser->Render(scene, &editor_state.show_asset_browser);
 }
 
 void ShowViewport(EditorState& editor_state) {
@@ -1415,6 +1427,8 @@ void ShowViewport(EditorState& editor_state) {
         // Prepare view and projection matrices
         ImVec2 viewport_size = ImGui::GetContentRegionAvail();
         float aspect = viewport_size.x > 0 ? viewport_size.x / viewport_size.y : 1.0f;
+        if (viewport_size.x > 50.0f && viewport_size.y > 50.0f)
+            editor_state.viewport_panel_size = {viewport_size.x, viewport_size.y};
         
         glm::mat4 view_matrix;
         glm::mat4 proj_matrix;
@@ -1434,17 +1448,16 @@ void ShowViewport(EditorState& editor_state) {
                     view_matrix = editor_state.viewport_camera.GetViewMatrix();
                     proj_matrix = editor_state.viewport_camera.GetProjectionMatrix(aspect);
                 } else {
-                    // Get camera position and compute view matrix from player camera
+                    // Use the camera's WORLD rotation (so a first-person camera
+                    // parented to a rotating player faces the player's forward,
+                    // not its own local -Z).
                     glm::vec3 cam_pos = camera_transform->GetWorldPosition();
-                    glm::vec3 cam_forward = camera_transform->GetForward();
-                    glm::vec3 cam_up = glm::vec3(0.0f, 1.0f, 0.0f);
-                    
+                    glm::quat cam_rot = camera_transform->GetWorldRotation();
+                    glm::vec3 cam_forward = cam_rot * glm::vec3(0.0f, 0.0f, -1.0f);
+                    glm::vec3 cam_up      = cam_rot * glm::vec3(0.0f, 1.0f,  0.0f);
+
                     view_matrix = glm::lookAt(cam_pos, cam_pos + cam_forward, cam_up);
                     proj_matrix = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 1000.0f);
-                    
-                    spdlog::info("🎥 VIEWPORT using camera '{}' at ({:.2f}, {:.2f}, {:.2f})", 
-                        playback_camera->GetName(),
-                        cam_pos.x, cam_pos.y, cam_pos.z);
                 }
             }
         } else {
@@ -1454,179 +1467,141 @@ void ShowViewport(EditorState& editor_state) {
             proj_matrix = editor_state.viewport_camera.GetProjectionMatrix(aspect);
         }
         
-        // Render to framebuffer
-        if (viewport_size.x > 50.0f && viewport_size.y > 50.0f && editor_state.simple_renderer) {
-            uint32_t fb_width = static_cast<uint32_t>(viewport_size.x);
-            uint32_t fb_height = static_cast<uint32_t>(viewport_size.y);
-            
-            try {
-                editor_state.simple_renderer->ResizeFramebuffer(fb_width, fb_height);
-                editor_state.simple_renderer->BindFramebuffer();
-                // Gray background
-                editor_state.simple_renderer->ClearFramebuffer(glm::vec4(0.2f, 0.2f, 0.2f, 1.0f));
-                
-                // Render grid (identity transform)
-                glm::mat4 identity = glm::mat4(1.0f);
-                editor_state.simple_renderer->RenderMesh(
-                    editor_state.simple_renderer->grid_mesh,
-                    identity, view_matrix, proj_matrix
-                );
-                
-                // Render axes (scale for visibility)
-                glm::mat4 axes_transform = glm::scale(glm::mat4(1.0f), glm::vec3(5.0f));
-                editor_state.simple_renderer->RenderMesh(
-                    editor_state.simple_renderer->axes_mesh,
-                    axes_transform, view_matrix, proj_matrix
-                );
-                
-                // Render entities as cubes
-                if (scene) {
-                    const auto& entities = scene->GetEntities();
-                    spdlog::info("=== VIEWPORT RENDER: {} entities ===", entities.size());
-                    for (const auto& entity : entities) {
-                        auto transform = entity->GetTransform();
-                        
-                        // Create model matrix - use GetWorldMatrix which includes position, rotation, and scale
-                        glm::mat4 model = transform->GetWorldMatrix();
-                        
-                        // Skip rendering Camera entities as boxes - they're UI elements, not gameworld objects
-                        if (entity->GetName() == "Camera" || entity->GetName() == "PlayerCamera") {
-                            continue;
-                        }
-                        
-                        // Check for mesh component with custom mesh
-                        bool rendered = false;
-                        auto mesh_component = entity->GetMeshComponent();
-                        if (mesh_component && mesh_component->use_asset_mesh) {
-                            auto mesh_asset = mesh_component->GetMeshAsset();
-                            if (mesh_asset) {
-                                spdlog::info("[VIEWPORT] Rendering custom mesh for entity '{}'", entity->GetName());
-                                // Convert mesh asset to GPU mesh and render
-                                auto asset_mesh = editor_state.simple_renderer->GetOrCreateMeshFromAsset(*mesh_asset);
-                                editor_state.simple_renderer->RenderMesh(
-                                    asset_mesh,
-                                    model, view_matrix, proj_matrix
-                                );
-                                rendered = true;
-                            }
-                        }
-                        
-                        // Fallback to cube if no custom mesh or render as normal cube
-                        if (!rendered) {
-                            editor_state.simple_renderer->RenderMesh(
-                                editor_state.simple_renderer->cube_mesh,
-                                model, view_matrix, proj_matrix
-                            );
-                        }
-                    }
-                    
-                    // Render camera gizmos and other entities
-                    for (const auto& entity : entities) {
-                        // Render camera entities as pyramid gizmos
-                        if (entity->GetName() == "Camera") {
-                            auto transform = entity->GetTransform();
-                            auto entity_cam_pos = transform->GetWorldPosition();
-                            
-                            // Camera gizmo: small pyramid pointing forward
-                            glm::mat4 cam_gizmo = glm::translate(glm::mat4(1.0f), entity_cam_pos);
-                            cam_gizmo = glm::scale(cam_gizmo, glm::vec3(0.2f));
-                            
-                            // Create pyramid outline for camera visualization
-                            // For now, use small axes to show camera orientation
-                            glm::mat4 cam_axes = glm::translate(glm::mat4(1.0f), entity_cam_pos);
-                            cam_axes = glm::scale(cam_axes, glm::vec3(0.3f));
-                            editor_state.simple_renderer->RenderMesh(
-                                editor_state.simple_renderer->axes_mesh,
-                                cam_axes, view_matrix, proj_matrix
-                            );
-                        }
-                    }
-                    
-                    // Render transform gizmo for selected entity
-                    if (editor_state.show_gizmo && editor_state.selected_entity_id != 0) {
-                        auto selected_entity = scene->GetEntityById(editor_state.selected_entity_id);
-                        if (selected_entity) {
-                            auto selected_transform = selected_entity->GetTransform();
-                            auto selected_pos = selected_transform->GetWorldPosition();
-                            auto selected_scale = selected_transform->GetLocalScale();
-                            
-                            // Render the gizmo
-                            editor_state.transform_gizmo.Render(
-                                editor_state.simple_renderer.get(),
-                                selected_pos, 
-                                glm::vec3(0.0f),  // rotation (not used yet)
-                                selected_scale,
-                                view_matrix, proj_matrix,
-                                2.0f  // gizmo size
-                            );
-                        }
-                    }
-                    
-                    // Render selection highlight box around selected entity
-                    if (editor_state.selected_entity_id != 0) {
-                        auto selected_entity = scene->GetEntityById(editor_state.selected_entity_id);
-                        if (selected_entity) {
-                            auto selected_transform = selected_entity->GetTransform();
-                            auto selected_pos = selected_transform->GetWorldPosition();
-                            auto selected_scale = selected_transform->GetLocalScale();
-                            
-                            // Create selection box (wireframe cube outline at entity position)
-                            glm::mat4 selection_box = glm::translate(glm::mat4(1.0f), selected_pos);
-                            selection_box = glm::scale(selection_box, selected_scale * 0.5f);
-                            
-                            // Render as wireframe to show selection
-                            editor_state.simple_renderer->RenderMesh(
-                                editor_state.simple_renderer->wireframe_box_mesh,
-                                selection_box, view_matrix, proj_matrix
-                            );
-                        }
-                    }
-                }
-                
-                editor_state.simple_renderer->UnbindFramebuffer();
-                
-                // TEMPORARY TEST: Render frame to window instead of displaying framebuffer texture
-                spdlog::info("[VIEWPORT] Unbind complete - would display framebuffer texture ID: {}", 
-                    editor_state.simple_renderer->GetFramebufferTexture());
-                
-                // Display framebuffer texture in ImGui
-                GLuint fb_texture = editor_state.simple_renderer->GetFramebufferTexture();
-                if (fb_texture != 0) {
-                    // Display with different UV coords
-                    ImGui::Image(
-                        reinterpret_cast<void*>(static_cast<uintptr_t>(fb_texture)),
-                        viewport_size,
-                        ImVec2(0, 1),
-                        ImVec2(1, 0)
-                    );
-                } else {
-                    ImGui::Text("Framebuffer texture not initialized (ID=0)");
-                }
-            } catch (const std::exception& e) {
-                ImGui::TextColored(ImVec4(1, 0, 0, 1), "Viewport error: %s", e.what());
-                spdlog::error("Viewport rendering error: {}", e.what());
+        // Display deferred pipeline output as viewport background
+        ImVec2 image_min(0, 0), image_max(0, 0);
+        bool image_drawn = false;
+        if (viewport_size.x > 50.0f && viewport_size.y > 50.0f) {
+            if (editor_state.viewport_texture_id != VK_NULL_HANDLE) {
+                ImGui::Image((ImTextureID)(void*)editor_state.viewport_texture_id, viewport_size);
+                image_min = ImGui::GetItemRectMin();
+                image_max = ImGui::GetItemRectMax();
+                image_drawn = true;
+            } else {
+                ImGui::TextDisabled("Vulkan viewport initializing...");
+                ImGui::Text("Scene: %zu entities", scene ? scene->GetEntityCount() : 0);
             }
         }
-        
+
+        // ----------------------------------------------------------------
+        // Gizmo overlay — draw colored axis lines on top of the viewport
+        // image for the selected entity using ImGui's draw list. Picking
+        // (later in this function) uses the same world-space axes.
+        // ----------------------------------------------------------------
+        if (image_drawn && editor_state.show_gizmo &&
+            scene && editor_state.selected_entity_id != 0)
+        {
+            auto sel = scene->GetEntityById(editor_state.selected_entity_id);
+            if (sel) {
+                glm::vec3 origin_w = sel->GetTransform()->GetWorldPosition();
+                const float gizmo_size = 3.5f;
+
+                auto to_screen = [&](glm::vec3 w) -> ImVec2 {
+                    // Match the renderer: GL-style projection, Vulkan Y-flip
+                    // applied here so the overlay aligns with the rendered image.
+                    glm::mat4 p = proj_matrix;
+                    p[1][1] *= -1.0f;
+                    glm::vec4 c = p * view_matrix * glm::vec4(w, 1.0f);
+                    if (c.w <= 0.0f) return ImVec2(-1e9f, -1e9f); // behind cam
+                    glm::vec3 ndc = glm::vec3(c) / c.w;
+                    return ImVec2(
+                        image_min.x + (ndc.x * 0.5f + 0.5f) * viewport_size.x,
+                        image_min.y + (ndc.y * 0.5f + 0.5f) * viewport_size.y);
+                };
+
+                auto mode = editor_state.transform_gizmo.GetMode();
+
+                // Scale gizmo follows the entity's local axes; translate and
+                // rotate stay world-aligned (matches the picking math).
+                glm::vec3 ax_x(1, 0, 0), ax_y(0, 1, 0), ax_z(0, 0, 1);
+                if (mode == schizo::editor::GizmoMode::Scale) {
+                    glm::quat rot = sel->GetTransform()->GetWorldRotation();
+                    ax_x = rot * ax_x;
+                    ax_y = rot * ax_y;
+                    ax_z = rot * ax_z;
+                }
+
+                ImVec2 o  = to_screen(origin_w);
+                ImVec2 ex = to_screen(origin_w + ax_x * gizmo_size);
+                ImVec2 ey = to_screen(origin_w + ax_y * gizmo_size);
+                ImVec2 ez = to_screen(origin_w + ax_z * gizmo_size);
+
+                auto* dl = ImGui::GetWindowDrawList();
+                // Strictly clip the gizmo to the rendered viewport image so it
+                // never bleeds onto adjacent panels (Inspector, Hierarchy, etc.)
+                // or the viewport's own toolbar/text area above the image.
+                dl->PushClipRect(image_min, image_max, true);
+
+                ImU32 col_x = IM_COL32(230, 60, 60, 255);
+                ImU32 col_y = IM_COL32(60, 230, 60, 255);
+                ImU32 col_z = IM_COL32(60, 110, 230, 255);
+                ImU32 col_hover = IM_COL32(255, 230, 80, 255);
+                if (editor_state.gizmo_axis == 'x') col_x = col_hover;
+                if (editor_state.gizmo_axis == 'y') col_y = col_hover;
+                if (editor_state.gizmo_axis == 'z') col_z = col_hover;
+
+                if (mode == schizo::editor::GizmoMode::Translate ||
+                    mode == schizo::editor::GizmoMode::None)
+                {
+                    // Lines + arrowheads for translate.
+                    dl->AddLine(o, ex, col_x, 3.0f);
+                    dl->AddLine(o, ey, col_y, 3.0f);
+                    dl->AddLine(o, ez, col_z, 3.0f);
+                    auto tip = [&](ImVec2 p, ImU32 col) {
+                        dl->AddCircleFilled(p, 5.0f, col);
+                    };
+                    tip(ex, col_x); tip(ey, col_y); tip(ez, col_z);
+                } else if (mode == schizo::editor::GizmoMode::Scale) {
+                    // Lines with cubes at the tips for scale.
+                    dl->AddLine(o, ex, col_x, 3.0f);
+                    dl->AddLine(o, ey, col_y, 3.0f);
+                    dl->AddLine(o, ez, col_z, 3.0f);
+                    auto box = [&](ImVec2 p, ImU32 col) {
+                        dl->AddRectFilled(ImVec2(p.x - 5, p.y - 5),
+                                          ImVec2(p.x + 5, p.y + 5), col);
+                    };
+                    box(ex, col_x); box(ey, col_y); box(ez, col_z);
+                } else if (mode == schizo::editor::GizmoMode::Rotate) {
+                    // Three orthogonal rings projected to screen — sample the
+                    // ring on each axis-plane and draw a polyline.
+                    auto ring = [&](glm::vec3 a, glm::vec3 b, ImU32 col) {
+                        const int N = 48;
+                        ImVec2 prev{};
+                        bool prev_valid = false;
+                        for (int i = 0; i <= N; ++i) {
+                            float t = (float)i / N * 6.2831853f;
+                            glm::vec3 p = origin_w + (a * std::cos(t) + b * std::sin(t))
+                                          * gizmo_size;
+                            ImVec2 s = to_screen(p);
+                            if (prev_valid) dl->AddLine(prev, s, col, 2.0f);
+                            prev = s; prev_valid = true;
+                        }
+                    };
+                    ring(glm::vec3(0,1,0), glm::vec3(0,0,1), col_x); // YZ plane (rotate around X)
+                    ring(glm::vec3(1,0,0), glm::vec3(0,0,1), col_y); // XZ plane (rotate around Y)
+                    ring(glm::vec3(1,0,0), glm::vec3(0,1,0), col_z); // XY plane (rotate around Z)
+                }
+                dl->AddCircleFilled(o, 4.0f, IM_COL32(220, 220, 220, 255));
+
+                dl->PopClipRect();
+            }
+        }
+
         // Camera controls - only process when viewport is hovered
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) {
             ImGuiIO& io = ImGui::GetIO();
             
             // Handle entity selection through picking and gizmo interaction
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && scene) {
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && scene && image_drawn) {
                 ImVec2 mouse_pos = io.MousePos;
-                ImVec2 viewport_canvas_pos = ImGui::GetCursorScreenPos();
-                
-                // Calculate relative position within viewport (from actual image position)
-                float viewport_x = mouse_pos.x - viewport_canvas_pos.x;
-                float viewport_y = mouse_pos.y - viewport_canvas_pos.y;
-                
+                // Use the image's actual rect (captured immediately after
+                // ImGui::Image), not GetCursorScreenPos, which points BELOW
+                // the image and made all picking math off by image height.
+                float viewport_x = mouse_pos.x - image_min.x;
+                float viewport_y = mouse_pos.y - image_min.y;
+
                 // Clamp to viewport bounds
                 viewport_x = std::max(0.0f, std::min(viewport_x, viewport_size.x));
                 viewport_y = std::max(0.0f, std::min(viewport_y, viewport_size.y));
-                
-                spdlog::debug("[CLICK] Mouse: ({}, {}), Canvas: ({}, {}), Viewport: ({}, {})", 
-                    mouse_pos.x, mouse_pos.y, viewport_canvas_pos.x, viewport_canvas_pos.y, viewport_x, viewport_y);
                 
                 if (viewport_x >= 0 && viewport_y >= 0 && viewport_x < viewport_size.x && viewport_y < viewport_size.y) {
                     // Get picking ray
@@ -1777,21 +1752,34 @@ void ShowViewport(EditorState& editor_state) {
                     }
                     
                     // Get mode-specific updates
-                    if (editor_state.transform_gizmo.GetMode() == schizo::editor::GizmoMode::Translate) {
+                    auto gmode = editor_state.transform_gizmo.GetMode();
+                    if (gmode == schizo::editor::GizmoMode::Translate) {
                         glm::vec3 current_pos = selected_transform->GetLocalPosition();
                         glm::vec3 new_pos = editor_state.transform_gizmo.UpdateDrag(current_mouse_glm, current_pos);
                         selected_transform->SetLocalPosition(new_pos);
-                    } else if (editor_state.transform_gizmo.GetMode() == schizo::editor::GizmoMode::Rotate) {
-                        // Rotation support will be added once we refactor to handle quaternions properly
-                        // For now, skip rotation updates
-                    } else if (editor_state.transform_gizmo.GetMode() == schizo::editor::GizmoMode::Scale) {
+                    } else if (gmode == schizo::editor::GizmoMode::Rotate) {
+                        // Mouse delta along its dominant axis drives a
+                        // rotation around the selected gizmo axis. ~0.5°/pixel.
+                        glm::vec2 delta = current_mouse_glm - editor_state.gizmo_drag_start;
+                        editor_state.gizmo_drag_start = current_mouse_glm;
+                        float scalar = (editor_state.gizmo_axis == 'y') ? -delta.y : delta.x;
+                        float angle  = glm::radians(scalar * 0.5f);
+                        glm::vec3 axis(0.0f);
+                        if (editor_state.gizmo_axis == 'x') axis = glm::vec3(1, 0, 0);
+                        if (editor_state.gizmo_axis == 'y') axis = glm::vec3(0, 1, 0);
+                        if (editor_state.gizmo_axis == 'z') axis = glm::vec3(0, 0, 1);
+                        if (axis != glm::vec3(0.0f) && std::abs(angle) > 1e-6f) {
+                            glm::quat q = glm::angleAxis(angle, axis);
+                            selected_transform->SetLocalRotation(q * selected_transform->GetLocalRotation());
+                        }
+                    } else if (gmode == schizo::editor::GizmoMode::Scale) {
                         glm::vec3 current_scale = selected_transform->GetLocalScale();
                         glm::vec3 new_scale = editor_state.transform_gizmo.UpdateDrag(current_mouse_glm, current_scale);
                         // Ensure scale doesn't go below minimum
                         new_scale = glm::max(new_scale, glm::vec3(0.01f));
                         selected_transform->SetLocalScale(new_scale);
                     }
-                    
+
                     editor_state.editor_scene->MarkModified();
                 }
             } else if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
@@ -1925,8 +1913,7 @@ void ShowPlaybackControls(EditorState& editor_state) {
         ImGui::BeginDisabled(!can_play);
         if (ImGui::Button("Play (F5)##playback", ImVec2(80, 0))) {
             if (editor_state.scene_playback_manager->StartPlayback(scene)) {
-                spdlog::info("Scene playback started - hiding cursor");
-                ImGui::GetIO().MouseDrawCursor = false;  // Hide ImGui cursor
+                spdlog::info("Scene playback started");
             } else {
                 spdlog::warn("Failed to start scene playback");
             }
@@ -1950,8 +1937,7 @@ void ShowPlaybackControls(EditorState& editor_state) {
         ImGui::BeginDisabled(!editor_state.scene_playback_manager->IsPlaying());
         if (ImGui::Button("Stop##playback", ImVec2(80, 0))) {
             editor_state.scene_playback_manager->StopPlayback();
-            ImGui::GetIO().MouseDrawCursor = true;  // Show ImGui cursor
-            spdlog::info("Scene playback stopped - showing cursor");
+            spdlog::info("Scene playback stopped");
         }
         ImGui::EndDisabled();
         
@@ -2014,245 +2000,722 @@ void ShowDebugPanels(EditorState& editor_state) {
     }
 }
 
+// ============================================================================
+// Blit post-processing output to swapchain, leaving swapchain in
+// TRANSFER_DST_OPTIMAL so the ImGui render pass can take it from there.
+// ============================================================================
+
+static void blit_to_swapchain(VkCommandBuffer cmd,
+                               VkImage src_image,
+                               VkExtent2D src_extent,
+                               VkImage swapchain_image,
+                               VkExtent2D dst_extent) {
+    VkImageMemoryBarrier src_to_transfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    src_to_transfer.oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    src_to_transfer.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    src_to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    src_to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    src_to_transfer.image               = src_image;
+    src_to_transfer.srcAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+    src_to_transfer.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+    src_to_transfer.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    VkImageMemoryBarrier dst_to_transfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    dst_to_transfer.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+    dst_to_transfer.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    dst_to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    dst_to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    dst_to_transfer.image               = swapchain_image;
+    dst_to_transfer.srcAccessMask       = 0;
+    dst_to_transfer.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+    dst_to_transfer.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    VkImageMemoryBarrier pre_barriers[] = {src_to_transfer, dst_to_transfer};
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 2, pre_barriers);
+
+    VkImageBlit blit{};
+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[0]  = {0, 0, 0};
+    blit.srcOffsets[1]  = {(int32_t)src_extent.width, (int32_t)src_extent.height, 1};
+    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.dstOffsets[0]  = {0, 0, 0};
+    blit.dstOffsets[1]  = {(int32_t)dst_extent.width, (int32_t)dst_extent.height, 1};
+    vkCmdBlitImage(cmd,
+                   src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   swapchain_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1, &blit, VK_FILTER_LINEAR);
+
+    // Restore post-processing output to SHADER_READ_ONLY for ImGui::Image display.
+    // Swapchain stays in TRANSFER_DST_OPTIMAL — the ImGui render pass transitions it.
+    VkImageMemoryBarrier src_restore{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    src_restore.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    src_restore.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    src_restore.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    src_restore.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    src_restore.image               = src_image;
+    src_restore.srcAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+    src_restore.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+    src_restore.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &src_restore);
+}
+
+// ============================================================================
+// main()
+// ============================================================================
+
 int main() {
     try {
         spdlog::set_level(spdlog::level::info);
-        spdlog::info("=== Project Schizo Editor ===");
-        
-        // Create window
-        spdlog::info("Creating window...");
-        schizo::window::WindowProperties props;
-        props.width = 1920;
-        props.height = 1080;
-        props.title = "Project Schizo - Editor";
-        props.vsync = true;
-        
-        auto window = schizo::window::Window::Create(props);
-        if (!window) {
-            spdlog::error("Failed to create window!");
+        spdlog::info("=== Project Schizo Editor (Vulkan) ===");
+
+        // ----------------------------------------------------------------
+        // GLFW + window (Vulkan, no OpenGL context)
+        // ----------------------------------------------------------------
+        if (!glfwInit()) {
+            spdlog::error("glfwInit failed");
             return 1;
         }
-        spdlog::info("Window created successfully!");
-        
-        // Load OpenGL function pointers with glad
-        if (!gladLoadGL((GLADloadproc)glfwGetProcAddress)) {
-            spdlog::error("Failed to initialize glad!");
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        glfwWindowHint(GLFW_RESIZABLE,  GLFW_TRUE);
+
+        constexpr uint32_t kW = 1920, kH = 1080;
+        GLFWwindow* glfw_window = glfwCreateWindow(kW, kH,
+                                                    "Project Schizo - Editor",
+                                                    nullptr, nullptr);
+        if (!glfw_window) {
+            spdlog::error("glfwCreateWindow failed");
+            glfwTerminate();
             return 1;
         }
-        const char* gl_version = (const char*)glGetString(GL_VERSION);
-        spdlog::info("Glad initialized - OpenGL {} loaded", gl_version);
-        
-        // Initialize ImGui
-        spdlog::info("Initializing ImGui...");
-        IMGUI_CHECKVERSION();
-        ImGui::CreateContext();
-        ImGuiIO& io = ImGui::GetIO();
-        
-        // Enable keyboard navigation
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-        
-        // Set INI file for window state persistence
-        io.IniFilename = "editor.ini";
-        
-        ImGui::StyleColorsDark();
-        
-        // Setup Platform/Renderer backends
-        ImGui_ImplGlfw_InitForOpenGL(window->GetNativeHandle(), true);
-        ImGui_ImplOpenGL3_Init("#version 450");
-        
-        spdlog::info("ImGui initialized!");
-        
-        // Create editor scene (manages current scene being edited)
+        spdlog::info("GLFW window created ({}x{})", kW, kH);
+
+        // ----------------------------------------------------------------
+        // Vulkan device + surface + swapchain
+        // ----------------------------------------------------------------
+        VulkanDevice device;
+        RenderConfig render_cfg{};
+        render_cfg.window_width      = kW;
+        render_cfg.window_height     = kH;
+        render_cfg.enable_validation = true;
+        render_cfg.app_name          = "ProjectSchizoEditor";
+        device.initialize(render_cfg);
+        spdlog::info("VulkanDevice initialized: {}", device.get_device_name());
+
+        VkSurfaceKHR surface = VK_NULL_HANDLE;
+        if (glfwCreateWindowSurface(device.get_vk_instance(), glfw_window,
+                                    nullptr, &surface) != VK_SUCCESS) {
+            spdlog::error("glfwCreateWindowSurface failed");
+            device.shutdown();
+            glfwDestroyWindow(glfw_window);
+            glfwTerminate();
+            return 1;
+        }
+        if (!device.attach_surface(surface) ||
+            !device.create_window_swapchain(kW, kH)) {
+            spdlog::error("Surface / swapchain setup failed");
+            device.shutdown();
+            glfwDestroyWindow(glfw_window);
+            glfwTerminate();
+            return 1;
+        }
+        auto* swapchain = device.get_swapchain();
+        spdlog::info("Swapchain: {}x{} ({} images)",
+                     swapchain->get_width(), swapchain->get_height(),
+                     swapchain->get_image_count());
+
+        // ----------------------------------------------------------------
+        // Material descriptor infra (layout + pool shared by GBuffer pipeline
+        // and all Material instances created in the editor session).
+        // ----------------------------------------------------------------
+        VkDescriptorSetLayout mat_layout =
+            Material::create_descriptor_set_layout(device.get_device());
+        VkDescriptorPool mat_pool =
+            Material::create_descriptor_pool(device.get_device(), 64);
+
+        // ----------------------------------------------------------------
+        // Deferred pipeline
+        // ----------------------------------------------------------------
+        GBufferConfig g_cfg{};
+        g_cfg.width              = kW;
+        g_cfg.height             = kH;
+        g_cfg.material_set_layout = mat_layout;
+        auto g_buffer = VulkanGBuffer::create(&device, g_cfg);
+
+        LightingConfig l_cfg{};
+        l_cfg.ambient_color   = glm::vec3(0.3f);
+        l_cfg.global_ambient  = 1.0f;
+        auto lighting = VulkanLightingPass::create(&device, l_cfg, g_buffer.get());
+        lighting->add_directional_light(glm::vec3(0.3f, -1.0f, 0.2f),
+                                        glm::vec3(1.0f, 0.95f, 0.85f),
+                                        1.5f, /*shadow=*/false);
+
+        ShadowMapConfig s_cfg{};
+        s_cfg.width = s_cfg.height = 512;
+        s_cfg.cascade_count = 1;
+        auto shadow_map = VulkanShadowMap::create(&device, s_cfg);
+
+        PostProcessingConfig pp_cfg{};
+        pp_cfg.width  = kW;
+        pp_cfg.height = kH;
+        pp_cfg.bloom.enabled        = true;
+        pp_cfg.taa.enabled          = false;
+        pp_cfg.tone_mapping.enabled = true;
+        auto post_processing = VulkanPostProcessing::create(&device, pp_cfg);
+        post_processing->set_input_image(lighting->get_output_view());
+
+        if (!g_buffer || !lighting || !shadow_map || !post_processing) {
+            spdlog::error("Deferred pipeline component construction failed");
+            device.shutdown();
+            glfwDestroyWindow(glfw_window);
+            glfwTerminate();
+            return 1;
+        }
+
+        RenderGraphConfig graph_cfg{};
+        graph_cfg.device          = &device;
+        graph_cfg.g_buffer        = g_buffer.get();
+        graph_cfg.lighting        = lighting.get();
+        graph_cfg.shadow_map      = shadow_map.get();
+        graph_cfg.post_processing = post_processing.get();
+        graph_cfg.width           = kW;
+        graph_cfg.height          = kH;
+        auto graph = VulkanRenderGraph::create(graph_cfg);
+        if (!graph) {
+            spdlog::error("VulkanRenderGraph::create failed");
+            device.shutdown();
+            glfwDestroyWindow(glfw_window);
+            glfwTerminate();
+            return 1;
+        }
+        spdlog::info("Deferred pipeline + render graph ready");
+
+        // ----------------------------------------------------------------
+        // Primitive mesh cache (one GPU mesh per MeshType; reused by every
+        // entity that selects that primitive via MeshRendererComponent).
+        // ----------------------------------------------------------------
+        schizo::editor::PrimitiveMeshCache prim_cache;
+        prim_cache.initialize(&device);
+        spdlog::info("Primitive meshes initialized (cube/plane/sphere/cylinder/capsule/pyramid)");
+
+        // Per-entity Material cache. Materials are rebuilt only when the
+        // entity's color factors actually change.
+        schizo::editor::EntityMaterialCache mat_cache;
+
+        // glTF asset cache. Lazily loads .gltf/.glb files referenced via
+        // entity MeshComponent::mesh_path (set by drag-drop in the inspector).
+        schizo::editor::AssetMeshCache asset_cache;
+
+        // ----------------------------------------------------------------
+        // ImGui render pass: clears swapchain to dark gray, presents as PRESENT_SRC.
+        // The 3D scene is displayed inside the viewport via ImGui::Image(), not as
+        // a swapchain blit — so we start from UNDEFINED and clear each frame.
+        // ----------------------------------------------------------------
+        VkAttachmentDescription imgui_color_attachment{};
+        imgui_color_attachment.format         = swapchain->get_format();
+        imgui_color_attachment.samples        = VK_SAMPLE_COUNT_1_BIT;
+        imgui_color_attachment.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        imgui_color_attachment.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        imgui_color_attachment.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        imgui_color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        imgui_color_attachment.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        imgui_color_attachment.finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+        VkAttachmentReference imgui_color_ref{};
+        imgui_color_ref.attachment = 0;
+        imgui_color_ref.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        VkSubpassDescription imgui_subpass{};
+        imgui_subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        imgui_subpass.colorAttachmentCount = 1;
+        imgui_subpass.pColorAttachments    = &imgui_color_ref;
+
+        VkSubpassDependency imgui_dep{};
+        imgui_dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
+        imgui_dep.dstSubpass    = 0;
+        imgui_dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        imgui_dep.srcAccessMask = 0;
+        imgui_dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        imgui_dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        VkRenderPassCreateInfo imgui_rp_info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        imgui_rp_info.attachmentCount = 1;
+        imgui_rp_info.pAttachments    = &imgui_color_attachment;
+        imgui_rp_info.subpassCount    = 1;
+        imgui_rp_info.pSubpasses      = &imgui_subpass;
+        imgui_rp_info.dependencyCount = 1;
+        imgui_rp_info.pDependencies   = &imgui_dep;
+
+        VkRenderPass imgui_render_pass = VK_NULL_HANDLE;
+        if (vkCreateRenderPass(device.get_device(), &imgui_rp_info, nullptr,
+                               &imgui_render_pass) != VK_SUCCESS) {
+            spdlog::error("Failed to create ImGui render pass");
+            device.shutdown();
+            glfwDestroyWindow(glfw_window);
+            glfwTerminate();
+            return 1;
+        }
+
+        // One framebuffer per swapchain image
+        std::vector<VkFramebuffer> imgui_framebuffers(swapchain->get_image_count());
+        for (uint32_t i = 0; i < swapchain->get_image_count(); ++i) {
+            VkImageView views[] = { swapchain->get_image_view(i) };
+            VkFramebufferCreateInfo fb_info{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+            fb_info.renderPass      = imgui_render_pass;
+            fb_info.attachmentCount = 1;
+            fb_info.pAttachments    = views;
+            fb_info.width           = swapchain->get_width();
+            fb_info.height          = swapchain->get_height();
+            fb_info.layers          = 1;
+            vkCreateFramebuffer(device.get_device(), &fb_info, nullptr,
+                                &imgui_framebuffers[i]);
+        }
+        spdlog::info("ImGui render pass + framebuffers created");
+
+        // ----------------------------------------------------------------
+        // ImGuiVulkan (owns ImGui context, GLFW + Vulkan backends)
+        // ----------------------------------------------------------------
+        auto imgui = ImGuiVulkan::create(&device, graph.get(), glfw_window,
+                                         kW, kH, imgui_render_pass);
+        if (!imgui) {
+            spdlog::error("ImGuiVulkan::create failed");
+            device.shutdown();
+            glfwDestroyWindow(glfw_window);
+            glfwTerminate();
+            return 1;
+        }
+        ImGui::GetIO().IniFilename = "editor.ini";
+        spdlog::info("ImGuiVulkan initialized");
+
+        // ----------------------------------------------------------------
+        // Per-frame synchronisation (double-buffered)
+        // ----------------------------------------------------------------
+        constexpr uint32_t kMaxFrames = 2;
+        VkCommandBuffer frame_cmds[kMaxFrames]    = {};
+        VkSemaphore     acquire_sems[kMaxFrames]  = {};
+        VkSemaphore     render_sems[kMaxFrames]   = {};
+        VkFence         frame_fences[kMaxFrames]  = {};
+
+        VkCommandBufferAllocateInfo cmd_alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        cmd_alloc.commandPool        = device.get_command_pool();
+        cmd_alloc.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmd_alloc.commandBufferCount = kMaxFrames;
+        vkAllocateCommandBuffers(device.get_device(), &cmd_alloc, frame_cmds);
+
+        VkSemaphoreCreateInfo sem_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        VkFenceCreateInfo     fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        for (uint32_t i = 0; i < kMaxFrames; ++i) {
+            vkCreateSemaphore(device.get_device(), &sem_info, nullptr, &acquire_sems[i]);
+            vkCreateSemaphore(device.get_device(), &sem_info, nullptr, &render_sems[i]);
+            vkCreateFence(device.get_device(), &fence_info, nullptr, &frame_fences[i]);
+        }
+        uint32_t current_frame = 0;
+
+        // ----------------------------------------------------------------
+        // Viewport texture — register post-processing output with ImGui
+        // ----------------------------------------------------------------
+        VkDescriptorSet viewport_ds = ImGui_ImplVulkan_AddTexture(
+            post_processing->get_output_image(),
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        // ----------------------------------------------------------------
+        // Editor scene + UI state
+        // ----------------------------------------------------------------
         schizo::editor::EditorScene editor_scene;
-        
-        // Editor state
         EditorState editor_state;
-        editor_state.editor_scene = &editor_scene;
-        
-        // Set up drag-and-drop callback
+        editor_state.editor_scene       = &editor_scene;
+        editor_state.viewport_texture_id = viewport_ds;
+
         g_editor_state = &editor_state;
-        glfwSetDropCallback(window->GetNativeHandle(), DropCallback);
-        spdlog::info("Drag-and-drop support enabled");
-        
-        // Initialize 3D renderer
-        spdlog::info("Initializing SimpleRenderer...");
-        editor_state.simple_renderer = std::make_unique<schizo::editor::SimpleRenderer>();
-        editor_state.simple_renderer->Initialize();
-        
-        // Initialize 3D Viewport Renderer
-        spdlog::info("Initializing 3D Viewport Renderer...");
-        editor_state.viewport_renderer_3d = std::make_unique<schizo::editor::ViewportRenderer3D>();
-        editor_state.viewport_renderer_3d->Initialize(nullptr, 1024, 768);
-        spdlog::info("ViewportRenderer3D initialized");
-        
-        // Initialize Asset Browser Panel
-        spdlog::info("Initializing Asset Browser Panel...");
-        editor_state.asset_browser = std::make_unique<schizo::editor::AssetBrowserPanel>();
-        spdlog::info("Asset Browser Panel initialized");
-        
-        // Initialize Material Editor Panel
-        spdlog::info("Initializing Material Editor Panel...");
+        glfwSetDropCallback(glfw_window, DropCallback);
+
+        editor_state.asset_browser  = std::make_unique<schizo::editor::AssetBrowserPanel>();
         editor_state.material_editor = std::make_unique<schizo::editor::MaterialEditorPanel>();
-        spdlog::info("Material Editor Panel initialized");
-        
-        // Initialize Asset Import Dialog
-        spdlog::info("Initializing Asset Import Dialog...");
         editor_state.asset_import_dialog = std::make_unique<schizo::editor::AssetImportDialog>();
-        spdlog::info("Asset Import Dialog initialized");
-        
-        // Initialize Scene Playback Manager
-        spdlog::info("Initializing Scene Playback Manager...");
         editor_state.scene_playback_manager = std::make_unique<schizo::editor::ScenePlaybackManager>();
-        spdlog::info("Scene Playback Manager initialized");
-        
-        // Initialize Debug Panels
-        spdlog::info("Initializing Debug Panels...");
         editor_state.character_panel = std::make_unique<schizo::editor::CharacterControllerPanel>();
-        editor_state.ability_panel = std::make_unique<schizo::editor::AbilitySystemPanel>();
-        editor_state.network_panel = std::make_unique<schizo::editor::NetworkSystemPanel>();
-        spdlog::info("Debug Panels initialized (Character, Ability, Network)");
-        
+        editor_state.ability_panel   = std::make_unique<schizo::editor::AbilitySystemPanel>();
+        editor_state.network_panel   = std::make_unique<schizo::editor::NetworkSystemPanel>();
+        spdlog::info("Editor state and panels initialized");
+
+        // ----------------------------------------------------------------
+        // Populate default base scene — light + ground only. The user adds
+        // additional entities via the Scene Hierarchy "+ Add Entity" menu.
+        // ----------------------------------------------------------------
+        {
+            auto scene = editor_scene.GetScene();
+            if (scene) {
+                schizo::scene::EntityFactory::CreateDirectionalLight(scene, "Directional Light",
+                    glm::vec3(-0.3f, -1.0f, 0.2f),
+                    glm::vec3(1.0f, 0.95f, 0.85f), 1.5f);
+
+                schizo::scene::EntityFactory::CreatePlane(scene, "Ground", 10.0f, 10.0f,
+                    glm::vec4(0.45f, 0.45f, 0.45f, 1.0f));
+
+                spdlog::info("Default scene: {} entities", scene->GetEntityCount());
+            }
+        }
+
+        // ----------------------------------------------------------------
         // Main loop
+        // ----------------------------------------------------------------
         spdlog::info("Entering editor loop...");
         int frame_count = 0;
-        
-        while (window->Update()) {
-            if (window->IsKeyPressed(schizo::window::KeyCode::ESCAPE)) {
-                spdlog::info("ESC pressed - exiting editor");
-                break;
-            }
-            
-            // Ctrl+Z for undo
-            if (window->IsKeyPressed(schizo::window::KeyCode::LEFT_CONTROL) && 
-                window->IsKeyPressed(schizo::window::KeyCode::Z)) {
-                if (editor_state.undo_redo_manager.CanUndo()) {
-                    editor_state.undo_redo_manager.Undo();
-                    spdlog::info("Undo: {}", editor_state.undo_redo_manager.GetRedoDescription());
+
+        // Persistent state for the play-mode cursor pipeline. We mirror the
+        // playback manager's IsCursorCaptured() flag onto GLFW (hide/lock the
+        // cursor) and onto ImGui (NoMouse = ignore mouse on panels) so the
+        // player can't accidentally hover or click editor UI while playing.
+        bool prev_cursor_captured = false;
+        double last_cursor_x = 0.0;
+        double last_cursor_y = 0.0;
+        bool cursor_delta_primed = false;
+
+        while (!glfwWindowShouldClose(glfw_window)) {
+            glfwPollEvents();
+
+            // Key input
+            auto key = [&](int k) { return glfwGetKey(glfw_window, k) == GLFW_PRESS; };
+
+            // ----------------------------------------------------------------
+            // Play-mode cursor pipeline. Gated tightly on IsPlaying() so it is
+            // a no-op outside play. No ImGui ConfigFlags manipulation here —
+            // we only toggle GLFW's cursor mode and feed raw deltas. Editor
+            // panels remain hoverable, but the OS cursor is hidden and locked
+            // so the player can't move it onto a panel by accident.
+            // ----------------------------------------------------------------
+            const bool playing = editor_state.scene_playback_manager &&
+                                 editor_state.scene_playback_manager->IsPlaying();
+            if (playing) {
+                const bool want_capture =
+                    editor_state.scene_playback_manager->IsCursorCaptured();
+                if (want_capture != prev_cursor_captured) {
+                    glfwSetInputMode(glfw_window, GLFW_CURSOR,
+                                     want_capture ? GLFW_CURSOR_DISABLED
+                                                  : GLFW_CURSOR_NORMAL);
+                    cursor_delta_primed = false;
+                    prev_cursor_captured = want_capture;
                 }
-            }
-            
-            // Ctrl+Y for redo
-            if (window->IsKeyPressed(schizo::window::KeyCode::LEFT_CONTROL) && 
-                window->IsKeyPressed(schizo::window::KeyCode::Y)) {
-                if (editor_state.undo_redo_manager.CanRedo()) {
-                    editor_state.undo_redo_manager.Redo();
-                    spdlog::info("Redo: {}", editor_state.undo_redo_manager.GetUndoDescription());
+                if (want_capture) {
+                    double cx = 0.0, cy = 0.0;
+                    glfwGetCursorPos(glfw_window, &cx, &cy);
+                    if (cursor_delta_primed) {
+                        editor_state.scene_playback_manager->OnMouseDelta(
+                            static_cast<float>(cx - last_cursor_x),
+                            static_cast<float>(cy - last_cursor_y));
+                    }
+                    last_cursor_x = cx;
+                    last_cursor_y = cy;
+                    cursor_delta_primed = true;
                 }
+            } else if (prev_cursor_captured) {
+                // Exited play mode — restore the OS cursor we hid earlier.
+                glfwSetInputMode(glfw_window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                prev_cursor_captured = false;
+                cursor_delta_primed = false;
             }
-            
-            // F5 to toggle play mode
-            if (window->IsKeyPressed(schizo::window::KeyCode::F5)) {
-                if (editor_state.scene_playback_manager->IsPlaying()) {
-                    editor_state.scene_playback_manager->StopPlayback();
-                    ImGui::GetIO().MouseDrawCursor = true;  // Show ImGui cursor
-                    spdlog::info("Play mode stopped (F5)");
-                } else {
-                    auto scene = editor_state.editor_scene->GetScene();
-                    if (scene && editor_state.scene_playback_manager->StartPlayback(scene)) {
-                        spdlog::info("Play mode started (F5) - hiding cursor");
-                        ImGui::GetIO().MouseDrawCursor = false;  // Hide ImGui cursor
+
+            // ESC progressively de-escalates while playing:
+            //   captured cursor → release cursor
+            //   released cursor → stop playback
+            // Outside play, ESC still exits the editor (matches old behaviour).
+            {
+                static bool prev_esc = false;
+                bool cur_esc = key(GLFW_KEY_ESCAPE);
+                if (cur_esc && !prev_esc) {
+                    if (playing) {
+                        if (editor_state.scene_playback_manager->IsCursorCaptured()) {
+                            editor_state.scene_playback_manager->SetCursorCaptured(false);
+                        } else {
+                            editor_state.scene_playback_manager->StopPlayback();
+                        }
                     } else {
-                        spdlog::warn("Failed to start playback - no valid scene");
+                        spdlog::info("ESC — exiting editor");
+                        prev_esc = cur_esc;
+                        break;
                     }
                 }
+                prev_esc = cur_esc;
             }
-            
-            // Flythrough camera controls (WASD keys)
-            float camera_movement = 0.1f;
-            if (window->IsKeyPressed(schizo::window::KeyCode::W)) {
-                editor_state.viewport_camera.MoveLocal(camera_movement, 0.0f, 0.0f);
+            if (key(GLFW_KEY_LEFT_CONTROL) && key(GLFW_KEY_Z)) {
+                if (editor_state.undo_redo_manager.CanUndo())
+                    editor_state.undo_redo_manager.Undo();
             }
-            if (window->IsKeyPressed(schizo::window::KeyCode::S)) {
-                editor_state.viewport_camera.MoveLocal(-camera_movement, 0.0f, 0.0f);
+            if (key(GLFW_KEY_LEFT_CONTROL) && key(GLFW_KEY_Y)) {
+                if (editor_state.undo_redo_manager.CanRedo())
+                    editor_state.undo_redo_manager.Redo();
             }
-            if (window->IsKeyPressed(schizo::window::KeyCode::A)) {
-                editor_state.viewport_camera.MoveLocal(0.0f, -camera_movement, 0.0f);
-            }
-            if (window->IsKeyPressed(schizo::window::KeyCode::D)) {
-                editor_state.viewport_camera.MoveLocal(0.0f, camera_movement, 0.0f);
-            }
-            if (window->IsKeyPressed(schizo::window::KeyCode::SPACE)) {
-                editor_state.viewport_camera.MoveLocal(0.0f, 0.0f, camera_movement);
-            }
-            if (window->IsKeyPressed(schizo::window::KeyCode::LEFT_CONTROL)) {
-                editor_state.viewport_camera.MoveLocal(0.0f, 0.0f, -camera_movement);
-            }
-            
-            // Update play time if in play mode
-            if (editor_state.is_playing) {
-                editor_state.play_time += 0.016f;  // Approximate 60 FPS delta time
-            }
-            
-            // Update scene playback if running
-            if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
-                editor_state.scene_playback_manager->Update(0.016f);  // Approximate 60 FPS delta time
-            }
-            
-            // Start ImGui frame
-            ImGui_ImplOpenGL3_NewFrame();
-            ImGui_ImplGlfw_NewFrame();
-            ImGui::NewFrame();
-            
-            // Draw background to clear previous frames
+            // F5 toggles play/stop. Edge-detected so a held key fires once.
             {
+                static bool prev_f5 = false;
+                bool cur_f5 = key(GLFW_KEY_F5);
+                if (cur_f5 && !prev_f5 && editor_state.scene_playback_manager) {
+                    if (editor_state.scene_playback_manager->IsPlaying()) {
+                        editor_state.scene_playback_manager->StopPlayback();
+                    } else {
+                        auto sc = editor_state.editor_scene->GetScene();
+                        if (sc) editor_state.scene_playback_manager->StartPlayback(sc);
+                    }
+                }
+                prev_f5 = cur_f5;
+            }
+
+            // V toggles first-/third-person view while playing. Edge-detected
+            // so a held key only fires once.
+            {
+                static bool prev_v = false;
+                bool cur_v = key(GLFW_KEY_V);
+                if (cur_v && !prev_v &&
+                    editor_state.scene_playback_manager &&
+                    editor_state.scene_playback_manager->IsPlaying()) {
+                    editor_state.scene_playback_manager->ToggleCameraView();
+                }
+                prev_v = cur_v;
+            }
+
+            // Delete key removes the selected entity. Edge-detected so a held
+            // key fires once; suppressed while ImGui has a text field focused
+            // so it doesn't conflict with the rename dialog.
+            {
+                static bool prev_delete = false;
+                bool cur_delete = key(GLFW_KEY_DELETE);
+                if (cur_delete && !prev_delete &&
+                    !ImGui::GetIO().WantTextInput &&
+                    editor_state.selected_entity_id != 0) {
+                    auto sc = editor_state.editor_scene->GetScene();
+                    auto ent = sc ? sc->GetEntityById(editor_state.selected_entity_id)
+                                  : nullptr;
+                    if (ent) {
+                        spdlog::info("Deleted entity (Delete key): {}", ent->GetName());
+                        sc->RemoveEntity(ent);
+                        editor_state.selected_entity_id = 0;
+                        editor_state.editor_scene->MarkModified();
+                    }
+                }
+                prev_delete = cur_delete;
+            }
+
+            float cam_spd = 0.1f;
+            if (key(GLFW_KEY_W))     editor_state.viewport_camera.MoveLocal( cam_spd, 0.f, 0.f);
+            if (key(GLFW_KEY_S))     editor_state.viewport_camera.MoveLocal(-cam_spd, 0.f, 0.f);
+            if (key(GLFW_KEY_A))     editor_state.viewport_camera.MoveLocal(0.f, -cam_spd, 0.f);
+            if (key(GLFW_KEY_D))     editor_state.viewport_camera.MoveLocal(0.f,  cam_spd, 0.f);
+            if (key(GLFW_KEY_SPACE)) editor_state.viewport_camera.MoveLocal(0.f, 0.f,  cam_spd);
+
+            if (editor_state.is_playing)
+                editor_state.play_time += 0.016f;
+            if (editor_state.scene_playback_manager &&
+                editor_state.scene_playback_manager->IsPlaying())
+                editor_state.scene_playback_manager->Update(0.016f);
+
+            // ------------------------------------------------------------
+            // Build ImGui frame (no GPU commands yet)
+            // ------------------------------------------------------------
+            imgui->begin_frame();
+
+            {   // Dark background window
                 ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
                 ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize, ImGuiCond_Always);
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
                 ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 1.0f));
-                ImGui::Begin("##background", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus);
+                ImGui::Begin("##background", nullptr,
+                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                    ImGuiWindowFlags_NoBringToFrontOnFocus);
                 ImGui::End();
                 ImGui::PopStyleColor();
                 ImGui::PopStyleVar(2);
             }
-            
-            // Render menus and panels
+
+            // Consume OS-dropped files (filled by GLFW DropCallback). Copies
+            // recognised asset extensions into assets/models and refreshes
+            // the browser so they appear immediately.
+            if (!editor_state.dropped_files.empty()) {
+                namespace fs = std::filesystem;
+                const fs::path target_dir = "assets/models";
+                std::error_code ec;
+                fs::create_directories(target_dir, ec);
+                int imported = 0;
+                for (const auto& src : editor_state.dropped_files) {
+                    fs::path src_path(src);
+                    std::string ext = src_path.extension().string();
+                    std::transform(ext.begin(), ext.end(), ext.begin(),
+                                   [](unsigned char c){ return std::tolower(c); });
+                    if (ext != ".obj" && ext != ".gltf" && ext != ".glb" &&
+                        ext != ".fbx" && ext != ".png" && ext != ".jpg" &&
+                        ext != ".jpeg" && ext != ".tga") {
+                        spdlog::warn("[Drop] Skipping unsupported file: {}", src);
+                        continue;
+                    }
+                    fs::path dst = target_dir / src_path.filename();
+                    std::error_code copy_ec;
+                    fs::copy_file(src_path, dst,
+                                  fs::copy_options::overwrite_existing, copy_ec);
+                    if (copy_ec) {
+                        spdlog::error("[Drop] Failed to import {} -> {}: {}",
+                                      src, dst.string(), copy_ec.message());
+                    } else {
+                        spdlog::info("[Drop] Imported {} -> {}", src, dst.string());
+                        ++imported;
+                    }
+                }
+                editor_state.dropped_files.clear();
+                if (imported > 0 && editor_state.asset_browser)
+                    editor_state.asset_browser->RefreshAssets();
+            }
+
             ShowMainMenuBar(editor_state);
-            
-            // File dialogs
             ShowSaveDialog(editor_state);
             ShowOpenDialog(editor_state);
             ShowRenameDialog(editor_state);
-            
-            if (editor_state.show_demo_window) {
+            if (editor_state.show_demo_window)
                 ImGui::ShowDemoWindow(&editor_state.show_demo_window);
-            }
-            
             ShowViewport(editor_state);
             ShowSceneHierarchy(editor_state);
             ShowInspector(editor_state);
             ShowAssetBrowser(editor_state);
-            
-            // Phase 6 Systems - Playback and Debug Tools
             ShowPlaybackControls(editor_state);
             ShowDebugPanels(editor_state);
-            
-            // Render import dialog if open
-            if (editor_state.asset_import_dialog && editor_state.asset_import_dialog->IsOpen()) {
+            if (editor_state.asset_import_dialog &&
+                editor_state.asset_import_dialog->IsOpen())
                 editor_state.asset_import_dialog->RenderDialog();
-            }
-            
             ShowPreferences(editor_state);
-            
-            // Render ImGui
-            ImGui::Render();
-            
-            // ImGui OpenGL3 backend renders to the window
-            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-            
-            // Swap buffers
-            window->SwapBuffers();
-            
-            frame_count++;
+
+            // ------------------------------------------------------------
+            // GPU frame
+            // ------------------------------------------------------------
+            vkWaitForFences(device.get_device(), 1, &frame_fences[current_frame],
+                            VK_TRUE, UINT64_MAX);
+            uint32_t image_index = swapchain->acquire_next_image(
+                acquire_sems[current_frame]);
+            vkResetFences(device.get_device(), 1, &frame_fences[current_frame]);
+
+            VkCommandBuffer cmd = frame_cmds[current_frame];
+            vkResetCommandBuffer(cmd, 0);
+
+            VkCommandBufferBeginInfo begin_info{
+                VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+            begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkBeginCommandBuffer(cmd, &begin_info);
+
+            // Camera from viewport — use the actual panel aspect ratio
+            CameraData cam{};
+            cam.position = editor_state.viewport_camera.GetPosition();
+            float vp_w = editor_state.viewport_panel_size.x;
+            float vp_h = editor_state.viewport_panel_size.y;
+            float aspect = (vp_h > 0.0f) ? vp_w / vp_h
+                                          : static_cast<float>(kW) / static_cast<float>(kH);
+            cam.view = editor_state.viewport_camera.GetViewMatrix();
+            cam.proj = editor_state.viewport_camera.GetProjectionMatrix(aspect);
+            cam.proj[1][1] *= -1.0f;  // GL → Vulkan Y flip
+            graph->set_camera(cam);
+
+            // Build per-frame draw list from the editor scene's entities.
+            // Entities with a MeshRendererComponent become DrawItems; others
+            // (lights, empty parents) are skipped.
+            mat_cache.prune(editor_scene.GetScene());
+            auto scene_draw_items = schizo::editor::build_draw_items(
+                editor_scene.GetScene(), prim_cache, mat_cache, asset_cache,
+                &device, mat_layout, mat_pool);
+            graph->set_draw_items(scene_draw_items);
+
+            graph->begin_frame(cmd);
+            graph->execute_stage(cmd, RenderGraphStage::Shadow,     {});
+            graph->execute_stage(cmd, RenderGraphStage::Geometry,   {});
+            graph->execute_stage(cmd, RenderGraphStage::Lighting,   {});
+            graph->execute_stage(cmd, RenderGraphStage::PostProcess, {});
+            graph->end_frame(cmd);
+
+            // ImGui render pass — clears swapchain to dark gray, then draws UI on top.
+            // The 3D scene is shown inside the Viewport panel via ImGui::Image().
+            VkClearValue imgui_clear{};
+            imgui_clear.color = {0.1f, 0.1f, 0.1f, 1.0f};
+            VkRenderPassBeginInfo rp_begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+            rp_begin.renderPass        = imgui_render_pass;
+            rp_begin.framebuffer       = imgui_framebuffers[image_index];
+            rp_begin.renderArea.offset = {0, 0};
+            rp_begin.renderArea.extent = {swapchain->get_width(),
+                                          swapchain->get_height()};
+            rp_begin.clearValueCount   = 1;
+            rp_begin.pClearValues      = &imgui_clear;
+            vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
+            imgui->end_frame(cmd);  // ImGui::Render + RenderDrawData
+            vkCmdEndRenderPass(cmd);
+
+            vkEndCommandBuffer(cmd);
+
+            VkPipelineStageFlags wait_stage =
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            VkSubmitInfo submit_info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            submit_info.waitSemaphoreCount   = 1;
+            submit_info.pWaitSemaphores      = &acquire_sems[current_frame];
+            submit_info.pWaitDstStageMask    = &wait_stage;
+            submit_info.commandBufferCount   = 1;
+            submit_info.pCommandBuffers      = &cmd;
+            submit_info.signalSemaphoreCount = 1;
+            submit_info.pSignalSemaphores    = &render_sems[current_frame];
+            vkQueueSubmit(device.get_graphics_queue(), 1, &submit_info,
+                          frame_fences[current_frame]);
+
+            swapchain->present_image(image_index, render_sems[current_frame]);
+            current_frame = (current_frame + 1) % kMaxFrames;
+            ++frame_count;
         }
-        
+
         spdlog::info("Editor closed after {} frames", frame_count);
-        
-        // Cleanup ImGui
-        ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplGlfw_Shutdown();
-        ImGui::DestroyContext();
-        
+
+        // ----------------------------------------------------------------
+        // Cleanup
+        // ----------------------------------------------------------------
+        device.wait_idle();
+
+        if (viewport_ds != VK_NULL_HANDLE)
+            ImGui_ImplVulkan_RemoveTexture(viewport_ds);
+
+        imgui.reset();  // ImGui::DestroyContext + backends shutdown
+
+        for (auto fb : imgui_framebuffers)
+            vkDestroyFramebuffer(device.get_device(), fb, nullptr);
+        vkDestroyRenderPass(device.get_device(), imgui_render_pass, nullptr);
+
+        for (uint32_t i = 0; i < kMaxFrames; ++i) {
+            vkDestroyFence(device.get_device(), frame_fences[i], nullptr);
+            vkDestroySemaphore(device.get_device(), render_sems[i], nullptr);
+            vkDestroySemaphore(device.get_device(), acquire_sems[i], nullptr);
+        }
+        vkFreeCommandBuffers(device.get_device(), device.get_command_pool(),
+                             kMaxFrames, frame_cmds);
+
+        // Scene geometry — caches must release their meshes + materials
+        // before the descriptor pool / layout are destroyed.
+        mat_cache.clear();
+        asset_cache.clear();
+        prim_cache.cube.reset();
+        prim_cache.plane.reset();
+        prim_cache.sphere.reset();
+        prim_cache.cylinder.reset();
+        prim_cache.capsule.reset();
+        prim_cache.pyramid.reset();
+        vkDestroyDescriptorPool(device.get_device(), mat_pool, nullptr);
+        vkDestroyDescriptorSetLayout(device.get_device(), mat_layout, nullptr);
+
+        graph.reset();
+        post_processing.reset();
+        shadow_map.reset();
+        lighting.reset();
+        g_buffer.reset();
+
+        device.shutdown();
+        glfwDestroyWindow(glfw_window);
+        glfwTerminate();
+
         return 0;
     }
     catch (const std::exception& e) {

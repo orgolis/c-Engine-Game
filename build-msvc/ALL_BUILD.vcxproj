@@ -1,0 +1,296 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <PropertyGroup>
+    <ResolveNugetPackages>false</ResolveNugetPackages>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A1C1BB70-1A16-3F0A-B18D-FBE6F67F4A35}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>ALL_BUILD</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule C:/dev/ProjectSchizo - Copy/c-Engine-Game/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+C:\Strawberry\c\bin\cmake.exe "-SC:/dev/ProjectSchizo - Copy/c-Engine-Game" "-BC:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc" --check-stamp-file "C:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc/CMakeFiles/generate.stamp"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCXXCompiler.cmake.in;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCXXCompilerABI.cpp;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCXXInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCommonLanguageInclude.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCompilerIdDetection.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCXXCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompileFeatures.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompilerABI.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompilerId.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineRCCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineSystem.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeFindBinUtils.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeGenericSystem.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeInitializeConfigs.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeLanguageInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeParseImplicitIncludeInfo.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeParseImplicitLinkInfo.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeParseLibraryArchitecture.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeRCCompiler.cmake.in;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeRCInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeSystem.cmake.in;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeSystemSpecificInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeSystemSpecificInitialize.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeTestCXXCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeTestCompilerCommon.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeTestRCCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\ADSP-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\ARMCC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\ARMClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\AppleClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Borland-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Clang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Clang-DetermineCompilerInternal.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Compaq-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Cray-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\CrayClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Embarcadero-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Fujitsu-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\FujitsuClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\GHS-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\GNU-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\HP-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IAR-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IBMCPP-CXX-DetermineVersionInternal.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IBMClang-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Intel-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IntelLLVM-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\LCC-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\MSVC-CXX.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\MSVC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\MSVC.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\NVHPC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\NVIDIA-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\OpenWatcom-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\OrangeC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\PGI-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\PathScale-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\SCO-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\SunPro-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\TI-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\TIClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Tasking-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\VisualAge-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Watcom-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\XL-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\XLClang-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\zOS-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CompilerId\VS-10.vcxproj.in;C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageHandleStandardArgs.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageMessage.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindVulkan.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Internal\CMakeDetermineLinkerId.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Internal\FeatureTesting.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-Determine-CXX.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-Initialize.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-MSVC.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\WindowsPaths.cmake;C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\3.29.2\CMakeCXXCompiler.cmake;C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\3.29.2\CMakeRCCompiler.cmake;C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\3.29.2\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule C:/dev/ProjectSchizo - Copy/c-Engine-Game/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+C:\Strawberry\c\bin\cmake.exe "-SC:/dev/ProjectSchizo - Copy/c-Engine-Game" "-BC:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc" --check-stamp-file "C:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc/CMakeFiles/generate.stamp"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCXXCompiler.cmake.in;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCXXCompilerABI.cpp;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCXXInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCommonLanguageInclude.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCompilerIdDetection.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCXXCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompileFeatures.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompilerABI.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompilerId.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineRCCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineSystem.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeFindBinUtils.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeGenericSystem.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeInitializeConfigs.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeLanguageInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeParseImplicitIncludeInfo.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeParseImplicitLinkInfo.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeParseLibraryArchitecture.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeRCCompiler.cmake.in;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeRCInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeSystem.cmake.in;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeSystemSpecificInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeSystemSpecificInitialize.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeTestCXXCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeTestCompilerCommon.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeTestRCCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\ADSP-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\ARMCC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\ARMClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\AppleClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Borland-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Clang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Clang-DetermineCompilerInternal.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Compaq-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Cray-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\CrayClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Embarcadero-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Fujitsu-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\FujitsuClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\GHS-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\GNU-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\HP-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IAR-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IBMCPP-CXX-DetermineVersionInternal.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IBMClang-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Intel-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IntelLLVM-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\LCC-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\MSVC-CXX.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\MSVC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\MSVC.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\NVHPC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\NVIDIA-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\OpenWatcom-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\OrangeC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\PGI-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\PathScale-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\SCO-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\SunPro-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\TI-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\TIClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Tasking-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\VisualAge-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Watcom-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\XL-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\XLClang-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\zOS-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CompilerId\VS-10.vcxproj.in;C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageHandleStandardArgs.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageMessage.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindVulkan.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Internal\CMakeDetermineLinkerId.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Internal\FeatureTesting.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-Determine-CXX.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-Initialize.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-MSVC.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\WindowsPaths.cmake;C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\3.29.2\CMakeCXXCompiler.cmake;C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\3.29.2\CMakeRCCompiler.cmake;C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\3.29.2\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule C:/dev/ProjectSchizo - Copy/c-Engine-Game/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+C:\Strawberry\c\bin\cmake.exe "-SC:/dev/ProjectSchizo - Copy/c-Engine-Game" "-BC:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc" --check-stamp-file "C:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc/CMakeFiles/generate.stamp"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCXXCompiler.cmake.in;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCXXCompilerABI.cpp;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCXXInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCommonLanguageInclude.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCompilerIdDetection.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCXXCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompileFeatures.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompilerABI.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompilerId.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineRCCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineSystem.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeFindBinUtils.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeGenericSystem.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeInitializeConfigs.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeLanguageInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeParseImplicitIncludeInfo.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeParseImplicitLinkInfo.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeParseLibraryArchitecture.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeRCCompiler.cmake.in;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeRCInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeSystem.cmake.in;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeSystemSpecificInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeSystemSpecificInitialize.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeTestCXXCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeTestCompilerCommon.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeTestRCCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\ADSP-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\ARMCC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\ARMClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\AppleClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Borland-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Clang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Clang-DetermineCompilerInternal.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Compaq-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Cray-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\CrayClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Embarcadero-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Fujitsu-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\FujitsuClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\GHS-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\GNU-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\HP-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IAR-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IBMCPP-CXX-DetermineVersionInternal.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IBMClang-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Intel-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IntelLLVM-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\LCC-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\MSVC-CXX.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\MSVC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\MSVC.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\NVHPC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\NVIDIA-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\OpenWatcom-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\OrangeC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\PGI-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\PathScale-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\SCO-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\SunPro-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\TI-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\TIClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Tasking-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\VisualAge-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Watcom-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\XL-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\XLClang-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\zOS-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CompilerId\VS-10.vcxproj.in;C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageHandleStandardArgs.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageMessage.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindVulkan.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Internal\CMakeDetermineLinkerId.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Internal\FeatureTesting.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-Determine-CXX.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-Initialize.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-MSVC.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\WindowsPaths.cmake;C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\3.29.2\CMakeCXXCompiler.cmake;C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\3.29.2\CMakeRCCompiler.cmake;C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\3.29.2\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule C:/dev/ProjectSchizo - Copy/c-Engine-Game/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+C:\Strawberry\c\bin\cmake.exe "-SC:/dev/ProjectSchizo - Copy/c-Engine-Game" "-BC:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc" --check-stamp-file "C:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc/CMakeFiles/generate.stamp"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCXXCompiler.cmake.in;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCXXCompilerABI.cpp;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCXXInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCommonLanguageInclude.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeCompilerIdDetection.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCXXCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompileFeatures.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompilerABI.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineCompilerId.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineRCCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeDetermineSystem.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeFindBinUtils.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeGenericSystem.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeInitializeConfigs.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeLanguageInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeParseImplicitIncludeInfo.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeParseImplicitLinkInfo.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeParseLibraryArchitecture.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeRCCompiler.cmake.in;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeRCInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeSystem.cmake.in;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeSystemSpecificInformation.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeSystemSpecificInitialize.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeTestCXXCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeTestCompilerCommon.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CMakeTestRCCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\ADSP-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\ARMCC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\ARMClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\AppleClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Borland-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Clang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Clang-DetermineCompilerInternal.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Compaq-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Cray-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\CrayClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Embarcadero-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Fujitsu-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\FujitsuClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\GHS-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\GNU-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\HP-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IAR-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IBMCPP-CXX-DetermineVersionInternal.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IBMClang-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Intel-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\IntelLLVM-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\LCC-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\MSVC-CXX.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\MSVC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\MSVC.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\NVHPC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\NVIDIA-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\OpenWatcom-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\OrangeC-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\PGI-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\PathScale-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\SCO-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\SunPro-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\TI-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\TIClang-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Tasking-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\VisualAge-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\Watcom-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\XL-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\XLClang-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Compiler\zOS-CXX-DetermineCompiler.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\CompilerId\VS-10.vcxproj.in;C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageHandleStandardArgs.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageMessage.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindVulkan.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Internal\CMakeDetermineLinkerId.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Internal\FeatureTesting.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-Determine-CXX.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-Initialize.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows-MSVC.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\Windows.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\Platform\WindowsPaths.cmake;C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\3.29.2\CMakeCXXCompiler.cmake;C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\3.29.2\CMakeRCCompiler.cmake;C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\3.29.2\CMakeSystem.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\ZERO_CHECK.vcxproj">
+      <Project>{56B24B6B-FEDD-37A3-8EA8-6C0FEED5B92A}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\third_party\catch2\src\Catch2.vcxproj">
+      <Project>{8d538cbe-01bf-4a2e-a98a-6c368fdf13d7}</Project>
+      <Name>Catch2</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\third_party\catch2\src\Catch2WithMain.vcxproj">
+      <Project>{8bd3552a-2cfb-4a59-ab15-2031b97ada1e}</Project>
+      <Name>Catch2WithMain</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\ability\ability.vcxproj">
+      <Project>{BB8E9B22-D3A9-3E41-9B20-A5FB06EAD598}</Project>
+      <Name>ability</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\character\character.vcxproj">
+      <Project>{0D44F48B-0290-3003-ABB6-E15B179EE1C6}</Project>
+      <Name>character</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\tests\culling_test.vcxproj">
+      <Project>{158ABA9E-3FFF-353D-957E-F74A6291A379}</Project>
+      <Name>culling_test</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\tests\deferred_scene_test.vcxproj">
+      <Project>{C87FB559-72C8-38B7-A1C7-5DB708D7A210}</Project>
+      <Name>deferred_scene_test</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\tests\deferred_smoke_test.vcxproj">
+      <Project>{3EFF0BA3-F07A-3F60-AACB-8309A5D430E1}</Project>
+      <Name>deferred_smoke_test</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\editor\editor.vcxproj">
+      <Project>{47BD514A-380E-323B-86EE-80764E8DE3D2}</Project>
+      <Name>editor</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\engine.vcxproj">
+      <Project>{F2646164-1C8D-3014-9B09-5307BBA23CC3}</Project>
+      <Name>engine</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\tests\engine_window_test.vcxproj">
+      <Project>{9F3999A8-F546-3FA4-94E8-E600109FC322}</Project>
+      <Name>engine_window_test</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\game\game.vcxproj">
+      <Project>{82C4C4B6-2F7B-3CBB-A845-D43DD3814A6E}</Project>
+      <Name>game</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\gameplay\gameplay.vcxproj">
+      <Project>{8C8888C1-12BF-37A3-A0EF-C0C21487B859}</Project>
+      <Name>gameplay</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\third_party\glad\glad.vcxproj">
+      <Project>{AE30138E-C9B0-3E51-B352-16C207F6B210}</Project>
+      <Name>glad</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\third_party\glfw\src\glfw.vcxproj">
+      <Project>{6E468995-F39F-3144-9028-F3E0F8501560}</Project>
+      <Name>glfw</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\assets\gws_assets.vcxproj">
+      <Project>{6EF76C6C-6BD5-37B4-9217-56AABD894CAE}</Project>
+      <Name>gws_assets</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\file_io\gws_file_io.vcxproj">
+      <Project>{071A53D4-9036-3361-A4A5-6399A2257507}</Project>
+      <Name>gws_file_io</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\logging\gws_logging.vcxproj">
+      <Project>{4685521D-F21D-33D7-A5E7-207B4D0266CD}</Project>
+      <Name>gws_logging</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\tests\gws_tests.vcxproj">
+      <Project>{16EDA7E5-16EC-3B39-9AE5-286BB13667FA}</Project>
+      <Name>gws_tests</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\imgui.vcxproj">
+      <Project>{2A15902F-388E-3BE2-8267-208D63578187}</Project>
+      <Name>imgui</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\input\input.vcxproj">
+      <Project>{941071D5-FE27-3B70-BF1E-6843CFDFF8CA}</Project>
+      <Name>input</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\math\math.vcxproj">
+      <Project>{0A0FFDD1-D0FA-3292-847F-2ACF04315CFF}</Project>
+      <Name>math</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\third_party\meshoptimizer\meshoptimizer.vcxproj">
+      <Project>{B02D9C63-AD48-3264-BE17-8E3770E3D55F}</Project>
+      <Name>meshoptimizer</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\network\network.vcxproj">
+      <Project>{A9C26CFD-0C21-3440-98C3-D81583B7DA26}</Project>
+      <Name>network</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\physics\physics.vcxproj">
+      <Project>{446328B3-B42C-37B3-8266-A684D21976A9}</Project>
+      <Name>physics</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\renderer\renderer.vcxproj">
+      <Project>{0D5BFB09-08A6-33D9-82A0-FFEFDBF83274}</Project>
+      <Name>renderer</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\scene\scene.vcxproj">
+      <Project>{DDF57E89-BA02-3CE8-82A9-ACD9CEC76E38}</Project>
+      <Name>scene</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\third_party\spdlog\spdlog.vcxproj">
+      <Project>{1B63D163-9E61-366D-B757-B50949EE5932}</Project>
+      <Name>spdlog</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\tests\vulkan_window_test.vcxproj">
+      <Project>{55488733-609B-39FF-BF68-CDC0FB3EB090}</Project>
+      <Name>vulkan_window_test</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\window\window.vcxproj">
+      <Project>{BF721979-B158-33E0-8399-F937E112CF42}</Project>
+      <Name>window</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

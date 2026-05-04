@@ -74,11 +74,39 @@ std::shared_ptr<Entity> PlayerEntity::Create(
     
     // Mark as player
     player->AddComponent<PlayerMarkerComponent>();
-    
+
+    // ------------------------------------------------------------------
+    // Camera children. Created in hierarchy order:
+    //   1. FirstPersonCamera  (default — used when play mode starts)
+    //   2. ThirdPersonCamera
+    // The hierarchy panel orders children by scene-creation order, so
+    // creating FP first puts it above TP in the hierarchy.
+    //
+    // Player visual scale is (0.5, 1.8, 0.5); local offsets are picked so
+    // the world-space placement makes sense without play-time overrides.
+    // ------------------------------------------------------------------
+    auto first_person = scene->CreateEntity("FirstPersonCamera");
+    if (first_person) {
+        first_person->SetParent(player);
+        if (auto t = first_person->GetTransform()) {
+            t->SetLocalPosition(glm::vec3(0.0f, 0.45f, 0.0f));
+            t->SetLocalScale(glm::vec3(1.0f));
+        }
+    }
+
+    auto third_person = scene->CreateEntity("ThirdPersonCamera");
+    if (third_person) {
+        third_person->SetParent(player);
+        if (auto t = third_person->GetTransform()) {
+            t->SetLocalPosition(glm::vec3(0.0f, 0.7f, 6.0f));
+            t->SetLocalScale(glm::vec3(1.0f));
+        }
+    }
+
     // Emit signal that player was created
-    spdlog::info("Player entity '{}' created at position ({}, {}, {})",
+    spdlog::info("Player entity '{}' created at position ({}, {}, {}) with FirstPerson + ThirdPerson cameras",
                  name, position.x, position.y, position.z);
-    
+
     return player;
 }
 

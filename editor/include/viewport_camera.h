@@ -19,7 +19,7 @@ namespace schizo::editor {
  */
 class ViewportCamera {
 public:
-    ViewportCamera() = default;
+    ViewportCamera() { RecalculateViewMatrix(); }
     ~ViewportCamera() = default;
     
     /**

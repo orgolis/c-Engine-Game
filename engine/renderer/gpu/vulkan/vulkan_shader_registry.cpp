@@ -8,9 +8,12 @@
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <sstream>
+#ifdef _MSC_VER
 #include <glslang/Public/ShaderLang.h>
 #include <glslang/Public/ResourceLimits.h>
 #include <glslang/SPIRV/GlslangToSpv.h>
+#define GWS_HAS_GLSLANG 1
+#endif
 
 namespace gws::renderer::gpu {
 
@@ -20,10 +23,9 @@ VulkanShaderRegistry::~VulkanShaderRegistry() {
 
 bool VulkanShaderRegistry::initialize(VulkanDevice* device) {
     device_ = device;
-    
-    // Initialize glslang
+#ifdef GWS_HAS_GLSLANG
     glslang::InitializeProcess();
-    
+#endif
     spdlog::info("VulkanShaderRegistry initialized");
     return true;
 }
@@ -233,6 +235,35 @@ VkPipeline VulkanShaderRegistry::create_graphics_pipeline(const PipelineShaders&
     return pipeline;
 }
 
+std::shared_ptr<ShaderModule> VulkanShaderRegistry::create_from_spirv(const uint32_t* data,
+                                                                       uint32_t size_bytes,
+                                                                       ShaderStage stage,
+                                                                       const std::string& name) {
+    auto cached = get_shader(name);
+    if (cached) return cached;
+
+    VkShaderModuleCreateInfo ci{};
+    ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    ci.codeSize = size_bytes;
+    ci.pCode    = data;
+
+    VkShaderModule module;
+    if (vkCreateShaderModule(device_->get_device(), &ci, nullptr, &module) != VK_SUCCESS) {
+        spdlog::error("create_from_spirv: failed to create VkShaderModule for {}", name);
+        return nullptr;
+    }
+
+    auto shader = std::make_shared<ShaderModule>();
+    shader->handle = module;
+    shader->name   = name;
+    shader->stage  = stage;
+    shader->spirv_code.assign(data, data + size_bytes / sizeof(uint32_t));
+    shader_cache_[name] = shader;
+
+    spdlog::debug("Loaded pre-compiled SPIR-V: {} ({} bytes)", name, size_bytes);
+    return shader;
+}
+
 std::string VulkanShaderRegistry::get_builtin_shader(const std::string& name) {
     // Built-in shaders embedded as strings
     // In production, these would be loaded from actual files
@@ -259,64 +290,49 @@ void VulkanShaderRegistry::clear_cache() {
 std::vector<uint32_t> VulkanShaderRegistry::compile_glsl_to_spirv(const std::string& source,
                                                                   ShaderStage stage,
                                                                   const std::string& name) {
-    // Determine glslang shader type
+#ifdef GWS_HAS_GLSLANG
     EShLanguage language;
     switch (stage) {
-        case ShaderStage::Vertex:
-            language = EShLangVertex;
-            break;
-        case ShaderStage::Fragment:
-            language = EShLangFragment;
-            break;
-        case ShaderStage::Geometry:
-            language = EShLangGeometry;
-            break;
-        case ShaderStage::Compute:
-            language = EShLangCompute;
-            break;
-        default:
-            throw std::runtime_error("Unsupported shader stage");
+        case ShaderStage::Vertex:   language = EShLangVertex;   break;
+        case ShaderStage::Fragment: language = EShLangFragment; break;
+        case ShaderStage::Geometry: language = EShLangGeometry; break;
+        case ShaderStage::Compute:  language = EShLangCompute;  break;
+        default: throw std::runtime_error("Unsupported shader stage");
     }
-    
-    // Create shader
+
     glslang::TShader shader(language);
     const char* source_cstr = source.c_str();
     shader.setStrings(&source_cstr, 1);
     shader.setEnvInput(glslang::EShSourceGlsl, language, glslang::EShClientVulkan, 450);
     shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_2);
     shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_5);
-    
-    // Compile
+
     if (!shader.parse(GetDefaultResources(), 450, false, EShMsgDefault)) {
         std::string error = "Shader compilation failed:\n";
-        error += shader.getInfoLog();
-        error += "\n";
-        error += shader.getInfoDebugLog();
+        error += shader.getInfoLog(); error += "\n"; error += shader.getInfoDebugLog();
         throw std::runtime_error(error);
     }
-    
-    // Link program
+
     glslang::TProgram program;
     program.addShader(&shader);
-    
+
     if (!program.link(EShMsgDefault)) {
         std::string error = "Shader linking failed:\n";
-        error += program.getInfoLog();
-        error += "\n";
-        error += program.getInfoDebugLog();
+        error += program.getInfoLog(); error += "\n"; error += program.getInfoDebugLog();
         throw std::runtime_error(error);
     }
-    
-    // Convert to SPIR-V
+
     std::vector<uint32_t> spirv;
     spv::SpvBuildLogger logger;
     glslang::GlslangToSpv(*program.getIntermediate(language), spirv, &logger);
-    
-    if (spirv.empty()) {
-        throw std::runtime_error("Failed to generate SPIR-V code");
-    }
-    
+
+    if (spirv.empty()) throw std::runtime_error("Failed to generate SPIR-V code");
     return spirv;
+
+#else
+    (void)source; (void)stage;
+    throw std::runtime_error("GLSL->SPIR-V compilation unavailable (built with GCC). Shader: " + name);
+#endif
 }
 
 VkShaderStageFlagBits VulkanShaderRegistry::stage_to_vk(ShaderStage stage) {

@@ -1,5 +1,4 @@
 #include "transform_gizmo.h"
-#include "simple_renderer.h"
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/vector_angle.hpp>
 
@@ -77,87 +76,11 @@ void TransformGizmo::EndDrag() {
     delta_value_ = glm::vec3(0.0f);
 }
 
-void TransformGizmo::Render(SimpleRenderer* renderer, const glm::vec3& position, const glm::vec3& rotation,
-                            const glm::vec3& scale, const glm::mat4& view, const glm::mat4& proj,
-                            float gizmo_size) {
-    if (!renderer || mode_ == GizmoMode::None) return;
-    
-    // Create model matrix for gizmo
-    glm::mat4 model = glm::translate(glm::mat4(1.0f), position);
-    // Note: We'll ignore rotation for now - gizmos are typically world-aligned
-    model = glm::scale(model, glm::vec3(gizmo_size));
-    
-    switch (mode_) {
-        case GizmoMode::Translate: {
-            // Render red X arrow
-            glm::vec4 x_color(1.0f, 0.0f, 0.0f, 1.0f);
-            if (hovered_axis_ == GizmoAxis::X || selected_axis_ == GizmoAxis::X) {
-                x_color = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);  // Yellow highlight
-            }
-            Mesh x_arrow = renderer->CreateTranslationGizmoMesh('x');
-            renderer->RenderMesh(x_arrow, model, view, proj, x_color);
-            
-            // Render green Y arrow
-            glm::vec4 y_color(0.0f, 1.0f, 0.0f, 1.0f);
-            if (hovered_axis_ == GizmoAxis::Y || selected_axis_ == GizmoAxis::Y) {
-                y_color = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);  // Yellow highlight
-            }
-            Mesh y_arrow = renderer->CreateTranslationGizmoMesh('y');
-            renderer->RenderMesh(y_arrow, model, view, proj, y_color);
-            
-            // Render blue Z arrow
-            glm::vec4 z_color(0.0f, 0.0f, 1.0f, 1.0f);
-            if (hovered_axis_ == GizmoAxis::Z || selected_axis_ == GizmoAxis::Z) {
-                z_color = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);  // Yellow highlight
-            }
-            Mesh z_arrow = renderer->CreateTranslationGizmoMesh('z');
-            renderer->RenderMesh(z_arrow, model, view, proj, z_color);
-            break;
-        }
-        
-        case GizmoMode::Rotate: {
-            // Render rotation rings (from rotation gizmo mesh)
-            glm::vec4 red(1.0f, 0.0f, 0.0f, 1.0f);
-            glm::vec4 green(0.0f, 1.0f, 0.0f, 1.0f);
-            glm::vec4 blue(0.0f, 0.0f, 1.0f, 1.0f);
-            
-            // Highlight on hover
-            if (selected_axis_ == GizmoAxis::X) red = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
-            if (selected_axis_ == GizmoAxis::Y) green = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
-            if (selected_axis_ == GizmoAxis::Z) blue = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
-            
-            renderer->RenderMesh(renderer->rotation_gizmo_mesh, model, view, proj, red);
-            break;
-        }
-        
-        case GizmoMode::Scale: {
-            // Render scale handles (cubes on each axis)
-            glm::vec4 x_color(1.0f, 0.0f, 0.0f, 1.0f);
-            if (selected_axis_ == GizmoAxis::X) {
-                x_color = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
-            }
-            Mesh x_scale = renderer->CreateScaleGizmoMesh('x');
-            renderer->RenderMesh(x_scale, model, view, proj, x_color);
-            
-            glm::vec4 y_color(0.0f, 1.0f, 0.0f, 1.0f);
-            if (selected_axis_ == GizmoAxis::Y) {
-                y_color = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
-            }
-            Mesh y_scale = renderer->CreateScaleGizmoMesh('y');
-            renderer->RenderMesh(y_scale, model, view, proj, y_color);
-            
-            glm::vec4 z_color(0.0f, 0.0f, 1.0f, 1.0f);
-            if (selected_axis_ == GizmoAxis::Z) {
-                z_color = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
-            }
-            Mesh z_scale = renderer->CreateScaleGizmoMesh('z');
-            renderer->RenderMesh(z_scale, model, view, proj, z_color);
-            break;
-        }
-        
-        default:
-            break;
-    }
+void TransformGizmo::Render(SimpleRenderer* /*renderer*/, const glm::vec3& /*position*/,
+                            const glm::vec3& /*rotation*/, const glm::vec3& /*scale*/,
+                            const glm::mat4& /*view*/, const glm::mat4& /*proj*/,
+                            float /*gizmo_size*/) {
+    // OpenGL-based gizmo rendering removed; Vulkan overlay gizmo not yet implemented.
 }
 
 GizmoAxis TransformGizmo::CheckAxisProximity(const glm::vec2& mouse_pos, const glm::vec2& viewport_size,

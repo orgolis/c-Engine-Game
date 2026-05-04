@@ -1,0 +1,447 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{0D5BFB09-08A6-33D9-82A0-FFEFDBF83274}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>renderer</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\lib\Debug\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">renderer.dir\Debug\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">renderer</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.lib</TargetExt>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\lib\Release\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">renderer.dir\Release\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">renderer</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.lib</TargetExt>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\lib\MinSizeRel\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">renderer.dir\MinSizeRel\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">renderer</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">.lib</TargetExt>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\lib\RelWithDebInfo\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">renderer.dir\RelWithDebInfo\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">renderer</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">.lib</TargetExt>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glm;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\window\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glfw\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\spdlog\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\math\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\memory\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\scene\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\assets;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\tinygltf;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\vma\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\stb;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\meshoptimizer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui\backends;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/VulkanSDK/1.4.341.1/Include" /utf-8</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+      <DisableSpecificWarnings>4251;4275;4459</DisableSpecificWarnings>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <Optimization>Disabled</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;GLM_ENABLE_EXPERIMENTAL;GWS_USE_VULKAN=1;_CRT_SECURE_NO_WARNINGS;SPDLOG_COMPILED_LIB;SPDLOG_WCHAR_FILENAMES;TINYGLTF_IMPLEMENTATION;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VMA_STATIC_VULKAN_FUNCTIONS=0;CMAKE_INTDIR="Debug"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;GLM_ENABLE_EXPERIMENTAL;GWS_USE_VULKAN=1;_CRT_SECURE_NO_WARNINGS;SPDLOG_COMPILED_LIB;SPDLOG_WCHAR_FILENAMES;TINYGLTF_IMPLEMENTATION;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VMA_STATIC_VULKAN_FUNCTIONS=0;CMAKE_INTDIR=\"Debug\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glm;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\window\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glfw\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\spdlog\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\math\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\memory\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\scene\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\assets;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\tinygltf;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\vma\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\stb;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\meshoptimizer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui\backends;C:\VulkanSDK\1.4.341.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glm;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\window\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glfw\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\spdlog\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\math\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\memory\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\scene\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\assets;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\tinygltf;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\vma\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\stb;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\meshoptimizer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui\backends;C:\VulkanSDK\1.4.341.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Lib>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glm;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\window\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glfw\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\spdlog\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\math\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\memory\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\scene\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\assets;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\tinygltf;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\vma\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\stb;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\meshoptimizer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui\backends;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/VulkanSDK/1.4.341.1/Include" /utf-8</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <DisableSpecificWarnings>4251;4275;4459</DisableSpecificWarnings>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GLM_ENABLE_EXPERIMENTAL;GWS_USE_VULKAN=1;_CRT_SECURE_NO_WARNINGS;SPDLOG_COMPILED_LIB;SPDLOG_WCHAR_FILENAMES;TINYGLTF_IMPLEMENTATION;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VMA_STATIC_VULKAN_FUNCTIONS=0;CMAKE_INTDIR="Release"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GLM_ENABLE_EXPERIMENTAL;GWS_USE_VULKAN=1;_CRT_SECURE_NO_WARNINGS;SPDLOG_COMPILED_LIB;SPDLOG_WCHAR_FILENAMES;TINYGLTF_IMPLEMENTATION;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VMA_STATIC_VULKAN_FUNCTIONS=0;CMAKE_INTDIR=\"Release\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glm;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\window\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glfw\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\spdlog\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\math\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\memory\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\scene\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\assets;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\tinygltf;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\vma\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\stb;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\meshoptimizer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui\backends;C:\VulkanSDK\1.4.341.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glm;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\window\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glfw\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\spdlog\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\math\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\memory\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\scene\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\assets;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\tinygltf;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\vma\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\stb;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\meshoptimizer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui\backends;C:\VulkanSDK\1.4.341.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Lib>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glm;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\window\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glfw\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\spdlog\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\math\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\memory\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\scene\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\assets;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\tinygltf;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\vma\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\stb;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\meshoptimizer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui\backends;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/VulkanSDK/1.4.341.1/Include" /utf-8</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <DisableSpecificWarnings>4251;4275;4459</DisableSpecificWarnings>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <Optimization>MinSpace</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GLM_ENABLE_EXPERIMENTAL;GWS_USE_VULKAN=1;_CRT_SECURE_NO_WARNINGS;SPDLOG_COMPILED_LIB;SPDLOG_WCHAR_FILENAMES;TINYGLTF_IMPLEMENTATION;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VMA_STATIC_VULKAN_FUNCTIONS=0;CMAKE_INTDIR="MinSizeRel"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GLM_ENABLE_EXPERIMENTAL;GWS_USE_VULKAN=1;_CRT_SECURE_NO_WARNINGS;SPDLOG_COMPILED_LIB;SPDLOG_WCHAR_FILENAMES;TINYGLTF_IMPLEMENTATION;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VMA_STATIC_VULKAN_FUNCTIONS=0;CMAKE_INTDIR=\"MinSizeRel\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glm;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\window\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glfw\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\spdlog\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\math\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\memory\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\scene\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\assets;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\tinygltf;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\vma\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\stb;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\meshoptimizer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui\backends;C:\VulkanSDK\1.4.341.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glm;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\window\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glfw\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\spdlog\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\math\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\memory\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\scene\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\assets;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\tinygltf;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\vma\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\stb;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\meshoptimizer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui\backends;C:\VulkanSDK\1.4.341.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Lib>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glm;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\window\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glfw\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\spdlog\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\math\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\memory\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\scene\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\assets;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\tinygltf;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\vma\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\stb;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\meshoptimizer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui\backends;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/VulkanSDK/1.4.341.1/Include" /utf-8</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <DisableSpecificWarnings>4251;4275;4459</DisableSpecificWarnings>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <UseFullPaths>false</UseFullPaths>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GLM_ENABLE_EXPERIMENTAL;GWS_USE_VULKAN=1;_CRT_SECURE_NO_WARNINGS;SPDLOG_COMPILED_LIB;SPDLOG_WCHAR_FILENAMES;TINYGLTF_IMPLEMENTATION;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VMA_STATIC_VULKAN_FUNCTIONS=0;CMAKE_INTDIR="RelWithDebInfo"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;GLM_ENABLE_EXPERIMENTAL;GWS_USE_VULKAN=1;_CRT_SECURE_NO_WARNINGS;SPDLOG_COMPILED_LIB;SPDLOG_WCHAR_FILENAMES;TINYGLTF_IMPLEMENTATION;VMA_DYNAMIC_VULKAN_FUNCTIONS=1;VMA_STATIC_VULKAN_FUNCTIONS=0;CMAKE_INTDIR=\"RelWithDebInfo\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glm;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\window\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glfw\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\spdlog\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\math\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\memory\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\scene\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\assets;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\tinygltf;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\vma\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\stb;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\meshoptimizer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui\backends;C:\VulkanSDK\1.4.341.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glm;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\window\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\glfw\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\spdlog\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\physics\..\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\math\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\memory\..;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\scene\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\assets;C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\core\logging\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\tinygltf;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\vma\include;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\stb;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\meshoptimizer\src;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui;C:\dev\ProjectSchizo - Copy\c-Engine-Game\third_party\imgui\backends;C:\VulkanSDK\1.4.341.1\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <Lib>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule C:/dev/ProjectSchizo - Copy/c-Engine-Game/engine/renderer/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+C:\Strawberry\c\bin\cmake.exe "-SC:/dev/ProjectSchizo - Copy/c-Engine-Game" "-BC:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc" --check-stamp-file "C:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc/engine/renderer/CMakeFiles/generate.stamp"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageHandleStandardArgs.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageMessage.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindVulkan.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\renderer\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule C:/dev/ProjectSchizo - Copy/c-Engine-Game/engine/renderer/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+C:\Strawberry\c\bin\cmake.exe "-SC:/dev/ProjectSchizo - Copy/c-Engine-Game" "-BC:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc" --check-stamp-file "C:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc/engine/renderer/CMakeFiles/generate.stamp"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageHandleStandardArgs.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageMessage.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindVulkan.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\renderer\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule C:/dev/ProjectSchizo - Copy/c-Engine-Game/engine/renderer/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+C:\Strawberry\c\bin\cmake.exe "-SC:/dev/ProjectSchizo - Copy/c-Engine-Game" "-BC:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc" --check-stamp-file "C:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc/engine/renderer/CMakeFiles/generate.stamp"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageHandleStandardArgs.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageMessage.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindVulkan.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\renderer\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule C:/dev/ProjectSchizo - Copy/c-Engine-Game/engine/renderer/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+C:\Strawberry\c\bin\cmake.exe "-SC:/dev/ProjectSchizo - Copy/c-Engine-Game" "-BC:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc" --check-stamp-file "C:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc/engine/renderer/CMakeFiles/generate.stamp"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageHandleStandardArgs.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindPackageMessage.cmake;C:\Strawberry\c\share\cmake-3.29\Modules\FindVulkan.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\renderer\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\render_device.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_device.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_swapchain.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_command_buffer.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_descriptor_set.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_surface.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\shader_compiler.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\render_pass.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\graphics_pipeline.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\barriers.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\buffer.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\image.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\mesh.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\material.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\gltf_loader.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_g_buffer.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_lighting_pass.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_shadow_map.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_post_processing.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_shader_registry.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_render_graph.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_texture.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_scene_mesh.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_scene_material.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_gltf_loader.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\culling.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\imgui_vulkan.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\ui_manager.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\debug_panels.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\scene_hierarchy_panel.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\reflection.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\inspector_panel.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\profiler.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\profiler_panels.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\debug_visualization.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\hzb_culler.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\indirect_dispatcher.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\transform_gizmo.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\query_pool.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\gpu_profiler.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\gpu_profiler_panels.h" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_device.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_swapchain.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_command_buffer.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_descriptor_set.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_surface.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\shader_compiler.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\render_pass.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\graphics_pipeline.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\barriers.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\buffer.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\image.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\mesh.cpp">
+      <ObjectFileName>$(IntDir)/gpu/vulkan/mesh.cpp.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\material.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\gltf_loader.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_g_buffer.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_lighting_pass.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_shadow_map.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_post_processing.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_shader_registry.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_render_graph.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_texture.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_scene_mesh.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_scene_material.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\vulkan_gltf_loader.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\culling.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\gpu\vulkan\imgui_vulkan.cpp" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\graphics.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\render_device.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\renderer.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\opengl_device.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\mesh.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\shader.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\texture.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\material.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\pbr.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\framebuffer.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\graphics_utils.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\geometry.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\light.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\shadow.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\ibl.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\lighting.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\g_buffer.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\deferred_renderer.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\post_processing.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\frustum.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\batch.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\profiler.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\skeleton.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\animation.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\animator.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\blend_tree.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\animation_component.h" />
+    <ClInclude Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\include\skeletal_mesh_component.h" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src\renderer.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src\mesh.cpp">
+      <ObjectFileName>$(IntDir)/src/mesh.cpp.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src\pbr.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src\geometry.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src\frustum.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src\profiler.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src\skeleton.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src\animation.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src\animator.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src\blend_tree.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src\animation_component.cpp" />
+    <ClCompile Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\engine\renderer\src\skeletal_mesh_component.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\ZERO_CHECK.vcxproj">
+      <Project>{56B24B6B-FEDD-37A3-8EA8-6C0FEED5B92A}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\third_party\glfw\src\glfw.vcxproj">
+      <Project>{6E468995-F39F-3144-9028-F3E0F8501560}</Project>
+      <Name>glfw</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\assets\gws_assets.vcxproj">
+      <Project>{6EF76C6C-6BD5-37B4-9217-56AABD894CAE}</Project>
+      <Name>gws_assets</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\logging\gws_logging.vcxproj">
+      <Project>{4685521D-F21D-33D7-A5E7-207B4D0266CD}</Project>
+      <Name>gws_logging</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\imgui.vcxproj">
+      <Project>{2A15902F-388E-3BE2-8267-208D63578187}</Project>
+      <Name>imgui</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\math\math.vcxproj">
+      <Project>{0A0FFDD1-D0FA-3292-847F-2ACF04315CFF}</Project>
+      <Name>math</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\third_party\meshoptimizer\meshoptimizer.vcxproj">
+      <Project>{B02D9C63-AD48-3264-BE17-8E3770E3D55F}</Project>
+      <Name>meshoptimizer</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\core\physics\physics.vcxproj">
+      <Project>{446328B3-B42C-37B3-8266-A684D21976A9}</Project>
+      <Name>physics</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\scene\scene.vcxproj">
+      <Project>{DDF57E89-BA02-3CE8-82A9-ACD9CEC76E38}</Project>
+      <Name>scene</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\third_party\spdlog\spdlog.vcxproj">
+      <Project>{1B63D163-9E61-366D-B757-B50949EE5932}</Project>
+      <Name>spdlog</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\ProjectSchizo - Copy\c-Engine-Game\build-msvc\engine\window\window.vcxproj">
+      <Project>{BF721979-B158-33E0-8399-F937E112CF42}</Project>
+      <Name>window</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

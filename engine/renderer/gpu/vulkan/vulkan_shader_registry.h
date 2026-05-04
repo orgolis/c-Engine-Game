@@ -118,6 +118,16 @@ public:
     std::string get_builtin_shader(const std::string& name);
     
     /**
+     * @brief Create shader module from pre-compiled SPIR-V data.
+     * Used as a fallback on GCC/MinGW builds where runtime GLSL compilation
+     * is unavailable (glslang requires MSVC-ABI static libs).
+     */
+    std::shared_ptr<ShaderModule> create_from_spirv(const uint32_t* data,
+                                                    uint32_t size_bytes,
+                                                    ShaderStage stage,
+                                                    const std::string& name);
+
+    /**
      * @brief Clear shader cache
      */
     void clear_cache();

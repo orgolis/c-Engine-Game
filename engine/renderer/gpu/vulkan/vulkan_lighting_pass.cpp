@@ -7,6 +7,7 @@
 #include "vulkan_device.h"
 #include "vulkan_g_buffer.h"
 #include "vulkan_shader_registry.h"
+#include "lighting_pass_spirv.h"  // pre-compiled SPIR-V fallback for GCC builds
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <algorithm>
@@ -155,7 +156,8 @@ void VulkanLightingPass::create_output_image(uint32_t width, uint32_t height) {
     image_info.arrayLayers = 1;
     image_info.samples = VK_SAMPLE_COUNT_1_BIT;
     image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                       VK_IMAGE_USAGE_SAMPLED_BIT;
     image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     
     if (vkCreateImage(vk_device, &image_info, nullptr, &output_image_) != VK_SUCCESS) {
@@ -600,8 +602,16 @@ void VulkanLightingPass::create_pipeline() {
 
     auto vert = shader_registry_->compile_glsl(kLightingVertSrc, ShaderStage::Vertex,
                                                "lighting_pass.vert");
+    if (!vert) {
+        vert = shader_registry_->create_from_spirv(kLightingPassVertSpv, kLightingPassVertSpv_size,
+                                                   ShaderStage::Vertex, "lighting_pass.vert");
+    }
     auto frag = shader_registry_->compile_glsl(kLightingFragSrc, ShaderStage::Fragment,
                                                "lighting_pass.frag");
+    if (!frag) {
+        frag = shader_registry_->create_from_spirv(kLightingPassFragSpv, kLightingPassFragSpv_size,
+                                                   ShaderStage::Fragment, "lighting_pass.frag");
+    }
     if (!vert || !frag) {
         throw std::runtime_error("Failed to compile lighting shaders");
     }

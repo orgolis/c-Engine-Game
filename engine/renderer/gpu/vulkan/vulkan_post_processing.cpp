@@ -6,6 +6,7 @@
 #include "vulkan_post_processing.h"
 #include "vulkan_device.h"
 #include "vulkan_shader_registry.h"
+#include "post_proc_tonemap_spirv.h" // pre-compiled SPIR-V fallback for GCC builds
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <array>
@@ -488,8 +489,16 @@ void VulkanPostProcessing::create_bloom_pipeline() {
 
     auto vert = shader_registry_->compile_glsl(kTonemapVertSrc, ShaderStage::Vertex,
                                                "post_proc_fullscreen.vert");
+    if (!vert) {
+        vert = shader_registry_->create_from_spirv(kTonemapVertSpv, kTonemapVertSpv_size,
+                                                   ShaderStage::Vertex, "post_proc_fullscreen.vert");
+    }
     auto frag = shader_registry_->compile_glsl(kBloomFragSrc, ShaderStage::Fragment,
                                                "post_proc_bloom.frag");
+    if (!frag) {
+        frag = shader_registry_->create_from_spirv(kBloomFragSpv, kBloomFragSpv_size,
+                                                   ShaderStage::Fragment, "post_proc_bloom.frag");
+    }
     if (!vert || !frag) {
         throw std::runtime_error("Failed to compile bloom shaders");
     }
@@ -762,8 +771,16 @@ void VulkanPostProcessing::create_taa_pipeline() {
 
     auto vert = shader_registry_->compile_glsl(kTonemapVertSrc, ShaderStage::Vertex,
                                                "post_proc_fullscreen.vert");
+    if (!vert) {
+        vert = shader_registry_->create_from_spirv(kTonemapVertSpv, kTonemapVertSpv_size,
+                                                   ShaderStage::Vertex, "post_proc_fullscreen.vert");
+    }
     auto frag = shader_registry_->compile_glsl(kTaaFragSrc, ShaderStage::Fragment,
                                                "post_proc_taa.frag");
+    if (!frag) {
+        frag = shader_registry_->create_from_spirv(kTaaFragSpv, kTaaFragSpv_size,
+                                                   ShaderStage::Fragment, "post_proc_taa.frag");
+    }
     if (!vert || !frag) {
         throw std::runtime_error("Failed to compile TAA shaders");
     }
@@ -1035,8 +1052,16 @@ void VulkanPostProcessing::create_tonemap_pipeline() {
 
     auto vert = shader_registry_->compile_glsl(kTonemapVertSrc, ShaderStage::Vertex,
                                                "post_proc_tonemap.vert");
+    if (!vert) {
+        vert = shader_registry_->create_from_spirv(kTonemapVertSpv, kTonemapVertSpv_size,
+                                                   ShaderStage::Vertex, "post_proc_tonemap.vert");
+    }
     auto frag = shader_registry_->compile_glsl(kTonemapFragSrc, ShaderStage::Fragment,
                                                "post_proc_tonemap.frag");
+    if (!frag) {
+        frag = shader_registry_->create_from_spirv(kTonemapFragSpv, kTonemapFragSpv_size,
+                                                   ShaderStage::Fragment, "post_proc_tonemap.frag");
+    }
     if (!vert || !frag) {
         throw std::runtime_error("Failed to compile tone mapping shaders");
     }

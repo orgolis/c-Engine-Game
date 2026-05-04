@@ -6,7 +6,7 @@
 namespace schizo::editor {
 
 EditorScene::EditorScene() {
-    NewScene("Untitled");
+    NewScene("Default Scene");
 }
 
 void EditorScene::NewScene(const std::string& name) {

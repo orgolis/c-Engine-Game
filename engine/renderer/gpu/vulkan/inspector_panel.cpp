@@ -5,7 +5,7 @@
 
 #include "inspector_panel.h"
 #include "scene_hierarchy_panel.h"
-#include <engine/scene/include/entity.h>
+#include "entity.h"
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 #include <glm/glm.hpp>

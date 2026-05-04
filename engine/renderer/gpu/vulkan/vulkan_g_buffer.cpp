@@ -9,6 +9,8 @@
 #include "vulkan_scene_mesh.h"
 #include "vulkan_scene_material.h"
 #include "vulkan_render_graph.h" // for DrawItem
+#include "gbuffer_demo_spirv.h"   // pre-compiled SPIR-V fallback for GCC builds
+#include "gbuffer_scene_spirv.h"  // pre-compiled SPIR-V fallback for GCC builds
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <array>
@@ -354,7 +356,7 @@ void VulkanGBuffer::begin_geometry_pass(VkCommandBuffer cmd) {
     std::vector<VkClearValue> clear_values(5);
     clear_values[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
     clear_values[1].color = {{0.0f, 0.0f, 1.0f, 0.0f}};  // Normal default (0, 0, 1)
-    clear_values[2].color = {{1.0f, 1.0f, 1.0f, 1.0f}};  // White albedo
+    clear_values[2].color = {{0.04f, 0.04f, 0.04f, 0.0f}};  // Dark gray background
     clear_values[3].color = {{0.0f, 1.0f, 0.0f, 0.0f}};  // Default material
     clear_values[4].depthStencil = {1.0f, 0};
     
@@ -526,7 +528,15 @@ void VulkanGBuffer::create_demo_pipeline() {
     VkDevice vk_device = device_->get_device();
 
     auto vert = shader_registry_->compile_glsl(kGeomVertSrc, ShaderStage::Vertex,   "gbuffer_demo.vert");
+    if (!vert) {
+        vert = shader_registry_->create_from_spirv(kGBufferDemoVertSpv, kGBufferDemoVertSpv_size,
+                                                   ShaderStage::Vertex, "gbuffer_demo.vert");
+    }
     auto frag = shader_registry_->compile_glsl(kGeomFragSrc, ShaderStage::Fragment, "gbuffer_demo.frag");
+    if (!frag) {
+        frag = shader_registry_->create_from_spirv(kGBufferDemoFragSpv, kGBufferDemoFragSpv_size,
+                                                   ShaderStage::Fragment, "gbuffer_demo.frag");
+    }
     if (!vert || !frag) {
         throw std::runtime_error("Failed to compile geometry-pass shaders");
     }
@@ -641,7 +651,15 @@ void VulkanGBuffer::create_scene_pipeline() {
     VkDevice vk_device = device_->get_device();
 
     auto vert = shader_registry_->compile_glsl(kSceneVertSrc, ShaderStage::Vertex,   "gbuffer_scene.vert");
+    if (!vert) {
+        vert = shader_registry_->create_from_spirv(kGBufferSceneVertSpv, kGBufferSceneVertSpv_size,
+                                                   ShaderStage::Vertex, "gbuffer_scene.vert");
+    }
     auto frag = shader_registry_->compile_glsl(kSceneFragSrc, ShaderStage::Fragment, "gbuffer_scene.frag");
+    if (!frag) {
+        frag = shader_registry_->create_from_spirv(kGBufferSceneFragSpv, kGBufferSceneFragSpv_size,
+                                                   ShaderStage::Fragment, "gbuffer_scene.frag");
+    }
     if (!vert || !frag) {
         throw std::runtime_error("Failed to compile scene-pass shaders");
     }
@@ -719,7 +737,7 @@ void VulkanGBuffer::create_scene_pipeline() {
     VkPipelineRasterizationStateCreateInfo rs{};
     rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode    = VK_CULL_MODE_BACK_BIT;
+    rs.cullMode    = VK_CULL_MODE_NONE;
     rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth   = 1.0f;
 

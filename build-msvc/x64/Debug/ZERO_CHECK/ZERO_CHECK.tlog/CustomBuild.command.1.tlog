@@ -1,0 +1,10 @@
+^C:\DEV\PROJECTSCHIZO - COPY\C-ENGINE-GAME\BUILD-MSVC\CMAKEFILES\D1D4A441D4F420D92A17C5BD3A448FEA\GENERATE.STAMP.RULE
+setlocal
+C:\Strawberry\c\bin\cmake.exe "-SC:/dev/ProjectSchizo - Copy/c-Engine-Game" "-BC:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc" --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file "C:/dev/ProjectSchizo - Copy/c-Engine-Game/build-msvc/GameWorldshaper.sln"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
