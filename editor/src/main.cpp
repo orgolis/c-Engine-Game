@@ -2374,7 +2374,21 @@ int main() {
                 schizo::scene::EntityFactory::CreatePlane(scene, "Ground", 10.0f, 10.0f,
                     glm::vec4(0.45f, 0.45f, 0.45f, 1.0f));
 
-                spdlog::info("Default scene: {} entities", scene->GetEntityCount());
+                // TEST: Create a parent cube and child cube to verify hierarchy
+                auto parent_cube = schizo::scene::EntityFactory::CreateCube(scene);
+                parent_cube->SetName("Parent_Cube");
+                parent_cube->GetTransform()->SetLocalPosition(glm::vec3(0.0f, 2.0f, 0.0f));
+
+                auto child_cube = schizo::scene::EntityFactory::CreateCube(scene);
+                child_cube->SetName("Child_Cube");
+                child_cube->GetTransform()->SetLocalPosition(glm::vec3(2.0f, 0.0f, 0.0f));  // Local offset from parent
+                child_cube->SetParent(parent_cube);  // Make it a child
+
+                spdlog::info("Default scene: {} entities (includes parent-child test)", scene->GetEntityCount());
+                spdlog::info("HIERARCHY TEST: Parent={}, Child={}, Child's parent entity={}",
+                    parent_cube->GetName(),
+                    child_cube->GetName(),
+                    child_cube->GetParent() ? child_cube->GetParent()->GetName() : "NULL");
             }
         }
 
@@ -2529,6 +2543,14 @@ int main() {
             if (editor_state.scene_playback_manager &&
                 editor_state.scene_playback_manager->IsPlaying())
                 editor_state.scene_playback_manager->Update(0.016f);
+            else {
+                // In edit mode, still need to update the scene so transforms are recalculated
+                // This ensures the hierarchy MarkDirty cascade works in the editor
+                auto scene = editor_state.editor_scene->GetScene();
+                if (scene) {
+                    scene->Update(0.016f);
+                }
+            }
 
             // ------------------------------------------------------------
             // Build ImGui frame (no GPU commands yet)
