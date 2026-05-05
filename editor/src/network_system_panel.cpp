@@ -291,16 +291,16 @@ void NetworkSystemPanel::RenderNetworkPacketInspection(engine::network::NetworkM
     
     ImGui::TextUnformatted("Recent Packets:");
     
-    if (ImGui::BeginChild("PacketList", ImVec2(-1, 150), true)) {
-        // Display recent packets
-        ImGui::TextColored(ImVec4(0, 1, 0, 1), "[1223] PlayerInput - size: 64 bytes");
-        ImGui::TextColored(ImVec4(0, 1, 0, 1), "[1222] StateUpdate - size: 256 bytes");
-        ImGui::TextColored(ImVec4(1, 1, 0, 1), "[1221] Ack - size: 16 bytes (retransmit)");
-        ImGui::TextColored(ImVec4(0, 1, 0, 1), "[1220] AbilityEvent - size: 128 bytes");
-        ImGui::TextColored(ImVec4(0, 1, 0, 1), "[1219] PlayerInput - size: 64 bytes");
-        
-        ImGui::EndChild();
-    }
+    // EndChild() must always be paired with BeginChild() since ImGui 1.89.5,
+    // even when BeginChild returns false — otherwise the parent's End() trips
+    // the "Must call EndChild() and not End()!" assertion.
+    ImGui::BeginChild("PacketList", ImVec2(-1, 150), true);
+    ImGui::TextColored(ImVec4(0, 1, 0, 1), "[1223] PlayerInput - size: 64 bytes");
+    ImGui::TextColored(ImVec4(0, 1, 0, 1), "[1222] StateUpdate - size: 256 bytes");
+    ImGui::TextColored(ImVec4(1, 1, 0, 1), "[1221] Ack - size: 16 bytes (retransmit)");
+    ImGui::TextColored(ImVec4(0, 1, 0, 1), "[1220] AbilityEvent - size: 128 bytes");
+    ImGui::TextColored(ImVec4(0, 1, 0, 1), "[1219] PlayerInput - size: 64 bytes");
+    ImGui::EndChild();
     
     ImGui::Spacing();
     ImGui::TextUnformatted("Packet Statistics:");

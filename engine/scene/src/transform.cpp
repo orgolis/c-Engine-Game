@@ -2,6 +2,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/quaternion.hpp>
+#include <algorithm>
 #include <cmath>
 
 namespace schizo::scene {
@@ -11,6 +12,22 @@ namespace schizo::scene {
 // ============================================================================
 
 Transform::Transform() = default;
+
+Transform::~Transform() {
+    // Detach from parent so the parent's children_ list doesn't keep a
+    // dangling pointer.
+    if (parent_) {
+        auto& siblings = parent_->children_;
+        siblings.erase(std::remove(siblings.begin(), siblings.end(), this),
+                       siblings.end());
+        parent_ = nullptr;
+    }
+    // Orphan our own children — their parent pointer would otherwise dangle.
+    for (Transform* child : children_) {
+        if (child) child->parent_ = nullptr;
+    }
+    children_.clear();
+}
 
 void Transform::SetLocalPosition(const glm::vec3& position) {
     if (local_position_ != position) {
@@ -94,8 +111,15 @@ glm::mat4 Transform::GetWorldMatrix() const {
 }
 
 void Transform::MarkDirty() {
+    if (world_matrix_dirty_) return;  // already dirty — children cascade was done last time
     world_matrix_dirty_ = true;
-    // Mark children as dirty too
+    // Cascade: a parent's transform change invalidates every descendant's
+    // cached world matrix. Without this propagation, child entities (e.g.
+    // cameras parented to a player) keep returning stale world positions
+    // and visually fail to follow the parent.
+    for (Transform* child : children_) {
+        if (child) child->MarkDirty();
+    }
 }
 
 glm::vec3 Transform::GetForward() const {
@@ -114,10 +138,23 @@ glm::vec3 Transform::GetUp() const {
 }
 
 void Transform::SetParent(Transform* parent) {
-    if (parent_ != parent) {
-        parent_ = parent;
-        MarkDirty();
+    if (parent_ == parent) return;
+
+    // Unregister from old parent's children list.
+    if (parent_) {
+        auto& siblings = parent_->children_;
+        siblings.erase(std::remove(siblings.begin(), siblings.end(), this),
+                       siblings.end());
     }
+
+    parent_ = parent;
+
+    // Register with new parent's children list.
+    if (parent_) {
+        parent_->children_.push_back(this);
+    }
+
+    MarkDirty();  // cascades to our descendants
 }
 
 void Transform::RemoveParent() {

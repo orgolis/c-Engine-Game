@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <cstdint>
+#include <vector>
 
 namespace schizo::scene {
 
@@ -19,13 +20,15 @@ namespace schizo::scene {
 class Transform {
 public:
     Transform();
-    ~Transform() = default;
-    
+    ~Transform();
+
     // Deleted copy (transforms are unique per entity)
     Transform(const Transform&) = delete;
     Transform& operator=(const Transform&) = delete;
-    
-    // Allow move operations
+
+    // Move is left default because nothing in the codebase actually moves a
+    // Transform — entities are owned via shared_ptr. Don't move a Transform
+    // with live children/parent links: the pointer fixup is not handled here.
     Transform(Transform&&) = default;
     Transform& operator=(Transform&&) = default;
     
@@ -158,10 +161,14 @@ protected:
     // Cached world transform
     mutable glm::mat4 world_matrix_ = glm::mat4(1.0f);
     mutable bool world_matrix_dirty_ = true;
-    
-    // Hierarchy
+
+    // Hierarchy. children_ is maintained alongside the parent_ link so that
+    // MarkDirty() can cascade to dependents — without it, a parent's move
+    // wouldn't invalidate cached child world matrices and child entities
+    // (e.g. cameras parented to the player) wouldn't follow.
     Transform* parent_ = nullptr;
-    
+    std::vector<Transform*> children_;
+
     /**
      * @brief Recalculate cached world matrix
      */

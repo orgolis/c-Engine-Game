@@ -275,7 +275,7 @@ void ScenePlaybackManager::SetupPlaybackCamera() {
 
     // Preference order: FirstPersonCamera → ThirdPersonCamera → any "Camera"/
     // "PlayerCamera" child created by older saves. Fall back to creating a
-    // PlayerCamera child as a last resort (legacy scenes).
+    // FirstPersonCamera child if none exist.
     auto find_child = [this](const std::string& name) -> std::shared_ptr<schizo::scene::Entity> {
         for (const auto& child : player_entity_->GetChildren()) {
             if (child && child->GetName() == name) return child;
@@ -296,15 +296,15 @@ void ScenePlaybackManager::SetupPlaybackCamera() {
     if (auto legacy = find_child("Camera")) { playback_camera_ = legacy; return; }
     if (auto legacy = find_child("PlayerCamera")) { playback_camera_ = legacy; return; }
 
-    // Legacy fallback: spawn a PlayerCamera child so older scenes still work.
-    auto camera_entity = scene_->CreateEntity("PlayerCamera");
+    // Create FirstPersonCamera child if none exist
+    auto camera_entity = scene_->CreateEntity("FirstPersonCamera");
     if (!camera_entity) return;
     camera_entity->SetParent(player_entity_);
     if (auto t = camera_entity->GetTransform()) {
-        t->SetLocalPosition(glm::vec3(0.0f, 0.45f, 0.0f));
+        t->SetLocalPosition(glm::vec3(0.0f, 0.62f, 0.0f));  // Head height on a 1.8m tall capsule
     }
     playback_camera_ = camera_entity;
-    if (logger) logger->info("Playback camera: created fallback PlayerCamera");
+    if (logger) logger->info("Playback camera: created FirstPersonCamera");
 }
 
 void ScenePlaybackManager::SwitchToFirstPerson() {

@@ -947,7 +947,11 @@ void ShowInspector(EditorState& editor_state) {
             
             const auto& children = selected_entity->GetChildren();
             ImGui::Text("Children: %zu", children.size());
-            if (!children.empty() && ImGui::BeginChild("ChildrenList", ImVec2(0, 100), true)) {
+            // BeginChild() must always be paired with EndChild() since ImGui
+            // 1.89.5 — even when BeginChild returns false. Don't gate EndChild
+            // on the BeginChild return value.
+            if (!children.empty()) {
+                ImGui::BeginChild("ChildrenList", ImVec2(0, 100), true);
                 for (const auto& child : children) {
                     ImGui::Text("- %s (ID: %u)", child->GetName().c_str(), child->GetId());
                 }
@@ -1830,6 +1834,16 @@ void ShowViewport(EditorState& editor_state) {
                     spdlog::debug("[ARROW] Right key - pan right");
                     editor_state.viewport_camera.Pan(1.0f, 0.0f);   // Right
                 }
+                
+                // Vertical camera movement (Q/E keys for intuitive up/down)
+                if (ImGui::IsKeyDown(ImGuiKey_Q)) {
+                    spdlog::debug("[Q] Move camera up");
+                    editor_state.viewport_camera.MoveLocal(0.0f, 0.0f, 1.0f);  // Up
+                }
+                if (ImGui::IsKeyDown(ImGuiKey_E)) {
+                    spdlog::debug("[E] Move camera down");
+                    editor_state.viewport_camera.MoveLocal(0.0f, 0.0f, -1.0f);  // Down
+                }
             }
             
             // Right mouse drag to pan (only if not dragging gizmo)
@@ -1968,33 +1982,29 @@ void ShowDebugPanels(EditorState& editor_state) {
     if (ImGui::Begin("Debug Systems", &editor_state.show_debug_panels)) {
         ImGui::TextUnformatted("Phase 6 System Debug Tools:");
         ImGui::Separator();
+        ImGui::TextDisabled("Debug panels temporarily disabled due to ImGui state issues.");
+        ImGui::TextDisabled("These will be re-enabled after refactoring the panel hierarchy.");
         
-        // Character Controller Panel
-        if (editor_state.character_panel) {
-            if (ImGui::CollapsingHeader("Character Controller##debug", ImGuiTreeNodeFlags_DefaultOpen)) {
-                editor_state.character_panel->Render(editor_state.selected_character_controller);
-            }
-        }
+        // TODO: Character Controller Panel - currently disabled due to Begin/End mismatch
+        // if (editor_state.character_panel) {
+        //     if (ImGui::CollapsingHeader("Character Controller##debug", ImGuiTreeNodeFlags_DefaultOpen)) {
+        //         editor_state.character_panel->Render(editor_state.selected_character_controller);
+        //     }
+        // }
         
-        ImGui::Spacing();
-        ImGui::Separator();
+        // TODO: Ability System Panel - currently disabled due to Begin/End mismatch  
+        // if (editor_state.ability_panel) {
+        //     if (ImGui::CollapsingHeader("Ability System##debug", ImGuiTreeNodeFlags_DefaultOpen)) {
+        //         editor_state.ability_panel->Render(editor_state.selected_ability_system);
+        //     }
+        // }
         
-        // Ability System Panel
-        if (editor_state.ability_panel) {
-            if (ImGui::CollapsingHeader("Ability System##debug", ImGuiTreeNodeFlags_DefaultOpen)) {
-                editor_state.ability_panel->Render(editor_state.selected_ability_system);
-            }
-        }
-        
-        ImGui::Spacing();
-        ImGui::Separator();
-        
-        // Network System Panel
-        if (editor_state.network_panel) {
-            if (ImGui::CollapsingHeader("Network System##debug", ImGuiTreeNodeFlags_DefaultOpen)) {
-                editor_state.network_panel->Render(editor_state.network_manager);
-            }
-        }
+        // TODO: Network System Panel - currently disabled due to Begin/End mismatch
+        // if (editor_state.network_panel) {
+        //     if (ImGui::CollapsingHeader("Network System##debug", ImGuiTreeNodeFlags_DefaultOpen)) {
+        //         editor_state.network_panel->Render(editor_state.network_manager);
+        //     }
+        // }
         
         ImGui::End();
     }
@@ -2319,10 +2329,16 @@ int main() {
 
         // ----------------------------------------------------------------
         // Viewport texture — register post-processing output with ImGui
+        // CRITICAL FIX #6: Validate post-processing before using its output
         // ----------------------------------------------------------------
-        VkDescriptorSet viewport_ds = ImGui_ImplVulkan_AddTexture(
-            post_processing->get_output_image(),
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        VkDescriptorSet viewport_ds = VK_NULL_HANDLE;
+        if (post_processing) {
+            viewport_ds = ImGui_ImplVulkan_AddTexture(
+                post_processing->get_output_image(),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        } else {
+            spdlog::warn("Post-processing not initialized - viewport texture will be null");
+        }
 
         // ----------------------------------------------------------------
         // Editor scene + UI state
@@ -2607,13 +2623,50 @@ int main() {
 
             // Camera from viewport — use the actual panel aspect ratio
             CameraData cam{};
-            cam.position = editor_state.viewport_camera.GetPosition();
             float vp_w = editor_state.viewport_panel_size.x;
             float vp_h = editor_state.viewport_panel_size.y;
             float aspect = (vp_h > 0.0f) ? vp_w / vp_h
                                           : static_cast<float>(kW) / static_cast<float>(kH);
-            cam.view = editor_state.viewport_camera.GetViewMatrix();
-            cam.proj = editor_state.viewport_camera.GetProjectionMatrix(aspect);
+            
+            // Use playback camera if scene is playing, otherwise use editor viewport camera
+            if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
+                auto playback_camera = editor_state.scene_playback_manager->GetPlaybackCamera();
+                if (playback_camera) {
+                    auto camera_transform = playback_camera->GetTransform();
+                    if (camera_transform) {
+                        // Use the camera's WORLD position and rotation
+                        cam.position = camera_transform->GetWorldPosition();
+                        glm::vec3 cam_forward = camera_transform->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f);
+                        glm::vec3 cam_up = camera_transform->GetWorldRotation() * glm::vec3(0.0f, 1.0f, 0.0f);
+                        cam.view = glm::lookAt(cam.position, cam.position + cam_forward, cam_up);
+                        cam.proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 1000.0f);
+                        static bool logged_once = false;
+                        if (!logged_once) {
+                            spdlog::info("✓ CAMERA SWAP ACTIVE: Using playback camera '{}'", playback_camera->GetName());
+                            spdlog::info("  Position: ({:.2f}, {:.2f}, {:.2f})", cam.position.x, cam.position.y, cam.position.z);
+                            logged_once = true;
+                        }
+                    } else {
+                        // Fallback to editor camera if camera has no transform
+                        spdlog::warn("⚠️ Play mode active but playback camera has no transform, using editor camera");
+                        cam.position = editor_state.viewport_camera.GetPosition();
+                        cam.view = editor_state.viewport_camera.GetViewMatrix();
+                        cam.proj = editor_state.viewport_camera.GetProjectionMatrix(aspect);
+                    }
+                } else {
+                    // Fallback to editor camera if playback camera is null
+                    spdlog::warn("⚠️ Play mode active but playback camera is null, using editor camera");
+                    cam.position = editor_state.viewport_camera.GetPosition();
+                    cam.view = editor_state.viewport_camera.GetViewMatrix();
+                    cam.proj = editor_state.viewport_camera.GetProjectionMatrix(aspect);
+                }
+            } else {
+                // Normal edit mode - use editor viewport camera
+                cam.position = editor_state.viewport_camera.GetPosition();
+                cam.view = editor_state.viewport_camera.GetViewMatrix();
+                cam.proj = editor_state.viewport_camera.GetProjectionMatrix(aspect);
+            }
+            
             cam.proj[1][1] *= -1.0f;  // GL → Vulkan Y flip
             graph->set_camera(cam);
 
@@ -2621,6 +2674,14 @@ int main() {
             // Entities with a MeshRendererComponent become DrawItems; others
             // (lights, empty parents) are skipped.
             mat_cache.prune(editor_scene.GetScene());
+            
+            // CRITICAL FIX #5: Validate render graph before setting draw items
+            if (!graph) {
+                spdlog::error("Render graph is null - skipping frame");
+                device.wait_idle();
+                continue;
+            }
+            
             auto scene_draw_items = schizo::editor::build_draw_items(
                 editor_scene.GetScene(), prim_cache, mat_cache, asset_cache,
                 &device, mat_layout, mat_pool);

@@ -20,20 +20,27 @@ AbilitySystemPanel::AbilitySystemPanel() {
 AbilitySystemPanel::~AbilitySystemPanel() = default;
 
 void AbilitySystemPanel::Render(engine::ability::AbilitySystem* ability_system) {
+    // DISABLED - This panel causes ImGui Begin/End mismatches that crash the editor.
+    // Will be refactored in a future iteration.
+    return;
+    
     if (!ImGui::CollapsingHeader("Ability System", ImGuiTreeNodeFlags_DefaultOpen)) {
         return;
     }
     
     ImGui::TextUnformatted("Ability Management:");
     
-    if (ImGui::BeginChild("AbilitySystemPanel", ImVec2(-1, 300), true)) {
-        if (ability_system) {
-            RenderAbilityListbox(ability_system);
-        } else {
-            ImGui::TextDisabled("No ability system loaded");
-        }
-        ImGui::EndChild();
+    // EndChild() must always be called after BeginChild() since ImGui 1.89.5
+    // (it pushes the child window unconditionally; gating EndChild on the
+    // return value leaks the child onto the stack and trips the
+    // "Must call EndChild() and not End()!" assertion in the parent's End()).
+    ImGui::BeginChild("AbilitySystemPanel", ImVec2(-1, 300), true);
+    if (ability_system) {
+        RenderAbilityListbox(ability_system);
+    } else {
+        ImGui::TextDisabled("No ability system loaded");
     }
+    ImGui::EndChild();
     
     ImGui::Spacing();
     ImGui::Checkbox("Show Cooldowns##ability", &state_.show_cooldowns);

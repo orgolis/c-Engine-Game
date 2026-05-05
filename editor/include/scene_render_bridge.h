@@ -64,9 +64,20 @@ public:
     /// descriptor sets when the user deletes entities.
     void prune(const std::shared_ptr<schizo::scene::Scene>& scene) {
         if (!scene) { entries_.clear(); return; }
+        // Make a defensive copy to avoid iterator invalidation if scene is modified
+        std::vector<uint32_t> active_ids;
+        try {
+            for (const auto& ent : scene->GetEntities()) {
+                if (ent) active_ids.push_back(ent->GetId());
+            }
+        } catch (...) {
+            // Scene was modified during iteration; clear cache to be safe
+            entries_.clear();
+            return;
+        }
         std::unordered_map<uint32_t, Entry> kept;
-        for (const auto& ent : scene->GetEntities()) {
-            auto it = entries_.find(ent->GetId());
+        for (uint32_t id : active_ids) {
+            auto it = entries_.find(id);
             if (it != entries_.end())
                 kept.emplace(it->first, std::move(it->second));
         }
@@ -215,7 +226,14 @@ public:
         VkDescriptorPool mat_pool)
     {
         auto it = entries_.find(path);
-        if (it != entries_.end()) return it->second.get();
+        if (it != entries_.end()) {
+            // Validate cached entry - check for nullptr before returning
+            if (it->second) {
+                return it->second.get();
+            }
+            // Cached as nullptr (failed load); don't retry
+            return nullptr;
+        }
 
         std::string ext;
         size_t dot = path.find_last_of('.');
@@ -225,19 +243,35 @@ public:
 
         std::unique_ptr<gws::renderer::gpu::Scene> scene;
         if (ext == ".gltf" || ext == ".glb") {
-            scene = gws::renderer::gpu::GltfLoader::load(
-                device, mat_layout, mat_pool, path);
+            if (device) {
+                scene = gws::renderer::gpu::GltfLoader::load(
+                    device, mat_layout, mat_pool, path);
+            } else {
+                spdlog::error("[AssetMeshCache] Device is null for {}", path);
+            }
         } else if (ext == ".obj") {
-            scene = load_obj_scene(path, device, mat_layout, mat_pool);
+            if (device) {
+                scene = load_obj_scene(path, device, mat_layout, mat_pool);
+            } else {
+                spdlog::error("[AssetMeshCache] Device is null for {}", path);
+            }
         } else {
             spdlog::warn("[AssetMeshCache] Unsupported extension: {}", path);
         }
 
         if (!scene) {
             spdlog::warn("[AssetMeshCache] Failed to load: {}", path);
+            entries_[path] = nullptr;  // Cache the failure
+            return nullptr;
+        }
+        
+        // Validate loaded scene before caching
+        if (scene->draw_items.empty() || scene->meshes.empty()) {
+            spdlog::warn("[AssetMeshCache] Loaded {} but has no draw items or meshes", path);
             entries_[path] = nullptr;
             return nullptr;
         }
+        
         spdlog::info("[AssetMeshCache] Loaded {}: {} draw items, {} meshes",
                      path, scene->draw_items.size(), scene->meshes.size());
         const auto* raw = scene.get();

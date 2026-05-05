@@ -1,7 +1,7 @@
-prefix=C:/Program Files/GameWorldshaper
+prefix=C:/Program Files (x86)/GameWorldshaper
 exec_prefix=${prefix}
-includedir=C:/Program Files/GameWorldshaper/include
-libdir=C:/Program Files/GameWorldshaper/lib
+includedir=C:/Program Files (x86)/GameWorldshaper/include
+libdir=C:/Program Files (x86)/GameWorldshaper/lib
 
 Name: GLFW
 Description: A multi-platform library for OpenGL, window and input
