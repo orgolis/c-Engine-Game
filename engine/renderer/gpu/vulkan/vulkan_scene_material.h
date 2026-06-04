@@ -29,13 +29,18 @@ class Texture;
 
 /// std140-aligned uniform block for PBR material factors. 48 bytes;
 /// fits comfortably under the 16 KiB minimum guarantee for UBOs.
+///
+/// emissive_factor.a is repurposed as `alpha_cutoff` for alpha-tested
+/// transparency: when > 0, the G-Buffer fragment shader discards pixels
+/// whose sampled alpha is below this threshold. 0 means "opaque, no
+/// discard" — the previous behaviour.
 struct MaterialUniforms {
     glm::vec4 base_color_factor    = glm::vec4(1.0f); // RGB + alpha
     float     metallic_factor      = 1.0f;
     float     roughness_factor     = 1.0f;
     float     occlusion_strength   = 1.0f;
     float     normal_scale         = 1.0f;
-    glm::vec4 emissive_factor      = glm::vec4(0.0f); // RGB + (a unused)
+    glm::vec4 emissive_factor      = glm::vec4(0.0f); // RGB + alpha_cutoff (a)
 };
 static_assert(sizeof(MaterialUniforms) == 48, "MaterialUniforms layout drift");
 

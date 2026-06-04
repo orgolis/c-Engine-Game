@@ -24,6 +24,22 @@ enum class MeshType {
 };
 
 /**
+ * @enum AlphaMode
+ * @brief How the renderer should treat per-fragment alpha.
+ *
+ *  - Opaque: alpha is ignored; rendered in the G-Buffer pass.
+ *  - Cutout: G-Buffer pass `discard`s fragments below alpha_cutoff_. Hard edges.
+ *  - Blend:  rendered in the forward transparent pass after lighting, with
+ *            depth test on / depth write off and source-over alpha blending.
+ *            Real translucency (glass, water, decals, particle billboards).
+ */
+enum class AlphaMode : uint8_t {
+    Opaque = 0,
+    Cutout = 1,
+    Blend  = 2,
+};
+
+/**
  * @class MeshRendererComponent
  * @brief Component that renders a mesh with color
  */
@@ -67,10 +83,49 @@ public:
     void SetColor(float r, float g, float b, float a = 1.0f) {
         color_ = glm::vec4(r, g, b, a);
     }
-    
+
+    AlphaMode GetAlphaMode() const { return alpha_mode_; }
+    void      SetAlphaMode(AlphaMode m) { alpha_mode_ = m; }
+
+    // Compatibility wrappers — older call sites and the serializer used to
+    // treat transparency as a single bool. Keep them so they still work,
+    // mapped onto the new enum.
+    bool IsTransparent() const { return alpha_mode_ != AlphaMode::Opaque; }
+    void SetTransparent(bool t) {
+        if (!t) alpha_mode_ = AlphaMode::Opaque;
+        else if (alpha_mode_ == AlphaMode::Opaque) alpha_mode_ = AlphaMode::Cutout;
+    }
+
+    float GetAlphaCutoff() const { return alpha_cutoff_; }
+    void  SetAlphaCutoff(float c) { alpha_cutoff_ = glm::clamp(c, 0.0f, 1.0f); }
+
+    // ---- PBR factors --------------------------------------------------
+    // These feed straight into MaterialUniforms.{metallic,roughness,occlusion,emissive}
+    // via EntityMaterialCache::get_or_create. Defaults match what the
+    // editor used to hardcode (slightly dielectric, fairly rough, fully lit).
+
+    float GetMetallic() const { return metallic_; }
+    void  SetMetallic(float m) { metallic_ = glm::clamp(m, 0.0f, 1.0f); }
+
+    float GetRoughness() const { return roughness_; }
+    void  SetRoughness(float r) { roughness_ = glm::clamp(r, 0.04f, 1.0f); }
+
+    float GetOcclusion() const { return occlusion_; }
+    void  SetOcclusion(float o) { occlusion_ = glm::clamp(o, 0.0f, 1.0f); }
+
+    const glm::vec3& GetEmissive() const { return emissive_; }
+    void  SetEmissive(const glm::vec3& e) { emissive_ = glm::max(e, glm::vec3(0.0f)); }
+
 protected:
-    MeshType mesh_type_ = MeshType::Cube;
-    glm::vec4 color_ = glm::vec4(1.0f);  // White by default
+    MeshType  mesh_type_      = MeshType::Cube;
+    glm::vec4 color_          = glm::vec4(1.0f);  // White by default
+    AlphaMode alpha_mode_     = AlphaMode::Opaque;
+    float     alpha_cutoff_   = 0.5f;            // Standard glTF default (Cutout mode)
+
+    float     metallic_       = 0.05f;
+    float     roughness_      = 0.7f;
+    float     occlusion_      = 1.0f;
+    glm::vec3 emissive_       = glm::vec3(0.0f);
 };
 
 } // namespace schizo::scene

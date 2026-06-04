@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <array>
+#include <optional>
 #include <glm/glm.hpp>
 #include <entt/entt.hpp>
 
@@ -31,9 +32,17 @@ public:
     // Movement parameters
     static constexpr float WALK_SPEED = 5.0f;      // m/s
     static constexpr float SPRINT_SPEED = 10.0f;   // m/s
-    static constexpr float JUMP_FORCE = 15.0f;     // m/s
+    // JUMP_FORCE = initial upward velocity on Jump. Max jump height ≈
+    // JUMP_FORCE² / (2·|GRAVITY|). 6.0 ⇒ ~1.83 m peak — a "game" jump rather
+    // than the old 11.5 m default that was clearly tuned for testing.
+    static constexpr float JUMP_FORCE = 6.0f;      // m/s
     static constexpr float GRAVITY = -9.81f;       // m/s²
-    static constexpr float GROUND_DRAG = 0.1f;     // friction coefficient
+    // GROUND_DRAG = exponential decay coefficient applied to horizontal
+    // velocity each frame when no movement input is held. 20 ⇒ ~25% loss
+    // per frame at 60 Hz ⇒ player stops in ~0.15 s. The old value of 0.1
+    // decayed at 0.17% per frame, which is why the player felt slippery —
+    // releasing a key took ~7 s to halve the speed.
+    static constexpr float GROUND_DRAG = 20.0f;    // friction coefficient
     static constexpr float AIR_DRAG = 0.01f;       // air friction
 
     /**
@@ -108,6 +117,14 @@ public:
     glm::vec3 GetPosition() const;
 
     /**
+     * Set the character's position from an external integrator. The controller
+     * does not own a Transform component, so the host (e.g. ScenePlaybackManager)
+     * is responsible for applying velocity to a real transform each frame and
+     * pushing the resulting position back here so states can query it.
+     */
+    void SetPosition(const glm::vec3& position);
+
+    /**
      * Get the character's forward direction
      */
     glm::vec3 GetForwardDirection() const;
@@ -118,6 +135,20 @@ public:
      * Check if the character is on the ground
      */
     bool IsOnGround() const;
+
+    /**
+     * Override the ground state from an external source. GroundDetector's
+     * raycast is a stub right now, so without an override IsOnGround() would
+     * always return false, jumps would be blocked, and FallState would never
+     * land. Hosts driving the controller without a real physics raycast
+     * should call this each frame from their own ground check.
+     */
+    void SetGrounded(bool grounded);
+
+    /**
+     * Clear the SetGrounded() override and fall back to the GroundDetector.
+     */
+    void ClearGroundedOverride();
 
     /**
      * Get the ground normal at the character's position
@@ -205,6 +236,8 @@ private:
     // Physics
     glm::vec3 velocity_ = glm::vec3(0.0f);
     glm::vec3 desired_direction_ = glm::vec3(0.0f);
+    glm::vec3 external_position_ = glm::vec3(0.0f);
+    std::optional<bool> grounded_override_;
 
     // Movement parameters
     float current_speed_ = 0.0f;

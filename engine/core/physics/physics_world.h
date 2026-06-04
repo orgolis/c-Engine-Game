@@ -144,6 +144,17 @@ public:
      */
     virtual std::vector<RigidBody*> GetBodiesInSphere(const glm::vec3& center,
                                                        float radius) const = 0;
+
+    /**
+     * Get the list of contacts a body participated in during the most recent
+     * Step(). Each Contact's `normal` is oriented "from the queried body
+     * outward toward the other body" (so for a body resting on the floor,
+     * the contact normal points downward).
+     *
+     * @return Pointer to the contact list (owned by the world), or nullptr
+     *         if this body had no contacts last frame.
+     */
+    virtual const std::vector<Contact>* GetBodyContacts(RigidBody* body) const = 0;
     
     // ========== Statistics ==========
     

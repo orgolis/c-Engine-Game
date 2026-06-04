@@ -202,6 +202,20 @@ public:
      */
     void SetGravityScale(float scale) { gravity_scale_ = scale; }
     float GetGravityScale() const { return gravity_scale_; }
+
+    // Trigger: still collected by the narrow phase (contact is recorded for
+    // game code to read), but skipped by ResolveCollision so bodies overlap
+    // without being pushed apart.
+    bool IsTrigger() const { return is_trigger_; }
+    void SetTrigger(bool t) { is_trigger_ = t; }
+
+    // Layer this body sits on (0..31). Default 0.
+    uint8_t GetLayer() const { return layer_; }
+    void    SetLayer(uint8_t layer) { layer_ = static_cast<uint8_t>(layer & 31u); }
+
+    // Bitmask of layers this body is willing to collide with. Default all-on.
+    uint32_t GetCollisionMask() const { return collision_mask_; }
+    void     SetCollisionMask(uint32_t mask) { collision_mask_ = mask; }
     
     // ========== Constraints ==========
     
@@ -325,6 +339,12 @@ private:
     bool is_sleeping_ = false;
     float sleep_timer_ = 0.0f;
     float sleep_threshold_ = 0.1f;
+
+    // Trigger + layer filtering. Defaults: not a trigger, on layer 0,
+    // collides with every other layer.
+    bool     is_trigger_     = false;
+    uint8_t  layer_          = 0;
+    uint32_t collision_mask_ = 0xFFFFFFFFu;
     
     // Collision tracking
     std::vector<CollisionInfo> collisions_;

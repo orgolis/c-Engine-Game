@@ -35,6 +35,7 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_lighting_pass.h
     gpu/vulkan/vulkan_shadow_map.h
     gpu/vulkan/vulkan_post_processing.h
+    gpu/vulkan/vulkan_transparent_pass.h
     gpu/vulkan/vulkan_shader_registry.h
     gpu/vulkan/vulkan_render_graph.h
     gpu/vulkan/vulkan_texture.h
@@ -79,6 +80,7 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_lighting_pass.cpp
     gpu/vulkan/vulkan_shadow_map.cpp
     gpu/vulkan/vulkan_post_processing.cpp
+    gpu/vulkan/vulkan_transparent_pass.cpp
     gpu/vulkan/vulkan_shader_registry.cpp
     gpu/vulkan/vulkan_render_graph.cpp
     gpu/vulkan/vulkan_texture.cpp

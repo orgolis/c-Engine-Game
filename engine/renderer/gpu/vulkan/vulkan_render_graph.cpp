@@ -10,6 +10,7 @@
 #include "vulkan_lighting_pass.h"
 #include "vulkan_post_processing.h"
 #include "vulkan_shadow_map.h"
+#include "vulkan_transparent_pass.h"
 #include "vulkan_scene_mesh.h"
 #include "vulkan_scene_material.h"
 #include "culling.h"
@@ -46,6 +47,7 @@ const char* VulkanRenderGraph::stage_name(RenderGraphStage stage) {
         case RenderGraphStage::Shadow:      return "Shadow";
         case RenderGraphStage::Geometry:    return "Geometry";
         case RenderGraphStage::Lighting:    return "Lighting";
+        case RenderGraphStage::Transparent: return "Transparent";
         case RenderGraphStage::PostProcess: return "PostProcess";
         case RenderGraphStage::StageCount:  return "StageCount";
     }
@@ -135,16 +137,23 @@ std::unique_ptr<VulkanRenderGraph> VulkanRenderGraph::create(const RenderGraphCo
     lighting_entry.debug_label = "Lighting";
     graph->stages_.push_back(lighting_entry);
 
+    StageEntry transparent_entry{};
+    transparent_entry.stage       = RenderGraphStage::Transparent;
+    transparent_entry.enabled     = (config.transparent != nullptr);
+    transparent_entry.debug_label = "Transparent";
+    graph->stages_.push_back(transparent_entry);
+
     StageEntry post_entry{};
     post_entry.stage       = RenderGraphStage::PostProcess;
     post_entry.enabled     = (config.post_processing != nullptr);
     post_entry.debug_label = "PostProcess";
     graph->stages_.push_back(post_entry);
 
-    spdlog::info("VulkanRenderGraph created at {}x{} (shadow={}, post={})",
+    spdlog::info("VulkanRenderGraph created at {}x{} (shadow={}, transparent={}, post={})",
                  config.width, config.height,
-                 shadow_entry.enabled ? "on" : "off",
-                 post_entry.enabled   ? "on" : "off");
+                 shadow_entry.enabled      ? "on" : "off",
+                 transparent_entry.enabled ? "on" : "off",
+                 post_entry.enabled        ? "on" : "off");
 
     return graph;
 }
@@ -246,6 +255,9 @@ bool VulkanRenderGraph::resolve_timings() {
     if (stats_.lighting_passes_run > 0) {
         stats_.lighting_us = compute_us(RenderGraphStage::Lighting);
     }
+    if (stats_.transparent_passes_run > 0) {
+        stats_.transparent_us = compute_us(RenderGraphStage::Transparent);
+    }
     if (stats_.post_process_passes_run > 0) {
         stats_.post_process_us = compute_us(RenderGraphStage::PostProcess);
     }
@@ -296,6 +308,10 @@ void VulkanRenderGraph::execute_stage(VkCommandBuffer cmd,
             record_lighting(cmd, recorder);
             ++stats_.lighting_passes_run;
             break;
+        case RenderGraphStage::Transparent:
+            record_transparent(cmd, recorder);
+            ++stats_.transparent_passes_run;
+            break;
         case RenderGraphStage::PostProcess:
             record_post_process(cmd, recorder);
             ++stats_.post_process_passes_run;
@@ -332,6 +348,17 @@ void VulkanRenderGraph::insert_barrier_between(VkCommandBuffer cmd,
     VkPipelineStageFlags dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 
     if (previous == RenderGraphStage::Lighting && next == RenderGraphStage::PostProcess) {
+        src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    } else if (previous == RenderGraphStage::Lighting && next == RenderGraphStage::Transparent) {
+        // Lighting wrote HDR colour; transparent pass reads it as a colour
+        // attachment (LOAD_OP_LOAD) and samples G-Buffer depth as a depth
+        // attachment.
+        src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                    VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    } else if (previous == RenderGraphStage::Transparent && next == RenderGraphStage::PostProcess) {
+        // Transparent pass wrote HDR colour; post-processing samples it.
         src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     }
@@ -413,6 +440,19 @@ void VulkanRenderGraph::record_lighting(VkCommandBuffer cmd, const StageRecorder
         config_.lighting->render(cmd);
     }
     config_.lighting->end_pass(cmd);
+}
+
+void VulkanRenderGraph::record_transparent(VkCommandBuffer cmd, const StageRecorder& recorder) {
+    if (config_.transparent == nullptr) return;
+    // Filter the per-frame draw list for the items that belong here. For now
+    // the editor passes only the opaque list into the graph, so this default
+    // recorder has nothing to draw — Blend-mode entities are intentionally
+    // invisible until the transparent forward pipeline is implemented.
+    if (recorder) {
+        recorder(cmd);
+    } else {
+        config_.transparent->execute(cmd, draw_items_, camera_);
+    }
 }
 
 void VulkanRenderGraph::record_post_process(VkCommandBuffer cmd, const StageRecorder& recorder) {

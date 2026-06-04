@@ -3,12 +3,14 @@
 // Use a relative path so we always pick up the new gpu/render_device.h
 // (the legacy renderer/include/render_device.h shares a filename and is
 // resolved first when we use a bare include).
-#include "../render_device.h"
 #include <vulkan/vulkan.h>
+
 #include <memory>
-#include <vector>
 #include <queue>
 #include <unordered_map>
+#include <vector>
+
+#include "../render_device.h"
 
 namespace gws::renderer::gpu {
 
@@ -30,8 +32,10 @@ struct QueueFamilyIndices;
 
 class VulkanCommandBuffer : public CommandBuffer {
 public:
-    VkCommandBuffer get_vk_command_buffer() const { return command_buffer; }
-    
+    VkCommandBuffer get_vk_command_buffer() const {
+        return command_buffer;
+    }
+
 private:
     friend class VulkanDevice;
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
@@ -45,9 +49,13 @@ private:
 
 class VulkanBuffer {
 public:
-    VkBuffer get_vk_buffer() const { return buffer; }
-    VkDeviceMemory get_memory() const { return memory; }
-    
+    VkBuffer get_vk_buffer() const {
+        return buffer;
+    }
+    VkDeviceMemory get_memory() const {
+        return memory;
+    }
+
 private:
     friend class VulkanDevice;
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -60,10 +68,16 @@ private:
 
 class VulkanImage {
 public:
-    VkImage get_vk_image() const { return image; }
-    VkImageView get_vk_image_view() const { return image_view; }
-    VkFormat get_format() const { return format; }
-    
+    VkImage get_vk_image() const {
+        return image;
+    }
+    VkImageView get_vk_image_view() const {
+        return image_view;
+    }
+    VkFormat get_format() const {
+        return format;
+    }
+
 private:
     friend class VulkanDevice;
     VkImage image = VK_NULL_HANDLE;
@@ -80,10 +94,16 @@ private:
 
 class VulkanShader {
 public:
-    VkShaderModule get_vk_shader_module() const { return shader_module; }
-    const std::string& get_entry_point() const { return entry_point; }
-    uint32_t get_stage() const { return stage; }
-    
+    VkShaderModule get_vk_shader_module() const {
+        return shader_module;
+    }
+    const std::string& get_entry_point() const {
+        return entry_point;
+    }
+    uint32_t get_stage() const {
+        return stage;
+    }
+
 private:
     friend class VulkanDevice;
     VkShaderModule shader_module = VK_NULL_HANDLE;
@@ -97,9 +117,13 @@ private:
 
 class VulkanPipeline {
 public:
-    VkPipeline get_vk_pipeline() const { return pipeline; }
-    VkPipelineLayout get_vk_layout() const { return layout; }
-    
+    VkPipeline get_vk_pipeline() const {
+        return pipeline;
+    }
+    VkPipelineLayout get_vk_layout() const {
+        return layout;
+    }
+
 private:
     friend class VulkanDevice;
     VkPipeline pipeline = VK_NULL_HANDLE;
@@ -112,8 +136,10 @@ private:
 
 class VulkanFence {
 public:
-    VkFence get_vk_fence() const { return fence; }
-    
+    VkFence get_vk_fence() const {
+        return fence;
+    }
+
 private:
     friend class VulkanDevice;
     VkFence fence = VK_NULL_HANDLE;
@@ -121,8 +147,10 @@ private:
 
 class VulkanSemaphore {
 public:
-    VkSemaphore get_vk_semaphore() const { return semaphore; }
-    
+    VkSemaphore get_vk_semaphore() const {
+        return semaphore;
+    }
+
 private:
     friend class VulkanDevice;
     VkSemaphore semaphore = VK_NULL_HANDLE;
@@ -136,132 +164,129 @@ class VulkanDevice : public RenderDevice {
 public:
     VulkanDevice();
     ~VulkanDevice() override;
-    
+
     // ========================================================================
     // Device Lifecycle
     // ========================================================================
-    
+
     void initialize(const RenderConfig& config) override;
     void shutdown() override;
     void wait_idle() override;
-    
+
     // ========================================================================
     // Swapchain Management
     // ========================================================================
-    
+
     SwapchainInfo get_swapchain_info() const override;
     uint32_t acquire_next_image(Handle<Semaphore> signal_semaphore) override;
-    void present_image(uint32_t image_index,
-                      Handle<Semaphore> wait_semaphore) override;
+    void present_image(uint32_t image_index, Handle<Semaphore> wait_semaphore) override;
     void recreate_swapchain(uint32_t width, uint32_t height) override;
     Handle<Image> get_current_swapchain_image() override;
     uint32_t get_swapchain_format() const override;
-    
+
     // ========================================================================
     // Command Buffer Management
     // ========================================================================
-    
+
     CommandBuffer* begin_command_buffer() override;
-    void submit_command_buffer(CommandBuffer* cmd_buffer,
-                              Handle<Fence> signal_fence) override;
+    void submit_command_buffer(CommandBuffer* cmd_buffer, Handle<Fence> signal_fence) override;
     void wait_fence(Handle<Fence> fence) override;
     void reset_fence(Handle<Fence> fence) override;
-    
+
     // ========================================================================
     // Resource Creation
     // ========================================================================
-    
+
     Handle<Buffer> create_buffer(const BufferInfo& info) override;
     void destroy_buffer(Handle<Buffer> buffer) override;
     void* map_buffer(Handle<Buffer> buffer) override;
     void unmap_buffer(Handle<Buffer> buffer) override;
-    
+
     Handle<Image> create_image(const ImageInfo& info) override;
     void destroy_image(Handle<Image> image) override;
-    
+
     Handle<Shader> create_shader(const ShaderStageInfo& info) override;
     void destroy_shader(Handle<Shader> shader) override;
-    
-    Handle<Pipeline> create_graphics_pipeline(
-        const GraphicsPipelineInfo& info) override;
+
+    Handle<Pipeline> create_graphics_pipeline(const GraphicsPipelineInfo& info) override;
     void destroy_pipeline(Handle<Pipeline> pipeline) override;
-    
+
     Handle<Fence> create_fence(bool signaled = false) override;
     void destroy_fence(Handle<Fence> fence) override;
-    
+
     Handle<Semaphore> create_semaphore() override;
     void destroy_semaphore(Handle<Semaphore> semaphore) override;
-    
+
     // ========================================================================
     // Rendering Commands
     // ========================================================================
-    
-    void begin_render_pass(CommandBuffer* cmd_buffer,
-                          const glm::vec4& clear_color) override;
+
+    void begin_render_pass(CommandBuffer* cmd_buffer, const glm::vec4& clear_color) override;
     void end_render_pass(CommandBuffer* cmd_buffer) override;
-    
-    void bind_pipeline(CommandBuffer* cmd_buffer,
-                      Handle<Pipeline> pipeline) override;
-    
-    void draw(CommandBuffer* cmd_buffer,
-             uint32_t vertex_count,
-             uint32_t instance_count = 1,
-             uint32_t first_vertex = 0,
-             uint32_t first_instance = 0) override;
-    
-    void draw_indexed(CommandBuffer* cmd_buffer,
-                     uint32_t index_count,
-                     uint32_t instance_count = 1,
-                     uint32_t first_index = 0,
-                     int32_t vertex_offset = 0,
-                     uint32_t first_instance = 0) override;
-    
-    void set_viewport(CommandBuffer* cmd_buffer,
-                     uint32_t x, uint32_t y,
-                     uint32_t width, uint32_t height) override;
-    
-    void set_scissor(CommandBuffer* cmd_buffer,
-                    uint32_t x, uint32_t y,
-                    uint32_t width, uint32_t height) override;
-    
+
+    void bind_pipeline(CommandBuffer* cmd_buffer, Handle<Pipeline> pipeline) override;
+
+    void draw(CommandBuffer* cmd_buffer, uint32_t vertex_count, uint32_t instance_count = 1, uint32_t first_vertex = 0,
+              uint32_t first_instance = 0) override;
+
+    void draw_indexed(CommandBuffer* cmd_buffer, uint32_t index_count, uint32_t instance_count = 1,
+                      uint32_t first_index = 0, int32_t vertex_offset = 0, uint32_t first_instance = 0) override;
+
+    void set_viewport(CommandBuffer* cmd_buffer, uint32_t x, uint32_t y, uint32_t width, uint32_t height) override;
+
+    void set_scissor(CommandBuffer* cmd_buffer, uint32_t x, uint32_t y, uint32_t width, uint32_t height) override;
+
     // ========================================================================
     // Debugging & Profiling
     // ========================================================================
-    
+
     std::string get_device_name() const override;
-    
-    void set_resource_name(Handle<Buffer> buffer,
-                          const std::string& name) override;
-    void set_resource_name(Handle<Image> image,
-                          const std::string& name) override;
-    
+
+    void set_resource_name(Handle<Buffer> buffer, const std::string& name) override;
+    void set_resource_name(Handle<Image> image, const std::string& name) override;
+
     void set_debug_enabled(bool enabled) override;
-    
+
     // ========================================================================
     // Vulkan-Specific Methods
     // ========================================================================
-    
+
     /// Get Vulkan instance
-    VkInstance get_vk_instance() const { return instance; }
+    VkInstance get_vk_instance() const {
+        return instance;
+    }
 
     /// Get Vulkan physical device
-    VkPhysicalDevice get_vk_physical_device() const { return physical_device; }
+    VkPhysicalDevice get_vk_physical_device() const {
+        return physical_device;
+    }
 
     /// Get Vulkan logical device
-    VkDevice get_vk_device() const { return device; }
+    VkDevice get_vk_device() const {
+        return device;
+    }
 
     /// Short-form accessors used by Phase 3+ components.
-    VkDevice get_device() const { return device; }
-    VkPhysicalDevice get_physical_device() const { return physical_device; }
+    VkDevice get_device() const {
+        return device;
+    }
+    VkPhysicalDevice get_physical_device() const {
+        return physical_device;
+    }
 
     /// Get graphics queue
-    VkQueue get_graphics_queue() const { return graphics_queue; }
-    uint32_t get_graphics_queue_family() const { return graphics_queue_family; }
-    VkCommandPool get_command_pool() const { return command_pool; }
+    VkQueue get_graphics_queue() const {
+        return graphics_queue;
+    }
+    uint32_t get_graphics_queue_family() const {
+        return graphics_queue_family;
+    }
+    VkCommandPool get_command_pool() const {
+        return command_pool;
+    }
 
     /// Find a memory type matching the requested property flags. Throws on failure.
-    uint32_t find_memory_type(uint32_t type_filter,
-                              VkMemoryPropertyFlags properties) const;
+    uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties) const;
 
     /// Attach an externally-created surface (typically from `glfwCreateWindowSurface`).
     /// The device takes ownership for shutdown — the caller must NOT destroy it.
@@ -274,62 +299,63 @@ public:
     bool create_window_swapchain(uint32_t width, uint32_t height);
 
     /// Access the owned swapchain (null until `create_window_swapchain` succeeds).
-    VulkanSwapchain* get_swapchain() const { return swapchain.get(); }
-    
+    VulkanSwapchain* get_swapchain() const {
+        return swapchain.get();
+    }
+
 private:
     // ========================================================================
     // Initialization Helpers
     // ========================================================================
-    
+
     void create_instance(const RenderConfig& config);
     void setup_debug_messenger();
     void pick_physical_device();
     void create_logical_device();
     void create_swapchain(void* window_handle,  // HWND on Windows
-                         uint32_t width,
-                         uint32_t height);
+                          uint32_t width, uint32_t height);
     void create_command_pool();
-    
+
     // ========================================================================
     // Vulkan Object Management
     // ========================================================================
-    
-    template<typename T>
+
+    template <typename T>
     uint64_t allocate_handle();
-    
-    template<typename T>
+
+    template <typename T>
     T* get_resource(Handle<T> handle);
-    
-    template<typename T>
+
+    template <typename T>
     void free_resource(Handle<T> handle);
-    
+
     // ========================================================================
     // Member Variables
     // ========================================================================
-    
+
     // Instance & Device
     VkInstance instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
-    
+
     // Queues
     VkQueue graphics_queue = VK_NULL_HANDLE;
     VkQueue present_queue = VK_NULL_HANDLE;
     uint32_t graphics_queue_family = ~0u;
     uint32_t present_queue_family = ~0u;
-    
+
     // Swapchain
     std::unique_ptr<VulkanSwapchain> swapchain;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
-    
+
     // Command Pool
     VkCommandPool command_pool = VK_NULL_HANDLE;
-    
+
     // Configuration
     RenderConfig config;
     bool debug_enabled = false;
-    
+
     // Resource Management
     std::unordered_map<uint64_t, std::unique_ptr<VulkanBuffer>> buffers;
     std::unordered_map<uint64_t, std::unique_ptr<VulkanImage>> images;
@@ -337,11 +363,11 @@ private:
     std::unordered_map<uint64_t, std::unique_ptr<VulkanPipeline>> pipelines;
     std::unordered_map<uint64_t, std::unique_ptr<VulkanFence>> fences;
     std::unordered_map<uint64_t, std::unique_ptr<VulkanSemaphore>> semaphores;
-    
+
     // Command Buffer Pool
     std::vector<std::unique_ptr<VulkanCommandBuffer>> command_buffers;
     std::queue<VulkanCommandBuffer*> available_command_buffers;
-    
+
     // Handle allocation counter
     uint64_t next_handle_id = 1;
 };

@@ -2,7 +2,9 @@
 
 #include <memory>
 #include <cstdint>
+#include <unordered_map>
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 namespace engine::character {
     class CharacterController;
@@ -11,6 +13,11 @@ namespace engine::character {
 namespace schizo::scene {
     class Entity;
     class Scene;
+}
+
+namespace schizo::physics {
+    class PhysicsWorld;
+    class RigidBody;
 }
 
 namespace schizo::editor {
@@ -125,9 +132,28 @@ private:
     float mouse_delta_x_ = 0.0f;
     float mouse_delta_y_ = 0.0f;
 
-    // Physics state
-    glm::vec3 player_velocity_ = glm::vec3(0.0f);  // Current velocity for gravity
+    // External ground check fed into the CharacterController, since the
+    // controller's GroundDetector raycast is a stub. Hard-coded floor for now.
+    static constexpr float GROUND_LEVEL = 0.0f;
     bool is_on_ground_ = false;
+
+    // Snapshot taken on StartPlayback and replayed on StopPlayback so play
+    // testing does not mutate the saved scene. Keyed by Entity::GetId().
+    // Only transform state is captured for now — components added/removed
+    // during play are NOT undone.
+    struct EntitySnapshot {
+        glm::vec3 local_position{0.0f};
+        glm::quat local_rotation{1.0f, 0.0f, 0.0f, 0.0f};
+        glm::vec3 local_scale{1.0f};
+    };
+    std::unordered_map<uint32_t, EntitySnapshot> entity_snapshots_;
+
+    // Phase 2 physics: a PhysicsWorld is rebuilt fresh on every StartPlayback
+    // from the ColliderComponents currently in the scene. Bodies are owned
+    // here (unique_ptr); the world holds raw pointers as weak refs and is
+    // expected to be torn down before this map clears.
+    std::unique_ptr<schizo::physics::PhysicsWorld> physics_world_;
+    std::unordered_map<uint32_t, std::unique_ptr<schizo::physics::RigidBody>> entity_bodies_;
     
     // Camera state
     glm::vec3 camera_position_ = glm::vec3(0.0f);  // Current camera world position
@@ -142,9 +168,13 @@ private:
     bool AttachCharacterController();
     void SetupPlaybackCamera();
     void UpdateCamera();
-    void UpdateCharacterMovement(float delta_time);
-    void ApplyGravity(float delta_time);
-    void ApplyVelocityToPosition(float delta_time);
+    void UpdateMouseLook();
+    void DriveCharacterController(float delta_time);
+    void CaptureSceneSnapshot();
+    void RestoreSceneSnapshot();
+    void BuildPhysicsWorld();
+    void TearDownPhysicsWorld();
+    void StepPhysics(float delta_time);
 };
 
 } // namespace schizo::editor

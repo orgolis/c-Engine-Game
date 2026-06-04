@@ -198,6 +198,34 @@ public:
         return point_shadow_view_ != VK_NULL_HANDLE;
     }
 
+    /// Resources exposed for forward passes (e.g. transparent) that want to
+    /// reuse the same light data and shadow textures as deferred shading.
+    /// The effective_* getters return the live shadow map when one is bound
+    /// and the internal dummy 1×1 otherwise, so callers can write descriptor
+    /// sets unconditionally.
+    VkBuffer    get_light_buffer() const { return light_buffer_; }
+    uint32_t    get_max_lights() const { return config_.max_lights; }
+    VkImageView get_effective_directional_shadow_view() const {
+        return directional_shadow_view_ != VK_NULL_HANDLE
+                   ? directional_shadow_view_
+                   : dummy_shadow_2d_array_view_;
+    }
+    VkSampler   get_effective_directional_shadow_sampler() const {
+        return directional_shadow_sampler_ != VK_NULL_HANDLE
+                   ? directional_shadow_sampler_
+                   : shadow_sampler_;
+    }
+    VkImageView get_effective_point_shadow_view() const {
+        return point_shadow_view_ != VK_NULL_HANDLE
+                   ? point_shadow_view_
+                   : dummy_shadow_cube_view_;
+    }
+    VkSampler   get_effective_point_shadow_sampler() const {
+        return point_shadow_sampler_ != VK_NULL_HANDLE
+                   ? point_shadow_sampler_
+                   : shadow_sampler_;
+    }
+
 private:
     VulkanDevice* device_ = nullptr;
     VulkanGBuffer* gbuffer_ = nullptr;

@@ -7,6 +7,7 @@
 #include "vulkan_device.h"
 #include "vulkan_shader_registry.h"
 #include "vulkan_scene_mesh.h"
+#include "vulkan_scene_material.h" // Material::bind for alpha-tested caster
 #include "vulkan_render_graph.h" // for DrawItem
 #include "shadow_caster_spirv.h" // pre-compiled SPIR-V fallback for GCC builds
 #include <spdlog/spdlog.h>
@@ -290,22 +291,44 @@ void VulkanShadowMap::update_cascade_splits(const std::vector<float>& splits) {
 
 namespace {
 
+// Caster shader now does an alpha test (cutoff packed into material's
+// emissive_factor.a, just like the G-Buffer fragment shader). Opaque
+// materials use cutoff=0 → discard branch never triggers → identical perf
+// to a pure depth-only pipeline modulo one extra texture sample. Cutout
+// materials use the user's cutoff. Blend materials get cutoff=0.5 (set on
+// the CPU side) so transparent objects cast binarised shadows instead of
+// solid ones.
 constexpr const char* kCasterVertSrc = R"GLSL(
 #version 450
 layout(location = 0) in vec3 inPosition;
-// Other SceneVertex attributes (normal/uv/tangent) are bound but not read.
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inUV;
 layout(location = 3) in vec4 inTangent;
 layout(push_constant) uniform PC { mat4 mvp; } pc;
+layout(location = 0) out vec2 outUV;
 void main() {
+    outUV = inUV;
     gl_Position = pc.mvp * vec4(inPosition, 1.0);
 }
 )GLSL";
 
 constexpr const char* kCasterFragSrc = R"GLSL(
 #version 450
-void main() {}
+layout(location = 0) in vec2 inUV;
+layout(set = 0, binding = 0) uniform MaterialUBO {
+    vec4  base_color_factor;
+    float metallic_factor;
+    float roughness_factor;
+    float occlusion_strength;
+    float normal_scale;
+    vec4  emissive_factor;
+} mat;
+layout(set = 0, binding = 1) uniform sampler2D albedoMap;
+void main() {
+    float alpha   = texture(albedoMap, inUV).a * mat.base_color_factor.a;
+    float cutoff  = mat.emissive_factor.a;
+    if (cutoff > 0.0 && alpha < cutoff) discard;
+}
 )GLSL";
 
 } // namespace
@@ -334,6 +357,14 @@ void VulkanShadowMap::create_caster_pipeline() {
     plinfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     plinfo.pushConstantRangeCount = 1;
     plinfo.pPushConstantRanges    = &pc;
+    // If the caller supplied a material descriptor-set layout, bind it at
+    // set=0 so the alpha-test fragment shader can sample the albedo + read
+    // the cutoff. Otherwise build a layout with no sets (pure depth-only —
+    // shadow shader's discard branch is never reached).
+    if (config_.material_set_layout != VK_NULL_HANDLE) {
+        plinfo.setLayoutCount = 1;
+        plinfo.pSetLayouts    = &config_.material_set_layout;
+    }
     if (vkCreatePipelineLayout(vk, &plinfo, nullptr, &caster_pipeline_layout_) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create shadow caster pipeline layout");
     }
@@ -445,12 +476,23 @@ void VulkanShadowMap::draw_items(VkCommandBuffer cmd,
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, caster_pipeline_);
 
-    const glm::mat4 view_proj = proj * view;
-    const Mesh* last_mesh = nullptr;
+    const bool   has_material_layout = (config_.material_set_layout != VK_NULL_HANDLE);
+    const glm::mat4 view_proj         = proj * view;
+    const Mesh*     last_mesh         = nullptr;
+    const Material* last_material     = nullptr;
 
     for (size_t i = 0; i < draw_count; ++i) {
         const DrawItem& d = draws[i];
         if (!d.mesh) continue;
+
+        // Bind material descriptor set=0 so the alpha-test shader can read
+        // base_color_factor + emissive_factor.a + sample albedoMap. Skip when
+        // the pipeline layout doesn't include the material set (depth-only
+        // fallback for callers that didn't pass a material_set_layout).
+        if (has_material_layout && d.material != nullptr && d.material != last_material) {
+            d.material->bind(cmd, caster_pipeline_layout_, /*set=*/0);
+            last_material = d.material;
+        }
 
         if (d.mesh != last_mesh) {
             d.mesh->bind(cmd);

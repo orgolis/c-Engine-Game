@@ -28,6 +28,7 @@ class VulkanGBuffer;
 class VulkanLightingPass;
 class VulkanShadowMap;
 class VulkanPostProcessing;
+class VulkanTransparentPass;
 class Mesh;
 class Material;
 
@@ -48,6 +49,11 @@ struct DrawItem {
     const Material* material      = nullptr;
     glm::mat4       model         = glm::mat4(1.0f);
     uint32_t        submesh_index = 0;
+    /// True when this draw uses alpha blend (forward transparent pass) instead
+    /// of the deferred G-Buffer path. Cutout-style alpha-test draws stay false
+    /// (the G-Buffer fragment shader's `discard` handles them via the
+    /// alpha_cutoff packed into `MaterialUniforms::emissive_factor.a`).
+    bool            is_blend      = false;
 };
 
 /**
@@ -58,6 +64,7 @@ enum class RenderGraphStage : uint32_t {
     Shadow = 0,        ///< Render shadow maps for shadow-casting lights
     Geometry,          ///< Geometry pass writes to the G-Buffer
     Lighting,          ///< Full-screen lighting reads G-Buffer + shadow maps
+    Transparent,       ///< Forward alpha-blended pass (reads lit HDR + depth)
     PostProcess,       ///< Post-processing chain (bloom / tonemap / TAA)
     StageCount
 };
@@ -89,6 +96,7 @@ struct RenderGraphConfig {
     VulkanLightingPass* lighting = nullptr;
     VulkanShadowMap* shadow_map = nullptr;
     VulkanPostProcessing* post_processing = nullptr;
+    VulkanTransparentPass* transparent = nullptr;
     uint32_t width = 0;
     uint32_t height = 0;
 };
@@ -107,11 +115,13 @@ struct RenderGraphStats {
     uint32_t shadow_passes_run = 0;
     uint32_t geometry_passes_run = 0;
     uint32_t lighting_passes_run = 0;
+    uint32_t transparent_passes_run = 0;
     uint32_t post_process_passes_run = 0;
 
     double shadow_us = 0.0;
     double geometry_us = 0.0;
     double lighting_us = 0.0;
+    double transparent_us = 0.0;
     double post_process_us = 0.0;
 
     // CPU-side per-frame draw / culling counters. Populated by the default
@@ -241,6 +251,7 @@ private:
     void record_geometry(VkCommandBuffer cmd, const StageRecorder& recorder);
     void record_shadow(VkCommandBuffer cmd, const StageRecorder& recorder);
     void record_lighting(VkCommandBuffer cmd, const StageRecorder& recorder);
+    void record_transparent(VkCommandBuffer cmd, const StageRecorder& recorder);
     void record_post_process(VkCommandBuffer cmd, const StageRecorder& recorder);
 
     void destroy_query_pool();

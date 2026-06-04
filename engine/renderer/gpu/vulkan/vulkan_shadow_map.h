@@ -42,6 +42,14 @@ struct ShadowMapConfig {
     float cascade_split_lambda = 0.95f;
     bool use_pcf = true;            // Percentage-closer filtering
     uint32_t pcf_samples = 9;       // 3x3 PCF
+
+    /// Material descriptor-set layout (same one passed to the G-Buffer scene
+    /// pipeline). Caster pipeline binds this at set=0 so its alpha-test
+    /// fragment shader can sample the albedo texture and read the per-material
+    /// alpha_cutoff (packed into emissive_factor.a). Pass VK_NULL_HANDLE to
+    /// fall back to a pure depth-only caster (Cutout / Blend objects will
+    /// then cast solid shadows).
+    VkDescriptorSetLayout material_set_layout = VK_NULL_HANDLE;
 };
 
 /**

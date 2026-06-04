@@ -23,6 +23,8 @@ target_sources(scene PRIVATE
     include/animation_demo_scene.h
     include/entity_factory.h
     include/light_component.h
+    include/collider_component.h
+    include/camera_component.h
 )
 
 # Source files - Scene Management
@@ -34,6 +36,7 @@ target_sources(scene PRIVATE
     src/scene.cpp
     src/entity_factory.cpp
     src/light_component.cpp
+    src/camera_component.cpp
     # src/physics_demo_scene.cpp  # TODO: Resolve circular dependency with renderer
     # src/animation_demo_scene.cpp  # TODO: Resolve circular dependency with renderer
     # src/octree.cpp  # Disabled - experimental spatial partitioning

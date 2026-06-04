@@ -171,6 +171,10 @@ std::unique_ptr<Scene> GltfLoader::load(VulkanDevice* device,
     };
 
     // 2) Build materials.
+    // Track per-material alpha mode so the DrawItems we emit later know
+    // whether to route through the forward transparent pass.
+    std::vector<bool> material_is_blend;
+    material_is_blend.reserve(model.materials.size());
     scene->materials.reserve(model.materials.size());
     for (const auto& gm : model.materials) {
         MaterialUniforms u{};
@@ -182,9 +186,18 @@ std::unique_ptr<Scene> GltfLoader::load(VulkanDevice* device,
         u.roughness_factor   = gm.pbrMetallicRoughness.roughnessFactor;
         u.occlusion_strength = gm.occlusionTexture.strength;
         u.normal_scale       = gm.normalTexture.scale;
+        // emissive_factor.a doubles as alpha_cutoff. MASK uses the file's
+        // value, BLEND gets 0.5 so it casts binarised shadows (the shadow
+        // pass shares this field). OPAQUE leaves it at 0.
+        const float cutoff = (gm.alphaMode == "MASK")  ? gm.alphaCutoff
+                          : (gm.alphaMode == "BLEND") ? 0.5f
+                          : 0.0f;
         u.emissive_factor    = glm::vec4(gm.emissiveFactor[0],
                                           gm.emissiveFactor[1],
-                                          gm.emissiveFactor[2], 0.0f);
+                                          gm.emissiveFactor[2],
+                                          cutoff);
+
+        material_is_blend.push_back(gm.alphaMode == "BLEND");
 
         auto mat = Material::create(device, material_layout, material_pool, u,
                                     resolve_tex(gm.pbrMetallicRoughness.baseColorTexture.index),
@@ -326,6 +339,7 @@ std::unique_ptr<Scene> GltfLoader::load(VulkanDevice* device,
             d.material      = mat;
             d.model         = xform;
             d.submesh_index = static_cast<uint32_t>(si);
+            d.is_blend      = (mat_idx < material_is_blend.size()) && material_is_blend[mat_idx];
             scene->draw_items.push_back(d);
         }
     }
@@ -345,6 +359,7 @@ std::unique_ptr<Scene> GltfLoader::load(VulkanDevice* device,
                 d.material      = mat;
                 d.model         = glm::mat4(1.0f);
                 d.submesh_index = static_cast<uint32_t>(si);
+                d.is_blend      = (mat_idx < material_is_blend.size()) && material_is_blend[mat_idx];
                 scene->draw_items.push_back(d);
             }
         }

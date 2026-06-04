@@ -138,10 +138,10 @@ public:
      * @param right Right movement (positive = right, negative = left)
      * @param up Up movement (positive = up, negative = down)
      */
-    void MoveLocal(float forward, float right, float up) {
+    void MoveLocal(float forward, float right_movement, float up) {
         position_ += front_ * forward * movement_speed_;
-        position_ += right_ * right * movement_speed_;
-        position_ += up * glm::vec3(0.0f, 1.0f, 0.0f) * movement_speed_;
+        position_ += right_ * right_movement * movement_speed_;
+        position_ += glm::vec3(0.0f, 1.0f, 0.0f) * up * movement_speed_;
         RecalculateViewMatrix();
     }
     

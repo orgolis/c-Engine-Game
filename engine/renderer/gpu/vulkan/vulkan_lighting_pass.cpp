@@ -426,18 +426,27 @@ vec3 evaluateLight(Light L, vec3 N, vec3 V, vec3 worldPos,
 void main() {
     vec4 normalSample   = texture(normalTex,   inTexCoord);
     vec4 albedoSample   = texture(albedoTex,   inTexCoord);
+    vec4 materialSample = texture(materialTex, inTexCoord);
     vec3 worldPos = texture(positionTex, inTexCoord).xyz;
     vec3 N        = normalize(normalSample.xyz);
     float roughness = normalSample.a;
     vec3 albedo   = albedoSample.rgb;
     float metallic = albedoSample.a;
+    // materialTex layout (see vulkan_g_buffer.cpp): (emissive.rgb, ao).
+    vec3  emissive   = materialSample.rgb;
+    float occlusion  = materialSample.a;
 
     vec3 V = normalize(pc.cameraPos - worldPos);
 
-    vec3 color = pc.ambientColor * pc.ambientIntensity * albedo;
+    // Direct + ambient contributions are scaled by AO so darker pockets
+    // read as recessed; emissive bypasses AO (light-emitting surfaces
+    // shouldn't get shaded into oblivion).
+    vec3 ambient = pc.ambientColor * pc.ambientIntensity * albedo;
+    vec3 direct  = vec3(0.0);
     for (uint i = 0u; i < pc.lightCount; ++i) {
-        color += evaluateLight(lightBuffer.lights[i], N, V, worldPos, albedo, roughness, metallic);
+        direct += evaluateLight(lightBuffer.lights[i], N, V, worldPos, albedo, roughness, metallic);
     }
+    vec3 color = (ambient + direct) * occlusion + emissive;
 
     outColor = vec4(color, 1.0);
 }

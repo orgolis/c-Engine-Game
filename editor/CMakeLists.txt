@@ -60,3 +60,10 @@ if(MSVC)
 else()
     target_compile_options(editor PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+# Native Win32 file dialogs (GetOpenFileName / GetSaveFileName) live in
+# comdlg32 — MinGW-w64 doesn't auto-link it, MSVC does. Pull it in
+# explicitly on Windows so both toolchains build the editor.
+if(WIN32)
+    target_link_libraries(editor PRIVATE comdlg32)
+endif()

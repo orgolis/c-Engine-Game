@@ -357,7 +357,11 @@ void VulkanGBuffer::begin_geometry_pass(VkCommandBuffer cmd) {
     clear_values[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
     clear_values[1].color = {{0.0f, 0.0f, 1.0f, 0.0f}};  // Normal default (0, 0, 1)
     clear_values[2].color = {{0.04f, 0.04f, 0.04f, 0.0f}};  // Dark gray background
-    clear_values[3].color = {{0.0f, 1.0f, 0.0f, 0.0f}};  // Default material
+    // Layout per the scene fragment shader: (emissive.rgb, ao). emissive
+    // must clear to 0 so the lighting pass doesn't add a phantom glow on
+    // background pixels; ao clears to 1 so ambient * albedo still shows
+    // through the un-drawn region (instead of multiplying to black).
+    clear_values[3].color = {{0.0f, 0.0f, 0.0f, 1.0f}};  // (emissive=0, ao=1)
     clear_values[4].depthStencil = {1.0f, 0};
     
     begin_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
@@ -495,6 +499,14 @@ layout(location = 3) out vec4 outMaterial;
 
 void main() {
     vec4 base = texture(albedoMap, inUV) * mat.base_color_factor;
+
+    // Alpha cutout. emissive_factor.a doubles as alpha_cutoff (set on the
+    // CPU side via EntityMaterialCache when the MeshRendererComponent has
+    // its "Transparent" flag on). Cutoff == 0 means "opaque, no discard"
+    // so opaque materials are unaffected.
+    float alpha_cutoff = mat.emissive_factor.a;
+    if (alpha_cutoff > 0.0 && base.a < alpha_cutoff) discard;
+
     vec3 nmap = texture(normalMap, inUV).xyz * 2.0 - 1.0;
     nmap.xy *= mat.normal_scale;
     mat3 TBN = mat3(normalize(inTangent), normalize(inBitangent), normalize(inNormal));
@@ -504,14 +516,20 @@ void main() {
     float roughness = clamp(mr.g * mat.roughness_factor, 0.04, 1.0);
     float metallic  = clamp(mr.b * mat.metallic_factor, 0.0, 1.0);
 
-    float ao = mix(1.0, texture(aoMap, inUV).r, mat.occlusion_strength);
-    vec3  emis = texture(emissiveMap, inUV).rgb * mat.emissive_factor.rgb;
-    float emis_lum = max(max(emis.r, emis.g), emis.b);
+    // AO and emissive use additive / multiplier combine so the per-material
+    // factors are visible without an asset texture (default textures are
+    // white / black respectively, which would otherwise zero either signal
+    // out via the strict glTF combine).
+    float ao   = texture(aoMap, inUV).r * mat.occlusion_strength;
+    vec3  emis = mat.emissive_factor.rgb + texture(emissiveMap, inUV).rgb;
 
     outPosition         = vec4(inWorldPos, 1.0);
     outNormalRoughness  = vec4(N, roughness);
     outAlbedoMetallic   = vec4(base.rgb, metallic);
-    outMaterial         = vec4(0.0, ao, emis_lum, 0.0); // (id, ao, emission, _)
+    // Pack emissive RGB + AO into the 4th attachment. Previously this
+    // stored emissive *luminance* only, so coloured glows were impossible
+    // and the lighting pass never sampled it anyway.
+    outMaterial         = vec4(emis, ao);
 }
 )GLSL";
 

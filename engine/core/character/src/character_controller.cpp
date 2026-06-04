@@ -67,12 +67,25 @@ void CharacterController::Update(float dt) {
 void CharacterController::ProcessInput(const InputAction& input) {
     // Process movement input
     desired_direction_ = glm::vec3(input.lateral, 0.0f, input.forward);
-    
+
     // Normalize direction if there's any movement
-    if (glm::length(desired_direction_) > 0.001f) {
+    bool wants_to_move = glm::length(desired_direction_) > 0.001f;
+    if (wants_to_move) {
         desired_direction_ = glm::normalize(desired_direction_);
     }
-    
+
+    // Movement input → Walk transition. Without this the state machine is
+    // stuck in Idle (where desired_speed_ == 0), so UpdateMovement keeps
+    // velocity at 0, speed never crosses the 0.5 threshold, and the
+    // speed-based Idle→Walk check in UpdateMovement never fires.
+    if (wants_to_move && IsInState(CharacterStateType::Idle) &&
+        current_state_->CanTransitionTo(CharacterStateType::Walk)) {
+        TransitionToState(CharacterStateType::Walk);
+    } else if (!wants_to_move && IsInState(CharacterStateType::Walk) &&
+               current_state_->CanTransitionTo(CharacterStateType::Idle)) {
+        TransitionToState(CharacterStateType::Idle);
+    }
+
     // Handle jumping
     if (input.jump && !was_jump_pressed_) {
         if (IsOnGround() && current_state_->CanTransitionTo(CharacterStateType::Jump)) {
@@ -166,9 +179,11 @@ float CharacterController::GetCurrentSpeed() const {
 }
 
 glm::vec3 CharacterController::GetPosition() const {
-    // TODO: Get actual position from Transform component
-    // For now, return a stub
-    return glm::vec3(0.0f);
+    return external_position_;
+}
+
+void CharacterController::SetPosition(const glm::vec3& position) {
+    external_position_ = position;
 }
 
 glm::vec3 CharacterController::GetForwardDirection() const {
@@ -176,7 +191,16 @@ glm::vec3 CharacterController::GetForwardDirection() const {
 }
 
 bool CharacterController::IsOnGround() const {
+    if (grounded_override_.has_value()) return *grounded_override_;
     return ground_detector_->IsOnGround();
+}
+
+void CharacterController::SetGrounded(bool grounded) {
+    grounded_override_ = grounded;
+}
+
+void CharacterController::ClearGroundedOverride() {
+    grounded_override_.reset();
 }
 
 glm::vec3 CharacterController::GetGroundNormal() const {
@@ -239,10 +263,16 @@ void CharacterController::ActivateDash() {
 }
 
 void CharacterController::UpdateMovement(float dt) {
-    // Determine target speed based on current state
+    // Determine target horizontal speed. Jump and Fall keep `WALK_SPEED` so
+    // the player has full air control — pressing W mid-jump moves you
+    // forward instead of letting the speed lerp decay to zero, which is the
+    // arcade default. Set this to a fraction of WALK_SPEED if you want
+    // reduced air control.
     if (IsInState(CharacterStateType::Sprint)) {
         desired_speed_ = SPRINT_SPEED;
-    } else if (IsInState(CharacterStateType::Walk)) {
+    } else if (IsInState(CharacterStateType::Walk) ||
+               IsInState(CharacterStateType::Jump) ||
+               IsInState(CharacterStateType::Fall)) {
         desired_speed_ = WALK_SPEED;
     } else {
         desired_speed_ = 0.0f;
@@ -256,9 +286,12 @@ void CharacterController::UpdateMovement(float dt) {
         velocity_.x = desired_direction_.x * current_speed_;
         velocity_.z = desired_direction_.z * current_speed_;
     } else {
-        // Decelerate smoothly
-        velocity_.x *= (1.0f - GROUND_DRAG * dt);
-        velocity_.z *= (1.0f - GROUND_DRAG * dt);
+        // Decelerate smoothly. Clamp the decay factor to [0, 1] so a large
+        // dt (post-stutter frame) can't make velocity overshoot into the
+        // opposite direction.
+        float decay = std::max(0.0f, 1.0f - GROUND_DRAG * dt);
+        velocity_.x *= decay;
+        velocity_.z *= decay;
     }
     
     // Transition between states based on speed

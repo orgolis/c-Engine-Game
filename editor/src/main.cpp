@@ -13,6 +13,7 @@
 #include "vulkan/vulkan_lighting_pass.h"
 #include "vulkan/vulkan_shadow_map.h"
 #include "vulkan/vulkan_post_processing.h"
+#include "vulkan/vulkan_transparent_pass.h"
 #include "vulkan/vulkan_render_graph.h"
 #include "vulkan/vulkan_scene_mesh.h"
 #include "vulkan/vulkan_scene_material.h"
@@ -29,8 +30,10 @@
 #include "entity_factory.h"
 #include "transform_component.h"
 #include "light_component.h"
+#include "camera_component.h"
 #include "viewport_camera.h"
 #include "mesh_renderer_component.h"
+#include "collider_component.h"
 #include "asset_browser_panel.h"
 #include "material_editor_panel.h"
 #include "asset_import_dialog.h"
@@ -50,6 +53,18 @@
 #include <cstdint>
 #include <memory>
 #include <limits>
+
+#ifdef _WIN32
+  // Native file-open / file-save dialogs (Win32 commdlg). Pulled in just for
+  // the Save/Open Scene menu items — keep WIN32_LEAN_AND_MEAN so we don't
+  // drag the whole Windows kitchen sink into this TU.
+  #define WIN32_LEAN_AND_MEAN
+  #define NOMINMAX
+  #include <windows.h>
+  #include <commdlg.h>
+  #define GLFW_EXPOSE_NATIVE_WIN32
+  #include <GLFW/glfw3native.h>
+#endif
 #include <algorithm>
 #include <vector>
 #include <filesystem>
@@ -121,10 +136,6 @@ struct EditorState {
     glm::vec2 gizmo_drag_start = glm::vec2(0.0f);
     glm::vec3 gizmo_drag_offset = glm::vec3(0.0f);
     
-    // Play Mode
-    bool is_playing = false;
-    float play_time = 0.0f;
-    
     // Undo/Redo
     schizo::editor::UndoRedoManager undo_redo_manager;
     
@@ -174,6 +185,42 @@ static void DropCallback(GLFWwindow* window, int count, const char** paths) {
 // ============================================================================
 // File Dialog Functions
 // ============================================================================
+
+// Native Win32 file pickers. Block the calling thread (the editor's main
+// loop) for the duration of the dialog, which is the expected behaviour.
+// Filter is *.scene; default extension is added when the user types just
+// "foo" into the Save dialog.
+#ifdef _WIN32
+static std::string OpenSceneDialogNative(GLFWwindow* window) {
+    char buf[MAX_PATH] = {0};
+    OPENFILENAMEA ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = window ? glfwGetWin32Window(window) : NULL;
+    ofn.lpstrFile   = buf;
+    ofn.nMaxFile    = sizeof(buf);
+    ofn.lpstrFilter = "Scene Files (*.scene)\0*.scene\0All Files\0*.*\0";
+    ofn.lpstrTitle  = "Open Scene";
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    return GetOpenFileNameA(&ofn) ? std::string(buf) : std::string();
+}
+
+static std::string SaveSceneDialogNative(GLFWwindow* window) {
+    char buf[MAX_PATH] = {0};
+    OPENFILENAMEA ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = window ? glfwGetWin32Window(window) : NULL;
+    ofn.lpstrFile   = buf;
+    ofn.nMaxFile    = sizeof(buf);
+    ofn.lpstrFilter = "Scene Files (*.scene)\0*.scene\0All Files\0*.*\0";
+    ofn.lpstrTitle  = "Save Scene As";
+    ofn.lpstrDefExt = "scene";
+    ofn.Flags       = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    return GetSaveFileNameA(&ofn) ? std::string(buf) : std::string();
+}
+#else
+static std::string OpenSceneDialogNative(GLFWwindow*) { return {}; }
+static std::string SaveSceneDialogNative(GLFWwindow*) { return {}; }
+#endif
 
 void ShowSaveDialog(EditorState& editor_state) {
     if (!editor_state.show_save_dialog) return;
@@ -298,7 +345,7 @@ void ShowRenameDialog(EditorState& editor_state) {
 // Menu Functions
 // ============================================================================
 
-void ShowMainMenuBar(EditorState& editor_state) {
+void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
     if (ImGui::BeginMainMenuBar()) {
         // File menu
         if (ImGui::BeginMenu("File")) {
@@ -307,19 +354,29 @@ void ShowMainMenuBar(EditorState& editor_state) {
                 spdlog::info("New scene created");
             }
             if (ImGui::MenuItem("Open Scene", "Ctrl+O")) {
-                editor_state.show_open_dialog = true;
-                ImGui::OpenPopup("Open Scene");
+                std::string path = OpenSceneDialogNative(glfw_window);
+                if (!path.empty()) {
+                    editor_state.editor_scene->LoadScene(path);
+                    spdlog::info("Scene loaded from: {}", path);
+                }
             }
             if (ImGui::MenuItem("Save Scene", "Ctrl+S")) {
                 auto filepath = editor_state.editor_scene->GetSceneFilepath();
                 if (filepath.empty()) {
-                    filepath = "scenes/untitled.scene";
+                    // No file backing the scene yet — fall through to Save As.
+                    filepath = SaveSceneDialogNative(glfw_window);
                 }
-                editor_state.editor_scene->SaveScene(filepath);
+                if (!filepath.empty()) {
+                    editor_state.editor_scene->SaveScene(filepath);
+                    spdlog::info("Scene saved to: {}", filepath);
+                }
             }
             if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S")) {
-                editor_state.show_save_dialog = true;
-                ImGui::OpenPopup("Save Scene As");
+                std::string path = SaveSceneDialogNative(glfw_window);
+                if (!path.empty()) {
+                    editor_state.editor_scene->SaveScene(path);
+                    spdlog::info("Scene saved to: {}", path);
+                }
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit", "Alt+F4")) {
@@ -372,14 +429,18 @@ void ShowMainMenuBar(EditorState& editor_state) {
                 spdlog::info("Build Scene");
             }
             
-            const char* play_label = editor_state.is_playing ? "Stop (F5)" : "Play (F5)";
+            const bool playing_now = editor_state.scene_playback_manager &&
+                                     editor_state.scene_playback_manager->IsPlaying();
+            const char* play_label = playing_now ? "Stop (F5)" : "Play (F5)";
             if (ImGui::MenuItem(play_label)) {
-                editor_state.is_playing = !editor_state.is_playing;
-                editor_state.play_time = 0.0f;
-                if (editor_state.is_playing) {
-                    spdlog::info("Play mode started");
-                } else {
-                    spdlog::info("Play mode stopped");
+                if (editor_state.scene_playback_manager) {
+                    if (playing_now) {
+                        editor_state.scene_playback_manager->StopPlayback();
+                    } else if (auto scene = editor_state.editor_scene->GetScene()) {
+                        if (!editor_state.scene_playback_manager->StartPlayback(scene)) {
+                            spdlog::warn("Failed to start scene playback (no entity named 'Player'?)");
+                        }
+                    }
                 }
             }
             ImGui::EndMenu();
@@ -1019,7 +1080,55 @@ void ShowInspector(EditorState& editor_state) {
                     }
                     ImGui::EndMenu();
                 }
-                
+
+                if (ImGui::BeginMenu("Collider##add_collider")) {
+                    // One collider per entity — adding a second would just sit
+                    // there unused by the (single-collider) Phase 2 lookup.
+                    const bool has_collider =
+                        selected_entity->GetComponent<schizo::scene::ColliderComponent>() != nullptr;
+                    ImGui::BeginDisabled(has_collider);
+                    auto add_collider = [&](schizo::scene::ColliderShape s, const char* label) {
+                        if (ImGui::MenuItem(label)) {
+                            selected_entity->AddComponent<schizo::scene::ColliderComponent>(s);
+                            editor_state.editor_scene->MarkModified();
+                            spdlog::info("Added {} collider to entity: {}",
+                                         label, selected_entity->GetName());
+                            ImGui::CloseCurrentPopup();
+                        }
+                    };
+                    add_collider(schizo::scene::ColliderShape::Box,      "Box Collider");
+                    add_collider(schizo::scene::ColliderShape::Sphere,   "Sphere Collider");
+                    add_collider(schizo::scene::ColliderShape::Capsule,  "Capsule Collider");
+                    add_collider(schizo::scene::ColliderShape::Cylinder, "Cylinder Collider");
+                    add_collider(schizo::scene::ColliderShape::Plane,    "Plane Collider");
+                    add_collider(schizo::scene::ColliderShape::Mesh,     "Mesh Collider (uses MeshComponent)");
+                    ImGui::EndDisabled();
+                    if (has_collider) {
+                        ImGui::Separator();
+                        ImGui::TextDisabled("(already has a Collider)");
+                    }
+                    ImGui::EndMenu();
+                }
+
+                // One camera per entity — pick the active one in the
+                // viewport/runtime by entity selection, not by stacking.
+                {
+                    const bool has_camera =
+                        selected_entity->GetComponent<schizo::scene::CameraComponent>() != nullptr;
+                    ImGui::BeginDisabled(has_camera);
+                    if (ImGui::MenuItem("Camera")) {
+                        selected_entity->AddComponent<schizo::scene::CameraComponent>();
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Added CameraComponent to entity: {}", selected_entity->GetName());
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndDisabled();
+                    if (has_camera) {
+                        ImGui::Separator();
+                        ImGui::TextDisabled("(already has a Camera)");
+                    }
+                }
+
                 ImGui::EndPopup();
             }
             
@@ -1224,7 +1333,148 @@ void ShowInspector(EditorState& editor_state) {
                 ImGui::TreePop();
             }
         }
-        
+
+        // Collider Component Properties (Phase 1 data layer — physics not
+        // simulated yet; editing this just records authoring data that the
+        // Phase 2 PhysicsWorld lifecycle will consume on StartPlayback).
+        ImGui::Separator();
+        if (auto collider = selected_entity->GetComponent<schizo::scene::ColliderComponent>()) {
+            if (ImGui::TreeNode("Collider")) {
+                using schizo::scene::ColliderShape;
+                const char* shape_names[] = { "Box", "Sphere", "Plane", "Capsule", "Cylinder", "Mesh" };
+                int shape_idx = static_cast<int>(collider->GetShape());
+                if (ImGui::Combo("Shape##collider", &shape_idx, shape_names,
+                                 IM_ARRAYSIZE(shape_names))) {
+                    collider->SetShape(static_cast<ColliderShape>(shape_idx));
+                    editor_state.editor_scene->MarkModified();
+                }
+
+                // Per-shape fields. Hide ones that don't apply to the
+                // selected shape so the inspector stays uncluttered.
+                ColliderShape shape = collider->GetShape();
+                if (shape == ColliderShape::Box) {
+                    glm::vec3 he = collider->GetHalfExtents();
+                    if (ImGui::DragFloat3("Half Extents##collider", &he.x, 0.05f, 0.01f, 1000.0f)) {
+                        collider->SetHalfExtents(he);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                } else if (shape == ColliderShape::Sphere) {
+                    float r = collider->GetRadius();
+                    if (ImGui::DragFloat("Radius##collider", &r, 0.05f, 0.01f, 1000.0f)) {
+                        collider->SetRadius(r);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                } else if (shape == ColliderShape::Capsule ||
+                           shape == ColliderShape::Cylinder) {
+                    float r = collider->GetRadius();
+                    if (ImGui::DragFloat("Radius##collider", &r, 0.05f, 0.01f, 1000.0f)) {
+                        collider->SetRadius(r);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    float h = collider->GetHeight();
+                    if (ImGui::DragFloat("Height##collider", &h, 0.05f, 0.0f, 1000.0f)) {
+                        collider->SetHeight(h);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                } else if (shape == ColliderShape::Plane) {
+                    glm::vec3 n = collider->GetPlaneNormal();
+                    if (ImGui::DragFloat3("Normal##collider", &n.x, 0.05f, -1.0f, 1.0f)) {
+                        collider->SetPlaneNormal(n);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                } else if (shape == ColliderShape::Mesh) {
+                    // Geometry comes from the entity's MeshComponent rather
+                    // than from collider fields — show the source path so
+                    // the user knows whether play mode will find anything
+                    // to test against.
+                    auto* mc = selected_entity->GetMeshComponent();
+                    if (mc && !mc->mesh_path.empty()) {
+                        ImGui::TextWrapped("Source: %s", mc->mesh_path.c_str());
+                    } else {
+                        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
+                            "No MeshComponent path set — assign a glTF/OBJ via drag-drop\n"
+                            "or this collider will be skipped on Play.");
+                    }
+                }
+
+                glm::vec3 offset = collider->GetOffset();
+                if (ImGui::DragFloat3("Offset##collider", &offset.x, 0.05f)) {
+                    collider->SetOffset(offset);
+                    editor_state.editor_scene->MarkModified();
+                }
+
+                ImGui::Separator();
+                bool dynamic = collider->IsDynamic();
+                if (ImGui::Checkbox("Dynamic (responds to gravity)##collider", &dynamic)) {
+                    collider->SetDynamic(dynamic);
+                    editor_state.editor_scene->MarkModified();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Off  = Static: never moves, acts as immovable level geometry.\n"
+                                      "On   = Dynamic: falls under gravity, bounces, gets pushed.\n"
+                                      "The Player is special-cased to Kinematic regardless.");
+                }
+                if (dynamic) {
+                    float mass = collider->GetMass();
+                    if (ImGui::DragFloat("Mass (kg)##collider", &mass, 0.1f, 0.001f, 10000.0f)) {
+                        collider->SetMass(mass);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                }
+
+                bool is_trigger = collider->IsTrigger();
+                if (ImGui::Checkbox("Trigger (overlap, no resolve)##collider", &is_trigger)) {
+                    collider->SetTrigger(is_trigger);
+                    editor_state.editor_scene->MarkModified();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Triggers still register contacts (game code can read them via\n"
+                                      "PhysicsWorld::GetBodyContacts) but bodies pass through them\n"
+                                      "instead of being pushed apart. Use for damage volumes, pickups,\n"
+                                      "checkpoints, etc.");
+                }
+
+                if (ImGui::TreeNode("Collision Filtering##collider")) {
+                    int layer = static_cast<int>(collider->GetLayer());
+                    if (ImGui::DragInt("Layer (0-31)##collider", &layer, 0.1f, 0, 31)) {
+                        collider->SetLayer(static_cast<uint8_t>(layer));
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    uint32_t mask = collider->GetMask();
+                    bool changed = false;
+                    if (ImGui::SmallButton("All##mask"))   { mask = 0xFFFFFFFFu; changed = true; }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("None##mask"))  { mask = 0u;          changed = true; }
+                    // 8 columns × 4 rows of layer-bit toggles.
+                    for (int row = 0; row < 4; ++row) {
+                        for (int col = 0; col < 8; ++col) {
+                            int bit = row * 8 + col;
+                            bool on = (mask >> bit) & 1u;
+                            char label[16];
+                            std::snprintf(label, sizeof(label), "L%d##m", bit);
+                            if (ImGui::Checkbox(label, &on)) {
+                                mask = on ? (mask | (1u << bit)) : (mask & ~(1u << bit));
+                                changed = true;
+                            }
+                            if (col < 7) ImGui::SameLine();
+                        }
+                    }
+                    if (changed) {
+                        collider->SetMask(mask);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    ImGui::TreePop();
+                }
+
+                ImGui::Separator();
+                if (ImGui::Button("Remove Collider##collider")) {
+                    selected_entity->RemoveComponent(collider);
+                    editor_state.editor_scene->MarkModified();
+                }
+                ImGui::TreePop();
+            }
+        }
+
         // Material Editor Section
         ImGui::Separator();
         if (ImGui::TreeNode("Mesh##inspector")) {
@@ -1280,9 +1530,135 @@ void ShowInspector(EditorState& editor_state) {
             } else {
                 ImGui::Text("Material editor not initialized");
             }
+
+            // Base colour + cutout transparency. These edit the
+            // MeshRendererComponent (which is what the renderer actually
+            // reads), not the decorative state the Material Editor above
+            // uses. The "Material" section above is currently visual only
+            // and doesn't write back to the entity.
+            if (auto mr = selected_entity->GetComponent<schizo::scene::MeshRendererComponent>()) {
+                ImGui::Separator();
+                ImGui::Text("Mesh Renderer (live)");
+
+                glm::vec4 col = mr->GetColor();
+                if (ImGui::ColorEdit4("Color (RGBA)##mr", &col.r,
+                                      ImGuiColorEditFlags_AlphaBar |
+                                      ImGuiColorEditFlags_AlphaPreview)) {
+                    mr->SetColor(col);
+                    editor_state.editor_scene->MarkModified();
+                }
+
+                float metallic = mr->GetMetallic();
+                if (ImGui::SliderFloat("Metallic##mr", &metallic, 0.0f, 1.0f)) {
+                    mr->SetMetallic(metallic);
+                    editor_state.editor_scene->MarkModified();
+                }
+
+                float roughness = mr->GetRoughness();
+                if (ImGui::SliderFloat("Roughness##mr", &roughness, 0.04f, 1.0f)) {
+                    mr->SetRoughness(roughness);
+                    editor_state.editor_scene->MarkModified();
+                }
+
+                float occlusion = mr->GetOcclusion();
+                if (ImGui::SliderFloat("Occlusion##mr", &occlusion, 0.0f, 1.0f)) {
+                    mr->SetOcclusion(occlusion);
+                    editor_state.editor_scene->MarkModified();
+                }
+
+                glm::vec3 emissive = mr->GetEmissive();
+                if (ImGui::ColorEdit3("Emissive##mr", &emissive.r,
+                                      ImGuiColorEditFlags_HDR |
+                                      ImGuiColorEditFlags_Float)) {
+                    mr->SetEmissive(emissive);
+                    editor_state.editor_scene->MarkModified();
+                }
+
+                // Alpha mode — radio buttons (rather than a Combo) so all
+                // three choices are always visible, can't be clipped by a
+                // collapsed dropdown, and the current value is obvious at a
+                // glance.
+                ImGui::Text("Alpha Mode:");
+                int am = static_cast<int>(mr->GetAlphaMode());
+                bool changed = false;
+                ImGui::SameLine();
+                changed |= ImGui::RadioButton("Opaque##mr_am", &am, 0);
+                ImGui::SameLine();
+                changed |= ImGui::RadioButton("Cutout##mr_am", &am, 1);
+                ImGui::SameLine();
+                changed |= ImGui::RadioButton("Blend##mr_am",  &am, 2);
+                if (changed) {
+                    mr->SetAlphaMode(static_cast<schizo::scene::AlphaMode>(am));
+                    editor_state.editor_scene->MarkModified();
+                }
+                ImGui::TextDisabled(
+                    "Opaque: no transparency.   Cutout: hard discard below cutoff.   "
+                    "Blend: real translucency.");
+                if (mr->GetAlphaMode() == schizo::scene::AlphaMode::Cutout) {
+                    float cutoff = mr->GetAlphaCutoff();
+                    if (ImGui::SliderFloat("Alpha Cutoff##mat", &cutoff, 0.0f, 1.0f)) {
+                        mr->SetAlphaCutoff(cutoff);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                }
+            }
             ImGui::TreePop();
         }
-        
+
+        // Camera Component (intrinsic camera attached to this entity)
+        if (auto cam = selected_entity->GetComponent<schizo::scene::CameraComponent>()) {
+            ImGui::Separator();
+            if (ImGui::TreeNode("Camera")) {
+                // Projection type radios — same pattern as the AlphaMode
+                // control: all options always visible, no hidden popup.
+                ImGui::Text("Projection:");
+                int proj = static_cast<int>(cam->GetProjection());
+                bool changed = false;
+                ImGui::SameLine();
+                changed |= ImGui::RadioButton("Perspective##cam_proj",  &proj, 0);
+                ImGui::SameLine();
+                changed |= ImGui::RadioButton("Orthographic##cam_proj", &proj, 1);
+                if (changed) {
+                    cam->SetProjection(static_cast<schizo::scene::CameraProjection>(proj));
+                    editor_state.editor_scene->MarkModified();
+                }
+
+                if (cam->GetProjection() == schizo::scene::CameraProjection::Perspective) {
+                    float fov = cam->GetFOV();
+                    if (ImGui::SliderFloat("FOV (deg)##cam", &fov, 10.0f, 120.0f)) {
+                        cam->SetFOV(fov);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                } else {
+                    float ortho = cam->GetOrthographicSize();
+                    if (ImGui::DragFloat("Ortho Size##cam", &ortho, 0.1f, 0.1f, 1000.0f)) {
+                        cam->SetOrthographicSize(ortho);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                }
+
+                float np = cam->GetNearPlane();
+                if (ImGui::DragFloat("Near##cam", &np, 0.01f, 0.001f, 1000.0f)) {
+                    cam->SetNearPlane(np);
+                    editor_state.editor_scene->MarkModified();
+                }
+                float fp = cam->GetFarPlane();
+                if (ImGui::DragFloat("Far##cam",  &fp, 1.0f, np + 0.01f, 100000.0f)) {
+                    cam->SetFarPlane(fp);
+                    editor_state.editor_scene->MarkModified();
+                }
+
+                glm::vec4 cc = cam->GetClearColor();
+                if (ImGui::ColorEdit4("Clear Color##cam", &cc.r,
+                                      ImGuiColorEditFlags_AlphaBar |
+                                      ImGuiColorEditFlags_AlphaPreview)) {
+                    cam->SetClearColor(cc);
+                    editor_state.editor_scene->MarkModified();
+                }
+                ImGui::TreePop();
+            }
+        }
+
         // Physics Section
         ImGui::Separator();
         if (ImGui::TreeNode("Physics")) {
@@ -1376,20 +1752,34 @@ void ShowViewport(EditorState& editor_state) {
     
     if (ImGui::Begin("Viewport", &editor_state.show_viewport, ImGuiWindowFlags_NoMove)) {
         ImVec2 content_area = ImGui::GetContentRegionAvail();
-        
-        // Play mode indicator and controls
-        if (editor_state.is_playing) {
+        auto scene = editor_state.editor_scene->GetScene();
+
+        // Play mode indicator and controls — all play UI must drive
+        // ScenePlaybackManager, so the gizmo overlay (gated on
+        // scene_playback_manager->IsPlaying()) and the player update loop
+        // see a consistent "playing" state.
+        const bool viewport_playing = editor_state.scene_playback_manager &&
+                                      editor_state.scene_playback_manager->IsPlaying();
+        if (viewport_playing) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f));  // Green text
-            ImGui::Text(">>> PLAY MODE (%.2f s) <<<", editor_state.play_time);
+            ImGui::Text(">>> PLAY MODE (%.2f s) <<<",
+                        editor_state.scene_playback_manager->GetPlaybackTime());
             ImGui::PopStyleColor();
         } else {
             ImGui::Text("Edit Mode");
         }
         ImGui::SameLine();
-        
-        if (ImGui::Button(editor_state.is_playing ? "Stop (F5)" : "Play (F5)")) {
-            editor_state.is_playing = !editor_state.is_playing;
-            editor_state.play_time = 0.0f;
+
+        if (ImGui::Button(viewport_playing ? "Stop (F5)" : "Play (F5)")) {
+            if (editor_state.scene_playback_manager) {
+                if (viewport_playing) {
+                    editor_state.scene_playback_manager->StopPlayback();
+                } else if (scene) {
+                    if (!editor_state.scene_playback_manager->StartPlayback(scene)) {
+                        spdlog::warn("Failed to start scene playback (no entity named 'Player'?)");
+                    }
+                }
+            }
         }
         ImGui::SameLine();
         
@@ -1397,9 +1787,7 @@ void ShowViewport(EditorState& editor_state) {
             editor_state.viewport_camera.Reset();
         }
         ImGui::Separator();
-        
-        auto scene = editor_state.editor_scene->GetScene();
-        
+
         // Display viewport info
         ImGui::Text("Viewport: %.0f x %.0f", content_area.x, content_area.y);
         auto cam_pos = editor_state.viewport_camera.GetPosition();
@@ -1491,8 +1879,9 @@ void ShowViewport(EditorState& editor_state) {
         // image for the selected entity using ImGui's draw list. Picking
         // (later in this function) uses the same world-space axes.
         // ----------------------------------------------------------------
+        bool gizmo_scene_playing = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying();
         if (image_drawn && editor_state.show_gizmo &&
-            scene && editor_state.selected_entity_id != 0)
+            scene && editor_state.selected_entity_id != 0 && !gizmo_scene_playing)
         {
             auto sel = scene->GetEntityById(editor_state.selected_entity_id);
             if (sel) {
@@ -1613,8 +2002,9 @@ void ShowViewport(EditorState& editor_state) {
                         viewport_x, viewport_y, viewport_size.x, viewport_size.y
                     );
                     
-                    // First check if gizmo is visible and try to hit an axis
-                    if (editor_state.show_gizmo && editor_state.selected_entity_id != 0) {
+                    // First check if gizmo is visible and try to hit an axis (only in edit mode, not during play)
+                    bool play_mode_check = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying();
+                    if (editor_state.show_gizmo && editor_state.selected_entity_id != 0 && !play_mode_check) {
                         auto selected_entity = scene->GetEntityById(editor_state.selected_entity_id);
                         if (selected_entity) {
                             auto selected_transform = selected_entity->GetTransform();
@@ -1795,8 +2185,9 @@ void ShowViewport(EditorState& editor_state) {
                 editor_state.gizmo_axis = 0;
             }
             
-            // Middle mouse drag to rotate
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+            // Middle mouse drag to rotate (disabled during scene playback)
+            bool is_scene_playing = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying();
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Middle) && !is_scene_playing) {
                 ImVec2 current_mouse = io.MousePos;
                 if (editor_state.viewport_camera_rotating) {
                     auto current_pos = glm::vec2(current_mouse.x, current_mouse.y);
@@ -1810,14 +2201,16 @@ void ShowViewport(EditorState& editor_state) {
                 editor_state.viewport_camera_rotating = false;
             }
             
-            // Scroll to zoom (only if not dragging gizmo)
-            if (io.MouseWheel != 0.0f && !editor_state.gizmo_dragging) {
+            // Scroll to zoom (only if not dragging gizmo, and not during scene playback)
+            bool is_scene_playing_zoom = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying();
+            if (io.MouseWheel != 0.0f && !editor_state.gizmo_dragging && !is_scene_playing_zoom) {
                 editor_state.viewport_camera.Zoom(io.MouseWheel);
             }
             
             // Arrow key camera movement (camera speed = 1.0)
-            // Only when viewport is focused (active window) and not dragging gizmo
-            if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !editor_state.gizmo_dragging) {
+            // Only when viewport is focused (active window) and not dragging gizmo, and scene is not playing
+            bool scene_playing = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying();
+            if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !editor_state.gizmo_dragging && !scene_playing) {
                 if (ImGui::IsKeyDown(ImGuiKey_UpArrow)) {
                     spdlog::debug("[ARROW] Up key - pan forward");
                     editor_state.viewport_camera.Pan(0.0f, 1.0f);  // Forward
@@ -1846,8 +2239,9 @@ void ShowViewport(EditorState& editor_state) {
                 }
             }
             
-            // Right mouse drag to pan (only if not dragging gizmo)
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Right) && !editor_state.gizmo_dragging) {
+            // Right mouse drag to pan (only if not dragging gizmo, and not during scene playback)
+            bool is_scene_playing_pan = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying();
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Right) && !editor_state.gizmo_dragging && !is_scene_playing_pan) {
                 ImVec2 current_mouse = io.MousePos;
                 ImVec2 delta = ImVec2(
                     (io.MousePos.x - io.MousePosPrev.x) / viewport_size.x,
@@ -2168,6 +2562,10 @@ int main() {
         ShadowMapConfig s_cfg{};
         s_cfg.width = s_cfg.height = 512;
         s_cfg.cascade_count = 1;
+        // Bind the material descriptor set in the shadow caster pipeline so
+        // Cutout/Blend objects can do alpha-tested shadow casting (sampling
+        // the albedo + reading the per-material cutoff from emissive.a).
+        s_cfg.material_set_layout = mat_layout;
         auto shadow_map = VulkanShadowMap::create(&device, s_cfg);
 
         PostProcessingConfig pp_cfg{};
@@ -2179,7 +2577,34 @@ int main() {
         auto post_processing = VulkanPostProcessing::create(&device, pp_cfg);
         post_processing->set_input_image(lighting->get_output_view());
 
-        if (!g_buffer || !lighting || !shadow_map || !post_processing) {
+        // Forward transparent pass — runs after lighting, reuses the HDR colour
+        // image as its render target and the G-Buffer depth as a read-only
+        // depth attachment. AlphaMode::Blend entities are routed through this
+        // pass via the editor's draw-list filter.
+        auto transparent = VulkanTransparentPass::create(
+            &device,
+            lighting->get_output_view(),
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+            g_buffer->get_depth_view(),
+            VK_FORMAT_D32_SFLOAT,
+            kW, kH,
+            mat_layout);
+        if (transparent) {
+            // Wire the transparent pass to the same dynamic light SSBO and
+            // shadow textures the deferred lighting pass uses, so blend-mode
+            // surfaces receive the same lighting (PBR + multi-light + PCF
+            // shadows) as opaque ones.
+            transparent->set_ambient(l_cfg.ambient_color, l_cfg.global_ambient);
+            transparent->set_lighting_resources(
+                lighting->get_light_buffer(),
+                lighting->get_max_lights(),
+                lighting->get_effective_directional_shadow_view(),
+                lighting->get_effective_directional_shadow_sampler(),
+                lighting->get_effective_point_shadow_view(),
+                lighting->get_effective_point_shadow_sampler());
+        }
+
+        if (!g_buffer || !lighting || !shadow_map || !post_processing || !transparent) {
             spdlog::error("Deferred pipeline component construction failed");
             device.shutdown();
             glfwDestroyWindow(glfw_window);
@@ -2193,6 +2618,7 @@ int main() {
         graph_cfg.lighting        = lighting.get();
         graph_cfg.shadow_map      = shadow_map.get();
         graph_cfg.post_processing = post_processing.get();
+        graph_cfg.transparent     = transparent.get();
         graph_cfg.width           = kW;
         graph_cfg.height          = kH;
         auto graph = VulkanRenderGraph::create(graph_cfg);
@@ -2407,8 +2833,22 @@ int main() {
         double last_cursor_y = 0.0;
         bool cursor_delta_primed = false;
 
+        // Variable timestep clock. Previously the loop passed a constant
+        // 0.016 to Update() and Step(), so anything above 60 fps real played
+        // back proportionally faster (e.g. at 144 fps, sim runs 2.4× too
+        // fast). Cap dt to keep one stutter frame from launching dynamic
+        // bodies through static colliders.
+        double last_frame_wall = glfwGetTime();
+        constexpr float kMaxFrameDt = 1.0f / 20.0f;  // 50 ms ceiling
+
         while (!glfwWindowShouldClose(glfw_window)) {
             glfwPollEvents();
+
+            double now_wall = glfwGetTime();
+            float delta_time = static_cast<float>(now_wall - last_frame_wall);
+            last_frame_wall = now_wall;
+            if (delta_time > kMaxFrameDt) delta_time = kMaxFrameDt;
+            if (delta_time < 0.0f) delta_time = 0.0f;
 
             // Key input
             auto key = [&](int k) { return glfwGetKey(glfw_window, k) == GLFW_PRESS; };
@@ -2538,17 +2978,15 @@ int main() {
             if (key(GLFW_KEY_D))     editor_state.viewport_camera.MoveLocal(0.f,  cam_spd, 0.f);
             if (key(GLFW_KEY_SPACE)) editor_state.viewport_camera.MoveLocal(0.f, 0.f,  cam_spd);
 
-            if (editor_state.is_playing)
-                editor_state.play_time += 0.016f;
             if (editor_state.scene_playback_manager &&
                 editor_state.scene_playback_manager->IsPlaying())
-                editor_state.scene_playback_manager->Update(0.016f);
+                editor_state.scene_playback_manager->Update(delta_time);
             else {
                 // In edit mode, still need to update the scene so transforms are recalculated
                 // This ensures the hierarchy MarkDirty cascade works in the editor
                 auto scene = editor_state.editor_scene->GetScene();
                 if (scene) {
-                    scene->Update(0.016f);
+                    scene->Update(delta_time);
                 }
             }
 
@@ -2609,7 +3047,7 @@ int main() {
                     editor_state.asset_browser->RefreshAssets();
             }
 
-            ShowMainMenuBar(editor_state);
+            ShowMainMenuBar(editor_state, glfw_window);
             ShowSaveDialog(editor_state);
             ShowOpenDialog(editor_state);
             ShowRenameDialog(editor_state);
@@ -2704,15 +3142,54 @@ int main() {
                 continue;
             }
             
-            auto scene_draw_items = schizo::editor::build_draw_items(
+            std::vector<gws::renderer::gpu::DrawItem> opaque_draws, transparent_draws;
+            schizo::editor::build_draw_items(
                 editor_scene.GetScene(), prim_cache, mat_cache, asset_cache,
-                &device, mat_layout, mat_pool);
-            graph->set_draw_items(scene_draw_items);
+                &device, mat_layout, mat_pool,
+                opaque_draws, transparent_draws);
+
+            // (WBOIT is order-independent — no need to back-to-front sort the
+            // transparent list. The depth-weighted compositing in the shader
+            // handles inter-fragment ordering even for intersecting meshes.)
+
+            graph->set_draw_items(opaque_draws);
+
+            // Sync the transparent pass's view of the dynamic light list each
+            // frame so newly-added lights or removed lights take effect.
+            if (transparent) {
+                transparent->set_light_count(lighting->get_light_count());
+            }
+
+            // Combined caster list for the shadow stage: opaque + transparent.
+            // Blend materials cast binarised shadows (cutoff=0.5 in their
+            // emissive_factor.a). Cutout materials use their per-material
+            // cutoff. Opaque materials' cutoff is 0 → no discard branch.
+            std::vector<gws::renderer::gpu::DrawItem> shadow_draws;
+            shadow_draws.reserve(opaque_draws.size() + transparent_draws.size());
+            shadow_draws.insert(shadow_draws.end(), opaque_draws.begin(), opaque_draws.end());
+            shadow_draws.insert(shadow_draws.end(), transparent_draws.begin(), transparent_draws.end());
 
             graph->begin_frame(cmd);
-            graph->execute_stage(cmd, RenderGraphStage::Shadow,     {});
+            graph->execute_stage(cmd, RenderGraphStage::Shadow,
+                [&](VkCommandBuffer rec_cmd) {
+                    uint32_t calls = 0, tris = 0;
+                    shadow_map->draw_items(rec_cmd,
+                                           graph->get_camera().view,
+                                           graph->get_camera().proj,
+                                           graph->get_camera().position,
+                                           shadow_draws.data(),
+                                           shadow_draws.size(),
+                                           &calls, &tris);
+                });
             graph->execute_stage(cmd, RenderGraphStage::Geometry,   {});
             graph->execute_stage(cmd, RenderGraphStage::Lighting,   {});
+            // Transparent stage uses a custom recorder so we can feed it
+            // the back-to-front-sorted transparent draw list directly,
+            // independent of the graph's stored opaque draw_items_.
+            graph->execute_stage(cmd, RenderGraphStage::Transparent,
+                [&](VkCommandBuffer rec_cmd) {
+                    transparent->execute(rec_cmd, transparent_draws, graph->get_camera());
+                });
             graph->execute_stage(cmd, RenderGraphStage::PostProcess, {});
             graph->end_frame(cmd);
 

@@ -34,6 +34,9 @@ public:
         uint32_t entity_id,
         const glm::vec4& color,
         float metallic, float roughness,
+        float occlusion,
+        const glm::vec3& emissive,
+        float alpha_cutoff,                                    // 0 → opaque (no discard)
         gws::renderer::gpu::VulkanDevice* device,
         VkDescriptorSetLayout layout,
         VkDescriptorPool pool)
@@ -43,7 +46,12 @@ public:
             const Entry& e = it->second;
             if (color_eq(e.color, color) &&
                 std::abs(e.metallic - metallic) < 1e-4f &&
-                std::abs(e.roughness - roughness) < 1e-4f) {
+                std::abs(e.roughness - roughness) < 1e-4f &&
+                std::abs(e.occlusion - occlusion) < 1e-4f &&
+                std::abs(e.emissive.r - emissive.r) < 1e-4f &&
+                std::abs(e.emissive.g - emissive.g) < 1e-4f &&
+                std::abs(e.emissive.b - emissive.b) < 1e-4f &&
+                std::abs(e.alpha_cutoff - alpha_cutoff) < 1e-4f) {
                 return e.material.get();
             }
         }
@@ -51,10 +59,14 @@ public:
         params.base_color_factor = color;
         params.metallic_factor   = metallic;
         params.roughness_factor  = roughness;
+        params.occlusion_strength = occlusion;
+        // emissive_factor.a doubles as alpha_cutoff for the G-Buffer
+        // shader's discard test (see MaterialUniforms comment).
+        params.emissive_factor   = glm::vec4(emissive, alpha_cutoff);
         auto mat = gws::renderer::gpu::Material::create(
             device, layout, pool, params,
             nullptr, nullptr, nullptr, nullptr, nullptr);
-        Entry e{ color, metallic, roughness, std::move(mat) };
+        Entry e{ color, metallic, roughness, occlusion, emissive, alpha_cutoff, std::move(mat) };
         gws::renderer::gpu::Material* raw = e.material.get();
         entries_[entity_id] = std::move(e);
         return raw;
@@ -87,8 +99,11 @@ public:
 private:
     struct Entry {
         glm::vec4 color{1.0f};
-        float metallic  = 0.0f;
-        float roughness = 0.8f;
+        float     metallic     = 0.0f;
+        float     roughness    = 0.8f;
+        float     occlusion    = 1.0f;
+        glm::vec3 emissive{0.0f};
+        float     alpha_cutoff = 0.0f;
         std::unique_ptr<gws::renderer::gpu::Material> material;
     };
     std::unordered_map<uint32_t, Entry> entries_;
@@ -325,39 +340,66 @@ private:
 /// components. Priority: if `MeshComponent::mesh_path` is set, load that
 /// asset; else fall back to `MeshRendererComponent`'s primitive type.
 /// Entities with neither (lights, empty parents) are skipped.
-inline std::vector<gws::renderer::gpu::DrawItem> build_draw_items(
+///
+/// Output is split by alpha mode: AlphaMode::Blend entities go to
+/// `out_transparent` (rendered by the forward transparent pass), everything
+/// else goes to `out_opaque` (rendered by the deferred G-Buffer pass).
+inline void build_draw_items(
     const std::shared_ptr<schizo::scene::Scene>& scene,
     const PrimitiveMeshCache& meshes,
     EntityMaterialCache& mat_cache,
     AssetMeshCache& asset_cache,
     gws::renderer::gpu::VulkanDevice* device,
     VkDescriptorSetLayout mat_layout,
-    VkDescriptorPool mat_pool)
+    VkDescriptorPool mat_pool,
+    std::vector<gws::renderer::gpu::DrawItem>& out_opaque,
+    std::vector<gws::renderer::gpu::DrawItem>& out_transparent)
 {
-    std::vector<gws::renderer::gpu::DrawItem> out;
-    if (!scene) return out;
+    out_opaque.clear();
+    out_transparent.clear();
+    if (!scene) return;
 
     for (const auto& ent : scene->GetEntities()) {
         if (!ent || !ent->IsActiveInHierarchy()) continue;
 
         const glm::mat4 model = ent->GetTransform()->GetWorldMatrix();
 
-        // Asset-driven mesh (drag-dropped glTF): emit each of the asset's
-        // draw items transformed by the entity's world matrix.
+        // Resolve the entity's alpha mode for the primitive path. For the
+        // asset path we route per-DrawItem based on the loaded glTF's
+        // per-material alphaMode (see below).
+        schizo::scene::AlphaMode am = schizo::scene::AlphaMode::Opaque;
+        if (auto mr = ent->GetComponent<schizo::scene::MeshRendererComponent>()) {
+            am = mr->GetAlphaMode();
+        }
+
         const auto* mc = ent->GetMeshComponent();
         if (mc && !mc->mesh_path.empty()) {
             const auto* loaded = asset_cache.get_or_load(
                 mc->mesh_path, device, mat_layout, mat_pool);
             if (loaded && !loaded->draw_items.empty()) {
+                // If the entity has an explicit MeshRendererComponent with
+                // AlphaMode::Blend, treat every sub-draw as blend (manual
+                // override). Otherwise honour the per-material flag the
+                // GltfLoader stamped onto each DrawItem.
+                const bool entity_force_blend =
+                    (am == schizo::scene::AlphaMode::Blend);
                 for (const auto& src : loaded->draw_items) {
                     gws::renderer::gpu::DrawItem di = src;
                     di.model = model * src.model;
-                    out.push_back(di);
+                    const bool blend = entity_force_blend || src.is_blend;
+                    auto& target = blend ? out_transparent : out_opaque;
+                    di.is_blend = blend;
+                    target.push_back(di);
                 }
                 continue; // asset path takes precedence over primitive
             }
             // Fall through if load failed.
         }
+
+        // Primitive path uses the entity-level AlphaMode (no per-submesh).
+        auto& target = (am == schizo::scene::AlphaMode::Blend)
+                           ? out_transparent
+                           : out_opaque;
 
         // Primitive-driven mesh (hierarchy "+ Add Entity").
         auto mr = ent->GetComponent<schizo::scene::MeshRendererComponent>();
@@ -367,10 +409,21 @@ inline std::vector<gws::renderer::gpu::DrawItem> build_draw_items(
         if (!mesh) continue;
 
         const glm::vec4& col = mr->GetColor();
-        float metallic  = 0.05f;
-        float roughness = 0.7f;
+        // alpha_cutoff serves two pipelines:
+        //  - G-Buffer (opaque/cutout): discards fragments below cutoff.
+        //  - Shadow caster: same — but Blend objects also pass through the
+        //    shadow alpha-test pipeline, so they need a non-zero cutoff
+        //    (0.5) to cast binarised shadows. Blend skips the G-Buffer
+        //    entirely, so the cutoff there is irrelevant.
+        float alpha_cutoff =
+            (am == schizo::scene::AlphaMode::Cutout) ? mr->GetAlphaCutoff()
+          : (am == schizo::scene::AlphaMode::Blend)  ? 0.5f
+          : 0.0f;
         gws::renderer::gpu::Material* mat = mat_cache.get_or_create(
-            ent->GetId(), col, metallic, roughness,
+            ent->GetId(), col,
+            mr->GetMetallic(), mr->GetRoughness(),
+            mr->GetOcclusion(), mr->GetEmissive(),
+            alpha_cutoff,
             device, mat_layout, mat_pool);
         if (!mat) continue;
 
@@ -379,9 +432,9 @@ inline std::vector<gws::renderer::gpu::DrawItem> build_draw_items(
         di.material      = mat;
         di.model         = model;
         di.submesh_index = 0;
-        out.push_back(di);
+        di.is_blend      = (am == schizo::scene::AlphaMode::Blend);
+        target.push_back(di);
     }
-    return out;
 }
 
 } // namespace schizo::editor
