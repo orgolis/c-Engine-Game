@@ -43,11 +43,32 @@ struct MeshLod {
     float    distance_threshold = 0.0f;
 };
 
+/// One meshlet — a small cluster of triangles (typically 64–124) with its
+/// own local-space bounding sphere. Used for per-cluster culling: at draw
+/// time the renderer transforms each meshlet's sphere to world space, tests
+/// it against the camera frustum, and skips the meshlet's `vkCmdDrawIndexed`
+/// when it falls outside.
+///
+/// `first_index` / `index_count` index into the parent mesh's index buffer.
+/// During `Mesh::create` LOD 0's triangles are reordered into meshlet order,
+/// so a meshlet's draw range is a contiguous sub-range of the LOD 0 indices.
+struct Meshlet {
+    uint32_t first_index = 0;
+    uint32_t index_count = 0;
+    /// Bounding sphere in mesh-local space (no model transform applied).
+    glm::vec3 center{0.0f};
+    float     radius = 0.0f;
+};
+
 /// One drawable section of a mesh, sharing a single material.
 /// `lods` always contains at least one entry (LOD 0 = full resolution).
 struct Submesh {
     uint32_t material_index = 0;       // index into the parent Scene::materials
     std::vector<MeshLod> lods;         // [0] = full res; subsequent = decimated
+    /// Meshlets covering LOD 0. Empty for trivially small meshes (<= one
+    /// meshlet's worth of triangles), in which case the renderer falls back
+    /// to the per-submesh draw_submesh path.
+    std::vector<Meshlet> lod0_meshlets;
 
     // Convenience: full-mesh range ⇔ lods[0].
     uint32_t index_offset() const { return lods.empty() ? 0u : lods[0].index_offset; }
@@ -82,6 +103,12 @@ public:
     void draw_submesh(VkCommandBuffer cmd, size_t submesh_idx,
                       size_t lod_index = 0) const;
 
+    /// Issue `vkCmdDrawIndexed` for a single meshlet (a sub-range of the
+    /// shared index buffer). Caller must have already done frustum
+    /// culling — this is just the draw call wrapper.
+    void draw_meshlet(VkCommandBuffer cmd, uint32_t first_index,
+                      uint32_t index_count) const;
+
     /// Pick the highest-detail LOD tier for the given world-space distance.
     /// Returns 0 (LOD 0) if `submesh_idx` is out of range or the submesh
     /// has only LOD 0. Comparison: returns the largest `i` such that
@@ -110,6 +137,15 @@ public:
     /// Get the mesh's bounding box in local space (computed at load time).
     const AABB& bounding_box() const { return bounding_box_; }
 
+    /// True when the mesh's triangle winding is not trustworthy and the
+    /// G-Buffer renderer must draw it from both sides. OBJ assets set this
+    /// to true (their authored winding is not standardised); glTF (spec
+    /// mandates CCW) and the engine's primitive generators stay false.
+    /// VulkanGBuffer's `draw_items` consults this per-draw to pick between
+    /// the cull-back and cull-none pipelines.
+    bool is_double_sided() const { return double_sided_; }
+    void set_double_sided(bool d) { double_sided_ = d; }
+
     /// Vertex input descriptors compatible with this mesh's layout. Used by
     /// the geometry pipeline at creation time.
     static VkVertexInputBindingDescription vertex_binding();
@@ -123,6 +159,7 @@ private:
     VkDeviceMemory ibo_memory_  = VK_NULL_HANDLE;
     uint32_t       vertex_count_ = 0;
     uint32_t       index_count_  = 0;
+    bool           double_sided_ = false;
     std::vector<Submesh> submeshes_;
     AABB           bounding_box_;
 

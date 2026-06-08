@@ -185,12 +185,16 @@ inline bool parse_obj_file(const std::string& path,
             for (size_t i = 1; i + 1 < face.size(); ++i) {
                 std::tuple<int,int,int> tri[3] = { face[0], face[i], face[i + 1] };
 
-                // If normals weren't supplied, compute a flat one.
+                // Compute the geometric normal of this triangle. We need it
+                // for two reasons: (1) to supply per-vertex normals when the
+                // OBJ doesn't ship any, and (2) to detect CW-vs-CCW winding
+                // when it does. Some legacy exporters (older 3ds Max,
+                // certain tools) write CW-wound OBJs; with back-face culling
+                // on, those would disappear unless we fix the winding at
+                // load time.
                 glm::vec3 flat_n(0,1,0);
-                bool have_n = std::get<2>(tri[0]) >= 0 &&
-                              std::get<2>(tri[1]) >= 0 &&
-                              std::get<2>(tri[2]) >= 0;
-                if (!have_n) {
+                glm::vec3 geom_n_raw(0,1,0);
+                {
                     int ai = std::get<0>(tri[0]);
                     int bi = std::get<0>(tri[1]);
                     int ci = std::get<0>(tri[2]);
@@ -200,9 +204,28 @@ inline bool parse_obj_file(const std::string& path,
                         ci < (int)positions.size()) {
                         glm::vec3 e1 = positions[bi] - positions[ai];
                         glm::vec3 e2 = positions[ci] - positions[ai];
-                        glm::vec3 cr = glm::cross(e1, e2);
-                        float len = glm::length(cr);
-                        if (len > 1e-8f) flat_n = cr / len;
+                        geom_n_raw = glm::cross(e1, e2);
+                        float len = glm::length(geom_n_raw);
+                        if (len > 1e-8f) flat_n = geom_n_raw / len;
+                    }
+                }
+
+                bool have_n = std::get<2>(tri[0]) >= 0 &&
+                              std::get<2>(tri[1]) >= 0 &&
+                              std::get<2>(tri[2]) >= 0;
+
+                // Winding check: if the file supplied normals and the
+                // geometric normal of this triangle is anti-aligned with the
+                // supplied normal, swap vertices 1 and 2 to flip winding.
+                // Match what back-face culling expects (CCW from outside =
+                // positive dot product with declared normal).
+                if (have_n) {
+                    int n0_idx = std::get<2>(tri[0]);
+                    if (n0_idx >= 0 && n0_idx < (int)normals.size()) {
+                        const glm::vec3& supplied = normals[n0_idx];
+                        if (glm::dot(geom_n_raw, supplied) < 0.0f) {
+                            std::swap(tri[1], tri[2]);
+                        }
                     }
                 }
 
@@ -222,6 +245,76 @@ inline bool parse_obj_file(const std::string& path,
                     out_verts.push_back(v);
                     out_idx.push_back((uint32_t)out_verts.size() - 1);
                 }
+            }
+        }
+    }
+
+    // Global winding-orientation check. The per-triangle pass above already
+    // flips individual triangles whose geometric normal points opposite to
+    // their file-supplied normal — that's correct per-triangle but can leave
+    // a mesh that's globally still CW-wound if the supplied normals are
+    // also globally inverted (rare, but it happens with some legacy assets).
+    //
+    // Strategy: pick a single criterion based on what data the OBJ actually
+    // ships, and apply ONE global flip if needed.
+    //   - Has `vn` normals → vote each triangle by dot(geom_n, supplied_avg).
+    //     Trustworthy because the file is telling us which way the surface
+    //     should face.
+    //   - No `vn` lines → fall back to a centroid heuristic (does the face
+    //     point away from the mesh centroid?). Works for closed-convex
+    //     shapes; doesn't help much for skin-thin meshes or open shells.
+    //
+    // Crucially, we DO NOT run the centroid heuristic when normals are
+    // available — that can produce false flips on non-convex meshes (e.g.
+    // city scenes where streets at low Y vote "inward" against the mesh
+    // centroid even though they're correctly wound).
+    if (!out_verts.empty() && !out_idx.empty() && !normals.empty()) {
+        // Path 1: voting by supplied normal agreement.
+        size_t agree = 0, disagree = 0;
+        for (size_t i = 0; i + 2 < out_idx.size(); i += 3) {
+            const auto& v0 = out_verts[out_idx[i  ]];
+            const auto& v1 = out_verts[out_idx[i+1]];
+            const auto& v2 = out_verts[out_idx[i+2]];
+            const glm::vec3 geom_n = glm::cross(v1.position - v0.position,
+                                                v2.position - v0.position);
+            // Average the three vertex normals — more robust than just v0's
+            // (which can disagree at sharp edges due to smoothing groups).
+            const glm::vec3 supplied_avg = v0.normal + v1.normal + v2.normal;
+            const float d = glm::dot(geom_n, supplied_avg);
+            if (d > 0.0f) ++agree; else if (d < 0.0f) ++disagree;
+        }
+        if (disagree > agree) {
+            spdlog::info("OBJ global winding: {} disagree vs {} agree with supplied normals — flipping all triangles",
+                         disagree, agree);
+            for (size_t i = 0; i + 2 < out_idx.size(); i += 3) {
+                std::swap(out_idx[i+1], out_idx[i+2]);
+            }
+        } else {
+            spdlog::info("OBJ global winding: {} agree vs {} disagree — keeping as-is",
+                         agree, disagree);
+        }
+    } else if (!out_verts.empty() && !out_idx.empty()) {
+        // Path 2: no supplied normals — centroid heuristic.
+        glm::vec3 centroid(0.0f);
+        for (const auto& v : out_verts) centroid += v.position;
+        centroid /= static_cast<float>(out_verts.size());
+
+        size_t outward = 0, inward = 0;
+        for (size_t i = 0; i + 2 < out_idx.size(); i += 3) {
+            const glm::vec3& p0 = out_verts[out_idx[i  ]].position;
+            const glm::vec3& p1 = out_verts[out_idx[i+1]].position;
+            const glm::vec3& p2 = out_verts[out_idx[i+2]].position;
+            const glm::vec3 face_center = (p0 + p1 + p2) / 3.0f;
+            const glm::vec3 geom_n = glm::cross(p1 - p0, p2 - p0);
+            const glm::vec3 from_centroid = face_center - centroid;
+            const float d = glm::dot(geom_n, from_centroid);
+            if (d > 0.0f) ++outward; else if (d < 0.0f) ++inward;
+        }
+        if (inward > outward) {
+            spdlog::info("OBJ centroid winding: {} inward vs {} outward (no vn lines) — flipping",
+                         inward, outward);
+            for (size_t i = 0; i + 2 < out_idx.size(); i += 3) {
+                std::swap(out_idx[i+1], out_idx[i+2]);
             }
         }
     }
@@ -312,6 +405,9 @@ private:
         sm.lods.push_back({0, (uint32_t)idx.size(), 0.0f});
         auto mesh = Mesh::create(device, verts, idx, {sm});
         if (!mesh) return nullptr;
+        // OBJ files have no standardised winding convention — flag the mesh
+        // double-sided so the G-Buffer renderer uses the cull-none pipeline.
+        mesh->set_double_sided(true);
 
         MaterialUniforms params{};
         params.base_color_factor = glm::vec4(0.85f, 0.85f, 0.85f, 1.0f);

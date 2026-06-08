@@ -19,7 +19,8 @@ inline void gen_cube(std::vector<gws::renderer::gpu::SceneVertex>& verts,
         verts.push_back({o + u,     n, {1,0}, t});
         verts.push_back({o + u + v, n, {1,1}, t});
         verts.push_back({o + v,     n, {0,1}, t});
-        idx.insert(idx.end(), {b, b+1, b+2, b, b+2, b+3});
+        // CCW from outside (cross(E1,E2) = declared face normal).
+        idx.insert(idx.end(), {b, b+2, b+1, b, b+3, b+2});
     };
     float h = 0.5f;
     // Centred at origin, unit size. Local space is scaled by entity transform.
@@ -27,7 +28,11 @@ inline void gen_cube(std::vector<gws::renderer::gpu::SceneVertex>& verts,
     add_face({ h,-h, h},{-1,0,0},{0,1,0},{0,0,1}); // back  (+Z)
     add_face({-h,-h, h},{1,0,0},{0,0,-1},{0,-1,0});// bottom(-Y)
     add_face({-h, h,-h},{1,0,0},{0,0,1},{0,1,0});  // top   (+Y)
-    add_face({-h,-h,-h},{0,0,1},{0,1,0},{-1,0,0}); // left  (-X)
+    // Left (-X): u/v swapped vs the other 5 faces so its (u, v, n) basis
+    // is left-handed (u × v = -n). Without this swap, the universal CCW
+    // index pattern in add_face would produce a CW-from-outside triangle
+    // and back-face culling would hide this face.
+    add_face({-h,-h,-h},{0,1,0},{0,0,1},{-1,0,0}); // left  (-X)
     add_face({ h,-h,-h},{0,0,1},{0,1,0},{1,0,0});  // right (+X)
 }
 
@@ -41,7 +46,8 @@ inline void gen_plane(std::vector<gws::renderer::gpu::SceneVertex>& verts,
     verts.push_back({{ 0.5f, 0, -0.5f}, n, {1,0}, t});
     verts.push_back({{ 0.5f, 0,  0.5f}, n, {1,1}, t});
     verts.push_back({{-0.5f, 0,  0.5f}, n, {0,1}, t});
-    idx = {0,1,2, 0,2,3};
+    // CCW from above (+Y normal).
+    idx = {0,2,1, 0,3,2};
 }
 
 inline void gen_sphere(std::vector<gws::renderer::gpu::SceneVertex>& verts,
@@ -71,7 +77,8 @@ inline void gen_sphere(std::vector<gws::renderer::gpu::SceneVertex>& verts,
             uint32_t b = a + 1;
             uint32_t c = a + cols;
             uint32_t d = c + 1;
-            idx.insert(idx.end(), {a, c, b,  b, c, d});
+            // CCW from outside (radial outward normal).
+            idx.insert(idx.end(), {a, b, c,  b, d, c});
         }
     }
 }
@@ -109,9 +116,10 @@ inline void gen_cylinder(std::vector<gws::renderer::gpu::SceneVertex>& verts,
         glm::vec3 p{ std::cos(a)*r, h, std::sin(a)*r };
         verts.push_back({p, {0,1,0}, {(std::cos(a)+1)*0.5f, (std::sin(a)+1)*0.5f}, {1,0,0,1}});
     }
+    // Top cap CCW from above (+Y normal).
     for (int i = 0; i < segments; ++i)
-        idx.insert(idx.end(), {top_center, top_start + i, top_start + i + 1});
-    // Bottom cap (fan, reversed winding)
+        idx.insert(idx.end(), {top_center, top_start + i + 1, top_start + i});
+    // Bottom cap (fan)
     uint32_t bot_center = (uint32_t)verts.size();
     verts.push_back({{0, -h, 0}, {0,-1,0}, {0.5f, 0.5f}, {1,0,0,1}});
     uint32_t bot_start = (uint32_t)verts.size();
@@ -120,8 +128,9 @@ inline void gen_cylinder(std::vector<gws::renderer::gpu::SceneVertex>& verts,
         glm::vec3 p{ std::cos(a)*r, -h, std::sin(a)*r };
         verts.push_back({p, {0,-1,0}, {(std::cos(a)+1)*0.5f, (std::sin(a)+1)*0.5f}, {1,0,0,1}});
     }
+    // Bottom cap CCW from below (-Y normal).
     for (int i = 0; i < segments; ++i)
-        idx.insert(idx.end(), {bot_center, bot_start + i + 1, bot_start + i});
+        idx.insert(idx.end(), {bot_center, bot_start + i, bot_start + i + 1});
 }
 
 inline void gen_capsule(std::vector<gws::renderer::gpu::SceneVertex>& verts,
@@ -154,10 +163,13 @@ inline void gen_capsule(std::vector<gws::renderer::gpu::SceneVertex>& verts,
             uint32_t b = a + 1;
             uint32_t c = a + cols;
             uint32_t d = c + 1;
-            idx.insert(idx.end(), {a, c, b,  b, c, d});
+            // CCW from outside (radial outward normal).
+            idx.insert(idx.end(), {a, b, c,  b, d, c});
         }
     }
-    // Cylinder body (two rings of verts)
+    // Cylinder body (two rings of verts). NOTE: vertex layout differs from
+    // gen_cylinder — here `a` is the TOP ring vertex (+h) and `b` is the
+    // BOTTOM ring (-h), so the CCW order differs accordingly.
     uint32_t cyl_base = (uint32_t)verts.size();
     for (int i = 0; i <= segments; ++i) {
         float a = (float)i / (float)segments * 2.0f * pi;
@@ -172,7 +184,8 @@ inline void gen_capsule(std::vector<gws::renderer::gpu::SceneVertex>& verts,
         uint32_t b = a + 1;
         uint32_t c = a + 2;
         uint32_t d = a + 3;
-        idx.insert(idx.end(), {a, b, c,  b, d, c});
+        // CCW from outside (radial outward normal).
+        idx.insert(idx.end(), {a, c, b,  b, c, d});
     }
     // Bottom hemisphere
     uint32_t bot_base = (uint32_t)verts.size();
@@ -196,7 +209,8 @@ inline void gen_capsule(std::vector<gws::renderer::gpu::SceneVertex>& verts,
             uint32_t b = a + 1;
             uint32_t c = a + cols;
             uint32_t d = c + 1;
-            idx.insert(idx.end(), {a, c, b,  b, c, d});
+            // CCW from outside (radial outward normal).
+            idx.insert(idx.end(), {a, b, c,  b, d, c});
         }
     }
 }
@@ -219,12 +233,13 @@ inline void gen_pyramid(std::vector<gws::renderer::gpu::SceneVertex>& verts,
         verts.push_back({c, n, {1, 0}, t});
         idx.insert(idx.end(), {i0, i0+1, i0+2});
     };
-    // Four side faces (apex + base edge)
-    tri(apex, c0, c1);
-    tri(apex, c1, c2);
-    tri(apex, c2, c3);
-    tri(apex, c3, c0);
-    // Base (two triangles, downward normal)
+    // Four side faces (apex + base edge). Argument order swapped so the
+    // cross(b-a, c-a) normal points outward from each slant face.
+    tri(apex, c1, c0);
+    tri(apex, c2, c1);
+    tri(apex, c3, c2);
+    tri(apex, c0, c3);
+    // Base (two triangles, downward normal). CCW from below.
     {
         glm::vec3 n{0, -1, 0};
         glm::vec4 t{1,0,0,1};
@@ -233,7 +248,7 @@ inline void gen_pyramid(std::vector<gws::renderer::gpu::SceneVertex>& verts,
         verts.push_back({c1, n, {1,0}, t});
         verts.push_back({c2, n, {1,1}, t});
         verts.push_back({c3, n, {0,1}, t});
-        idx.insert(idx.end(), {b, b+2, b+1, b, b+3, b+2});
+        idx.insert(idx.end(), {b, b+1, b+2, b, b+2, b+3});
     }
 }
 

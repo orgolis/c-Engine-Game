@@ -29,6 +29,8 @@ class VulkanLightingPass;
 class VulkanShadowMap;
 class VulkanPostProcessing;
 class VulkanTransparentPass;
+class VulkanOcclusionCuller;
+class VulkanHzbCuller;
 class Mesh;
 class Material;
 
@@ -97,6 +99,13 @@ struct RenderGraphConfig {
     VulkanShadowMap* shadow_map = nullptr;
     VulkanPostProcessing* post_processing = nullptr;
     VulkanTransparentPass* transparent = nullptr;
+    /// Optional. When set, the Geometry stage wraps each draw in an
+    /// occlusion query and skips draws that were fully hidden last frame.
+    VulkanOcclusionCuller* occlusion_culler = nullptr;
+    /// Optional. HZB-based occlusion culling — draws whose previous-frame
+    /// AABB test failed are skipped, and the HZB is rebuilt at the end of
+    /// each frame's geometry stage from the current depth buffer.
+    VulkanHzbCuller* hzb_culler = nullptr;
     uint32_t width = 0;
     uint32_t height = 0;
 };
@@ -212,6 +221,10 @@ public:
     /// No-op (and returns false) if the device doesn't support timestamps
     /// or if no frame has run yet.
     bool resolve_timings();
+
+    /// Pull the previous frame's per-draw occlusion query results from the
+    /// GPU into the culler. Call after waiting on the previous frame's fence.
+    void resolve_occlusion_queries();
 
     /// Feed resolved GPU timings to the GPUProfiler for display.
     /// Call this after resolve_timings() to push the resolved stage times

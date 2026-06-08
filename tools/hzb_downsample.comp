@@ -1,0 +1,35 @@
+#version 450
+// Hierarchical Z-Buffer downsample. One workgroup thread per output texel.
+// Reads a 2x2 block from `src` and writes the MAX (furthest depth) to `dst`.
+//
+// Used in two configurations:
+//   1. depth → HZB[0]:   src = G-Buffer depth (D32_SFLOAT, depth aspect view
+//                              bound as sampler2D), dst = HZB mip 0 (R32_SFLOAT).
+//                        HZB mip 0 is half the depth resolution.
+//   2. HZB[N] → HZB[N+1]: src/dst are both R32_SFLOAT views of the HZB image.
+//
+// MAX reduction is the right choice for occlusion: HZB[mip][region] holds
+// the depth of the *furthest* visible pixel in that region. An AABB whose
+// nearest depth exceeds the HZB sample is fully occluded.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(set = 0, binding = 1, r32f) uniform writeonly image2D dst;
+
+layout(push_constant) uniform PC {
+    ivec2 dst_size;
+} pc;
+
+void main() {
+    ivec2 dst_coord = ivec2(gl_GlobalInvocationID.xy);
+    if (dst_coord.x >= pc.dst_size.x || dst_coord.y >= pc.dst_size.y) return;
+
+    ivec2 src_coord = dst_coord * 2;
+    float d0 = texelFetch(src, src_coord,                 0).r;
+    float d1 = texelFetch(src, src_coord + ivec2(1, 0),   0).r;
+    float d2 = texelFetch(src, src_coord + ivec2(0, 1),   0).r;
+    float d3 = texelFetch(src, src_coord + ivec2(1, 1),   0).r;
+
+    imageStore(dst, dst_coord, vec4(max(max(d0, d1), max(d2, d3))));
+}

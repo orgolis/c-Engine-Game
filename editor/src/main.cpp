@@ -14,6 +14,8 @@
 #include "vulkan/vulkan_shadow_map.h"
 #include "vulkan/vulkan_post_processing.h"
 #include "vulkan/vulkan_transparent_pass.h"
+#include "vulkan/vulkan_occlusion_culler.h"
+#include "vulkan/vulkan_hzb_culler.h"
 #include "vulkan/vulkan_render_graph.h"
 #include "vulkan/vulkan_scene_mesh.h"
 #include "vulkan/vulkan_scene_material.h"
@@ -2612,15 +2614,37 @@ int main() {
             return 1;
         }
 
+        // Occlusion-query culler stays unwired (per-query design hangs the
+        // editor — see feedback_culling_traps memory).
+        std::unique_ptr<VulkanOcclusionCuller> occlusion_culler; // intentionally null
+
+        // HZB occlusion culler. The original "HZB false culls" we chased
+        // earlier turned out to be a cocktail of other bugs (cube LEFT-face
+        // winding, degenerate-AABB plane culling, OBJ winding + back-face
+        // cull mismatch) — all since fixed. Re-enabling HZB now that the
+        // rendering pipeline is consistent.
+        VulkanHzbCuller::Config hzb_cfg{};
+        hzb_cfg.depth_format = VK_FORMAT_D32_SFLOAT;
+        hzb_cfg.depth_width  = kW;
+        hzb_cfg.depth_height = kH;
+        hzb_cfg.max_draws    = 4096;
+        hzb_cfg.readback_mip = 4;
+        auto hzb_culler = VulkanHzbCuller::create(&device, hzb_cfg);
+        if (hzb_culler) {
+            hzb_culler->set_depth_view(g_buffer->get_depth_view());
+        }
+
         RenderGraphConfig graph_cfg{};
-        graph_cfg.device          = &device;
-        graph_cfg.g_buffer        = g_buffer.get();
-        graph_cfg.lighting        = lighting.get();
-        graph_cfg.shadow_map      = shadow_map.get();
-        graph_cfg.post_processing = post_processing.get();
-        graph_cfg.transparent     = transparent.get();
-        graph_cfg.width           = kW;
-        graph_cfg.height          = kH;
+        graph_cfg.device           = &device;
+        graph_cfg.g_buffer         = g_buffer.get();
+        graph_cfg.lighting         = lighting.get();
+        graph_cfg.shadow_map       = shadow_map.get();
+        graph_cfg.post_processing  = post_processing.get();
+        graph_cfg.transparent      = transparent.get();
+        graph_cfg.occlusion_culler = nullptr;
+        graph_cfg.hzb_culler       = hzb_culler.get();
+        graph_cfg.width            = kW;
+        graph_cfg.height           = kH;
         auto graph = VulkanRenderGraph::create(graph_cfg);
         if (!graph) {
             spdlog::error("VulkanRenderGraph::create failed");
@@ -2629,7 +2653,12 @@ int main() {
             glfwTerminate();
             return 1;
         }
-        spdlog::info("Deferred pipeline + render graph ready");
+        // CPU-side frustum culling: skip draws whose AABB is outside the view
+        // frustum. Default-off on the graph for backwards-compat, but for a
+        // real editor session we want it on — it dramatically improves perf
+        // on scenes with many off-screen objects.
+        graph->set_frustum_culling_enabled(true);
+        spdlog::info("Deferred pipeline + render graph ready (frustum culling ON)");
 
         // ----------------------------------------------------------------
         // Primitive mesh cache (one GPU mesh per MeshType; reused by every
@@ -3069,6 +3098,13 @@ int main() {
             // ------------------------------------------------------------
             vkWaitForFences(device.get_device(), 1, &frame_fences[current_frame],
                             VK_TRUE, UINT64_MAX);
+            // The previous frame's occlusion queries are guaranteed available
+            // after its fence. Pull the results into the culler so this
+            // frame can skip occluded draws.
+            if (graph) graph->resolve_occlusion_queries();
+            // Same story for the HZB readback — the GPU finished copying the
+            // HZB mip to the host buffer before signalling this fence.
+            if (hzb_culler) hzb_culler->pull_readback();
             uint32_t image_index = swapchain->acquire_next_image(
                 acquire_sems[current_frame]);
             vkResetFences(device.get_device(), 1, &frame_fences[current_frame]);
@@ -3099,7 +3135,28 @@ int main() {
                         glm::vec3 cam_forward = camera_transform->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f);
                         glm::vec3 cam_up = camera_transform->GetWorldRotation() * glm::vec3(0.0f, 1.0f, 0.0f);
                         cam.view = glm::lookAt(cam.position, cam.position + cam_forward, cam_up);
-                        cam.proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 1000.0f);
+
+                        // If the playback camera entity (or any ancestor / direct
+                        // child) carries a CameraComponent, its FOV / clip
+                        // planes / projection drive the matrix. Otherwise fall
+                        // back to a sensible 45° perspective.
+                        auto find_cam_comp = [](schizo::scene::Entity* e)
+                                -> std::shared_ptr<schizo::scene::CameraComponent> {
+                            if (!e) return nullptr;
+                            if (auto c = e->GetComponent<schizo::scene::CameraComponent>()) return c;
+                            // Walk up parents (one level — costly to walk deep
+                            // and rigs typically put the component on the camera
+                            // entity itself or on a single parent).
+                            if (auto p = e->GetParent()) {
+                                if (auto c = p->GetComponent<schizo::scene::CameraComponent>()) return c;
+                            }
+                            return nullptr;
+                        };
+                        if (auto cc = find_cam_comp(playback_camera)) {
+                            cam.proj = cc->GetProjectionMatrix(aspect);
+                        } else {
+                            cam.proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 1000.0f);
+                        }
                         static bool logged_once = false;
                         if (!logged_once) {
                             spdlog::info("✓ CAMERA SWAP ACTIVE: Using playback camera '{}'", playback_camera->GetName());
@@ -3153,6 +3210,42 @@ int main() {
             // handles inter-fragment ordering even for intersecting meshes.)
 
             graph->set_draw_items(opaque_draws);
+
+            // HZB occlusion test for the opaque draw list — projects each
+            // entity's world-space AABB into NDC and compares against the
+            // CPU-side HZB from the previous frame. Draws marked occluded
+            // are skipped by VulkanGBuffer::draw_items.
+            if (hzb_culler) {
+                std::vector<glm::vec3> aabb_mins, aabb_maxs;
+                aabb_mins.reserve(opaque_draws.size());
+                aabb_maxs.reserve(opaque_draws.size());
+                for (const auto& d : opaque_draws) {
+                    if (!d.mesh) {
+                        aabb_mins.emplace_back(0.0f);
+                        aabb_maxs.emplace_back(0.0f);
+                        continue;
+                    }
+                    const auto& local = d.mesh->bounding_box();
+                    // Transform all 8 corners by the model matrix and rebuild
+                    // a world-space AABB.
+                    glm::vec3 wmin( std::numeric_limits<float>::infinity());
+                    glm::vec3 wmax(-std::numeric_limits<float>::infinity());
+                    for (int c = 0; c < 8; ++c) {
+                        glm::vec4 corner(
+                            (c & 1) ? local.max.x : local.min.x,
+                            (c & 2) ? local.max.y : local.min.y,
+                            (c & 4) ? local.max.z : local.min.z,
+                            1.0f);
+                        glm::vec3 w = glm::vec3(d.model * corner);
+                        wmin = glm::min(wmin, w);
+                        wmax = glm::max(wmax, w);
+                    }
+                    aabb_mins.push_back(wmin);
+                    aabb_maxs.push_back(wmax);
+                }
+                hzb_culler->test_visibility(aabb_mins, aabb_maxs,
+                                            cam.proj * cam.view);
+            }
 
             // Sync the transparent pass's view of the dynamic light list each
             // frame so newly-added lights or removed lights take effect.

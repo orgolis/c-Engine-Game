@@ -25,6 +25,8 @@ class VulkanImage;
 class VulkanRenderPass;
 class VulkanDevice;
 class VulkanShaderRegistry;
+class VulkanOcclusionCuller;
+class VulkanHzbCuller;
 struct DrawItem;
 
 /**
@@ -201,7 +203,21 @@ public:
                     const DrawItem* draws,
                     size_t draw_count,
                     uint32_t* out_draw_calls = nullptr,
-                    uint32_t* out_triangles  = nullptr);
+                    uint32_t* out_triangles  = nullptr,
+                    /// Deprecated. Left for ABI compatibility; nullptr in
+                    /// current builds (the per-query approach had a stall
+                    /// hazard — replaced by VulkanHzbCuller).
+                    VulkanOcclusionCuller* occlusion = nullptr,
+                    /// HZB occlusion culler. When non-null, draws whose AABB
+                    /// was reported occluded by the culler's previous-frame
+                    /// HZB test are skipped entirely.
+                    VulkanHzbCuller* hzb_culler = nullptr,
+                    /// Optional view frustum (world-space planes). When
+                    /// supplied, LOD 0 draws are split per-meshlet and each
+                    /// meshlet's bounding sphere is frustum-tested before
+                    /// submission — gives finer-grained culling than the
+                    /// per-entity test in the render graph.
+                    const class Frustum* meshlet_frustum = nullptr);
     
     /**
      * @brief Get width
@@ -252,7 +268,13 @@ private:
     VkPipelineLayout demo_pipeline_layout_       = VK_NULL_HANDLE;
     VkBuffer         demo_vertex_buffer_         = VK_NULL_HANDLE;
     VkDeviceMemory   demo_vertex_buffer_memory_  = VK_NULL_HANDLE;
-    VkPipeline       scene_pipeline_             = VK_NULL_HANDLE;
+    /// Two scene pipelines sharing layout / render pass / shaders — only
+    /// the rasterizer's `cullMode` differs. `scene_pipeline_back_` culls
+    /// back-faces (trusted CCW meshes: primitives, glTF), while
+    /// `scene_pipeline_none_` renders both sides (untrusted-winding meshes:
+    /// OBJ). draw_items picks per draw based on `Mesh::is_double_sided`.
+    VkPipeline       scene_pipeline_back_        = VK_NULL_HANDLE;
+    VkPipeline       scene_pipeline_none_        = VK_NULL_HANDLE;
     VkPipelineLayout scene_pipeline_layout_      = VK_NULL_HANDLE;
 
     // Helper functions

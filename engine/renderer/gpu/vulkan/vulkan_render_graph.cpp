@@ -11,6 +11,8 @@
 #include "vulkan_post_processing.h"
 #include "vulkan_shadow_map.h"
 #include "vulkan_transparent_pass.h"
+#include "vulkan_occlusion_culler.h"
+#include "vulkan_hzb_culler.h"
 #include "vulkan_scene_mesh.h"
 #include "vulkan_scene_material.h"
 #include "culling.h"
@@ -398,14 +400,23 @@ void VulkanRenderGraph::record_shadow(VkCommandBuffer cmd, const StageRecorder& 
 
 void VulkanRenderGraph::record_geometry(VkCommandBuffer cmd, const StageRecorder& recorder) {
     if (config_.g_buffer == nullptr) return;
+
+    // Reset and arm the occlusion culler BEFORE begin_geometry_pass so the
+    // vkCmdResetQueryPool happens outside the active render pass (Vulkan
+    // forbids vkCmdResetQueryPool inside a render pass).
+    if (config_.occlusion_culler != nullptr && !draw_items_.empty() && !recorder) {
+        config_.occlusion_culler->begin_frame(
+            cmd, static_cast<uint32_t>(draw_items_.size()));
+    }
+
     config_.g_buffer->begin_geometry_pass(cmd);
     if (recorder) {
         recorder(cmd);
     } else if (!draw_items_.empty()) {
         // Default: textured-pipeline iteration over the caller's draw list.
         std::vector<DrawItem> items_to_draw = draw_items_;
+        Frustum frustum = Frustum::from_matrix(camera_.proj * camera_.view);
         if (frustum_culling_enabled_) {
-            Frustum frustum = Frustum::from_matrix(camera_.proj * camera_.view);
             CullingStats cull{};
             cull_draw_items_frustum(items_to_draw, frustum, &cull);
             stats_.frustum_input_items   = cull.input_items;
@@ -418,17 +429,37 @@ void VulkanRenderGraph::record_geometry(VkCommandBuffer cmd, const StageRecorder
             stats_.frustum_visible_items = static_cast<uint32_t>(items_to_draw.size());
             stats_.frustum_culled_items  = 0;
         }
+        // Pass the same frustum into draw_items so it can do finer-grained
+        // per-meshlet culling on top of the entity-level cull above.
+        // (Verified not to be the cause of the city-OBJ rendering bugs we
+        // chased earlier — that was back-face culling, since reverted.)
         config_.g_buffer->draw_items(cmd, camera_.view, camera_.proj,
                                      camera_.position,
                                      items_to_draw.data(), items_to_draw.size(),
                                      &stats_.geometry_draw_calls,
-                                     &stats_.geometry_triangles);
+                                     &stats_.geometry_triangles,
+                                     config_.occlusion_culler,
+                                     config_.hzb_culler,
+                                     &frustum);
     } else {
         // Smoke-test fallback: paint the G-Buffer with the built-in demo
         // triangle so downstream stages have real data.
         config_.g_buffer->draw_demo_triangle(cmd, camera_.view, camera_.proj);
     }
     config_.g_buffer->end_geometry_pass(cmd);
+
+    // Build the HZB from this frame's depth so next frame's visibility test
+    // has fresh data. Done immediately after the geometry pass while the
+    // depth attachment is still in DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+    if (config_.hzb_culler != nullptr) {
+        config_.hzb_culler->build_and_readback(cmd);
+    }
+}
+
+void VulkanRenderGraph::resolve_occlusion_queries() {
+    if (config_.occlusion_culler != nullptr) {
+        config_.occlusion_culler->resolve_results();
+    }
 }
 
 void VulkanRenderGraph::record_lighting(VkCommandBuffer cmd, const StageRecorder& recorder) {

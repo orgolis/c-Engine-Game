@@ -29,9 +29,12 @@ struct AABB {
     AABB() = default;
     AABB(glm::vec3 min_v, glm::vec3 max_v) : min(min_v), max(max_v) {}
 
-    /// Check if AABB is degenerate (all min >= max).
+    /// Check if AABB is degenerate (any min strictly greater than max).
+    /// Note: an AABB with `min == max` on one axis is a *valid* flat box
+    /// (e.g. the bounding box of a ground plane). It should still cull
+    /// correctly against the frustum, so `>=` would be too aggressive.
     bool is_degenerate() const {
-        return min.x >= max.x || min.y >= max.y || min.z >= max.z;
+        return min.x > max.x || min.y > max.y || min.z > max.z;
     }
 
     /// Get the bounding sphere radius (half diagonal).

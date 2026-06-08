@@ -163,22 +163,107 @@ std::unique_ptr<Mesh> Mesh::create(VulkanDevice* device,
     }
     out->submeshes_ = std::move(submeshes);
 
+    // -----------------------------------------------------------------------
+    // Meshlet baking — per submesh, for LOD 0 only.
+    //
+    // meshoptimizer groups triangles into clusters of up to 64 vertices /
+    // 124 triangles. We rebuild LOD 0's index range so that each meshlet's
+    // triangles are contiguous in the index buffer; at draw time we issue
+    // one `vkCmdDrawIndexed` per visible meshlet (after CPU frustum cull).
+    //
+    // Higher LODs (decimated tiers) aren't meshlet'd — they're already
+    // coarse enough that per-cluster culling adds more overhead than
+    // benefit, and reordering them would invalidate the LOD index
+    // sequence.
+    // -----------------------------------------------------------------------
+    std::vector<uint32_t> mutable_indices = indices;
+    constexpr size_t MAX_MESHLET_VERTICES  = 64;
+    constexpr size_t MAX_MESHLET_TRIANGLES = 124;
+    constexpr float  CONE_WEIGHT           = 0.5f;
+    constexpr size_t MIN_TRIS_TO_BAKE      = 256; // below this, brute draw is faster
+
+    for (auto& sm : out->submeshes_) {
+        if (sm.lods.empty()) continue;
+        auto& lod0 = sm.lods[0];
+        if (lod0.index_count < MIN_TRIS_TO_BAKE * 3) continue;
+        if (lod0.index_offset + lod0.index_count > mutable_indices.size()) continue;
+
+        const uint32_t* src   = mutable_indices.data() + lod0.index_offset;
+        const size_t   src_n = lod0.index_count;
+
+        const size_t max_meshlets = meshopt_buildMeshletsBound(
+            src_n, MAX_MESHLET_VERTICES, MAX_MESHLET_TRIANGLES);
+        std::vector<meshopt_Meshlet> raw_meshlets(max_meshlets);
+        std::vector<unsigned int>    mlet_verts(max_meshlets * MAX_MESHLET_VERTICES);
+        std::vector<unsigned char>   mlet_tris (max_meshlets * MAX_MESHLET_TRIANGLES * 3);
+
+        const size_t actual_count = meshopt_buildMeshlets(
+            raw_meshlets.data(), mlet_verts.data(), mlet_tris.data(),
+            src, src_n,
+            &vertices[0].position.x, vertices.size(), sizeof(SceneVertex),
+            MAX_MESHLET_VERTICES, MAX_MESHLET_TRIANGLES, CONE_WEIGHT);
+        raw_meshlets.resize(actual_count);
+
+        // Rebuild LOD 0's indices in meshlet order; record per-meshlet ranges
+        // and bounds.
+        std::vector<uint32_t> rebuilt; rebuilt.reserve(src_n);
+        sm.lod0_meshlets.reserve(actual_count);
+
+        for (const auto& rm : raw_meshlets) {
+            Meshlet info{};
+            info.first_index = lod0.index_offset + static_cast<uint32_t>(rebuilt.size());
+            info.index_count = rm.triangle_count * 3;
+
+            for (uint32_t t = 0; t < rm.triangle_count; ++t) {
+                for (int v = 0; v < 3; ++v) {
+                    const uint8_t  local  = mlet_tris[rm.triangle_offset + t * 3 + v];
+                    const uint32_t global = mlet_verts[rm.vertex_offset + local];
+                    rebuilt.push_back(global);
+                }
+            }
+
+            const meshopt_Bounds b = meshopt_computeMeshletBounds(
+                &mlet_verts[rm.vertex_offset],
+                &mlet_tris[rm.triangle_offset],
+                rm.triangle_count,
+                &vertices[0].position.x, vertices.size(), sizeof(SceneVertex));
+            info.center = glm::vec3(b.center[0], b.center[1], b.center[2]);
+            info.radius = b.radius;
+            sm.lod0_meshlets.push_back(info);
+        }
+
+        // Triangle count should be preserved by meshoptimizer; if it isn't,
+        // bail on this submesh to avoid corrupting the index buffer.
+        if (rebuilt.size() == src_n) {
+            std::copy(rebuilt.begin(), rebuilt.end(),
+                      mutable_indices.begin() + lod0.index_offset);
+        } else {
+            spdlog::warn("Mesh::create: meshlet rebuild changed index count ({} → {}), "
+                         "keeping original ordering — meshlet culling disabled for this submesh",
+                         src_n, rebuilt.size());
+            sm.lod0_meshlets.clear();
+        }
+    }
+
     try {
         create_host_buffer(device, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                            sizeof(SceneVertex) * vertices.size(),
                            vertices.data(),
                            out->vbo_, out->vbo_memory_);
         create_host_buffer(device, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                           sizeof(uint32_t) * indices.size(),
-                           indices.data(),
+                           sizeof(uint32_t) * mutable_indices.size(),
+                           mutable_indices.data(),
                            out->ibo_, out->ibo_memory_);
     } catch (const std::exception& e) {
         spdlog::error("Mesh::create: {}", e.what());
         return nullptr;
     }
 
-    spdlog::debug("Mesh: {} verts, {} indices, {} submeshes",
-                  out->vertex_count_, out->index_count_, out->submeshes_.size());
+    size_t total_meshlets = 0;
+    for (const auto& sm : out->submeshes_) total_meshlets += sm.lod0_meshlets.size();
+    spdlog::debug("Mesh: {} verts, {} indices, {} submeshes, {} meshlets",
+                  out->vertex_count_, out->index_count_,
+                  out->submeshes_.size(), total_meshlets);
     return out;
 }
 
@@ -196,6 +281,11 @@ void Mesh::draw_submesh(VkCommandBuffer cmd, size_t submesh_idx,
     const size_t li = std::min(lod_index, s.lods.size() - 1);
     const auto& lod = s.lods[li];
     vkCmdDrawIndexed(cmd, lod.index_count, 1, lod.index_offset, 0, 0);
+}
+
+void Mesh::draw_meshlet(VkCommandBuffer cmd, uint32_t first_index,
+                        uint32_t index_count) const {
+    vkCmdDrawIndexed(cmd, index_count, 1, first_index, 0, 0);
 }
 
 size_t Mesh::select_lod(size_t submesh_idx, float camera_distance) const {

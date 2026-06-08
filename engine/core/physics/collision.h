@@ -211,23 +211,7 @@ private:
  */
 class MeshShape : public CollisionShape {
 public:
-    explicit MeshShape(std::vector<glm::vec3> triangles)
-        : triangles_(std::move(triangles)) {
-        if (triangles_.empty()) {
-            local_min_ = glm::vec3(0.0f);
-            local_max_ = glm::vec3(0.0f);
-            bounding_radius_ = 0.0f;
-            return;
-        }
-        local_min_ = triangles_[0];
-        local_max_ = triangles_[0];
-        for (const auto& v : triangles_) {
-            local_min_ = glm::min(local_min_, v);
-            local_max_ = glm::max(local_max_, v);
-        }
-        glm::vec3 half = (local_max_ - local_min_) * 0.5f;
-        bounding_radius_ = glm::length(half);
-    }
+    explicit MeshShape(std::vector<glm::vec3> triangles);
 
     ShapeType GetType() const override { return ShapeType::Mesh; }
 
@@ -241,11 +225,33 @@ public:
     const std::vector<glm::vec3>& GetTriangles() const { return triangles_; }
     size_t GetTriangleCount() const { return triangles_.size() / 3; }
 
+    /// Append the triangle "start indices" (multiples of 3 into `triangles_`)
+    /// whose AABB overlaps the [query_min, query_max] AABB. Triangles whose
+    /// AABB spans multiple grid cells appear in multiple cells; the caller's
+    /// per-triangle test naturally rejects duplicates that don't actually
+    /// touch the query AABB, so duplicates are left in for simplicity.
+    void QueryAABB(const glm::vec3& query_min,
+                   const glm::vec3& query_max,
+                   std::vector<uint32_t>& out_tri_starts) const;
+
 private:
+    void BuildGrid();
+    void CellIndex(const glm::vec3& p, int& ix, int& iy, int& iz) const;
+
     std::vector<glm::vec3> triangles_;   // flat 3N: tri i = triangles_[3i..3i+2]
     glm::vec3 local_min_{0.0f};
     glm::vec3 local_max_{0.0f};
     float     bounding_radius_ = 0.0f;
+
+    // Uniform spatial grid for accelerated triangle queries. Triangle
+    // start-indices (multiples of 3) get bucketed into the cells their AABBs
+    // overlap. Empty when the mesh is too small to benefit (< ~64 triangles).
+    glm::vec3 grid_origin_{0.0f};
+    glm::vec3 grid_cell_size_{1.0f};
+    int       grid_dim_x_ = 0;
+    int       grid_dim_y_ = 0;
+    int       grid_dim_z_ = 0;
+    std::vector<std::vector<uint32_t>> grid_cells_; // size = dim_x*dim_y*dim_z
 };
 
 /**
@@ -438,12 +444,12 @@ namespace collision {
 
     bool SphereMesh(const glm::vec3& sphere_pos, float sphere_radius,
                     const glm::vec3& mesh_pos, const glm::quat& mesh_rot,
-                    const std::vector<glm::vec3>& triangles,
+                    const MeshShape& mesh,
                     Contact& contact);
 
     bool CapsuleMesh(const glm::vec3& cap_a, const glm::vec3& cap_b, float cap_radius,
                      const glm::vec3& mesh_pos, const glm::quat& mesh_rot,
-                     const std::vector<glm::vec3>& triangles,
+                     const MeshShape& mesh,
                      Contact& contact);
     
     /**

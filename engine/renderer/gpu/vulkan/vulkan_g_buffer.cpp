@@ -11,6 +11,9 @@
 #include "vulkan_render_graph.h" // for DrawItem
 #include "gbuffer_demo_spirv.h"   // pre-compiled SPIR-V fallback for GCC builds
 #include "gbuffer_scene_spirv.h"  // pre-compiled SPIR-V fallback for GCC builds
+#include "vulkan_occlusion_culler.h"
+#include "vulkan_hzb_culler.h"
+#include "culling.h" // Frustum for per-meshlet culling
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <array>
@@ -755,7 +758,8 @@ void VulkanGBuffer::create_scene_pipeline() {
     VkPipelineRasterizationStateCreateInfo rs{};
     rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode    = VK_CULL_MODE_NONE;
+    // cullMode is overridden per-variant below (back / none).
+    rs.cullMode    = VK_CULL_MODE_BACK_BIT;
     rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth   = 1.0f;
 
@@ -795,9 +799,21 @@ void VulkanGBuffer::create_scene_pipeline() {
     info.layout              = scene_pipeline_layout_;
     info.renderPass          = render_pass_;
     info.subpass             = 0;
+
+    // Variant 1: back-face cull, used for primitives + glTF where winding
+    // is trustworthy CCW.
+    rs.cullMode = VK_CULL_MODE_BACK_BIT;
     if (vkCreateGraphicsPipelines(vk_device, VK_NULL_HANDLE, 1, &info, nullptr,
-                                  &scene_pipeline_) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create scene pipeline");
+                                  &scene_pipeline_back_) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create scene pipeline (back-cull)");
+    }
+
+    // Variant 2: no culling, used for OBJ-loaded meshes where the winding
+    // can't be trusted.
+    rs.cullMode = VK_CULL_MODE_NONE;
+    if (vkCreateGraphicsPipelines(vk_device, VK_NULL_HANDLE, 1, &info, nullptr,
+                                  &scene_pipeline_none_) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create scene pipeline (no-cull)");
     }
 }
 
@@ -871,10 +887,14 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
                                const DrawItem* draws,
                                size_t draw_count,
                                uint32_t* out_draw_calls,
-                               uint32_t* out_triangles) {
+                               uint32_t* out_triangles,
+                               VulkanOcclusionCuller* occlusion,
+                               VulkanHzbCuller* hzb_culler,
+                               const Frustum* meshlet_frustum) {
     if (out_draw_calls) *out_draw_calls = 0;
     if (out_triangles)  *out_triangles  = 0;
-    if (scene_pipeline_ == VK_NULL_HANDLE || draws == nullptr || draw_count == 0) {
+    if (scene_pipeline_back_ == VK_NULL_HANDLE || scene_pipeline_none_ == VK_NULL_HANDLE ||
+        draws == nullptr || draw_count == 0) {
         return;
     }
 
@@ -888,18 +908,44 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
     scissor.extent = {config_.width, config_.height};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scene_pipeline_);
-
     const glm::mat4 view_proj = proj * view;
 
-    // Track the most recently bound mesh / material so we don't redundantly
-    // rebind. (Sort by material first if you care about minimising binds.)
+    // Track the most recently bound mesh / material / pipeline so we don't
+    // redundantly rebind. Sort draws by `mesh->is_double_sided()` first if
+    // you care about minimising the pipeline rebind count (not done here —
+    // typical scenes have at most a handful of cull-mode transitions).
     const Mesh*     last_mesh     = nullptr;
     const Material* last_material = nullptr;
+    VkPipeline      last_pipeline = VK_NULL_HANDLE;
 
     for (size_t i = 0; i < draw_count; ++i) {
         const DrawItem& d = draws[i];
         if (!d.mesh || !d.material) continue;
+
+        // Skip draws that were fully occluded last frame (per the HZB
+        // culler's CPU-side AABB-vs-HZB test).
+        const uint32_t draw_idx = static_cast<uint32_t>(i);
+        if (hzb_culler != nullptr && !hzb_culler->was_visible(draw_idx)) {
+            continue;
+        }
+        if (occlusion != nullptr && !occlusion->was_visible(draw_idx)) {
+            continue;
+        }
+
+        // Pick pipeline: cull-back for trustworthy CCW meshes, cull-none
+        // for untrusted (OBJ-loaded) meshes. Rebind only when changing.
+        VkPipeline pipeline = d.mesh->is_double_sided()
+                                  ? scene_pipeline_none_
+                                  : scene_pipeline_back_;
+        if (pipeline != last_pipeline) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            last_pipeline = pipeline;
+            // Rebind material on next draw — pipeline change invalidates
+            // descriptor set bindings even though both pipelines share a
+            // layout (Vulkan spec: bindings persist if layouts are
+            // compatible, which they are here, but it's cheap insurance).
+            last_material = nullptr;
+        }
 
         if (d.material != last_material) {
             d.material->bind(cmd, scene_pipeline_layout_, /*set=*/1);
@@ -921,16 +967,50 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
         const float distance = glm::length(draw_origin - camera_position);
         const size_t lod = d.mesh->select_lod(d.submesh_index, distance);
 
-        d.mesh->draw_submesh(cmd, d.submesh_index, lod);
+        if (occlusion != nullptr) occlusion->begin_draw(cmd, draw_idx);
 
-        if (out_draw_calls) ++(*out_draw_calls);
-        if (out_triangles && d.submesh_index < d.mesh->submeshes().size()) {
+        // Per-meshlet path: only at LOD 0, only when the mesh actually has
+        // meshlets, and only when the caller supplied a frustum to test
+        // against. Each meshlet's local-space bounding sphere is
+        // transformed to world space and frustum-tested individually; only
+        // visible meshlets get a draw call. Falls back to draw_submesh
+        // otherwise.
+        bool drew_meshlets = false;
+        if (meshlet_frustum != nullptr && lod == 0 &&
+            d.submesh_index < d.mesh->submeshes().size()) {
             const auto& sm = d.mesh->submeshes()[d.submesh_index];
-            const size_t li = std::min(lod, sm.lods.empty() ? 0 : sm.lods.size() - 1);
-            if (!sm.lods.empty()) {
-                *out_triangles += sm.lods[li].index_count / 3;
+            if (!sm.lod0_meshlets.empty()) {
+                // Approximate world-space scaling factor: largest column norm.
+                // Exact only for uniform scaling but conservative for almost
+                // every non-pathological transform.
+                const float scale = std::max({
+                    glm::length(glm::vec3(d.model[0])),
+                    glm::length(glm::vec3(d.model[1])),
+                    glm::length(glm::vec3(d.model[2]))
+                });
+                for (const auto& ml : sm.lod0_meshlets) {
+                    const glm::vec3 wc = glm::vec3(d.model * glm::vec4(ml.center, 1.0f));
+                    const float wr = ml.radius * scale;
+                    if (!meshlet_frustum->is_sphere_visible(wc, wr)) continue;
+                    d.mesh->draw_meshlet(cmd, ml.first_index, ml.index_count);
+                    if (out_draw_calls) ++(*out_draw_calls);
+                    if (out_triangles) *out_triangles += ml.index_count / 3;
+                }
+                drew_meshlets = true;
             }
         }
+        if (!drew_meshlets) {
+            d.mesh->draw_submesh(cmd, d.submesh_index, lod);
+            if (out_draw_calls) ++(*out_draw_calls);
+            if (out_triangles && d.submesh_index < d.mesh->submeshes().size()) {
+                const auto& sm = d.mesh->submeshes()[d.submesh_index];
+                const size_t li = std::min(lod, sm.lods.empty() ? 0 : sm.lods.size() - 1);
+                if (!sm.lods.empty()) {
+                    *out_triangles += sm.lods[li].index_count / 3;
+                }
+            }
+        }
+        if (occlusion != nullptr) occlusion->end_draw(cmd, draw_idx);
     }
 }
 
@@ -975,9 +1055,13 @@ void VulkanGBuffer::cleanup() {
         vkDestroyPipelineLayout(vk_device, demo_pipeline_layout_, nullptr);
         demo_pipeline_layout_ = VK_NULL_HANDLE;
     }
-    if (scene_pipeline_ != VK_NULL_HANDLE) {
-        vkDestroyPipeline(vk_device, scene_pipeline_, nullptr);
-        scene_pipeline_ = VK_NULL_HANDLE;
+    if (scene_pipeline_back_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(vk_device, scene_pipeline_back_, nullptr);
+        scene_pipeline_back_ = VK_NULL_HANDLE;
+    }
+    if (scene_pipeline_none_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(vk_device, scene_pipeline_none_, nullptr);
+        scene_pipeline_none_ = VK_NULL_HANDLE;
     }
     if (scene_pipeline_layout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(vk_device, scene_pipeline_layout_, nullptr);

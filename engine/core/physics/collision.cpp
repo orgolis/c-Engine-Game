@@ -650,25 +650,31 @@ bool CapsuleTriangle(const glm::vec3& cap_a, const glm::vec3& cap_b, float cap_r
 
 // ----------------------------------------------------------------------------
 // Mesh pairs. Triangles are stored in the mesh's local frame; transform the
-// query shape into that frame, scan the triangle list, then transform the
-// contact back to world.
+// query shape into that frame, ask MeshShape's spatial grid for the
+// candidate triangles whose AABBs overlap the query AABB, then run the
+// per-triangle test on only those candidates.
 // ----------------------------------------------------------------------------
 
 bool SphereMesh(const glm::vec3& sphere_pos, float sphere_radius,
                 const glm::vec3& mesh_pos, const glm::quat& mesh_rot,
-                const std::vector<glm::vec3>& triangles,
+                const MeshShape& mesh,
                 Contact& contact)
 {
+    const auto& triangles = mesh.GetTriangles();
     if (triangles.size() < 3) return false;
 
     glm::quat inv_rot = glm::inverse(mesh_rot);
     glm::vec3 local_sphere = inv_rot * (sphere_pos - mesh_pos);
 
+    const glm::vec3 r3(sphere_radius);
+    std::vector<uint32_t> candidates;
+    mesh.QueryAABB(local_sphere - r3, local_sphere + r3, candidates);
+    if (candidates.empty()) return false;
+
     bool found = false;
     float deepest = 0.0f;
     Contact best{};
-
-    for (size_t i = 0; i + 2 < triangles.size(); i += 3) {
+    for (uint32_t i : candidates) {
         Contact local;
         if (!SphereTriangle(local_sphere, sphere_radius,
                             triangles[i], triangles[i+1], triangles[i+2],
@@ -690,20 +696,27 @@ bool SphereMesh(const glm::vec3& sphere_pos, float sphere_radius,
 
 bool CapsuleMesh(const glm::vec3& cap_a, const glm::vec3& cap_b, float cap_radius,
                  const glm::vec3& mesh_pos, const glm::quat& mesh_rot,
-                 const std::vector<glm::vec3>& triangles,
+                 const MeshShape& mesh,
                  Contact& contact)
 {
+    const auto& triangles = mesh.GetTriangles();
     if (triangles.size() < 3) return false;
 
     glm::quat inv_rot = glm::inverse(mesh_rot);
     glm::vec3 local_a = inv_rot * (cap_a - mesh_pos);
     glm::vec3 local_b = inv_rot * (cap_b - mesh_pos);
 
+    const glm::vec3 r3(cap_radius);
+    glm::vec3 lmin = glm::min(local_a, local_b) - r3;
+    glm::vec3 lmax = glm::max(local_a, local_b) + r3;
+    std::vector<uint32_t> candidates;
+    mesh.QueryAABB(lmin, lmax, candidates);
+    if (candidates.empty()) return false;
+
     bool found = false;
     float deepest = 0.0f;
     Contact best{};
-
-    for (size_t i = 0; i + 2 < triangles.size(); i += 3) {
+    for (uint32_t i : candidates) {
         Contact local;
         if (!CapsuleTriangle(local_a, local_b, cap_radius,
                              triangles[i], triangles[i+1], triangles[i+2],
@@ -724,6 +737,127 @@ bool CapsuleMesh(const glm::vec3& cap_a, const glm::vec3& cap_b, float cap_radiu
 }
 
 } // namespace collision
+
+// ----------------------------------------------------------------------------
+// MeshShape spatial grid
+// ----------------------------------------------------------------------------
+
+MeshShape::MeshShape(std::vector<glm::vec3> triangles)
+    : triangles_(std::move(triangles))
+{
+    if (triangles_.empty()) {
+        local_min_ = glm::vec3(0.0f);
+        local_max_ = glm::vec3(0.0f);
+        bounding_radius_ = 0.0f;
+        return;
+    }
+    local_min_ = triangles_[0];
+    local_max_ = triangles_[0];
+    for (const auto& v : triangles_) {
+        local_min_ = glm::min(local_min_, v);
+        local_max_ = glm::max(local_max_, v);
+    }
+    glm::vec3 half = (local_max_ - local_min_) * 0.5f;
+    bounding_radius_ = glm::length(half);
+
+    BuildGrid();
+}
+
+void MeshShape::BuildGrid() {
+    const size_t tri_count = triangles_.size() / 3;
+    // For very small meshes a brute-force scan beats the grid bookkeeping.
+    if (tri_count < 64) {
+        grid_dim_x_ = grid_dim_y_ = grid_dim_z_ = 0;
+        return;
+    }
+
+    grid_origin_ = local_min_;
+    glm::vec3 extent = glm::max(local_max_ - local_min_, glm::vec3(1e-4f));
+
+    // Target ~8 triangles per cell on average. Resolution along each axis is
+    // proportional to that axis's relative size — keeps cells roughly cubic
+    // for elongated meshes (corridors, walls).
+    const float target_per_cell = 8.0f;
+    const float cells_total_f =
+        glm::max(static_cast<float>(tri_count) / target_per_cell, 1.0f);
+    // Distribute cells_total over 3 axes proportional to their length:
+    // dim_i = round(cube_root(cells_total) * extent_i / mean_extent).
+    const float mean_extent =
+        std::cbrt(extent.x * extent.y * extent.z);
+    const float base_dim = std::cbrt(cells_total_f);
+    auto pick_dim = [&](float ext) {
+        int d = static_cast<int>(std::round(base_dim * (ext / std::max(mean_extent, 1e-4f))));
+        return glm::clamp(d, 1, 96);
+    };
+    grid_dim_x_ = pick_dim(extent.x);
+    grid_dim_y_ = pick_dim(extent.y);
+    grid_dim_z_ = pick_dim(extent.z);
+
+    grid_cell_size_.x = extent.x / static_cast<float>(grid_dim_x_);
+    grid_cell_size_.y = extent.y / static_cast<float>(grid_dim_y_);
+    grid_cell_size_.z = extent.z / static_cast<float>(grid_dim_z_);
+
+    grid_cells_.assign(static_cast<size_t>(grid_dim_x_) *
+                       static_cast<size_t>(grid_dim_y_) *
+                       static_cast<size_t>(grid_dim_z_),
+                       std::vector<uint32_t>{});
+
+    // Bucket each triangle into every cell its AABB overlaps. A triangle
+    // straddling 4 cells goes into all 4 — the per-triangle test will reject
+    // mismatches naturally.
+    for (size_t base = 0; base + 2 < triangles_.size(); base += 3) {
+        glm::vec3 tmin = glm::min(triangles_[base],
+                          glm::min(triangles_[base + 1], triangles_[base + 2]));
+        glm::vec3 tmax = glm::max(triangles_[base],
+                          glm::max(triangles_[base + 1], triangles_[base + 2]));
+        int ix0, iy0, iz0, ix1, iy1, iz1;
+        CellIndex(tmin, ix0, iy0, iz0);
+        CellIndex(tmax, ix1, iy1, iz1);
+        const uint32_t base_u32 = static_cast<uint32_t>(base);
+        for (int z = iz0; z <= iz1; ++z)
+            for (int y = iy0; y <= iy1; ++y)
+                for (int x = ix0; x <= ix1; ++x) {
+                    const size_t idx = (static_cast<size_t>(z) * grid_dim_y_ + y) * grid_dim_x_ + x;
+                    grid_cells_[idx].push_back(base_u32);
+                }
+    }
+}
+
+void MeshShape::CellIndex(const glm::vec3& p, int& ix, int& iy, int& iz) const {
+    auto clamp_idx = [](int v, int max_dim) {
+        if (v < 0) return 0;
+        if (v >= max_dim) return max_dim - 1;
+        return v;
+    };
+    ix = clamp_idx(static_cast<int>((p.x - grid_origin_.x) / grid_cell_size_.x), grid_dim_x_);
+    iy = clamp_idx(static_cast<int>((p.y - grid_origin_.y) / grid_cell_size_.y), grid_dim_y_);
+    iz = clamp_idx(static_cast<int>((p.z - grid_origin_.z) / grid_cell_size_.z), grid_dim_z_);
+}
+
+void MeshShape::QueryAABB(const glm::vec3& query_min,
+                          const glm::vec3& query_max,
+                          std::vector<uint32_t>& out) const
+{
+    // No grid → brute-force (tiny mesh, or the constructor decided to skip).
+    if (grid_cells_.empty()) {
+        out.reserve(out.size() + triangles_.size() / 3);
+        for (size_t base = 0; base + 2 < triangles_.size(); base += 3) {
+            out.push_back(static_cast<uint32_t>(base));
+        }
+        return;
+    }
+    int ix0, iy0, iz0, ix1, iy1, iz1;
+    CellIndex(query_min, ix0, iy0, iz0);
+    CellIndex(query_max, ix1, iy1, iz1);
+    for (int z = iz0; z <= iz1; ++z)
+        for (int y = iy0; y <= iy1; ++y)
+            for (int x = ix0; x <= ix1; ++x) {
+                const size_t idx =
+                    (static_cast<size_t>(z) * grid_dim_y_ + y) * grid_dim_x_ + x;
+                const auto& cell = grid_cells_[idx];
+                out.insert(out.end(), cell.begin(), cell.end());
+            }
+}
 
 } // namespace schizo::physics
 

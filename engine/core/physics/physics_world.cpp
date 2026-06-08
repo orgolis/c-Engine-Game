@@ -607,14 +607,14 @@ private:
                 auto* mesh = static_cast<MeshShape*>(shape_b);
                 colliding = collision::SphereMesh(
                     pos_a, sphere->GetRadius(),
-                    pos_b, rot_b, mesh->GetTriangles(),
+                    pos_b, rot_b, *mesh,
                     contact);
             } else if (shape_a->GetType() == ShapeType::Mesh && shape_b->GetType() == ShapeType::Sphere) {
                 auto* mesh = static_cast<MeshShape*>(shape_a);
                 auto* sphere = static_cast<SphereShape*>(shape_b);
                 colliding = collision::SphereMesh(
                     pos_b, sphere->GetRadius(),
-                    pos_a, rot_a, mesh->GetTriangles(),
+                    pos_a, rot_a, *mesh,
                     contact);
                 contact.normal = -contact.normal;
             } else if (shape_a->GetType() == ShapeType::Capsule && shape_b->GetType() == ShapeType::Mesh) {
@@ -624,7 +624,7 @@ private:
                 capsule_endpoints(pos_a, rot_a, cap->GetHalfHeight(), a0, a1);
                 colliding = collision::CapsuleMesh(
                     a0, a1, cap->GetRadius(),
-                    pos_b, rot_b, mesh->GetTriangles(),
+                    pos_b, rot_b, *mesh,
                     contact);
             } else if (shape_a->GetType() == ShapeType::Mesh && shape_b->GetType() == ShapeType::Capsule) {
                 auto* mesh = static_cast<MeshShape*>(shape_a);
@@ -633,7 +633,7 @@ private:
                 capsule_endpoints(pos_b, rot_b, cap->GetHalfHeight(), b0, b1);
                 colliding = collision::CapsuleMesh(
                     b0, b1, cap->GetRadius(),
-                    pos_a, rot_a, mesh->GetTriangles(),
+                    pos_a, rot_a, *mesh,
                     contact);
                 contact.normal = -contact.normal;
             }
@@ -652,7 +652,7 @@ private:
                 glm::vec3 a1 = pos_a + axis * hh;
                 colliding = collision::CapsuleMesh(
                     a0, a1, radius,
-                    pos_b, rot_b, mesh->GetTriangles(),
+                    pos_b, rot_b, *mesh,
                     contact);
             } else if (shape_a->GetType() == ShapeType::Mesh && shape_b->GetType() == ShapeType::Box) {
                 auto* mesh = static_cast<MeshShape*>(shape_a);
@@ -665,7 +665,7 @@ private:
                 glm::vec3 b1 = pos_b + axis * hh;
                 colliding = collision::CapsuleMesh(
                     b0, b1, radius,
-                    pos_a, rot_a, mesh->GetTriangles(),
+                    pos_a, rot_a, *mesh,
                     contact);
                 contact.normal = -contact.normal;
             } else if (shape_a->GetType() == ShapeType::Cylinder && shape_b->GetType() == ShapeType::Mesh) {
@@ -677,7 +677,7 @@ private:
                 glm::vec3 a1 = pos_a + axis * hh;
                 colliding = collision::CapsuleMesh(
                     a0, a1, cyl->GetRadius(),
-                    pos_b, rot_b, mesh->GetTriangles(),
+                    pos_b, rot_b, *mesh,
                     contact);
             } else if (shape_a->GetType() == ShapeType::Mesh && shape_b->GetType() == ShapeType::Cylinder) {
                 auto* mesh = static_cast<MeshShape*>(shape_a);
@@ -688,7 +688,7 @@ private:
                 glm::vec3 b1 = pos_b + axis * hh;
                 colliding = collision::CapsuleMesh(
                     b0, b1, cyl->GetRadius(),
-                    pos_a, rot_a, mesh->GetTriangles(),
+                    pos_a, rot_a, *mesh,
                     contact);
                 contact.normal = -contact.normal;
             }
