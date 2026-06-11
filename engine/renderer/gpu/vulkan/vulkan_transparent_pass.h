@@ -85,6 +85,19 @@ public:
                                 VkImageView point_shadow_view,
                                 VkSampler   point_shadow_sampler);
 
+    /// Bind the IBL textures baked by VulkanEnvironmentMap::bake_ibl. Same
+    /// data the deferred lighting pass uses. Pass VK_NULL_HANDLE for any
+    /// view to disable IBL — the forward shader then uses the legacy
+    /// constant-ambient term only.
+    void set_ibl_textures(VkImageView irradiance_view, VkSampler irradiance_sampler,
+                          VkImageView prefilter_view,  VkSampler prefilter_sampler,
+                          VkImageView brdf_lut_view,   VkSampler brdf_lut_sampler,
+                          uint32_t prefilter_mips);
+
+    /// Blend factor between the constant ambient and the IBL ambient.
+    /// 0 = constant only, 1 = IBL only. Default 1.
+    void set_ibl_intensity(float intensity) { ibl_intensity_ = intensity; }
+
     /// Per-frame: how many entries in the light SSBO are valid. The shader
     /// iterates 0..light_count - 1 and skips the rest.
     void set_light_count(uint32_t count) { light_count_ = count; }
@@ -147,6 +160,10 @@ private:
 
     glm::vec3 ambient_color_     = glm::vec3(1.0f);
     float     ambient_intensity_ = 0.3f;
+    uint32_t  ibl_prefilter_mips_ = 0;
+    // Match the deferred lighting default — keeps blend-mode and opaque
+    // surfaces visually consistent under the same env map.
+    float     ibl_intensity_      = 0.4f;
     uint32_t  light_count_       = 0;
 
     VkFormat hdr_format_   = VK_FORMAT_UNDEFINED;

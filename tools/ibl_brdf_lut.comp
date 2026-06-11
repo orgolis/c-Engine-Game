@@ -1,0 +1,88 @@
+#version 450
+// BRDF integration LUT for the Karis split-sum specular IBL approximation.
+// Output is R16G16: red = F0 scale, green = F0 bias. Indexed by:
+//   u = N·V    ∈ (0, 1]
+//   v = α      ∈ [0, 1]    (perceptual roughness)
+//
+// Combined with the prefiltered env map:
+//   specular_IBL = prefiltered * (F0 * brdfLUT.r + brdfLUT.g)
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rg16f) uniform writeonly image2D dstLut;
+
+layout(push_constant) uniform PC {
+    ivec2 lut_size;
+} pc;
+
+const float PI = 3.14159265358979323846;
+const uint  SAMPLE_COUNT = 1024u;
+
+float radical_inverse_vdc(uint bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u)  | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u)  | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u)  | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u)  | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10;
+}
+vec2 hammersley(uint i, uint N) {
+    return vec2(float(i) / float(N), radical_inverse_vdc(i));
+}
+
+vec3 importance_sample_ggx(vec2 Xi, vec3 N, float roughness) {
+    float a = roughness * roughness;
+    float phi = 2.0 * PI * Xi.x;
+    float cos_theta = sqrt((1.0 - Xi.y) / (1.0 + (a * a - 1.0) * Xi.y));
+    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
+    vec3 H = vec3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta);
+    vec3 up    = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(up, N));
+    vec3 bitan   = cross(N, tangent);
+    return normalize(tangent * H.x + bitan * H.y + N * H.z);
+}
+
+// Smith G for IBL: k uses the IBL formulation rather than direct lighting.
+float geometry_schlick_ggx(float NdotV, float roughness) {
+    float a = roughness;
+    float k = (a * a) / 2.0;
+    return NdotV / (NdotV * (1.0 - k) + k);
+}
+float geometry_smith(float NdotV, float NdotL, float roughness) {
+    return geometry_schlick_ggx(NdotV, roughness) *
+           geometry_schlick_ggx(NdotL, roughness);
+}
+
+vec2 integrate_brdf(float NdotV, float roughness) {
+    vec3 V = vec3(sqrt(1.0 - NdotV * NdotV), 0.0, NdotV);
+    float A = 0.0;
+    float B = 0.0;
+    vec3 N = vec3(0.0, 0.0, 1.0);
+    for (uint i = 0u; i < SAMPLE_COUNT; ++i) {
+        vec2 Xi = hammersley(i, SAMPLE_COUNT);
+        vec3 H  = importance_sample_ggx(Xi, N, roughness);
+        vec3 L  = normalize(2.0 * dot(V, H) * H - V);
+        float NdotL = max(L.z, 0.0);
+        float NdotH = max(H.z, 0.0);
+        float VdotH = max(dot(V, H), 0.0);
+        if (NdotL > 0.0) {
+            float G = geometry_smith(NdotV, NdotL, roughness);
+            float G_Vis = (G * VdotH) / (NdotH * NdotV);
+            float Fc = pow(1.0 - VdotH, 5.0);
+            A += (1.0 - Fc) * G_Vis;
+            B += Fc * G_Vis;
+        }
+    }
+    return vec2(A, B) / float(SAMPLE_COUNT);
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.lut_size.x || px.y >= pc.lut_size.y) return;
+    // Add small bias to avoid singularities at u=0 (NdotV=0).
+    vec2 uv = (vec2(px) + 0.5) / vec2(pc.lut_size);
+    float NdotV = max(uv.x, 0.001);
+    float roughness = uv.y;
+    vec2 result = integrate_brdf(NdotV, roughness);
+    imageStore(dstLut, px, vec4(result, 0.0, 0.0));
+}

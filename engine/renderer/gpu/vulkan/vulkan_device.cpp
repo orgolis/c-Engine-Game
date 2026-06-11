@@ -13,6 +13,10 @@
 #  define VK_USE_PLATFORM_WIN32_KHR
 #endif
 
+#include <cstring>
+
+#include "vulkan_rt_functions.h"
+
 #include "vulkan_device.h"
 #include "vulkan_swapchain.h"
 #include "logging/logger.h"
@@ -660,22 +664,98 @@ void VulkanDevice::create_logical_device() {
     
     // Device features
     VkPhysicalDeviceFeatures device_features{};
-    
-    // Device extensions
+
+    // Device extensions — swapchain is required; the four KHR ray-tracing
+    // extensions are added if the physical device advertises all of them.
     std::vector<const char*> extensions = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
     };
-    
+
+    // Enumerate available device extensions so we can opt into the RT set
+    // only when the GPU actually supports them.
+    uint32_t available_count = 0;
+    vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &available_count, nullptr);
+    std::vector<VkExtensionProperties> available_exts(available_count);
+    vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &available_count, available_exts.data());
+    auto has_ext = [&](const char* name) {
+        for (const auto& e : available_exts) {
+            if (std::strcmp(e.extensionName, name) == 0) return true;
+        }
+        return false;
+    };
+
+    const bool rt_exts_present =
+        has_ext(VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+        has_ext(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+        has_ext(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) &&
+        has_ext(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+
+    // Feature chain for RT — must be pNext-chained off VkPhysicalDeviceFeatures2.
+    VkPhysicalDeviceRayQueryFeaturesKHR rq_features{};
+    rq_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR as_features{};
+    as_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    VkPhysicalDeviceBufferDeviceAddressFeatures bda_features{};
+    bda_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+    VkPhysicalDeviceFeatures2 features2{};
+    features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+
+    if (rt_exts_present) {
+        // Chain everything and ask the GPU what it actually supports.
+        features2.pNext = &rq_features;
+        rq_features.pNext = &as_features;
+        as_features.pNext = &bda_features;
+        vkGetPhysicalDeviceFeatures2(physical_device, &features2);
+        if (rq_features.rayQuery && as_features.accelerationStructure &&
+            bda_features.bufferDeviceAddress) {
+            extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+            extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+            extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+            extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+            ray_tracing_supported_ = true;
+            GWS_LOG_INFO("✅ Hardware ray tracing supported and enabled");
+        } else {
+            GWS_LOG_INFO("Ray tracing extensions present but required features missing — RT disabled");
+            features2.pNext = nullptr;
+        }
+    } else {
+        GWS_LOG_INFO("Ray tracing extensions not available on this device — RT disabled");
+    }
+
+    // Also enable basic device features (preserve existing behavior — empty struct).
+    if (ray_tracing_supported_) {
+        // Use Features2 chain so pNext picks up rq/as/bda.
+        features2.features = device_features;
+    }
+
     VkDeviceCreateInfo create_info{};
     create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     create_info.queueCreateInfoCount = queue_create_infos.size();
     create_info.pQueueCreateInfos = queue_create_infos.data();
-    create_info.pEnabledFeatures = &device_features;
     create_info.enabledExtensionCount = extensions.size();
     create_info.ppEnabledExtensionNames = extensions.data();
-    
+    if (ray_tracing_supported_) {
+        create_info.pNext = &features2;
+        create_info.pEnabledFeatures = nullptr; // mutually exclusive with Features2
+    } else {
+        create_info.pEnabledFeatures = &device_features;
+    }
+
     vkCreateDevice(physical_device, &create_info, nullptr, &device);
-    
+
+    // Resolve KHR ray-tracing function pointers if RT was enabled. A
+    // resolve failure here means the driver advertised the extensions but
+    // didn't actually export the entry points — we treat that as a fatal
+    // RT setup failure and fall back to raster.
+    if (ray_tracing_supported_) {
+        rt_functions_ = std::make_unique<VulkanRtFunctions>();
+        if (!rt_functions_->load(device)) {
+            GWS_LOG_INFO("RT function-pointer resolution failed — disabling RT");
+            rt_functions_.reset();
+            ray_tracing_supported_ = false;
+        }
+    }
+
     // Get queues
     vkGetDeviceQueue(device, graphics_queue_family, 0, &graphics_queue);
     vkGetDeviceQueue(device, present_queue_family, 0, &present_queue);

@@ -1,0 +1,52 @@
+#version 450
+// Equirectangular → cubemap conversion. Dispatched once per cubemap pixel,
+// one workgroup per 8x8 face tile. The push constant carries the target
+// face index (0..5), and the cubemap is bound as a storage image array
+// (writeonly) so we can write each face by selecting the layer.
+//
+// Face axis convention matches Vulkan's cubemap layer order:
+//   0: +X   1: -X   2: +Y   3: -Y   4: +Z   5: -Z
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D src; // equirectangular source
+layout(set = 0, binding = 1, rgba16f) uniform writeonly imageCube dst;
+
+layout(push_constant) uniform PC {
+    ivec2 face_size;
+    int   face_index;
+} pc;
+
+const float PI = 3.14159265358979323846;
+
+vec3 face_direction(ivec2 px, int face) {
+    // Normalised face coords in [-1, +1]; +0.5 to sample texel centres.
+    vec2 uv = ((vec2(px) + 0.5) / vec2(pc.face_size)) * 2.0 - 1.0;
+    if (face == 0) return normalize(vec3( 1.0, -uv.y, -uv.x)); // +X
+    if (face == 1) return normalize(vec3(-1.0, -uv.y,  uv.x)); // -X
+    if (face == 2) return normalize(vec3( uv.x,  1.0,  uv.y)); // +Y
+    if (face == 3) return normalize(vec3( uv.x, -1.0, -uv.y)); // -Y
+    if (face == 4) return normalize(vec3( uv.x, -uv.y,  1.0)); // +Z
+    return                 normalize(vec3(-uv.x, -uv.y, -1.0)); // -Z
+}
+
+vec2 dir_to_equirect_uv(vec3 d) {
+    // Atlas: u from atan2(z, x), v from acos(y).
+    float u = atan(d.z, d.x) / (2.0 * PI) + 0.5;
+    float v = acos(clamp(d.y, -1.0, 1.0)) / PI;
+    return vec2(u, v);
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.face_size.x || px.y >= pc.face_size.y) return;
+
+    vec3 dir = face_direction(px, pc.face_index);
+    vec2 uv = dir_to_equirect_uv(dir);
+    vec4 col = texture(src, uv);
+
+    // imageCube stores one layer per face; gl_GlobalInvocationID.z + face
+    // would let us run all 6 faces in one dispatch but the cleaner pattern
+    // is one dispatch per face with the push-constant face_index.
+    imageStore(dst, ivec3(px, pc.face_index), col);
+}

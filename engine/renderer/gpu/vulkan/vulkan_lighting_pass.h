@@ -97,7 +97,8 @@ public:
     uint32_t add_directional_light(const glm::vec3& direction,
                                    const glm::vec3& color,
                                    float intensity,
-                                   bool casts_shadow = true);
+                                   bool casts_shadow = true,
+                                   const glm::mat4& shadow_view_proj = glm::mat4(1.0f));
 
     /// Convenience: add an omnidirectional point light with smooth-falloff
     /// quadratic attenuation.
@@ -183,8 +184,60 @@ public:
     /// descriptor-set update; pass VK_NULL_HANDLE to fall back to the dummy.
     void set_point_shadow_map(VkImageView view, VkSampler sampler);
 
+    /// Bind the three IBL textures baked by VulkanEnvironmentMap::bake_ibl.
+    /// Pass any null to clear; when cleared, the shader's `iblPrefilterMips`
+    /// push-constant is forced to 0 and the IBL term doesn't contribute.
+    /// `prefilter_mips` is the last valid mip level (max LOD for roughness).
+    void set_ibl_textures(VkImageView irradiance_view, VkSampler irradiance_sampler,
+                          VkImageView prefilter_view,  VkSampler prefilter_sampler,
+                          VkImageView brdf_lut_view,   VkSampler brdf_lut_sampler,
+                          uint32_t prefilter_mips);
+
+    /// IBL contribution scale [0, 1]. 0 = ignore IBL (use legacy ambient).
+    /// 1 = use only the split-sum IBL term as ambient. Default 1.
+    void set_ibl_intensity(float intensity) { ibl_intensity_ = intensity; }
+
+    /// Toggle the hardware ray-tracing shadow path. When on AND `set_tlas`
+    /// has bound a non-null acceleration structure, the lighting shader's
+    /// `directionalShadow` switches from PCF-sampled shadow maps to an
+    /// inline `rayQueryEXT` against the TLAS — no shadow-map aliasing,
+    /// no acne, no swimming as the camera moves.
+    void set_rt_enabled(bool enabled) { rt_enabled_ = enabled; }
+    bool is_rt_enabled() const { return rt_enabled_; }
+
+    /// Toggle ray-traced ambient occlusion. When on (and RT is active),
+    /// the shader replaces the screen-space SSAO texture sample with N
+    /// hemisphere rays against the TLAS — sees real off-screen geometry,
+    /// so sealed rooms / caves get genuinely dark. Costs more than SSAO.
+    void set_rt_ao_enabled(bool enabled) { rt_ao_enabled_ = enabled; }
+    bool is_rt_ao_enabled() const { return rt_ao_enabled_; }
+
+    /// Bind the scene TLAS at descriptor binding 13. Pass VK_NULL_HANDLE
+    /// to clear (which also forces the shader's RT branch off via the
+    /// push-constant flag). Updates the descriptor set immediately.
+    void set_tlas(VkAccelerationStructureKHR tlas);
+
+    /// Bind the environment cubemap (typically the base map owned by
+    /// VulkanEnvironmentMap). Sampled by the lighting shader's sky branch
+    /// for pixels where the G-Buffer wrote no geometry. Pass nullptr to
+    /// disable — the sky branch then renders solid black.
+    void set_env_cubemap(VkImageView view, VkSampler sampler);
+
+    /// Bind the SSAO occlusion texture written by VulkanSsaoPass.
+    /// R8_UNORM, sampled per-pixel and multiplied into the ambient term.
+    /// Pass VK_NULL_HANDLE for either argument to fall back to the dummy
+    /// (white) view — the shader multiply then becomes a no-op.
+    void set_ssao_texture(VkImageView view, VkSampler sampler);
+
     /// Set the camera world-space position used for view-direction reconstruction.
     void set_camera_position(const glm::vec3& position) { camera_position_ = position; }
+
+    /// Set the camera's view + projection so the sky branch can
+    /// reconstruct world-space view rays per pixel.
+    void set_view_projection(const glm::mat4& view, const glm::mat4& proj) {
+        view_matrix_ = view;
+        proj_matrix_ = proj;
+    }
 
     /// HDR output of this pass (R16G16B16A16_SFLOAT, in SHADER_READ_ONLY_OPTIMAL
     /// after `end_pass`). Downstream passes (post-processing) sample this.
@@ -270,6 +323,11 @@ private:
     VkImage      dummy_shadow_cube_image_      = VK_NULL_HANDLE;
     VkImageView  dummy_shadow_cube_view_       = VK_NULL_HANDLE;
     VkDeviceMemory dummy_shadow_cube_mem_      = VK_NULL_HANDLE;
+    // 1x1 R8_UNORM image cleared to 1.0 — SSAO sampler fallback so the
+    // shader's `ambient *= ssao` is a no-op when SSAO isn't bound.
+    VkImage        dummy_ssao_image_  = VK_NULL_HANDLE;
+    VkImageView    dummy_ssao_view_   = VK_NULL_HANDLE;
+    VkDeviceMemory dummy_ssao_mem_    = VK_NULL_HANDLE;
 
     // Camera position pushed to the shader each frame for view-direction
     // computation. Set via `set_camera_position`; defaults to origin.
@@ -283,6 +341,40 @@ private:
     VkSampler directional_shadow_sampler_ = VK_NULL_HANDLE;
     VkImageView point_shadow_view_ = VK_NULL_HANDLE;
     VkSampler point_shadow_sampler_ = VK_NULL_HANDLE;
+
+    // IBL descriptors (owned by VulkanEnvironmentMap, not destroyed here).
+    VkImageView ibl_irradiance_view_   = VK_NULL_HANDLE;
+    VkSampler   ibl_irradiance_sampler_ = VK_NULL_HANDLE;
+    VkImageView ibl_prefilter_view_    = VK_NULL_HANDLE;
+    VkSampler   ibl_prefilter_sampler_ = VK_NULL_HANDLE;
+    VkImageView ibl_brdf_lut_view_     = VK_NULL_HANDLE;
+    VkSampler   ibl_brdf_lut_sampler_  = VK_NULL_HANDLE;
+    uint32_t    ibl_prefilter_mips_    = 0;
+    // RT toggle — Phase 1 scaffold. Phase 3 reads this and switches the
+    // shadow path; Phase 4 reads it to skip SSAO sampling in favour of an
+    // RT AO ray query. Always false unless the device supports RT AND
+    // the caller flips this on.
+    bool                        rt_enabled_    = false;
+    bool                        rt_ao_enabled_ = false;
+    VkAccelerationStructureKHR  tlas_          = VK_NULL_HANDLE;
+    // 0.4 default: leaves room for direct lights to dominate well-lit
+    // areas (so a placed sun reads as the primary illuminant) while
+    // limiting how aggressively the sky bleeds into enclosed spaces.
+    // Open outdoor scenes can push this up to ~0.8 from the inspector;
+    // for true PBR-correct lighting on a clear outdoor scene, 1.0.
+    float       ibl_intensity_         = 0.4f;
+
+    // Environment cubemap (owned by VulkanEnvironmentMap).
+    VkImageView env_cubemap_view_    = VK_NULL_HANDLE;
+    VkSampler   env_cubemap_sampler_ = VK_NULL_HANDLE;
+
+    // SSAO occlusion texture (owned by VulkanSsaoPass).
+    VkImageView ssao_view_    = VK_NULL_HANDLE;
+    VkSampler   ssao_sampler_ = VK_NULL_HANDLE;
+
+    // For the sky branch in the shader — view + projection of the camera.
+    glm::mat4   view_matrix_ = glm::mat4(1.0f);
+    glm::mat4   proj_matrix_ = glm::mat4(1.0f);
 
     // Helper functions
     void create_light_buffer();

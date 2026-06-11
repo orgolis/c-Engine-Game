@@ -518,7 +518,7 @@ inline void build_draw_items(
         gws::renderer::gpu::Material* mat = mat_cache.get_or_create(
             ent->GetId(), col,
             mr->GetMetallic(), mr->GetRoughness(),
-            mr->GetOcclusion(), mr->GetEmissive(),
+            mr->GetOcclusion(), mr->GetEmissiveLinear(),
             alpha_cutoff,
             device, mat_layout, mat_pool);
         if (!mat) continue;

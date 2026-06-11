@@ -1,0 +1,63 @@
+#version 450
+// High Definition Ambient Occlusion (AMD-style). Gathers opposing sample
+// PAIRS around the pixel in a ring and detects "valleys": when both members
+// of a pair sit above the surface tangent plane (i.e. the centre is in a
+// concavity), that pair contributes occlusion. Pair-based rejection makes
+// it robust to flat surfaces seen at grazing angles.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D positionTex;
+layout(set = 0, binding = 1) uniform sampler2D normalTex;
+layout(set = 0, binding = 2) uniform sampler2D depthTex;
+layout(set = 0, binding = 3, r8) uniform writeonly image2D dstOcclusion;
+
+layout(push_constant) uniform PC {
+    mat4  view_proj;
+    ivec2 output_size;
+    float radius;
+    float bias;
+    float intensity;
+    float _pad;
+} pc;
+
+// 8 ring directions; each is used with its negation to form a pair.
+const vec2 kDir[8] = vec2[8](
+    vec2( 1.0,  0.0), vec2( 0.707,  0.707),
+    vec2( 0.0,  1.0), vec2(-0.707,  0.707),
+    vec2( 0.92,  0.38), vec2( 0.38,  0.92),
+    vec2(-0.38,  0.92), vec2(-0.92,  0.38)
+);
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.output_size.x || px.y >= pc.output_size.y) return;
+    vec2 uv = (vec2(px) + 0.5) / vec2(pc.output_size);
+
+    vec3 N = texture(normalTex, uv).xyz;
+    if (dot(N, N) < 0.01) { imageStore(dstOcclusion, px, vec4(1.0)); return; }
+    N = normalize(N);
+    vec3 P = texture(positionTex, uv).xyz;
+
+    vec2 texel  = 1.0 / vec2(pc.output_size);
+    float ringPx = 10.0; // gather ring radius in pixels
+
+    float occlusion = 0.0;
+    for (int i = 0; i < 8; ++i) {
+        vec2 off = kDir[i] * texel * ringPx;
+        vec3 pa = texture(positionTex, uv + off).xyz;
+        vec3 pb = texture(positionTex, uv - off).xyz;
+        // Signed height of each neighbour above the centre's tangent plane.
+        float ha = dot(pa - P, N);
+        float hb = dot(pb - P, N);
+        float da = length(pa - P);
+        float db = length(pb - P);
+        // Valley: BOTH neighbours rise above the plane and are within range.
+        if (ha > pc.bias && hb > pc.bias && da < pc.radius && db < pc.radius) {
+            float falloff = (1.0 - da / pc.radius) * (1.0 - db / pc.radius);
+            occlusion += min(ha, hb) * falloff;
+        }
+    }
+    occlusion = (occlusion / 8.0) * pc.intensity * 4.0;
+    imageStore(dstOcclusion, px, vec4(1.0 - clamp(occlusion, 0.0, 1.0)));
+}

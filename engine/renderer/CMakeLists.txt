@@ -38,6 +38,12 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_transparent_pass.h
     gpu/vulkan/vulkan_occlusion_culler.h
     gpu/vulkan/vulkan_hzb_culler.h
+    gpu/vulkan/vulkan_environment_map.h
+    gpu/vulkan/vulkan_ssao_pass.h
+    gpu/vulkan/vulkan_ssr_pass.h
+    gpu/vulkan/vulkan_rt_functions.h
+    gpu/vulkan/vulkan_rt_scene.h
+    gpu/vulkan/vulkan_vxao_pass.h
     gpu/vulkan/vulkan_shader_registry.h
     gpu/vulkan/vulkan_render_graph.h
     gpu/vulkan/vulkan_texture.h
@@ -85,6 +91,12 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_transparent_pass.cpp
     gpu/vulkan/vulkan_occlusion_culler.cpp
     gpu/vulkan/vulkan_hzb_culler.cpp
+    gpu/vulkan/vulkan_environment_map.cpp
+    gpu/vulkan/vulkan_ssao_pass.cpp
+    gpu/vulkan/vulkan_ssr_pass.cpp
+    gpu/vulkan/vulkan_rt_functions.cpp
+    gpu/vulkan/vulkan_rt_scene.cpp
+    gpu/vulkan/vulkan_vxao_pass.cpp
     gpu/vulkan/vulkan_shader_registry.cpp
     gpu/vulkan/vulkan_render_graph.cpp
     gpu/vulkan/vulkan_texture.cpp

@@ -288,6 +288,18 @@ public:
     /// Find a memory type matching the requested property flags. Throws on failure.
     uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties) const;
 
+    /// True when the device supports hardware ray tracing via VK_KHR_ray_query
+    /// + VK_KHR_acceleration_structure (and the required dependencies). When
+    /// false, RT features will not be enabled even if the engine config
+    /// requests them — call sites should fall back to the raster path.
+    bool has_ray_tracing() const { return ray_tracing_supported_; }
+
+    /// Resolved RT extension function pointers. Only valid when
+    /// `has_ray_tracing()` returns true — call sites must check first.
+    const struct VulkanRtFunctions* get_rt_functions() const {
+        return ray_tracing_supported_ ? rt_functions_.get() : nullptr;
+    }
+
     /// Attach an externally-created surface (typically from `glfwCreateWindowSurface`).
     /// The device takes ownership for shutdown — the caller must NOT destroy it.
     /// Returns false if attached after a previous surface or if the graphics queue
@@ -355,6 +367,15 @@ private:
     // Configuration
     RenderConfig config;
     bool debug_enabled = false;
+
+    // Set to true at device-creation time if all four RT KHR extensions
+    // were available and the rayQuery + accelerationStructure features
+    // were enabled on the logical device. See `has_ray_tracing()`.
+    bool ray_tracing_supported_ = false;
+
+    // Resolved RT function pointers — populated after logical device
+    // creation when ray_tracing_supported_ is true.
+    std::unique_ptr<struct VulkanRtFunctions> rt_functions_;
 
     // Resource Management
     std::unordered_map<uint64_t, std::unique_ptr<VulkanBuffer>> buffers;

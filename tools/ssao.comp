@@ -1,0 +1,130 @@
+#version 450
+// Screen-space ambient occlusion. Per pixel:
+//   1. Read G-Buffer world position + world normal.
+//   2. Sample N points in a world-space hemisphere oriented along the
+//      surface normal (samples below the surface are flipped up).
+//   3. Project each sample to screen and compare its expected depth to
+//      the depth buffer. Samples whose expected depth is hidden behind
+//      the actual depth buffer count as occluders.
+//   4. Output 0..1 occlusion (1 = fully visible, 0 = fully occluded).
+//
+// 16 samples + a per-pixel hash rotation gives a reasonable noise pattern
+// without a separate noise texture. If the result looks too gritty, the
+// follow-up session adds a bilateral blur pass downstream.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D positionTex; // G-Buffer world pos
+layout(set = 0, binding = 1) uniform sampler2D normalTex;   // G-Buffer world normal (xyz)
+layout(set = 0, binding = 2) uniform sampler2D depthTex;    // G-Buffer depth
+layout(set = 0, binding = 3, r8) uniform writeonly image2D dstOcclusion;
+
+layout(push_constant) uniform PC {
+    mat4  view_proj;     // for projecting samples to screen
+    ivec2 output_size;
+    float radius;        // world-space hemisphere radius
+    float bias;          // depth bias to suppress self-occlusion (in NDC z)
+    float intensity;     // scales final occlusion contrast
+    float _pad;
+} pc;
+
+// 16 unit-length samples on the upper hemisphere, weighted to bias
+// toward the surface (Crytek-style). Pre-generated offline so the runtime
+// shader doesn't need a noise texture.
+const vec3 kSamples[16] = vec3[16](
+    vec3( 0.5381,  0.1856,  0.4319), vec3( 0.1379,  0.2486,  0.4430),
+    vec3( 0.3371,  0.5679, -0.0057), vec3(-0.6999, -0.0451, -0.0019),
+    vec3( 0.0689, -0.1598, -0.8547), vec3( 0.0560,  0.0069, -0.1843),
+    vec3(-0.0146,  0.1402,  0.0762), vec3( 0.0100, -0.1924, -0.0344),
+    vec3(-0.3577, -0.5301, -0.4358), vec3(-0.3169,  0.1063,  0.0158),
+    vec3( 0.0103, -0.5869,  0.0046), vec3(-0.0897, -0.4940,  0.3287),
+    vec3( 0.7119, -0.0154, -0.0918), vec3(-0.0533,  0.0596, -0.5411),
+    vec3( 0.0352, -0.0631,  0.5460), vec3(-0.4776,  0.2847, -0.0271)
+);
+
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.output_size.x || px.y >= pc.output_size.y) return;
+
+    vec2 uv = (vec2(px) + 0.5) / vec2(pc.output_size);
+
+    // Skip pixels that don't have geometry — normal magnitude near zero
+    // means the G-Buffer was cleared at that pixel (sky, etc.).
+    vec3 N = texture(normalTex, uv).xyz;
+    if (dot(N, N) < 0.01) {
+        imageStore(dstOcclusion, px, vec4(1.0));
+        return;
+    }
+    N = normalize(N);
+
+    vec3 P = texture(positionTex, uv).xyz;
+
+    // Per-pixel random rotation around the surface normal — Rodrigues
+    // formula applied to each sample via a 2D rotation in the plane
+    // perpendicular to N. Cheap; breaks up the banding from a fixed
+    // sample set.
+    float rand_angle = hash12(vec2(px)) * 6.2831853;
+    float cs = cos(rand_angle);
+    float sn = sin(rand_angle);
+
+    // Two-radius hemisphere: first 8 samples at `pc.radius` capture small
+    // contact / crevice darkening. Remaining 8 at `pc.radius * 10` capture
+    // large-scale occlusion (cave ceilings, sealed rooms) which lets the
+    // lighting shader gate the IBL term properly indoors. Visibility from
+    // each group is multiplied together so a fragment in both a crevice
+    // AND inside a cave receives the combined darkening.
+    const float kFarRadiusMul = 10.0;
+
+    float occ_near = 0.0; int tested_near = 0;
+    float occ_far  = 0.0; int tested_far  = 0;
+    for (int i = 0; i < 16; ++i) {
+        vec3 s = kSamples[i];
+        if (dot(s, N) < 0.0) s = -s;
+        vec3 sr = vec3(s.x * cs - s.y * sn,
+                       s.x * sn + s.y * cs,
+                       s.z);
+        bool is_far = (i >= 8);
+        float radius = is_far ? pc.radius * kFarRadiusMul : pc.radius;
+
+        vec3 sample_pos = P + sr * radius;
+        vec4 clip = pc.view_proj * vec4(sample_pos, 1.0);
+        if (clip.w <= 0.0) continue;
+        vec3 ndc = clip.xyz / clip.w;
+        if (any(greaterThan(abs(ndc.xy), vec2(1.0))) ||
+            ndc.z < 0.0 || ndc.z > 1.0) continue;
+
+        vec2  sample_uv    = ndc.xy * 0.5 + 0.5;
+        float actual_depth = texture(depthTex, sample_uv).r;
+        float expected     = ndc.z;
+        // Per-group bias: the far group needs a larger tolerance because
+        // a small NDC-z delta at distant samples can correspond to many
+        // world units, and we don't want spurious occlusion from depth
+        // discontinuities at the far horizon.
+        float bias = is_far ? pc.bias * 10.0 : pc.bias;
+        if (actual_depth + bias < expected) {
+            if (is_far) occ_far  += 1.0;
+            else        occ_near += 1.0;
+        }
+        if (is_far) tested_far  += 1;
+        else        tested_near += 1;
+    }
+
+    float vis_near = (tested_near > 0)
+                       ? 1.0 - (occ_near / float(tested_near)) * pc.intensity
+                       : 1.0;
+    float vis_far  = (tested_far > 0)
+                       ? 1.0 - (occ_far  / float(tested_far))  * pc.intensity
+                       : 1.0;
+    vis_near = clamp(vis_near, 0.0, 1.0);
+    vis_far  = clamp(vis_far,  0.0, 1.0);
+    // Combine: in caves both visibilities are low, multiplying gives
+    // strong darkening. Outdoors both are ~1.0, so the product stays ~1.0.
+    float visibility = vis_near * vis_far;
+    imageStore(dstOcclusion, px, vec4(visibility, 0.0, 0.0, 0.0));
+}

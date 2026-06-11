@@ -65,7 +65,7 @@ struct DrawItem {
 enum class RenderGraphStage : uint32_t {
     Shadow = 0,        ///< Render shadow maps for shadow-casting lights
     Geometry,          ///< Geometry pass writes to the G-Buffer
-    Lighting,          ///< Full-screen lighting reads G-Buffer + shadow maps
+    Lighting,          ///< Full-screen lighting reads G-Buffer + shadow maps; sky inline at empty pixels
     Transparent,       ///< Forward alpha-blended pass (reads lit HDR + depth)
     PostProcess,       ///< Post-processing chain (bloom / tonemap / TAA)
     StageCount

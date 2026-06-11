@@ -14,6 +14,11 @@
 #include "vulkan/vulkan_shadow_map.h"
 #include "vulkan/vulkan_post_processing.h"
 #include "vulkan/vulkan_transparent_pass.h"
+#include "vulkan/vulkan_environment_map.h"
+#include "vulkan/vulkan_ssao_pass.h"
+#include "vulkan/vulkan_ssr_pass.h"
+#include "vulkan/vulkan_rt_scene.h"
+#include "vulkan/vulkan_vxao_pass.h"
 #include "vulkan/vulkan_occlusion_culler.h"
 #include "vulkan/vulkan_hzb_culler.h"
 #include "vulkan/vulkan_render_graph.h"
@@ -1575,6 +1580,14 @@ void ShowInspector(EditorState& editor_state) {
                     mr->SetEmissive(emissive);
                     editor_state.editor_scene->MarkModified();
                 }
+                // Emissive intensity — HDR multiplier. Bloom threshold is
+                // ~1.0, so push this above ~1.5 to make the surface glow.
+                float emissive_intensity = mr->GetEmissiveIntensity();
+                if (ImGui::SliderFloat("Emissive glow##mr", &emissive_intensity,
+                                       0.0f, 10.0f)) {
+                    mr->SetEmissiveIntensity(emissive_intensity);
+                    editor_state.editor_scene->MarkModified();
+                }
 
                 // Alpha mode — radio buttons (rather than a Combo) so all
                 // three choices are always visible, can't be clipped by a
@@ -2557,18 +2570,30 @@ int main() {
         l_cfg.ambient_color   = glm::vec3(0.3f);
         l_cfg.global_ambient  = 1.0f;
         auto lighting = VulkanLightingPass::create(&device, l_cfg, g_buffer.get());
-        lighting->add_directional_light(glm::vec3(0.3f, -1.0f, 0.2f),
-                                        glm::vec3(1.0f, 0.95f, 0.85f),
-                                        1.5f, /*shadow=*/false);
+        // Scene LightComponents are synced into the lighting pass each
+        // frame in the render loop below. If the scene contains no
+        // Directional LightComponent, that sync injects a default sun so
+        // an empty scene isn't pitch black.
 
         ShadowMapConfig s_cfg{};
-        s_cfg.width = s_cfg.height = 512;
+        // 2048² is the sweet spot for a single cascade on a desktop GPU:
+        // crisp without dominating frame time. Drop to 1024 on lower-end
+        // hardware if needed.
+        s_cfg.width = s_cfg.height = 2048;
         s_cfg.cascade_count = 1;
         // Bind the material descriptor set in the shadow caster pipeline so
         // Cutout/Blend objects can do alpha-tested shadow casting (sampling
         // the albedo + reading the per-material cutoff from emissive.a).
         s_cfg.material_set_layout = mat_layout;
         auto shadow_map = VulkanShadowMap::create(&device, s_cfg);
+        // Bind the shadow map view + sampler to the deferred lighting pass.
+        // Static binding — the shadow_map's image identity doesn't change
+        // across frames; only the depth contents do (rewritten each frame
+        // by the Shadow stage).
+        if (shadow_map && lighting) {
+            lighting->set_directional_shadow_map(shadow_map->get_shadow_view(),
+                                                  shadow_map->get_shadow_sampler());
+        }
 
         PostProcessingConfig pp_cfg{};
         pp_cfg.width  = kW;
@@ -2577,6 +2602,10 @@ int main() {
         pp_cfg.taa.enabled          = false;
         pp_cfg.tone_mapping.enabled = true;
         auto post_processing = VulkanPostProcessing::create(&device, pp_cfg);
+        // Give auto-exposure the G-Buffer depth so it can exclude sky
+        // pixels from metering — must be set before set_input_image (which
+        // lazily initialises auto-exposure).
+        post_processing->set_scene_depth(g_buffer->get_depth_view());
         post_processing->set_input_image(lighting->get_output_view());
 
         // Forward transparent pass — runs after lighting, reuses the HDR colour
@@ -2591,6 +2620,106 @@ int main() {
             VK_FORMAT_D32_SFLOAT,
             kW, kH,
             mat_layout);
+        // Environment cubemap. Looks for an HDR equirectangular file under
+        // assets/skies/*.hdr; falls back to a procedural gradient cubemap
+        // when no asset is present. Same data path either way — the sky
+        // pass and (future) IBL precompute sample this cubemap.
+        std::unique_ptr<VulkanEnvironmentMap> env_map;
+        {
+            namespace fs = std::filesystem;
+            const fs::path skies_dir = "assets/skies";
+            fs::path hdr_path;
+            std::error_code ec;
+            if (fs::exists(skies_dir, ec) && fs::is_directory(skies_dir, ec)) {
+                for (const auto& entry : fs::directory_iterator(skies_dir, ec)) {
+                    const auto ext = entry.path().extension().string();
+                    if (ext == ".hdr" || ext == ".HDR") {
+                        hdr_path = entry.path();
+                        break;
+                    }
+                }
+            }
+            if (!hdr_path.empty()) {
+                env_map = VulkanEnvironmentMap::create_from_hdr(
+                    &device, hdr_path.string(), 512);
+            }
+            if (!env_map) {
+                env_map = VulkanEnvironmentMap::create_procedural(&device, 256);
+            }
+            if (env_map) {
+                // One-shot bake of irradiance + prefiltered specular +
+                // BRDF LUT. The textures live for the editor session and
+                // are sampled by the deferred lighting shader (and, later,
+                // the forward transparent shader).
+                env_map->bake_ibl();
+            }
+        }
+
+        // SSAO compute pass. Reads the G-Buffer (position, normal, depth)
+        // and writes a per-pixel occlusion image consumed by the lighting
+        // pass. Dispatched between Geometry and Lighting in the frame
+        // loop below.
+        auto ssao = VulkanSsaoPass::create(&device, g_buffer.get(), kW, kH,
+                                           /*use_rt=*/device.has_ray_tracing());
+        if (ssao) {
+            lighting->set_ssao_texture(ssao->get_output_view(),
+                                       ssao->get_output_sampler());
+        }
+
+        // Voxel-cone-traced AO — the world-space, non-RT member of the AO
+        // suite. Built unconditionally so the technique selector can switch
+        // to it; only runs when VXAO is the active technique.
+        auto vxao = VulkanVxaoPass::create(&device, g_buffer.get(), kW, kH);
+        bool vxao_bound = false; // tracks which AO texture lighting samples
+
+        // SSR — runs after Lighting (needs lit HDR) and before Transparent
+        // (so transparent fragments composite over reflections). The env
+        // cubemap is sampled on a ray miss so SSR is the single source of
+        // specular reflection (object on-screen, sky elsewhere).
+        auto ssr = (env_map)
+            ? VulkanSsrPass::create(
+                  &device, g_buffer.get(),
+                  lighting->get_output_view(),
+                  VK_FORMAT_R16G16B16A16_SFLOAT,
+                  env_map->get_view(), env_map->get_sampler(),
+                  kW, kH,
+                  /*use_rt=*/device.has_ray_tracing())
+            : nullptr;
+
+        // Hand the IBL textures + env cubemap to the deferred lighting
+        // pass. Lighting now samples envCubemap directly at empty-depth
+        // pixels (the sky branch is folded into the lighting shader), so
+        // the separate sky pass is no longer used.
+        if (env_map) {
+            lighting->set_env_cubemap(env_map->get_view(), env_map->get_sampler());
+            if (env_map->ibl_ready()) {
+                lighting->set_ibl_textures(
+                    env_map->get_irradiance_view(),  env_map->get_sampler(),
+                    env_map->get_prefiltered_view(), env_map->get_sampler(),
+                    env_map->get_brdf_lut_view(),    env_map->get_brdf_lut_sampler(),
+                    env_map->get_prefilter_mips());
+            }
+        }
+
+        // Phase 1 RT scaffold: enable the toggle on the lighting pass only
+        // when the device actually supports the four KHR extensions and the
+        // rayQuery + accelerationStructure features. The shader path that
+        // reads this flag lands in Phase 3 (RT shadows). Until then the
+        // toggle is purely informational.
+        std::unique_ptr<VulkanRtScene> rt_scene;
+        if (device.has_ray_tracing()) {
+            lighting->set_rt_enabled(true);
+            lighting->set_rt_ao_enabled(true); // Phase 4: RT AO replaces SSAO
+            rt_scene = VulkanRtScene::create(&device);
+            spdlog::info("Ray tracing toggle ON (shadows + AO); RT scene {}",
+                         rt_scene ? "created" : "creation failed");
+        } else {
+            spdlog::info("Ray tracing not available on this GPU — raster path only");
+        }
+
+        // (Sky is rendered inline inside the deferred lighting pass — see
+        // lighting_pass.frag's sky branch. No separate sky stage.)
+
         if (transparent) {
             // Wire the transparent pass to the same dynamic light SSBO and
             // shadow textures the deferred lighting pass uses, so blend-mode
@@ -2604,6 +2733,16 @@ int main() {
                 lighting->get_effective_directional_shadow_sampler(),
                 lighting->get_effective_point_shadow_view(),
                 lighting->get_effective_point_shadow_sampler());
+
+            // Same IBL data the deferred lighting samples — keeps the
+            // blend-mode and opaque ambient terms consistent.
+            if (env_map && env_map->ibl_ready()) {
+                transparent->set_ibl_textures(
+                    env_map->get_irradiance_view(),  env_map->get_sampler(),
+                    env_map->get_prefiltered_view(), env_map->get_sampler(),
+                    env_map->get_brdf_lut_view(),    env_map->get_brdf_lut_sampler(),
+                    env_map->get_prefilter_mips());
+            }
         }
 
         if (!g_buffer || !lighting || !shadow_map || !post_processing || !transparent) {
@@ -2879,6 +3018,12 @@ int main() {
             if (delta_time > kMaxFrameDt) delta_time = kMaxFrameDt;
             if (delta_time < 0.0f) delta_time = 0.0f;
 
+            // Feed dt to the post-processing chain so auto-exposure can
+            // do frame-rate-independent smoothing.
+            if (post_processing) {
+                post_processing->set_delta_time(delta_time);
+            }
+
             // Key input
             auto key = [&](int k) { return glfwGetKey(glfw_window, k) == GLFW_PRESS; };
 
@@ -3093,6 +3238,133 @@ int main() {
                 editor_state.asset_import_dialog->RenderDialog();
             ShowPreferences(editor_state);
 
+            // Post-processing controls — inline here because post_processing
+            // lives in main()'s scope (the free Show* helpers only get
+            // EditorState). Toggles + live sliders for every effect.
+            if (post_processing) {
+                if (ImGui::Begin("Post-Processing")) {
+                    bool bloom = post_processing->is_effect_enabled(
+                        gws::renderer::gpu::PostProcessEffect::Bloom);
+                    if (ImGui::Checkbox("Bloom", &bloom))
+                        post_processing->set_effect_enabled(
+                            gws::renderer::gpu::PostProcessEffect::Bloom, bloom);
+
+                    bool fxaa = post_processing->is_fxaa_enabled();
+                    if (ImGui::Checkbox("FXAA (anti-aliasing)", &fxaa))
+                        post_processing->set_fxaa_enabled(fxaa);
+
+                    bool ae = post_processing->is_auto_exposure_enabled();
+                    if (ImGui::Checkbox("Auto-exposure", &ae))
+                        post_processing->set_auto_exposure_enabled(ae);
+
+                    // Ambient-occlusion technique selector.
+                    if (ssao) {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Ambient Occlusion");
+                        const char* ao_items[] = { "SSAO", "HBAO", "HDAO",
+                                                   "GTAO", "VXAO", "RT" };
+                        int cur = static_cast<int>(ssao->technique());
+                        if (ImGui::Combo("Technique##ao", &cur, ao_items, 6)) {
+                            auto newt = static_cast<gws::renderer::gpu::AoTechnique>(cur);
+                            ssao->set_technique(newt); // waits for device idle
+                            // Rebind which occlusion texture the lighting pass
+                            // samples: VXAO has its own output image, all the
+                            // others share the SSAO pass's blurred output.
+                            if (newt == gws::renderer::gpu::AoTechnique::VXAO && vxao)
+                                lighting->set_ssao_texture(vxao->get_output_view(),
+                                                           vxao->get_output_sampler());
+                            else
+                                lighting->set_ssao_texture(ssao->get_output_view(),
+                                                           ssao->get_output_sampler());
+                        }
+                        if (!ssao->rt_available())
+                            ImGui::TextDisabled("(RT unavailable on this GPU)");
+                    }
+
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("Color FX");
+
+                    bool chroma = post_processing->is_chromatic_enabled();
+                    if (ImGui::Checkbox("Chromatic aberration", &chroma))
+                        post_processing->set_chromatic(
+                            chroma, post_processing->chromatic_intensity_ref());
+                    if (chroma)
+                        ImGui::SliderFloat("  Chroma amount",
+                            &post_processing->chromatic_intensity_ref(), 0.0f, 0.05f, "%.4f");
+
+                    bool vig = post_processing->is_vignette_enabled();
+                    if (ImGui::Checkbox("Vignette", &vig))
+                        post_processing->set_vignette(
+                            vig, post_processing->vignette_intensity_ref(),
+                            post_processing->vignette_radius_ref());
+                    if (vig) {
+                        ImGui::SliderFloat("  Vignette strength",
+                            &post_processing->vignette_intensity_ref(), 0.0f, 1.0f);
+                        ImGui::SliderFloat("  Vignette radius",
+                            &post_processing->vignette_radius_ref(), 0.2f, 1.2f);
+                    }
+
+                    bool grain = post_processing->is_film_grain_enabled();
+                    if (ImGui::Checkbox("Film grain", &grain))
+                        post_processing->set_film_grain(
+                            grain, post_processing->film_grain_intensity_ref());
+                    if (grain)
+                        ImGui::SliderFloat("  Grain amount",
+                            &post_processing->film_grain_intensity_ref(), 0.0f, 0.3f);
+
+                    bool sharpen = post_processing->is_sharpen_enabled();
+                    if (ImGui::Checkbox("Sharpen", &sharpen))
+                        post_processing->set_sharpen(sharpen);
+                    if (sharpen)
+                        ImGui::SliderFloat("  Sharpen amount",
+                            &post_processing->sharpen_intensity_ref(), 0.0f, 2.0f);
+
+                    bool lens = post_processing->is_lens_distortion_enabled();
+                    if (ImGui::Checkbox("Lens distortion", &lens))
+                        post_processing->set_lens_distortion(lens);
+                    if (lens)
+                        ImGui::SliderFloat("  Distort (barrel/pincushion)",
+                            &post_processing->lens_distortion_ref(), -0.5f, 0.5f);
+
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("Color Grade");
+                    bool grade = post_processing->is_color_grade_enabled();
+                    if (ImGui::Checkbox("Enable grading", &grade))
+                        post_processing->set_color_grade(grade);
+                    if (grade) {
+                        ImGui::SliderFloat("  Temperature", &post_processing->cg_temperature_ref(), -1.0f, 1.0f);
+                        ImGui::SliderFloat("  Tint",        &post_processing->cg_tint_ref(),        -1.0f, 1.0f);
+                        ImGui::SliderFloat("  Saturation",  &post_processing->cg_saturation_ref(),   0.0f, 2.0f);
+                        ImGui::SliderFloat("  Contrast",    &post_processing->cg_contrast_ref(),     0.5f, 2.0f);
+                        ImGui::SliderFloat("  Brightness",  &post_processing->cg_brightness_ref(),   0.5f, 2.0f);
+                    }
+
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("Stylized");
+                    bool poster = post_processing->is_posterize_enabled();
+                    if (ImGui::Checkbox("Posterize", &poster))
+                        post_processing->set_posterize(poster);
+                    if (poster)
+                        ImGui::SliderFloat("  Levels",
+                            &post_processing->posterize_levels_ref(), 2.0f, 32.0f);
+
+                    bool pix = post_processing->is_pixelate_enabled();
+                    if (ImGui::Checkbox("Pixelate", &pix))
+                        post_processing->set_pixelate(pix);
+                    if (pix)
+                        ImGui::SliderFloat("  Block size (px)",
+                            &post_processing->pixelate_size_ref(), 1.0f, 32.0f);
+
+                    bool scan = post_processing->is_scanlines_enabled();
+                    if (ImGui::Checkbox("Scanlines (CRT)", &scan))
+                        post_processing->set_scanlines(scan);
+                    if (scan)
+                        ImGui::SliderFloat("  Scanline strength",
+                            &post_processing->scanline_intensity_ref(), 0.0f, 1.0f);
+                }
+                ImGui::End();
+            }
+
             // ------------------------------------------------------------
             // GPU frame
             // ------------------------------------------------------------
@@ -3186,6 +3458,114 @@ int main() {
             
             cam.proj[1][1] *= -1.0f;  // GL → Vulkan Y flip
             graph->set_camera(cam);
+            // The lighting pass now needs view+proj so the in-shader sky
+            // branch can reconstruct world-space view rays at empty pixels.
+            lighting->set_view_projection(cam.view, cam.proj);
+            lighting->set_camera_position(cam.position);
+
+            // Sync scene LightComponents into the lighting pass. Clear the
+            // existing list and rebuild it from whatever LightComponents
+            // are currently attached to active entities. If no Directional
+            // LightComponent is present, inject a default sun so empty
+            // scenes aren't pitch black.
+            //
+            // For the (first) shadow-casting directional light we also
+            // build a light-space view-projection matrix so:
+            //   1) the Shadow stage renders casters from the sun's POV,
+            //   2) the lighting shader can project worldPos to light space
+            //      and PCF-sample the shadow map.
+            // Scene-bounds approximation: an ortho box of ±kShadowExtent
+            // around the world origin, depth [0, kShadowFar]. Good enough
+            // for now; cascades / per-frame fitting come later.
+            glm::mat4 shadow_view_proj{1.0f};
+            glm::vec3 shadow_light_dir{0.3f, -1.0f, 0.2f};
+            bool      shadow_active = false;
+            // Primary directional light captured for the RT reflection
+            // re-shade (sun direction + colour×intensity). Defaults match
+            // the fallback sun injected when the scene has no directional.
+            glm::vec3 sun_dir_for_rt{0.3f, -1.0f, 0.2f};
+            glm::vec3 sun_color_for_rt{1.0f, 0.95f, 0.85f};
+            sun_color_for_rt *= 1.5f;
+            {
+                // Camera-anchored ortho frustum. The shadow box follows
+                // the camera around so shadows exist where the player is
+                // looking, not just near the world origin. Anchor point
+                // is the camera position; eye is offset by -sun_dir
+                // along the depth axis.
+                constexpr float kShadowExtent = 30.0f;
+                constexpr float kShadowNear   = 0.1f;
+                constexpr float kShadowFar    = 150.0f;
+                const glm::vec3 anchor = cam.position;
+
+                lighting->clear_lights();
+                bool has_directional = false;
+                const auto& scene_entities = editor_scene.GetScene()->GetEntities();
+                for (const auto& entity : scene_entities) {
+                    if (!entity || !entity->IsActiveInHierarchy()) continue;
+                    auto lc = entity->GetComponent<schizo::scene::LightComponent>();
+                    if (!lc || !lc->IsEnabled()) continue;
+                    const glm::vec3 color = lc->GetColor();
+                    const float     intensity = lc->GetIntensity();
+                    const bool      shadow = lc->GetCastShadow();
+                    switch (lc->GetType()) {
+                        case schizo::scene::LightType::Directional: {
+                            const glm::vec3 dir = lc->GetDirection();
+                            // First directional drives the RT reflection sun.
+                            if (!has_directional) {
+                                sun_dir_for_rt   = dir;
+                                sun_color_for_rt = color * intensity;
+                            }
+                            glm::mat4 light_vp{1.0f};
+                            if (shadow && !shadow_active) {
+                                const glm::vec3 nd = glm::normalize(
+                                    glm::length(dir) > 0.0f ? dir : glm::vec3(0,-1,0));
+                                const glm::vec3 light_pos =
+                                    anchor - nd * (kShadowFar * 0.5f);
+                                const glm::vec3 up =
+                                    (std::abs(nd.y) > 0.99f)
+                                        ? glm::vec3(0.0f, 0.0f, 1.0f)
+                                        : glm::vec3(0.0f, 1.0f, 0.0f);
+                                const glm::mat4 light_view =
+                                    glm::lookAt(light_pos, anchor, up);
+                                const glm::mat4 light_proj =
+                                    glm::orthoZO(-kShadowExtent, kShadowExtent,
+                                                  -kShadowExtent, kShadowExtent,
+                                                  kShadowNear, kShadowFar);
+                                light_vp = light_proj * light_view;
+                                shadow_view_proj = light_vp;
+                                shadow_light_dir = nd;
+                                shadow_active = true;
+                            }
+                            lighting->add_directional_light(dir, color, intensity,
+                                                            shadow, light_vp);
+                            has_directional = true;
+                            break;
+                        }
+                        case schizo::scene::LightType::Point: {
+                            lighting->add_point_light(lc->GetPosition(), color, intensity,
+                                                      lc->GetRange(), shadow);
+                            break;
+                        }
+                        case schizo::scene::LightType::Spot: {
+                            const glm::vec2 angles_deg = lc->GetSpotAngles(); // (inner, outer)
+                            const float outer_cos = glm::cos(glm::radians(angles_deg.y));
+                            lighting->add_spot_light(lc->GetPosition(), lc->GetDirection(),
+                                                     color, intensity, lc->GetRange(),
+                                                     outer_cos, shadow);
+                            break;
+                        }
+                        default: break;
+                    }
+                }
+                if (!has_directional) {
+                    // Default sun — only injected when the scene has none.
+                    // Place a Directional LightComponent on an entity (with
+                    // GetCastShadow=true) to drive actual shadows.
+                    lighting->add_directional_light(glm::vec3(0.3f, -1.0f, 0.2f),
+                                                    glm::vec3(1.0f, 0.95f, 0.85f),
+                                                    1.5f, /*shadow=*/false);
+                }
+            }
 
             // Build per-frame draw list from the editor scene's entities.
             // Entities with a MeshRendererComponent become DrawItems; others
@@ -3263,19 +3643,94 @@ int main() {
             shadow_draws.insert(shadow_draws.end(), transparent_draws.begin(), transparent_draws.end());
 
             graph->begin_frame(cmd);
+
+            // RT scene update — build BLAS for any newly-seen meshes and
+            // rebuild the TLAS with this frame's draw list. Has to happen
+            // before any pass that wants to ray-query the TLAS, which
+            // (starting in Phase 3) will be the Lighting stage. Phase 2
+            // runs this for its own sake — verifies the AS builds work and
+            // produces a log line per frame.
+            if (rt_scene) {
+                // NOTE: meshes are owned by the persistent prim_cache /
+                // asset_cache (NOT the scene), so switching scenes does
+                // NOT invalidate the BLAS cache — the Mesh* keys stay
+                // alive. `ensure_blas` additionally validates each cached
+                // entry by source-VBO handle, so even a reused Mesh*
+                // address rebuilds correctly. We therefore do NOT clear
+                // the RT scene on scene switch (doing so previously left
+                // the lighting descriptor pointing at a destroyed TLAS,
+                // which hung the editor on scene load).
+                rt_scene->update(cmd, opaque_draws.data(), opaque_draws.size());
+                // Re-bind the TLAS handle. rebuild_tlas() always produces
+                // a valid handle (empty TLAS for empty scenes), so this is
+                // never null and the descriptor never dangles.
+                lighting->set_tlas(rt_scene->get_tlas_handle());
+                if (ssao && ssao->uses_rt())
+                    ssao->set_tlas(rt_scene->get_tlas_handle());
+                if (ssr && ssr->uses_rt()) {
+                    ssr->set_tlas(rt_scene->get_tlas_handle());
+                    ssr->set_instance_data_buffer(rt_scene->get_instance_data_buffer());
+                    // Feed the RT reflection re-shade the same sun + ambient
+                    // the deferred lighting uses, so reflected geometry is
+                    // lit consistently with what's directly visible.
+                    ssr->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                    ssr->set_ambient(l_cfg.ambient_color, l_cfg.global_ambient);
+                }
+                static int rt_log_throttle = 0;
+                if ((rt_log_throttle++ % 120) == 0) {
+                    spdlog::info("RT scene update: {} instances",
+                                 rt_scene->get_instance_count());
+                }
+            }
+
+            // Shadow stage: render casters from the directional light's
+            // POV using the matrix we just built in the scene sync. If no
+            // shadow-casting directional light exists we still run the
+            // stage so the shadow map clears, but with the camera matrix
+            // (acts as a no-op the lighting shader ignores because the
+            // sun's `castsShadow` flag will be 0).
+            // The shadow stage just needs view+proj that, when multiplied,
+            // equal shadow_view_proj. Easiest: pass identity view and
+            // shadow_view_proj as proj — the shadow_map's caster shader
+            // only uses `proj * view * model`, so the split doesn't matter.
+            const glm::mat4 sh_view = glm::mat4(1.0f);
+            const glm::mat4 sh_proj = shadow_active
+                ? shadow_view_proj
+                : graph->get_camera().proj;
             graph->execute_stage(cmd, RenderGraphStage::Shadow,
                 [&](VkCommandBuffer rec_cmd) {
                     uint32_t calls = 0, tris = 0;
                     shadow_map->draw_items(rec_cmd,
-                                           graph->get_camera().view,
-                                           graph->get_camera().proj,
+                                           sh_view,
+                                           sh_proj,
                                            graph->get_camera().position,
                                            shadow_draws.data(),
                                            shadow_draws.size(),
                                            &calls, &tris);
                 });
             graph->execute_stage(cmd, RenderGraphStage::Geometry,   {});
+            // SSAO compute dispatch — runs after the G-Buffer is populated
+            // and before lighting samples the occlusion texture. Outside
+            // the render graph because it's a compute pass and the graph
+            // currently only models render-pass stages.
+            if (ssao) {
+                if (ssao->technique() == gws::renderer::gpu::AoTechnique::VXAO && vxao) {
+                    // VXAO: voxelize this frame's opaque draws, then cone-trace.
+                    vxao->voxelize(cmd, opaque_draws.data(), opaque_draws.size(),
+                                   cam.position);
+                    vxao->compute_ao(cmd);
+                } else {
+                    ssao->execute(cmd, cam.view, cam.proj);
+                }
+            }
             graph->execute_stage(cmd, RenderGraphStage::Lighting,   {});
+            // SSR — compute reflections + composite into HDR before
+            // transparent fragments are drawn. Runs outside the render
+            // graph because the graph models only render-pass stages and
+            // SSR is a compute + render-pass pair owned by its own class.
+            if (ssr) {
+                ssr->execute(cmd, cam.view, cam.proj, cam.position);
+            }
             // Transparent stage uses a custom recorder so we can feed it
             // the back-to-front-sorted transparent draw list directly,
             // independent of the graph's stored opaque draw_items_.

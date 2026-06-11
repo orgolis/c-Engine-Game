@@ -134,6 +134,12 @@ public:
     uint32_t vertex_count() const { return vertex_count_; }
     uint32_t index_count() const  { return index_count_; }
 
+    /// Raw GPU buffer handles — needed by VulkanRtScene to build a BLAS
+    /// from this mesh's geometry without copying. The buffers carry the
+    /// AS-build usage bits when the device supports ray tracing.
+    VkBuffer get_vertex_buffer() const { return vbo_; }
+    VkBuffer get_index_buffer()  const { return ibo_; }
+
     /// Get the mesh's bounding box in local space (computed at load time).
     const AABB& bounding_box() const { return bounding_box_; }
 

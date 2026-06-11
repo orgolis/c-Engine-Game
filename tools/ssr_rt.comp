@@ -1,0 +1,155 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+// Ray-traced reflections with full hit RE-SHADING (Phase 5b). Instead of
+// borrowing the hit's colour from the screen (which fails for off-screen
+// or occluded geometry → wrong colour / sky), this traces the reflection
+// ray against the TLAS, looks up the hit triangle's geometry + material
+// via buffer-device-address, and recomputes a flat-shaded lit colour
+// (albedo × (ambient + sun·N·L × shadow)) at the hit point. The colour is
+// therefore correct regardless of what's on screen.
+//
+// Limitations (intentional for this pass): flat material colour only (no
+// albedo textures in reflections), single directional light, no IBL
+// specular at the hit. These keep the pass tractable; they can be layered
+// in later if needed.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D positionTex;
+layout(set = 0, binding = 1) uniform sampler2D normalTex;   // xyz = N, w = roughness
+layout(set = 0, binding = 2) uniform sampler2D depthTex;
+layout(set = 0, binding = 3) uniform sampler2D albedoTex;   // w = metallic
+layout(set = 0, binding = 4) uniform sampler2D hdrTex;      // lit HDR (unused now, kept for parity)
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D dstReflection;
+layout(set = 0, binding = 6) uniform samplerCube envCubemap;
+layout(set = 0, binding = 7) uniform accelerationStructureEXT sceneTlas;
+
+// SceneVertex = position(3) + normal(3) + uv(2) + tangent(4) = 48 bytes.
+struct Vertex { vec3 pos; vec3 normal; vec2 uv; vec4 tangent; };
+layout(buffer_reference, scalar) readonly buffer VertexBuf { Vertex v[]; };
+layout(buffer_reference, scalar) readonly buffer IndexBuf  { uint   i[]; };
+
+struct RtInstanceData {
+    uint64_t vbo_addr;
+    uint64_t ibo_addr;
+    vec4  base_color;
+    float metallic;
+    float roughness;
+    float pad0, pad1;
+    vec4  emissive;
+};
+layout(set = 0, binding = 8, scalar) readonly buffer InstanceBuffer {
+    RtInstanceData instances[];
+};
+
+layout(push_constant) uniform PC {
+    mat4  view_proj;
+    vec4  camera_pos;
+    ivec2 output_size;
+    float max_distance;
+    float thickness;
+    int   num_steps;
+    float fresnel_power;
+    vec2  _pad;
+    vec4  sun_dir;    // xyz = direction (light → scene)
+    vec4  sun_color;  // rgb = colour × intensity
+    vec4  ambient;    // rgb = colour × intensity
+} pc;
+
+const float kBaseReflect  = 0.02;
+const float kSkyClampLuma = 2.0;
+
+// Trace a shadow ray from `p` toward the sun; 1 = lit, 0 = shadowed.
+float sun_shadow(vec3 p, vec3 n, vec3 L) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, sceneTlas,
+        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        0xFF, p + n * 0.02, 0.001, L, 1000.0);
+    while (rayQueryProceedEXT(rq)) {}
+    return (rayQueryGetIntersectionTypeEXT(rq, true) ==
+            gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.output_size.x || px.y >= pc.output_size.y) return;
+    vec2 uv = (vec2(px) + 0.5) / vec2(pc.output_size);
+
+    vec4 normal_sample = texture(normalTex, uv);
+    vec3 N = normal_sample.xyz;
+    float roughness = normal_sample.w;
+    if (dot(N, N) < 0.01) { imageStore(dstReflection, px, vec4(0.0)); return; }
+    N = normalize(N);
+
+    float smoothness = 1.0 - roughness;
+    if (smoothness < 0.1) { imageStore(dstReflection, px, vec4(0.0)); return; }
+
+    float metallic = texture(albedoTex, uv).a;
+    vec3 P = texture(positionTex, uv).xyz;
+    vec3 V = normalize(P - pc.camera_pos.xyz);
+    vec3 R = reflect(V, N);
+
+    // Trace the reflection ray.
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, sceneTlas, gl_RayFlagsOpaqueEXT, 0xFF,
+        P + N * 0.02, 0.01, R, pc.max_distance);
+    while (rayQueryProceedEXT(rq)) {}
+
+    vec3 reflection_color;
+    if (rayQueryGetIntersectionTypeEXT(rq, true) !=
+        gl_RayQueryCommittedIntersectionNoneEXT) {
+        // --- Re-shade the hit point ---
+        int   inst_idx = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+        int   prim_idx = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+        vec2  bary     = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+        float t        = rayQueryGetIntersectionTEXT(rq, true);
+        vec3  hit_pos  = P + N * 0.02 + R * t;
+
+        RtInstanceData inst = instances[inst_idx];
+        vec3 albedo = inst.base_color.rgb;
+        vec3 world_n = N; // fallback
+
+        if (inst.vbo_addr != 0ul && inst.ibo_addr != 0ul) {
+            IndexBuf  ib = IndexBuf(inst.ibo_addr);
+            VertexBuf vb = VertexBuf(inst.vbo_addr);
+            uint i0 = ib.i[prim_idx * 3 + 0];
+            uint i1 = ib.i[prim_idx * 3 + 1];
+            uint i2 = ib.i[prim_idx * 3 + 2];
+            vec3 n0 = vb.v[i0].normal;
+            vec3 n1 = vb.v[i1].normal;
+            vec3 n2 = vb.v[i2].normal;
+            vec3 bc = vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
+            vec3 local_n = normalize(n0 * bc.x + n1 * bc.y + n2 * bc.z);
+            mat4x3 o2w = rayQueryGetIntersectionObjectToWorldEXT(rq, true);
+            world_n = normalize(mat3(o2w) * local_n);
+        }
+
+        // Flat-shaded lighting at the hit.
+        vec3 L = normalize(-pc.sun_dir.xyz);
+        float ndotl = max(dot(world_n, L), 0.0);
+        float shadow = (ndotl > 0.0) ? sun_shadow(hit_pos, world_n, L) : 1.0;
+        vec3 lit = albedo * pc.ambient.rgb
+                 + albedo * pc.sun_color.rgb * ndotl * shadow
+                 + inst.emissive.rgb;
+        reflection_color = lit;
+    } else {
+        // Genuine miss — sample the sky.
+        reflection_color = texture(envCubemap, R).rgb;
+        float l = max(max(reflection_color.r, reflection_color.g), reflection_color.b);
+        if (l > kSkyClampLuma) reflection_color *= kSkyClampLuma / l;
+    }
+
+    // Roughness-aware Fresnel weighting (matches ssr.comp / IBL).
+    float NdotV = max(dot(N, -V), 0.0);
+    vec3 F0_v = mix(vec3(kBaseReflect), vec3(1.0), metallic);
+    vec3 rough_term = max(vec3(1.0 - roughness), F0_v);
+    vec3 F = F0_v + (rough_term - F0_v) *
+                    pow(clamp(1.0 - NdotV, 0.0, 1.0), pc.fresnel_power);
+    float spec_weight = max(max(F.r, F.g), F.b);
+    spec_weight *= mix(smoothness * smoothness, smoothness, metallic);
+
+    imageStore(dstReflection, px, vec4(reflection_color, spec_weight));
+}

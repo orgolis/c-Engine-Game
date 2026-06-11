@@ -1,0 +1,92 @@
+#version 450
+// Bilateral blur for the SSAO occlusion texture. A 5x5 Gaussian-weighted
+// kernel that down-weights taps whose depth or normal differ significantly
+// from the centre pixel, so edges are preserved (no halos across silhouettes,
+// no leak from a wall into the open space next to it).
+//
+// Reads the raw SSAO output + G-Buffer normal + depth; writes the smoothed
+// occlusion to a second R8 image. Lighting samples this output instead of
+// the raw SSAO.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D srcOcclusion;  // raw SSAO (R8)
+layout(set = 0, binding = 1) uniform sampler2D normalTex;     // G-Buffer normal
+layout(set = 0, binding = 2) uniform sampler2D depthTex;      // G-Buffer depth
+layout(set = 0, binding = 3, r8) uniform writeonly image2D dstOcclusion;
+
+layout(push_constant) uniform PC {
+    ivec2 output_size;
+    float depth_sigma;   // depth difference falloff (NDC units)
+    float normal_sigma;  // normal-dot-product falloff (1 - dot)
+    int   radius;        // kernel half-size in pixels (e.g. 2 = 5x5)
+    float _pad0;
+    float _pad1;
+    float _pad2;
+} pc;
+
+// Gaussian weight by 2D pixel offset (sigma in pixels).
+float spatial_w(ivec2 offset, float sigma) {
+    float r2 = float(offset.x * offset.x + offset.y * offset.y);
+    return exp(-r2 / (2.0 * sigma * sigma));
+}
+
+// Bilateral weight by depth + normal similarity.
+float range_w(float center_depth, float tap_depth,
+              vec3 center_normal, vec3 tap_normal) {
+    float dd = (tap_depth - center_depth) / max(pc.depth_sigma, 1e-5);
+    float dw = exp(-0.5 * dd * dd);
+
+    float nd = (1.0 - clamp(dot(center_normal, tap_normal), 0.0, 1.0))
+             / max(pc.normal_sigma, 1e-5);
+    float nw = exp(-0.5 * nd * nd);
+
+    return dw * nw;
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.output_size.x || px.y >= pc.output_size.y) return;
+
+    vec2 inv_size = 1.0 / vec2(pc.output_size);
+    vec2 uv_centre = (vec2(px) + 0.5) * inv_size;
+
+    float depth_c   = texture(depthTex,  uv_centre).r;
+    vec3  normal_c  = texture(normalTex, uv_centre).xyz;
+
+    // Skip sky pixels — pass through cleared value (1.0).
+    if (dot(normal_c, normal_c) < 0.01) {
+        imageStore(dstOcclusion, px, vec4(1.0));
+        return;
+    }
+    normal_c = normalize(normal_c);
+
+    const float kSpatialSigma = 2.0; // soft Gaussian in pixel units
+    float weighted_sum = 0.0;
+    float weight_sum   = 0.0;
+
+    for (int dy = -pc.radius; dy <= pc.radius; ++dy) {
+        for (int dx = -pc.radius; dx <= pc.radius; ++dx) {
+            ivec2 tap = px + ivec2(dx, dy);
+            if (tap.x < 0 || tap.y < 0 ||
+                tap.x >= pc.output_size.x || tap.y >= pc.output_size.y) continue;
+            vec2 uv_tap = (vec2(tap) + 0.5) * inv_size;
+
+            float depth_t  = texture(depthTex,  uv_tap).r;
+            vec3  normal_t = texture(normalTex, uv_tap).xyz;
+            if (dot(normal_t, normal_t) < 0.01) continue; // skip sky taps
+            normal_t = normalize(normal_t);
+
+            float w_s = spatial_w(ivec2(dx, dy), kSpatialSigma);
+            float w_r = range_w(depth_c, depth_t, normal_c, normal_t);
+            float w = w_s * w_r;
+
+            float ao = texture(srcOcclusion, uv_tap).r;
+            weighted_sum += ao * w;
+            weight_sum   += w;
+        }
+    }
+
+    float result = (weight_sum > 0.0) ? weighted_sum / weight_sum : 1.0;
+    imageStore(dstOcclusion, px, vec4(result, 0.0, 0.0, 0.0));
+}

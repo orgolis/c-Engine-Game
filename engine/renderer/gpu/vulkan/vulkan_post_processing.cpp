@@ -7,6 +7,9 @@
 #include "vulkan_device.h"
 #include "vulkan_shader_registry.h"
 #include "post_proc_tonemap_spirv.h" // pre-compiled SPIR-V fallback for GCC builds
+#include "auto_exposure_spirv.h"
+#include "post_proc_fxaa_spirv.h"
+#include "post_proc_colorfx_spirv.h"
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <array>
@@ -22,6 +25,16 @@ std::unique_ptr<VulkanPostProcessing> VulkanPostProcessing::create(VulkanDevice*
     auto post_proc = std::make_unique<VulkanPostProcessing>();
     post_proc->device_ = device;
     post_proc->config_ = config;
+    // Sync the colour-FX runtime enables from the config.
+    post_proc->chromatic_enabled_       = config.enable_chromatic;
+    post_proc->vignette_enabled_        = config.enable_vignette;
+    post_proc->film_grain_enabled_      = config.enable_film_grain;
+    post_proc->sharpen_enabled_         = config.enable_sharpen;
+    post_proc->lens_distortion_enabled_ = config.enable_lens_distortion;
+    post_proc->color_grade_enabled_     = config.enable_color_grade;
+    post_proc->posterize_enabled_       = config.enable_posterize;
+    post_proc->pixelate_enabled_        = config.enable_pixelate;
+    post_proc->scanlines_enabled_       = config.enable_scanlines;
     
     try {
         post_proc->shader_registry_ = std::make_unique<VulkanShaderRegistry>();
@@ -259,6 +272,12 @@ layout(location = 0) in vec2 inTexCoord;
 layout(location = 0) out vec4 outColor;
 layout(set = 0, binding = 0) uniform sampler2D inputTexture;
 layout(set = 0, binding = 1) uniform sampler2D bloomTexture;
+layout(set = 0, binding = 2) readonly buffer ExposureBuffer {
+    float exposure;
+    float _pad0;
+    float _pad1;
+    float _pad2;
+} autoExposure;
 layout(push_constant) uniform TonemapConstants {
     float exposure;
     float gamma;
@@ -281,7 +300,9 @@ void main() {
     vec3 color = texture(inputTexture, inTexCoord).rgb;
     vec3 bloom = texture(bloomTexture, inTexCoord).rgb;
     color += bloom * pc.bloomIntensity;
-    color *= pc.exposure;
+    float live_exp = autoExposure.exposure;
+    float exp_used = live_exp > 0.0 ? live_exp : pc.exposure;
+    color *= exp_used;
     color = ACESFilm(color);
     color = mix(vec3(0.5), color, pc.contrast);
     float lum = dot(color, vec3(0.299, 0.587, 0.114));
@@ -1004,13 +1025,21 @@ void VulkanPostProcessing::create_tonemap_sampler() {
 void VulkanPostProcessing::create_descriptor_sets() {
     VkDevice vk_device = device_->get_device();
 
-    std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
-    for (uint32_t i = 0; i < bindings.size(); ++i) {
-        bindings[i].binding         = i;
-        bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[i].descriptorCount = 1;
-        bindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-    }
+    // Bindings: 0 = HDR input sampler, 1 = bloom input sampler,
+    //           2 = auto-exposure storage buffer (read by tonemap shader).
+    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+    bindings[0].binding         = 0;
+    bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].binding         = 1;
+    bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[2].binding         = 2;
+    bindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layout_info{};
     layout_info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1021,14 +1050,16 @@ void VulkanPostProcessing::create_descriptor_sets() {
         throw std::runtime_error("Failed to create tone mapping descriptor set layout");
     }
 
-    VkDescriptorPoolSize pool_size{};
-    pool_size.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    pool_size.descriptorCount = static_cast<uint32_t>(bindings.size());
+    std::array<VkDescriptorPoolSize, 2> pool_sizes{};
+    pool_sizes[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    pool_sizes[0].descriptorCount = 2;
+    pool_sizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    pool_sizes[1].descriptorCount = 1;
 
     VkDescriptorPoolCreateInfo pool_info{};
     pool_info.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_info.poolSizeCount = 1;
-    pool_info.pPoolSizes    = &pool_size;
+    pool_info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
+    pool_info.pPoolSizes    = pool_sizes.data();
     pool_info.maxSets       = 1;
 
     if (vkCreateDescriptorPool(vk_device, &pool_info, nullptr, &descriptor_pool_) != VK_SUCCESS) {
@@ -1183,8 +1214,18 @@ void VulkanPostProcessing::update_input_descriptor() {
     image_infos[1].imageView   = bloom_view;
     image_infos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 2> writes{};
-    for (uint32_t i = 0; i < writes.size(); ++i) {
+    // Binding 2: auto-exposure storage buffer. Until the buffer is
+    // lazy-created by apply_auto_exposure, skip the write — the static
+    // exposure path in the shader (when auto-exposure is disabled) uses
+    // the push-constant fallback so the shader still runs cleanly.
+    const uint32_t write_count = (auto_exposure_buffer_ != VK_NULL_HANDLE) ? 3u : 2u;
+    VkDescriptorBufferInfo expo_info{};
+    expo_info.buffer = auto_exposure_buffer_;
+    expo_info.offset = 0;
+    expo_info.range  = VK_WHOLE_SIZE;
+
+    std::array<VkWriteDescriptorSet, 3> writes{};
+    for (uint32_t i = 0; i < 2; ++i) {
         writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet          = descriptor_sets_[0];
         writes[i].dstBinding      = i;
@@ -1192,14 +1233,25 @@ void VulkanPostProcessing::update_input_descriptor() {
         writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[i].pImageInfo      = &image_infos[i];
     }
+    if (write_count == 3) {
+        writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet          = descriptor_sets_[0];
+        writes[2].dstBinding      = 2;
+        writes[2].descriptorCount = 1;
+        writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[2].pBufferInfo     = &expo_info;
+    }
 
     vkUpdateDescriptorSets(device_->get_device(),
-                           static_cast<uint32_t>(writes.size()), writes.data(),
+                           write_count, writes.data(),
                            0, nullptr);
 }
 
 void VulkanPostProcessing::set_input_image(VkImageView image_view) {
     input_view_ = image_view;
+    // Lazy-init auto-exposure here so the storage buffer exists before
+    // update_input_descriptor writes binding 2 on the tonemap descriptor set.
+    init_auto_exposure_resources();
     update_input_descriptor();
     update_bloom_descriptor();
     update_taa_descriptor();
@@ -1394,10 +1446,17 @@ void VulkanPostProcessing::apply_film_grain(VkCommandBuffer cmd) {
 void VulkanPostProcessing::render(VkCommandBuffer cmd) {
     if (bloom_enabled_) apply_bloom(cmd);
     if (taa_enabled_) apply_taa(cmd);
+    // Auto-exposure must run BEFORE tone mapping — the latter reads the
+    // smoothed exposure value this compute pass updates.
+    if (auto_exposure_enabled_) apply_auto_exposure(cmd, delta_time_);
     if (tone_mapping_enabled_) apply_tone_mapping(cmd);
-    if (chromatic_enabled_) apply_chromatic(cmd);
-    if (vignette_enabled_) apply_vignette(cmd);
-    if (film_grain_enabled_) apply_film_grain(cmd);
+    // FXAA runs on the LDR tone-mapped result. Edge detection on a
+    // gamma-correct LDR image is what FXAA was designed for; running it
+    // earlier (on HDR linear) makes the edge thresholds meaningless.
+    if (fxaa_enabled_) apply_fxaa(cmd);
+    // Combined colour FX (chromatic aberration + vignette + film grain) —
+    // runs last, gated internally so it no-ops when all three are off.
+    apply_color_fx(cmd);
 }
 
 void VulkanPostProcessing::set_effect_enabled(PostProcessEffect effect, bool enabled) {
@@ -1640,9 +1699,920 @@ void VulkanPostProcessing::cleanup() {
         taa_output_memory_ = VK_NULL_HANDLE;
     }
 
+    // Auto-exposure resources.
+    if (auto_exposure_pipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(vk_device, auto_exposure_pipeline_, nullptr);
+        auto_exposure_pipeline_ = VK_NULL_HANDLE;
+    }
+    if (auto_exposure_layout_ != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(vk_device, auto_exposure_layout_, nullptr);
+        auto_exposure_layout_ = VK_NULL_HANDLE;
+    }
+    if (auto_exposure_pool_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(vk_device, auto_exposure_pool_, nullptr);
+        auto_exposure_pool_ = VK_NULL_HANDLE;
+        auto_exposure_set_  = VK_NULL_HANDLE;
+    }
+    if (auto_exposure_dsl_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(vk_device, auto_exposure_dsl_, nullptr);
+        auto_exposure_dsl_ = VK_NULL_HANDLE;
+    }
+    if (auto_exposure_sampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(vk_device, auto_exposure_sampler_, nullptr);
+        auto_exposure_sampler_ = VK_NULL_HANDLE;
+    }
+    if (auto_exposure_buffer_ != VK_NULL_HANDLE) {
+        vkDestroyBuffer(vk_device, auto_exposure_buffer_, nullptr);
+        auto_exposure_buffer_ = VK_NULL_HANDLE;
+    }
+    if (auto_exposure_memory_ != VK_NULL_HANDLE) {
+        vkFreeMemory(vk_device, auto_exposure_memory_, nullptr);
+        auto_exposure_memory_ = VK_NULL_HANDLE;
+    }
+    auto_exposure_initialized_ = false;
+
+    // FXAA resources.
+    if (fxaa_pipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(vk_device, fxaa_pipeline_, nullptr);
+        fxaa_pipeline_ = VK_NULL_HANDLE;
+    }
+    if (fxaa_pipeline_layout_ != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(vk_device, fxaa_pipeline_layout_, nullptr);
+        fxaa_pipeline_layout_ = VK_NULL_HANDLE;
+    }
+    if (fxaa_pool_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(vk_device, fxaa_pool_, nullptr);
+        fxaa_pool_ = VK_NULL_HANDLE;
+        fxaa_set_  = VK_NULL_HANDLE;
+    }
+    if (fxaa_dsl_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(vk_device, fxaa_dsl_, nullptr);
+        fxaa_dsl_ = VK_NULL_HANDLE;
+    }
+    if (fxaa_framebuffer_ != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(vk_device, fxaa_framebuffer_, nullptr);
+        fxaa_framebuffer_ = VK_NULL_HANDLE;
+    }
+    if (fxaa_render_pass_ != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(vk_device, fxaa_render_pass_, nullptr);
+        fxaa_render_pass_ = VK_NULL_HANDLE;
+    }
+    if (fxaa_sampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(vk_device, fxaa_sampler_, nullptr);
+        fxaa_sampler_ = VK_NULL_HANDLE;
+    }
+    if (fxaa_intermediate_view_ != VK_NULL_HANDLE) {
+        vkDestroyImageView(vk_device, fxaa_intermediate_view_, nullptr);
+        fxaa_intermediate_view_ = VK_NULL_HANDLE;
+    }
+    if (fxaa_intermediate_image_ != VK_NULL_HANDLE) {
+        vkDestroyImage(vk_device, fxaa_intermediate_image_, nullptr);
+        fxaa_intermediate_image_ = VK_NULL_HANDLE;
+    }
+    if (fxaa_intermediate_memory_ != VK_NULL_HANDLE) {
+        vkFreeMemory(vk_device, fxaa_intermediate_memory_, nullptr);
+        fxaa_intermediate_memory_ = VK_NULL_HANDLE;
+    }
+    fxaa_initialized_ = false;
+
+    // Colour-FX resources.
+    if (colorfx_pipeline_ != VK_NULL_HANDLE) { vkDestroyPipeline(vk_device, colorfx_pipeline_, nullptr); colorfx_pipeline_ = VK_NULL_HANDLE; }
+    if (colorfx_pipeline_layout_ != VK_NULL_HANDLE) { vkDestroyPipelineLayout(vk_device, colorfx_pipeline_layout_, nullptr); colorfx_pipeline_layout_ = VK_NULL_HANDLE; }
+    if (colorfx_pool_ != VK_NULL_HANDLE) { vkDestroyDescriptorPool(vk_device, colorfx_pool_, nullptr); colorfx_pool_ = VK_NULL_HANDLE; colorfx_set_ = VK_NULL_HANDLE; }
+    if (colorfx_dsl_ != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(vk_device, colorfx_dsl_, nullptr); colorfx_dsl_ = VK_NULL_HANDLE; }
+    if (colorfx_framebuffer_ != VK_NULL_HANDLE) { vkDestroyFramebuffer(vk_device, colorfx_framebuffer_, nullptr); colorfx_framebuffer_ = VK_NULL_HANDLE; }
+    if (colorfx_render_pass_ != VK_NULL_HANDLE) { vkDestroyRenderPass(vk_device, colorfx_render_pass_, nullptr); colorfx_render_pass_ = VK_NULL_HANDLE; }
+    if (colorfx_sampler_ != VK_NULL_HANDLE) { vkDestroySampler(vk_device, colorfx_sampler_, nullptr); colorfx_sampler_ = VK_NULL_HANDLE; }
+    if (colorfx_intermediate_view_ != VK_NULL_HANDLE) { vkDestroyImageView(vk_device, colorfx_intermediate_view_, nullptr); colorfx_intermediate_view_ = VK_NULL_HANDLE; }
+    if (colorfx_intermediate_image_ != VK_NULL_HANDLE) { vkDestroyImage(vk_device, colorfx_intermediate_image_, nullptr); colorfx_intermediate_image_ = VK_NULL_HANDLE; }
+    if (colorfx_intermediate_memory_ != VK_NULL_HANDLE) { vkFreeMemory(vk_device, colorfx_intermediate_memory_, nullptr); colorfx_intermediate_memory_ = VK_NULL_HANDLE; }
+    colorfx_initialized_ = false;
+
     // Drop the shader registry last so its cached VkShaderModules are torn
     // down while the device is still alive.
     shader_registry_.reset();
+}
+
+// ---- Auto-exposure --------------------------------------------------------
+
+namespace {
+
+bool create_auto_exposure_resources(VulkanDevice* device,
+                                     VkBuffer& buffer, VkDeviceMemory& mem,
+                                     VkSampler& sampler) {
+    VkDevice vk = device->get_device();
+
+    // 16-byte persistent buffer: float current_exposure + 12B padding.
+    // Bound as STORAGE for compute writes and as UNIFORM for tonemap reads.
+    VkBufferCreateInfo bi{};
+    bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size        = 16;
+    bi.usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                     VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(vk, &bi, nullptr, &buffer) != VK_SUCCESS) return false;
+    VkMemoryRequirements mr{};
+    vkGetBufferMemoryRequirements(vk, buffer, &mr);
+    VkMemoryAllocateInfo ai{};
+    ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize  = mr.size;
+    ai.memoryTypeIndex = device->find_memory_type(
+        mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (vkAllocateMemory(vk, &ai, nullptr, &mem) != VK_SUCCESS) return false;
+    vkBindBufferMemory(vk, buffer, mem, 0);
+
+    // Linear sampler for sampling HDR — the strided fetch in the compute
+    // shader uses texelFetch so the sampler is mostly nominal, but Vulkan
+    // requires one for a sampler2D binding.
+    VkSamplerCreateInfo si{};
+    si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    si.magFilter    = VK_FILTER_NEAREST;
+    si.minFilter    = VK_FILTER_NEAREST;
+    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    return vkCreateSampler(vk, &si, nullptr, &sampler) == VK_SUCCESS;
+}
+
+} // namespace
+
+bool VulkanPostProcessing::init_auto_exposure_resources() {
+    if (auto_exposure_initialized_) return true;
+    if (input_view_ == VK_NULL_HANDLE) return false;
+
+    VkDevice vk = device_->get_device();
+
+    if (!create_auto_exposure_resources(device_, auto_exposure_buffer_,
+                                        auto_exposure_memory_,
+                                        auto_exposure_sampler_)) {
+        spdlog::error("AutoExposure: resource creation failed"); return false;
+    }
+
+    // Descriptor set layout: HDR sampler + exposure SSBO + depth sampler.
+    std::array<VkDescriptorSetLayoutBinding, 3> b{};
+    b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    b[0].descriptorCount = 1; b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    b[1].descriptorCount = 1; b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    b[2].descriptorCount = 1; b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutCreateInfo li{};
+    li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    li.bindingCount = 3; li.pBindings = b.data();
+    if (vkCreateDescriptorSetLayout(vk, &li, nullptr, &auto_exposure_dsl_) != VK_SUCCESS) {
+        spdlog::error("AutoExposure: dsl failed"); return false;
+    }
+
+    VkPushConstantRange pr{};
+    pr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pr.size       = sizeof(float) * 8;
+    VkPipelineLayoutCreateInfo pli{};
+    pli.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pli.setLayoutCount         = 1;
+    pli.pSetLayouts            = &auto_exposure_dsl_;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges    = &pr;
+    if (vkCreatePipelineLayout(vk, &pli, nullptr, &auto_exposure_layout_) != VK_SUCCESS) {
+        spdlog::error("AutoExposure: pipeline layout failed"); return false;
+    }
+
+    VkShaderModuleCreateInfo smi{};
+    smi.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smi.codeSize = kAutoExposureSpv_size;
+    smi.pCode    = kAutoExposureSpv;
+    VkShaderModule sm = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(vk, &smi, nullptr, &sm) != VK_SUCCESS) {
+        spdlog::error("AutoExposure: shader module failed"); return false;
+    }
+    VkComputePipelineCreateInfo cpi{};
+    cpi.sType        = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    cpi.stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cpi.stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
+    cpi.stage.module = sm;
+    cpi.stage.pName  = "main";
+    cpi.layout       = auto_exposure_layout_;
+    VkResult pres = vkCreateComputePipelines(vk, VK_NULL_HANDLE, 1, &cpi, nullptr,
+                                             &auto_exposure_pipeline_);
+    vkDestroyShaderModule(vk, sm, nullptr);
+    if (pres != VK_SUCCESS) {
+        spdlog::error("AutoExposure: pipeline failed"); return false;
+    }
+
+    std::array<VkDescriptorPoolSize, 2> ps{};
+    ps[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps[0].descriptorCount = 2; // HDR + depth
+    ps[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;         ps[1].descriptorCount = 1;
+    VkDescriptorPoolCreateInfo pi{};
+    pi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pi.maxSets       = 1;
+    pi.poolSizeCount = static_cast<uint32_t>(ps.size());
+    pi.pPoolSizes    = ps.data();
+    if (vkCreateDescriptorPool(vk, &pi, nullptr, &auto_exposure_pool_) != VK_SUCCESS) {
+        spdlog::error("AutoExposure: pool failed"); return false;
+    }
+    VkDescriptorSetAllocateInfo dai{};
+    dai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dai.descriptorPool     = auto_exposure_pool_;
+    dai.descriptorSetCount = 1;
+    dai.pSetLayouts        = &auto_exposure_dsl_;
+    if (vkAllocateDescriptorSets(vk, &dai, &auto_exposure_set_) != VK_SUCCESS) {
+        spdlog::error("AutoExposure: set alloc failed"); return false;
+    }
+
+    VkDescriptorImageInfo ii{};
+    ii.sampler     = auto_exposure_sampler_;
+    ii.imageView   = input_view_;
+    ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorBufferInfo bii{};
+    bii.buffer = auto_exposure_buffer_;
+    bii.offset = 0;
+    bii.range  = VK_WHOLE_SIZE;
+    // Depth binding. If no scene depth was provided, fall back to the HDR
+    // view so the descriptor is valid — sky exclusion simply won't fire
+    // (every pixel reads as non-sky), preserving the old behaviour.
+    VkDescriptorImageInfo di{};
+    di.sampler     = auto_exposure_sampler_;
+    di.imageView   = (scene_depth_view_ != VK_NULL_HANDLE) ? scene_depth_view_ : input_view_;
+    di.imageLayout = (scene_depth_view_ != VK_NULL_HANDLE)
+                        ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                        : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    std::array<VkWriteDescriptorSet, 3> ws{};
+    ws[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; ws[0].dstSet = auto_exposure_set_;
+    ws[0].dstBinding = 0; ws[0].descriptorCount = 1;
+    ws[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ws[0].pImageInfo = &ii;
+    ws[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; ws[1].dstSet = auto_exposure_set_;
+    ws[1].dstBinding = 1; ws[1].descriptorCount = 1;
+    ws[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; ws[1].pBufferInfo = &bii;
+    ws[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; ws[2].dstSet = auto_exposure_set_;
+    ws[2].dstBinding = 2; ws[2].descriptorCount = 1;
+    ws[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ws[2].pImageInfo = &di;
+    vkUpdateDescriptorSets(vk, 3, ws.data(), 0, nullptr);
+
+    auto_exposure_initialized_ = true;
+    auto_exposure_needs_seed_  = true;
+    spdlog::info("AutoExposure initialized");
+    return true;
+}
+
+void VulkanPostProcessing::apply_auto_exposure(VkCommandBuffer cmd, float delta_s) {
+    if (!auto_exposure_initialized_) return;
+
+    // First frame after init: seed the buffer with the configured static
+    // exposure so the screen doesn't flash black before convergence.
+    if (auto_exposure_needs_seed_) {
+        const float seed = config_.tone_mapping.exposure;
+        vkCmdUpdateBuffer(cmd, auto_exposure_buffer_, 0, sizeof(float), &seed);
+        VkMemoryBarrier sb{};
+        sb.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        sb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        sb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &sb, 0, nullptr, 0, nullptr);
+        auto_exposure_needs_seed_ = false;
+    }
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, auto_exposure_pipeline_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            auto_exposure_layout_, 0, 1, &auto_exposure_set_, 0, nullptr);
+    struct {
+        int32_t w, h;
+        float dt;
+        float adapt_rate;
+        float key;
+        float min_exposure;
+        float max_exposure;
+        float _pad;
+    } pc{};
+    pc.w = static_cast<int32_t>(config_.width);
+    pc.h = static_cast<int32_t>(config_.height);
+    pc.dt = std::max(delta_s, 1.0f / 240.0f);
+    pc.adapt_rate  = 1.5f;        // ~0.7s half-life
+    pc.key         = 0.18f;       // middle grey
+    pc.min_exposure = 0.05f;
+    pc.max_exposure = 8.0f;
+    vkCmdPushConstants(cmd, auto_exposure_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(pc), &pc);
+    vkCmdDispatch(cmd, 1, 1, 1);
+
+    // Make the exposure-buffer write visible to the upcoming tonemap pass.
+    VkMemoryBarrier mb{};
+    mb.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 1, &mb, 0, nullptr, 0, nullptr);
+}
+
+// ---- FXAA -----------------------------------------------------------------
+
+bool VulkanPostProcessing::init_fxaa_resources() {
+    if (fxaa_initialized_) return true;
+    if (output_image_ == VK_NULL_HANDLE || output_view_ == VK_NULL_HANDLE) return false;
+
+    VkDevice vk = device_->get_device();
+
+    // Intermediate image — same format as the post-process output. FXAA
+    // reads this and writes back to output_image_.
+    {
+        VkImageCreateInfo ii{};
+        ii.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ii.imageType     = VK_IMAGE_TYPE_2D;
+        ii.format        = VK_FORMAT_R16G16B16A16_SFLOAT;
+        ii.extent        = { config_.width, config_.height, 1 };
+        ii.mipLevels     = 1;
+        ii.arrayLayers   = 1;
+        ii.samples       = VK_SAMPLE_COUNT_1_BIT;
+        ii.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        ii.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        ii.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(vk, &ii, nullptr, &fxaa_intermediate_image_) != VK_SUCCESS) {
+            spdlog::error("FXAA: failed to create intermediate image"); return false;
+        }
+        VkMemoryRequirements mr{};
+        vkGetImageMemoryRequirements(vk, fxaa_intermediate_image_, &mr);
+        VkMemoryAllocateInfo ai{};
+        ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        ai.allocationSize  = mr.size;
+        ai.memoryTypeIndex = device_->find_memory_type(
+            mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(vk, &ai, nullptr, &fxaa_intermediate_memory_) != VK_SUCCESS) {
+            spdlog::error("FXAA: alloc failed"); return false;
+        }
+        vkBindImageMemory(vk, fxaa_intermediate_image_, fxaa_intermediate_memory_, 0);
+
+        VkImageViewCreateInfo vi{};
+        vi.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vi.image            = fxaa_intermediate_image_;
+        vi.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format           = VK_FORMAT_R16G16B16A16_SFLOAT;
+        vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vi.subresourceRange.levelCount = 1;
+        vi.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(vk, &vi, nullptr, &fxaa_intermediate_view_) != VK_SUCCESS) return false;
+    }
+
+    // Linear sampler for the FXAA sample taps.
+    {
+        VkSamplerCreateInfo si{};
+        si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter    = VK_FILTER_LINEAR;
+        si.minFilter    = VK_FILTER_LINEAR;
+        si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(vk, &si, nullptr, &fxaa_sampler_) != VK_SUCCESS) return false;
+    }
+
+    // Render pass: one colour attachment (the output_image_), LOAD_OP_LOAD
+    // because we want to preserve the alpha channel / structure but the
+    // shader overwrites every pixel anyway — DONT_CARE is also valid.
+    {
+        VkAttachmentDescription att{};
+        att.format         = VK_FORMAT_R16G16B16A16_SFLOAT;
+        att.samples        = VK_SAMPLE_COUNT_1_BIT;
+        att.loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        att.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        att.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference ref{};
+        ref.attachment = 0;
+        ref.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        VkSubpassDescription sub{};
+        sub.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sub.colorAttachmentCount = 1;
+        sub.pColorAttachments    = &ref;
+        VkSubpassDependency dep{};
+        dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
+        dep.dstSubpass    = 0;
+        dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+        dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        VkRenderPassCreateInfo rpi{};
+        rpi.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        rpi.attachmentCount = 1;
+        rpi.pAttachments    = &att;
+        rpi.subpassCount    = 1;
+        rpi.pSubpasses      = &sub;
+        rpi.dependencyCount = 1;
+        rpi.pDependencies   = &dep;
+        if (vkCreateRenderPass(vk, &rpi, nullptr, &fxaa_render_pass_) != VK_SUCCESS) {
+            spdlog::error("FXAA: render pass failed"); return false;
+        }
+
+        VkFramebufferCreateInfo fbi{};
+        fbi.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbi.renderPass      = fxaa_render_pass_;
+        fbi.attachmentCount = 1;
+        fbi.pAttachments    = &output_view_;
+        fbi.width           = config_.width;
+        fbi.height          = config_.height;
+        fbi.layers          = 1;
+        if (vkCreateFramebuffer(vk, &fbi, nullptr, &fxaa_framebuffer_) != VK_SUCCESS) {
+            spdlog::error("FXAA: framebuffer failed"); return false;
+        }
+    }
+
+    // Descriptor set layout + pool + set, write the intermediate image.
+    {
+        VkDescriptorSetLayoutBinding b{};
+        b.binding         = 0;
+        b.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b.descriptorCount = 1;
+        b.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo li{};
+        li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        li.bindingCount = 1; li.pBindings = &b;
+        if (vkCreateDescriptorSetLayout(vk, &li, nullptr, &fxaa_dsl_) != VK_SUCCESS) return false;
+
+        VkDescriptorPoolSize ps{};
+        ps.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps.descriptorCount = 1;
+        VkDescriptorPoolCreateInfo pi{};
+        pi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pi.maxSets       = 1;
+        pi.poolSizeCount = 1;
+        pi.pPoolSizes    = &ps;
+        if (vkCreateDescriptorPool(vk, &pi, nullptr, &fxaa_pool_) != VK_SUCCESS) return false;
+        VkDescriptorSetAllocateInfo dai{};
+        dai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dai.descriptorPool     = fxaa_pool_;
+        dai.descriptorSetCount = 1;
+        dai.pSetLayouts        = &fxaa_dsl_;
+        if (vkAllocateDescriptorSets(vk, &dai, &fxaa_set_) != VK_SUCCESS) return false;
+
+        VkDescriptorImageInfo ii{};
+        ii.sampler     = fxaa_sampler_;
+        ii.imageView   = fxaa_intermediate_view_;
+        ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet w{};
+        w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet          = fxaa_set_;
+        w.dstBinding      = 0;
+        w.descriptorCount = 1;
+        w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.pImageInfo      = &ii;
+        vkUpdateDescriptorSets(vk, 1, &w, 0, nullptr);
+    }
+
+    // Graphics pipeline. Reuses the post-process tonemap vertex shader
+    // (fullscreen triangle).
+    {
+        VkPushConstantRange pr{};
+        pr.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        pr.size       = sizeof(float) * 4; // vec2 rcpFrame + 2 floats pad
+        VkPipelineLayoutCreateInfo pli{};
+        pli.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pli.setLayoutCount         = 1;
+        pli.pSetLayouts            = &fxaa_dsl_;
+        pli.pushConstantRangeCount = 1;
+        pli.pPushConstantRanges    = &pr;
+        if (vkCreatePipelineLayout(vk, &pli, nullptr, &fxaa_pipeline_layout_) != VK_SUCCESS) return false;
+
+        auto vert = shader_registry_->create_from_spirv(kTonemapVertSpv, kTonemapVertSpv_size,
+                                                        ShaderStage::Vertex, "fxaa.vert");
+        auto frag = shader_registry_->create_from_spirv(kFxaaFragSpv, kFxaaFragSpv_size,
+                                                        ShaderStage::Fragment, "fxaa.frag");
+        if (!vert || !frag) { spdlog::error("FXAA: shader load failed"); return false; }
+
+        std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vert->handle; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = frag->handle; stages[1].pName = "main";
+
+        VkPipelineVertexInputStateCreateInfo vi{};
+        vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        VkPipelineInputAssemblyStateCreateInfo ia{};
+        ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        std::array<VkDynamicState, 2> dyns = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dyn{};
+        dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dyn.dynamicStateCount = 2; dyn.pDynamicStates = dyns.data();
+
+        VkPipelineViewportStateCreateInfo vp{};
+        vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rs{};
+        rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rs.polygonMode = VK_POLYGON_MODE_FILL;
+        rs.cullMode    = VK_CULL_MODE_NONE;
+        rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rs.lineWidth   = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms{};
+        ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.colorWriteMask = 0xF;
+        cba.blendEnable    = VK_FALSE;
+        VkPipelineColorBlendStateCreateInfo cb{};
+        cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+        VkGraphicsPipelineCreateInfo gpi{};
+        gpi.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        gpi.stageCount          = static_cast<uint32_t>(stages.size());
+        gpi.pStages             = stages.data();
+        gpi.pVertexInputState   = &vi;
+        gpi.pInputAssemblyState = &ia;
+        gpi.pViewportState      = &vp;
+        gpi.pRasterizationState = &rs;
+        gpi.pMultisampleState   = &ms;
+        gpi.pColorBlendState    = &cb;
+        gpi.pDynamicState       = &dyn;
+        gpi.layout              = fxaa_pipeline_layout_;
+        gpi.renderPass          = fxaa_render_pass_;
+        if (vkCreateGraphicsPipelines(vk, VK_NULL_HANDLE, 1, &gpi, nullptr,
+                                      &fxaa_pipeline_) != VK_SUCCESS) {
+            spdlog::error("FXAA: pipeline failed"); return false;
+        }
+    }
+
+    fxaa_initialized_ = true;
+    spdlog::info("FXAA initialized");
+    return true;
+}
+
+void VulkanPostProcessing::apply_fxaa(VkCommandBuffer cmd) {
+    if (output_image_ == VK_NULL_HANDLE) return;
+    if (!fxaa_initialized_ && !init_fxaa_resources()) return;
+
+    // 1. Transition output_image_ TRANSFER_SRC and intermediate TRANSFER_DST,
+    //    then blit. After the blit, intermediate is in TRANSFER_DST and
+    //    output_image_ is in TRANSFER_SRC.
+    auto barrier = [&](VkImage img, VkImageLayout from, VkImageLayout to,
+                        VkAccessFlags srcA, VkAccessFlags dstA,
+                        VkPipelineStageFlags srcS, VkPipelineStageFlags dstS) {
+        VkImageMemoryBarrier b{};
+        b.sType                       = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.oldLayout                   = from;
+        b.newLayout                   = to;
+        b.image                       = img;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.levelCount = 1;
+        b.subresourceRange.layerCount = 1;
+        b.srcAccessMask = srcA;
+        b.dstAccessMask = dstA;
+        vkCmdPipelineBarrier(cmd, srcS, dstS, 0, 0, nullptr, 0, nullptr, 1, &b);
+    };
+
+    barrier(output_image_,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT);
+    barrier(fxaa_intermediate_image_,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            0, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+    VkImageCopy region{};
+    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.srcSubresource.layerCount = 1;
+    region.dstSubresource = region.srcSubresource;
+    region.extent = { config_.width, config_.height, 1 };
+    vkCmdCopyImage(cmd, output_image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   fxaa_intermediate_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1, &region);
+
+    // 2. Transition intermediate to SHADER_READ_ONLY, output to COLOR_ATTACHMENT.
+    barrier(fxaa_intermediate_image_,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    barrier(output_image_,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_ACCESS_TRANSFER_READ_BIT,
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+
+    // 3. Run the FXAA pass. The render pass's initialLayout = UNDEFINED so
+    //    Vulkan will accept whatever we transitioned to above.
+    VkRenderPassBeginInfo rpi{};
+    rpi.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpi.renderPass        = fxaa_render_pass_;
+    rpi.framebuffer       = fxaa_framebuffer_;
+    rpi.renderArea.offset = {0, 0};
+    rpi.renderArea.extent = {config_.width, config_.height};
+    vkCmdBeginRenderPass(cmd, &rpi, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport vp{};
+    vp.width  = static_cast<float>(config_.width);
+    vp.height = static_cast<float>(config_.height);
+    vp.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    VkRect2D sc{};
+    sc.extent = {config_.width, config_.height};
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fxaa_pipeline_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            fxaa_pipeline_layout_, 0, 1, &fxaa_set_, 0, nullptr);
+
+    float pc[4] = {
+        1.0f / static_cast<float>(config_.width),
+        1.0f / static_cast<float>(config_.height),
+        0.0f, 0.0f,
+    };
+    vkCmdPushConstants(cmd, fxaa_pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(pc), pc);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cmd);
+}
+
+// ---- Colour FX (chromatic + vignette + grain) -----------------------------
+
+bool VulkanPostProcessing::init_colorfx_resources() {
+    if (colorfx_initialized_) return true;
+    if (output_image_ == VK_NULL_HANDLE || output_view_ == VK_NULL_HANDLE) return false;
+
+    VkDevice vk = device_->get_device();
+
+    // Intermediate image — same shape/format as the FXAA one.
+    {
+        VkImageCreateInfo ii{};
+        ii.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ii.imageType     = VK_IMAGE_TYPE_2D;
+        ii.format        = VK_FORMAT_R16G16B16A16_SFLOAT;
+        ii.extent        = { config_.width, config_.height, 1 };
+        ii.mipLevels     = 1;
+        ii.arrayLayers   = 1;
+        ii.samples       = VK_SAMPLE_COUNT_1_BIT;
+        ii.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        ii.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        ii.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(vk, &ii, nullptr, &colorfx_intermediate_image_) != VK_SUCCESS) return false;
+        VkMemoryRequirements mr{};
+        vkGetImageMemoryRequirements(vk, colorfx_intermediate_image_, &mr);
+        VkMemoryAllocateInfo ai{};
+        ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        ai.allocationSize  = mr.size;
+        ai.memoryTypeIndex = device_->find_memory_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(vk, &ai, nullptr, &colorfx_intermediate_memory_) != VK_SUCCESS) return false;
+        vkBindImageMemory(vk, colorfx_intermediate_image_, colorfx_intermediate_memory_, 0);
+        VkImageViewCreateInfo vi{};
+        vi.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vi.image            = colorfx_intermediate_image_;
+        vi.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format           = VK_FORMAT_R16G16B16A16_SFLOAT;
+        vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vi.subresourceRange.levelCount = 1;
+        vi.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(vk, &vi, nullptr, &colorfx_intermediate_view_) != VK_SUCCESS) return false;
+    }
+    {
+        VkSamplerCreateInfo si{};
+        si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter    = VK_FILTER_LINEAR;
+        si.minFilter    = VK_FILTER_LINEAR;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(vk, &si, nullptr, &colorfx_sampler_) != VK_SUCCESS) return false;
+    }
+    {
+        VkAttachmentDescription att{};
+        att.format         = VK_FORMAT_R16G16B16A16_SFLOAT;
+        att.samples        = VK_SAMPLE_COUNT_1_BIT;
+        att.loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        att.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        att.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkAttachmentReference ref{};
+        ref.attachment = 0; ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        VkSubpassDescription sub{};
+        sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sub.colorAttachmentCount = 1; sub.pColorAttachments = &ref;
+        VkSubpassDependency dep{};
+        dep.srcSubpass = VK_SUBPASS_EXTERNAL; dep.dstSubpass = 0;
+        dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+        dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        VkRenderPassCreateInfo rpi{};
+        rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        rpi.attachmentCount = 1; rpi.pAttachments = &att;
+        rpi.subpassCount = 1; rpi.pSubpasses = &sub;
+        rpi.dependencyCount = 1; rpi.pDependencies = &dep;
+        if (vkCreateRenderPass(vk, &rpi, nullptr, &colorfx_render_pass_) != VK_SUCCESS) return false;
+        VkFramebufferCreateInfo fbi{};
+        fbi.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbi.renderPass = colorfx_render_pass_;
+        fbi.attachmentCount = 1; fbi.pAttachments = &output_view_;
+        fbi.width = config_.width; fbi.height = config_.height; fbi.layers = 1;
+        if (vkCreateFramebuffer(vk, &fbi, nullptr, &colorfx_framebuffer_) != VK_SUCCESS) return false;
+    }
+    {
+        VkDescriptorSetLayoutBinding b{};
+        b.binding = 0; b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b.descriptorCount = 1; b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo li{};
+        li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        li.bindingCount = 1; li.pBindings = &b;
+        if (vkCreateDescriptorSetLayout(vk, &li, nullptr, &colorfx_dsl_) != VK_SUCCESS) return false;
+        VkDescriptorPoolSize ps{};
+        ps.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps.descriptorCount = 1;
+        VkDescriptorPoolCreateInfo pi{};
+        pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pi.maxSets = 1; pi.poolSizeCount = 1; pi.pPoolSizes = &ps;
+        if (vkCreateDescriptorPool(vk, &pi, nullptr, &colorfx_pool_) != VK_SUCCESS) return false;
+        VkDescriptorSetAllocateInfo dai{};
+        dai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dai.descriptorPool = colorfx_pool_; dai.descriptorSetCount = 1; dai.pSetLayouts = &colorfx_dsl_;
+        if (vkAllocateDescriptorSets(vk, &dai, &colorfx_set_) != VK_SUCCESS) return false;
+        VkDescriptorImageInfo ii{};
+        ii.sampler = colorfx_sampler_; ii.imageView = colorfx_intermediate_view_;
+        ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet w{};
+        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = colorfx_set_;
+        w.dstBinding = 0; w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &ii;
+        vkUpdateDescriptorSets(vk, 1, &w, 0, nullptr);
+    }
+    {
+        VkPushConstantRange pr{};
+        pr.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        pr.size       = sizeof(float) * 20; // 17 used, rounded up
+        VkPipelineLayoutCreateInfo pli{};
+        pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pli.setLayoutCount = 1; pli.pSetLayouts = &colorfx_dsl_;
+        pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pr;
+        if (vkCreatePipelineLayout(vk, &pli, nullptr, &colorfx_pipeline_layout_) != VK_SUCCESS) return false;
+
+        auto vert = shader_registry_->create_from_spirv(kTonemapVertSpv, kTonemapVertSpv_size,
+                                                        ShaderStage::Vertex, "colorfx.vert");
+        auto frag = shader_registry_->create_from_spirv(kColorFxFragSpv, kColorFxFragSpv_size,
+                                                        ShaderStage::Fragment, "colorfx.frag");
+        if (!vert || !frag) return false;
+        std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vert->handle; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = frag->handle; stages[1].pName = "main";
+        VkPipelineVertexInputStateCreateInfo vi{};
+        vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        VkPipelineInputAssemblyStateCreateInfo ia{};
+        ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        std::array<VkDynamicState, 2> dyns = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dyn{};
+        dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dyn.dynamicStateCount = 2; dyn.pDynamicStates = dyns.data();
+        VkPipelineViewportStateCreateInfo vp{};
+        vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rs{};
+        rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms{};
+        ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.colorWriteMask = 0xF; cba.blendEnable = VK_FALSE;
+        VkPipelineColorBlendStateCreateInfo cb{};
+        cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+        VkGraphicsPipelineCreateInfo gpi{};
+        gpi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        gpi.stageCount = static_cast<uint32_t>(stages.size()); gpi.pStages = stages.data();
+        gpi.pVertexInputState = &vi; gpi.pInputAssemblyState = &ia;
+        gpi.pViewportState = &vp; gpi.pRasterizationState = &rs;
+        gpi.pMultisampleState = &ms; gpi.pColorBlendState = &cb; gpi.pDynamicState = &dyn;
+        gpi.layout = colorfx_pipeline_layout_; gpi.renderPass = colorfx_render_pass_;
+        if (vkCreateGraphicsPipelines(vk, VK_NULL_HANDLE, 1, &gpi, nullptr, &colorfx_pipeline_) != VK_SUCCESS) return false;
+    }
+
+    colorfx_initialized_ = true;
+    spdlog::info("ColorFX initialized");
+    return true;
+}
+
+void VulkanPostProcessing::apply_color_fx(VkCommandBuffer cmd) {
+    if (output_image_ == VK_NULL_HANDLE) return;
+    // Nothing to do if every colour effect is off.
+    if (!chromatic_enabled_ && !vignette_enabled_ && !film_grain_enabled_ &&
+        !sharpen_enabled_ && !lens_distortion_enabled_ && !color_grade_enabled_ &&
+        !posterize_enabled_ && !pixelate_enabled_ && !scanlines_enabled_) return;
+    if (!colorfx_initialized_ && !init_colorfx_resources()) return;
+
+    colorfx_time_ += delta_time_;
+
+    auto barrier = [&](VkImage img, VkImageLayout from, VkImageLayout to,
+                        VkAccessFlags srcA, VkAccessFlags dstA,
+                        VkPipelineStageFlags srcS, VkPipelineStageFlags dstS) {
+        VkImageMemoryBarrier b{};
+        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.oldLayout = from; b.newLayout = to; b.image = img;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.levelCount = 1; b.subresourceRange.layerCount = 1;
+        b.srcAccessMask = srcA; b.dstAccessMask = dstA;
+        vkCmdPipelineBarrier(cmd, srcS, dstS, 0, 0, nullptr, 0, nullptr, 1, &b);
+    };
+
+    barrier(output_image_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    barrier(colorfx_intermediate_image_, VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            0, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+    VkImageCopy region{};
+    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.srcSubresource.layerCount = 1;
+    region.dstSubresource = region.srcSubresource;
+    region.extent = { config_.width, config_.height, 1 };
+    vkCmdCopyImage(cmd, output_image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   colorfx_intermediate_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    barrier(colorfx_intermediate_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    barrier(output_image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+
+    VkRenderPassBeginInfo rpi{};
+    rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpi.renderPass = colorfx_render_pass_; rpi.framebuffer = colorfx_framebuffer_;
+    rpi.renderArea.offset = {0, 0}; rpi.renderArea.extent = {config_.width, config_.height};
+    vkCmdBeginRenderPass(cmd, &rpi, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport vp{}; vp.width = static_cast<float>(config_.width); vp.height = static_cast<float>(config_.height); vp.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    VkRect2D sc{}; sc.extent = {config_.width, config_.height};
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, colorfx_pipeline_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            colorfx_pipeline_layout_, 0, 1, &colorfx_set_, 0, nullptr);
+
+    struct {
+        float texel_x, texel_y;
+        float chromatic;
+        float vignette;
+        float vignette_radius;
+        float grain;
+        float time;
+        float sharpen;
+        float lens_distort;
+        float temperature;
+        float tint;
+        float saturation;
+        float contrast;
+        float brightness;
+        float posterize;
+        float pixelate;
+        float scanline;
+    } pc{};
+    pc.texel_x = 1.0f / static_cast<float>(config_.width);
+    pc.texel_y = 1.0f / static_cast<float>(config_.height);
+    pc.chromatic       = chromatic_enabled_  ? config_.chromatic_intensity   : 0.0f;
+    pc.vignette        = vignette_enabled_   ? config_.vignette_intensity    : 0.0f;
+    pc.vignette_radius = config_.vignette_radius;
+    pc.grain           = film_grain_enabled_ ? config_.film_grain_intensity  : 0.0f;
+    pc.time            = colorfx_time_;
+    pc.sharpen         = sharpen_enabled_         ? config_.sharpen_intensity : 0.0f;
+    pc.lens_distort    = lens_distortion_enabled_ ? config_.lens_distortion   : 0.0f;
+    // Color grade: identity values when off so the math is a no-op.
+    pc.temperature = color_grade_enabled_ ? config_.cg_temperature : 0.0f;
+    pc.tint        = color_grade_enabled_ ? config_.cg_tint        : 0.0f;
+    pc.saturation  = color_grade_enabled_ ? config_.cg_saturation  : 1.0f;
+    pc.contrast    = color_grade_enabled_ ? config_.cg_contrast    : 1.0f;
+    pc.brightness  = color_grade_enabled_ ? config_.cg_brightness  : 1.0f;
+    pc.posterize   = posterize_enabled_ ? config_.posterize_levels : 0.0f;
+    pc.pixelate    = pixelate_enabled_  ? config_.pixelate_size    : 0.0f;
+    pc.scanline    = scanlines_enabled_ ? config_.scanline_intensity : 0.0f;
+    vkCmdPushConstants(cmd, colorfx_pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(pc), &pc);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cmd);
 }
 
 } // namespace gws::renderer::gpu

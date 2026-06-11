@@ -1,0 +1,67 @@
+#version 450
+// Irradiance convolution. For each output texel (one per cubemap face
+// pixel), integrates incoming radiance from the environment cubemap over
+// the cosine-weighted hemisphere oriented along the texel's world-space
+// direction. The result is the diffuse-IBL irradiance E(N) used by:
+//
+//   diffuse_IBL = albedo * irradiance(N) / PI
+//
+// Resolution is intentionally small (32^2 per face) because the integral
+// is heavily low-frequency — high resolution would be wasted work.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform samplerCube envMap;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly imageCube dstIrradiance;
+
+layout(push_constant) uniform PC {
+    ivec2 face_size;
+    int   face_index;
+} pc;
+
+const float PI = 3.14159265358979323846;
+
+vec3 face_direction(ivec2 px, int face) {
+    vec2 uv = ((vec2(px) + 0.5) / vec2(pc.face_size)) * 2.0 - 1.0;
+    if (face == 0) return normalize(vec3( 1.0, -uv.y, -uv.x));
+    if (face == 1) return normalize(vec3(-1.0, -uv.y,  uv.x));
+    if (face == 2) return normalize(vec3( uv.x,  1.0,  uv.y));
+    if (face == 3) return normalize(vec3( uv.x, -1.0, -uv.y));
+    if (face == 4) return normalize(vec3( uv.x, -uv.y,  1.0));
+    return                 normalize(vec3(-uv.x, -uv.y, -1.0));
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.face_size.x || px.y >= pc.face_size.y) return;
+
+    vec3 N = face_direction(px, pc.face_index);
+
+    // Build a tangent basis around N.
+    vec3 up    = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
+    vec3 right = normalize(cross(up, N));
+    up         = normalize(cross(N, right));
+
+    vec3 irradiance = vec3(0.0);
+    float sample_count = 0.0;
+    const float delta = 0.025;
+
+    for (float phi = 0.0; phi < 2.0 * PI; phi += delta) {
+        for (float theta = 0.0; theta < 0.5 * PI; theta += delta) {
+            // Tangent-space sample, then transform into world space using
+            // the (right, up, N) basis.
+            vec3 ts = vec3(sin(theta) * cos(phi),
+                           sin(theta) * sin(phi),
+                           cos(theta));
+            vec3 sample_dir = ts.x * right + ts.y * up + ts.z * N;
+            // sin(theta) is the spherical-coords Jacobian; cos(theta) is
+            // Lambert's cosine.
+            irradiance += texture(envMap, sample_dir).rgb *
+                          cos(theta) * sin(theta);
+            sample_count += 1.0;
+        }
+    }
+    irradiance = PI * irradiance / sample_count;
+
+    imageStore(dstIrradiance, ivec3(px, pc.face_index), vec4(irradiance, 1.0));
+}

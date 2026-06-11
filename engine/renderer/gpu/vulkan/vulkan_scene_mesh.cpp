@@ -38,8 +38,20 @@ void create_host_buffer(VulkanDevice* device, VkBufferUsageFlags usage,
     VkMemoryRequirements req;
     vkGetBufferMemoryRequirements(vkdev, out_buf, &req);
 
+    // When the buffer will be referenced by device address (RT path uses
+    // buffer_reference to fetch vertices/indices in the reflection
+    // shader), the backing memory MUST be allocated with the
+    // device-address flag — otherwise getBufferDeviceAddress is invalid
+    // and the shader dereference hangs the GPU.
+    VkMemoryAllocateFlagsInfo flags_info{};
+    flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    flags_info.flags = (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
+                          ? VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT
+                          : 0;
+
     VkMemoryAllocateInfo ai{};
     ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.pNext           = (flags_info.flags != 0) ? &flags_info : nullptr;
     ai.allocationSize  = req.size;
     ai.memoryTypeIndex = device->find_memory_type(
         req.memoryTypeBits,
@@ -245,12 +257,24 @@ std::unique_ptr<Mesh> Mesh::create(VulkanDevice* device,
         }
     }
 
+    // Add the AS-build + device-address usage bits when the device
+    // supports ray tracing — they're harmless on non-RT paths and let
+    // VulkanRtScene build a BLAS from the same buffers without copying.
+    VkBufferUsageFlags vbo_usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    VkBufferUsageFlags ibo_usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    if (device->has_ray_tracing()) {
+        const VkBufferUsageFlags rt_bits =
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        vbo_usage |= rt_bits;
+        ibo_usage |= rt_bits;
+    }
     try {
-        create_host_buffer(device, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        create_host_buffer(device, vbo_usage,
                            sizeof(SceneVertex) * vertices.size(),
                            vertices.data(),
                            out->vbo_, out->vbo_memory_);
-        create_host_buffer(device, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        create_host_buffer(device, ibo_usage,
                            sizeof(uint32_t) * mutable_indices.size(),
                            mutable_indices.data(),
                            out->ibo_, out->ibo_memory_);

@@ -13,8 +13,9 @@ layout(location = 3) in vec3 inTangent;
 layout(location = 4) in vec3 inBitangent;
 
 layout(set = 0, binding = 0) uniform LightEnv {
-    vec4 ambient_color;
-    vec4 camera_position;
+    vec4 ambient_color;       // rgb = color, w = intensity (legacy ambient)
+    vec4 camera_position;     // xyz = camera world pos, w = light count (uint bit-cast in float)
+    vec4 ibl_params;          // x = prefilter max mip (0 disables IBL), y = intensity, zw = pad
 } env;
 layout(set = 0, binding = 1) uniform sampler2DArray shadowMap;
 layout(set = 0, binding = 2) uniform samplerCube    pointShadowMap;
@@ -30,6 +31,14 @@ struct Light {
     uint _pad1;
 };
 layout(set = 0, binding = 3) readonly buffer LightBuffer { Light lights[]; } lightBuffer;
+
+// IBL bindings — same data as the deferred lighting pass uses. Baked once
+// at startup by VulkanEnvironmentMap. Skipped at runtime if ibl_params.x
+// (the prefilter mip count) is 0, which preserves the legacy constant-
+// ambient path for scenes that don't ship an env map.
+layout(set = 0, binding = 4) uniform samplerCube iblIrradiance;
+layout(set = 0, binding = 5) uniform samplerCube iblPrefilter;
+layout(set = 0, binding = 6) uniform sampler2D   iblBrdfLut;
 
 layout(set = 1, binding = 0) uniform MaterialUBO {
     vec4  base_color_factor;
@@ -52,6 +61,25 @@ const float PI = 3.14159265359;
 
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
+    vec3 r = max(vec3(1.0 - roughness), F0);
+    return F0 + (r - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+vec3 computeIBL(vec3 N, vec3 V, vec3 albedo, float metallic, float roughness) {
+    if (env.ibl_params.x <= 0.0) return vec3(0.0);
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+    float NdotV = max(dot(N, V), 0.0);
+    vec3 F = fresnelSchlickRoughness(NdotV, F0, roughness);
+    vec3 kD = (1.0 - F) * (1.0 - metallic);
+    vec3 irradiance = texture(iblIrradiance, N).rgb;
+    vec3 diffuse    = irradiance * albedo;
+    vec3 R = reflect(-V, N);
+    float lod = roughness * env.ibl_params.x;
+    vec3 prefiltered = textureLod(iblPrefilter, R, lod).rgb;
+    vec2 brdf = texture(iblBrdfLut, vec2(NdotV, roughness)).rg;
+    vec3 specular = prefiltered * (F * brdf.x + brdf.y);
+    return kD * diffuse + specular;
 }
 float DistributionGGX(vec3 N, vec3 H, float roughness) {
     float a = roughness * roughness;
@@ -143,7 +171,9 @@ void main() {
     for (uint i = 0u; i < count; ++i)
         direct += evaluateLight(lightBuffer.lights[i], N, V, inWorldPos,
                                 base.rgb, roughness, metallic);
-    vec3 ambient = env.ambient_color.xyz * env.ambient_color.w * base.rgb;
+    vec3 ambient_const = env.ambient_color.xyz * env.ambient_color.w * base.rgb;
+    vec3 ambient_ibl   = computeIBL(N, V, base.rgb, metallic, roughness);
+    vec3 ambient = mix(ambient_const, ambient_ibl, env.ibl_params.y);
     vec3 lit = (ambient + direct) * ao + emis;
 
     float alpha = base.a;

@@ -134,6 +134,7 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
     auto out     = std::unique_ptr<Material>(new Material());
     out->device_ = device;
     out->pool_   = pool;
+    out->params_ = params; // cache for the RT reflection pass
 
     VkDevice vkdev = device->get_device();
 

@@ -92,11 +92,16 @@ void VulkanLightingPass::create_light_buffer() {
 void VulkanLightingPass::create_descriptor_sets() {
     VkDevice vk_device = device_->get_device();
 
-    // 5 G-Buffer samplers + 2 shadow samplers + 1 light SSBO. Bindings
-    // match the PBR shader's set=0 layout (positionTex=0, normalTex=1,
-    // albedoTex=2, materialTex=3, depthTex=4, shadowMap=5,
-    // pointShadowMap=6, lightBuffer=7).
-    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
+    // 5 G-Buffer samplers + 2 shadow samplers + 1 light SSBO + 3 IBL
+    // samplers + 1 env cubemap + 1 SSAO sampler + 1 TLAS. Bindings:
+    //   0..4  : positionTex, normalTex, albedoTex, materialTex, depthTex
+    //   5..6  : shadowMap, pointShadowMap
+    //   7     : lightBuffer (SSBO)
+    //   8..10 : iblIrradiance, iblPrefilter, iblBrdfLut
+    //   11    : envCubemap
+    //   12    : ssaoTex
+    //   13    : tlas (acceleration structure, only used when rt_enabled)
+    std::array<VkDescriptorSetLayoutBinding, 14> bindings{};
     for (uint32_t i = 0; i < 7; ++i) {
         bindings[i].binding         = i;
         bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -107,6 +112,16 @@ void VulkanLightingPass::create_descriptor_sets() {
     bindings[7].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[7].descriptorCount = 1;
     bindings[7].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    for (uint32_t i = 8; i < 13; ++i) {
+        bindings[i].binding         = i;
+        bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+    bindings[13].binding         = 13;
+    bindings[13].descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    bindings[13].descriptorCount = 1;
+    bindings[13].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layout_info{};
     layout_info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -117,9 +132,10 @@ void VulkanLightingPass::create_descriptor_sets() {
         throw std::runtime_error("Failed to create descriptor set layout");
     }
 
-    std::array<VkDescriptorPoolSize, 2> pool_sizes{};
-    pool_sizes[0] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7};
-    pool_sizes[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1};
+    std::array<VkDescriptorPoolSize, 3> pool_sizes{};
+    pool_sizes[0] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12};
+    pool_sizes[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,          1};
+    pool_sizes[2] = {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1};
 
     VkDescriptorPoolCreateInfo pool_info{};
     pool_info.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -319,14 +335,67 @@ layout(set = 0, binding = 7) readonly buffer LightBuffer {
     Light lights[];
 } lightBuffer;
 
+// IBL inputs. Baked once at startup by VulkanEnvironmentMap::bake_ibl():
+//   8 = diffuse irradiance cubemap (32^2 per face, low-frequency convolution)
+//   9 = prefiltered specular environment cubemap (mip chain encodes roughness)
+//  10 = BRDF integration LUT (R16G16: split-sum scale + bias)
+// pc.iblPrefilterMips carries the max mip level for the roughness LOD calc.
+layout(set = 0, binding = 8)  uniform samplerCube iblIrradiance;
+layout(set = 0, binding = 9)  uniform samplerCube iblPrefilter;
+layout(set = 0, binding = 10) uniform sampler2D   iblBrdfLut;
+// Base environment cubemap — sampled directly to draw the sky at pixels
+// where the G-Buffer has no geometry. Folded into this pass so the sky
+// doesn't need its own render pass (which caused cross-pass sync issues
+// with the WBOIT transparent path).
+layout(set = 0, binding = 11) uniform samplerCube envCubemap;
+// SSAO occlusion (R8): 1 = fully visible, 0 = fully occluded. Multiplied
+// into the ambient/IBL term (NOT direct light) so the indirect term
+// represents how much sky / surrounding bounce can reach this pixel.
+layout(set = 0, binding = 12) uniform sampler2D ssaoTex;
+
 layout(push_constant) uniform Constants {
     vec3  cameraPos;
     float ambientIntensity;
     vec3  ambientColor;
     uint  lightCount;
+    float iblPrefilterMips;  // last valid mip level; 0 = no IBL
+    float iblIntensity;      // 0..1+, blends IBL ambient against constant
+    vec2  _pad;
+    mat4  invViewProj;       // for reconstructing view rays at empty pixels (sky)
 } pc;
 
 const float PI = 3.14159265359;
+
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
+    // Karis approximation: the rough-grazing factor desaturates F0 when the
+    // surface is rough, so highlights don't unrealistically pop.
+    vec3 r = max(vec3(1.0 - roughness), F0);
+    return F0 + (r - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+vec3 computeIBL(vec3 N, vec3 V, vec3 albedo, float metallic, float roughness) {
+    if (pc.iblPrefilterMips <= 0.0) return vec3(0.0);
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+    float NdotV = max(dot(N, V), 0.0);
+    vec3 F = fresnelSchlickRoughness(NdotV, F0, roughness);
+    vec3 kS = F;
+    vec3 kD = (1.0 - kS) * (1.0 - metallic);
+
+    vec3 irradiance = texture(iblIrradiance, N).rgb;
+    vec3 diffuse    = irradiance * albedo;
+
+    vec3 R = reflect(-V, N);
+    float lod = roughness * pc.iblPrefilterMips;
+    vec3 prefiltered = textureLod(iblPrefilter, R, lod).rgb;
+    vec2 brdf = texture(iblBrdfLut, vec2(NdotV, roughness)).rg;
+    vec3 specular = prefiltered * (F * brdf.x + brdf.y);
+    // Dampen IBL specular for non-metals — see lighting_pass.frag for the
+    // full rationale (Karis split-sum bias term over-reflects dielectrics).
+    float spec_gate = mix(0.03, 1.0, metallic * metallic);
+    specular *= spec_gate;
+
+    return kD * diffuse + specular;
+}
 
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
@@ -355,13 +424,17 @@ float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
            GeometrySchlickGGX(NdotL, roughness);
 }
 
-float PCF(sampler2DArray sm, vec3 coords, float bias) {
+// PCF for a 2D-array shadow map. `uv` is the projected shadow-space UV,
+// `layer` selects the cascade (0 for the single-cascade setup), and
+// `expected_depth` is proj.z — the fragment's depth in light space, which
+// gets compared against the depth buffer at each tap.
+float PCF(sampler2DArray sm, vec2 uv, float layer, float expected_depth, float bias) {
     float shadow = 0.0;
     vec2 texelSize = 1.0 / vec2(textureSize(sm, 0).xy);
     for (int x = -1; x <= 1; ++x) {
         for (int y = -1; y <= 1; ++y) {
-            float pcfDepth = texture(sm, coords + vec3(vec2(x, y) * texelSize, 0.0)).r;
-            shadow += (coords.z - bias) > pcfDepth ? 0.0 : 1.0;
+            float pcfDepth = texture(sm, vec3(uv + vec2(x, y) * texelSize, layer)).r;
+            shadow += (expected_depth - bias) > pcfDepth ? 0.0 : 1.0;
         }
     }
     return shadow / 9.0;
@@ -372,9 +445,14 @@ float directionalShadow(vec3 worldPos, vec3 normal, Light L) {
     vec4 fragPosLS = L.shadowMatrix * vec4(worldPos, 1.0);
     vec3 proj = fragPosLS.xyz / max(fragPosLS.w, 1e-4);
     proj.xy = proj.xy * 0.5 + 0.5;
-    if (proj.z > 1.0) return 1.0;
+    // Out of the shadow frustum: treat as fully lit. CLAMP_TO_EDGE on the
+    // shadow sampler would otherwise sample whatever was at the texture
+    // border, which paints phantom shadows beyond the frustum.
+    if (proj.z > 1.0 || proj.z < 0.0 ||
+        proj.x < 0.0 || proj.x > 1.0 ||
+        proj.y < 0.0 || proj.y > 1.0) return 1.0;
     float bias = max(0.05 * (1.0 - dot(normal, -L.direction.xyz)), 0.005);
-    return PCF(shadowMap, vec3(proj.xy, float(L.shadowMapIndex)), bias);
+    return PCF(shadowMap, proj.xy, float(L.shadowMapIndex), proj.z, bias);
 }
 
 float pointShadow(vec3 worldPos, Light L) {
@@ -424,6 +502,23 @@ vec3 evaluateLight(Light L, vec3 N, vec3 V, vec3 worldPos,
 }
 
 void main() {
+    // Sky branch: pixels where the G-Buffer wrote no geometry have depth
+    // still at the cleared value of 1.0. Reconstruct the world-space view
+    // ray per-pixel and sample the environment cubemap. Doing this here
+    // (rather than in a separate sky pass) keeps depth + HDR state owned
+    // entirely by this pass, sidestepping cross-pass sync problems that
+    // were poisoning the downstream WBOIT transparent compositing.
+    float gbufferDepth = texture(depthTex, inTexCoord).r;
+    if (gbufferDepth >= 1.0 - 1e-5) {
+        vec2 ndc = inTexCoord * 2.0 - 1.0;
+        vec4 clip = vec4(ndc, 1.0, 1.0);
+        vec4 world = pc.invViewProj * clip;
+        world /= world.w;
+        vec3 viewDir = normalize(world.xyz - pc.cameraPos);
+        outColor = vec4(texture(envCubemap, viewDir).rgb, 1.0);
+        return;
+    }
+
     vec4 normalSample   = texture(normalTex,   inTexCoord);
     vec4 albedoSample   = texture(albedoTex,   inTexCoord);
     vec4 materialSample = texture(materialTex, inTexCoord);
@@ -441,7 +536,21 @@ void main() {
     // Direct + ambient contributions are scaled by AO so darker pockets
     // read as recessed; emissive bypasses AO (light-emitting surfaces
     // shouldn't get shaded into oblivion).
-    vec3 ambient = pc.ambientColor * pc.ambientIntensity * albedo;
+    //
+    // Ambient = blend of (legacy constant) and (IBL split-sum). When the
+    // IBL precompute didn't run (iblPrefilterMips == 0), only the constant
+    // term contributes — preserves behavior for scenes that don't ship an
+    // env map. When IBL is active, iblIntensity in [0, 1] controls how
+    // much it replaces the constant term.
+    vec3 ambient_const = pc.ambientColor * pc.ambientIntensity * albedo;
+    vec3 ambient_ibl   = computeIBL(N, V, albedo, metallic, roughness);
+    vec3 ambient = mix(ambient_const, ambient_ibl, pc.iblIntensity);
+    // SSAO modulates only the ambient/IBL term — physically it represents
+    // how much indirect light reaches the surface, not how much direct
+    // light is blocked (which is what shadow maps already model).
+    float ssao = texture(ssaoTex, inTexCoord).r;
+    ambient *= ssao;
+
     vec3 direct  = vec3(0.0);
     for (uint i = 0u; i < pc.lightCount; ++i) {
         direct += evaluateLight(lightBuffer.lights[i], N, V, worldPos, albedo, roughness, metallic);
@@ -519,7 +628,7 @@ void VulkanLightingPass::create_dummy_shadow_textures() {
     arr_info.arrayLayers   = 1;
     arr_info.samples       = VK_SAMPLE_COUNT_1_BIT;
     arr_info.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    arr_info.usage         = VK_IMAGE_USAGE_SAMPLED_BIT;
+    arr_info.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     arr_info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     arr_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     allocate_image(arr_info, dummy_shadow_2d_array_image_, dummy_shadow_2d_array_mem_);
@@ -552,6 +661,35 @@ void VulkanLightingPass::create_dummy_shadow_textures() {
         throw std::runtime_error("Failed to create dummy cube shadow view");
     }
 
+    // 1x1 R8_UNORM SSAO dummy. Cleared and seeded with 1.0 below so the
+    // shader's `ambient *= ssao` multiply is a no-op when no SSAO texture
+    // is bound.
+    VkImageCreateInfo ssao_info{};
+    ssao_info.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ssao_info.imageType     = VK_IMAGE_TYPE_2D;
+    ssao_info.format        = VK_FORMAT_R8_UNORM;
+    ssao_info.extent        = {1, 1, 1};
+    ssao_info.mipLevels     = 1;
+    ssao_info.arrayLayers   = 1;
+    ssao_info.samples       = VK_SAMPLE_COUNT_1_BIT;
+    ssao_info.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    ssao_info.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ssao_info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    ssao_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    allocate_image(ssao_info, dummy_ssao_image_, dummy_ssao_mem_);
+
+    VkImageViewCreateInfo ssao_v{};
+    ssao_v.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    ssao_v.image    = dummy_ssao_image_;
+    ssao_v.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    ssao_v.format   = VK_FORMAT_R8_UNORM;
+    ssao_v.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    ssao_v.subresourceRange.levelCount = 1;
+    ssao_v.subresourceRange.layerCount = 1;
+    if (vkCreateImageView(vk_device, &ssao_v, nullptr, &dummy_ssao_view_) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create dummy SSAO view");
+    }
+
     // The dummy images are still in UNDEFINED layout, but the descriptor
     // says SHADER_READ_ONLY_OPTIMAL. Run a one-shot transition to bring
     // them into the right layout. Use the device's command pool and the
@@ -572,28 +710,84 @@ void VulkanLightingPass::create_dummy_shadow_textures() {
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd, &begin);
 
-    auto transition = [&](VkImage image, uint32_t layer_count) {
+    // Clear-and-transition the depth-format dummies to a known "fully lit"
+    // value of 1.0. Without the clear, the dummy memory is uninitialized,
+    // so the shadow PCF / point-shadow shader reads garbage — which for
+    // point lights (whose default in LightComponent has cast_shadow=true)
+    // means the light is randomly attenuated to ~zero.
+    auto clear_and_transition = [&](VkImage image, uint32_t layer_count) {
         VkImageMemoryBarrier b{};
-        b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        b.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-        b.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.image               = image;
-        b.srcAccessMask       = 0;
-        b.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-        b.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT;
-        b.subresourceRange.baseMipLevel   = 0;
-        b.subresourceRange.levelCount     = 1;
-        b.subresourceRange.baseArrayLayer = 0;
-        b.subresourceRange.layerCount     = layer_count;
-        vkCmdPipelineBarrier(cmd,
-                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        b.sType                       = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.oldLayout                   = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout                   = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.image                       = image;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        b.subresourceRange.levelCount = 1;
+        b.subresourceRange.layerCount = layer_count;
+        b.srcAccessMask = 0;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &b);
+
+        VkClearDepthStencilValue clear{};
+        clear.depth = 1.0f;
+        VkImageSubresourceRange r{};
+        r.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        r.levelCount = 1;
+        r.layerCount = layer_count;
+        vkCmdClearDepthStencilImage(cmd, image,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    &clear, 1, &r);
+
+        b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &b);
     };
-    transition(dummy_shadow_2d_array_image_, 1);
-    transition(dummy_shadow_cube_image_,     6);
+    clear_and_transition(dummy_shadow_2d_array_image_, 1);
+    clear_and_transition(dummy_shadow_cube_image_,     6);
+
+    // SSAO dummy: transition to TRANSFER_DST, clear to white (1.0), then
+    // to SHADER_READ_ONLY. Done inline rather than via the generic
+    // `transition` lambda because the dummy needs a real color value the
+    // shader reads, not just a layout.
+    {
+        VkImageMemoryBarrier b{};
+        b.sType                       = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.oldLayout                   = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout                   = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.image                       = dummy_ssao_image_;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.levelCount = 1;
+        b.subresourceRange.layerCount = 1;
+        b.srcAccessMask = 0;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &b);
+
+        VkClearColorValue clear{};
+        clear.float32[0] = 1.0f;
+        VkImageSubresourceRange r{};
+        r.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        r.levelCount = 1;
+        r.layerCount = 1;
+        vkCmdClearColorImage(cmd, dummy_ssao_image_,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             &clear, 1, &r);
+
+        b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &b);
+    }
 
     vkEndCommandBuffer(cmd);
 
@@ -615,12 +809,15 @@ void VulkanLightingPass::create_pipeline() {
         vert = shader_registry_->create_from_spirv(kLightingPassVertSpv, kLightingPassVertSpv_size,
                                                    ShaderStage::Vertex, "lighting_pass.vert");
     }
-    auto frag = shader_registry_->compile_glsl(kLightingFragSrc, ShaderStage::Fragment,
-                                               "lighting_pass.frag");
-    if (!frag) {
-        frag = shader_registry_->create_from_spirv(kLightingPassFragSpv, kLightingPassFragSpv_size,
-                                                   ShaderStage::Fragment, "lighting_pass.frag");
-    }
+    // Force the pre-compiled SPIR-V — the runtime glslang path can't
+    // compile GL_EXT_ray_query without explicit target-env setup, and
+    // the embedded GLSL string would have to be kept in sync with the
+    // disk .frag (now non-trivial with the RT additions). The SPIR-V
+    // is the source of truth.
+    auto frag = shader_registry_->create_from_spirv(kLightingPassFragSpv,
+                                                    kLightingPassFragSpv_size,
+                                                    ShaderStage::Fragment,
+                                                    "lighting_pass.frag");
     if (!vert || !frag) {
         throw std::runtime_error("Failed to compile lighting shaders");
     }
@@ -628,7 +825,7 @@ void VulkanLightingPass::create_pipeline() {
     VkPushConstantRange push_range{};
     push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     push_range.offset     = 0;
-    push_range.size       = sizeof(float) * 8; // vec3 cameraPos + float ambient + vec3 ambientColor + uint lightCount
+    push_range.size       = sizeof(float) * 28; // 48B legacy/IBL + 64B mat4 invViewProj
 
     VkPipelineLayoutCreateInfo layout_info{};
     layout_info.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -727,7 +924,7 @@ void VulkanLightingPass::update_descriptor_set() {
         gbuffer_->get_depth_view(),
     };
 
-    std::array<VkDescriptorImageInfo, 7> image_infos{};
+    std::array<VkDescriptorImageInfo, 12> image_infos{};
     for (uint32_t i = 0; i < 5; ++i) {
         image_infos[i].sampler     = gbuffer_sampler_;
         image_infos[i].imageView   = gbuffer_views[i];
@@ -744,7 +941,38 @@ void VulkanLightingPass::update_descriptor_set() {
     image_infos[6].imageView   = point_shadow_view_          ? point_shadow_view_          : dummy_shadow_cube_view_;
     image_infos[6].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    std::array<VkWriteDescriptorSet, 8> writes{};
+    // IBL bindings 8 (irradiance cube), 9 (prefiltered cube), 10 (BRDF LUT 2D).
+    // Fall back to the dummy point-shadow cube + dummy directional shadow
+    // sampler if IBL hasn't been bound; the shader gates on
+    // `iblPrefilterMips > 0` (set via push constants), so unused samples
+    // never affect the output but Vulkan still requires valid descriptors.
+    VkImageView dummy_cube_view = ibl_irradiance_view_ ? ibl_irradiance_view_ : dummy_shadow_cube_view_;
+    VkSampler   dummy_cube_smp  = ibl_irradiance_sampler_ ? ibl_irradiance_sampler_ : shadow_sampler_;
+    image_infos[7].sampler     = dummy_cube_smp;
+    image_infos[7].imageView   = dummy_cube_view;
+    image_infos[7].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    image_infos[8].sampler     = ibl_prefilter_sampler_ ? ibl_prefilter_sampler_ : shadow_sampler_;
+    image_infos[8].imageView   = ibl_prefilter_view_    ? ibl_prefilter_view_    : dummy_shadow_cube_view_;
+    image_infos[8].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    image_infos[9].sampler     = ibl_brdf_lut_sampler_  ? ibl_brdf_lut_sampler_  : gbuffer_sampler_;
+    image_infos[9].imageView   = ibl_brdf_lut_view_     ? ibl_brdf_lut_view_     : dummy_shadow_2d_array_view_;
+    image_infos[9].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // Env cubemap (binding 11) — sampled directly for the sky branch in
+    // main(). Falls back to the dummy cube view if no env map was bound.
+    image_infos[10].sampler     = env_cubemap_sampler_ ? env_cubemap_sampler_ : shadow_sampler_;
+    image_infos[10].imageView   = env_cubemap_view_    ? env_cubemap_view_    : dummy_shadow_cube_view_;
+    image_infos[10].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // SSAO (binding 12) — falls back to the 1x1 dummy R8 image cleared to
+    // 1.0, so the shader's `ambient *= ssao` multiply is a no-op when no
+    // SSAO texture is bound.
+    image_infos[11].sampler     = ssao_sampler_ ? ssao_sampler_ : gbuffer_sampler_;
+    image_infos[11].imageView   = ssao_view_    ? ssao_view_    : dummy_ssao_view_;
+    image_infos[11].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // 7 g-buffer/shadow + 1 light SSBO + 3 IBL + 1 env cubemap + 1 SSAO = 13 writes.
+    std::array<VkWriteDescriptorSet, 13> writes{};
     for (uint32_t i = 0; i < 7; ++i) {
         writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet          = descriptor_set_;
@@ -765,6 +993,15 @@ void VulkanLightingPass::update_descriptor_set() {
     writes[7].descriptorCount = 1;
     writes[7].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[7].pBufferInfo     = &light_info;
+
+    for (uint32_t i = 0; i < 5; ++i) {
+        writes[8 + i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[8 + i].dstSet          = descriptor_set_;
+        writes[8 + i].dstBinding      = 8 + i;
+        writes[8 + i].descriptorCount = 1;
+        writes[8 + i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[8 + i].pImageInfo      = &image_infos[7 + i];
+    }
 
     vkUpdateDescriptorSets(device_->get_device(),
                            static_cast<uint32_t>(writes.size()), writes.data(),
@@ -797,7 +1034,8 @@ void VulkanLightingPass::add_light(const Light& light) {
 uint32_t VulkanLightingPass::add_directional_light(const glm::vec3& direction,
                                                    const glm::vec3& color,
                                                    float intensity,
-                                                   bool casts_shadow) {
+                                                   bool casts_shadow,
+                                                   const glm::mat4& shadow_view_proj) {
     if (light_count_ >= config_.max_lights) {
         spdlog::warn("Light limit reached, cannot add directional light");
         return UINT32_MAX;
@@ -811,7 +1049,7 @@ uint32_t VulkanLightingPass::add_directional_light(const glm::vec3& direction,
     light.direction   = glm::vec4(dir, intensity);
     light.color_radius = glm::vec4(color, 0.0f); // Radius unused for directional.
     light.attenuation = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
-    light.shadow_matrix = glm::mat4(1.0f);
+    light.shadow_matrix = shadow_view_proj;
     light.shadow_map_index = 0;
     light.casts_shadow = casts_shadow ? 1u : 0u;
     add_light(light);
@@ -877,6 +1115,65 @@ void VulkanLightingPass::set_directional_shadow_map(VkImageView view, VkSampler 
 void VulkanLightingPass::set_point_shadow_map(VkImageView view, VkSampler sampler) {
     point_shadow_view_    = view;
     point_shadow_sampler_ = sampler;
+    update_descriptor_set();
+}
+
+void VulkanLightingPass::set_tlas(VkAccelerationStructureKHR tlas) {
+    // Skip the descriptor write when the handle hasn't actually changed —
+    // main.cpp re-binds every frame for safety, but most frames the TLAS
+    // handle is stable. vkUpdateDescriptorSets is not free.
+    if (tlas == tlas_) return;
+    tlas_ = tlas;
+    if (descriptor_set_ == VK_NULL_HANDLE) return;
+
+    // Write binding 13 with the (possibly null) TLAS. When `tlas` is null,
+    // we skip the write entirely — the push-constant `rt_shadow_enabled`
+    // flag must also be 0 in that case so the shader's RT branch is dead.
+    if (tlas_ == VK_NULL_HANDLE) return;
+
+    VkWriteDescriptorSetAccelerationStructureKHR as_write{};
+    as_write.sType                       = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+    as_write.accelerationStructureCount  = 1;
+    as_write.pAccelerationStructures     = &tlas_;
+
+    VkWriteDescriptorSet write{};
+    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.pNext           = &as_write;
+    write.dstSet          = descriptor_set_;
+    write.dstBinding      = 13;
+    write.descriptorCount = 1;
+    write.descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    vkUpdateDescriptorSets(device_->get_device(), 1, &write, 0, nullptr);
+}
+
+void VulkanLightingPass::set_ssao_texture(VkImageView view, VkSampler sampler) {
+    ssao_view_    = view;
+    ssao_sampler_ = sampler;
+    update_descriptor_set();
+}
+
+void VulkanLightingPass::set_env_cubemap(VkImageView view, VkSampler sampler) {
+    env_cubemap_view_    = view;
+    env_cubemap_sampler_ = sampler;
+    update_descriptor_set();
+}
+
+void VulkanLightingPass::set_ibl_textures(VkImageView irradiance_view, VkSampler irradiance_sampler,
+                                          VkImageView prefilter_view,  VkSampler prefilter_sampler,
+                                          VkImageView brdf_lut_view,   VkSampler brdf_lut_sampler,
+                                          uint32_t prefilter_mips) {
+    // If any view/sampler is null, treat IBL as disabled — fall back to the
+    // legacy constant ambient term in the shader by reporting mips=0.
+    const bool all_set = (irradiance_view != VK_NULL_HANDLE && irradiance_sampler != VK_NULL_HANDLE &&
+                         prefilter_view != VK_NULL_HANDLE && prefilter_sampler != VK_NULL_HANDLE &&
+                         brdf_lut_view != VK_NULL_HANDLE && brdf_lut_sampler != VK_NULL_HANDLE);
+    ibl_irradiance_view_   = all_set ? irradiance_view    : VK_NULL_HANDLE;
+    ibl_irradiance_sampler_ = all_set ? irradiance_sampler : VK_NULL_HANDLE;
+    ibl_prefilter_view_    = all_set ? prefilter_view     : VK_NULL_HANDLE;
+    ibl_prefilter_sampler_ = all_set ? prefilter_sampler  : VK_NULL_HANDLE;
+    ibl_brdf_lut_view_     = all_set ? brdf_lut_view      : VK_NULL_HANDLE;
+    ibl_brdf_lut_sampler_  = all_set ? brdf_lut_sampler   : VK_NULL_HANDLE;
+    ibl_prefilter_mips_    = all_set ? prefilter_mips     : 0u;
     update_descriptor_set();
 }
 
@@ -964,20 +1261,47 @@ void VulkanLightingPass::render(VkCommandBuffer cmd) {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_,
                             0, 1, &descriptor_set_, 0, nullptr);
 
-    // Push constants match the PBR shader's `Constants` block.
-    // Layout (std430-like, all 4-byte slots):
-    //   vec3  cameraPos        [0..2]  +  float ambientIntensity [3]
-    //   vec3  ambientColor     [4..6]  +  uint  lightCount       [7]
-    struct {
+    // Push constants match the PBR shader's `Constants` block. Layout
+    // (std430-like, all 4-byte slots):
+    //   vec3  cameraPos        [0..2]  +  float ambientIntensity   [3]
+    //   vec3  ambientColor     [4..6]  +  uint  lightCount         [7]
+    //   float iblPrefilterMips [8]     +  float iblIntensity        [9]
+    //   vec2  _pad             [10..11]
+    // iblPrefilterMips holds the max mip index (mips - 1); the shader
+    // gates the IBL term on `iblPrefilterMips > 0`, so when IBL hasn't
+    // been bound the term is skipped and only the constant ambient applies.
+    struct PC {
         float camera_x, camera_y, camera_z, ambient_intensity;
         float ambient_r, ambient_g, ambient_b;
         uint32_t light_count;
-    } pc{
-        camera_position_.x, camera_position_.y, camera_position_.z,
-        config_.global_ambient,
-        config_.ambient_color.r, config_.ambient_color.g, config_.ambient_color.b,
-        light_count_,
-    };
+        float ibl_prefilter_mips;
+        float ibl_intensity;
+        // Both former pad slots now carry RT toggles. inv_view_proj stays
+        // on a 16-byte boundary (offset 48).
+        float rt_shadow_enabled;
+        float rt_ao_enabled;
+        float inv_view_proj[16]; // column-major mat4
+    } pc{};
+    pc.camera_x = camera_position_.x;
+    pc.camera_y = camera_position_.y;
+    pc.camera_z = camera_position_.z;
+    pc.ambient_intensity = config_.global_ambient;
+    pc.ambient_r = config_.ambient_color.r;
+    pc.ambient_g = config_.ambient_color.g;
+    pc.ambient_b = config_.ambient_color.b;
+    pc.light_count = light_count_;
+    pc.ibl_prefilter_mips = ibl_prefilter_mips_ > 0 ? float(ibl_prefilter_mips_ - 1) : 0.0f;
+    pc.ibl_intensity      = ibl_prefilter_mips_ > 0 ? ibl_intensity_ : 0.0f;
+    const bool rt_active  = (rt_enabled_ && tlas_ != VK_NULL_HANDLE);
+    pc.rt_shadow_enabled  = rt_active ? 1.0f : 0.0f;
+    pc.rt_ao_enabled      = (rt_active && rt_ao_enabled_) ? 1.0f : 0.0f;
+    // Inverse of (proj * view-rotation-only). Strips the camera translation
+    // so the sky shader reconstructs a world-space ray DIRECTION without a
+    // precision-losing `world - cameraPos` subtraction (which made the
+    // skybox drift grey at large camera positions).
+    const glm::mat4 view_rot_only = glm::mat4(glm::mat3(view_matrix_));
+    const glm::mat4 inv_vp = glm::inverse(proj_matrix_ * view_rot_only);
+    std::memcpy(pc.inv_view_proj, &inv_vp[0][0], sizeof(pc.inv_view_proj));
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc), &pc);
 
@@ -1086,6 +1410,19 @@ void VulkanLightingPass::cleanup() {
     if (dummy_shadow_cube_mem_ != VK_NULL_HANDLE) {
         vkFreeMemory(vk_device, dummy_shadow_cube_mem_, nullptr);
         dummy_shadow_cube_mem_ = VK_NULL_HANDLE;
+    }
+
+    if (dummy_ssao_view_ != VK_NULL_HANDLE) {
+        vkDestroyImageView(vk_device, dummy_ssao_view_, nullptr);
+        dummy_ssao_view_ = VK_NULL_HANDLE;
+    }
+    if (dummy_ssao_image_ != VK_NULL_HANDLE) {
+        vkDestroyImage(vk_device, dummy_ssao_image_, nullptr);
+        dummy_ssao_image_ = VK_NULL_HANDLE;
+    }
+    if (dummy_ssao_mem_ != VK_NULL_HANDLE) {
+        vkFreeMemory(vk_device, dummy_ssao_mem_, nullptr);
+        dummy_ssao_mem_ = VK_NULL_HANDLE;
     }
 
     // Drop the registry last so its cached VkShaderModules are torn down

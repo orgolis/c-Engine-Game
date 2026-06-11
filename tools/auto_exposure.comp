@@ -1,0 +1,91 @@
+#version 450
+// Auto-exposure: parallel-reduce the lit HDR target into a single
+// average-log-luminance value, then smoothly lerp the persistent
+// `exposure` value toward a target derived from that luminance.
+//
+// SKY EXCLUSION: pixels where the G-Buffer depth is at the far plane
+// (== sky, no geometry) are NOT metered. Otherwise, facing open sky
+// pulls the average luminance way up, the exposure drops, and the sky
+// desaturates to grey as the camera moves to face it. Metering only
+// scene geometry keeps the sky's apparent brightness stable.
+//
+// Dispatched once per frame with a single workgroup of 16x16 threads.
+// Each thread strides over the HDR target. Shared-memory reduction
+// collapses the workgroup's contributions (sum of log-luminance + count
+// of valid samples) into one final value at invocation 0.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D hdrTex;
+layout(set = 0, binding = 1) buffer ExposureBuffer {
+    float exposure;
+    float _pad0;
+    float _pad1;
+    float _pad2;
+} expBuf;
+layout(set = 0, binding = 2) uniform sampler2D depthTex; // G-Buffer depth
+
+layout(push_constant) uniform PC {
+    ivec2 hdr_size;
+    float dt;
+    float adapt_rate;
+    float key;
+    float min_exposure;
+    float max_exposure;
+    float _pad;
+} pc;
+
+shared float s_log_lum[256];
+shared float s_count[256];
+
+float luminance(vec3 rgb) {
+    return dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+}
+
+void main() {
+    const int STRIDE_X = max(pc.hdr_size.x / 16, 1);
+    const int STRIDE_Y = max(pc.hdr_size.y / 16, 1);
+
+    ivec2 px = ivec2(gl_LocalInvocationID.xy) * ivec2(STRIDE_X, STRIDE_Y);
+    px = clamp(px, ivec2(0), pc.hdr_size - 1);
+
+    // Sky pixels (depth at far plane) are excluded from metering.
+    float depth = texelFetch(depthTex, px, 0).r;
+    bool  is_sky = depth >= (1.0 - 1e-5);
+
+    if (is_sky) {
+        s_log_lum[gl_LocalInvocationIndex] = 0.0;
+        s_count[gl_LocalInvocationIndex]   = 0.0;
+    } else {
+        vec3 col = texelFetch(hdrTex, px, 0).rgb;
+        float lum = max(luminance(col), 1e-4);
+        s_log_lum[gl_LocalInvocationIndex] = log(lum);
+        s_count[gl_LocalInvocationIndex]   = 1.0;
+    }
+
+    barrier();
+
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (gl_LocalInvocationIndex < stride) {
+            s_log_lum[gl_LocalInvocationIndex] += s_log_lum[gl_LocalInvocationIndex + stride];
+            s_count[gl_LocalInvocationIndex]   += s_count[gl_LocalInvocationIndex + stride];
+        }
+        barrier();
+    }
+
+    if (gl_LocalInvocationIndex == 0u) {
+        float count = s_count[0];
+        // All-sky frame (count == 0): don't adapt — keep the current
+        // exposure so looking straight up at the sky doesn't swing it.
+        if (count < 0.5) return;
+
+        float avg_log_lum = s_log_lum[0] / count;
+        float avg_lum     = exp(avg_log_lum);
+        float target = pc.key / max(avg_lum, 1e-4);
+        target = clamp(target, pc.min_exposure, pc.max_exposure);
+
+        float prev = expBuf.exposure;
+        float alpha = 1.0 - exp(-pc.dt * pc.adapt_rate);
+        expBuf.exposure = mix(prev, target, alpha);
+    }
+}

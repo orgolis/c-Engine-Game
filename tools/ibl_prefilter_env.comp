@@ -1,0 +1,88 @@
+#version 450
+// Prefiltered specular environment map convolution. One dispatch per mip
+// level (push constant carries roughness ∈ [0, 1]). For each output texel,
+// importance-samples the GGX NDF and accumulates env-cubemap radiance
+// weighted by N·L. The result is the prefiltered radiance term in Karis'
+// split-sum specular IBL approximation:
+//
+//   specular_IBL ≈ prefiltered(N, α) * (F0 * brdfLUT.x + brdfLUT.y)
+//
+// At mip 0 (roughness = 0) the result is effectively the original env map.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform samplerCube envMap;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly imageCube dstPrefilter;
+
+layout(push_constant) uniform PC {
+    ivec2 face_size;     // resolution of this mip
+    int   face_index;
+    float roughness;
+} pc;
+
+const float PI = 3.14159265358979323846;
+const uint  SAMPLE_COUNT = 1024u;
+
+vec3 face_direction(ivec2 px, int face) {
+    vec2 uv = ((vec2(px) + 0.5) / vec2(pc.face_size)) * 2.0 - 1.0;
+    if (face == 0) return normalize(vec3( 1.0, -uv.y, -uv.x));
+    if (face == 1) return normalize(vec3(-1.0, -uv.y,  uv.x));
+    if (face == 2) return normalize(vec3( uv.x,  1.0,  uv.y));
+    if (face == 3) return normalize(vec3( uv.x, -1.0, -uv.y));
+    if (face == 4) return normalize(vec3( uv.x, -uv.y,  1.0));
+    return                 normalize(vec3(-uv.x, -uv.y, -1.0));
+}
+
+// Radical-inverse base-2 for low-discrepancy Hammersley sequence.
+float radical_inverse_vdc(uint bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u)  | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u)  | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u)  | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u)  | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10;
+}
+
+vec2 hammersley(uint i, uint N) {
+    return vec2(float(i) / float(N), radical_inverse_vdc(i));
+}
+
+// GGX importance-sample the half-vector. `roughness` is α = roughness^2 in
+// the conventional Disney/Karis formulation.
+vec3 importance_sample_ggx(vec2 Xi, vec3 N, float roughness) {
+    float a = roughness * roughness;
+    float phi = 2.0 * PI * Xi.x;
+    float cos_theta = sqrt((1.0 - Xi.y) / (1.0 + (a * a - 1.0) * Xi.y));
+    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
+
+    vec3 H = vec3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta);
+
+    vec3 up    = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(up, N));
+    vec3 bitan   = cross(N, tangent);
+    return normalize(tangent * H.x + bitan * H.y + N * H.z);
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.face_size.x || px.y >= pc.face_size.y) return;
+
+    vec3 N = face_direction(px, pc.face_index);
+    vec3 V = N; // assume view direction = surface normal (Karis split-sum)
+
+    vec3 prefiltered = vec3(0.0);
+    float total_weight = 0.0;
+    for (uint i = 0u; i < SAMPLE_COUNT; ++i) {
+        vec2 Xi = hammersley(i, SAMPLE_COUNT);
+        vec3 H  = importance_sample_ggx(Xi, N, pc.roughness);
+        vec3 L  = reflect(-V, H);
+        float NdotL = max(dot(N, L), 0.0);
+        if (NdotL > 0.0) {
+            prefiltered  += texture(envMap, L).rgb * NdotL;
+            total_weight += NdotL;
+        }
+    }
+    prefiltered /= max(total_weight, 1e-4);
+
+    imageStore(dstPrefilter, ivec3(px, pc.face_index), vec4(prefiltered, 1.0));
+}

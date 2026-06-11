@@ -116,16 +116,32 @@ public:
     const glm::vec3& GetEmissive() const { return emissive_; }
     void  SetEmissive(const glm::vec3& e) { emissive_ = glm::max(e, glm::vec3(0.0f)); }
 
+    /// HDR multiplier on the emissive colour. The bloom threshold is ~1.0,
+    /// so an emissive colour at [0,1] barely glows — push this to 2–10 to
+    /// make a surface read as a real, blooming light source ("self glow").
+    float GetEmissiveIntensity() const { return emissive_intensity_; }
+    void  SetEmissiveIntensity(float i) { emissive_intensity_ = glm::max(i, 0.0f); }
+
+    /// Emissive colour pre-multiplied by intensity — what the material/
+    /// G-Buffer actually receives.
+    glm::vec3 GetEmissiveLinear() const { return emissive_ * emissive_intensity_; }
+
 protected:
     MeshType  mesh_type_      = MeshType::Cube;
     glm::vec4 color_          = glm::vec4(1.0f);  // White by default
     AlphaMode alpha_mode_     = AlphaMode::Opaque;
     float     alpha_cutoff_   = 0.5f;            // Standard glTF default (Cutout mode)
 
-    float     metallic_       = 0.05f;
-    float     roughness_      = 0.7f;
+    // Default to fully dielectric, fully rough — i.e. truly non-reflective.
+    // Previously this defaulted to metallic=0.05 / roughness=0.7 which left
+    // a faint stochastic SSR + IBL contribution on every surface that
+    // looked like noise/sparkles. Place a real material on the entity
+    // (or override these values) when a reflective look is wanted.
+    float     metallic_       = 0.0f;
+    float     roughness_      = 1.0f;
     float     occlusion_      = 1.0f;
     glm::vec3 emissive_       = glm::vec3(0.0f);
+    float     emissive_intensity_ = 1.0f;
 };
 
 } // namespace schizo::scene

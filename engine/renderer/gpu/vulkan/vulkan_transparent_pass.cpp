@@ -40,8 +40,9 @@ struct TransparentPushConstants {
 struct LightEnvUniform {
     glm::vec4 ambient_color;
     glm::vec4 camera_position;  // w = light_count as float
+    glm::vec4 ibl_params;       // x = prefilter max mip (0 disables IBL), y = intensity, zw = pad
 };
-static_assert(sizeof(LightEnvUniform) == 32, "LightEnvUniform must be 32 bytes");
+static_assert(sizeof(LightEnvUniform) == 48, "LightEnvUniform must be 48 bytes");
 
 // Vertex / accumulation fragment shader sources — see transparent_pass.{vert,frag}.
 constexpr const char* kTransparentVertSrc = R"GLSL(
@@ -247,11 +248,17 @@ bool VulkanTransparentPass::create_light_env_resources() {
     vkBindBufferMemory(vk, light_env_buffer_, light_env_memory_, 0);
     if (vkMapMemory(vk, light_env_memory_, 0, sizeof(LightEnvUniform), 0, &light_env_mapped_) != VK_SUCCESS) return false;
 
-    std::array<VkDescriptorSetLayoutBinding, 4> bs{};
+    // Bindings 0..3: legacy (UBO + 2 shadow samplers + light SSBO).
+    // Bindings 4..6: IBL (irradiance cube + prefiltered specular cube +
+    // BRDF LUT 2D). Same data the deferred lighting pass samples.
+    std::array<VkDescriptorSetLayoutBinding, 7> bs{};
     bs[0] = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
     bs[1] = { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
     bs[2] = { 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
     bs[3] = { 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
+    bs[4] = { 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
+    bs[5] = { 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
+    bs[6] = { 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
     VkDescriptorSetLayoutCreateInfo li{};
     li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     li.bindingCount = static_cast<uint32_t>(bs.size());
@@ -260,7 +267,7 @@ bool VulkanTransparentPass::create_light_env_resources() {
 
     std::array<VkDescriptorPoolSize, 3> ps{};
     ps[0] = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1 };
-    ps[1] = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 };
+    ps[1] = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 }; // 2 shadow + 3 IBL
     ps[2] = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1 };
     VkDescriptorPoolCreateInfo pi{};
     pi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -523,11 +530,61 @@ void VulkanTransparentPass::set_lighting_resources(
     spdlog::info("VulkanTransparentPass[WBOIT]: lighting resources wired (max_lights={})", max_lights);
 }
 
+void VulkanTransparentPass::set_ibl_textures(
+    VkImageView irradiance_view, VkSampler irradiance_sampler,
+    VkImageView prefilter_view,  VkSampler prefilter_sampler,
+    VkImageView brdf_lut_view,   VkSampler brdf_lut_sampler,
+    uint32_t prefilter_mips)
+{
+    if (device_ == nullptr || light_env_set_ == VK_NULL_HANDLE) return;
+    if (irradiance_view == VK_NULL_HANDLE || prefilter_view == VK_NULL_HANDLE ||
+        brdf_lut_view   == VK_NULL_HANDLE) {
+        ibl_prefilter_mips_ = 0;
+        return;
+    }
+
+    VkDescriptorImageInfo ir{};
+    ir.sampler = irradiance_sampler; ir.imageView = irradiance_view;
+    ir.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorImageInfo pr{};
+    pr.sampler = prefilter_sampler;  pr.imageView = prefilter_view;
+    pr.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorImageInfo lu{};
+    lu.sampler = brdf_lut_sampler;   lu.imageView = brdf_lut_view;
+    lu.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    std::array<VkWriteDescriptorSet, 3> ws{};
+    ws[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    ws[0].dstSet = light_env_set_; ws[0].dstBinding = 4;
+    ws[0].descriptorCount = 1;
+    ws[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    ws[0].pImageInfo = &ir;
+    ws[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    ws[1].dstSet = light_env_set_; ws[1].dstBinding = 5;
+    ws[1].descriptorCount = 1;
+    ws[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    ws[1].pImageInfo = &pr;
+    ws[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    ws[2].dstSet = light_env_set_; ws[2].dstBinding = 6;
+    ws[2].descriptorCount = 1;
+    ws[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    ws[2].pImageInfo = &lu;
+    vkUpdateDescriptorSets(device_->get_device(),
+                           static_cast<uint32_t>(ws.size()), ws.data(), 0, nullptr);
+    ibl_prefilter_mips_ = prefilter_mips;
+    spdlog::info("VulkanTransparentPass[WBOIT]: IBL textures wired (mips={})", prefilter_mips);
+}
+
 void VulkanTransparentPass::upload_light_env(const glm::vec3& camera_position) {
     if (light_env_mapped_ == nullptr) return;
     LightEnvUniform u{};
     u.ambient_color   = glm::vec4(ambient_color_, ambient_intensity_);
     u.camera_position = glm::vec4(camera_position, static_cast<float>(light_count_));
+    // ibl_params.x = max valid prefilter mip; 0 disables the IBL branch.
+    const float mips = ibl_prefilter_mips_ > 0 ? float(ibl_prefilter_mips_ - 1) : 0.0f;
+    u.ibl_params = glm::vec4(mips,
+                             ibl_prefilter_mips_ > 0 ? ibl_intensity_ : 0.0f,
+                             0.0f, 0.0f);
     std::memcpy(light_env_mapped_, &u, sizeof(u));
 }
 

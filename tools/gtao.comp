@@ -1,0 +1,76 @@
+#version 450
+// Ground-Truth Ambient Occlusion (Jimenez et al. 2016), simplified. Like
+// HBAO it is horizon-based, but it samples slices with TWO horizons (both
+// sides) and weights the result by the cosine-of-elevation visibility, so
+// it converges toward a reference path-traced AO. Smoother and less prone
+// to over-darkening thin features than HBAO.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D positionTex;
+layout(set = 0, binding = 1) uniform sampler2D normalTex;
+layout(set = 0, binding = 2) uniform sampler2D depthTex;
+layout(set = 0, binding = 3, r8) uniform writeonly image2D dstOcclusion;
+
+layout(push_constant) uniform PC {
+    mat4  view_proj;
+    ivec2 output_size;
+    float radius;
+    float bias;
+    float intensity;
+    float _pad;
+} pc;
+
+float hash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+const float PI = 3.14159265359;
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.output_size.x || px.y >= pc.output_size.y) return;
+    vec2 uv = (vec2(px) + 0.5) / vec2(pc.output_size);
+
+    vec3 N = texture(normalTex, uv).xyz;
+    if (dot(N, N) < 0.01) { imageStore(dstOcclusion, px, vec4(1.0)); return; }
+    N = normalize(N);
+    vec3 P = texture(positionTex, uv).xyz;
+
+    const int SLICES = 3;
+    const int STEPS  = 5;
+    vec2  texel  = 1.0 / vec2(pc.output_size);
+    float rnd    = hash(vec2(px));
+    float stride = 7.0;
+
+    float visibility = 0.0;
+    for (int slice = 0; slice < SLICES; ++slice) {
+        float phi = (float(slice) + rnd) / float(SLICES) * PI;
+        vec2  sdir = vec2(cos(phi), sin(phi));
+
+        // Max elevation (sine of angle above the tangent plane) on each side.
+        float elev1 = 0.0, elev2 = 0.0;
+        for (int s = 1; s <= STEPS; ++s) {
+            vec2 o = sdir * texel * (float(s) * stride);
+            vec3 d1 = texture(positionTex, uv + o).xyz - P;
+            vec3 d2 = texture(positionTex, uv - o).xyz - P;
+            float l1 = length(d1), l2 = length(d2);
+            if (l1 > 1e-4 && l1 < pc.radius)
+                elev1 = max(elev1, (dot(d1, N) / l1 - pc.bias) * (1.0 - l1 / pc.radius));
+            if (l2 > 1e-4 && l2 < pc.radius)
+                elev2 = max(elev2, (dot(d2, N) / l2 - pc.bias) * (1.0 - l2 / pc.radius));
+        }
+        elev1 = clamp(elev1, 0.0, 1.0);
+        elev2 = clamp(elev2, 0.0, 1.0);
+        // Cosine-weighted visibility above each horizon = cos(asin(elev)).
+        float v1 = sqrt(max(0.0, 1.0 - elev1 * elev1));
+        float v2 = sqrt(max(0.0, 1.0 - elev2 * elev2));
+        visibility += 0.5 * (v1 + v2);
+    }
+    visibility = visibility / float(SLICES);
+    // Apply intensity as a contrast on the occlusion (1 - visibility).
+    float ao = 1.0 - (1.0 - visibility) * pc.intensity;
+    imageStore(dstOcclusion, px, vec4(clamp(ao, 0.0, 1.0)));
+}

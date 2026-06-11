@@ -36,7 +36,11 @@ class Texture;
 /// discard" — the previous behaviour.
 struct MaterialUniforms {
     glm::vec4 base_color_factor    = glm::vec4(1.0f); // RGB + alpha
-    float     metallic_factor      = 1.0f;
+    // PBR convention: default = dielectric (non-metal), fully rough. The
+    // previous metallic_factor=1.0 default made every untextured primitive
+    // a perfect mirror, which is why surfaces looked uniformly reflective
+    // even when the user expected "absolutely non-reflective".
+    float     metallic_factor      = 0.0f;
     float     roughness_factor     = 1.0f;
     float     occlusion_strength   = 1.0f;
     float     normal_scale         = 1.0f;
@@ -82,12 +86,18 @@ public:
 
     VkDescriptorSet descriptor_set() const { return descriptor_set_; }
 
+    /// CPU-side copy of the PBR factors this material was built with.
+    /// Used by the RT reflection pass to shade hit points (which can't
+    /// read the GPU UBO conveniently in a ray query).
+    const MaterialUniforms& params() const { return params_; }
+
 private:
     VulkanDevice*    device_         = nullptr;
     VkDescriptorPool pool_           = VK_NULL_HANDLE; // Not owned; for free path
     VkDescriptorSet  descriptor_set_ = VK_NULL_HANDLE;
     VkBuffer         ubo_            = VK_NULL_HANDLE;
     VkDeviceMemory   ubo_memory_     = VK_NULL_HANDLE;
+    MaterialUniforms params_{};
 
     // Default fallback textures owned by the material when the caller
     // didn't supply one. We keep them on the material so the descriptor

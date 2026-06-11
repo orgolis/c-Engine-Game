@@ -79,6 +79,31 @@ struct PostProcessingConfig {
     bool enable_chromatic = false;
     bool enable_vignette = false;
     bool enable_film_grain = false;
+    // Effect strengths (used when the matching enable is on).
+    float chromatic_intensity = 0.005f; // radial UV offset scale
+    float vignette_intensity  = 0.5f;   // 0 = none, 1 = strong
+    float vignette_radius     = 0.75f;  // distance where darkening starts
+    float film_grain_intensity = 0.05f; // additive noise amplitude
+    // Sharpen (unsharp mask).
+    bool  enable_sharpen      = false;
+    float sharpen_intensity   = 0.5f;
+    // Lens distortion (barrel +, pincushion -).
+    bool  enable_lens_distortion = false;
+    float lens_distortion     = 0.15f;
+    // Color grading.
+    bool  enable_color_grade  = false;
+    float cg_temperature      = 0.0f;   // warm(+)/cool(-)
+    float cg_tint             = 0.0f;   // magenta(+)/green(-)
+    float cg_saturation       = 1.0f;
+    float cg_contrast         = 1.0f;
+    float cg_brightness       = 1.0f;
+    // Stylized effects.
+    bool  enable_posterize    = false;
+    float posterize_levels    = 8.0f;
+    bool  enable_pixelate     = false;
+    float pixelate_size       = 4.0f;   // block size in pixels
+    bool  enable_scanlines    = false;
+    float scanline_intensity  = 0.3f;
 };
 
 /**
@@ -111,6 +136,14 @@ public:
      * @brief Set input image (before post-processing)
      */
     void set_input_image(VkImageView image_view);
+
+    /**
+     * @brief Bind the G-Buffer depth view so auto-exposure can exclude sky
+     *        pixels from metering. Call before `set_input_image` (which
+     *        lazily inits auto-exposure). A sampleable depth view (the same
+     *        one the lighting pass uses) is expected.
+     */
+    void set_scene_depth(VkImageView depth_view) { scene_depth_view_ = depth_view; }
     
     /**
      * @brief Get output image view (after post-processing) — for sampling.
@@ -131,7 +164,88 @@ public:
      * @brief Execute tone mapping
      */
     void apply_tone_mapping(VkCommandBuffer cmd);
-    
+
+    /**
+     * @brief Dispatch the auto-exposure compute pass. Reads the lit HDR,
+     *        smooths the persistent exposure value toward a target based
+     *        on average scene luminance. Must run before tone mapping.
+     * @param cmd      Command buffer to record into
+     * @param delta_s  Seconds since last frame, for frame-rate independent smoothing
+     */
+    void apply_auto_exposure(VkCommandBuffer cmd, float delta_s);
+
+    /**
+     * @brief Turn auto-exposure on/off. When off, tone mapping falls back
+     *        to the static `config.tone_mapping.exposure` value.
+     */
+    void set_auto_exposure_enabled(bool enabled) { auto_exposure_enabled_ = enabled; }
+    bool is_auto_exposure_enabled() const { return auto_exposure_enabled_; }
+
+    /**
+     * @brief Seconds since previous frame, used by auto-exposure for
+     *        frame-rate-independent smoothing. Caller updates this each
+     *        frame (typically from the editor loop's `dt`).
+     */
+    void set_delta_time(float dt) { delta_time_ = dt; }
+
+    /**
+     * @brief Apply FXAA-Lite to the post-process output target. Blits the
+     *        current output to a private intermediate, then runs the FXAA
+     *        fragment shader writing back to the output. Must run after
+     *        tone mapping (FXAA works on LDR).
+     */
+    void apply_fxaa(VkCommandBuffer cmd);
+
+    /// Turn FXAA on/off. Default: on.
+    void set_fxaa_enabled(bool enabled) { fxaa_enabled_ = enabled; }
+    bool is_fxaa_enabled() const { return fxaa_enabled_; }
+
+    /**
+     * @brief Combined colour-FX pass: chromatic aberration + vignette +
+     *        film grain, each gated by its enable flag. Runs after FXAA
+     *        on the LDR output (blit to intermediate → effects → output).
+     */
+    void apply_color_fx(VkCommandBuffer cmd);
+
+    // Runtime toggles + tuning for the three colour effects.
+    void set_chromatic(bool on, float intensity)  { chromatic_enabled_ = on; config_.chromatic_intensity = intensity; }
+    void set_vignette(bool on, float intensity, float radius) { vignette_enabled_ = on; config_.vignette_intensity = intensity; config_.vignette_radius = radius; }
+    void set_film_grain(bool on, float intensity)  { film_grain_enabled_ = on; config_.film_grain_intensity = intensity; }
+    bool is_chromatic_enabled() const  { return chromatic_enabled_; }
+    bool is_vignette_enabled() const   { return vignette_enabled_; }
+    bool is_film_grain_enabled() const { return film_grain_enabled_; }
+    // Mutable access to live-tune intensities from an editor panel.
+    float& chromatic_intensity_ref()  { return config_.chromatic_intensity; }
+    float& vignette_intensity_ref()   { return config_.vignette_intensity; }
+    float& vignette_radius_ref()      { return config_.vignette_radius; }
+    float& film_grain_intensity_ref() { return config_.film_grain_intensity; }
+
+    // Sharpen / lens distortion / color grade.
+    void set_sharpen(bool on)          { sharpen_enabled_ = on; }
+    void set_lens_distortion(bool on)  { lens_distortion_enabled_ = on; }
+    void set_color_grade(bool on)      { color_grade_enabled_ = on; }
+    bool is_sharpen_enabled() const         { return sharpen_enabled_; }
+    bool is_lens_distortion_enabled() const { return lens_distortion_enabled_; }
+    bool is_color_grade_enabled() const     { return color_grade_enabled_; }
+    float& sharpen_intensity_ref()    { return config_.sharpen_intensity; }
+    float& lens_distortion_ref()      { return config_.lens_distortion; }
+    float& cg_temperature_ref()       { return config_.cg_temperature; }
+    float& cg_tint_ref()              { return config_.cg_tint; }
+    float& cg_saturation_ref()        { return config_.cg_saturation; }
+    float& cg_contrast_ref()          { return config_.cg_contrast; }
+    float& cg_brightness_ref()        { return config_.cg_brightness; }
+
+    // Stylized: posterize / pixelate / scanlines.
+    void set_posterize(bool on)  { posterize_enabled_ = on; }
+    void set_pixelate(bool on)   { pixelate_enabled_ = on; }
+    void set_scanlines(bool on)  { scanlines_enabled_ = on; }
+    bool is_posterize_enabled() const { return posterize_enabled_; }
+    bool is_pixelate_enabled() const  { return pixelate_enabled_; }
+    bool is_scanlines_enabled() const { return scanlines_enabled_; }
+    float& posterize_levels_ref()    { return config_.posterize_levels; }
+    float& pixelate_size_ref()       { return config_.pixelate_size; }
+    float& scanline_intensity_ref()  { return config_.scanline_intensity; }
+
     /**
      * @brief Execute TAA
      */
@@ -253,6 +367,67 @@ private:
     bool chromatic_enabled_ = false;
     bool vignette_enabled_ = false;
     bool film_grain_enabled_ = false;
+    bool sharpen_enabled_ = false;
+    bool lens_distortion_enabled_ = false;
+    bool color_grade_enabled_ = false;
+    bool posterize_enabled_ = false;
+    bool pixelate_enabled_ = false;
+    bool scanlines_enabled_ = false;
+    bool auto_exposure_enabled_ = true;
+
+    // Auto-exposure resources. Buffer persists across frames so the
+    // smoothed exposure value carries over without CPU readback.
+    VkBuffer              auto_exposure_buffer_  = VK_NULL_HANDLE;
+    VkDeviceMemory        auto_exposure_memory_  = VK_NULL_HANDLE;
+    VkDescriptorSetLayout auto_exposure_dsl_     = VK_NULL_HANDLE;
+    VkDescriptorPool      auto_exposure_pool_    = VK_NULL_HANDLE;
+    VkDescriptorSet       auto_exposure_set_     = VK_NULL_HANDLE;
+    VkPipelineLayout      auto_exposure_layout_  = VK_NULL_HANDLE;
+    VkPipeline            auto_exposure_pipeline_ = VK_NULL_HANDLE;
+    VkSampler             auto_exposure_sampler_ = VK_NULL_HANDLE;
+    VkImageView           scene_depth_view_      = VK_NULL_HANDLE; // for sky exclusion
+    bool                  auto_exposure_initialized_ = false;
+    bool                  auto_exposure_needs_seed_  = true;
+    float                 delta_time_ = 1.0f / 60.0f; // sensible default before first set
+
+    bool init_auto_exposure_resources();
+
+    // FXAA resources: a private intermediate image (copy of output_image_
+    // before FXAA runs), render pass + framebuffer writing back to the
+    // main output_view_, plus its own pipeline + descriptor set.
+    bool                  fxaa_enabled_       = true;
+    bool                  fxaa_initialized_   = false;
+    VkImage               fxaa_intermediate_image_  = VK_NULL_HANDLE;
+    VkDeviceMemory        fxaa_intermediate_memory_ = VK_NULL_HANDLE;
+    VkImageView           fxaa_intermediate_view_   = VK_NULL_HANDLE;
+    VkSampler             fxaa_sampler_       = VK_NULL_HANDLE;
+    VkRenderPass          fxaa_render_pass_   = VK_NULL_HANDLE;
+    VkFramebuffer         fxaa_framebuffer_   = VK_NULL_HANDLE;
+    VkDescriptorSetLayout fxaa_dsl_           = VK_NULL_HANDLE;
+    VkDescriptorPool      fxaa_pool_          = VK_NULL_HANDLE;
+    VkDescriptorSet       fxaa_set_           = VK_NULL_HANDLE;
+    VkPipelineLayout      fxaa_pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline            fxaa_pipeline_      = VK_NULL_HANDLE;
+
+    bool init_fxaa_resources();
+
+    // Colour-FX resources (chromatic + vignette + grain), same private-
+    // intermediate pattern as FXAA.
+    bool                  colorfx_initialized_ = false;
+    float                 colorfx_time_        = 0.0f; // accumulates dt for grain
+    VkImage               colorfx_intermediate_image_  = VK_NULL_HANDLE;
+    VkDeviceMemory        colorfx_intermediate_memory_ = VK_NULL_HANDLE;
+    VkImageView           colorfx_intermediate_view_   = VK_NULL_HANDLE;
+    VkSampler             colorfx_sampler_     = VK_NULL_HANDLE;
+    VkRenderPass          colorfx_render_pass_ = VK_NULL_HANDLE;
+    VkFramebuffer         colorfx_framebuffer_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout colorfx_dsl_         = VK_NULL_HANDLE;
+    VkDescriptorPool      colorfx_pool_        = VK_NULL_HANDLE;
+    VkDescriptorSet       colorfx_set_         = VK_NULL_HANDLE;
+    VkPipelineLayout      colorfx_pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline            colorfx_pipeline_    = VK_NULL_HANDLE;
+
+    bool init_colorfx_resources();
     
     // Helper functions
     void create_output_image();
