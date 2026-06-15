@@ -16,8 +16,7 @@ namespace schizo::scene {
 }
 
 namespace schizo::physics {
-    class PhysicsWorld;
-    class RigidBody;
+    class PhysicsWorld;   // Jolt-backed (Stage 4)
 }
 
 namespace schizo::editor {
@@ -148,12 +147,15 @@ private:
     };
     std::unordered_map<uint32_t, EntitySnapshot> entity_snapshots_;
 
-    // Phase 2 physics: a PhysicsWorld is rebuilt fresh on every StartPlayback
-    // from the ColliderComponents currently in the scene. Bodies are owned
-    // here (unique_ptr); the world holds raw pointers as weak refs and is
-    // expected to be torn down before this map clears.
+    // Stage-4 physics: a Jolt PhysicsWorld is rebuilt fresh on every
+    // StartPlayback from the scene's ColliderComponents. `entity_bodies_` maps
+    // entity id -> Jolt BodyId; `dynamic_entities_` is the subset whose
+    // simulated transform is written back each step. The player is a Jolt
+    // CharacterVirtual (`player_char_id_`), not a rigid body.
     std::unique_ptr<schizo::physics::PhysicsWorld> physics_world_;
-    std::unordered_map<uint32_t, std::unique_ptr<schizo::physics::RigidBody>> entity_bodies_;
+    std::unordered_map<uint32_t, uint32_t> entity_bodies_;   // entity id -> BodyId
+    std::vector<uint32_t>                  dynamic_entities_; // entity ids w/ dynamic body
+    uint32_t                               player_char_id_ = 0xFFFFFFFFu;
     
     // Camera state
     glm::vec3 camera_position_ = glm::vec3(0.0f);  // Current camera world position

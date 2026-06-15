@@ -144,23 +144,28 @@ public:
         stats.total_reserved = capacity;
         stats.peak_used = peak_used;
         
-        // Count allocations and estimate fragmentation
-        size_t free_blocks = 0;
-        size_t free_space = 0;
+        // Count allocations and measure fragmentation as a 0-100 ratio:
+        //   frag = 100 * (1 - largest_free_block / total_free)
+        // 0  = all free space in one block (defragmented),
+        // ~100 = free space shattered into many small blocks (a large
+        // total_free that still can't satisfy a mid-size request).
+        size_t free_space   = 0;
+        size_t largest_free = 0;
         BlockHeader* current = block_list;
         while (current) {
             if (current->is_free) {
-                free_blocks++;
                 free_space += current->size;
+                if (current->size > largest_free) largest_free = current->size;
             } else {
                 stats.allocation_count++;
             }
             current = current->next;
         }
-        
-        // Fragmentation: how many free blocks exist
-        stats.fragmentation = free_blocks;
-        
+
+        stats.fragmentation = (free_space > 0)
+            ? static_cast<size_t>(100.0 * (1.0 - static_cast<double>(largest_free) / free_space))
+            : 0;
+
         return stats;
     }
     

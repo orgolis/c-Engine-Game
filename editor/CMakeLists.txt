@@ -25,12 +25,18 @@ target_link_libraries(editor
         ability
         network
         renderer
+        gws_jobs           # work-stealing job system (Stage 0.3)
+        gws_profiler       # core CPU profiler - scoped zones (Stage 0.6)
+        gws_ecs            # ECS World + components (Stage 1)
+        gws_asset_pipeline # cooked-asset bundles (Stage 2)
+        gws_physics        # Jolt-backed rigid bodies + character (Stage 4)
 )
 
 # Add source files
 target_sources(editor
     PRIVATE
         src/main.cpp
+        src/ecs_bridge.cpp
         src/editor_scene.cpp
         src/scene_serializer.cpp
         src/mesh_generator.cpp

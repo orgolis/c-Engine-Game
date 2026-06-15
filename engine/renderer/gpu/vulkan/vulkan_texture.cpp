@@ -59,7 +59,8 @@ void run_one_time_command(VulkanDevice* device, Fn&& fn) {
 }
 
 void transition_image_layout(VkCommandBuffer cmd, VkImage img,
-                             VkImageLayout from, VkImageLayout to) {
+                             VkImageLayout from, VkImageLayout to,
+                             uint32_t mip_count = 1) {
     VkImageMemoryBarrier barrier{};
     barrier.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.oldLayout                       = from;
@@ -69,7 +70,7 @@ void transition_image_layout(VkCommandBuffer cmd, VkImage img,
     barrier.image                           = img;
     barrier.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.baseMipLevel   = 0;
-    barrier.subresourceRange.levelCount     = 1;
+    barrier.subresourceRange.levelCount     = mip_count;
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount     = 1;
 
@@ -324,6 +325,168 @@ std::unique_ptr<Texture> Texture::create_from_file(VulkanDevice* device,
     auto out = create_from_pixels(device, pixels,
                                   static_cast<uint32_t>(w), static_cast<uint32_t>(h), srgb);
     stbi_image_free(pixels);
+    return out;
+}
+
+namespace {
+// Bytes per 4x4 block for the BC VkFormats we cook (BC1 = 8, rest = 16).
+uint32_t bc_vk_block_bytes(VkFormat f) {
+    switch (f) {
+        case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
+        case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+        case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+        case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+            return 8;
+        default:
+            return 16;  // BC3 / BC5 / BC7
+    }
+}
+}  // namespace
+
+std::unique_ptr<Texture> Texture::create_compressed(VulkanDevice* device,
+                                                    VkFormat format,
+                                                    uint32_t width, uint32_t height,
+                                                    uint32_t mip_count,
+                                                    const uint8_t* block_data,
+                                                    size_t data_size) {
+    if (!device || !block_data || width == 0 || height == 0 || mip_count == 0 || data_size == 0) {
+        spdlog::error("Texture::create_compressed: invalid args");
+        return nullptr;
+    }
+
+    VkDevice vkdev = device->get_device();
+
+    // Bail (let the caller fall back) if the GPU can't sample this BC format.
+    VkFormatProperties fp{};
+    vkGetPhysicalDeviceFormatProperties(device->get_physical_device(), format, &fp);
+    if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) {
+        spdlog::warn("Texture::create_compressed: format {} not sampleable on this GPU",
+                     static_cast<int>(format));
+        return nullptr;
+    }
+
+    auto out     = std::unique_ptr<Texture>(new Texture());
+    out->device_ = device;
+    out->width_  = width;
+    out->height_ = height;
+
+    const uint32_t bb = bc_vk_block_bytes(format);
+
+    // 1) Staging buffer holding the whole concatenated mip chain.
+    VkBufferCreateInfo bi{};
+    bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size        = data_size;
+    bi.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer staging = VK_NULL_HANDLE;
+    if (vkCreateBuffer(vkdev, &bi, nullptr, &staging) != VK_SUCCESS) return nullptr;
+
+    VkMemoryRequirements mreq;
+    vkGetBufferMemoryRequirements(vkdev, staging, &mreq);
+    VkMemoryAllocateInfo ma{};
+    ma.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ma.allocationSize  = mreq.size;
+    ma.memoryTypeIndex = device->find_memory_type(
+        mreq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    if (vkAllocateMemory(vkdev, &ma, nullptr, &staging_mem) != VK_SUCCESS) {
+        vkDestroyBuffer(vkdev, staging, nullptr); return nullptr;
+    }
+    vkBindBufferMemory(vkdev, staging, staging_mem, 0);
+    void* mapped = nullptr;
+    vkMapMemory(vkdev, staging_mem, 0, data_size, 0, &mapped);
+    std::memcpy(mapped, block_data, data_size);
+    vkUnmapMemory(vkdev, staging_mem);
+
+    // 2) Device-local compressed image with the full mip chain.
+    VkImageCreateInfo ii{};
+    ii.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ii.imageType     = VK_IMAGE_TYPE_2D;
+    ii.extent        = {width, height, 1};
+    ii.mipLevels     = mip_count;
+    ii.arrayLayers   = 1;
+    ii.format        = format;
+    ii.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    ii.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ii.samples       = VK_SAMPLE_COUNT_1_BIT;
+    ii.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateImage(vkdev, &ii, nullptr, &out->image_) != VK_SUCCESS) {
+        vkFreeMemory(vkdev, staging_mem, nullptr); vkDestroyBuffer(vkdev, staging, nullptr);
+        return nullptr;
+    }
+    VkMemoryRequirements ireq;
+    vkGetImageMemoryRequirements(vkdev, out->image_, &ireq);
+    VkMemoryAllocateInfo ia{};
+    ia.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ia.allocationSize  = ireq.size;
+    ia.memoryTypeIndex = device->find_memory_type(ireq.memoryTypeBits,
+                                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (vkAllocateMemory(vkdev, &ia, nullptr, &out->memory_) != VK_SUCCESS) {
+        vkFreeMemory(vkdev, staging_mem, nullptr); vkDestroyBuffer(vkdev, staging, nullptr);
+        return nullptr;
+    }
+    vkBindImageMemory(vkdev, out->image_, out->memory_, 0);
+
+    // 3) One copy region per mip (compressed: imageExtent is in texels, the
+    //    buffer offset advances by each mip's BC-block byte size).
+    run_one_time_command(device, [&](VkCommandBuffer cmd) {
+        transition_image_layout(cmd, out->image_, VK_IMAGE_LAYOUT_UNDEFINED,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mip_count);
+        VkDeviceSize offset = 0;
+        uint32_t mw = width, mh = height;
+        std::vector<VkBufferImageCopy> regions;
+        regions.reserve(mip_count);
+        for (uint32_t m = 0; m < mip_count; ++m) {
+            const uint32_t blocks = ((mw + 3) / 4) * ((mh + 3) / 4);
+            VkBufferImageCopy r{};
+            r.bufferOffset                    = offset;
+            r.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+            r.imageSubresource.mipLevel       = m;
+            r.imageSubresource.baseArrayLayer = 0;
+            r.imageSubresource.layerCount     = 1;
+            r.imageExtent                     = {mw, mh, 1};
+            regions.push_back(r);
+            offset += static_cast<VkDeviceSize>(blocks) * bb;
+            mw = std::max(1u, mw / 2); mh = std::max(1u, mh / 2);
+        }
+        vkCmdCopyBufferToImage(cmd, staging, out->image_,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               static_cast<uint32_t>(regions.size()), regions.data());
+        transition_image_layout(cmd, out->image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mip_count);
+    });
+    vkFreeMemory(vkdev, staging_mem, nullptr);
+    vkDestroyBuffer(vkdev, staging, nullptr);
+
+    // 4) View over all mips.
+    VkImageViewCreateInfo vi{};
+    vi.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image                           = out->image_;
+    vi.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format                          = format;
+    vi.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    vi.subresourceRange.baseMipLevel   = 0;
+    vi.subresourceRange.levelCount     = mip_count;
+    vi.subresourceRange.baseArrayLayer = 0;
+    vi.subresourceRange.layerCount     = 1;
+    if (vkCreateImageView(vkdev, &vi, nullptr, &out->view_) != VK_SUCCESS) return nullptr;
+
+    // 5) Sampler sampling the full mip chain.
+    VkSamplerCreateInfo si{};
+    si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    si.magFilter    = VK_FILTER_LINEAR;
+    si.minFilter    = VK_FILTER_LINEAR;
+    si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    si.minLod       = 0.0f;
+    si.maxLod       = static_cast<float>(mip_count - 1);
+    si.borderColor  = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+    if (vkCreateSampler(vkdev, &si, nullptr, &out->sampler_) != VK_SUCCESS) return nullptr;
+
     return out;
 }
 

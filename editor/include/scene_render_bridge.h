@@ -5,11 +5,13 @@
 #include "vulkan/vulkan_render_graph.h"
 #include "vulkan/vulkan_gltf_loader.h"
 #include "vulkan/vulkan_texture.h"
+#include "cooked_mesh_loader.h"   // cooked .pak bundles (Stage 2 cook->runtime loop)
 #include "scene.h"
 #include "entity.h"
 #include "transform.h"
 #include "mesh_component.h"
 #include "mesh_renderer_component.h"
+#include "ecs_bridge.h"   // authoritative ECS world matrices (Stage 1.4 step 2)
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -363,6 +365,13 @@ public:
             } else {
                 spdlog::error("[AssetMeshCache] Device is null for {}", path);
             }
+        } else if (ext == ".pak") {
+            // Cooked bundle: mmap + zero-parse load (the Stage 2 fast path).
+            if (device) {
+                scene = load_cooked_pak_scene(path, device, mat_layout, mat_pool);
+            } else {
+                spdlog::error("[AssetMeshCache] Device is null for {}", path);
+            }
         } else {
             spdlog::warn("[AssetMeshCache] Unsupported extension: {}", path);
         }
@@ -449,7 +458,8 @@ inline void build_draw_items(
     VkDescriptorSetLayout mat_layout,
     VkDescriptorPool mat_pool,
     std::vector<gws::renderer::gpu::DrawItem>& out_opaque,
-    std::vector<gws::renderer::gpu::DrawItem>& out_transparent)
+    std::vector<gws::renderer::gpu::DrawItem>& out_transparent,
+    const schizo::editor::EcsSceneBridge* ecs = nullptr)
 {
     out_opaque.clear();
     out_transparent.clear();
@@ -458,7 +468,13 @@ inline void build_draw_items(
     for (const auto& ent : scene->GetEntities()) {
         if (!ent || !ent->IsActiveInHierarchy()) continue;
 
-        const glm::mat4 model = ent->GetTransform()->GetWorldMatrix();
+        // Authoritative: read the world matrix the ECS transform system
+        // computed this frame. Falls back to the OOP matrix for entities not
+        // in the shadow (e.g. before the first sync). These are verified
+        // equal, so this changes the data path, not the pixels.
+        schizo::scene::Transform* tf = ent->GetTransform();
+        const glm::mat4* ecs_model = ecs ? ecs->world_matrix(tf) : nullptr;
+        const glm::mat4 model = ecs_model ? *ecs_model : tf->GetWorldMatrix();
 
         // Resolve the entity's alpha mode for the primitive path. For the
         // asset path we route per-DrawItem based on the loaded glTF's

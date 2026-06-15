@@ -5,9 +5,7 @@
 #include "entity.h"
 #include "collider_component.h"
 #include "mesh_component.h"
-#include "physics/physics_world.h"
-#include "physics/rigidbody.h"
-#include "physics/collision.h"
+#include "physics/jolt_physics.h"   // Stage 4 — Jolt-backed PhysicsWorld
 #include "tinygltf.hpp"
 #include <algorithm>
 #include <cctype>
@@ -449,20 +447,12 @@ void ScenePlaybackManager::DriveCharacterController(float delta_time) {
     glm::vec3 world_velocity = right * cv.x + forward * cv.z;
     world_velocity.y = cv.y;
 
-    // 5. Hand the desired target to the player's Kinematic body. Setting
-    //    velocity first and then advancing world_position by velocity*dt
-    //    gives the world's collision pass a chance to snap the body back
-    //    out of any overlap with Static colliders during Step(). The
-    //    sync-after-step pass writes the corrected position back to the
-    //    entity transform.
-    auto it = entity_bodies_.find(player_entity_->GetId());
-    if (it != entity_bodies_.end() && it->second) {
-        auto* body = it->second.get();
-        body->SetVelocity(world_velocity);
-        body->SetWorldPosition(player_pos + world_velocity * delta_time);
-        // Keep yaw in sync so the body's bounding box rotates with the player
-        // (matters once we move beyond axis-aligned BoxBox testing).
-        body->SetWorldRotation(player_transform->GetWorldRotation());
+    // 5. Drive the Jolt character with the controller's full velocity (the
+    //    controller already owns gravity/jump in world_velocity.y). Jolt does
+    //    the collide-and-slide; StepPhysics writes the corrected position back
+    //    to the entity transform.
+    if (player_char_id_ != 0xFFFFFFFFu && physics_world_) {
+        physics_world_->update_character(player_char_id_, world_velocity, delta_time);
     }
 }
 
@@ -577,204 +567,151 @@ void ScenePlaybackManager::BuildPhysicsWorld() {
     TearDownPhysicsWorld();
     if (!scene_) return;
 
-    schizo::physics::PhysicsConfig cfg;
-    cfg.gravity = glm::vec3(0.0f, -9.81f, 0.0f);
-    physics_world_ = schizo::physics::PhysicsWorld::Create(cfg);
-    if (!physics_world_) {
+    using namespace schizo::physics;
+    physics_world_ = std::make_unique<PhysicsWorld>();
+    if (!physics_world_->init(glm::vec3(0.0f, -9.81f, 0.0f))) {
         auto logger = spdlog::get("editor");
-        if (logger) logger->error("BuildPhysicsWorld: PhysicsWorld::Create returned null");
+        if (logger) logger->error("BuildPhysicsWorld: Jolt PhysicsWorld init failed");
+        physics_world_.reset();
         return;
     }
 
-    auto map_shape = [](const schizo::scene::ColliderComponent& c,
-                        const glm::vec3& world_scale)
-                     -> std::unique_ptr<schizo::physics::CollisionShape>
-    {
-        using namespace schizo::physics;
-        // Scale authored half-extents/radius by the entity's world scale so a
-        // BoxCollider(0.5) on a (scale=2) entity matches its visible 2x2x2
-        // cube. Non-uniform scale of a sphere/capsule collapses to the max
-        // axis — these shapes can't actually be stretched.
+    // Fill a Jolt BodyDesc from a ColliderComponent, baking the entity's world
+    // scale into the authored dimensions.
+    auto fill_desc = [](const schizo::scene::ColliderComponent& c,
+                        const glm::vec3& world_scale, BodyDesc& d) -> bool {
         switch (c.GetShape()) {
-            case schizo::scene::ColliderShape::Box: {
-                glm::vec3 he = c.GetHalfExtents() * world_scale;
-                return std::make_unique<BoxShape>(he);
-            }
-            case schizo::scene::ColliderShape::Sphere: {
-                float s = std::max({world_scale.x, world_scale.y, world_scale.z});
-                return std::make_unique<SphereShape>(c.GetRadius() * s);
-            }
-            case schizo::scene::ColliderShape::Capsule: {
-                // BodyType uses height as the cylindrical half-height; the
-                // ColliderComponent stores the full cylindrical span. Halve.
-                float r = c.GetRadius() * std::max(world_scale.x, world_scale.z);
-                float hh = (c.GetHeight() * 0.5f) * world_scale.y;
-                return std::make_unique<CapsuleShape>(r, hh);
-            }
-            case schizo::scene::ColliderShape::Cylinder: {
-                // Same authoring convention as Capsule (Height is the
-                // cylinder's full Y span); cylinder has flat caps instead of
-                // hemispherical ones, so collision uses native cylinder math.
-                float r = c.GetRadius() * std::max(world_scale.x, world_scale.z);
-                float hh = (c.GetHeight() * 0.5f) * world_scale.y;
-                return std::make_unique<CylinderShape>(r, hh);
-            }
+            case schizo::scene::ColliderShape::Box:
+                d.shape = ShapeType::Box;
+                d.half_extents = c.GetHalfExtents() * world_scale;
+                return true;
+            case schizo::scene::ColliderShape::Sphere:
+                d.shape = ShapeType::Sphere;
+                d.radius = c.GetRadius() * std::max({world_scale.x, world_scale.y, world_scale.z});
+                return true;
+            case schizo::scene::ColliderShape::Capsule:
+                d.shape  = ShapeType::Capsule;
+                d.radius = c.GetRadius() * std::max(world_scale.x, world_scale.z);
+                d.height = c.GetHeight() * world_scale.y;   // full cylinder span
+                return true;
+            case schizo::scene::ColliderShape::Cylinder:
+                d.shape  = ShapeType::Cylinder;
+                d.radius = c.GetRadius() * std::max(world_scale.x, world_scale.z);
+                d.height = c.GetHeight() * world_scale.y;
+                return true;
             case schizo::scene::ColliderShape::Plane:
-                return std::make_unique<PlaneShape>(c.GetPlaneNormal());
-            case schizo::scene::ColliderShape::Mesh:
-                // Mesh colliders are built by the per-entity path below
-                // where we have access to the entity's MeshComponent.path.
-                return nullptr;
+                // Jolt has no infinite plane body — approximate with a large,
+                // thin box (the authored normal is assumed +Y for ground).
+                d.shape = ShapeType::Box;
+                d.half_extents = glm::vec3(500.0f, 0.05f, 500.0f);
+                return true;
             default:
-                return nullptr;
+                return false;   // Mesh handled on the dedicated path below
         }
     };
 
     size_t built = 0;
+    auto logger = spdlog::get("editor");
     for (const auto& ent : scene_->GetEntities()) {
         if (!ent || !ent->IsActiveInHierarchy()) continue;
-
         auto col = ent->GetComponent<schizo::scene::ColliderComponent>();
         if (!col) continue;
-
         auto t = ent->GetTransform();
         if (!t) continue;
 
-        glm::vec3 world_scale = t->GetWorldScale();
-        std::unique_ptr<schizo::physics::CollisionShape> shape;
-
-        if (col->GetShape() == schizo::scene::ColliderShape::Mesh) {
-            // Triangle data comes from the entity's MeshComponent. We bake
-            // world scale directly into the loaded vertices so the resulting
-            // MeshShape lives in the same local frame as every other body
-            // (no per-axis scaling on the body itself).
-            auto* mc = ent->GetMeshComponent();
-            if (!mc || mc->mesh_path.empty()) {
-                auto logger = spdlog::get("editor");
-                if (logger) logger->warn("MeshCollider on '{}' has no mesh_path — skipped",
-                                          ent->GetName());
-                continue;
-            }
-            std::vector<glm::vec3> tris;
-            if (!LoadMeshTriangles(mc->mesh_path, tris) || tris.empty()) {
-                auto logger = spdlog::get("editor");
-                if (logger) logger->warn("MeshCollider on '{}' failed to load triangles from '{}'",
-                                          ent->GetName(), mc->mesh_path);
-                continue;
-            }
-            for (auto& v : tris) v *= world_scale;
-            shape = std::make_unique<schizo::physics::MeshShape>(std::move(tris));
-        } else {
-            shape = map_shape(*col, world_scale);
-        }
-        if (!shape) continue;
-        shape->SetLocalOffset(col->GetOffset());
-
-        auto body = std::make_unique<schizo::physics::RigidBody>();
-        body->SetEntity(ent.get());
-        body->SetCollisionShape(std::move(shape));
-        body->SetWorldPosition(t->GetWorldPosition());
-        body->SetWorldRotation(t->GetWorldRotation());
-
-        // Player gets Kinematic regardless of the collider's is_dynamic
-        // flag — its position is driven by CharacterController, but it
-        // participates in collision so it can stand on Static colliders
-        // and push Dynamic ones.
+        const glm::vec3 world_scale = t->GetWorldScale();
+        const glm::vec3 wpos = t->GetWorldPosition() + col->GetOffset();
+        const glm::quat wrot = t->GetWorldRotation();
         const bool is_player = (player_entity_ && ent == player_entity_);
-        schizo::physics::BodyType body_type =
-            is_player ? schizo::physics::BodyType::Kinematic
-                      : (col->IsDynamic() ? schizo::physics::BodyType::Dynamic
-                                          : schizo::physics::BodyType::Static);
-        body->SetBodyType(body_type);
-        if (body_type == schizo::physics::BodyType::Dynamic) {
-            body->SetMass(col->GetMass());
+
+        // The player is a kinematic capsule character (collide-and-slide),
+        // driven by the CharacterController — not a rigid body.
+        if (is_player) {
+            CharacterDesc cd;
+            cd.radius   = col->GetRadius() * std::max(world_scale.x, world_scale.z);
+            cd.height   = (col->GetShape() == schizo::scene::ColliderShape::Box)
+                            ? col->GetHalfExtents().y * 2.0f * world_scale.y
+                            : col->GetHeight() * world_scale.y;
+            if (cd.height < 0.1f) cd.height = 1.2f;
+            cd.position = wpos;
+            player_char_id_ = physics_world_->add_character(cd);
+            if (logger) logger->info("  +player character (capsule r={:.2f} h={:.2f})", cd.radius, cd.height);
+            continue;
         }
 
-        body->SetTrigger(col->IsTrigger());
-        body->SetLayer(col->GetLayer());
-        body->SetCollisionMask(col->GetMask());
-
-        physics_world_->AddRigidBody(body.get());
-
-        auto logger = spdlog::get("editor");
-        if (logger) {
-            const char* type_name =
-                (body_type == schizo::physics::BodyType::Dynamic)   ? "Dynamic"
-                : (body_type == schizo::physics::BodyType::Kinematic) ? "Kinematic"
-                                                                      : "Static";
-            logger->info("  +body '{}' [{}] shape={} mass={:.2f}",
-                         ent->GetName(), type_name,
-                         static_cast<int>(col->GetShape()),
-                         (body_type == schizo::physics::BodyType::Dynamic) ? col->GetMass() : 0.0f);
+        BodyId id = kInvalidBody;
+        if (col->GetShape() == schizo::scene::ColliderShape::Mesh) {
+            auto* mc = ent->GetMeshComponent();
+            std::vector<glm::vec3> tris;
+            if (!mc || mc->mesh_path.empty() || !LoadMeshTriangles(mc->mesh_path, tris) || tris.empty()) {
+                if (logger) logger->warn("MeshCollider on '{}' unavailable — skipped", ent->GetName());
+                continue;
+            }
+            for (auto& v : tris) v *= world_scale;           // bake scale into the verts
+            if (col->IsDynamic()) {
+                // Jolt triangle meshes can't be dynamic — use the convex hull of
+                // the mesh verts (the standard approximation for dynamic meshes).
+                BodyDesc d;
+                d.position = wpos; d.rotation = wrot;
+                d.motion = MotionType::Dynamic; d.mass = col->GetMass();
+                id = physics_world_->add_convex_body(tris, d);
+            } else {
+                id = physics_world_->add_mesh_body(tris, t->GetWorldPosition() + col->GetOffset(), wrot);
+            }
+        } else {
+            BodyDesc d;
+            if (!fill_desc(*col, world_scale, d)) continue;
+            d.position    = wpos;
+            d.rotation    = wrot;
+            d.motion      = col->IsDynamic() ? MotionType::Dynamic : MotionType::Static;
+            d.mass        = col->IsDynamic() ? col->GetMass() : 0.0f;
+            id = physics_world_->add_body(d);
         }
+        if (id == kInvalidBody) continue;
 
-        entity_bodies_.emplace(ent->GetId(), std::move(body));
+        entity_bodies_.emplace(ent->GetId(), id);
+        if (col->IsDynamic()) dynamic_entities_.push_back(ent->GetId());  // incl. dynamic mesh (convex)
+        if (logger) logger->info("  +body '{}' [{}] shape={}", ent->GetName(),
+                                 dynamic ? "Dynamic" : "Static", static_cast<int>(col->GetShape()));
         ++built;
     }
-
-    auto logger = spdlog::get("editor");
-    if (logger) logger->info("PhysicsWorld built with {} bodies", built);
+    if (logger) logger->info("Jolt PhysicsWorld built: {} bodies, {} dynamic, player={}",
+                             built, dynamic_entities_.size(),
+                             player_char_id_ != 0xFFFFFFFFu ? "yes" : "no");
 }
 
 void ScenePlaybackManager::TearDownPhysicsWorld() {
-    // Order matters: remove bodies from the world before destroying them so
-    // the world can't dereference stale pointers from its own destructor.
-    if (physics_world_) {
-        physics_world_->Clear();
-    }
     entity_bodies_.clear();
-    physics_world_.reset();
+    dynamic_entities_.clear();
+    player_char_id_ = 0xFFFFFFFFu;
+    physics_world_.reset();   // PhysicsWorld dtor frees all Jolt bodies/characters
 }
 
 void ScenePlaybackManager::StepPhysics(float delta_time) {
     if (!physics_world_) return;
-    physics_world_->Step(delta_time);
+    physics_world_->step(delta_time);
 
-    // Sync both Dynamic AND Kinematic bodies back to their entity transforms.
-    // Dynamic moved because of forces; Kinematic moved because we wrote its
-    // target position in DriveCharacterController and Step may have snapped
-    // it out of overlap with a Static collider.
-    for (auto& [id, body] : entity_bodies_) {
-        if (!body) continue;
-        auto type = body->GetBodyType();
-        if (type != schizo::physics::BodyType::Dynamic &&
-            type != schizo::physics::BodyType::Kinematic) continue;
-        auto* ent = body->GetEntity();
+    // Write simulated dynamic bodies back to their entity transforms.
+    for (uint32_t eid : dynamic_entities_) {
+        auto it = entity_bodies_.find(eid);
+        if (it == entity_bodies_.end()) continue;
+        auto ent = scene_ ? scene_->GetEntityById(eid) : nullptr;
         if (!ent) continue;
         auto t = ent->GetTransform();
         if (!t) continue;
-        t->SetWorldPosition(body->GetWorldPosition());
-        // Skip rotation for Kinematic — DriveCharacterController is the
-        // authority on player yaw; physics collisions don't tumble it.
-        if (type == schizo::physics::BodyType::Dynamic) {
-            t->SetWorldRotation(body->GetWorldRotation());
-        }
+        const schizo::physics::BodyState s = physics_world_->get_state(it->second);
+        t->SetWorldPosition(s.position);
+        t->SetWorldRotation(s.rotation);
     }
 
-    // Grounded check: read the contacts the player body actually had this
-    // step. Each contact normal stored on a body points "self → other", so a
-    // contact with the floor (other body below the player) has normal
-    // pointing downward. dot(normal, +Y) < threshold ⇒ surface below ⇒
-    // grounded. The previous downward-raycast approach went through
-    // PhysicsWorld::Raycast which only tests bounding spheres and silently
-    // missed large floors/slopes, making it impossible to climb anything.
-    is_on_ground_ = false;
-    if (player_entity_ && physics_world_) {
-        auto player_body_it = entity_bodies_.find(player_entity_->GetId());
-        if (player_body_it != entity_bodies_.end() && player_body_it->second) {
-            const auto* contacts =
-                physics_world_->GetBodyContacts(player_body_it->second.get());
-            if (contacts) {
-                // 0.5 ≈ cos(60°), so any surface up to a 60° overhang still
-                // counts as ground. Anything steeper is treated as a wall.
-                for (const auto& c : *contacts) {
-                    if (glm::dot(c.normal, glm::vec3(0.0f, 1.0f, 0.0f)) < -0.5f) {
-                        is_on_ground_ = true;
-                        break;
-                    }
-                }
-            }
-        }
+    // Write the player character's collide-and-slide result back + refresh the
+    // grounded flag the CharacterController reads next frame.
+    if (player_char_id_ != 0xFFFFFFFFu && player_entity_) {
+        if (auto t = player_entity_->GetTransform())
+            t->SetWorldPosition(physics_world_->character_position(player_char_id_));
+        is_on_ground_ = physics_world_->character_on_ground(player_char_id_);
+    } else {
+        is_on_ground_ = false;
     }
 }
 

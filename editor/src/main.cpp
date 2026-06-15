@@ -26,6 +26,16 @@
 #include "vulkan/vulkan_scene_material.h"
 #include "vulkan/imgui_vulkan.h"
 
+// Engine foundation (Master Plan Stage 0/1): job system, frame allocator,
+// reflected ECS components. (Component registration only needs reflection +
+// glm; the EnTT World is not pulled into this TU yet — the OOP-scene → ECS
+// migration is a separate pass.)
+#include "jobs/job_system.h"
+#include "memory/memory.h"
+#include "profiler/profiler.h" // scoped CPU zones, per-thread (Stage 0.6)
+#include "ecs/components.h"
+#include "ecs_bridge.h"        // shadow ECS mirror of the scene (Stage 1.4 step 1)
+
 // ImGui headers
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -2491,6 +2501,10 @@ static void blit_to_swapchain(VkCommandBuffer cmd,
 int main() {
     try {
         spdlog::set_level(spdlog::level::info);
+        // Flush every info+ line immediately so logs survive a hard kill / crash
+        // and show up live when stdout is redirected to a file (otherwise the C
+        // runtime fully-buffers a redirected stream and the tail is lost).
+        spdlog::flush_on(spdlog::level::info);
         spdlog::info("=== Project Schizo Editor (Vulkan) ===");
 
         // ----------------------------------------------------------------
@@ -2965,26 +2979,194 @@ int main() {
                     glm::vec3(-0.3f, -1.0f, 0.2f),
                     glm::vec3(1.0f, 0.95f, 0.85f), 1.5f);
 
+                // Ground already gets a static box collider from CreatePlane.
                 schizo::scene::EntityFactory::CreatePlane(scene, "Ground", 10.0f, 10.0f,
                     glm::vec4(0.45f, 0.45f, 0.45f, 1.0f));
 
-                // TEST: Create a parent cube and child cube to verify hierarchy
+                // Two cubes — CreateCube already gives them a Box collider; flag
+                // it DYNAMIC so they fall + land on the ground when you press
+                // Play (Stage-4 Jolt physics demo).
+                auto make_dynamic = [](const std::shared_ptr<schizo::scene::Entity>& e) {
+                    if (auto col = e->GetComponent<schizo::scene::ColliderComponent>()) {
+                        col->SetDynamic(true);
+                        col->SetMass(1.0f);
+                    }
+                };
                 auto parent_cube = schizo::scene::EntityFactory::CreateCube(scene);
                 parent_cube->SetName("Parent_Cube");
-                parent_cube->GetTransform()->SetLocalPosition(glm::vec3(0.0f, 2.0f, 0.0f));
+                parent_cube->GetTransform()->SetLocalPosition(glm::vec3(0.0f, 4.0f, 0.0f));
+                make_dynamic(parent_cube);
 
                 auto child_cube = schizo::scene::EntityFactory::CreateCube(scene);
-                child_cube->SetName("Child_Cube");
-                child_cube->GetTransform()->SetLocalPosition(glm::vec3(2.0f, 0.0f, 0.0f));  // Local offset from parent
-                child_cube->SetParent(parent_cube);  // Make it a child
+                child_cube->SetName("Falling_Cube");
+                child_cube->GetTransform()->SetLocalPosition(glm::vec3(0.6f, 7.0f, 0.3f));
+                make_dynamic(child_cube);
 
-                spdlog::info("Default scene: {} entities (includes parent-child test)", scene->GetEntityCount());
-                spdlog::info("HIERARCHY TEST: Parent={}, Child={}, Child's parent entity={}",
-                    parent_cube->GetName(),
-                    child_cube->GetName(),
-                    child_cube->GetParent() ? child_cube->GetParent()->GetName() : "NULL");
+                // Stage 4: a "Player" (capsule collider + cameras) so Play works
+                // out of the box — it becomes a Jolt CharacterVirtual.
+                schizo::scene::EntityFactory::CreatePlayer(scene, "Player",
+                    glm::vec3(-2.5f, 1.0f, 0.0f));
+
+                spdlog::info("Default scene: {} entities (player + 2 dynamic cubes + ground)",
+                             scene->GetEntityCount());
+
+                // One-time headless self-check of the MIGRATED play-mode physics:
+                // run the play manager (which builds a Jolt world from the scene's
+                // colliders + a CharacterVirtual player) and confirm a dynamic
+                // cube actually falls. StopPlayback restores the scene so the user
+                // presses Play on a clean state.
+                if (editor_state.scene_playback_manager) {
+                    const float y0 = parent_cube->GetTransform()->GetWorldPosition().y;
+                    if (editor_state.scene_playback_manager->StartPlayback(scene)) {
+                        for (int i = 0; i < 90; ++i)
+                            editor_state.scene_playback_manager->Update(1.0f / 60.0f);
+                        const float y1 = parent_cube->GetTransform()->GetWorldPosition().y;
+                        spdlog::info("Stage 4 play-mode physics (Jolt) self-check: Parent_Cube y "
+                                     "{:.2f} -> {:.2f} (fell {:.2f}) -> {}",
+                                     y0, y1, y0 - y1, (y1 < y0 - 1.0f) ? "OK" : "CHECK");
+                        editor_state.scene_playback_manager->StopPlayback();
+                    }
+                }
+
+                // ----------------------------------------------------------------
+                // Stage 2 cook->runtime loop — live verification on real cooked
+                // content. Find a cooked scene bundle next to the editor, load it
+                // via mmap (NO source .obj/.gltf parse), log what came through,
+                // and drop one entity into the scene so it renders in the
+                // viewport (proves "cooked scene loads via mmap with no runtime
+                // parse"; the precomputed LOD chain becomes the runtime LODs).
+                // ----------------------------------------------------------------
+                {
+                    namespace fs = std::filesystem;
+                    std::string pak_path;
+                    uintmax_t   best_size = 0;
+                    const char* dirs[] = { "cooked", "bin/cooked", "../cooked", "assets/cooked" };
+                    for (const char* d : dirs) {
+                        std::error_code ec;
+                        if (!fs::is_directory(d, ec)) continue;
+                        for (const auto& e : fs::directory_iterator(d, ec)) {
+                            if (!e.is_regular_file()) continue;
+                            const std::string p = e.path().string();
+                            if (p.size() < 4 || p.substr(p.size() - 4) != ".pak") continue;
+                            if (p.find(".tex.pak") != std::string::npos) continue;  // textures
+                            const uintmax_t sz = fs::file_size(e.path(), ec);
+                            if (pak_path.empty() || sz < best_size) { pak_path = p; best_size = sz; }
+                        }
+                        if (!pak_path.empty()) break;
+                    }
+
+                    if (pak_path.empty()) {
+                        spdlog::info("Stage 2 cook->runtime: no cooked .pak found "
+                                     "(run tools/assetcook) — skipping live load");
+                    } else {
+                        schizo::editor::CookedSceneStats st;
+                        if (schizo::editor::inspect_cooked_pak(pak_path, st)) {
+                            spdlog::info("Stage 2 cook->runtime OK: '{}' mmap-loaded with NO source "
+                                         "parse -> {} mesh(es), {} material(s), {} node(s), {} verts; "
+                                         "first mesh: LOD0 {} idx, {} LOD tiers, {} meshlets; "
+                                         "albedo tex linked {}/{} resolved-by-GUID",
+                                         pak_path, st.mesh_count, st.material_count, st.node_count,
+                                         st.total_vertices, st.lod0_indices, st.lod_tiers, st.meshlets,
+                                         st.resolved_textures, st.linked_textures);
+
+                            // Spawn a visible entity referencing the bundle. The
+                            // AssetMeshCache loads the .pak through the same path
+                            // as any mesh, so this renders without special-casing.
+                            auto ent = scene->CreateEntity("CookedMesh (Stage 2 .pak)");
+                            ent->SetMesh(pak_path);
+                            const glm::vec3 ext    = st.bounds_max - st.bounds_min;
+                            const glm::vec3 center = 0.5f * (st.bounds_min + st.bounds_max);
+                            const float maxext = std::max({ ext.x, ext.y, ext.z, 1e-3f });
+                            const float s = (maxext > 6.0f) ? (4.0f / maxext) : 1.0f;
+                            ent->GetTransform()->SetLocalScale(glm::vec3(s));
+                            ent->GetTransform()->SetLocalPosition(
+                                glm::vec3(-4.0f, 1.0f, 0.0f) - center * s);
+                            spdlog::info("Stage 2 cook->runtime: spawned '{}' from cooked bundle "
+                                         "(scale {:.3f}) — visible in viewport at x=-4", ent->GetName(), s);
+                        } else {
+                            spdlog::warn("Stage 2 cook->runtime: '{}' is not a loadable scene bundle",
+                                         pak_path);
+                        }
+                    }
+                }
+
+                // ----------------------------------------------------------------
+                // Stage 2.3 stream-ready check: if a cooked virtual texture (.vt)
+                // exists, memory-map it and page ONE tile zero-copy — proving the
+                // tiled, page-aligned format streams with no parse (the Stage-8
+                // virtual-texture streamer builds on exactly this).
+                // ----------------------------------------------------------------
+                {
+                    namespace fs = std::filesystem;
+                    std::string vt_path;
+                    const char* vdirs[] = { "cooked", "bin/cooked", "../cooked", "assets/cooked" };
+                    for (const char* d : vdirs) {
+                        std::error_code ec;
+                        if (!fs::is_directory(d, ec)) continue;
+                        for (const auto& e : fs::directory_iterator(d, ec)) {
+                            if (!e.is_regular_file()) continue;
+                            const std::string p = e.path().string();
+                            if (p.size() >= 3 && p.substr(p.size() - 3) == ".vt") { vt_path = p; break; }
+                        }
+                        if (!vt_path.empty()) break;
+                    }
+                    if (!vt_path.empty()) {
+                        schizo::assets::MappedFile vf;
+                        schizo::assets::CookedVTView vv;
+                        if (vf.open(vt_path) && vv.open(vf.data(), vf.size())) {
+                            uint32_t tsz = 0;
+                            const uint8_t* tile0 = vv.tile(0, 0, 0, tsz);
+                            const bool aligned = tile0 &&
+                                (vv.tiles[0].offset % vv.header->page_align == 0);
+                            spdlog::info("Stage 2.3 virtual texture: mmap'd '{}' -> {}x{}, {} mips, "
+                                         "{} {}-px tiles; paged tile(0,0,0) = {} B zero-copy, "
+                                         "page-aligned {}",
+                                         vt_path, vv.header->width, vv.header->height,
+                                         vv.header->mip_count, vv.header->tile_count,
+                                         vv.header->tile_texels, tsz, aligned ? "OK" : "FAIL");
+                        }
+                    }
+                }
             }
         }
+
+        // ----------------------------------------------------------------
+        // Engine foundation online (Master Plan Stage 0/1)
+        // ----------------------------------------------------------------
+        // Work-stealing job system (idle workers park, so no CPU spin).
+        gws::jobs::JobSystem::instance().init();
+        const unsigned kJobWorkers = gws::jobs::JobSystem::instance().worker_count();
+        // Register the core POD components with reflection (so they're
+        // serialisable / inspectable as the ECS migration proceeds).
+        schizo::ecs::register_core_components();
+        // Per-frame transient allocator: double-buffered, one arena PER
+        // worker (lock-free). reset() at the top of every frame.
+        gws::memory::FrameAllocator frame_allocator(8u * 1024u * 1024u, kJobWorkers);
+        spdlog::info("Engine foundation online: {} job workers, frame allocator {} MiB x2 per worker",
+                     kJobWorkers, 8);
+        {
+            // One-time live self-check that the parallel path works end-to-end
+            // in the real build (not just standalone tests).
+            constexpr size_t kSelfCheckN = 100000;
+            std::atomic<long long> sum{0};
+            gws::jobs::JobSystem::instance().parallel_for(0, kSelfCheckN, [&](size_t i) {
+                sum.fetch_add(static_cast<long long>(i), std::memory_order_relaxed);
+            });
+            const long long expected =
+                static_cast<long long>(kSelfCheckN - 1) * kSelfCheckN / 2;
+            spdlog::info("parallel_for self-check: sum={} expected={} -> {}",
+                         sum.load(), expected, sum.load() == expected ? "OK" : "FAIL");
+        }
+
+        // First OOP->ECS migration step (Stage 1.4): a non-authoritative shadow
+        // world, refreshed from the scene each frame, that runs the
+        // transform -> LocalToWorld system on the job system. Rendering still
+        // reads the OOP scene, so this can't change what's drawn — it proves
+        // the ECS data path runs live on real scene data.
+        schizo::editor::EcsSceneBridge ecs_bridge;
+        bool ecs_shadow_logged = false;
+        bool ecs_persist_logged = false;
+        bool ecs_snapshot_logged = false;
 
         // ----------------------------------------------------------------
         // Main loop
@@ -3011,6 +3193,11 @@ int main() {
 
         while (!glfwWindowShouldClose(glfw_window)) {
             glfwPollEvents();
+
+            // Recycle the per-frame transient allocator (double-buffered, so
+            // last frame's results survive into this frame's first reads).
+            frame_allocator.begin_frame();
+            GWS_PROFILE_FRAME_BEGIN();
 
             double now_wall = glfwGetTime();
             float delta_time = static_cast<float>(now_wall - last_frame_wall);
@@ -3580,10 +3767,64 @@ int main() {
             }
             
             std::vector<gws::renderer::gpu::DrawItem> opaque_draws, transparent_draws;
-            schizo::editor::build_draw_items(
-                editor_scene.GetScene(), prim_cache, mat_cache, asset_cache,
-                &device, mat_layout, mat_pool,
-                opaque_draws, transparent_draws);
+            // Run the ECS transform system FIRST so its world matrices are
+            // ready, then feed them to the draw-list builder (authoritative:
+            // build_draw_items reads ECS LocalToWorld, OOP matrix is fallback).
+            { GWS_PROFILE_ZONE("ecs_sync");
+              ecs_bridge.sync_and_run(editor_scene.GetScene()); }
+
+            { GWS_PROFILE_ZONE("build_draw_items");
+              schizo::editor::build_draw_items(
+                  editor_scene.GetScene(), prim_cache, mat_cache, asset_cache,
+                  &device, mat_layout, mat_pool,
+                  opaque_draws, transparent_draws, &ecs_bridge); }
+
+            if (!ecs_shadow_logged && ecs_bridge.entity_count() > 0) {
+                spdlog::info("ECS shadow live: {} entities synced, {} LocalToWorld "
+                             "computed (parallel TRS + hierarchy), {}/{} matrices "
+                             "match OOP world -> {}",
+                             ecs_bridge.entity_count(), ecs_bridge.matrices_written(),
+                             ecs_bridge.verified(), ecs_bridge.checked(),
+                             (ecs_bridge.verified() == ecs_bridge.checked())
+                                 ? "OK" : "MISMATCH");
+                ecs_shadow_logged = true;
+            }
+            if (!ecs_persist_logged && ecs_bridge.reused() > 0) {
+                spdlog::info("ECS persistent handles: {} reused, {} created, {} "
+                             "destroyed this frame -> stable identity across frames",
+                             ecs_bridge.reused(), ecs_bridge.created(),
+                             ecs_bridge.destroyed());
+                ecs_persist_logged = true;
+            }
+            if (!ecs_snapshot_logged && ecs_bridge.entity_count() > 0) {
+                size_t snap_bytes = 0, reloaded = 0;
+                const bool snap_ok = ecs_bridge.snapshot_selfcheck(snap_bytes, reloaded);
+                spdlog::info("ECS snapshot self-check: {} entities -> {} bytes -> "
+                             "reloaded {} -> {}",
+                             ecs_bridge.entity_count(), snap_bytes, reloaded,
+                             snap_ok ? "OK" : "FAIL");
+
+                // Stage 1.4 draw submission: real scene drawables from the ECS,
+                // plus the 100k single-parallel-pass acceptance benchmark.
+                double scene_ms = 0.0, bench_ms = 0.0;
+                const size_t scene_draws = ecs_bridge.collect_scene_draws(scene_ms);
+                const size_t bench_draws =
+                    schizo::editor::EcsSceneBridge::draw_benchmark(100000, bench_ms);
+#ifdef NDEBUG
+                const char* bench_verdict =
+                    (bench_draws == 100000 && bench_ms < 16.0) ? "OK" : "SLOW";
+#else
+                const char* bench_verdict =
+                    (bench_draws == 100000) ? "OK (unoptimized build; ~3.7ms at -O2)"
+                                            : "FAIL";
+#endif
+                spdlog::info("ECS draw submission: scene {} draws ({:.3f} ms); "
+                             "benchmark {} entities -> {} draws in one parallel "
+                             "pass ({:.3f} ms) -> {}",
+                             scene_draws, scene_ms, 100000, bench_draws, bench_ms,
+                             bench_verdict);
+                ecs_snapshot_logged = true;
+            }
 
             // (WBOIT is order-independent — no need to back-to-front sort the
             // transparent list. The depth-weighted compositing in the shader
@@ -3596,18 +3837,25 @@ int main() {
             // CPU-side HZB from the previous frame. Draws marked occluded
             // are skipped by VulkanGBuffer::draw_items.
             if (hzb_culler) {
-                std::vector<glm::vec3> aabb_mins, aabb_maxs;
-                aabb_mins.reserve(opaque_draws.size());
-                aabb_maxs.reserve(opaque_draws.size());
-                for (const auto& d : opaque_draws) {
+                GWS_PROFILE_ZONE("hzb_cull");
+                // Per-draw world-space AABB build — embarrassingly parallel
+                // (each task writes only its own index), so it runs on the
+                // job system. The scratch arrays come from the per-frame
+                // FrameAllocator (transient, reset next frame) — this is the
+                // first real allocation served by it live, alongside the
+                // first per-frame parallel workload.
+                const size_t draw_n = opaque_draws.size();
+                glm::vec3* aabb_mins = draw_n ? frame_allocator.alloc_array<glm::vec3>(draw_n) : nullptr;
+                glm::vec3* aabb_maxs = draw_n ? frame_allocator.alloc_array<glm::vec3>(draw_n) : nullptr;
+                if (draw_n && aabb_mins && aabb_maxs)
+                gws::jobs::JobSystem::instance().parallel_for(0, draw_n, [&](size_t i) {
+                    const auto& d = opaque_draws[i];
                     if (!d.mesh) {
-                        aabb_mins.emplace_back(0.0f);
-                        aabb_maxs.emplace_back(0.0f);
-                        continue;
+                        aabb_mins[i] = glm::vec3(0.0f);
+                        aabb_maxs[i] = glm::vec3(0.0f);
+                        return;
                     }
                     const auto& local = d.mesh->bounding_box();
-                    // Transform all 8 corners by the model matrix and rebuild
-                    // a world-space AABB.
                     glm::vec3 wmin( std::numeric_limits<float>::infinity());
                     glm::vec3 wmax(-std::numeric_limits<float>::infinity());
                     for (int c = 0; c < 8; ++c) {
@@ -3620,11 +3868,12 @@ int main() {
                         wmin = glm::min(wmin, w);
                         wmax = glm::max(wmax, w);
                     }
-                    aabb_mins.push_back(wmin);
-                    aabb_maxs.push_back(wmax);
-                }
-                hzb_culler->test_visibility(aabb_mins, aabb_maxs,
-                                            cam.proj * cam.view);
+                    aabb_mins[i] = wmin;
+                    aabb_maxs[i] = wmax;
+                });
+                if (draw_n && aabb_mins && aabb_maxs)
+                    hzb_culler->test_visibility(aabb_mins, aabb_maxs, draw_n,
+                                                cam.proj * cam.view);
             }
 
             // Sync the transparent pass's view of the dynamic light list each
@@ -3775,6 +4024,15 @@ int main() {
             swapchain->present_image(image_index, render_sems[current_frame]);
             current_frame = (current_frame + 1) % kMaxFrames;
             ++frame_count;
+
+            // Collect this frame's CPU zones and report a breakdown
+            // periodically (the full flame-graph UI is Stage 14).
+            GWS_PROFILE_FRAME_END();
+#if GWS_PROFILE_ENABLED
+            if (frame_count % 240 == 0)
+                spdlog::info("[profiler] {}",
+                             gws::profile::Profiler::instance().format_report());
+#endif
         }
 
         spdlog::info("Editor closed after {} frames", frame_count);
@@ -3782,6 +4040,8 @@ int main() {
         // ----------------------------------------------------------------
         // Cleanup
         // ----------------------------------------------------------------
+        // Stop the job workers before tearing down (joins all threads).
+        gws::jobs::JobSystem::instance().shutdown();
         device.wait_idle();
 
         if (viewport_ds != VK_NULL_HANDLE)

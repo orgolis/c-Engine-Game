@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "memory_tags.h"
+#include "memory_tracker.h"
+
 namespace gws::memory {
 
 // ====================
@@ -38,9 +41,26 @@ public:
     
     // Reset allocator to empty state (if supported)
     virtual void reset() {}
-    
+
     // Defragment (if supported)
     virtual void defragment() {}
+
+    // ---- Tag-aware tracked allocation (Master Plan Stage 0.1) ----
+    //
+    // Opt-in: forwards to the virtual allocate()/deallocate(), and records
+    // the allocation against `tag` in the MemoryTracker so usage/leaks can
+    // be grouped by subsystem. No-op tracking in release builds. Works
+    // through an `Allocator*` base pointer. Code that uses allocate_tracked
+    // must free with deallocate_tracked so the table stays balanced.
+    void* allocate_tracked(size_t size, size_t alignment, AllocationTag tag) {
+        void* p = allocate(size, alignment);
+        detail::track_alloc(p, size, tag);
+        return p;
+    }
+    void deallocate_tracked(void* ptr) {
+        detail::track_free(ptr);
+        deallocate(ptr);
+    }
 };
 
 // ====================

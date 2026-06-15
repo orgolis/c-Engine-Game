@@ -464,12 +464,11 @@ void VulkanHzbCuller::pull_readback() {
     cpu_hzb_valid_ = true;
 }
 
-void VulkanHzbCuller::test_visibility(const std::vector<glm::vec3>& aabb_mins,
-                                      const std::vector<glm::vec3>& aabb_maxs,
+void VulkanHzbCuller::test_visibility(const glm::vec3* aabb_mins,
+                                      const glm::vec3* aabb_maxs,
+                                      size_t count,
                                       const glm::mat4& view_proj) {
-    const size_t draw_count = std::min({ aabb_mins.size(),
-                                         aabb_maxs.size(),
-                                         static_cast<size_t>(config_.max_draws) });
+    const size_t draw_count = std::min(count, static_cast<size_t>(config_.max_draws));
 
     if (visibility_.size() < draw_count) visibility_.assign(config_.max_draws, 1);
 

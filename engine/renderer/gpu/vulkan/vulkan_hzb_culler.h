@@ -61,9 +61,19 @@ public:
     /// CPU side: project each draw's world AABB to NDC, sample the
     /// CPU-side HZB at the right mip, set visibility flags. Call before
     /// the Geometry stage.
+    // Pointer + count form — lets callers pass per-frame scratch (e.g. a
+    // frame-allocator array) without building a std::vector. The vector
+    // overload below forwards to it.
+    void test_visibility(const glm::vec3* aabb_mins,
+                         const glm::vec3* aabb_maxs,
+                         size_t count,
+                         const glm::mat4& view_proj);
     void test_visibility(const std::vector<glm::vec3>& aabb_mins,
                          const std::vector<glm::vec3>& aabb_maxs,
-                         const glm::mat4& view_proj);
+                         const glm::mat4& view_proj) {
+        test_visibility(aabb_mins.data(), aabb_maxs.data(),
+                        aabb_mins.size(), view_proj);
+    }
 
     /// Query a draw's visibility from the last `test_visibility` call.
     /// Returns true on the first frame or when the culler is disabled.

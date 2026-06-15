@@ -49,6 +49,20 @@ public:
                                                      const std::string& path,
                                                      bool srgb);
 
+    /// Upload an already block-compressed (BCn) mip chain straight to the GPU
+    /// — no CPU decode. `format` is a BC VkFormat (e.g. VK_FORMAT_BC7_*_BLOCK);
+    /// `block_data` is all `mip_count` mips concatenated (the cooked texture
+    /// blob's block region). Returns nullptr if the device can't sample that
+    /// format (caller should fall back). This is the Stage-2 cooked-texture
+    /// runtime path: cook produces BC7, the GPU samples it directly.
+    static std::unique_ptr<Texture> create_compressed(VulkanDevice* device,
+                                                      VkFormat format,
+                                                      uint32_t width,
+                                                      uint32_t height,
+                                                      uint32_t mip_count,
+                                                      const uint8_t* block_data,
+                                                      size_t data_size);
+
     /// 1×1 opaque white texture. Standard fallback for unbound color slots.
     static std::unique_ptr<Texture> create_default_white(VulkanDevice* device);
 

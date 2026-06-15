@@ -1,0 +1,7 @@
+# Material library for textured_quad.obj
+newmtl Checker
+Kd 0.20 0.55 0.90
+Ks 0.50 0.50 0.50
+Ns 120
+d 1.0
+map_Kd checker.bmp
