@@ -3002,6 +3002,19 @@ int main() {
                 child_cube->GetTransform()->SetLocalPosition(glm::vec3(0.6f, 7.0f, 0.3f));
                 make_dynamic(child_cube);
 
+                // A dynamic CUSTOM-MESH collider (uses the convex-hull path —
+                // Jolt triangle meshes are static-only). Falls + lands like the
+                // cubes when you press Play.
+                auto mesh_cube = scene->CreateEntity("MeshCube");
+                mesh_cube->GetTransform()->SetLocalPosition(glm::vec3(2.5f, 5.5f, -1.0f));
+                mesh_cube->SetMesh("../../assets/test_cooked/cube3d.obj");  // visual + collider source
+                {
+                    auto col = mesh_cube->AddComponent<schizo::scene::ColliderComponent>(
+                        schizo::scene::ColliderShape::Mesh);
+                    col->SetDynamic(true);
+                    col->SetMass(1.0f);
+                }
+
                 // Stage 4: a "Player" (capsule collider + cameras) so Play works
                 // out of the box — it becomes a Jolt CharacterVirtual.
                 schizo::scene::EntityFactory::CreatePlayer(scene, "Player",
@@ -3016,14 +3029,17 @@ int main() {
                 // cube actually falls. StopPlayback restores the scene so the user
                 // presses Play on a clean state.
                 if (editor_state.scene_playback_manager) {
-                    const float y0 = parent_cube->GetTransform()->GetWorldPosition().y;
+                    const float cy0 = parent_cube->GetTransform()->GetWorldPosition().y;
+                    const float my0 = mesh_cube->GetTransform()->GetWorldPosition().y;
                     if (editor_state.scene_playback_manager->StartPlayback(scene)) {
                         for (int i = 0; i < 90; ++i)
                             editor_state.scene_playback_manager->Update(1.0f / 60.0f);
-                        const float y1 = parent_cube->GetTransform()->GetWorldPosition().y;
-                        spdlog::info("Stage 4 play-mode physics (Jolt) self-check: Parent_Cube y "
-                                     "{:.2f} -> {:.2f} (fell {:.2f}) -> {}",
-                                     y0, y1, y0 - y1, (y1 < y0 - 1.0f) ? "OK" : "CHECK");
+                        const float cy1 = parent_cube->GetTransform()->GetWorldPosition().y;
+                        const float my1 = mesh_cube->GetTransform()->GetWorldPosition().y;
+                        spdlog::info("Stage 4 play-mode physics (Jolt) self-check: box y {:.2f}->{:.2f} ({}), "
+                                     "MESH-collider y {:.2f}->{:.2f} ({})",
+                                     cy0, cy1, (cy1 < cy0 - 1.0f) ? "fell OK" : "CHECK",
+                                     my0, my1, (my1 < my0 - 1.0f) ? "fell OK (convex hull)" : "CHECK");
                         editor_state.scene_playback_manager->StopPlayback();
                     }
                 }

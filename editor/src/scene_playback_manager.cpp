@@ -672,7 +672,7 @@ void ScenePlaybackManager::BuildPhysicsWorld() {
         entity_bodies_.emplace(ent->GetId(), id);
         if (col->IsDynamic()) dynamic_entities_.push_back(ent->GetId());  // incl. dynamic mesh (convex)
         if (logger) logger->info("  +body '{}' [{}] shape={}", ent->GetName(),
-                                 dynamic ? "Dynamic" : "Static", static_cast<int>(col->GetShape()));
+                                 col->IsDynamic() ? "Dynamic" : "Static", static_cast<int>(col->GetShape()));
         ++built;
     }
     if (logger) logger->info("Jolt PhysicsWorld built: {} bodies, {} dynamic, player={}",
