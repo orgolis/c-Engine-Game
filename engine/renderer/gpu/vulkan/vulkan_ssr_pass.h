@@ -84,6 +84,11 @@ public:
         ambient_color_ = color; ambient_intensity_ = intensity;
     }
 
+    /// Lat-long cloud map so clouds appear in reflections (RT mode). Bind once.
+    void set_cloud_sky(VkImageView view, VkSampler sampler);
+    /// Toggle reflected clouds on/off (each frame).
+    void set_cloud_sky_enabled(bool e) { cloud_sky_enabled_ = e; }
+
     bool uses_rt() const { return use_rt_; }
 
     SsrConfig& mutable_config() { return config_; }
@@ -113,6 +118,9 @@ private:
     glm::vec3      sun_color_      = glm::vec3(1.0f, 0.95f, 0.85f);
     glm::vec3      ambient_color_  = glm::vec3(0.3f);
     float          ambient_intensity_ = 1.0f;
+    VkImageView    cloud_sky_view_    = VK_NULL_HANDLE; // borrowed from cloud pass
+    VkSampler      cloud_sky_sampler_ = VK_NULL_HANDLE;
+    bool           cloud_sky_enabled_ = false;
     SsrConfig      config_{};
 
     VkSampler   gbuffer_sampler_   = VK_NULL_HANDLE;

@@ -3,6 +3,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <utility>
 #include <cstdint>
 #include <mutex>
 
@@ -63,6 +64,16 @@ public:
    * Should contain pairs of (start, end) timestamps in order
    */
   void update_from_query_results(const std::vector<uint64_t>& timestamps);
+
+  /**
+   * Submit a frame's already-resolved per-pass timings (name, milliseconds).
+   * For callers that read their own GPU timestamps (e.g. VulkanRenderGraph,
+   * which resolves stage µs itself) instead of going through the query-index
+   * model above. Recomputes the frame total; passes absent this frame are
+   * zeroed so a disabled stage shows 0 rather than a stale value; each named
+   * pass keeps its rolling history.
+   */
+  void submit_frame(const std::vector<std::pair<std::string, float>>& passes);
 
   /**
    * Get timing for specific pass

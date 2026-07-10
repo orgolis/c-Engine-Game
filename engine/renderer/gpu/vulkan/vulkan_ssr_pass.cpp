@@ -139,7 +139,7 @@ bool VulkanSsrPass::create_compute_pipeline() {
     VkDevice vk = device_->get_device();
 
     // 7 bindings in screen-space mode, +2 (TLAS, instance SSBO) in RT mode.
-    std::array<VkDescriptorSetLayoutBinding, 9> b{};
+    std::array<VkDescriptorSetLayoutBinding, 10> b{};
     for (uint32_t i = 0; i < 5; ++i) {
         b[i].binding = i;
         b[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -162,7 +162,11 @@ bool VulkanSsrPass::create_compute_pipeline() {
     b[8].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     b[8].descriptorCount = 1;
     b[8].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
-    const uint32_t binding_count = use_rt_ ? 9u : 7u;
+    b[9].binding = 9; // cloud-sky lat-long map for reflected clouds (RT only)
+    b[9].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    b[9].descriptorCount = 1;
+    b[9].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+    const uint32_t binding_count = use_rt_ ? 10u : 7u;
     VkDescriptorSetLayoutCreateInfo li{};
     li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     li.bindingCount = binding_count;
@@ -202,7 +206,7 @@ bool VulkanSsrPass::create_compute_pipeline() {
 
     // Descriptor pool + set.
     std::array<VkDescriptorPoolSize, 4> ps{};
-    ps[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;      ps[0].descriptorCount = 6; // 5 gbuffer/hdr + 1 cubemap
+    ps[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;      ps[0].descriptorCount = 7; // 5 gbuffer/hdr + cubemap + cloudSky
     ps[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;              ps[1].descriptorCount = 1;
     ps[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; ps[2].descriptorCount = 1;
     ps[3].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;             ps[3].descriptorCount = 1;
@@ -254,6 +258,19 @@ bool VulkanSsrPass::create_compute_pipeline() {
     ws[6].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     ws[6].pImageInfo      = &ii[6];
     vkUpdateDescriptorSets(vk, static_cast<uint32_t>(ws.size()), ws.data(), 0, nullptr);
+
+    // Binding 9 (cloudSky, RT only) — placeholder (the lit HDR view) until
+    // set_cloud_sky() supplies the real map. Harmless: the shader samples it
+    // only when pc.ambient.w > 0.5, which stays 0 until clouds bind a map.
+    if (use_rt_) {
+        VkDescriptorImageInfo cloud_ph{ hdr_sampler_, hdr_color_view_,
+                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet cw{};
+        cw.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        cw.dstSet = compute_set_; cw.dstBinding = 9; cw.descriptorCount = 1;
+        cw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; cw.pImageInfo = &cloud_ph;
+        vkUpdateDescriptorSets(vk, 1, &cw, 0, nullptr);
+    }
 
     return true;
 }
@@ -454,6 +471,19 @@ void VulkanSsrPass::set_instance_data_buffer(VkBuffer buffer) {
     vkUpdateDescriptorSets(device_->get_device(), 1, &w, 0, nullptr);
 }
 
+void VulkanSsrPass::set_cloud_sky(VkImageView view, VkSampler sampler) {
+    if (!use_rt_ || view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE ||
+        compute_set_ == VK_NULL_HANDLE) return;
+    cloud_sky_view_ = view;
+    cloud_sky_sampler_ = sampler;
+    VkDescriptorImageInfo ii{ sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkWriteDescriptorSet w{};
+    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet = compute_set_; w.dstBinding = 9; w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &ii;
+    vkUpdateDescriptorSets(device_->get_device(), 1, &w, 0, nullptr);
+}
+
 void VulkanSsrPass::execute(VkCommandBuffer cmd,
                              const glm::mat4& view,
                              const glm::mat4& proj,
@@ -514,6 +544,7 @@ void VulkanSsrPass::execute(VkCommandBuffer cmd,
     pc.ambient[0] = ambient_color_.x * ambient_intensity_;
     pc.ambient[1] = ambient_color_.y * ambient_intensity_;
     pc.ambient[2] = ambient_color_.z * ambient_intensity_;
+    pc.ambient[3] = cloud_sky_enabled_ ? 1.0f : 0.0f; // reflected-clouds gate
     vkCmdPushConstants(cmd, compute_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(pc), &pc);
 

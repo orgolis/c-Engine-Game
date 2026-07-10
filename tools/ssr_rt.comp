@@ -44,6 +44,9 @@ struct RtInstanceData {
 layout(set = 0, binding = 8, scalar) readonly buffer InstanceBuffer {
     RtInstanceData instances[];
 };
+// Lat-long cloud map — composited over the sky on a reflection miss so clouds
+// appear in reflections. Sampled only when pc.ambient.w > 0.5 (clouds on).
+layout(set = 0, binding = 9) uniform sampler2D cloudSky;
 
 layout(push_constant) uniform PC {
     mat4  view_proj;
@@ -77,6 +80,17 @@ void main() {
     ivec2 px = ivec2(gl_GlobalInvocationID.xy);
     if (px.x >= pc.output_size.x || px.y >= pc.output_size.y) return;
     vec2 uv = (vec2(px) + 0.5) / vec2(pc.output_size);
+
+    // Sky pixels (G-buffer depth at the far plane) carry NO geometry. The
+    // normal G-buffer clears to (0,0,1) — NOT zero — so the dot(N,N) test
+    // below does NOT catch them. Without this depth gate, SSR treats every
+    // sky pixel as a mirror (P=(0,0,0), V=normalize(-camera_pos)), traces a
+    // bogus reflection, and composites grey over the sky background that
+    // drifts with camera position. Use the same sky test as the lighting pass.
+    if (texture(depthTex, uv).r >= 1.0 - 1e-5) {
+        imageStore(dstReflection, px, vec4(0.0));
+        return;
+    }
 
     vec4 normal_sample = texture(normalTex, uv);
     vec3 N = normal_sample.xyz;
@@ -140,6 +154,15 @@ void main() {
         reflection_color = texture(envCubemap, R).rgb;
         float l = max(max(reflection_color.r, reflection_color.g), reflection_color.b);
         if (l > kSkyClampLuma) reflection_color *= kSkyClampLuma / l;
+        // Composite reflected clouds (lat-long) over the sky.
+        if (pc.ambient.w > 0.5) {
+            const float PI = 3.14159265358979323846;
+            float az = atan(R.x, R.z);
+            float el = asin(clamp(R.y, -1.0, 1.0));
+            vec2 cuv = vec2(az / (2.0 * PI) + 0.5, el / PI + 0.5);
+            vec4 cl = texture(cloudSky, cuv);
+            reflection_color = reflection_color * cl.a + cl.rgb;
+        }
     }
 
     // Roughness-aware Fresnel weighting (matches ssr.comp / IBL).

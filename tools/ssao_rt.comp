@@ -1,10 +1,11 @@
 #version 460
 #extension GL_EXT_ray_query : require
-// Ray-traced ambient occlusion written into the SSAO pass's R8 occlusion
-// image, so the existing bilateral blur denoises it. Replaces the noisy
-// inline AO that used to run in the lighting shader: computing AO here +
-// blurring downstream removes the per-pixel grain while keeping the
-// long-range "is this point enclosed?" occlusion that darkens sealed rooms.
+// Ray-traced ambient occlusion + REPROJECTED temporal accumulation. Each frame
+// casts a fresh set of rays (seed rotated by frame), then blends with the
+// accumulated history sampled at where this world point was LAST frame — so the
+// grain converges to smooth even while the camera moves. The reprojection
+// auto-calibrates the projection's axis convention against the known current
+// pixel UV, so a Y/X flip cannot break it.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -13,14 +14,17 @@ layout(set = 0, binding = 1) uniform sampler2D normalTex;
 layout(set = 0, binding = 2) uniform sampler2D depthTex;     // layout parity (unused)
 layout(set = 0, binding = 3, r8) uniform writeonly image2D dstOcclusion;
 layout(set = 0, binding = 4) uniform accelerationStructureEXT sceneTlas;
+layout(set = 0, binding = 5) uniform sampler2D historyTex;   // previous frame's accumulated AO
 
 layout(push_constant) uniform PC {
-    mat4  view_proj;
+    mat4  cur_view_proj;   // this frame's view*proj (to self-calibrate the UV convention)
+    mat4  prev_view_proj;  // last frame's view*proj (to reproject the history)
     ivec2 output_size;
-    float radius;        // RT AO ray length (world units)
+    float radius;
     float bias;
     float intensity;
-    float _pad;
+    int   frame;
+    int   accumulate;
 } pc;
 
 float hash(vec2 p) {
@@ -39,14 +43,14 @@ void main() {
     N = normalize(N);
     vec3 P = texture(positionTex, uv).xyz;
 
-    const int   AO_SAMPLES = 12;
+    const int AO_SAMPLES = 32;
     float radius = pc.radius > 0.0 ? pc.radius : 30.0;
 
     vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 T  = normalize(cross(up, N));
     vec3 B  = cross(N, T);
 
-    float rnd = hash(vec2(px));
+    float rnd = hash(vec2(px) + vec2(float(pc.frame)) * vec2(0.618034, 0.381966));
     vec3  origin = P + N * 0.02;
     float occluded = 0.0;
     for (int i = 0; i < AO_SAMPLES; ++i) {
@@ -69,5 +73,25 @@ void main() {
         }
     }
     float ao = 1.0 - (occluded / float(AO_SAMPLES));
+
+    if (pc.accumulate != 0) {
+        vec4 cc = pc.cur_view_proj  * vec4(P, 1.0);
+        vec4 pp = pc.prev_view_proj * vec4(P, 1.0);
+        if (cc.w > 0.0 && pp.w > 0.0) {
+            // Project under both matrices (no-flip assumption), then per-axis
+            // pick whichever orientation makes THIS frame's projection match the
+            // known current UV — and apply the same orientation to the previous
+            // frame's projection. This makes the reprojection convention-proof.
+            vec2 cur_proj  = (cc.xy / cc.w) * 0.5 + 0.5;
+            vec2 prev_proj = (pp.xy / pp.w) * 0.5 + 0.5;
+            bvec2 flip = greaterThan(abs(cur_proj - uv), abs((vec2(1.0) - cur_proj) - uv));
+            vec2 prev_uv = mix(prev_proj, vec2(1.0) - prev_proj, vec2(flip));
+            if (all(greaterThanEqual(prev_uv, vec2(0.0))) &&
+                all(lessThanEqual(prev_uv, vec2(1.0)))) {
+                float hist = texture(historyTex, prev_uv).r;
+                ao = mix(hist, ao, 0.1);
+            }
+        }
+    }
     imageStore(dstOcclusion, px, vec4(ao));
 }

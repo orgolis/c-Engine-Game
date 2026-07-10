@@ -7,6 +7,10 @@
 #include "light_component.h"
 #include "collider_component.h"
 #include "camera_component.h"
+#include "audio_components.h"
+#include "terrain_component.h"
+#include "script_component.h"
+#include "water_component.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cstdio>
@@ -19,6 +23,13 @@
 #include <glm/glm.hpp>
 
 namespace schizo::editor {
+
+// Directory portion of a path (incl. the trailing separator), or "" if none.
+// Used to place terrain sidecar heightmap files next to the .scene file.
+static std::string dir_of(const std::string& path) {
+    const size_t s = path.find_last_of("/\\");
+    return (s == std::string::npos) ? std::string() : path.substr(0, s + 1);
+}
 
 // Line-based key=value format. Each entity is its own [ENTITY_n] block.
 // Keys added in this revision (saved-but-not-required-on-load — older files
@@ -44,6 +55,7 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
         spdlog::error("Failed to open file for writing: {}", filepath);
         return false;
     }
+    const std::string scene_dir = dir_of(filepath);   // for terrain sidecar files
 
     try {
         file << "SCENE_NAME=" << scene->GetName() << "\n";
@@ -141,6 +153,13 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
                 }
 
                 file << "LIGHT_VOLUMETRIC=" << light_comp->GetVolumetricIntensity() << "\n";
+                if (light_comp->GetType() == schizo::scene::LightType::Area) {
+                    auto sz = light_comp->GetAreaSize();
+                    file << "LIGHT_AREA_SIZE=" << sz.x << "," << sz.y << "\n";
+                    file << "LIGHT_TWO_SIDED=" << (light_comp->IsTwoSided() ? "1" : "0") << "\n";
+                }
+                if (!light_comp->GetCookiePath().empty())
+                    file << "LIGHT_COOKIE=" << light_comp->GetCookiePath() << "\n";
             }
 
             // CameraComponent — intrinsic camera attached to the entity.
@@ -189,6 +208,105 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
                     }
                     default: break;
                 }
+            }
+
+            // Audio Source
+            if (auto as = entity->GetComponent<schizo::scene::AudioSourceComponent>()) {
+                file << "HAS_AUDIO_SRC=1\n";
+                file << "AUDIO_SRC_CLIP="          << as->GetClipPath() << "\n";
+                file << "AUDIO_SRC_VOLUME="        << as->GetVolume() << "\n";
+                file << "AUDIO_SRC_PITCH="         << as->GetPitch() << "\n";
+                file << "AUDIO_SRC_RADIUS="        << as->GetRadius() << "\n";
+                file << "AUDIO_SRC_LOOP="          << (as->IsLooping() ? "1" : "0") << "\n";
+                file << "AUDIO_SRC_SPATIAL="       << (as->IsSpatial() ? "1" : "0") << "\n";
+                file << "AUDIO_SRC_PLAY_ON_START=" << (as->PlayOnStart() ? "1" : "0") << "\n";
+            }
+
+            // Audio Listener
+            if (auto al = entity->GetComponent<schizo::scene::AudioListenerComponent>()) {
+                file << "HAS_AUDIO_LISTENER=1\n";
+                file << "AUDIO_LISTENER_GAIN="   << al->GetMasterGain() << "\n";
+                file << "AUDIO_LISTENER_ACTIVE=" << (al->IsActive() ? "1" : "0") << "\n";
+            }
+
+            // Terrain — params inline + the heightmap in a sidecar binary
+            // (terrain_<id>.r32) next to the .scene file.
+            if (auto tc = entity->GetComponent<schizo::scene::TerrainComponent>()) {
+                file << "TERRAIN_RES="          << tc->GetResolution() << "\n";
+                file << "TERRAIN_SIZE="         << tc->GetSize() << "\n";
+                file << "TERRAIN_HEIGHT_SCALE=" << tc->GetHeightScale() << "\n";
+                const std::string hf = "terrain_" + std::to_string(entity->GetId()) + ".r32";
+                std::ofstream hb(scene_dir + hf, std::ios::binary);
+                if (hb) {
+                    const auto& H = tc->Heights();
+                    hb.write(reinterpret_cast<const char*>(H.data()),
+                             static_cast<std::streamsize>(H.size() * sizeof(float)));
+                    file << "TERRAIN_HEIGHTS=" << hf << "\n";
+                }
+
+                // Splat painting (Phase C): per-layer texture paths + tiling
+                // inline, and the RGBA splatmap in a sidecar (terrain_<id>.splat:
+                // a small "res\n" header line then res*res*4 raw bytes).
+                for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
+                    file << "TERRAIN_LAYER" << i << "=" << tc->GetLayerPath(i) << "\n";
+                    file << "TERRAIN_TILING" << i << "=" << tc->GetTiling(i) << "\n";
+                }
+                const std::string sf = "terrain_" + std::to_string(entity->GetId()) + ".splat";
+                std::ofstream sb(scene_dir + sf, std::ios::binary);
+                if (sb) {
+                    const int sres = tc->SplatResolution();
+                    sb << sres << "\n";
+                    const auto& S = tc->Splat();
+                    sb.write(reinterpret_cast<const char*>(S.data()),
+                             static_cast<std::streamsize>(S.size()));
+                    file << "TERRAIN_SPLAT=" << sf << "\n";
+                }
+
+                // Holes (caves) — sidecar of res*res bytes, only when any set.
+                if (tc->AnyHoles()) {
+                    const std::string hf2 = "terrain_" + std::to_string(entity->GetId()) + ".holes";
+                    std::ofstream ob(scene_dir + hf2, std::ios::binary);
+                    if (ob) {
+                        const auto& H2 = tc->Holes();
+                        ob.write(reinterpret_cast<const char*>(H2.data()),
+                                 static_cast<std::streamsize>(H2.size()));
+                        file << "TERRAIN_HOLES=" << hf2 << "\n";
+                    }
+                }
+
+                // Integrated water.
+                if (tc->IsWaterEnabled()) {
+                    const auto& wd = tc->GetWaterDeepColor();
+                    const auto& ws = tc->GetWaterShallowColor();
+                    file << "TERRAIN_WATER=" << (tc->IsWaterPhysical() ? 1 : 0)
+                         << "," << tc->GetWaterLevel() << "\n";
+                    file << "TERRAIN_WATER_DEEP="    << wd.r << "," << wd.g << "," << wd.b << "\n";
+                    file << "TERRAIN_WATER_SHALLOW=" << ws.r << "," << ws.g << "," << ws.b << "\n";
+                    file << "TERRAIN_WATER_WAVES=" << tc->GetWaterWaveHeight() << ","
+                         << tc->GetWaterWaveSpeed() << "," << tc->GetWaterWaveScale() << "\n";
+                    file << "TERRAIN_WATER_LOOK=" << tc->GetWaterClarity() << ","
+                         << tc->GetWaterReflectivity() << "\n";
+                }
+            }
+
+            // Script component (Stage 12).
+            if (auto sc = entity->GetComponent<schizo::scene::ScriptComponent>()) {
+                file << "SCRIPT_PATH="    << sc->GetScriptPath() << "\n";
+                file << "SCRIPT_ENABLED=" << (sc->IsEnabled() ? "1" : "0") << "\n";
+            }
+
+            // Water component (terrain expansion).
+            if (auto wc = entity->GetComponent<schizo::scene::WaterComponent>()) {
+                file << "WATER_PHYSICAL=" << (wc->IsPhysical() ? "1" : "0") << "\n";
+                const auto& sz = wc->GetSize();
+                const auto& dc = wc->GetDeepColor();
+                const auto& sc2 = wc->GetShallowColor();
+                file << "WATER_SIZE="    << sz.x << "," << sz.y << "\n";
+                file << "WATER_DEEP="    << dc.r << "," << dc.g << "," << dc.b << "\n";
+                file << "WATER_SHALLOW=" << sc2.r << "," << sc2.g << "," << sc2.b << "\n";
+                file << "WATER_WAVES="   << wc->GetWaveHeight() << "," << wc->GetWaveSpeed()
+                     << "," << wc->GetWaveScale() << "\n";
+                file << "WATER_LOOK="    << wc->GetClarity() << "," << wc->GetReflectivity() << "\n";
             }
 
             file << "\n";
@@ -253,6 +371,9 @@ struct ParsedEntity {
     glm::vec2 light_shadow_planes{0.1f, 100.0f};
     int   light_cascade_count = 1;
     float light_volumetric = 0.0f;
+    glm::vec2 light_area_size{2.0f, 2.0f};
+    bool      light_two_sided = false;
+    std::string light_cookie;
 
     bool has_collider = false;
     int  collider_shape = 0;                       // Box
@@ -274,6 +395,48 @@ struct ParsedEntity {
     float     camera_far         = 1000.0f;
     float     camera_ortho_size  = 5.0f;
     glm::vec4 camera_clear_color = glm::vec4(0.1f, 0.1f, 0.1f, 1.0f);
+
+    bool        has_audio_src           = false;
+    std::string audio_src_clip;
+    float       audio_src_volume        = 1.0f;
+    float       audio_src_pitch         = 1.0f;
+    float       audio_src_radius        = 10.0f;
+    bool        audio_src_loop          = false;
+    bool        audio_src_spatial       = true;
+    bool        audio_src_play_on_start = false;
+
+    bool        has_audio_listener      = false;
+    float       audio_listener_gain     = 1.0f;
+    bool        audio_listener_active   = true;
+
+    bool        has_terrain          = false;
+    int         terrain_res          = 64;
+    float       terrain_size         = 100.0f;
+    float       terrain_height_scale = 1.0f;
+    std::string terrain_heights_file;
+    std::string terrain_layer[schizo::scene::kTerrainLayers];
+    float       terrain_tiling[schizo::scene::kTerrainLayers] = {16.0f, 16.0f, 16.0f, 16.0f};
+    std::string terrain_splat_file;
+    std::string terrain_holes_file;
+    bool        terrain_water          = false;
+    bool        terrain_water_physical = true;
+    float       terrain_water_level    = 0.5f;
+    glm::vec3   terrain_water_deep     = glm::vec3(0.02f, 0.12f, 0.18f);
+    glm::vec3   terrain_water_shallow  = glm::vec3(0.10f, 0.45f, 0.50f);
+    glm::vec3   terrain_water_waves    = glm::vec3(0.18f, 1.0f, 14.0f);
+    glm::vec2   terrain_water_look     = glm::vec2(4.0f, 0.8f);
+
+    bool        has_script     = false;
+    std::string script_path;
+    bool        script_enabled = true;
+
+    bool      has_water       = false;
+    bool      water_physical  = true;
+    glm::vec2 water_size      = glm::vec2(60.0f);
+    glm::vec3 water_deep      = glm::vec3(0.02f, 0.12f, 0.18f);
+    glm::vec3 water_shallow   = glm::vec3(0.10f, 0.45f, 0.50f);
+    glm::vec3 water_waves     = glm::vec3(0.18f, 1.0f, 14.0f);   // height, speed, scale
+    glm::vec2 water_look      = glm::vec2(4.0f, 0.8f);           // clarity, reflectivity
 };
 
 // Helper: does `line` start with `key=`? If so, return the value portion.
@@ -369,6 +532,14 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
     }
     if (starts_with(line, "LIGHT_CASCADE_COUNT", v)) { p.light_cascade_count = std::stoi(v); return; }
     if (starts_with(line, "LIGHT_VOLUMETRIC", v))    { p.light_volumetric = std::stof(v); return; }
+    if (starts_with(line, "LIGHT_AREA_SIZE", v)) {
+        float x = 2.0f, y = 2.0f;
+        std::sscanf(v.c_str(), "%f,%f", &x, &y);
+        p.light_area_size = {x, y};
+        return;
+    }
+    if (starts_with(line, "LIGHT_TWO_SIDED", v))     { p.light_two_sided = (v == "1"); return; }
+    if (starts_with(line, "LIGHT_COOKIE", v))        { p.light_cookie = v; return; }
 
     if (starts_with(line, "HAS_COLLIDER", v))         { p.has_collider = (v == "1"); return; }
     if (starts_with(line, "COLLIDER_SHAPE", v))       { p.collider_shape = std::stoi(v); return; }
@@ -413,10 +584,57 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
         p.camera_clear_color = {r, g, b, a};
         return;
     }
+
+    if (starts_with(line, "HAS_AUDIO_SRC", v))           { p.has_audio_src = (v == "1"); return; }
+    if (starts_with(line, "AUDIO_SRC_CLIP", v))          { p.audio_src_clip = v; return; }
+    if (starts_with(line, "AUDIO_SRC_VOLUME", v))        { p.audio_src_volume = std::stof(v); return; }
+    if (starts_with(line, "AUDIO_SRC_PITCH", v))         { p.audio_src_pitch = std::stof(v); return; }
+    if (starts_with(line, "AUDIO_SRC_RADIUS", v))        { p.audio_src_radius = std::stof(v); return; }
+    if (starts_with(line, "AUDIO_SRC_LOOP", v))          { p.audio_src_loop = (v == "1"); return; }
+    if (starts_with(line, "AUDIO_SRC_SPATIAL", v))       { p.audio_src_spatial = (v == "1"); return; }
+    if (starts_with(line, "AUDIO_SRC_PLAY_ON_START", v)) { p.audio_src_play_on_start = (v == "1"); return; }
+    if (starts_with(line, "HAS_AUDIO_LISTENER", v))      { p.has_audio_listener = (v == "1"); return; }
+    if (starts_with(line, "AUDIO_LISTENER_GAIN", v))     { p.audio_listener_gain = std::stof(v); return; }
+    if (starts_with(line, "AUDIO_LISTENER_ACTIVE", v))   { p.audio_listener_active = (v == "1"); return; }
+
+    if (starts_with(line, "TERRAIN_RES", v))          { p.has_terrain = true; p.terrain_res = std::stoi(v); return; }
+    if (starts_with(line, "TERRAIN_SIZE", v))         { p.terrain_size = std::stof(v); return; }
+    if (starts_with(line, "TERRAIN_HEIGHT_SCALE", v)) { p.terrain_height_scale = std::stof(v); return; }
+    if (starts_with(line, "TERRAIN_HEIGHTS", v))      { p.terrain_heights_file = v; return; }
+    for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
+        const std::string lk = "TERRAIN_LAYER"  + std::to_string(i);
+        const std::string tk = "TERRAIN_TILING" + std::to_string(i);
+        if (starts_with(line, lk.c_str(), v)) { p.terrain_layer[i]  = v; return; }
+        if (starts_with(line, tk.c_str(), v)) { p.terrain_tiling[i] = std::stof(v); return; }
+    }
+    if (starts_with(line, "TERRAIN_SPLAT", v))        { p.terrain_splat_file = v; return; }
+    if (starts_with(line, "TERRAIN_HOLES", v))        { p.terrain_holes_file = v; return; }
+    if (starts_with(line, "TERRAIN_WATER_DEEP", v))    { std::sscanf(v.c_str(), "%f,%f,%f", &p.terrain_water_deep.r, &p.terrain_water_deep.g, &p.terrain_water_deep.b); return; }
+    if (starts_with(line, "TERRAIN_WATER_SHALLOW", v)) { std::sscanf(v.c_str(), "%f,%f,%f", &p.terrain_water_shallow.r, &p.terrain_water_shallow.g, &p.terrain_water_shallow.b); return; }
+    if (starts_with(line, "TERRAIN_WATER_WAVES", v))   { std::sscanf(v.c_str(), "%f,%f,%f", &p.terrain_water_waves.x, &p.terrain_water_waves.y, &p.terrain_water_waves.z); return; }
+    if (starts_with(line, "TERRAIN_WATER_LOOK", v))    { std::sscanf(v.c_str(), "%f,%f", &p.terrain_water_look.x, &p.terrain_water_look.y); return; }
+    if (starts_with(line, "TERRAIN_WATER", v)) {
+        int phys = 1; float lvl = 0.5f;
+        std::sscanf(v.c_str(), "%d,%f", &phys, &lvl);
+        p.terrain_water = true; p.terrain_water_physical = phys != 0; p.terrain_water_level = lvl;
+        return;
+    }
+
+    if (starts_with(line, "SCRIPT_PATH", v))          { p.has_script = true; p.script_path = v; return; }
+    if (starts_with(line, "SCRIPT_ENABLED", v))       { p.script_enabled = (v == "1"); return; }
+
+    if (starts_with(line, "WATER_PHYSICAL", v)) { p.water_physical = (v == "1"); return; }
+    if (starts_with(line, "WATER_SIZE", v))    { p.has_water = true; std::sscanf(v.c_str(), "%f,%f", &p.water_size.x, &p.water_size.y); return; }
+    if (starts_with(line, "WATER_DEEP", v))    { std::sscanf(v.c_str(), "%f,%f,%f", &p.water_deep.r, &p.water_deep.g, &p.water_deep.b); return; }
+    if (starts_with(line, "WATER_SHALLOW", v)) { std::sscanf(v.c_str(), "%f,%f,%f", &p.water_shallow.r, &p.water_shallow.g, &p.water_shallow.b); return; }
+    if (starts_with(line, "WATER_WAVES", v))   { std::sscanf(v.c_str(), "%f,%f,%f", &p.water_waves.x, &p.water_waves.y, &p.water_waves.z); return; }
+    if (starts_with(line, "WATER_LOOK", v))    { std::sscanf(v.c_str(), "%f,%f", &p.water_look.x, &p.water_look.y); return; }
+
     // Unknown key — silently ignore for forward compatibility.
 }
 
-std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p) {
+std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
+                                                       const std::string& scene_dir) {
     using namespace schizo::scene;
 
     auto e = std::make_shared<Entity>(p.name);
@@ -480,6 +698,9 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p) {
             lc->SetShadowPlanes(p.light_shadow_planes.x, p.light_shadow_planes.y);
             lc->SetCascadeCount(static_cast<uint32_t>(std::max(1, p.light_cascade_count)));
             lc->SetVolumetricIntensity(p.light_volumetric);
+            lc->SetAreaSize(p.light_area_size);
+            lc->SetTwoSided(p.light_two_sided);
+            lc->SetCookiePath(p.light_cookie);
         }
     }
 
@@ -514,6 +735,105 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p) {
             cam->SetFarPlane(p.camera_far);
             cam->SetOrthographicSize(p.camera_ortho_size);
             cam->SetClearColor(p.camera_clear_color);
+        }
+    }
+
+    if (p.has_audio_src) {
+        auto as = e->AddComponent<AudioSourceComponent>();
+        if (as) {
+            as->SetClipPath(p.audio_src_clip);   // also derives the clip GUID
+            as->SetVolume(p.audio_src_volume);
+            as->SetPitch(p.audio_src_pitch);
+            as->SetRadius(p.audio_src_radius);
+            as->SetLooping(p.audio_src_loop);
+            as->SetSpatial(p.audio_src_spatial);
+            as->SetPlayOnStart(p.audio_src_play_on_start);
+        }
+    }
+
+    if (p.has_audio_listener) {
+        auto al = e->AddComponent<AudioListenerComponent>();
+        if (al) {
+            al->SetMasterGain(p.audio_listener_gain);
+            al->SetActive(p.audio_listener_active);
+        }
+    }
+
+    if (p.has_terrain) {
+        auto tc = e->AddComponent<TerrainComponent>(p.terrain_res, p.terrain_size);
+        if (tc) {
+            tc->SetHeightScale(p.terrain_height_scale);
+            if (!p.terrain_heights_file.empty()) {
+                std::ifstream hb(scene_dir + p.terrain_heights_file, std::ios::binary);
+                if (hb) {
+                    auto& H = tc->MutableHeights();
+                    hb.read(reinterpret_cast<char*>(H.data()),
+                            static_cast<std::streamsize>(H.size() * sizeof(float)));
+                    tc->MarkDirty();
+                }
+            }
+            // Splat layers + tiling + the painted splatmap.
+            for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
+                tc->SetLayerPath(i, p.terrain_layer[i]);
+                tc->SetTiling(i, p.terrain_tiling[i]);
+            }
+            // Holes (caves).
+            if (!p.terrain_holes_file.empty()) {
+                std::ifstream ob(scene_dir + p.terrain_holes_file, std::ios::binary);
+                if (ob) {
+                    auto& H2 = tc->MutableHoles();
+                    ob.read(reinterpret_cast<char*>(H2.data()),
+                            static_cast<std::streamsize>(H2.size()));
+                    tc->MarkDirty();
+                }
+            }
+            // Integrated water.
+            if (p.terrain_water) {
+                tc->SetWaterEnabled(true);
+                tc->SetWaterPhysical(p.terrain_water_physical);
+                tc->SetWaterLevel(p.terrain_water_level);
+                tc->SetWaterDeepColor(p.terrain_water_deep);
+                tc->SetWaterShallowColor(p.terrain_water_shallow);
+                tc->SetWaterWaveHeight(p.terrain_water_waves.x);
+                tc->SetWaterWaveSpeed(p.terrain_water_waves.y);
+                tc->SetWaterWaveScale(p.terrain_water_waves.z);
+                tc->SetWaterClarity(p.terrain_water_look.x);
+                tc->SetWaterReflectivity(p.terrain_water_look.y);
+            }
+            if (!p.terrain_splat_file.empty()) {
+                std::ifstream sb(scene_dir + p.terrain_splat_file, std::ios::binary);
+                if (sb) {
+                    int sres = 0;
+                    sb >> sres;
+                    sb.get(); // consume the newline after the header
+                    if (sres > 0) {
+                        tc->ResizeSplat(sres);
+                        auto& S = tc->MutableSplat();
+                        sb.read(reinterpret_cast<char*>(S.data()),
+                                static_cast<std::streamsize>(S.size()));
+                        tc->MarkSplatDirty();
+                    }
+                }
+            }
+        }
+    }
+
+    if (p.has_script) {
+        if (auto sc = e->AddComponent<ScriptComponent>(p.script_path))
+            sc->SetEnabled(p.script_enabled);
+    }
+
+    if (p.has_water) {
+        if (auto wc = e->AddComponent<WaterComponent>()) {
+            wc->SetPhysical(p.water_physical);
+            wc->SetSize(p.water_size);
+            wc->SetDeepColor(p.water_deep);
+            wc->SetShallowColor(p.water_shallow);
+            wc->SetWaveHeight(p.water_waves.x);
+            wc->SetWaveSpeed(p.water_waves.y);
+            wc->SetWaveScale(p.water_waves.z);
+            wc->SetClarity(p.water_look.x);
+            wc->SetReflectivity(p.water_look.y);
         }
     }
 
@@ -570,8 +890,9 @@ std::shared_ptr<schizo::scene::Scene> SceneSerializer::LoadScene(const std::stri
         std::unordered_map<uint32_t, std::shared_ptr<schizo::scene::Entity>> id_map;
         std::vector<std::shared_ptr<schizo::scene::Entity>> entities;
         entities.reserve(parsed.size());
+        const std::string scene_dir = dir_of(filepath);   // for terrain sidecar files
         for (const auto& p : parsed) {
-            auto e = construct_entity(p);
+            auto e = construct_entity(p, scene_dir);
             if (p.saved_id != 0) id_map[p.saved_id] = e;
             entities.push_back(e);
         }

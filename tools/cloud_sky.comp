@@ -1,0 +1,136 @@
+#version 450
+// Cloud sky lat-long map: raymarches the clouds per-DIRECTION into a 2D
+// equirectangular texture (x = azimuth, y = elevation). SSR samples this on a
+// sky-miss so clouds appear in reflections. Reuses the same density + lighting
+// as cloud_raymarch.comp; the Params block mirrors that shader's UBO.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std140) uniform Params {
+    mat4 inv_view_proj;
+    vec4 camera_pos;
+    vec4 sun_dir;
+    vec4 sun_color;
+    vec4 ambient;
+    vec4 layer;    // x=earth_radius, y=cloud_bottom, z=cloud_top, w=coverage
+    vec4 march;    // x=density, y=extinction, z=steps, w=light_steps
+    vec4 scales;   // x=shape_scale, y=detail_scale, z=detail_strength, w=powder
+    vec4 phase;    // x=hg_forward, y=hg_back, z=ambient_scale, w=max_march
+    vec4 wind;     // xyz=wind dir, w=time
+    vec4 misc;
+} ub;
+
+layout(set = 0, binding = 1) uniform sampler3D shapeNoise;
+layout(set = 0, binding = 2) uniform sampler3D detailNoise;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D dstSky;
+
+const float PI = 3.14159265358979323846;
+
+float remap(float v, float lo, float hi, float nlo, float nhi) {
+    return nlo + (v - lo) / max(hi - lo, 1e-4) * (nhi - nlo);
+}
+float hg(float c, float g) {
+    float g2 = g * g;
+    return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5));
+}
+float height_gradient(float hf) {
+    float bottom = clamp(remap(hf, 0.0, 0.10, 0.0, 1.0), 0.0, 1.0);
+    float top    = clamp(remap(hf, 0.20, 1.0, 1.0, 0.0), 0.0, 1.0);
+    return bottom * top;
+}
+vec2 ray_sphere(vec3 ro, vec3 rd, vec3 c, float r) {
+    vec3 oc = ro - c;
+    float b = dot(oc, rd);
+    float cc = dot(oc, oc) - r * r;
+    float disc = b * b - cc;
+    if (disc < 0.0) return vec2(-1.0);
+    float s = sqrt(disc);
+    return vec2(-b - s, -b + s);
+}
+
+vec3 g_center;
+
+float sample_density(vec3 p) {
+    float radius = length(p - g_center);
+    float h = radius - ub.layer.x;
+    float hf = (h - ub.layer.y) / max(ub.layer.z - ub.layer.y, 1e-3);
+    if (hf < 0.0 || hf > 1.0) return 0.0;
+    vec3 wind_off = ub.wind.xyz * ub.wind.w;
+    vec3 sp = (p + wind_off) * ub.scales.x;
+    vec4 shape = texture(shapeNoise, sp);
+    float base = shape.r;
+    float fbm = shape.g * 0.625 + shape.b * 0.25 + shape.a * 0.125;
+    base = remap(base, fbm - 1.0, 1.0, 0.0, 1.0);
+    float cov = ub.layer.w;
+    base = remap(base, 1.0 - cov, 1.0, 0.0, 1.0);
+    if (base <= 0.0) return 0.0;
+    base *= height_gradient(hf);
+    vec3 dp = (p + wind_off) * ub.scales.y;
+    vec3 det = texture(detailNoise, dp).rgb;
+    float det_fbm = det.r * 0.625 + det.g * 0.25 + det.b * 0.125;
+    base = remap(base, det_fbm * ub.scales.z, 1.0, 0.0, 1.0);
+    return clamp(base, 0.0, 1.0) * ub.march.x;
+}
+
+float light_optical_depth(vec3 p) {
+    vec3 L = normalize(-ub.sun_dir.xyz);
+    int steps = int(ub.march.w);
+    float dist = (ub.layer.z - ub.layer.y) * 0.5;
+    float lstep = dist / float(steps);
+    float od = 0.0;
+    for (int i = 0; i < steps; ++i) {
+        od += sample_density(p + L * (float(i) + 0.5) * lstep) * lstep;
+    }
+    return od;
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(dstSky);
+    if (px.x >= size.x || px.y >= size.y) return;
+    vec2 uv = (vec2(px) + 0.5) / vec2(size);
+
+    float az = (uv.x - 0.5) * 2.0 * PI;
+    float el = (uv.y - 0.5) * PI;
+    float ce = cos(el);
+    vec3 rd = vec3(ce * sin(az), sin(el), ce * cos(az));
+    vec3 ro = ub.camera_pos.xyz;
+
+    if (rd.y <= 0.02) { imageStore(dstSky, px, vec4(0.0, 0.0, 0.0, 1.0)); return; }
+
+    g_center = vec3(ro.x, -ub.layer.x, ro.z);
+    vec2 inner = ray_sphere(ro, rd, g_center, ub.layer.x + ub.layer.y);
+    vec2 outer = ray_sphere(ro, rd, g_center, ub.layer.x + ub.layer.z);
+    float t_start = inner.y;
+    float t_end   = outer.y;
+    if (t_end <= 0.0 || t_start >= t_end) { imageStore(dstSky, px, vec4(0.0, 0.0, 0.0, 1.0)); return; }
+    t_start = max(t_start, 0.0);
+    t_end   = min(t_end, t_start + ub.phase.w);
+
+    const int steps = 48;
+    float step_len = (t_end - t_start) / float(steps);
+    float cos_a = dot(rd, normalize(-ub.sun_dir.xyz));
+    float ph = mix(hg(cos_a, ub.phase.x), hg(cos_a, ub.phase.y), 0.5);
+
+    vec3 scattering = vec3(0.0);
+    float transmittance = 1.0;
+    float ext = ub.march.y;
+    for (int i = 0; i < steps; ++i) {
+        if (transmittance < 0.01) break;
+        vec3 p = ro + rd * (t_start + (float(i) + 0.5) * step_len);
+        float d = sample_density(p);
+        if (d > 0.0) {
+            float od = light_optical_depth(p);
+            float energy = 0.0; float a = 1.0, b = 1.0;
+            for (int o = 0; o < 3; ++o) { energy += a * exp(-od * ext * b); a *= 0.5; b *= 0.5; }
+            float powder = 1.0 - exp(-d * 2.0 * ub.scales.w);
+            vec3 sun_li = ub.sun_color.rgb * energy * (ph * 2.5 + 0.5) * mix(1.0, powder, 0.4) * ub.ambient.w;
+            vec3 amb_li = ub.ambient.rgb * ub.phase.z;
+            vec3 L = sun_li + amb_li;
+            float sample_trans = exp(-d * ext * step_len);
+            scattering += transmittance * L * (1.0 - sample_trans);
+            transmittance *= sample_trans;
+        }
+    }
+    imageStore(dstSky, px, vec4(scattering, transmittance));
+}

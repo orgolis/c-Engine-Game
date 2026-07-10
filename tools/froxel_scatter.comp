@@ -1,0 +1,110 @@
+#version 450
+// Froxel fog pass 1 (Stage 3.3): per-froxel in-scattering + extinction.
+//
+// The froxel grid is camera-frustum-aligned (X x Y across the screen, Z slices
+// distributed exponentially in view distance). Each invocation shades ONE
+// froxel: height-fog density at its world position, times the light arriving
+// there — the sun (shadow-map tested, Henyey-Greenstein phase toward the
+// camera), all local point/spot lights from the SAME light buffer the deferred
+// lighting uses, and a small ambient floor.
+//
+// Output: rgb = scattered radiance source, a = extinction coefficient.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+const int   FROXEL_X = 160;
+const int   FROXEL_Y = 90;
+const int   FROXEL_Z = 64;
+const float NEAR     = 0.5;
+
+layout(set = 0, binding = 0) uniform FroxelUBO {
+    mat4 inv_view_proj;
+    mat4 shadow_matrix;
+    vec4 cam_pos;      // xyz = camera, w = light_count
+    vec4 sun_dir;      // xyz = direction light->scene, w = HG anisotropy
+    vec4 sun_color;    // rgb, w = sun intensity
+    vec4 fog;          // x = density, y = height_base, z = height_falloff, w = far
+    vec4 ambient;      // rgb = ambient in-scatter color, w = local-light intensity
+} ub;
+
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image3D scatterTex;
+layout(set = 0, binding = 2) uniform sampler2DArray shadowMap;
+
+struct Light {
+    vec4 position;      // w: 0=directional 1=point 2=spot 3=area
+    vec4 direction;
+    vec4 colorRadius;   // rgb * intensity, w = radius
+    vec4 attenuation;
+    mat4 shadowMatrix;
+    uint shadowMapIndex;
+    uint castsShadow;
+    uint _pad0;
+    uint _pad1;
+};
+layout(set = 0, binding = 3) readonly buffer LightBuffer { Light lights[]; } lightBuffer;
+
+float slice_dist(float z) {   // exponential slice -> view distance
+    return NEAR * pow(ub.fog.w / NEAR, z / float(FROXEL_Z));
+}
+
+float sun_visibility(vec3 P) {
+    vec4 ls = ub.shadow_matrix * vec4(P, 1.0);
+    vec3 proj = ls.xyz / max(ls.w, 1e-4);
+    proj.xy = proj.xy * 0.5 + 0.5;
+    if (proj.z > 1.0 || proj.z < 0.0 ||
+        proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
+    return (proj.z - 0.0015 > texture(shadowMap, vec3(proj.xy, 0.0)).r) ? 0.0 : 1.0;
+}
+
+float hg_phase(float cos_theta, float g) {
+    float g2 = g * g;
+    return (1.0 - g2) / (12.5663706 * pow(1.0 + g2 - 2.0 * g * cos_theta, 1.5));
+}
+
+void main() {
+    ivec3 f = ivec3(gl_GlobalInvocationID);
+    if (f.x >= FROXEL_X || f.y >= FROXEL_Y || f.z >= FROXEL_Z) return;
+
+    // Froxel center -> world position: unproject the screen ray, walk to the
+    // slice's exponential distance.
+    vec2 ndc = (vec2(f.xy) + 0.5) / vec2(FROXEL_X, FROXEL_Y) * 2.0 - 1.0;
+    vec4 wp_far = ub.inv_view_proj * vec4(ndc, 1.0, 1.0);
+    vec3 dir = normalize(wp_far.xyz / wp_far.w - ub.cam_pos.xyz);
+    float dist = slice_dist(float(f.z) + 0.5);
+    vec3 P = ub.cam_pos.xyz + dir * dist;
+
+    // Height fog density.
+    float density = ub.fog.x * exp(-ub.fog.z * max(0.0, P.y - ub.fog.y));
+    if (density < 1e-6) {
+        imageStore(scatterTex, f, vec4(0.0));
+        return;
+    }
+
+    // Sun in-scatter: shadowed, forward-scattering toward the camera.
+    vec3 L_sun = normalize(-ub.sun_dir.xyz);
+    float phase = hg_phase(dot(dir, -L_sun), ub.sun_dir.w);
+    vec3 scat = ub.sun_color.rgb * ub.sun_color.w * sun_visibility(P) * phase;
+
+    // Local lights (point + spot) — isotropic scatter, distance-attenuated.
+    // Spots are treated as points at reduced weight (their cone parameters are
+    // packed as float bits the fog does not unpack — acceptable for fog).
+    uint count = uint(ub.cam_pos.w);
+    for (uint i = 0u; i < count; ++i) {
+        Light l = lightBuffer.lights[i];
+        float type = l.position.w;
+        if (type != 1.0 && type != 2.0) continue;
+        vec3  to_l = l.position.xyz - P;
+        float d    = length(to_l);
+        float r    = max(l.colorRadius.w, 0.01);
+        if (d >= r) continue;
+        float att = (1.0 - d / r);
+        att *= att / (d * d + 1.0);
+        float w = (type == 2.0) ? 0.6 : 1.0;
+        scat += l.colorRadius.rgb * att * w * ub.ambient.w * 0.0796;  // 1/(4pi)
+    }
+
+    // Ambient floor so shadowed fog isn't pure black.
+    scat += ub.ambient.rgb * 0.03;
+
+    imageStore(scatterTex, f, vec4(scat * density, density));
+}

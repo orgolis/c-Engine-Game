@@ -5,10 +5,13 @@
 #include "entity.h"
 #include "collider_component.h"
 #include "mesh_component.h"
+#include "terrain_component.h"
+#include "water_component.h"
 #include "physics/jolt_physics.h"   // Stage 4 — Jolt-backed PhysicsWorld
 #include "tinygltf.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cfloat>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -447,7 +450,22 @@ void ScenePlaybackManager::DriveCharacterController(float delta_time) {
     glm::vec3 world_velocity = right * cv.x + forward * cv.z;
     world_velocity.y = cv.y;
 
-    // 5. Drive the Jolt character with the controller's full velocity (the
+    // 5. Swimming: when the player's torso is under a PHYSICAL water surface,
+    //    replace the controller's gravity-driven vertical velocity with a swim
+    //    model — damped movement, gentle sink, Space to swim up. Above the
+    //    surface the normal gravity/jump behavior resumes (so you bob).
+    {
+        const float wl = WaterLevelAt(player_pos);
+        if (wl > -1e9f && player_pos.y + 0.4f < wl) {
+            world_velocity.x *= 0.6f;
+            world_velocity.z *= 0.6f;
+            float vy = glm::clamp(world_velocity.y, -8.0f, 8.0f) * 0.35f - 0.4f;
+            if (ImGui::IsKeyDown(ImGuiKey_Space)) vy = 3.0f;          // swim up
+            world_velocity.y = vy;
+        }
+    }
+
+    // 6. Drive the Jolt character with the controller's full velocity (the
     //    controller already owns gravity/jump in world_velocity.y). Jolt does
     //    the collide-and-slide; StepPhysics writes the corrected position back
     //    to the entity transform.
@@ -563,6 +581,29 @@ void ScenePlaybackManager::ToggleCameraView() {
     }
 }
 
+// Local-space triangle soup from a terrain heightmap (every 3 verts = 1 tri),
+// for a static Jolt mesh collider. Mirrors build_terrain_mesh's grid.
+static void BuildTerrainTriangles(const schizo::scene::TerrainComponent& tc,
+                                  std::vector<glm::vec3>& out) {
+    const int   res   = tc.GetResolution();
+    const float half  = tc.GetSize() * 0.5f;
+    const float cell  = tc.CellSize();
+    const float scale = tc.GetHeightScale();
+    out.clear();
+    out.reserve(static_cast<size_t>(res) * res * 6);
+    auto vert = [&](int ix, int iz) {
+        return glm::vec3(-half + ix * cell, tc.HeightAt(ix, iz) * scale, -half + iz * cell);
+    };
+    for (int z = 0; z < res; ++z)
+        for (int x = 0; x < res; ++x) {
+            if (tc.HasHole(x, z)) continue;   // carved cell — caves pass through
+            const glm::vec3 p0 = vert(x, z),     p1 = vert(x + 1, z);
+            const glm::vec3 p2 = vert(x, z + 1), p3 = vert(x + 1, z + 1);
+            out.push_back(p0); out.push_back(p2); out.push_back(p1);
+            out.push_back(p1); out.push_back(p2); out.push_back(p3);
+        }
+}
+
 void ScenePlaybackManager::BuildPhysicsWorld() {
     TearDownPhysicsWorld();
     if (!scene_) return;
@@ -614,6 +655,60 @@ void ScenePlaybackManager::BuildPhysicsWorld() {
     auto logger = spdlog::get("editor");
     for (const auto& ent : scene_->GetEntities()) {
         if (!ent || !ent->IsActiveInHierarchy()) continue;
+
+        // PHYSICAL water volumes (buoyancy + swimming). Standalone
+        // WaterComponent: entity Y is the surface level.
+        if (auto wcomp = ent->GetComponent<schizo::scene::WaterComponent>()) {
+            if (wcomp->IsPhysical()) {
+                auto wt = ent->GetTransform();
+                if (wt) {
+                    WaterVolume v;
+                    const glm::vec3 wp = wt->GetWorldPosition();
+                    v.center_xz = glm::vec2(wp.x, wp.z);
+                    v.half_size = wcomp->GetSize() * 0.5f;
+                    v.level     = wp.y;
+                    water_volumes_.push_back(v);
+                    if (logger) logger->info("  +water volume '{}' (level {:.2f})",
+                                             ent->GetName(), v.level);
+                }
+            }
+            // Water entities have no collider — nothing else to build.
+        }
+
+        // Terrain: a static triangle-mesh collider built from the heightmap so
+        // the player + dynamic bodies stand on it. (Built at play start; re-enter
+        // Play to refresh collision after sculpting.) Hole cells are carved out
+        // of the collision too. Terrain-integrated PHYSICAL water becomes a
+        // volume covering the terrain rect.
+        if (auto terr = ent->GetComponent<schizo::scene::TerrainComponent>()) {
+            auto tt = ent->GetTransform();
+            if (tt) {
+                std::vector<glm::vec3> tris;
+                BuildTerrainTriangles(*terr, tris);
+                if (!tris.empty()) {
+                    BodyId tid = physics_world_->add_mesh_body(
+                        tris, tt->GetWorldPosition(), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+                    if (tid != kInvalidBody) {
+                        entity_bodies_.emplace(ent->GetId(), tid);
+                        ++built;
+                        if (logger) logger->info("  +terrain collider '{}' ({} tris)",
+                                                 ent->GetName(), tris.size() / 3);
+                    }
+                }
+                if (terr->IsWaterEnabled() && terr->IsWaterPhysical()) {
+                    WaterVolume v;
+                    const glm::vec3 wp = tt->GetWorldPosition();
+                    v.center_xz = glm::vec2(wp.x, wp.z);
+                    v.half_size = glm::vec2(terr->GetSize() * 0.5f);
+                    v.level     = wp.y + terr->GetWaterLevel();
+                    water_volumes_.push_back(v);
+                    if (logger) logger->info("  +terrain water volume '{}' (level {:.2f})",
+                                             ent->GetName(), v.level);
+                }
+            }
+            continue;
+        }
+
         auto col = ent->GetComponent<schizo::scene::ColliderComponent>();
         if (!col) continue;
         auto t = ent->GetTransform();
@@ -653,7 +748,11 @@ void ScenePlaybackManager::BuildPhysicsWorld() {
                 // the mesh verts (the standard approximation for dynamic meshes).
                 BodyDesc d;
                 d.position = wpos; d.rotation = wrot;
-                d.motion = MotionType::Dynamic; d.mass = col->GetMass();
+                // Net clients don't simulate props: dynamic colliders become
+                // Kinematic bodies driven from the replicated entity transforms,
+                // so the local player still collides with them where drawn.
+                d.motion = net_client_mode_ ? MotionType::Kinematic : MotionType::Dynamic;
+                d.mass = col->GetMass();
                 id = physics_world_->add_convex_body(tris, d);
             } else {
                 id = physics_world_->add_mesh_body(tris, t->GetWorldPosition() + col->GetOffset(), wrot);
@@ -663,7 +762,10 @@ void ScenePlaybackManager::BuildPhysicsWorld() {
             if (!fill_desc(*col, world_scale, d)) continue;
             d.position    = wpos;
             d.rotation    = wrot;
-            d.motion      = col->IsDynamic() ? MotionType::Dynamic : MotionType::Static;
+            // Net clients: see the kinematic note on the dynamic-mesh path above.
+            d.motion      = col->IsDynamic()
+                              ? (net_client_mode_ ? MotionType::Kinematic : MotionType::Dynamic)
+                              : MotionType::Static;
             d.mass        = col->IsDynamic() ? col->GetMass() : 0.0f;
             id = physics_world_->add_body(d);
         }
@@ -683,15 +785,152 @@ void ScenePlaybackManager::BuildPhysicsWorld() {
 void ScenePlaybackManager::TearDownPhysicsWorld() {
     entity_bodies_.clear();
     dynamic_entities_.clear();
+    remote_player_bodies_.clear();
+    water_volumes_.clear();
     player_char_id_ = 0xFFFFFFFFu;
     physics_world_.reset();   // PhysicsWorld dtor frees all Jolt bodies/characters
 }
 
+float ScenePlaybackManager::WaterLevelAt(const glm::vec3& pos) const {
+    float best = -FLT_MAX;
+    for (const WaterVolume& v : water_volumes_) {
+        if (std::abs(pos.x - v.center_xz.x) <= v.half_size.x &&
+            std::abs(pos.z - v.center_xz.y) <= v.half_size.y)
+            best = std::max(best, v.level);
+    }
+    return best;
+}
+
+uint32_t ScenePlaybackManager::BodyForEntity(uint32_t entity_id) const {
+    auto it = entity_bodies_.find(entity_id);
+    return it != entity_bodies_.end() ? it->second : 0xFFFFFFFFu;
+}
+
+uint32_t ScenePlaybackManager::EntityForBody(uint32_t body_id) const {
+    for (const auto& [eid, bid] : entity_bodies_)
+        if (bid == body_id) return eid;
+    return 0;
+}
+
+bool ScenePlaybackManager::AddRuntimeBody(const std::shared_ptr<schizo::scene::Entity>& ent) {
+    using namespace schizo::physics;
+    if (!physics_world_ || !ent) return false;
+    auto col = ent->GetComponent<schizo::scene::ColliderComponent>();
+    auto t   = ent->GetTransform();
+    if (!col || !t) return false;
+    if (entity_bodies_.count(ent->GetId())) return true;   // already has one
+
+    const glm::vec3 ws = t->GetWorldScale();
+    BodyDesc d;
+    switch (col->GetShape()) {
+        case schizo::scene::ColliderShape::Box:
+            d.shape        = ShapeType::Box;
+            d.half_extents = col->GetHalfExtents() * ws;
+            break;
+        case schizo::scene::ColliderShape::Sphere:
+            d.shape  = ShapeType::Sphere;
+            d.radius = col->GetRadius() * std::max({ws.x, ws.y, ws.z});
+            break;
+        default:
+            return false;   // script-spawnable primitives only
+    }
+    d.position = t->GetWorldPosition() + col->GetOffset();
+    d.rotation = t->GetWorldRotation();
+    d.motion   = col->IsDynamic()
+                   ? (net_client_mode_ ? MotionType::Kinematic : MotionType::Dynamic)
+                   : MotionType::Static;
+    d.mass     = col->IsDynamic() ? col->GetMass() : 0.0f;
+    const BodyId id = physics_world_->add_body(d);
+    if (id == kInvalidBody) return false;
+    entity_bodies_.emplace(ent->GetId(), id);
+    if (col->IsDynamic()) dynamic_entities_.push_back(ent->GetId());
+    return true;
+}
+
+void ScenePlaybackManager::RemoveBodyForEntity(uint32_t entity_id) {
+    auto it = entity_bodies_.find(entity_id);
+    if (it == entity_bodies_.end()) return;
+    if (physics_world_) physics_world_->remove_body(it->second);
+    entity_bodies_.erase(it);
+    dynamic_entities_.erase(
+        std::remove(dynamic_entities_.begin(), dynamic_entities_.end(), entity_id),
+        dynamic_entities_.end());
+}
+
+void ScenePlaybackManager::SyncRemotePlayerBodies(const std::vector<glm::vec3>& positions,
+                                                  float dt) {
+    using namespace schizo::physics;
+    if (!physics_world_ || !is_playing_) return;
+
+    // Grow: one kinematic capsule per remote player (dimensions match the
+    // player factory: radius 0.4, cylinder height 1.0 -> 1.8 total).
+    while (remote_player_bodies_.size() < positions.size()) {
+        BodyDesc d;
+        d.shape    = ShapeType::Capsule;
+        d.radius   = 0.4f;
+        d.height   = 1.0f;
+        d.motion   = MotionType::Kinematic;
+        d.position = positions[remote_player_bodies_.size()];
+        const BodyId id = physics_world_->add_body(d);
+        if (id == kInvalidBody) return;
+        remote_player_bodies_.push_back(id);
+    }
+    // Shrink: a player left.
+    while (remote_player_bodies_.size() > positions.size()) {
+        physics_world_->remove_body(remote_player_bodies_.back());
+        remote_player_bodies_.pop_back();
+    }
+    // Kinematic move (not teleport) so the capsules push dynamic props with
+    // proper velocities as remote players walk into them.
+    for (size_t i = 0; i < positions.size(); ++i)
+        physics_world_->move_kinematic(remote_player_bodies_[i], positions[i],
+                                       glm::quat(1.0f, 0.0f, 0.0f, 0.0f), dt);
+}
+
 void ScenePlaybackManager::StepPhysics(float delta_time) {
     if (!physics_world_) return;
+
+    // Net client mode: the replication layer owns prop transforms. Push
+    // entity -> body BEFORE stepping so contacts (and the player character)
+    // resolve against the replicated positions, not stale local-sim ones.
+    if (net_client_mode_) {
+        for (uint32_t eid : dynamic_entities_) {
+            auto it = entity_bodies_.find(eid);
+            if (it == entity_bodies_.end()) continue;
+            auto ent = scene_ ? scene_->GetEntityById(eid) : nullptr;
+            if (!ent) continue;
+            auto t = ent->GetTransform();
+            if (!t) continue;
+            physics_world_->set_transform(it->second,
+                                          t->GetWorldPosition(), t->GetWorldRotation());
+        }
+    }
+
+    // Buoyancy: dynamic bodies inside a PHYSICAL water volume get an upward
+    // acceleration proportional to submersion plus velocity drag, so props
+    // splash in, bob up, and settle floating. (Skipped on net clients — their
+    // props are kinematic mirrors of the host's simulation.)
+    if (!net_client_mode_ && !water_volumes_.empty()) {
+        for (uint32_t eid : dynamic_entities_) {
+            auto it = entity_bodies_.find(eid);
+            if (it == entity_bodies_.end()) continue;
+            const auto st = physics_world_->get_state(it->second);
+            const float level = WaterLevelAt(st.position);
+            if (level <= -1e9f || st.position.y >= level) continue;
+            const float submerged = glm::clamp((level - st.position.y) / 1.0f, 0.0f, 1.0f);
+            glm::vec3 v = st.linear_velocity;
+            v.y += delta_time * 9.81f * 1.7f * submerged;              // buoyant lift (> gravity when deep)
+            const float drag = glm::min(0.9f, 3.0f * submerged * delta_time);
+            v *= (1.0f - drag);                                        // water resistance
+            physics_world_->set_linear_velocity(it->second, v);
+        }
+    }
+
     physics_world_->step(delta_time);
 
     // Write simulated dynamic bodies back to their entity transforms.
+    // (Skipped on net clients — the replication layer owns those transforms.)
+    if (!net_client_mode_)
     for (uint32_t eid : dynamic_entities_) {
         auto it = entity_bodies_.find(eid);
         if (it == entity_bodies_.end()) continue;

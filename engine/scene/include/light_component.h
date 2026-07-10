@@ -19,6 +19,7 @@ enum class LightType : uint8_t {
     Directional,  // Sun light, infinite distance
     Point,        // Omni-directional point light
     Spot,         // Cone-shaped directional light
+    Area,         // Rectangular area light (LTC-shaded)
     MAX_TYPES
 };
 
@@ -250,10 +251,28 @@ public:
     /**
      * Set volumetric light intensity
      */
-    void SetVolumetricIntensity(float intensity) { 
-        volumetric_intensity_ = glm::clamp(intensity, 0.0f, 1.0f); 
+    void SetVolumetricIntensity(float intensity) {
+        volumetric_intensity_ = glm::clamp(intensity, 0.0f, 1.0f);
     }
-    
+
+    // ========== Area Light Properties ==========
+
+    /// Rectangle size (width, height) in world units, for LightType::Area.
+    glm::vec2 GetAreaSize() const { return area_size_; }
+    void      SetAreaSize(glm::vec2 s) {
+        area_size_ = glm::max(s, glm::vec2(0.01f));
+    }
+
+    /// Whether the area light emits from both faces (else only its +normal side).
+    bool IsTwoSided() const { return two_sided_; }
+    void SetTwoSided(bool b) { two_sided_ = b; }
+
+    // ========== Cookie / Gobo (spot lights) ==========
+
+    /// Texture projected through a spot light (a gobo mask). Empty = no cookie.
+    const std::string& GetCookiePath() const { return cookie_path_; }
+    void               SetCookiePath(const std::string& p) { cookie_path_ = p; }
+
     // ========== Transform Accessors ==========
     
     /**
@@ -298,6 +317,13 @@ private:
     
     // Advanced
     float volumetric_intensity_ = 0.0f;
+
+    // Area light (LightType::Area)
+    glm::vec2 area_size_ = glm::vec2(2.0f, 2.0f);  // width, height (world units)
+    bool      two_sided_ = false;
+
+    // Spot cookie / gobo (texture projected through the cone). Empty = none.
+    std::string cookie_path_;
     
     /**
      * Update color from temperature using Tanner Helland algorithm

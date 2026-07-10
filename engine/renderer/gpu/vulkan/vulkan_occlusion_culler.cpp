@@ -118,7 +118,7 @@ void VulkanOcclusionCuller::resolve_results() {
         std::fill(visibility_.begin(), visibility_.end(), 1);
         have_prev_results_  = false;
         last_visible_count_ = pending_draw_count_;
-        last_culled_count_  = 0;
+        last_culled_count_  = 0;    
         return;
     }
 

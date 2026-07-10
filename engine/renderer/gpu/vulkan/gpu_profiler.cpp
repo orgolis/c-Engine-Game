@@ -78,6 +78,37 @@ void GPUProfiler::update_from_query_results(const std::vector<uint64_t>& timesta
   }
 }
 
+void GPUProfiler::submit_frame(const std::vector<std::pair<std::string, float>>& passes) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  total_gpu_time_ms_ = 0.0f;
+
+  // Apply this frame's measured passes (create on first sight, extend history).
+  for (const auto& [name, ms] : passes) {
+    PassTiming& timing = pass_timings_[name];
+    if (timing.name.empty()) {
+      timing.name = name;
+      timing.history.resize(100, 0.0f);
+    }
+    timing.duration_ms = ms;
+    if (!timing.history.empty()) {
+      timing.history[timing.history_index] = ms;
+      timing.history_index = (timing.history_index + 1) % static_cast<int>(timing.history.size());
+    }
+    total_gpu_time_ms_ += ms;
+  }
+
+  // Zero any pass that did NOT run this frame so a disabled stage shows 0
+  // instead of lingering at last frame's value.
+  for (auto& [name, timing] : pass_timings_) {
+    bool present = false;
+    for (const auto& p : passes) {
+      if (p.first == name) { present = true; break; }
+    }
+    if (!present) timing.duration_ms = 0.0f;
+  }
+}
+
 const GPUProfiler::PassTiming* GPUProfiler::get_pass_timing(const std::string& pass_name) const {
   std::lock_guard<std::mutex> lock(mutex_);
 

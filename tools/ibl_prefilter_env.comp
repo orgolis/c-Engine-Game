@@ -78,7 +78,15 @@ void main() {
         vec3 L  = reflect(-V, H);
         float NdotL = max(dot(N, L), 0.0);
         if (NdotL > 0.0) {
-            prefiltered  += texture(envMap, L).rgb * NdotL;
+            // Clamp env radiance so the ultra-bright HDR sun doesn't dominate
+            // the prefiltered specular. Without this, at higher roughness the
+            // GGX lobe spreads the sun across a wide cone, so the reflected sun
+            // appears on surfaces regardless of the actual reflection angle.
+            vec3 s = texture(envMap, L).rgb;
+            float lum = max(max(s.r, s.g), s.b);
+            const float kMaxLuma = 10.0;
+            if (lum > kMaxLuma) s *= kMaxLuma / lum;
+            prefiltered  += s * NdotL;
             total_weight += NdotL;
         }
     }

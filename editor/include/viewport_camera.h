@@ -5,6 +5,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <limits>
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace schizo::editor {
@@ -89,6 +90,22 @@ public:
         return glm::perspective(glm::radians(fov_), aspect, 0.1f, 1000.0f);
     }
     
+    /**
+     * @brief Third-person follow: place the camera at target+offset and orient
+     * it to look at the target. Used by the multiplayer "active session" view so
+     * the viewport tracks the local player's avatar.
+     */
+    void FollowTarget(const glm::vec3& target, const glm::vec3& offset) {
+        position_ = target + offset;
+        glm::vec3 dir = target - position_;
+        const float len = glm::length(dir);
+        if (len < 1e-4f) return;
+        dir /= len;
+        pitch_ = glm::degrees(std::asin(glm::clamp(dir.y, -1.0f, 1.0f)));
+        yaw_   = glm::degrees(std::atan2(dir.z, dir.x));
+        RecalculateViewMatrix();
+    }
+
     /**
      * @brief Reset camera to default position
      */

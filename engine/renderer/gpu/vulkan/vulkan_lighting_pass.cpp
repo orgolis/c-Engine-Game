@@ -7,7 +7,9 @@
 #include "vulkan_device.h"
 #include "vulkan_g_buffer.h"
 #include "vulkan_shader_registry.h"
+#include "vulkan_texture.h"        // RGBA32F LTC LUT textures (area lights)
 #include "lighting_pass_spirv.h"  // pre-compiled SPIR-V fallback for GCC builds
+#include "ltc_matrix.h"           // embedded LTC1/LTC2 area-light tables
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <algorithm>
@@ -45,6 +47,7 @@ std::unique_ptr<VulkanLightingPass> VulkanLightingPass::create(VulkanDevice* dev
         pass->create_gbuffer_sampler();
         pass->create_shadow_sampler();
         pass->create_dummy_shadow_textures();
+        pass->create_ltc_textures();
         pass->create_pipeline();
         pass->update_descriptor_set();
 
@@ -101,7 +104,10 @@ void VulkanLightingPass::create_descriptor_sets() {
     //   11    : envCubemap
     //   12    : ssaoTex
     //   13    : tlas (acceleration structure, only used when rt_enabled)
-    std::array<VkDescriptorSetLayoutBinding, 14> bindings{};
+    //   14    : cloudShadow (top-down sun-transmittance map)
+    //   15,16 : LTC1, LTC2 area-light lookup textures
+    //   17    : spot-light cookie/gobo
+    std::array<VkDescriptorSetLayoutBinding, 18> bindings{};
     for (uint32_t i = 0; i < 7; ++i) {
         bindings[i].binding         = i;
         bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -122,6 +128,16 @@ void VulkanLightingPass::create_descriptor_sets() {
     bindings[13].descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     bindings[13].descriptorCount = 1;
     bindings[13].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[14].binding         = 14;
+    bindings[14].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[14].descriptorCount = 1;
+    bindings[14].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    for (uint32_t i = 15; i < 18; ++i) {   // LTC1 / LTC2 area-light LUTs + cookie
+        bindings[i].binding         = i;
+        bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
 
     VkDescriptorSetLayoutCreateInfo layout_info{};
     layout_info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -133,7 +149,7 @@ void VulkanLightingPass::create_descriptor_sets() {
     }
 
     std::array<VkDescriptorPoolSize, 3> pool_sizes{};
-    pool_sizes[0] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12};
+    pool_sizes[0] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16};
     pool_sizes[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,          1};
     pool_sizes[2] = {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1};
 
@@ -305,6 +321,12 @@ void main() {
 }
 )GLSL";
 
+// NOTE: this inline fragment source is a NON-AUTHORITATIVE reference. This GCC
+// build can't compile GLSL at runtime, so the fragment shader always loads from
+// the pre-compiled kLightingPassFragSpv (lighting_pass_spirv.h). The authoritative
+// GLSL — including the LTC area-light path (bindings 15/16) — lives in
+// tools/lighting_pass.frag; edit that and regenerate the SPIR-V header. This
+// string is kept only as documentation and may lag behind.
 static const char* kLightingFragSrc = R"GLSL(
 #version 450
 
@@ -352,6 +374,8 @@ layout(set = 0, binding = 11) uniform samplerCube envCubemap;
 // into the ambient/IBL term (NOT direct light) so the indirect term
 // represents how much sky / surrounding bounce can reach this pixel.
 layout(set = 0, binding = 12) uniform sampler2D ssaoTex;
+// binding 13 = TLAS (declared elsewhere when RT is enabled)
+layout(set = 0, binding = 14) uniform sampler2D cloudShadow; // top-down sun transmittance
 
 layout(push_constant) uniform Constants {
     vec3  cameraPos;
@@ -362,7 +386,16 @@ layout(push_constant) uniform Constants {
     float iblIntensity;      // 0..1+, blends IBL ambient against constant
     vec2  _pad;
     mat4  invViewProj;       // for reconstructing view rays at empty pixels (sky)
+    vec4  cloudParams;       // x=center.x, y=center.z, z=half_extent, w=enabled
 } pc;
+
+// How much sun reaches `worldPos` through the clouds overhead (1 = clear).
+float cloudShadowFactor(vec3 worldPos) {
+    if (pc.cloudParams.w < 0.5) return 1.0;
+    vec2 uv = (worldPos.xz - pc.cloudParams.xy) / (2.0 * pc.cloudParams.z) + 0.5;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
+    return clamp(texture(cloudShadow, uv).r, 0.0, 1.0);
+}
 
 const float PI = 3.14159265359;
 
@@ -373,7 +406,7 @@ vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
     return F0 + (r - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-vec3 computeIBL(vec3 N, vec3 V, vec3 albedo, float metallic, float roughness) {
+vec3 computeIBL(vec3 N, vec3 V, vec3 albedo, float metallic, float roughness, float ao) {
     if (pc.iblPrefilterMips <= 0.0) return vec3(0.0);
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
     float NdotV = max(dot(N, V), 0.0);
@@ -392,7 +425,11 @@ vec3 computeIBL(vec3 N, vec3 V, vec3 albedo, float metallic, float roughness) {
     // Dampen IBL specular for non-metals — see lighting_pass.frag for the
     // full rationale (Karis split-sum bias term over-reflects dielectrics).
     float spec_gate = mix(0.03, 1.0, metallic * metallic);
-    specular *= spec_gate;
+    // Specular occlusion (Lagarde): suppress environment reflections (the sky /
+    // sun) on surfaces that are occluded — otherwise the skybox + its light
+    // source reflect onto indoor walls that can't actually see the sky.
+    float specOcc = clamp(pow(NdotV + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao, 0.0, 1.0);
+    specular *= spec_gate * specOcc;
 
     return kD * diffuse + specular;
 }
@@ -431,13 +468,14 @@ float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
 float PCF(sampler2DArray sm, vec2 uv, float layer, float expected_depth, float bias) {
     float shadow = 0.0;
     vec2 texelSize = 1.0 / vec2(textureSize(sm, 0).xy);
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
+    // 5x5 kernel (25 taps): noticeably smoother penumbra than the old 3x3.
+    for (int x = -2; x <= 2; ++x) {
+        for (int y = -2; y <= 2; ++y) {
             float pcfDepth = texture(sm, vec3(uv + vec2(x, y) * texelSize, layer)).r;
             shadow += (expected_depth - bias) > pcfDepth ? 0.0 : 1.0;
         }
     }
-    return shadow / 9.0;
+    return shadow / 25.0;
 }
 
 float directionalShadow(vec3 worldPos, vec3 normal, Light L) {
@@ -451,7 +489,10 @@ float directionalShadow(vec3 worldPos, vec3 normal, Light L) {
     if (proj.z > 1.0 || proj.z < 0.0 ||
         proj.x < 0.0 || proj.x > 1.0 ||
         proj.y < 0.0 || proj.y > 1.0) return 1.0;
-    float bias = max(0.05 * (1.0 - dot(normal, -L.direction.xyz)), 0.005);
+    // Small shader-side bias only — the shadow raster pipeline applies the main
+    // slope-scaled depth bias, so a large value here would just peter-pan
+    // (detach contact shadows). Lowered from 0.05/0.005.
+    float bias = max(0.02 * (1.0 - dot(normal, -L.direction.xyz)), 0.0015);
     return PCF(shadowMap, proj.xy, float(L.shadowMapIndex), proj.z, bias);
 }
 
@@ -497,6 +538,8 @@ vec3 evaluateLight(Light L, vec3 N, vec3 V, vec3 worldPos,
     float shadow  = (L.position.w == 1.0)
                         ? pointShadow(worldPos, L)
                         : directionalShadow(worldPos, N, L);
+    // The directional (sun) light is additionally occluded by clouds overhead.
+    if (L.position.w == 0.0) shadow *= cloudShadowFactor(worldPos);
 
     return (kD * albedo / PI + specular) * radiance * NdotL * shadow;
 }
@@ -511,10 +554,14 @@ void main() {
     float gbufferDepth = texture(depthTex, inTexCoord).r;
     if (gbufferDepth >= 1.0 - 1e-5) {
         vec2 ndc = inTexCoord * 2.0 - 1.0;
-        vec4 clip = vec4(ndc, 1.0, 1.0);
-        vec4 world = pc.invViewProj * clip;
-        world /= world.w;
-        vec3 viewDir = normalize(world.xyz - pc.cameraPos);
+        // Position-independent view ray: unproject TWO points along the pixel's
+        // ray (near + far) and take their difference. Subtracting the camera
+        // position from a single far-plane world point (the old method) loses
+        // float precision when the camera is far from the origin, which made the
+        // reconstructed direction degenerate → the sky sampled a flat grey texel.
+        vec4 wNear = pc.invViewProj * vec4(ndc, 0.0, 1.0);
+        vec4 wFar  = pc.invViewProj * vec4(ndc, 1.0, 1.0);
+        vec3 viewDir = normalize(wFar.xyz / wFar.w - wNear.xyz / wNear.w);
         outColor = vec4(texture(envCubemap, viewDir).rgb, 1.0);
         return;
     }
@@ -542,13 +589,14 @@ void main() {
     // term contributes — preserves behavior for scenes that don't ship an
     // env map. When IBL is active, iblIntensity in [0, 1] controls how
     // much it replaces the constant term.
-    vec3 ambient_const = pc.ambientColor * pc.ambientIntensity * albedo;
-    vec3 ambient_ibl   = computeIBL(N, V, albedo, metallic, roughness);
-    vec3 ambient = mix(ambient_const, ambient_ibl, pc.iblIntensity);
     // SSAO modulates only the ambient/IBL term — physically it represents
     // how much indirect light reaches the surface, not how much direct
-    // light is blocked (which is what shadow maps already model).
+    // light is blocked (which is what shadow maps already model). It also
+    // drives the IBL specular occlusion inside computeIBL.
     float ssao = texture(ssaoTex, inTexCoord).r;
+    vec3 ambient_const = pc.ambientColor * pc.ambientIntensity * albedo;
+    vec3 ambient_ibl   = computeIBL(N, V, albedo, metallic, roughness, ssao);
+    vec3 ambient = mix(ambient_const, ambient_ibl, pc.iblIntensity);
     ambient *= ssao;
 
     vec3 direct  = vec3(0.0);
@@ -825,7 +873,7 @@ void VulkanLightingPass::create_pipeline() {
     VkPushConstantRange push_range{};
     push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     push_range.offset     = 0;
-    push_range.size       = sizeof(float) * 28; // 48B legacy/IBL + 64B mat4 invViewProj
+    push_range.size       = sizeof(float) * 32; // 48B legacy/IBL + 64B mat4 + 16B cloudParams
 
     VkPipelineLayoutCreateInfo layout_info{};
     layout_info.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -924,7 +972,7 @@ void VulkanLightingPass::update_descriptor_set() {
         gbuffer_->get_depth_view(),
     };
 
-    std::array<VkDescriptorImageInfo, 12> image_infos{};
+    std::array<VkDescriptorImageInfo, 16> image_infos{};
     for (uint32_t i = 0; i < 5; ++i) {
         image_infos[i].sampler     = gbuffer_sampler_;
         image_infos[i].imageView   = gbuffer_views[i];
@@ -971,8 +1019,32 @@ void VulkanLightingPass::update_descriptor_set() {
     image_infos[11].imageView   = ssao_view_    ? ssao_view_    : dummy_ssao_view_;
     image_infos[11].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // 7 g-buffer/shadow + 1 light SSBO + 3 IBL + 1 env cubemap + 1 SSAO = 13 writes.
-    std::array<VkWriteDescriptorSet, 13> writes{};
+    // Cloud shadow (binding 14) — falls back to the 1×1 dummy (1.0 = no cloud
+    // occlusion); cloudParams.w gates whether the shader uses it at all.
+    image_infos[12].sampler     = cloud_shadow_sampler_ ? cloud_shadow_sampler_
+                                  : (ssao_sampler_ ? ssao_sampler_ : gbuffer_sampler_);
+    image_infos[12].imageView   = cloud_shadow_view_ ? cloud_shadow_view_ : dummy_ssao_view_;
+    image_infos[12].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // LTC area-light LUTs (bindings 15/16). Fall back to the 1×1 dummy when not
+    // created; area lights aren't shaded unless the tables are present, so the
+    // descriptors just need to be valid.
+    image_infos[13].sampler     = ltc1_tex_ ? ltc1_tex_->sampler() : gbuffer_sampler_;
+    image_infos[13].imageView   = ltc1_tex_ ? ltc1_tex_->view()    : dummy_ssao_view_;
+    image_infos[13].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    image_infos[14].sampler     = ltc2_tex_ ? ltc2_tex_->sampler() : gbuffer_sampler_;
+    image_infos[14].imageView   = ltc2_tex_ ? ltc2_tex_->view()    : dummy_ssao_view_;
+    image_infos[14].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // Spot cookie (binding 17) — 1×1 dummy fallback (sampled only when a light's
+    // cookie flag is set, so the dummy is never actually read).
+    image_infos[15].sampler     = cookie_sampler_ ? cookie_sampler_ : gbuffer_sampler_;
+    image_infos[15].imageView   = cookie_view_    ? cookie_view_    : dummy_ssao_view_;
+    image_infos[15].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // 7 g-buffer/shadow + 1 light SSBO + 3 IBL + 1 env + 1 SSAO + 1 cloud
+    // + 2 LTC + 1 cookie = 17.
+    std::array<VkWriteDescriptorSet, 17> writes{};
     for (uint32_t i = 0; i < 7; ++i) {
         writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet          = descriptor_set_;
@@ -1002,6 +1074,29 @@ void VulkanLightingPass::update_descriptor_set() {
         writes[8 + i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[8 + i].pImageInfo      = &image_infos[7 + i];
     }
+    writes[13].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[13].dstSet          = descriptor_set_;
+    writes[13].dstBinding      = 14;
+    writes[13].descriptorCount = 1;
+    writes[13].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[13].pImageInfo      = &image_infos[12];
+
+    // LTC LUTs → bindings 15, 16.
+    for (uint32_t i = 0; i < 2; ++i) {
+        writes[14 + i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[14 + i].dstSet          = descriptor_set_;
+        writes[14 + i].dstBinding      = 15 + i;
+        writes[14 + i].descriptorCount = 1;
+        writes[14 + i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[14 + i].pImageInfo      = &image_infos[13 + i];
+    }
+    // Cookie → binding 17.
+    writes[16].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[16].dstSet          = descriptor_set_;
+    writes[16].dstBinding      = 17;
+    writes[16].descriptorCount = 1;
+    writes[16].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[16].pImageInfo      = &image_infos[15];
 
     vkUpdateDescriptorSets(device_->get_device(),
                            static_cast<uint32_t>(writes.size()), writes.data(),
@@ -1085,7 +1180,10 @@ uint32_t VulkanLightingPass::add_spot_light(const glm::vec3& position,
                                             float intensity,
                                             float range,
                                             float outer_cone_cos,
-                                            bool casts_shadow) {
+                                            float inner_cone_cos,
+                                            bool casts_shadow,
+                                            const glm::mat4& cookie_vp,
+                                            bool has_cookie) {
     if (light_count_ >= config_.max_lights) {
         spdlog::warn("Light limit reached, cannot add spot light");
         return UINT32_MAX;
@@ -1100,10 +1198,55 @@ uint32_t VulkanLightingPass::add_spot_light(const glm::vec3& position,
     light.color_radius = glm::vec4(color, range);
     const float r = (range > 0.0f) ? range : 1.0f;
     light.attenuation = glm::vec4(1.0f, 4.5f / r, 75.0f / (r * r), outer_cone_cos);
-    light.shadow_matrix = glm::mat4(1.0f);
+    // Spot shadows use ray queries (not the matrix), so shadow_matrix is free to
+    // carry the cookie projection. _pad[0] = cookie flag; _pad[1] = inner-cone
+    // cosine (float bits) for the cone falloff in the shader.
+    light.shadow_matrix = cookie_vp;
     light.casts_shadow = casts_shadow ? 1u : 0u;
+    light._pad[0] = has_cookie ? 1u : 0u;
+    const float inner = (inner_cone_cos > outer_cone_cos) ? inner_cone_cos : 1.0f;
+    std::memcpy(&light._pad[1], &inner, sizeof(float));
     add_light(light);
     return light_count_ - 1;
+}
+
+void VulkanLightingPass::set_cookie(VkImageView view, VkSampler sampler) {
+    cookie_view_    = view;
+    cookie_sampler_ = sampler;
+    update_descriptor_set();
+}
+
+uint32_t VulkanLightingPass::add_area_light(const glm::vec3& center,
+                                            const glm::vec3& right,
+                                            const glm::vec3& up,
+                                            const glm::vec3& color,
+                                            float intensity,
+                                            float range,
+                                            bool two_sided) {
+    if (light_count_ >= config_.max_lights) {
+        spdlog::warn("Light limit reached, cannot add area light");
+        return UINT32_MAX;
+    }
+    Light light{};
+    // type 3 == area. The rect spans center ± right ± up (half-edge vectors).
+    light.position      = glm::vec4(center, 3.0f);
+    light.direction     = glm::vec4(right, intensity);                // half-width edge
+    light.color_radius  = glm::vec4(color, range);
+    light.attenuation   = glm::vec4(up, two_sided ? 1.0f : 0.0f);     // half-height edge
+    light.shadow_matrix = glm::mat4(1.0f);
+    light.casts_shadow  = 0u;   // area-light shadows not implemented yet
+    add_light(light);
+    return light_count_ - 1;
+}
+
+void VulkanLightingPass::create_ltc_textures() {
+    // 64×64 RGBA32F LUTs from the embedded Heitz tables (ltc_matrix.h).
+    ltc1_tex_ = Texture::create_from_float_pixels(device_, LTC1, 64, 64);
+    ltc2_tex_ = Texture::create_from_float_pixels(device_, LTC2, 64, 64);
+    if (!ltc1_tex_ || !ltc2_tex_)
+        spdlog::warn("VulkanLightingPass: LTC LUT upload failed; area lights will be dark");
+    else
+        spdlog::info("VulkanLightingPass: LTC area-light LUTs uploaded (64x64 RGBA32F)");
 }
 
 void VulkanLightingPass::set_directional_shadow_map(VkImageView view, VkSampler sampler) {
@@ -1149,6 +1292,12 @@ void VulkanLightingPass::set_tlas(VkAccelerationStructureKHR tlas) {
 void VulkanLightingPass::set_ssao_texture(VkImageView view, VkSampler sampler) {
     ssao_view_    = view;
     ssao_sampler_ = sampler;
+    update_descriptor_set();
+}
+
+void VulkanLightingPass::set_cloud_shadow(VkImageView view, VkSampler sampler) {
+    cloud_shadow_view_    = view;
+    cloud_shadow_sampler_ = sampler;
     update_descriptor_set();
 }
 
@@ -1281,6 +1430,7 @@ void VulkanLightingPass::render(VkCommandBuffer cmd) {
         float rt_shadow_enabled;
         float rt_ao_enabled;
         float inv_view_proj[16]; // column-major mat4
+        float cloud_params[4];   // center.x, center.z, half_extent, enabled
     } pc{};
     pc.camera_x = camera_position_.x;
     pc.camera_y = camera_position_.y;
@@ -1302,6 +1452,10 @@ void VulkanLightingPass::render(VkCommandBuffer cmd) {
     const glm::mat4 view_rot_only = glm::mat4(glm::mat3(view_matrix_));
     const glm::mat4 inv_vp = glm::inverse(proj_matrix_ * view_rot_only);
     std::memcpy(pc.inv_view_proj, &inv_vp[0][0], sizeof(pc.inv_view_proj));
+    pc.cloud_params[0] = cloud_params_.x;
+    pc.cloud_params[1] = cloud_params_.y;
+    pc.cloud_params[2] = cloud_params_.z;
+    pc.cloud_params[3] = cloud_params_.w;
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc), &pc);
 

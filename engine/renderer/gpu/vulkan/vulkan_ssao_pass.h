@@ -118,6 +118,13 @@ private:
     VkDeviceMemory blurred_memory_ = VK_NULL_HANDLE;
     VkImageView    blurred_view_   = VK_NULL_HANDLE;
 
+    // Previous frame's accumulated AO (RT temporal reprojection). The RT shader
+    // samples this via the reprojected UV (binding 5); output_image_ is copied
+    // into it at the end of each frame.
+    VkImage        history_image_  = VK_NULL_HANDLE;
+    VkDeviceMemory history_memory_ = VK_NULL_HANDLE;
+    VkImageView    history_view_   = VK_NULL_HANDLE;
+
     VkDescriptorSetLayout dsl_      = VK_NULL_HANDLE;
     VkDescriptorPool      pool_     = VK_NULL_HANDLE;
     VkDescriptorSet       set_      = VK_NULL_HANDLE;
@@ -132,6 +139,13 @@ private:
     VkPipeline            blur_pipeline_ = VK_NULL_HANDLE;
 
     VkSampler             gbuffer_sampler_ = VK_NULL_HANDLE;
+
+    // Temporal accumulation state (RT AO): when the camera is static, the RT AO
+    // compute blends each frame into the persistent output image so the grain
+    // converges. Reset when the camera moves or the image is recreated.
+    glm::mat4 prev_view_proj_{1.0f};
+    uint32_t  frame_counter_  = 0;
+    bool      history_valid_  = false;
 };
 
 } // namespace gws::renderer::gpu

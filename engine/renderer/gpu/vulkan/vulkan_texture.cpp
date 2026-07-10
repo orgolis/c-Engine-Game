@@ -299,6 +299,127 @@ std::unique_ptr<Texture> Texture::create_from_pixels(VulkanDevice* device,
     return out;
 }
 
+std::unique_ptr<Texture> Texture::create_from_float_pixels(VulkanDevice* device,
+                                                          const float* rgba_pixels,
+                                                          uint32_t width, uint32_t height) {
+    if (!device || !rgba_pixels || width == 0 || height == 0) {
+        spdlog::error("Texture::create_from_float_pixels: invalid args");
+        return nullptr;
+    }
+
+    auto out     = std::unique_ptr<Texture>(new Texture());
+    out->device_ = device;
+    out->width_  = width;
+    out->height_ = height;
+
+    VkDevice vkdev      = device->get_device();
+    const VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    const VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4 * sizeof(float);
+
+    // 1) Staging buffer (host-visible)
+    VkBufferCreateInfo bi{};
+    bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size        = size;
+    bi.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer staging = VK_NULL_HANDLE;
+    if (vkCreateBuffer(vkdev, &bi, nullptr, &staging) != VK_SUCCESS) return nullptr;
+
+    VkMemoryRequirements mreq;
+    vkGetBufferMemoryRequirements(vkdev, staging, &mreq);
+    VkMemoryAllocateInfo malloc{};
+    malloc.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    malloc.allocationSize  = mreq.size;
+    malloc.memoryTypeIndex = device->find_memory_type(
+        mreq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    if (vkAllocateMemory(vkdev, &malloc, nullptr, &staging_mem) != VK_SUCCESS) {
+        vkDestroyBuffer(vkdev, staging, nullptr);
+        return nullptr;
+    }
+    vkBindBufferMemory(vkdev, staging, staging_mem, 0);
+    void* mapped = nullptr;
+    vkMapMemory(vkdev, staging_mem, 0, size, 0, &mapped);
+    std::memcpy(mapped, rgba_pixels, static_cast<size_t>(size));
+    vkUnmapMemory(vkdev, staging_mem);
+
+    // 2) Device-local image
+    VkImageCreateInfo ii{};
+    ii.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ii.imageType     = VK_IMAGE_TYPE_2D;
+    ii.extent        = {width, height, 1};
+    ii.mipLevels     = 1;
+    ii.arrayLayers   = 1;
+    ii.format        = format;
+    ii.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    ii.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ii.samples       = VK_SAMPLE_COUNT_1_BIT;
+    ii.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateImage(vkdev, &ii, nullptr, &out->image_) != VK_SUCCESS) {
+        vkFreeMemory(vkdev, staging_mem, nullptr);
+        vkDestroyBuffer(vkdev, staging, nullptr);
+        return nullptr;
+    }
+    VkMemoryRequirements ireq;
+    vkGetImageMemoryRequirements(vkdev, out->image_, &ireq);
+    VkMemoryAllocateInfo ialloc{};
+    ialloc.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ialloc.allocationSize  = ireq.size;
+    ialloc.memoryTypeIndex = device->find_memory_type(ireq.memoryTypeBits,
+                                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (vkAllocateMemory(vkdev, &ialloc, nullptr, &out->memory_) != VK_SUCCESS) {
+        vkFreeMemory(vkdev, staging_mem, nullptr);
+        vkDestroyBuffer(vkdev, staging, nullptr);
+        return nullptr;
+    }
+    vkBindImageMemory(vkdev, out->image_, out->memory_, 0);
+
+    // 3) Upload
+    run_one_time_command(device, [&](VkCommandBuffer cmd) {
+        transition_image_layout(cmd, out->image_,
+                                VK_IMAGE_LAYOUT_UNDEFINED,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkBufferImageCopy region{};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent                 = {width, height, 1};
+        vkCmdCopyBufferToImage(cmd, staging, out->image_,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        transition_image_layout(cmd, out->image_,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    });
+    vkFreeMemory(vkdev, staging_mem, nullptr);
+    vkDestroyBuffer(vkdev, staging, nullptr);
+
+    // 4) View
+    VkImageViewCreateInfo vi{};
+    vi.sType                       = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image                       = out->image_;
+    vi.viewType                    = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format                      = format;
+    vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vi.subresourceRange.levelCount = 1;
+    vi.subresourceRange.layerCount = 1;
+    if (vkCreateImageView(vkdev, &vi, nullptr, &out->view_) != VK_SUCCESS) return nullptr;
+
+    // 5) Sampler — linear + CLAMP_TO_EDGE (LUTs must not wrap)
+    VkSamplerCreateInfo si{};
+    si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    si.magFilter    = VK_FILTER_LINEAR;
+    si.minFilter    = VK_FILTER_LINEAR;
+    si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.borderColor  = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+    if (vkCreateSampler(vkdev, &si, nullptr, &out->sampler_) != VK_SUCCESS) return nullptr;
+
+    return out;
+}
+
 std::unique_ptr<Texture> Texture::create_from_memory(VulkanDevice* device,
                                                      const uint8_t* data, size_t size,
                                                      bool srgb) {

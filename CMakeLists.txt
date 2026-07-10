@@ -77,6 +77,12 @@ add_subdirectory(third_party/tinygltf)
 # ufbx (single-file FBX loader — feeds the asset cooker's FBX importer)
 add_subdirectory(third_party/ufbx)
 
+# ENet (reliable-UDP transport — Stage 7 networking)
+add_subdirectory(third_party/enet)
+
+# miniaudio (device + decode — Stage 6 audio backend, custom mixer on top)
+add_subdirectory(third_party/miniaudio)
+
 # tinyusdz (USD loader — feeds the asset cooker's USD importer). Minimal build:
 # library + Tydra only, no tools/tests/examples/audio/exr. NO_WERROR + exceptions
 # are required for the MinGW build (its Win32 io path throws + has unused fns).

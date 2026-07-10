@@ -45,6 +45,14 @@ struct BodyState {
     glm::vec3 linear_velocity{0.0f};
 };
 
+// Closest-hit ray query result (used for audio occlusion, line-of-sight, etc.).
+struct RayHit {
+    bool      hit      = false;
+    float     distance = 0.0f;          // along the ray, in world units
+    glm::vec3 position{0.0f};           // world-space hit point
+    BodyId    body     = kInvalidBody;
+};
+
 // Kinematic capsule character controller (Jolt CharacterVirtual): collide-and-
 // slide against the world with slope + stair handling. Drives the Stage-10
 // movement state machine.
@@ -85,9 +93,22 @@ public:
     void   step(float dt, int collision_steps = 1);
 
     BodyState get_state(BodyId id) const;
+
+    // Cast a ray from `origin` along `direction` (need not be unit-length) up to
+    // `max_distance`, returning the closest hit. Used by audio occlusion to test
+    // line-of-sight between the listener and a source.
+    RayHit    raycast(const glm::vec3& origin, const glm::vec3& direction, float max_distance) const;
+
     void      set_transform(BodyId id, const glm::vec3& pos, const glm::quat& rot);
+    // Kinematic move: sets the body's velocities so it reaches the target pose
+    // over `dt`, pushing any dynamic bodies it contacts on the way (unlike
+    // set_transform, which teleports through them). Intended for kinematic
+    // bodies driven from external state (e.g. net-replicated players).
+    void      move_kinematic(BodyId id, const glm::vec3& pos, const glm::quat& rot, float dt);
     void      set_linear_velocity(BodyId id, const glm::vec3& v);
     glm::vec3 get_linear_velocity(BodyId id) const;
+    // Instantaneous impulse at the body's center of mass (dynamic bodies).
+    void      add_impulse(BodyId id, const glm::vec3& impulse);
 
     // --- Character controller (collide-and-slide) ---
     CharacterId add_character(const CharacterDesc& desc);

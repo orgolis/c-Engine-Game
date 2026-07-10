@@ -19,6 +19,7 @@ namespace gws::renderer::gpu {
 class VulkanDevice;
 class VulkanGBuffer;
 class VulkanShaderRegistry;
+class Texture;
 
 /**
  * @enum LightType
@@ -118,7 +119,26 @@ public:
                             float intensity,
                             float range,
                             float outer_cone_cos,
-                            bool casts_shadow = false);
+                            float inner_cone_cos = 1.0f,
+                            bool casts_shadow = false,
+                            const glm::mat4& cookie_vp = glm::mat4(1.0f),
+                            bool has_cookie = false);
+
+    /// Bind the cookie (gobo) texture sampled by cookie-enabled spot lights.
+    /// Pass VK_NULL_HANDLE to clear. Owned by the caller (the editor).
+    void set_cookie(VkImageView view, VkSampler sampler);
+
+    /// Convenience: add a rectangular area light shaded with LTC. `center` is
+    /// the rect centre; `right`/`up` are the half-edge vectors (so the rect
+    /// spans center ± right ± up). `two_sided` lights both faces.
+    /// @return Index of the inserted light, or UINT32_MAX if the cap was hit.
+    uint32_t add_area_light(const glm::vec3& center,
+                            const glm::vec3& right,
+                            const glm::vec3& up,
+                            const glm::vec3& color,
+                            float intensity,
+                            float range,
+                            bool two_sided = false);
 
     /**
      * @brief Update light at index
@@ -228,6 +248,10 @@ public:
     /// Pass VK_NULL_HANDLE for either argument to fall back to the dummy
     /// (white) view — the shader multiply then becomes a no-op.
     void set_ssao_texture(VkImageView view, VkSampler sampler);
+    /// Cloud shadow map — the sun (directional light) is multiplied by its
+    /// transmittance so clouds darken the ground. Unbound / params.w=0 = lit.
+    void set_cloud_shadow(VkImageView view, VkSampler sampler);
+    void set_cloud_shadow_params(const glm::vec4& p) { cloud_params_ = p; }
 
     /// Set the camera world-space position used for view-direction reconstruction.
     void set_camera_position(const glm::vec3& position) { camera_position_ = position; }
@@ -372,6 +396,21 @@ private:
     VkImageView ssao_view_    = VK_NULL_HANDLE;
     VkSampler   ssao_sampler_ = VK_NULL_HANDLE;
 
+    // Cloud shadow map (owned by VulkanCloudPass).
+    VkImageView cloud_shadow_view_    = VK_NULL_HANDLE;
+    VkSampler   cloud_shadow_sampler_ = VK_NULL_HANDLE;
+
+    // LTC lookup textures for rectangular area lights (bindings 15/16). Owned
+    // here (created from the embedded ltc_matrix.h tables).
+    std::unique_ptr<Texture> ltc1_tex_;   // inverse-M
+    std::unique_ptr<Texture> ltc2_tex_;   // GGX norm / fresnel / horizon
+
+    // Spot-light cookie/gobo (binding 17). View+sampler owned by the editor;
+    // falls back to the 1×1 dummy when unset.
+    VkImageView cookie_view_    = VK_NULL_HANDLE;
+    VkSampler   cookie_sampler_ = VK_NULL_HANDLE;
+    glm::vec4   cloud_params_ = glm::vec4(0.0f); // center.xz, half_extent, enabled
+
     // For the sky branch in the shader — view + projection of the camera.
     glm::mat4   view_matrix_ = glm::mat4(1.0f);
     glm::mat4   proj_matrix_ = glm::mat4(1.0f);
@@ -386,6 +425,7 @@ private:
     void create_gbuffer_sampler();
     void create_shadow_sampler();
     void create_dummy_shadow_textures();
+    void create_ltc_textures();
     void update_descriptor_set();
     void upload_lights();
     void cleanup();

@@ -1,501 +1,577 @@
+// ============================================================
+// Asset Browser implementation — see asset_browser_panel.h
+// ============================================================
+
 #include "asset_browser_panel.h"
-#include "asset_manager.h"
+
 #include "scene.h"
-#include "entity.h"
+
 #include <imgui.h>
 #include <spdlog/spdlog.h>
-#include <filesystem>
 #include <algorithm>
-#include <string>
-#include <vector>
-#include <cstdlib>
+#include <cctype>
+#include <cstring>
 #include <fstream>
+#include <system_error>
 
 #ifdef _WIN32
-#  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
-#  include <windows.h>
-#  include <commdlg.h>
-#  include <shellapi.h>
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <shellapi.h>
+#include <commdlg.h>
 #endif
-
-namespace fs = std::filesystem;
 
 namespace schizo::editor {
 
-using namespace schizo::assets;
+namespace fs = std::filesystem;
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::string lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+ImVec4 type_color(const char* type) {
+    if (!std::strcmp(type, "Folder"))  return {1.00f, 0.85f, 0.45f, 1.0f};
+    if (!std::strcmp(type, "Mesh"))    return {0.45f, 0.85f, 1.00f, 1.0f};
+    if (!std::strcmp(type, "Texture")) return {0.50f, 0.95f, 0.55f, 1.0f};
+    if (!std::strcmp(type, "Audio"))   return {1.00f, 0.65f, 0.30f, 1.0f};
+    if (!std::strcmp(type, "Script"))  return {0.80f, 0.60f, 1.00f, 1.0f};
+    if (!std::strcmp(type, "Scene"))   return {0.45f, 0.70f, 1.00f, 1.0f};
+    if (!std::strcmp(type, "Shader"))  return {0.95f, 0.80f, 0.50f, 1.0f};
+    if (!std::strcmp(type, "Cooked"))  return {0.70f, 0.72f, 0.78f, 1.0f};
+    return {0.85f, 0.85f, 0.85f, 1.0f};
+}
+
+const char* payload_for(const char* type) {
+    if (!std::strcmp(type, "Mesh"))    return AssetBrowserPanel::kPayloadMesh;
+    if (!std::strcmp(type, "Texture")) return AssetBrowserPanel::kPayloadTexture;
+    if (!std::strcmp(type, "Audio"))   return AssetBrowserPanel::kPayloadAudio;
+    if (!std::strcmp(type, "Script"))  return AssetBrowserPanel::kPayloadScript;
+    if (!std::strcmp(type, "Scene"))   return AssetBrowserPanel::kPayloadScene;
+    return AssetBrowserPanel::kPayloadOther;
+}
+
+std::string human_size(uint64_t b) {
+    char buf[32];
+    if (b >= 1024ull * 1024 * 1024) std::snprintf(buf, sizeof buf, "%.1f GB", b / (1024.0 * 1024 * 1024));
+    else if (b >= 1024ull * 1024)   std::snprintf(buf, sizeof buf, "%.1f MB", b / (1024.0 * 1024));
+    else if (b >= 1024ull)          std::snprintf(buf, sizeof buf, "%.1f KB", b / 1024.0);
+    else                            std::snprintf(buf, sizeof buf, "%llu B", static_cast<unsigned long long>(b));
+    return buf;
+}
+
+void os_open(const std::string& abs) {
+#ifdef _WIN32
+    ShellExecuteA(nullptr, "open", abs.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+    (void)abs;
+#endif
+}
+
+void os_reveal(const std::string& abs) {
+#ifdef _WIN32
+    const std::string args = "/select,\"" + abs + "\"";
+    ShellExecuteA(nullptr, "open", "explorer", args.c_str(), nullptr, SW_SHOWNORMAL);
+#else
+    (void)abs;
+#endif
+}
+
+}  // namespace
+
+const char* AssetBrowserPanel::classify(const std::string& e) {
+    if (e == ".obj" || e == ".gltf" || e == ".glb" || e == ".fbx" ||
+        e == ".usd" || e == ".usda" || e == ".usdc" || e == ".usdz") return "Mesh";
+    if (e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".bmp" ||
+        e == ".tga" || e == ".hdr" || e == ".dds" || e == ".ktx")    return "Texture";
+    if (e == ".wav" || e == ".mp3" || e == ".ogg" || e == ".flac")   return "Audio";
+    if (e == ".py" || e == ".cpp" || e == ".cc" || e == ".cs")       return "Script";
+    if (e == ".scene")                                               return "Scene";
+    if (e == ".pak" || e == ".vt" || e == ".r32" || e == ".splat")   return "Cooked";
+    if (e == ".frag" || e == ".vert" || e == ".comp" || e == ".spv" ||
+        e == ".glsl")                                                return "Shader";
+    if (e == ".h" || e == ".hpp")                                    return "Header";
+    if (e == ".txt" || e == ".md" || e == ".json" || e == ".xml" ||
+        e == ".ini" || e == ".cmake" || e == ".mtl")                 return "Text";
+    return "File";
+}
+
+bool AssetBrowserPanel::search_skip_dir(const std::string& name) {
+    return name == ".git" || name == ".vs" || name == "CMakeFiles" ||
+           name == "third_party" || name == "script_cache" ||
+           name.rfind("build", 0) == 0;   // build, build-msvc, build-editor...
+}
+
+std::string AssetBrowserPanel::runtime_relative(const fs::path& abs) const {
+    std::error_code ec;
+    fs::path rel = fs::relative(abs, cwd_, ec);
+    if (ec || rel.empty()) return abs.generic_string();
+    return rel.generic_string();
+}
+
+// ---------------------------------------------------------------------------
+// lifecycle / navigation
+// ---------------------------------------------------------------------------
 
 AssetBrowserPanel::AssetBrowserPanel() {
-    state_.current_directory = "assets/models";
-    RefreshAssets();
+    detect_roots();
+    // Start where gameplay assets live at runtime.
+    std::error_code ec;
+    if (fs::exists(cwd_ / "assets", ec)) current_ = cwd_ / "assets";
+    else                                 current_ = cwd_;
+    dirty_ = true;
 }
 
 AssetBrowserPanel::~AssetBrowserPanel() = default;
 
-void AssetBrowserPanel::Render(const std::shared_ptr<schizo::scene::Scene>& scene, bool* open) {
-    ImGuiWindowFlags flags = ImGuiWindowFlags_None;
+void AssetBrowserPanel::detect_roots() {
+    std::error_code ec;
+    cwd_ = fs::current_path(ec);
 
-    if (ImGui::Begin("Asset Browser##panel", open, flags)) {
-        // Toolbar
-        RenderToolbar();
-        
-        ImGui::Separator();
-        
-        // Main layout: list on left, details on right
-        ImGui::Columns(2, "asset_browser_columns", true);
-        
-        // Left column: asset grid/list
-        ImGui::SetColumnWidth(0, ImGui::GetWindowWidth() * 0.6f);
-        RenderAssetGrid();
-        
-        ImGui::NextColumn();
-        
-        // Right column: asset details
-        RenderAssetDetails();
-        
-        ImGui::Columns(1);
+    // Project root: nearest ancestor holding both CMakeLists.txt and assets/.
+    project_root_ = cwd_;
+    fs::path probe = cwd_;
+    for (int i = 0; i < 6 && !probe.empty(); ++i) {
+        if (fs::exists(probe / "CMakeLists.txt", ec) && fs::exists(probe / "assets", ec)) {
+            project_root_ = probe;
+            break;
+        }
+        if (probe == probe.parent_path()) break;
+        probe = probe.parent_path();
     }
-    ImGui::End();
-    
-    // Render import dialog if open
-    RenderImportDialog();
+
+    roots_.clear();
+    auto add = [&](const char* label, const fs::path& p) {
+        std::error_code e2;
+        if (fs::exists(p, e2) && fs::is_directory(p, e2)) roots_.push_back({label, p});
+    };
+    add("Runtime", cwd_);                              // what relative paths resolve against
+    add("Assets",  project_root_ / "assets");          // source content
+    add("Scripts", project_root_ / "assets" / "scripts");
+    add("Scenes",  cwd_ / "scenes");
+    add("Project", project_root_);                     // everything
 }
 
-void AssetBrowserPanel::RenderToolbar() {
-    // Directory navigation
-    ImGui::Text("Directory: %s", state_.current_directory.c_str());
-    ImGui::SameLine();
-    if (ImGui::Button("Refresh##assets")) {
-        RefreshAssets();
-        spdlog::info("[AssetBrowser] Refreshed asset list");
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Open in Explorer##assets")) {
-        // Open system file explorer
-        std::string cmd = "explorer \"" + state_.current_directory + "\"";
-        system(cmd.c_str());
-        spdlog::info("[AssetBrowser] Opened in explorer: {}", state_.current_directory);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Import File##assets")) {
-        state_.show_import_dialog = true;
-        spdlog::info("[AssetBrowser] Opening import dialog");
-    }
-    
-    ImGui::Separator();
-    
-    // Filter controls
-    if (ImGui::Checkbox("Meshes##filter", &state_.show_meshes)) {
-        RefreshAssets();
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Textures##filter", &state_.show_textures)) {
-        RefreshAssets();
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Materials##filter", &state_.show_materials)) {
-        RefreshAssets();
-    }
-    
-    // Preview size slider
-    ImGui::SliderFloat("Preview Size##assets", &state_.preview_size, 50.0f, 200.0f);
-}
-
-void AssetBrowserPanel::RenderAssetGrid() {
-    ImGui::Text("Assets (%zu)", state_.discovered_assets.size());
-    ImGui::Separator();
-    
-    if (state_.discovered_assets.empty()) {
-        ImGui::TextWrapped("No assets found in directory. Drag .gltf, .glb, or .obj files here.");
-        return;
-    }
-    
-    // Calculate grid columns
-    float item_width = state_.preview_size + 10.0f;
-    int columns = std::max(1, static_cast<int>(ImGui::GetContentRegionAvail().x / item_width));
-    
-    ImGui::BeginChild("AssetGrid", ImVec2(0, -30), true, ImGuiWindowFlags_None);
-    
-    int item_count = 0;
-    for (size_t i = 0; i < state_.discovered_assets.size(); ++i) {
-        auto& asset = state_.discovered_assets[i];
-        
-        // Create unique ID for this asset
-        std::string item_id = "asset_item_" + std::to_string(i);
-        bool is_selected = (state_.selected_asset_index == static_cast<int>(i));
-        
-        // Use Button instead to allow both drag/drop and custom rendering
-        ImVec2 button_size(state_.preview_size, state_.preview_size);
-        ImGui::PushID(i);  // Push ID for this item
-        
-        if (ImGui::Button("##asset_btn", button_size)) {
-            state_.selected_asset_index = i;
-            spdlog::info("[AssetBrowser] Selected asset: {}", asset.filename);
-        }
-        
-        // IMPORTANT: Drag-drop MUST be handled immediately after the interactive element (Button)
-        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
-            // Store the asset index as drag payload
-            size_t asset_index = i;
-            if (asset.asset_type == "Mesh") {
-                ImGui::SetDragDropPayload("MESH_ASSET", &asset_index, sizeof(size_t));
-                ImGui::Text("Dragging: %s", asset.filename.c_str());
-            } else if (asset.asset_type == "Texture") {
-                ImGui::SetDragDropPayload("TEXTURE_ASSET", &asset_index, sizeof(size_t));
-                ImGui::Text("Dragging: %s", asset.filename.c_str());
-            } else {
-                ImGui::SetDragDropPayload("ASSET_ITEM", &asset_index, sizeof(size_t));
-                ImGui::Text("Dragging: %s", asset.filename.c_str());
-            }
-            ImGui::EndDragDropSource();
-        }
-        
-        ImGui::PopID();
-        
-        // Draw preview on top of the button using DrawList
-        ImVec2 item_min = ImGui::GetItemRectMin();
-        ImVec2 item_max = ImGui::GetItemRectMax();
-        ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        
-        // Draw background color based on type
-        ImVec4 bg_color(0.3f, 0.3f, 0.3f, 0.8f);
-        if (asset.asset_type == "Mesh") {
-            bg_color = ImVec4(0.2f, 0.5f, 0.8f, 0.8f);  // Blue
-        } else if (asset.asset_type == "Texture") {
-            bg_color = ImVec4(0.8f, 0.6f, 0.2f, 0.8f);  // Orange
-        } else if (asset.asset_type == "Material") {
-            bg_color = ImVec4(0.6f, 0.2f, 0.8f, 0.8f);  // Purple
-        }
-        
-        ImU32 bg_col = ImGui::GetColorU32(bg_color);
-        draw_list->AddRectFilled(item_min, item_max, bg_col);
-        
-        // Draw border for selection
-        if (is_selected) {
-            ImU32 border_col = ImGui::GetColorU32(ImVec4(0.2f, 0.8f, 1.0f, 1.0f));
-            draw_list->AddRect(item_min, item_max, border_col, 0.0f, 0, 2.0f);
-        }
-        
-        // Draw asset name
-        ImVec2 text_pos(item_min.x + 5, item_min.y + 5);
-        ImU32 text_col = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-        draw_list->AddText(text_pos, text_col, asset.filename.c_str());
-        
-        // Draw type label
-        ImVec2 type_pos(item_min.x + 5, item_min.y + state_.preview_size - 20);
-        ImVec4 type_color(1.0f, 1.0f, 1.0f, 0.7f);
-        ImU32 type_col = ImGui::GetColorU32(type_color);
-        draw_list->AddText(type_pos, type_col, asset.asset_type.c_str());
-        
-        // Tooltip with asset name
-        if (ImGui::IsItemHovered()) {
-            ImGui::BeginTooltip();
-            ImGui::Text("%s", asset.filename.c_str());
-            ImGui::Text("Path: %s", asset.path.c_str());
-            ImGui::Text("Type: %s", asset.asset_type.c_str());
-            if (asset.asset_type == "Mesh") {
-                ImGui::Text("Vertices: %u", asset.vertex_count);
-                ImGui::Text("Indices: %u", asset.index_count);
-                ImGui::Text("Meshes: %u", asset.mesh_count);
-            } else if (asset.asset_type == "Texture") {
-                ImGui::Text("Size: %.1f KB", asset.file_size / 1024.0f);
-            }
-            ImGui::EndTooltip();
-        }
-        
-        // Layout items in grid
-        item_count++;
-        if (item_count % columns != 0) {
-            ImGui::SameLine();
-        }
-    }
-    
-    ImGui::EndChild();
-}
-
-void AssetBrowserPanel::RenderAssetDetails() {
-    ImGui::BeginGroup();
-    
-    if (state_.selected_asset_index < 0 || state_.selected_asset_index >= state_.discovered_assets.size()) {
-        ImGui::Text("Select an asset to view details");
-        ImGui::EndGroup();
-        return;
-    }
-    
-    const auto& asset = state_.discovered_assets[state_.selected_asset_index];
-    
-    ImGui::Text("Asset Details");
-    ImGui::Separator();
-    
-    ImGui::Text("Name: %s", asset.filename.c_str());
-    ImGui::Text("Type: %s", asset.asset_type.c_str());
-    ImGui::Text("Path: %s", asset.path.c_str());
-    ImGui::Text("Size: %.2f KB", asset.file_size / 1024.0f);
-    
-    ImGui::Separator();
-    ImGui::Text("Preview:");
-    
-    // Render larger preview
-    RenderAssetPreview(asset);
-    
-    ImGui::Separator();
-    
-    // Asset-specific details
-    if (asset.asset_type == "Mesh") {
-        ImGui::Text("Mesh Information:");
-        ImGui::Text("  Vertices: %u", asset.vertex_count);
-        ImGui::Text("  Indices: %u", asset.index_count);
-        ImGui::Text("  Primitives: %u", asset.mesh_count);
-        
-        ImGui::Separator();
-        
-        if (ImGui::Button("Create Entity with Mesh##asset", ImVec2(-1, 0))) {
-            spdlog::info("[AssetBrowser] Would create entity with mesh: {}", asset.path);
-        }
-    } else if (asset.asset_type == "Texture") {
-        ImGui::Text("Texture Information:");
-        ImGui::Text("  Path: %s", asset.path.c_str());
-    }
-    
-    ImGui::EndGroup();
-}
-
-void AssetBrowserPanel::RenderAssetPreview(const AssetMetadata& asset) {
-    ImVec2 preview_size_large(150.0f, 150.0f);
-    
-    if (asset.preview_texture != 0) {
-        ImGui::Image(
-            reinterpret_cast<void*>(static_cast<uintptr_t>(asset.preview_texture)),
-            preview_size_large,
-            ImVec2(0, 1), ImVec2(1, 0)
-        );
-    } else {
-        ImGui::Dummy(preview_size_large);
-        ImGui::SameLine();
-        ImGui::Text("[No preview]");
-    }
-}
-
-void AssetBrowserPanel::RefreshAssets() {
-    state_.discovered_assets.clear();
-    state_.selected_asset_index = -1;
-    DiscoverAssets(state_.current_directory);
-    
-    spdlog::info("[AssetBrowser] Refreshed: found {} assets", state_.discovered_assets.size());
+void AssetBrowserPanel::navigate(const fs::path& dir) {
+    current_ = dir;
+    selected_ = -1;
+    search_buf_[0] = '\0';
+    dirty_ = true;
 }
 
 void AssetBrowserPanel::SetDirectory(const std::string& path) {
-    state_.current_directory = path;
-    RefreshAssets();
+    std::error_code ec;
+    fs::path p(path);
+    if (p.is_relative()) p = cwd_ / p;
+    if (fs::is_directory(p, ec)) navigate(p);
 }
 
-const AssetMetadata* AssetBrowserPanel::GetSelectedAsset() const {
-    if (state_.selected_asset_index < 0 || state_.selected_asset_index >= state_.discovered_assets.size()) {
-        return nullptr;
-    }
-    return &state_.discovered_assets[state_.selected_asset_index];
-}
+void AssetBrowserPanel::RefreshAssets() { dirty_ = true; }
 
-const AssetMetadata* AssetBrowserPanel::GetAssetByIndex(size_t index) const {
-    if (index >= state_.discovered_assets.size()) {
-        return nullptr;
-    }
-    return &state_.discovered_assets[index];
-}
+// ---------------------------------------------------------------------------
+// listing
+// ---------------------------------------------------------------------------
 
-void AssetBrowserPanel::DiscoverAssets(const std::string& directory) {
-    try {
-        if (!fs::exists(directory)) {
-            spdlog::warn("[AssetBrowser] Directory not found: {}", directory);
-            return;
+void AssetBrowserPanel::list_current() {
+    entries_.clear();
+    selected_ = -1;
+    std::error_code ec;
+
+    const bool recursive = search_recursive_ && search_buf_[0] != '\0';
+    const std::string needle = lower(search_buf_);
+
+    auto push = [&](const fs::directory_entry& de, bool as_rel_name) {
+        AssetEntry e;
+        std::error_code e2;
+        e.is_dir   = de.is_directory(e2);
+        e.abs_path = de.path().string();
+        e.rel_path = runtime_relative(de.path());
+        e.name     = as_rel_name
+                       ? fs::relative(de.path(), current_, e2).generic_string()
+                       : de.path().filename().string();
+        if (!e.is_dir) {
+            e.ext  = lower(de.path().extension().string());
+            e.type = classify(e.ext);
+            e.size = de.file_size(e2);
+        } else {
+            e.type = "Folder";
         }
-        
-        for (const auto& entry : fs::recursive_directory_iterator(directory)) {
-            if (!entry.is_regular_file()) continue;
-            
-            std::string ext = entry.path().extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-            
-            // Filter by type
-            bool is_mesh = (ext == ".gltf" || ext == ".glb" || ext == ".obj");
-            bool is_texture = (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga");
-            bool is_material = (ext == ".mat");
-            
-            if (!(is_mesh && state_.show_meshes) &&
-                !(is_texture && state_.show_textures) &&
-                !(is_material && state_.show_materials)) {
+        entries_.push_back(std::move(e));
+    };
+
+    if (recursive) {
+        // Capped subtree search, skipping build junk / vendored code.
+        size_t hits = 0;
+        fs::recursive_directory_iterator it(
+            current_, fs::directory_options::skip_permission_denied, ec), end;
+        while (!ec && it != end && hits < 500) {
+            const fs::directory_entry de = *it;
+            std::error_code e2;
+            if (de.is_directory(e2) && search_skip_dir(de.path().filename().string())) {
+                it.disable_recursion_pending();
+                it.increment(ec);
                 continue;
             }
-            
-            AssetMetadata metadata;
-            metadata.path = entry.path().string();
-            metadata.filename = entry.path().filename().string();
-            metadata.extension = ext;
-            metadata.file_size = fs::file_size(entry.path());
-            
-            // Determine asset type
-            if (is_mesh) {
-                metadata.asset_type = "Mesh";
-                LoadAssetMetadata(metadata.path, metadata);
-            } else if (is_texture) {
-                metadata.asset_type = "Texture";
-                LoadAssetMetadata(metadata.path, metadata);
-            } else if (is_material) {
-                metadata.asset_type = "Material";
+            if (!de.is_directory(e2) &&
+                lower(de.path().filename().string()).find(needle) != std::string::npos) {
+                push(de, /*as_rel_name=*/true);
+                ++hits;
             }
-            
-            state_.discovered_assets.push_back(metadata);
+            it.increment(ec);
         }
-        
-        // Sort alphabetically
-        std::sort(state_.discovered_assets.begin(), state_.discovered_assets.end(),
-                  [](const AssetMetadata& a, const AssetMetadata& b) {
-                      return a.filename < b.filename;
+    } else {
+        for (fs::directory_iterator it(
+                 current_, fs::directory_options::skip_permission_denied, ec), end;
+             !ec && it != end; it.increment(ec)) {
+            push(*it, false);
+        }
+        std::sort(entries_.begin(), entries_.end(),
+                  [](const AssetEntry& a, const AssetEntry& b) {
+                      if (a.is_dir != b.is_dir) return a.is_dir;   // folders first
+                      return lower(a.name) < lower(b.name);
                   });
-        
-    } catch (const std::exception& e) {
-        spdlog::error("[AssetBrowser] Error discovering assets: {}", e.what());
     }
+    dirty_ = false;
 }
 
-void AssetBrowserPanel::LoadAssetMetadata(const std::string& path, AssetMetadata& metadata) {
-    try {
-        if (metadata.asset_type == "Texture") {
-            // Load texture and create preview
-            LoadTexturePreview(path, metadata);
+// ---------------------------------------------------------------------------
+// rendering
+// ---------------------------------------------------------------------------
+
+void AssetBrowserPanel::Render(const std::shared_ptr<schizo::scene::Scene>& /*scene*/,
+                               bool* open) {
+    if (dirty_) list_current();
+
+    // Docked window = child window internally; End() must run unconditionally.
+    ImGui::Begin("Asset Browser##panel", open);
+    {
+        render_toolbar();
+        render_breadcrumbs();
+        ImGui::Separator();
+
+        const float status_h = ImGui::GetFrameHeightWithSpacing();
+        if (show_tree_) {
+            if (ImGui::BeginTable("##ab_split", 2,
+                                  ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV,
+                                  ImVec2(0, -status_h))) {
+                ImGui::TableSetupColumn("tree", ImGuiTableColumnFlags_WidthFixed, 220.0f);
+                ImGui::TableSetupColumn("files", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::BeginChild("##ab_tree", ImVec2(0, 0));
+                render_tree();
+                ImGui::EndChild();
+                ImGui::TableSetColumnIndex(1);
+                ImGui::BeginChild("##ab_files", ImVec2(0, 0));
+                render_entries();
+                ImGui::EndChild();
+                ImGui::EndTable();
+            }
         } else {
-            auto& asset_mgr = AssetManager::GetInstance();
-            auto mesh = asset_mgr.LoadMesh(path);
-            
-            if (mesh) {
-                // Count vertices and indices
-                uint32_t total_vertices = 0;
-                uint32_t total_indices = 0;
-                
-                // Note: MeshAsset structure would have primitives or vertices/indices
-                // This is a placeholder - actual implementation depends on MeshAsset structure
-                metadata.vertex_count = 1000;  // Placeholder
-                metadata.index_count = 3000;   // Placeholder
-                metadata.mesh_count = 1;
-                
-                spdlog::info("[AssetBrowser] Loaded mesh metadata: {}", path);
-            }
+            ImGui::BeginChild("##ab_files", ImVec2(0, -status_h));
+            render_entries();
+            ImGui::EndChild();
         }
-    } catch (const std::exception& e) {
-        spdlog::warn("[AssetBrowser] Failed to load asset metadata: {}", e.what());
-    }
-}
 
-void AssetBrowserPanel::LoadTexturePreview(const std::string& /*path*/, AssetMetadata& /*metadata*/) {
-    // Texture previews require Vulkan image upload — not yet implemented.
-}
-
-void AssetBrowserPanel::GeneratePreviewTexture(AssetMetadata& /*asset*/) {
-    // Preview texture generation requires Vulkan — not yet implemented.
-}
-
-void AssetBrowserPanel::RenderImportDialog() {
-    if (!state_.show_import_dialog) {
-        return;
-    }
-    
-    ImGui::SetNextWindowSize(ImVec2(600, 300), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Import Asset##dialog", &state_.show_import_dialog, ImGuiWindowFlags_Modal)) {
-        ImGui::Text("Select a file to import:");
-        
-        ImGui::InputText("File Path##import", state_.import_file_path.data(), state_.import_file_path.capacity(), ImGuiInputTextFlags_ReadOnly);
-        ImGui::SameLine();
-        if (ImGui::Button("Browse...##browse")) {
-            std::string selected_file = ShowOpenFileDialog();
-            if (!selected_file.empty()) {
-                state_.import_file_path = selected_file;
-            }
-        }
-        
+        // Status bar.
         ImGui::Separator();
-        ImGui::Text("Import to: %s", state_.import_target_path.c_str());
-        
-        ImGui::Separator();
-        
-        // Buttons
-        if (ImGui::Button("Import##import_btn", ImVec2(120, 0))) {
-            if (!state_.import_file_path.empty() && fs::exists(state_.import_file_path)) {
-                ImportFile(state_.import_file_path, state_.import_target_path);
-                state_.show_import_dialog = false;
-                state_.import_file_path.clear();
-            } else {
-                spdlog::warn("[AssetBrowser] Invalid file path for import");
-            }
+        if (selected_ >= 0 && selected_ < static_cast<int>(entries_.size())) {
+            const AssetEntry& s = entries_[selected_];
+            ImGui::Text("%zu items  |  %s", entries_.size(), s.rel_path.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Copy Path"))
+                ImGui::SetClipboardText(s.rel_path.c_str());
+        } else {
+            ImGui::Text("%zu items", entries_.size());
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel##import_cancel", ImVec2(120, 0))) {
-            state_.show_import_dialog = false;
-            state_.import_file_path.clear();
-        }
-        
-        ImGui::End();
+
+        render_modals();
     }
+    ImGui::End();
 }
 
-std::string AssetBrowserPanel::ShowOpenFileDialog() {
+void AssetBrowserPanel::render_toolbar() {
+    // Pinned roots.
+    for (size_t i = 0; i < roots_.size(); ++i) {
+        if (i) ImGui::SameLine();
+        const bool here = current_ == roots_[i].path;
+        if (here) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.26f, 0.45f, 0.70f, 1.0f));
+        if (ImGui::SmallButton(roots_[i].label.c_str())) navigate(roots_[i].path);
+        if (here) ImGui::PopStyleColor();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton(show_tree_ ? "Hide Tree" : "Show Tree")) show_tree_ = !show_tree_;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Refresh")) dirty_ = true;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Import...")) {
 #ifdef _WIN32
-    // Native Win32 common-dialog open. Filter format is documented in
-    // GetOpenFileName: "Display\0Pattern\0Display\0Pattern\0\0".
-    char file_buf[MAX_PATH] = {0};
-    OPENFILENAMEA ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner   = nullptr;
-    ofn.lpstrFile   = file_buf;
-    ofn.nMaxFile    = sizeof(file_buf);
-    ofn.lpstrFilter =
-        "3D Models (*.obj;*.gltf;*.glb;*.fbx)\0*.obj;*.gltf;*.glb;*.fbx\0"
-        "Textures (*.png;*.jpg;*.jpeg;*.tga)\0*.png;*.jpg;*.jpeg;*.tga\0"
-        "All Files (*.*)\0*.*\0";
-    ofn.nFilterIndex = 1;
-    ofn.lpstrTitle   = "Import Asset";
-    ofn.Flags        = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-
-    if (GetOpenFileNameA(&ofn) == TRUE) {
-        return std::string(file_buf);
-    }
-    DWORD err = CommDlgExtendedError();
-    if (err != 0) {
-        spdlog::warn("[AssetBrowser] GetOpenFileName failed (0x{:X})", err);
-    }
-    return "";
-#else
-    spdlog::warn("[AssetBrowser] Native file dialog not implemented for this platform");
-    return "";
+        char file_buf[MAX_PATH] = {0};
+        OPENFILENAMEA ofn = {};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.lpstrFile   = file_buf;
+        ofn.nMaxFile    = sizeof(file_buf);
+        ofn.lpstrFilter = "All Files (*.*)\0*.*\0"
+                          "3D Models (*.obj;*.gltf;*.glb;*.fbx)\0*.obj;*.gltf;*.glb;*.fbx\0"
+                          "Textures (*.png;*.jpg;*.jpeg;*.tga;*.hdr)\0*.png;*.jpg;*.jpeg;*.tga;*.hdr\0"
+                          "Audio (*.wav;*.mp3;*.flac;*.ogg)\0*.wav;*.mp3;*.flac;*.ogg\0";
+        ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+        if (GetOpenFileNameA(&ofn) && file_buf[0]) {
+            const fs::path src(file_buf);
+            const fs::path dst = current_ / src.filename();
+            // Stream copy (fs::copy_file overwrite is unreliable on MinGW).
+            std::ifstream in(src, std::ios::binary);
+            std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+            if (in.is_open() && out.is_open()) {
+                out << in.rdbuf();
+                spdlog::info("[AssetBrowser] imported '{}' -> '{}'",
+                             src.string(), dst.string());
+                dirty_ = true;
+            } else {
+                spdlog::warn("[AssetBrowser] import failed for '{}'", src.string());
+            }
+        }
 #endif
+    }
+
+    // Search row.
+    ImGui::SetNextItemWidth(220);
+    const bool entered = ImGui::InputTextWithHint(
+        "##ab_search",
+        search_recursive_ ? "search subtree (Enter)" : "filter this folder",
+        search_buf_, sizeof search_buf_,
+        search_recursive_ ? ImGuiInputTextFlags_EnterReturnsTrue : 0);
+    if (search_recursive_ ? entered : ImGui::IsItemEdited()) dirty_ = true;
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Recursive", &search_recursive_)) dirty_ = true;
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110);
+    static const char* kFilters[] = {"All", "Meshes", "Textures", "Audio",
+                                     "Scripts", "Scenes", "Other"};
+    ImGui::Combo("##ab_filter", &type_filter_, kFilters, IM_ARRAYSIZE(kFilters));
 }
 
-void AssetBrowserPanel::ImportFile(const std::string& file_path, const std::string& target_path) {
-    try {
-        if (!fs::exists(file_path)) {
-            spdlog::error("[AssetBrowser] Import file not found: {}", file_path);
-            return;
+void AssetBrowserPanel::render_breadcrumbs() {
+    // Deepest pinned root containing current_; show clickable segments from it.
+    const Root* base = nullptr;
+    const std::string cur = current_.generic_string();
+    for (const auto& r : roots_) {
+        const std::string rp = r.path.generic_string();
+        if (cur.rfind(rp, 0) == 0 &&
+            (!base || rp.size() > base->path.generic_string().size()))
+            base = &r;
+    }
+    if (!base) { ImGui::TextDisabled("%s", cur.c_str()); return; }
+
+    if (ImGui::SmallButton((base->label + "##bc_root").c_str())) navigate(base->path);
+    std::error_code ec;
+    const fs::path rel = fs::relative(current_, base->path, ec);
+    fs::path walk = base->path;
+    if (!ec && rel != fs::path(".")) {
+        int i = 0;
+        for (const auto& seg : rel) {
+            walk /= seg;
+            ImGui::SameLine(); ImGui::TextDisabled(">"); ImGui::SameLine();
+            const std::string id = seg.string() + "##bc" + std::to_string(i++);
+            if (ImGui::SmallButton(id.c_str())) { navigate(walk); break; }
         }
-        
-        // Get filename from path
-        std::string filename = fs::path(file_path).filename().string();
-        
-        // Ensure target directory exists
-        if (!fs::exists(target_path)) {
-            fs::create_directories(target_path);
-        }
-        
-        // Copy file to target directory
-        std::string dest_path = target_path + "/" + filename;
-        fs::copy_file(file_path, dest_path, fs::copy_options::overwrite_existing);
-        
-        spdlog::info("[AssetBrowser] Imported file: {} -> {}", file_path, dest_path);
-        
-        // Refresh asset list
-        RefreshAssets();
-        
-    } catch (const std::exception& e) {
-        spdlog::error("[AssetBrowser] Error importing file: {}", e.what());
     }
 }
 
-} // namespace schizo::editor
+void AssetBrowserPanel::render_tree() {
+    for (const auto& r : roots_) {
+        ImGui::PushID(r.label.c_str());
+        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                                   ImGuiTreeNodeFlags_SpanAvailWidth;
+        if (current_ == r.path) flags |= ImGuiTreeNodeFlags_Selected;
+        if (r.label == "Assets") flags |= ImGuiTreeNodeFlags_DefaultOpen;
+        const bool node_open = ImGui::TreeNodeEx(r.label.c_str(), flags);
+        if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) navigate(r.path);
+        if (node_open) {
+            render_tree_dir(r.path, 0);
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
+}
+
+void AssetBrowserPanel::render_tree_dir(const fs::path& dir, int depth) {
+    if (depth > 24) return;
+    std::error_code ec;
+    std::vector<fs::path> subdirs;
+    for (fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        std::error_code e2;
+        if (it->is_directory(e2)) subdirs.push_back(it->path());
+    }
+    std::sort(subdirs.begin(), subdirs.end(), [](const fs::path& a, const fs::path& b) {
+        return lower(a.filename().string()) < lower(b.filename().string());
+    });
+    for (const auto& sd : subdirs) {
+        const std::string name = sd.filename().string();
+        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                                   ImGuiTreeNodeFlags_SpanAvailWidth;
+        if (current_ == sd) flags |= ImGuiTreeNodeFlags_Selected;
+        const bool node_open = ImGui::TreeNodeEx(name.c_str(), flags);
+        if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) navigate(sd);
+        if (node_open) {
+            render_tree_dir(sd, depth + 1);   // lazy: only when expanded
+            ImGui::TreePop();
+        }
+    }
+}
+
+void AssetBrowserPanel::render_entries() {
+    const std::string needle = lower(search_buf_);
+    const bool local_filter = !search_recursive_ && !needle.empty();
+
+    auto passes_type = [&](const AssetEntry& e) {
+        if (type_filter_ == 0 || e.is_dir) return true;
+        switch (type_filter_) {
+            case 1: return 0 == std::strcmp(e.type, "Mesh");
+            case 2: return 0 == std::strcmp(e.type, "Texture");
+            case 3: return 0 == std::strcmp(e.type, "Audio");
+            case 4: return 0 == std::strcmp(e.type, "Script");
+            case 5: return 0 == std::strcmp(e.type, "Scene");
+            default:
+                return std::strcmp(e.type, "Mesh") && std::strcmp(e.type, "Texture") &&
+                       std::strcmp(e.type, "Audio") && std::strcmp(e.type, "Script") &&
+                       std::strcmp(e.type, "Scene");
+        }
+    };
+
+    // Background context menu (empty space): folder-level actions.
+    bool want_new_folder = false;
+    if (ImGui::BeginPopupContextWindow("##ab_bg", ImGuiPopupFlags_MouseButtonRight |
+                                                  ImGuiPopupFlags_NoOpenOverItems)) {
+        if (ImGui::MenuItem("New Folder...")) { want_new_folder = true; new_folder_buf_[0] = '\0'; }
+        if (ImGui::MenuItem("Reveal in Explorer")) os_reveal(current_.string());
+        if (ImGui::MenuItem("Refresh")) dirty_ = true;
+        ImGui::EndPopup();
+    }
+    if (want_new_folder) ImGui::OpenPopup("New Folder##ab");
+
+    if (ImGui::BeginTable("##ab_list", 3,
+                          ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
+                          ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 0.62f);
+        ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthStretch, 0.18f);
+        ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthStretch, 0.20f);
+        ImGui::TableHeadersRow();
+
+        for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
+            const AssetEntry& e = entries_[i];
+            if (local_filter && lower(e.name).find(needle) == std::string::npos) continue;
+            if (!passes_type(e)) continue;
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::PushID(i);
+
+            ImGui::PushStyleColor(ImGuiCol_Text, type_color(e.type));
+            const bool clicked = ImGui::Selectable(
+                e.name.c_str(), selected_ == i,
+                ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick);
+            ImGui::PopStyleColor();
+            if (clicked) {
+                selected_ = i;
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    if (e.is_dir) {
+                        navigate(e.abs_path);
+                        ImGui::PopID();
+                        break;   // entries_ changed — stop iterating
+                    } else if (0 == std::strcmp(e.type, "Scene") && on_open_scene) {
+                        on_open_scene(e.rel_path);
+                    } else {
+                        os_open(e.abs_path);   // scripts/textures open in default app
+                    }
+                }
+            }
+
+            // Drag source (files only): typed payload carrying the path string.
+            if (!e.is_dir && ImGui::BeginDragDropSource()) {
+                ImGui::SetDragDropPayload(payload_for(e.type),
+                                          e.rel_path.c_str(), e.rel_path.size() + 1);
+                ImGui::Text("%s  (%s)", e.name.c_str(), e.type);
+                ImGui::EndDragDropSource();
+            }
+
+            render_context_menu(e);
+
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextDisabled("%s", e.type);
+            ImGui::TableSetColumnIndex(2);
+            if (!e.is_dir) ImGui::TextDisabled("%s", human_size(e.size).c_str());
+
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+}
+
+void AssetBrowserPanel::render_context_menu(const AssetEntry& e) {
+    if (ImGui::BeginPopupContextItem("##ab_item")) {
+        ImGui::TextDisabled("%s", e.name.c_str());
+        ImGui::Separator();
+        if (!e.is_dir && ImGui::MenuItem("Open")) os_open(e.abs_path);
+        if (e.is_dir && ImGui::MenuItem("Open Folder")) navigate(e.abs_path);
+        if (ImGui::MenuItem("Reveal in Explorer")) os_reveal(e.abs_path);
+        if (ImGui::MenuItem("Copy Path")) ImGui::SetClipboardText(e.rel_path.c_str());
+        if (ImGui::MenuItem("Copy Absolute Path")) ImGui::SetClipboardText(e.abs_path.c_str());
+        ImGui::Separator();
+        if (ImGui::MenuItem("Delete...")) pending_delete_ = e.abs_path;
+        ImGui::EndPopup();
+    }
+}
+
+void AssetBrowserPanel::render_modals() {
+    // Delete confirmation.
+    if (!pending_delete_.empty() && !ImGui::IsPopupOpen("Delete?##ab"))
+        ImGui::OpenPopup("Delete?##ab");
+    if (ImGui::BeginPopupModal("Delete?##ab", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Permanently delete\n%s ?", pending_delete_.c_str());
+        ImGui::Separator();
+        if (ImGui::Button("Delete", ImVec2(120, 0))) {
+            std::error_code ec;
+            const uintmax_t n = fs::remove_all(pending_delete_, ec);
+            if (ec) spdlog::warn("[AssetBrowser] delete failed: {}", ec.message());
+            else    spdlog::info("[AssetBrowser] deleted {} item(s): {}", n, pending_delete_);
+            pending_delete_.clear();
+            dirty_ = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            pending_delete_.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    // New folder.
+    if (ImGui::BeginPopupModal("New Folder##ab", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::InputText("Name##ab_nf", new_folder_buf_, sizeof new_folder_buf_);
+        if (ImGui::Button("Create", ImVec2(120, 0)) && new_folder_buf_[0]) {
+            std::error_code ec;
+            fs::create_directory(current_ / new_folder_buf_, ec);
+            if (ec) spdlog::warn("[AssetBrowser] create folder failed: {}", ec.message());
+            dirty_ = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+}
+
+}  // namespace schizo::editor

@@ -41,6 +41,8 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_environment_map.h
     gpu/vulkan/vulkan_ssao_pass.h
     gpu/vulkan/vulkan_ssr_pass.h
+    gpu/vulkan/vulkan_volumetric_light_pass.h
+    gpu/vulkan/vulkan_cloud_pass.h
     gpu/vulkan/vulkan_rt_functions.h
     gpu/vulkan/vulkan_rt_scene.h
     gpu/vulkan/vulkan_vxao_pass.h
@@ -94,6 +96,10 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_environment_map.cpp
     gpu/vulkan/vulkan_ssao_pass.cpp
     gpu/vulkan/vulkan_ssr_pass.cpp
+    gpu/vulkan/vulkan_volumetric_light_pass.cpp
+    gpu/vulkan/vulkan_water_pass.cpp
+    gpu/vulkan/vulkan_froxel_fog_pass.cpp
+    gpu/vulkan/vulkan_cloud_pass.cpp
     gpu/vulkan/vulkan_rt_functions.cpp
     gpu/vulkan/vulkan_rt_scene.cpp
     gpu/vulkan/vulkan_vxao_pass.cpp
@@ -117,9 +123,15 @@ target_sources(renderer PRIVATE
     # gpu/vulkan/indirect_dispatcher.cpp
     # gpu/vulkan/transform_gizmo.cpp
     # gpu/vulkan/query_pool.cpp
-    # gpu/vulkan/gpu_profiler.cpp
+    # gpu/vulkan/gpu_profiler.cpp  (re-enabled below — self-contained, GCC-clean)
     # gpu/vulkan/gpu_profiler_panels.cpp
 )
+
+# Stage 14 (Pillar N2): GPU per-pass timing class. Pure C++ (std::map/mutex/
+# vector — no Vulkan headers), so it builds under GCC unlike the rest of the
+# excluded Phase-6 panels. Re-enabled so the unified Performance overlay can
+# read engine::vulkan::GPUProfiler::instance().
+target_sources(renderer PRIVATE gpu/vulkan/gpu_profiler.cpp)
 
 # Header files - Core Graphics Abstraction
 target_sources(renderer PRIVATE

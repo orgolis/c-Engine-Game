@@ -11,6 +11,7 @@
 #include "transform.h"
 #include "mesh_component.h"
 #include "mesh_renderer_component.h"
+#include "terrain_component.h"
 #include "ecs_bridge.h"   // authoritative ECS world matrices (Stage 1.4 step 2)
 #include <algorithm>
 #include <cctype>
@@ -441,6 +442,231 @@ private:
     std::unordered_map<std::string, std::unique_ptr<gws::renderer::gpu::Scene>> entries_;
 };
 
+/// Cells per side of one terrain CHUNK. Terrains are meshed as a grid of
+/// chunk meshes so a sculpt edit only rebuilds the chunks it touched — the
+/// key to scaling terrains up (a 1024² terrain is 256 chunks; a brush stroke
+/// touches a handful). Also gives per-chunk frustum culling for free.
+inline constexpr int kTerrainChunkCells = 64;
+
+/// Build ONE chunk of a terrain heightmap as a GPU mesh. The chunk covers
+/// cells [cx0, cx0+cells) x [cz0, cz0+cells); vertices are world-local to the
+/// terrain entity (same space as the old full-terrain mesh). Cells flagged as
+/// HOLES are skipped (carved out of the surface — caves go through here).
+/// Returns nullptr when every cell in the chunk is a hole.
+inline std::unique_ptr<gws::renderer::gpu::Mesh> build_terrain_chunk_mesh(
+    const schizo::scene::TerrainComponent* tc,
+    gws::renderer::gpu::VulkanDevice* device,
+    int cx0, int cz0, int cells)
+{
+    using namespace gws::renderer::gpu;
+    const int   res   = tc->GetResolution();
+    const float half  = tc->GetSize() * 0.5f;
+    const float cell  = tc->CellSize();
+    const float scale = tc->GetHeightScale();
+    const int   cx1   = std::min(cx0 + cells, res);   // exclusive cell bounds
+    const int   cz1   = std::min(cz0 + cells, res);
+    const int   nx    = cx1 - cx0 + 1;                // verts per side (x)
+    const int   nz    = cz1 - cz0 + 1;
+
+    std::vector<SceneVertex> verts(static_cast<size_t>(nx) * nz);
+    for (int z = 0; z < nz; ++z) {
+        for (int x = 0; x < nx; ++x) {
+            const int gx = cx0 + x, gz = cz0 + z;     // global grid coords
+            const float hl = tc->HeightAt(gx - 1, gz) * scale;
+            const float hr = tc->HeightAt(gx + 1, gz) * scale;
+            const float hd = tc->HeightAt(gx, gz - 1) * scale;
+            const float hu = tc->HeightAt(gx, gz + 1) * scale;
+            SceneVertex v{};
+            v.position = glm::vec3(-half + gx * cell,
+                                   tc->HeightAt(gx, gz) * scale,
+                                   -half + gz * cell);
+            v.normal   = glm::normalize(glm::vec3(hl - hr, 2.0f * cell, hd - hu));
+            v.uv       = glm::vec2(static_cast<float>(gx) / res,
+                                   static_cast<float>(gz) / res);
+            v.tangent  = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+            verts[static_cast<size_t>(z) * nx + x] = v;
+        }
+    }
+    std::vector<uint32_t> idx;
+    idx.reserve(static_cast<size_t>(cx1 - cx0) * (cz1 - cz0) * 6);
+    for (int z = 0; z < cz1 - cz0; ++z) {
+        for (int x = 0; x < cx1 - cx0; ++x) {
+            if (tc->HasHole(cx0 + x, cz0 + z)) continue;   // carved cell
+            const uint32_t i0 = static_cast<uint32_t>(z) * nx + x;
+            const uint32_t i1 = i0 + 1;
+            const uint32_t i2 = i0 + nx;
+            const uint32_t i3 = i2 + 1;
+            // CCW from +Y (same winding convention as gen_plane).
+            idx.insert(idx.end(), {i0, i3, i1, i0, i2, i3});
+        }
+    }
+    if (idx.empty()) return nullptr;   // fully carved chunk
+    Submesh sm{};
+    sm.material_index = 0;
+    sm.lods.push_back({0, static_cast<uint32_t>(idx.size()), 0.0f});
+    return Mesh::create(device, verts, idx, {sm});
+}
+
+/// Per-terrain-entity CHUNKED GPU mesh cache. On version change, rebuilds
+/// only the chunks intersecting the component's accumulated dirty rect
+/// (sculpt brushes report their bounds; Resize/Flatten dirty everything).
+class TerrainMeshCache {
+public:
+    /// Chunk meshes for this terrain (nullptr entries = fully-holed chunks).
+    const std::vector<std::unique_ptr<gws::renderer::gpu::Mesh>>& get_or_build(
+        uint32_t entity_id,
+        schizo::scene::TerrainComponent* tc,
+        gws::renderer::gpu::VulkanDevice* device)
+    {
+        Entry& e = entries_[entity_id];
+        const int res = tc->GetResolution();
+        const int chunks = (res + kTerrainChunkCells - 1) / kTerrainChunkCells;
+
+        const bool layout_changed = (e.chunks != chunks);
+        if (layout_changed) {
+            e.meshes.clear();
+            e.meshes.resize(static_cast<size_t>(chunks) * chunks);
+            e.chunks = chunks;
+        }
+        if (e.version != tc->Version() || layout_changed) {
+            int x0, z0, x1, z1;
+            const bool have_rect = tc->ConsumeDirtyRect(x0, z0, x1, z1);
+            const bool full = layout_changed || !have_rect;
+            const int c_x0 = full ? 0 : std::max(0, (x0 - 1) / kTerrainChunkCells);
+            const int c_z0 = full ? 0 : std::max(0, (z0 - 1) / kTerrainChunkCells);
+            const int c_x1 = full ? chunks - 1
+                                  : std::min(chunks - 1, (x1 + 1) / kTerrainChunkCells);
+            const int c_z1 = full ? chunks - 1
+                                  : std::min(chunks - 1, (z1 + 1) / kTerrainChunkCells);
+            for (int cz = c_z0; cz <= c_z1; ++cz)
+                for (int cx = c_x0; cx <= c_x1; ++cx)
+                    e.meshes[static_cast<size_t>(cz) * chunks + cx] =
+                        build_terrain_chunk_mesh(tc, device,
+                                                 cx * kTerrainChunkCells,
+                                                 cz * kTerrainChunkCells,
+                                                 kTerrainChunkCells);
+            e.version = tc->Version();
+        }
+        return e.meshes;
+    }
+
+    void prune(const std::shared_ptr<schizo::scene::Scene>& scene) {
+        if (!scene) { entries_.clear(); return; }
+        std::unordered_map<uint32_t, Entry> kept;
+        for (const auto& ent : scene->GetEntities())
+            if (ent) {
+                auto it = entries_.find(ent->GetId());
+                if (it != entries_.end()) kept.emplace(it->first, std::move(it->second));
+            }
+        entries_ = std::move(kept);
+    }
+    void clear() { entries_.clear(); }
+
+private:
+    struct Entry {
+        std::vector<std::unique_ptr<gws::renderer::gpu::Mesh>> meshes;  // chunks*chunks
+        int      chunks  = 0;
+        uint64_t version = 0;
+    };
+    std::unordered_map<uint32_t, Entry> entries_;
+};
+
+/// Per-terrain-entity splat material cache (Phase C). Builds a Material whose
+/// 5 texture slots are reinterpreted by the terrain G-buffer shader as
+/// [splatmap, layer0, layer1, layer2, layer3], plus per-layer tiling packed in
+/// the material's base_color_factor. Rebuilds when the splatmap, layer paths,
+/// or tiling change (TerrainComponent::SplatVersion bumps on each).
+class TerrainGpuCache {
+public:
+    /// Returns a terrain Material ready to bind, or nullptr if the splat
+    /// texture couldn't be built. Layer slots with no/failed texture fall back
+    /// to a shared 1×1 white (so unpainted layers read white, not the PBR
+    /// fallbacks Material::create would otherwise inject into those slots).
+    gws::renderer::gpu::Material* get_or_build(
+        uint32_t entity_id,
+        const schizo::scene::TerrainComponent* tc,
+        gws::renderer::gpu::VulkanDevice* device,
+        VkDescriptorSetLayout mat_layout,
+        VkDescriptorPool mat_pool)
+    {
+        using namespace gws::renderer::gpu;
+        // Earthy base for unset layers (UNORM so the bytes are sampled as
+        // linear directly): 0.42,0.48,0.34 — the same green the pre-splat
+        // terrain material used, so a freshly-added terrain still looks like
+        // ground rather than stark white.
+        if (!base_tex_) {
+            const uint8_t earth[4] = { 107, 122, 87, 255 };
+            base_tex_ = Texture::create_from_pixels(device, earth, 1, 1, /*srgb=*/false);
+        }
+
+        Entry& e = entries_[entity_id];
+        bool paths_changed = false;
+        for (int i = 0; i < schizo::scene::kTerrainLayers; ++i)
+            if (e.layer_paths[i] != tc->GetLayerPath(i)) { paths_changed = true; break; }
+
+        if (e.material && e.splat_version == tc->SplatVersion() && !paths_changed)
+            return e.material.get();
+
+        // Rebuild. Free the old material first to return its descriptor set to
+        // the pool before allocating the new one (keeps peak set count low).
+        e.material.reset();
+
+        e.splat_tex = Texture::create_from_pixels(
+            device, tc->Splat().data(),
+            static_cast<uint32_t>(tc->SplatResolution()),
+            static_cast<uint32_t>(tc->SplatResolution()), /*srgb=*/false);
+        if (!e.splat_tex) return nullptr;
+
+        const Texture* layer_ptrs[schizo::scene::kTerrainLayers];
+        for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
+            e.layer_paths[i] = tc->GetLayerPath(i);
+            e.layer_tex[i].reset();
+            if (!e.layer_paths[i].empty())
+                e.layer_tex[i] = Texture::create_from_file(device, e.layer_paths[i], /*srgb=*/true);
+            layer_ptrs[i] = e.layer_tex[i] ? e.layer_tex[i].get() : base_tex_.get();
+        }
+
+        MaterialUniforms params{};
+        params.base_color_factor = glm::vec4(tc->GetTiling(0), tc->GetTiling(1),
+                                             tc->GetTiling(2), tc->GetTiling(3));
+        params.metallic_factor   = 0.0f;
+        params.roughness_factor  = 0.95f;
+        params.occlusion_strength = 1.0f;
+        params.normal_scale      = 1.0f;
+        params.emissive_factor   = glm::vec4(0.0f);
+        // Slot order matches the terrain shader: binding1=splat, 2..5=layers.
+        e.material = Material::create(device, mat_layout, mat_pool, params,
+                                      e.splat_tex.get(),
+                                      layer_ptrs[0], layer_ptrs[1],
+                                      layer_ptrs[2], layer_ptrs[3]);
+        e.splat_version = tc->SplatVersion();
+        return e.material.get();
+    }
+
+    void prune(const std::shared_ptr<schizo::scene::Scene>& scene) {
+        if (!scene) { entries_.clear(); return; }
+        std::unordered_map<uint32_t, Entry> kept;
+        for (const auto& ent : scene->GetEntities())
+            if (ent) {
+                auto it = entries_.find(ent->GetId());
+                if (it != entries_.end()) kept.emplace(it->first, std::move(it->second));
+            }
+        entries_ = std::move(kept);
+    }
+    void clear() { entries_.clear(); }
+
+private:
+    struct Entry {
+        std::unique_ptr<gws::renderer::gpu::Texture> splat_tex;
+        std::array<std::unique_ptr<gws::renderer::gpu::Texture>, schizo::scene::kTerrainLayers> layer_tex;
+        std::array<std::string, schizo::scene::kTerrainLayers> layer_paths;
+        std::unique_ptr<gws::renderer::gpu::Material> material;
+        uint64_t splat_version = 0;
+    };
+    std::unordered_map<uint32_t, Entry> entries_;
+    std::unique_ptr<gws::renderer::gpu::Texture> base_tex_; // shared earthy fallback for empty layers
+};
+
 /// Walk the scene's entities and build a draw list from those with renderable
 /// components. Priority: if `MeshComponent::mesh_path` is set, load that
 /// asset; else fall back to `MeshRendererComponent`'s primitive type.
@@ -454,6 +680,8 @@ inline void build_draw_items(
     const PrimitiveMeshCache& meshes,
     EntityMaterialCache& mat_cache,
     AssetMeshCache& asset_cache,
+    TerrainMeshCache& terrain_cache,
+    TerrainGpuCache& terrain_gpu_cache,
     gws::renderer::gpu::VulkanDevice* device,
     VkDescriptorSetLayout mat_layout,
     VkDescriptorPool mat_pool,
@@ -475,6 +703,41 @@ inline void build_draw_items(
         schizo::scene::Transform* tf = ent->GetTransform();
         const glm::mat4* ecs_model = ecs ? ecs->world_matrix(tf) : nullptr;
         const glm::mat4 model = ecs_model ? *ecs_model : tf->GetWorldMatrix();
+
+        // Terrain takes precedence over mesh/primitive components. Chunked:
+        // one DrawItem per (non-fully-holed) chunk mesh.
+        if (auto tc = ent->GetComponent<schizo::scene::TerrainComponent>()) {
+            const auto& chunk_meshes =
+                terrain_cache.get_or_build(ent->GetId(), tc.get(), device);
+            if (!chunk_meshes.empty()) {
+                // Splat material (splatmap + 4 tiling layers) → terrain
+                // pipeline. Falls back to a plain green material if the splat
+                // texture couldn't be built (terrain still renders, untextured).
+                gws::renderer::gpu::Material* tmat = terrain_gpu_cache.get_or_build(
+                    ent->GetId(), tc.get(), device, mat_layout, mat_pool);
+                bool is_terrain = tmat != nullptr;
+                if (!tmat) {
+                    tmat = mat_cache.get_or_create(
+                        ent->GetId(), glm::vec4(0.42f, 0.48f, 0.34f, 1.0f),
+                        0.0f, 0.95f, 1.0f, glm::vec3(0.0f), 0.0f,
+                        device, mat_layout, mat_pool);
+                }
+                if (tmat) {
+                    for (const auto& cm : chunk_meshes) {
+                        if (!cm) continue;   // fully carved chunk
+                        gws::renderer::gpu::DrawItem di;
+                        di.mesh          = cm.get();
+                        di.material      = tmat;
+                        di.model         = model;
+                        di.submesh_index = 0;
+                        di.is_blend      = false;
+                        di.is_terrain    = is_terrain;
+                        out_opaque.push_back(di);
+                    }
+                }
+            }
+            continue;   // terrain entity handled
+        }
 
         // Resolve the entity's alpha mode for the primitive path. For the
         // asset path we route per-DrawItem based on the loaded glTF's

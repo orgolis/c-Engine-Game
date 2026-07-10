@@ -19,4 +19,5 @@ add_subdirectory(input)     # Input system - typed action mapping
 add_subdirectory(character) # Character controller system
 add_subdirectory(ability)   # Ability system - abilities, effects, modifiers, skill tree
 add_subdirectory(network)   # Network system - multiplayer, deterministic simulation, rollback
+add_subdirectory(audio)     # Audio: miniaudio device + custom voice mixer (Stage 6)
 add_subdirectory(gameplay)  # Game runtime foundations (abilities, combat, NPC AI, deterministic state)

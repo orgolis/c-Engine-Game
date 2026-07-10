@@ -16,7 +16,7 @@
 #include "vulkan_scene_mesh.h"
 #include "vulkan_scene_material.h"
 #include "culling.h"
-// gpu_profiler.h excluded — implementation not compiled in this build
+#include "gpu_profiler.h"  // Stage 14 N2: per-pass GPU timing sink (now compiled)
 
 #include <spdlog/spdlog.h>
 
@@ -267,7 +267,20 @@ bool VulkanRenderGraph::resolve_timings() {
 }
 
 void VulkanRenderGraph::update_gpu_profiler() {
-    // GPUProfiler implementation excluded from this build (gpu_profiler.cpp not compiled).
+    // Feed this frame's resolved per-stage GPU timings (set by resolve_timings,
+    // in µs) into the GPUProfiler the Stage 14 overlay reads (N2). Only stages
+    // that actually ran are submitted; submit_frame() zeroes the rest.
+    std::vector<std::pair<std::string, float>> passes;
+    const auto add = [&](RenderGraphStage stage, double us) {
+        if (us > 0.0)
+            passes.emplace_back(stage_name(stage), static_cast<float>(us / 1000.0));  // µs → ms
+    };
+    add(RenderGraphStage::Shadow,      stats_.shadow_us);
+    add(RenderGraphStage::Geometry,    stats_.geometry_us);
+    add(RenderGraphStage::Lighting,    stats_.lighting_us);
+    add(RenderGraphStage::Transparent, stats_.transparent_us);
+    add(RenderGraphStage::PostProcess, stats_.post_process_us);
+    engine::vulkan::GPUProfiler::instance().submit_frame(passes);
 }
 
 

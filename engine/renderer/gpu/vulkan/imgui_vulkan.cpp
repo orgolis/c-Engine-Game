@@ -58,9 +58,13 @@ std::unique_ptr<ImGuiVulkan> ImGuiVulkan::create(VulkanDevice* device,
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    // ImGui 1.92.x master branch doesn't ship docking; the docking branch
-    // sets ImGuiConfigFlags_DockingEnable. The bundled imgui is master, so
-    // we simply omit the docking flag.
+    // Docking enables the Unity-style tiled editor layout (a DockSpace fills
+    // the window; panels tile it, resize via splitters, and refill on close).
+    // The vendored imgui is the docking branch, so the flag is available.
+    // NOTE: we deliberately do NOT enable ImGuiConfigFlags_ViewportsEnable —
+    // that would spawn OS child windows needing a multi-window platform render
+    // loop; the editor renders a single Vulkan swapchain.
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
     ImGui::StyleColorsDark();
 

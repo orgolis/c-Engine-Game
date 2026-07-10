@@ -38,6 +38,14 @@ public:
                                                        uint32_t height,
                                                        bool srgb);
 
+    /// Create an RGBA32F texture from raw float pixels (16 bytes/texel) with a
+    /// linear, clamp-to-edge sampler. For LUTs (e.g. the LTC area-light tables)
+    /// whose values fall outside [0,1] and need float precision.
+    static std::unique_ptr<Texture> create_from_float_pixels(VulkanDevice* device,
+                                                             const float* rgba_pixels,
+                                                             uint32_t width,
+                                                             uint32_t height);
+
     /// Decode an in-memory PNG/JPG/BMP via stb_image and upload.
     static std::unique_ptr<Texture> create_from_memory(VulkanDevice* device,
                                                        const uint8_t* data,

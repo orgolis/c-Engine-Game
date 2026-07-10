@@ -1,0 +1,118 @@
+#version 450
+// Offline generation of the two tileable 3D noise volumes used by the cloud
+// raymarcher (Schneider/Nubis-style):
+//   mode 0 -> SHAPE volume (e.g. 128^3, RGBA8):
+//       R = Perlin-Worley (billowy base shape)
+//       G = Worley FBM @ low  freq   (large dilation/erosion)
+//       B = Worley FBM @ med  freq
+//       A = Worley FBM @ high freq
+//   mode 1 -> DETAIL volume (e.g. 32^3, RGBA8):
+//       R/G/B = Worley FBM @ increasing freq (edge erosion), A unused
+//
+// All noise is periodic over the volume so it tiles seamlessly when the
+// raymarcher wraps cloud-space coordinates.
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 0, rgba8) uniform writeonly image3D dstVolume;
+
+layout(push_constant) uniform PC {
+    int   resolution;  // edge length of the (cubic) volume
+    int   mode;        // 0 = shape, 1 = detail
+    float _pad0, _pad1;
+} pc;
+
+// ---- hashing -------------------------------------------------------------
+// Periodic 3D hash → a feature-point offset in [0,1)^3 for a given lattice
+// cell. `freq` is the lattice period so cells wrap (tileable).
+vec3 hash33(vec3 p, float freq) {
+    p = mod(p, vec3(freq));
+    p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yxz + 33.33);
+    return fract((p.xxy + p.yxx) * p.zyx);
+}
+
+// Periodic gradient for Perlin noise (unit-ish vector per lattice point).
+vec3 grad33(vec3 p, float freq) {
+    return normalize(hash33(p, freq) * 2.0 - 1.0);
+}
+
+// ---- Worley (cellular) ---------------------------------------------------
+// Returns inverted nearest-feature distance in [0,1] (1 = at a feature point),
+// giving the billowy lumps clouds want. `freq` lattice tiles.
+float worley(vec3 uvw, float freq) {
+    vec3 id = floor(uvw);
+    vec3 fd = fract(uvw);
+    float min_d = 1.0;
+    for (int x = -1; x <= 1; ++x)
+    for (int y = -1; y <= 1; ++y)
+    for (int z = -1; z <= 1; ++z) {
+        vec3 off = vec3(x, y, z);
+        vec3 feat = off + hash33(id + off, freq);
+        vec3 d = feat - fd;
+        min_d = min(min_d, dot(d, d));
+    }
+    return 1.0 - sqrt(min_d);
+}
+
+float worley_fbm(vec3 uvw, float freq) {
+    return worley(uvw * freq,        freq)        * 0.625
+         + worley(uvw * freq * 2.0,  freq * 2.0)  * 0.250
+         + worley(uvw * freq * 4.0,  freq * 4.0)  * 0.125;
+}
+
+// ---- Perlin (tileable gradient noise) ------------------------------------
+float perlin(vec3 uvw, float freq) {
+    vec3 p = uvw * freq;
+    vec3 id = floor(p);
+    vec3 fd = fract(p);
+    vec3 u = fd * fd * (3.0 - 2.0 * fd);
+    float n = 0.0;
+    for (int x = 0; x <= 1; ++x)
+    for (int y = 0; y <= 1; ++y)
+    for (int z = 0; z <= 1; ++z) {
+        vec3 corner = vec3(x, y, z);
+        vec3 g = grad33(id + corner, freq);
+        float d = dot(g, fd - corner);
+        float wx = mix(1.0 - u.x, u.x, float(x));
+        float wy = mix(1.0 - u.y, u.y, float(y));
+        float wz = mix(1.0 - u.z, u.z, float(z));
+        n += d * wx * wy * wz;
+    }
+    return n * 0.5 + 0.5; // → [0,1]
+}
+
+float perlin_fbm(vec3 uvw, float freq) {
+    return perlin(uvw, freq)       * 0.625
+         + perlin(uvw, freq * 2.0)  * 0.250
+         + perlin(uvw, freq * 4.0)  * 0.125;
+}
+
+float remap(float v, float lo, float hi, float nlo, float nhi) {
+    return nlo + (v - lo) / max(hi - lo, 1e-4) * (nhi - nlo);
+}
+
+void main() {
+    ivec3 px = ivec3(gl_GlobalInvocationID.xyz);
+    if (px.x >= pc.resolution || px.y >= pc.resolution || px.z >= pc.resolution) return;
+    vec3 uvw = (vec3(px) + 0.5) / float(pc.resolution);
+
+    vec4 outv = vec4(0.0);
+    if (pc.mode == 0) {
+        // Perlin-Worley base: Perlin remapped by a low-freq Worley FBM so the
+        // round Perlin blobs get billowy Worley edges.
+        float pfbm = perlin_fbm(uvw, 4.0);
+        float wlow = worley_fbm(uvw, 6.0);
+        float perlin_worley = remap(pfbm, wlow - 1.0, 1.0, 0.0, 1.0);
+        outv.r = clamp(perlin_worley, 0.0, 1.0);
+        outv.g = clamp(worley_fbm(uvw, 6.0),  0.0, 1.0);
+        outv.b = clamp(worley_fbm(uvw, 12.0), 0.0, 1.0);
+        outv.a = clamp(worley_fbm(uvw, 24.0), 0.0, 1.0);
+    } else {
+        outv.r = clamp(worley_fbm(uvw, 8.0),  0.0, 1.0);
+        outv.g = clamp(worley_fbm(uvw, 16.0), 0.0, 1.0);
+        outv.b = clamp(worley_fbm(uvw, 32.0), 0.0, 1.0);
+        outv.a = 1.0;
+    }
+    imageStore(dstVolume, px, outv);
+}

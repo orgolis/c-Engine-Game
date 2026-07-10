@@ -54,10 +54,18 @@ void main() {
                            sin(theta) * sin(phi),
                            cos(theta));
             vec3 sample_dir = ts.x * right + ts.y * up + ts.z * N;
+            // Clamp the env radiance so an ultra-bright HDR sun doesn't dominate
+            // the diffuse irradiance — otherwise every surface (indoors + out)
+            // gets flooded with sun-coloured ambient regardless of view angle.
+            // The sun's real contribution belongs to the DIRECT directional
+            // light, not this low-frequency ambient term.
+            vec3 s = texture(envMap, sample_dir).rgb;
+            float lum = max(max(s.r, s.g), s.b);
+            const float kMaxLuma = 8.0;
+            if (lum > kMaxLuma) s *= kMaxLuma / lum;
             // sin(theta) is the spherical-coords Jacobian; cos(theta) is
             // Lambert's cosine.
-            irradiance += texture(envMap, sample_dir).rgb *
-                          cos(theta) * sin(theta);
+            irradiance += s * cos(theta) * sin(theta);
             sample_count += 1.0;
         }
     }

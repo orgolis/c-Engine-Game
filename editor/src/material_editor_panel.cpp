@@ -115,57 +115,39 @@ void MaterialEditorPanel::RenderPBRParameters() {
 }
 
 void MaterialEditorPanel::RenderTextureSlots() {
-    ImGui::TextWrapped("Drag texture files here or click to browse");
+    ImGui::TextWrapped("Drag texture files from the Asset Browser onto a slot");
     ImGui::Separator();
-    
-    // Texture slot display
-    ImGui::InputText("Albedo Texture##tex", state_.albedo_texture.data(), 256, ImGuiInputTextFlags_ReadOnly);
-    if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
-            spdlog::info("[MaterialEditor] Assigned albedo texture");
+
+    // One slot: read-only display of the assigned path + TEXTURE_ASSET drop
+    // target (payload = runtime-relative path string) + a clear button.
+    auto slot = [](const char* label, std::string& path) {
+        char buf[260];
+        std::snprintf(buf, sizeof buf, "%s", path.empty() ? "(none)" : path.c_str());
+        ImGui::InputText(label, buf, sizeof buf, ImGuiInputTextFlags_ReadOnly);
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
+                const char* p = static_cast<const char*>(pl->Data);
+                if (p && p[0]) {
+                    path = p;
+                    spdlog::info("[MaterialEditor] {} = {}", label, p);
+                }
+            }
+            ImGui::EndDragDropTarget();
         }
-        ImGui::EndDragDropTarget();
-    }
-    
-    ImGui::InputText("Normal Texture##tex", state_.normal_texture.data(), 256, ImGuiInputTextFlags_ReadOnly);
-    if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
-            spdlog::info("[MaterialEditor] Assigned normal texture");
+        if (!path.empty()) {
+            ImGui::SameLine();
+            ImGui::PushID(label);
+            if (ImGui::SmallButton("x")) path.clear();
+            ImGui::PopID();
         }
-        ImGui::EndDragDropTarget();
-    }
-    
-    ImGui::InputText("Metallic Texture##tex", state_.metallic_texture.data(), 256, ImGuiInputTextFlags_ReadOnly);
-    if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
-            spdlog::info("[MaterialEditor] Assigned metallic texture");
-        }
-        ImGui::EndDragDropTarget();
-    }
-    
-    ImGui::InputText("Roughness Texture##tex", state_.roughness_texture.data(), 256, ImGuiInputTextFlags_ReadOnly);
-    if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
-            spdlog::info("[MaterialEditor] Assigned roughness texture");
-        }
-        ImGui::EndDragDropTarget();
-    }
-    
-    ImGui::InputText("AO Texture##tex", state_.ao_texture.data(), 256, ImGuiInputTextFlags_ReadOnly);
-    if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
-            spdlog::info("[MaterialEditor] Assigned AO texture");
-        }
-        ImGui::EndDragDropTarget();
-    }
-    
-    ImGui::InputText("Emissive Texture##tex", state_.emissive_texture.data(), 256, ImGuiInputTextFlags_ReadOnly);
-    if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
-            spdlog::info("[MaterialEditor] Assigned emissive texture");
-        }
-        ImGui::EndDragDropTarget();
-    }
+    };
+
+    slot("Albedo##tex",    state_.albedo_texture);
+    slot("Normal##tex",    state_.normal_texture);
+    slot("Metallic##tex",  state_.metallic_texture);
+    slot("Roughness##tex", state_.roughness_texture);
+    slot("AO##tex",        state_.ao_texture);
+    slot("Emissive##tex",  state_.emissive_texture);
 }
 
 void MaterialEditorPanel::RenderPresets() {

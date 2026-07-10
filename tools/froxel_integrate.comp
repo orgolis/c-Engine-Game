@@ -1,0 +1,56 @@
+#version 450
+// Froxel fog pass 2 (Stage 3.3): front-to-back integration along each screen
+// column's Z slices. Each invocation owns one (x,y) froxel column and walks it
+// near -> far, accumulating in-scattered radiance attenuated by the running
+// transmittance. Every slice stores the ACCUMULATED result up to its distance
+// (rgb = in-scatter, a = transmittance), so the composite pass can sample any
+// depth with one trilinear tap.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+const int   FROXEL_X = 160;
+const int   FROXEL_Y = 90;
+const int   FROXEL_Z = 64;
+const float NEAR     = 0.5;
+
+layout(set = 0, binding = 0) uniform FroxelUBO {
+    mat4 inv_view_proj;
+    mat4 shadow_matrix;
+    vec4 cam_pos;
+    vec4 sun_dir;
+    vec4 sun_color;
+    vec4 fog;          // w = far
+    vec4 ambient;
+} ub;
+
+layout(set = 0, binding = 1, rgba16f) uniform readonly  image3D scatterTex;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image3D integratedTex;
+
+float slice_dist(float z) {
+    return NEAR * pow(ub.fog.w / NEAR, z / float(FROXEL_Z));
+}
+
+void main() {
+    ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+    if (xy.x >= FROXEL_X || xy.y >= FROXEL_Y) return;
+
+    vec3  accum = vec3(0.0);
+    float trans = 1.0;
+    float prev  = NEAR;
+    for (int z = 0; z < FROXEL_Z; ++z) {
+        float end  = slice_dist(float(z) + 1.0);
+        float step = max(end - prev, 1e-4);
+        prev = end;
+
+        vec4 s = imageLoad(scatterTex, ivec3(xy, z));   // rgb source, a extinction
+        float ext = s.a * step;
+        // Energy-conserving slice integration (analytic within the slice).
+        vec3 slice_scatter = (ext > 1e-5)
+            ? s.rgb * step * (1.0 - exp(-ext)) / ext
+            : s.rgb * step;
+        accum += trans * slice_scatter;
+        trans *= exp(-ext);
+
+        imageStore(integratedTex, ivec3(xy, z), vec4(accum, trans));
+    }
+}

@@ -3,6 +3,7 @@
 #include <memory>
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
@@ -53,7 +54,48 @@ public:
      * Pause/resume playback
      */
     void SetPaused(bool paused) { is_paused_ = paused; }
-    
+
+    /**
+     * Net client mode. Set BEFORE StartPlayback. When enabled, dynamic-collider
+     * props are created as Kinematic bodies that FOLLOW their entity transforms
+     * (written by the replication layer) instead of being simulated locally.
+     * The player is unaffected (still a CharacterVirtual — the client owns it).
+     */
+    void SetNetClientMode(bool enabled) { net_client_mode_ = enabled; }
+    bool IsNetClientMode() const { return net_client_mode_; }
+
+    /**
+     * Host-side ghost colliders for REMOTE players: one kinematic capsule per
+     * connected player, kinematically moved to its replicated position each
+     * frame so remote players push dynamic props in the authoritative
+     * simulation (which then replicates back to everyone). Call every frame
+     * while playing; pass the CURRENT remote positions (count may change).
+     */
+    void SyncRemotePlayerBodies(const std::vector<glm::vec3>& positions, float dt);
+
+    // ---- Script-system physics access (Stage 12) ----
+    schizo::physics::PhysicsWorld* GetPhysicsWorld() { return physics_world_.get(); }
+    /// Jolt BodyId for an entity's rigid body (0xFFFFFFFF if none).
+    uint32_t BodyForEntity(uint32_t entity_id) const;
+    /// Reverse lookup: which entity owns this body (0 if none).
+    uint32_t EntityForBody(uint32_t body_id) const;
+    /// Create a live rigid body for an entity spawned DURING play from its
+    /// ColliderComponent (Box/Sphere only — the script-spawnable primitives).
+    bool AddRuntimeBody(const std::shared_ptr<schizo::scene::Entity>& ent);
+    /// Remove an entity's body (entity being destroyed mid-play).
+    void RemoveBodyForEntity(uint32_t entity_id);
+
+    // ---- Physical water (terrain-integrated + WaterComponent volumes) ----
+    /// Rect water volume gathered at play start from PHYSICAL water only.
+    struct WaterVolume {
+        glm::vec2 center_xz{0.0f};
+        glm::vec2 half_size{0.0f};
+        float     level = 0.0f;    // world-space surface height
+    };
+    /// Water surface height above `pos` (XZ containment), or -FLT_MAX when
+    /// not over any physical water volume.
+    float WaterLevelAt(const glm::vec3& pos) const;
+
     /**
      * Update scene during playback (called each frame)
      * @param delta_time Time elapsed since last update
@@ -125,6 +167,7 @@ private:
     bool is_playing_ = false;
     bool is_paused_ = false;
     bool is_cursor_captured_ = false;  // True while the host should hide+lock the OS cursor
+    bool net_client_mode_ = false;     // Props follow net-set transforms, no local sim
     float playback_time_ = 0.0f;
 
     // Mouse delta accumulated by the host between Update() calls (raw GLFW)
@@ -155,6 +198,8 @@ private:
     std::unique_ptr<schizo::physics::PhysicsWorld> physics_world_;
     std::unordered_map<uint32_t, uint32_t> entity_bodies_;   // entity id -> BodyId
     std::vector<uint32_t>                  dynamic_entities_; // entity ids w/ dynamic body
+    std::vector<uint32_t>                  remote_player_bodies_; // ghost kinematic capsules (BodyIds)
+    std::vector<WaterVolume>               water_volumes_;        // physical water (play-time)
     uint32_t                               player_char_id_ = 0xFFFFFFFFu;
     
     // Camera state

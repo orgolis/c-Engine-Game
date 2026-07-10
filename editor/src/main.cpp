@@ -11,12 +11,18 @@
 #include "vulkan/vulkan_swapchain.h"
 #include "vulkan/vulkan_g_buffer.h"
 #include "vulkan/vulkan_lighting_pass.h"
+#include "vulkan/culling.h"   // Frustum::is_sphere_visible — per-light culling
+#include "vulkan/vulkan_texture.h"  // Texture::create_from_file — spot cookies
 #include "vulkan/vulkan_shadow_map.h"
 #include "vulkan/vulkan_post_processing.h"
 #include "vulkan/vulkan_transparent_pass.h"
 #include "vulkan/vulkan_environment_map.h"
+#include "vulkan/vulkan_water_pass.h"
+#include "vulkan/vulkan_froxel_fog_pass.h"
 #include "vulkan/vulkan_ssao_pass.h"
 #include "vulkan/vulkan_ssr_pass.h"
+#include "vulkan/vulkan_volumetric_light_pass.h"
+#include "vulkan/vulkan_cloud_pass.h"
 #include "vulkan/vulkan_rt_scene.h"
 #include "vulkan/vulkan_vxao_pass.h"
 #include "vulkan/vulkan_occlusion_culler.h"
@@ -33,11 +39,18 @@
 #include "jobs/job_system.h"
 #include "memory/memory.h"
 #include "profiler/profiler.h" // scoped CPU zones, per-thread (Stage 0.6)
+#include "profiler/frame_capture.h" // N5: one-frame draw-list snapshot
+#include "memory/memory_snapshot.h" // N3: per-tag live bytes + allocator registry
+#include "audio/audio_engine.h"     // Stage 6: miniaudio device + spatial mixer
+#include "physics/jolt_physics.h"   // Stage 6 step 6: raycast for audio occlusion
+#include "net_profiler.h"           // N4: network bandwidth / RTT / loss / rollback
+#include "vulkan/gpu_profiler.h"    // N2: per-pass GPU timing
 #include "ecs/components.h"
 #include "ecs_bridge.h"        // shadow ECS mirror of the scene (Stage 1.4 step 1)
 
 // ImGui headers
 #include <imgui.h>
+#include <imgui_internal.h>   // DockBuilder API (programmatic default dock layout)
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 
@@ -51,6 +64,7 @@
 #include "viewport_camera.h"
 #include "mesh_renderer_component.h"
 #include "collider_component.h"
+#include "audio_components.h"
 #include "asset_browser_panel.h"
 #include "material_editor_panel.h"
 #include "asset_import_dialog.h"
@@ -63,6 +77,14 @@
 #include "character_controller_panel.h"
 #include "ability_system_panel.h"
 #include "network_system_panel.h"
+#include "net_session.h"
+#include "script_system.h"       // Stage 12: custom scripts (Python/C++/C#)
+#include "script_api_editor.h"
+#include "script_component.h"
+#include "water_component.h"     // terrain expansion: water surfaces
+#include "terminal_panel.h"
+#include "console_panel.h"
+#include "editor_audio_driver.h"
 
 #include <spdlog/spdlog.h>
 #include <iostream>
@@ -85,7 +107,11 @@
 #include <algorithm>
 #include <vector>
 #include <filesystem>
+#include <fstream>
 #include <cctype>
+#include <cstdio>
+#include <cfloat>
+#include <cmath>
 #include <system_error>
 
 // GLM headers
@@ -104,7 +130,31 @@ struct EditorState {
     bool show_viewport = true;
     bool show_demo_window = false;
     bool show_preferences = false;
-    
+    bool show_post_processing = true;   // closable Post-Processing dock panel
+    bool show_terminal = true;          // embedded OS shell terminal panel
+    bool show_output = true;            // editor log output console panel
+
+    // Terrain sculpting (Phase A). Brush state shared by the Inspector's
+    // Terrain section and the viewport sculpt handler.
+    bool  terrain_sculpt_active  = false;  // LMB-drag sculpts the selected terrain
+    int   terrain_brush_mode     = 0;      // 0=Raise 1=Lower 2=Smooth 3=Flatten
+    float terrain_brush_radius   = 6.0f;   // world units
+    float terrain_brush_strength = 0.5f;   // per stroke-application
+    float terrain_brush_falloff  = 0.6f;   // 0 hard edge .. 1 soft
+    glm::vec3 terrain_brush_hit  = glm::vec3(0.0f);  // last sculpt hit (for the ring overlay)
+    bool  terrain_brush_valid    = false;  // is terrain_brush_hit current this frame
+
+    // Terrain texture splat painting (Phase C). When paint mode is on, LMB-drag
+    // paints the active layer's weight into the splatmap instead of sculpting.
+    bool  terrain_paint_active   = false;  // paint splat layers (mutually excl. w/ sculpt)
+    int   terrain_paint_layer    = 0;      // active layer 0..3
+    float terrain_paint_strength = 0.5f;   // 0..1 per stroke-application
+
+    // When true, the Unity-style dock layout is rebuilt to its default
+    // arrangement on the next frame (set by Window > Reset Layout). Also
+    // triggers the first-run build when no saved dock layout exists.
+    bool request_reset_layout = false;
+
     // Scene/Entity data
     uint32_t selected_entity_id = 0;  // 0 = no selection
 
@@ -140,7 +190,15 @@ struct EditorState {
     
     // Asset Browser
     std::unique_ptr<schizo::editor::AssetBrowserPanel> asset_browser;
-    
+
+    // Embedded OS shell terminal (ConPTY). Lazily created on first render so a
+    // shell isn't spawned until the panel is actually shown.
+    std::unique_ptr<schizo::editor::TerminalPanel> terminal;
+
+    // "Output" log console (mirrors the editor's own spdlog output). Lazy —
+    // the capture sink runs from startup regardless, so no logs are missed.
+    std::unique_ptr<schizo::editor::ConsolePanel> console;
+
     // Material Editor
     std::unique_ptr<schizo::editor::MaterialEditorPanel> material_editor;
     
@@ -163,6 +221,7 @@ struct EditorState {
     std::unique_ptr<schizo::editor::ScenePlaybackManager> scene_playback_manager;
     bool show_playback_controls = true;
     bool show_debug_panels = true;
+    bool show_performance = true;   // Stage 14 unified profiler overlay
     
     // Debug Panels
     std::unique_ptr<schizo::editor::CharacterControllerPanel> character_panel;
@@ -173,6 +232,25 @@ struct EditorState {
     engine::character::CharacterController* selected_character_controller = nullptr;
     engine::ability::AbilitySystem* selected_ability_system = nullptr;
     engine::network::NetworkManager* network_manager = nullptr;
+
+    // Multiplayer (Stage 7): live host/join session on the verified net stack.
+    // Ticked every frame; replicates scene transforms host->clients.
+    schizo::editor::NetSession net_session;
+    bool show_network_window = false;
+    char net_host_port[16] = "7777";
+    char net_join_ip[64]   = "127.0.0.1";
+    char net_join_port[16] = "7777";
+    int  net_launch_clients = 1;   // PIE launcher: how many client processes to spawn
+    bool net_autoplay_started = false;  // did the session auto-enter Play mode?
+    bool net_autoplay_failed  = false;  // tried but no 'Player' entity (edit-view fallback)
+
+    // Custom scripts (Stage 12). One persistent ScriptApi table — backends
+    // capture its address, so it must live as long as the editor; the ctx
+    // pointers + dt/time are refreshed every frame.
+    schizo::editor::ScriptSystem    script_system;
+    schizo::editor::EditorScriptCtx script_ctx;
+    schizo::editor::ScriptApi       script_api;
+    double script_play_time = 0.0;   // seconds since Play started
 };
 
 // ============================================================================
@@ -234,10 +312,32 @@ static std::string SaveSceneDialogNative(GLFWwindow* window) {
     ofn.Flags       = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     return GetSaveFileNameA(&ofn) ? std::string(buf) : std::string();
 }
+static std::string OpenAudioDialogNative() {
+    char buf[MAX_PATH] = {0};
+    OPENFILENAMEA ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = NULL;   // inspector has no window handle; unowned is fine
+    ofn.lpstrFile   = buf;
+    ofn.nMaxFile    = sizeof(buf);
+    ofn.lpstrFilter = "Audio (*.wav;*.mp3;*.flac;*.ogg)\0*.wav;*.mp3;*.flac;*.ogg\0All Files\0*.*\0";
+    ofn.lpstrTitle  = "Select Audio Clip";
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    return GetOpenFileNameA(&ofn) ? std::string(buf) : std::string();
+}
 #else
 static std::string OpenSceneDialogNative(GLFWwindow*) { return {}; }
 static std::string SaveSceneDialogNative(GLFWwindow*) { return {}; }
+static std::string OpenAudioDialogNative() { return {}; }
 #endif
+
+// Stable content GUID from a path — mirrors schizo::assets::asset_id_from_path
+// (FNV-1a 64, low bit forced set) so audio clip GUIDs match the asset system
+// without pulling the asset-pipeline header into this TU.
+static uint64_t AudioGuidFromPath(const std::string& p) {
+    uint64_t h = 1469598103934665603ull;
+    for (unsigned char c : p) { h ^= c; h *= 1099511628211ull; }
+    return h | 1ull;
+}
 
 void ShowSaveDialog(EditorState& editor_state) {
     if (!editor_state.show_save_dialog) return;
@@ -359,6 +459,50 @@ void ShowRenameDialog(EditorState& editor_state) {
 }
 
 // ============================================================================
+// Dock Layout (Unity-style fixed/tiled workspace)
+// ============================================================================
+
+// Bump when the docked-panel set changes so an existing editor.ini layout
+// (which predates a new panel) is rebuilt once into the default arrangement.
+static constexpr int kEditorDockLayoutVersion = 2;   // 2 = added Output + Terminal
+
+// Build the default docked layout into `dockspace_id`: a Unity-classic
+// arrangement — Hierarchy (left), Viewport (center), Inspector (right), and a
+// bottom strip with Asset Browser / Performance / Debug / Post-Processing /
+// Playback tabbed together. The window names MUST match each panel's exact
+// ImGui::Begin() title (including any "##suffix").
+static void BuildEditorDockLayout(ImGuiID dockspace_id, ImVec2 size) {
+    ImGui::DockBuilderRemoveNode(dockspace_id);                                  // wipe any prior layout
+    ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockspace_id, size);
+
+    // Split the central node into the four Unity regions. Each split shrinks
+    // `center`, which ends up as the middle viewport node.
+    ImGuiID center = dockspace_id;
+    ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down,  0.26f, nullptr, &center);
+    ImGuiID left   = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left,  0.18f, nullptr, &center);
+    ImGuiID right  = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
+
+    ImGui::DockBuilderDockWindow("Viewport",             center);
+    ImGui::DockBuilderDockWindow("Scene Hierarchy",      left);
+    ImGui::DockBuilderDockWindow("Inspector",            right);
+    ImGui::DockBuilderDockWindow("Asset Browser##panel", bottom);
+    ImGui::DockBuilderDockWindow("Performance",          bottom);
+    ImGui::DockBuilderDockWindow("Debug Systems",        bottom);
+    ImGui::DockBuilderDockWindow("Post-Processing",      bottom);
+    ImGui::DockBuilderDockWindow("Scene Playback",       bottom);
+    ImGui::DockBuilderDockWindow("Output",               bottom);
+    ImGui::DockBuilderDockWindow("Terminal",             bottom);
+
+    // The central viewport reads cleaner without a tab bar (it holds only the
+    // 3D scene), matching Unity's Scene view.
+    if (ImGuiDockNode* c = ImGui::DockBuilderGetNode(center))
+        c->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
+
+    ImGui::DockBuilderFinish(dockspace_id);
+}
+
+// ============================================================================
 // Menu Functions
 // ============================================================================
 
@@ -432,10 +576,29 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             ImGui::MenuItem("Viewport", nullptr, &editor_state.show_viewport);
             ImGui::Separator();
             ImGui::MenuItem("Playback Controls", nullptr, &editor_state.show_playback_controls);
+            ImGui::MenuItem("Performance (Stage 14)", nullptr, &editor_state.show_performance);
             ImGui::MenuItem("Debug Panels (Phase 6)", nullptr, &editor_state.show_debug_panels);
+            ImGui::MenuItem("Post-Processing", nullptr, &editor_state.show_post_processing);
+            ImGui::MenuItem("Output (Log)", nullptr, &editor_state.show_output);
+            ImGui::MenuItem("Terminal", nullptr, &editor_state.show_terminal);
+            ImGui::MenuItem("Multiplayer (Network)", nullptr, &editor_state.show_network_window);
             ImGui::Separator();
             if (ImGui::MenuItem("Reset Layout")) {
-                spdlog::info("Reset layout");
+                // Rebuild the default Unity-style dock arrangement next frame.
+                editor_state.request_reset_layout = true;
+                // Re-open every dockable panel so the rebuilt layout is fully
+                // populated (a closed panel wouldn't claim its dock slot).
+                editor_state.show_scene_hierarchy = true;
+                editor_state.show_inspector       = true;
+                editor_state.show_asset_browser   = true;
+                editor_state.show_viewport        = true;
+                editor_state.show_playback_controls = true;
+                editor_state.show_performance     = true;
+                editor_state.show_debug_panels    = true;
+                editor_state.show_post_processing = true;
+                editor_state.show_terminal        = true;
+                editor_state.show_output          = true;
+                spdlog::info("Reset editor dock layout to default");
             }
             ImGui::EndMenu();
         }
@@ -487,7 +650,8 @@ void ShowSceneHierarchy(EditorState& editor_state) {
         flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
     }
     
-    if (ImGui::Begin("Scene Hierarchy", &editor_state.show_scene_hierarchy, flags)) {
+    ImGui::Begin("Scene Hierarchy", &editor_state.show_scene_hierarchy, flags);  // docked window = child; End() must always run
+    {
         auto scene = editor_state.editor_scene->GetScene();
         if (!scene) {
             ImGui::Text("No scene loaded");
@@ -524,7 +688,46 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
                 ImGui::CloseCurrentPopup();
             }
-            
+
+            if (ImGui::MenuItem("Water")) {
+                auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                    [scene, &editor_state]() {
+                        auto ent = scene->CreateEntity("Water");
+                        if (ent) {
+                            ent->AddComponent<schizo::scene::WaterComponent>();
+                            ent->GetTransform()->SetLocalPosition(glm::vec3(0.0f, 0.5f, 0.0f));
+                        }
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Created Water entity");
+                    },
+                    [scene, &editor_state]() {
+                        auto ent = scene->GetEntityByName("Water");
+                        if (ent) scene->RemoveEntity(ent);
+                    },
+                    "Create Water"
+                );
+                editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
+                ImGui::CloseCurrentPopup();
+            }
+
+            if (ImGui::MenuItem("Terrain")) {
+                auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                    [scene, &editor_state]() {
+                        auto ent = scene->CreateEntity("Terrain");
+                        if (ent) ent->AddComponent<schizo::scene::TerrainComponent>();
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Created Terrain entity");
+                    },
+                    [scene, &editor_state]() {
+                        auto ent = scene->GetEntityByName("Terrain");
+                        if (ent) { scene->RemoveEntity(ent); spdlog::info("Removed Terrain entity"); }
+                    },
+                    "Create Terrain"
+                );
+                editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
+                ImGui::CloseCurrentPopup();
+            }
+
             if (ImGui::MenuItem("Sphere")) {
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
                     [scene, &editor_state]() {
@@ -780,19 +983,15 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                         }
                     }
                     
-                    // Also accept mesh assets — payload is a size_t index
-                    // into the asset browser's discovered list.
+                    // Also accept mesh assets — payload is the runtime-relative
+                    // path string (asset browser drag).
                     if (const ImGuiPayload* mesh_payload = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
-                        IM_ASSERT(mesh_payload->DataSize == sizeof(size_t));
-                        size_t asset_idx = *(const size_t*)mesh_payload->Data;
-                        if (editor_state.asset_browser) {
-                            const auto* asset = editor_state.asset_browser->GetAssetByIndex(asset_idx);
-                            if (asset && asset->asset_type == "Mesh") {
-                                entity->SetMesh(asset->path);
-                                spdlog::info("Assigned mesh '{}' to entity '{}'",
-                                             asset->path, entity->GetName());
-                                editor_state.editor_scene->MarkModified();
-                            }
+                        const char* mesh_path = static_cast<const char*>(mesh_payload->Data);
+                        if (mesh_path && mesh_path[0]) {
+                            entity->SetMesh(mesh_path);
+                            spdlog::info("Assigned mesh '{}' to entity '{}'",
+                                         mesh_path, entity->GetName());
+                            editor_state.editor_scene->MarkModified();
                         }
                     }
                     
@@ -895,7 +1094,8 @@ void ShowInspector(EditorState& editor_state) {
         flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
     }
     
-    if (ImGui::Begin("Inspector", &editor_state.show_inspector, flags)) {
+    ImGui::Begin("Inspector", &editor_state.show_inspector, flags);  // docked window = child; End() must always run
+    {
         auto scene = editor_state.editor_scene->GetScene();
         if (!scene || editor_state.selected_entity_id == 0) {
             ImGui::Text("No entity selected");
@@ -1095,6 +1295,15 @@ void ShowInspector(EditorState& editor_state) {
                         spdlog::info("Added Spot LightComponent to entity: {}", selected_entity->GetName());
                         ImGui::CloseCurrentPopup();
                     }
+                    if (ImGui::MenuItem("Area Light")) {
+                        selected_entity->AddComponent<schizo::scene::LightComponent>(
+                            schizo::scene::LightType::Area,
+                            "Area Light"
+                        );
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Added Area LightComponent to entity: {}", selected_entity->GetName());
+                        ImGui::CloseCurrentPopup();
+                    }
                     ImGui::EndMenu();
                 }
 
@@ -1146,12 +1355,468 @@ void ShowInspector(EditorState& editor_state) {
                     }
                 }
 
+                // Audio — one source / one listener per entity (the mixer keys
+                // voices by entity; the bridge uses the first active listener).
+                {
+                    const bool has_src =
+                        selected_entity->GetComponent<schizo::scene::AudioSourceComponent>() != nullptr;
+                    ImGui::BeginDisabled(has_src);
+                    if (ImGui::MenuItem("Audio Source")) {
+                        selected_entity->AddComponent<schizo::scene::AudioSourceComponent>();
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Added AudioSourceComponent to entity: {}", selected_entity->GetName());
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndDisabled();
+
+                    const bool has_listener =
+                        selected_entity->GetComponent<schizo::scene::AudioListenerComponent>() != nullptr;
+                    ImGui::BeginDisabled(has_listener);
+                    if (ImGui::MenuItem("Audio Listener")) {
+                        selected_entity->AddComponent<schizo::scene::AudioListenerComponent>();
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Added AudioListenerComponent to entity: {}", selected_entity->GetName());
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndDisabled();
+                }
+
+                // Terrain — one heightmap landscape per entity.
+                {
+                    const bool has_terrain =
+                        selected_entity->GetComponent<schizo::scene::TerrainComponent>() != nullptr;
+                    ImGui::BeginDisabled(has_terrain);
+                    if (ImGui::MenuItem("Terrain")) {
+                        selected_entity->AddComponent<schizo::scene::TerrainComponent>();
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Added TerrainComponent to entity: {}", selected_entity->GetName());
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndDisabled();
+                    if (has_terrain) {
+                        ImGui::Separator();
+                        ImGui::TextDisabled("(already has Terrain)");
+                    }
+                }
+
+                // Script — a custom Python/C++/C# behavior (Stage 12).
+                {
+                    const bool has_script =
+                        selected_entity->GetComponent<schizo::scene::ScriptComponent>() != nullptr;
+                    ImGui::BeginDisabled(has_script);
+                    if (ImGui::MenuItem("Script")) {
+                        selected_entity->AddComponent<schizo::scene::ScriptComponent>();
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Added ScriptComponent to entity: {}", selected_entity->GetName());
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndDisabled();
+                }
+
+                // Water — an animated water surface (entity Y = water level).
+                {
+                    const bool has_water =
+                        selected_entity->GetComponent<schizo::scene::WaterComponent>() != nullptr;
+                    ImGui::BeginDisabled(has_water);
+                    if (ImGui::MenuItem("Water")) {
+                        selected_entity->AddComponent<schizo::scene::WaterComponent>();
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("Added WaterComponent to entity: {}", selected_entity->GetName());
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndDisabled();
+                }
+
                 ImGui::EndPopup();
             }
             
             ImGui::TreePop();
         }
-        
+
+        // ── Audio Source Component ──────────────────────────────────────
+        ImGui::Separator();
+        auto audio_src = selected_entity->GetComponent<schizo::scene::AudioSourceComponent>();
+        if (audio_src) {
+            if (ImGui::TreeNode("Audio Source")) {
+                // Clip: shows the path; "..." opens a file picker; the field also
+                // accepts an AUDIO_ASSET drag-drop from the Asset Browser.
+                char clip_buf[512];
+                std::snprintf(clip_buf, sizeof(clip_buf), "%s", audio_src->GetClipPath().c_str());
+                ImGui::SetNextItemWidth(-70.0f);
+                if (ImGui::InputText("Clip##audiosrc", clip_buf, sizeof(clip_buf))) {
+                    audio_src->SetClipPath(clip_buf);
+                    audio_src->SetClipGuid(clip_buf[0] ? AudioGuidFromPath(clip_buf) : 0);
+                    editor_state.editor_scene->MarkModified();
+                }
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("AUDIO_ASSET")) {
+                        const char* apath = static_cast<const char*>(pl->Data);
+                        if (apath && apath[0]) {
+                            audio_src->SetClipPath(apath);
+                            audio_src->SetClipGuid(AudioGuidFromPath(apath));
+                            std::snprintf(clip_buf, sizeof(clip_buf), "%s", apath);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("...##audiosrc")) {
+                    std::string p = OpenAudioDialogNative();
+                    if (!p.empty()) {
+                        audio_src->SetClipPath(p);
+                        audio_src->SetClipGuid(AudioGuidFromPath(p));
+                        editor_state.editor_scene->MarkModified();
+                    }
+                }
+
+                float vol = audio_src->GetVolume();
+                if (ImGui::SliderFloat("Volume##audiosrc", &vol, 0.0f, 2.0f)) {
+                    audio_src->SetVolume(vol); editor_state.editor_scene->MarkModified();
+                }
+                float pitch = audio_src->GetPitch();
+                if (ImGui::SliderFloat("Pitch##audiosrc", &pitch, 0.1f, 4.0f)) {
+                    audio_src->SetPitch(pitch); editor_state.editor_scene->MarkModified();
+                }
+                float radius = audio_src->GetRadius();
+                if (ImGui::SliderFloat("Radius##audiosrc", &radius, 1.0f, 100.0f)) {
+                    audio_src->SetRadius(radius); editor_state.editor_scene->MarkModified();
+                }
+                bool loop = audio_src->IsLooping();
+                if (ImGui::Checkbox("Loop##audiosrc", &loop)) {
+                    audio_src->SetLooping(loop); editor_state.editor_scene->MarkModified();
+                }
+                ImGui::SameLine();
+                bool spatial = audio_src->IsSpatial();
+                if (ImGui::Checkbox("Spatial##audiosrc", &spatial)) {
+                    audio_src->SetSpatial(spatial); editor_state.editor_scene->MarkModified();
+                }
+                ImGui::SameLine();
+                bool play_start = audio_src->PlayOnStart();
+                if (ImGui::Checkbox("Play on Start##audiosrc", &play_start)) {
+                    audio_src->SetPlayOnStart(play_start); editor_state.editor_scene->MarkModified();
+                }
+
+                ImGui::Separator();
+                const bool playing = audio_src->IsPlaying();
+                if (ImGui::Button(playing ? "Stop Preview##audiosrc"
+                                          : "Preview##audiosrc", ImVec2(130, 0)))
+                    audio_src->SetPlaying(!playing);   // edit-mode audition
+                if (audio_src->GetClipPath().empty()) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(no clip assigned)");
+                } else if (!audio_src->PlayOnStart() && !playing) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.3f, 1.0f),
+                                       "silent in Play: 'Play on Start' is off");
+                }
+                ImGui::TreePop();
+            }
+        }
+
+        // ── Audio Listener Component ────────────────────────────────────
+        ImGui::Separator();
+        auto audio_listener = selected_entity->GetComponent<schizo::scene::AudioListenerComponent>();
+        if (audio_listener) {
+            if (ImGui::TreeNode("Audio Listener")) {
+                bool active = audio_listener->IsActive();
+                if (ImGui::Checkbox("Active##audiolisten", &active)) {
+                    audio_listener->SetActive(active); editor_state.editor_scene->MarkModified();
+                }
+                float gain = audio_listener->GetMasterGain();
+                if (ImGui::SliderFloat("Master Volume##audiolisten", &gain, 0.0f, 1.0f)) {
+                    audio_listener->SetMasterGain(gain); editor_state.editor_scene->MarkModified();
+                }
+                ImGui::TextDisabled("The active listener (usually the camera or\n"
+                                    "player) sets global pan & attenuation.");
+                ImGui::TreePop();
+            }
+        }
+
+        // ── Terrain Component ───────────────────────────────────────────
+        ImGui::Separator();
+        auto terrain_comp = selected_entity->GetComponent<schizo::scene::TerrainComponent>();
+        if (terrain_comp) {
+            if (ImGui::TreeNodeEx("Terrain", ImGuiTreeNodeFlags_DefaultOpen)) {
+                int   res  = terrain_comp->GetResolution();
+                float size = terrain_comp->GetSize();
+                ImGui::Text("Grid: %d x %d cells over %.0f m", res, res, size);
+                if (ImGui::SliderInt("Resolution##terrain", &res, 8, 1024)) {
+                    terrain_comp->Resize(res, terrain_comp->GetSize());
+                    editor_state.editor_scene->MarkModified();
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Changing resolution or size resets the heightmap to flat.\n"
+                                      "Large terrains are meshed in 64-cell chunks — sculpting\n"
+                                      "only rebuilds the chunks the brush touches.");
+                if (ImGui::SliderFloat("Size (m)##terrain", &size, 4.0f, 8000.0f,
+                                       "%.0f", ImGuiSliderFlags_Logarithmic)) {
+                    terrain_comp->Resize(terrain_comp->GetResolution(), size);
+                    editor_state.editor_scene->MarkModified();
+                }
+                float hs = terrain_comp->GetHeightScale();
+                if (ImGui::SliderFloat("Height Scale##terrain", &hs, 0.1f, 10.0f)) {
+                    terrain_comp->SetHeightScale(hs);
+                    editor_state.editor_scene->MarkModified();
+                }
+                if (ImGui::Button("Flatten##terrain")) {
+                    terrain_comp->Flatten(0.0f);
+                    editor_state.editor_scene->MarkModified();
+                }
+
+                ImGui::Separator();
+                if (ImGui::Checkbox("Sculpt Mode##terrain", &editor_state.terrain_sculpt_active)) {
+                    if (editor_state.terrain_sculpt_active) editor_state.terrain_paint_active = false;
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(Left-drag over terrain)");
+                const char* brushes[] = { "Raise", "Lower", "Smooth", "Flatten",
+                                          "Dig Hole", "Fill Hole" };
+                ImGui::Combo("Brush##terrain", &editor_state.terrain_brush_mode, brushes, 6);
+                if (editor_state.terrain_brush_mode >= 4)
+                    ImGui::TextDisabled("Holes carve the surface + collision —\n"
+                                        "build caves (or underwater entrances) through them.");
+                ImGui::SliderFloat("Radius##terrain",   &editor_state.terrain_brush_radius,   0.5f, 50.0f);
+                ImGui::SliderFloat("Strength##terrain", &editor_state.terrain_brush_strength, 0.01f, 5.0f);
+                ImGui::SliderFloat("Falloff##terrain",  &editor_state.terrain_brush_falloff,  0.0f, 1.0f);
+
+                // ── Texture splat painting (Phase C) ──
+                ImGui::Separator();
+                if (ImGui::Checkbox("Paint Mode##terrain", &editor_state.terrain_paint_active)) {
+                    if (editor_state.terrain_paint_active) editor_state.terrain_sculpt_active = false;
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(Left-drag paints active layer)");
+
+                ImGui::Text("Active layer:");
+                ImGui::SameLine();
+                for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
+                    char rb[16]; std::snprintf(rb, sizeof rb, "%d##tpl", i);
+                    if (i) ImGui::SameLine();
+                    ImGui::RadioButton(rb, &editor_state.terrain_paint_layer, i);
+                }
+                ImGui::SliderFloat("Paint Strength##terrain", &editor_state.terrain_paint_strength, 0.01f, 1.0f);
+                ImGui::SliderFloat("Paint Radius##terrain",   &editor_state.terrain_brush_radius,   0.5f, 50.0f);
+
+                // Per-layer texture path + tiling. Char buffers re-synced from
+                // the component when the inspected entity changes; the path is
+                // committed only when the field loses focus (avoids reloading a
+                // texture on every keystroke).
+                static uint32_t terr_synced_id = 0xFFFFFFFFu;
+                static char     terr_layer_buf[schizo::scene::kTerrainLayers][260];
+                const uint32_t  terr_eid = selected_entity->GetId();
+                if (terr_synced_id != terr_eid) {
+                    for (int i = 0; i < schizo::scene::kTerrainLayers; ++i)
+                        std::snprintf(terr_layer_buf[i], sizeof terr_layer_buf[i],
+                                      "%s", terrain_comp->GetLayerPath(i).c_str());
+                    terr_synced_id = terr_eid;
+                }
+                for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
+                    ImGui::PushID(i);
+                    char lbl[32]; std::snprintf(lbl, sizeof lbl, "Layer %d##path", i);
+                    ImGui::InputText(lbl, terr_layer_buf[i], sizeof terr_layer_buf[i]);
+                    if (ImGui::IsItemDeactivatedAfterEdit()) {
+                        terrain_comp->SetLayerPath(i, terr_layer_buf[i]);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    // Drag a texture from the Asset Browser onto the layer.
+                    if (ImGui::BeginDragDropTarget()) {
+                        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
+                            const char* tp = static_cast<const char*>(pl->Data);
+                            if (tp && tp[0]) {
+                                terrain_comp->SetLayerPath(i, tp);
+                                std::snprintf(terr_layer_buf[i], sizeof terr_layer_buf[i], "%s", tp);
+                                editor_state.editor_scene->MarkModified();
+                            }
+                        }
+                        ImGui::EndDragDropTarget();
+                    }
+                    float t = terrain_comp->GetTiling(i);
+                    if (ImGui::SliderFloat("tiling", &t, 1.0f, 128.0f)) {
+                        terrain_comp->SetTiling(i, t);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    ImGui::PopID();
+                }
+                if (ImGui::Button("Clear Painting##terrain")) {
+                    terrain_comp->ResizeSplat(terrain_comp->SplatResolution());
+                    editor_state.editor_scene->MarkModified();
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(resets to Layer 0)");
+
+                // ── Integrated water (Unreal-style: part of the terrain) ──
+                ImGui::Separator();
+                bool twater = terrain_comp->IsWaterEnabled();
+                if (ImGui::Checkbox("Water##terrain", &twater)) {
+                    terrain_comp->SetWaterEnabled(twater);
+                    editor_state.editor_scene->MarkModified();
+                }
+                if (twater) {
+                    ImGui::SameLine();
+                    bool tphys = terrain_comp->IsWaterPhysical();
+                    if (ImGui::Checkbox("Physical##terrainwater", &tphys)) {
+                        terrain_comp->SetWaterPhysical(tphys);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Physical: buoyancy + swimming in Play mode.\n"
+                                          "Unchecked: visual only.");
+                    float tlvl = terrain_comp->GetWaterLevel();
+                    if (ImGui::SliderFloat("Water Level##terrain", &tlvl, -50.0f, 100.0f)) {
+                        terrain_comp->SetWaterLevel(tlvl);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    glm::vec3 tdc = terrain_comp->GetWaterDeepColor();
+                    if (ImGui::ColorEdit3("Deep##terrainwater", &tdc.x)) {
+                        terrain_comp->SetWaterDeepColor(tdc);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    glm::vec3 tsc = terrain_comp->GetWaterShallowColor();
+                    if (ImGui::ColorEdit3("Shallow##terrainwater", &tsc.x)) {
+                        terrain_comp->SetWaterShallowColor(tsc);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    float twh = terrain_comp->GetWaterWaveHeight();
+                    if (ImGui::SliderFloat("Wave Height##terrainwater", &twh, 0.0f, 2.0f)) {
+                        terrain_comp->SetWaterWaveHeight(twh);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    float tws = terrain_comp->GetWaterWaveSpeed();
+                    if (ImGui::SliderFloat("Wave Speed##terrainwater", &tws, 0.0f, 5.0f)) {
+                        terrain_comp->SetWaterWaveSpeed(tws);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    float twsc = terrain_comp->GetWaterWaveScale();
+                    if (ImGui::SliderFloat("Wave Length##terrainwater", &twsc, 0.5f, 100.0f)) {
+                        terrain_comp->SetWaterWaveScale(twsc);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    float tcl = terrain_comp->GetWaterClarity();
+                    if (ImGui::SliderFloat("Clarity (m)##terrainwater", &tcl, 0.05f, 20.0f)) {
+                        terrain_comp->SetWaterClarity(tcl);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    float trf = terrain_comp->GetWaterReflectivity();
+                    if (ImGui::SliderFloat("Reflectivity##terrainwater", &trf, 0.0f, 1.0f)) {
+                        terrain_comp->SetWaterReflectivity(trf);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                }
+                ImGui::TreePop();
+            }
+        }
+
+        // ── Script Component (Stage 12: custom scripts) ────────────────
+        ImGui::Separator();
+        auto script_comp = selected_entity->GetComponent<schizo::scene::ScriptComponent>();
+        if (script_comp) {
+            if (ImGui::TreeNodeEx("Script", ImGuiTreeNodeFlags_DefaultOpen)) {
+                // Path field — synced per selected entity, committed on defocus.
+                static uint32_t scr_synced_id = 0xFFFFFFFFu;
+                static char     scr_path_buf[260];
+                if (scr_synced_id != selected_entity->GetId()) {
+                    std::snprintf(scr_path_buf, sizeof scr_path_buf, "%s",
+                                  script_comp->GetScriptPath().c_str());
+                    scr_synced_id = selected_entity->GetId();
+                }
+                ImGui::InputText("Script File##script", scr_path_buf, sizeof scr_path_buf);
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    script_comp->SetScriptPath(scr_path_buf);
+                    editor_state.script_system.force_reload(selected_entity->GetId());
+                    editor_state.editor_scene->MarkModified();
+                }
+                // Drag a script file from the Asset Browser onto the field.
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SCRIPT_ASSET")) {
+                        const char* sp = static_cast<const char*>(pl->Data);
+                        if (sp && sp[0]) {
+                            script_comp->SetScriptPath(sp);
+                            std::snprintf(scr_path_buf, sizeof scr_path_buf, "%s", sp);
+                            editor_state.script_system.force_reload(selected_entity->GetId());
+                            editor_state.editor_scene->MarkModified();
+                        }
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+                ImGui::TextDisabled(".py = Python, .cpp = C++ (g++), .cs = C# (.NET)\n"
+                                    "hooks: on_start(e), on_update(e, dt)");
+
+                bool s_enabled = script_comp->IsEnabled();
+                if (ImGui::Checkbox("Enabled##script", &s_enabled)) {
+                    script_comp->SetEnabled(s_enabled);
+                    editor_state.editor_scene->MarkModified();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reload##script")) {
+                    editor_state.script_system.force_reload(selected_entity->GetId());
+                    script_comp->SetStatus("");
+                }
+
+                // Runtime status from the ScriptSystem (errors in red).
+                const std::string& st = script_comp->GetStatus();
+                if (!st.empty()) {
+                    const bool ok = (st == "running");
+                    ImGui::TextColored(ok ? ImVec4(0.4f, 0.9f, 0.4f, 1.0f)
+                                          : ImVec4(0.95f, 0.4f, 0.35f, 1.0f),
+                                       "%s", st.c_str());
+                } else {
+                    ImGui::TextDisabled("(runs in Play mode; edits hot-reload live)");
+                }
+                ImGui::TreePop();
+            }
+        }
+
+        // ── Water Component ─────────────────────────────────────────────
+        ImGui::Separator();
+        auto water_comp = selected_entity->GetComponent<schizo::scene::WaterComponent>();
+        if (water_comp) {
+            if (ImGui::TreeNodeEx("Water", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextDisabled("Entity Y position = water level");
+                bool wphys = water_comp->IsPhysical();
+                if (ImGui::Checkbox("Physical##water", &wphys)) {
+                    water_comp->SetPhysical(wphys);
+                    editor_state.editor_scene->MarkModified();
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled(wphys ? "(buoyancy + swimming in Play)"
+                                          : "(visual only)");
+                glm::vec2 wsz = water_comp->GetSize();
+                if (ImGui::DragFloat2("Size (m)##water", &wsz.x, 1.0f, 1.0f, 4000.0f)) {
+                    water_comp->SetSize(wsz); editor_state.editor_scene->MarkModified();
+                }
+                glm::vec3 dc = water_comp->GetDeepColor();
+                if (ImGui::ColorEdit3("Deep Color##water", &dc.x)) {
+                    water_comp->SetDeepColor(dc); editor_state.editor_scene->MarkModified();
+                }
+                glm::vec3 shc = water_comp->GetShallowColor();
+                if (ImGui::ColorEdit3("Shallow Color##water", &shc.x)) {
+                    water_comp->SetShallowColor(shc); editor_state.editor_scene->MarkModified();
+                }
+                float wh = water_comp->GetWaveHeight();
+                if (ImGui::SliderFloat("Wave Height##water", &wh, 0.0f, 2.0f)) {
+                    water_comp->SetWaveHeight(wh); editor_state.editor_scene->MarkModified();
+                }
+                float ws = water_comp->GetWaveSpeed();
+                if (ImGui::SliderFloat("Wave Speed##water", &ws, 0.0f, 5.0f)) {
+                    water_comp->SetWaveSpeed(ws); editor_state.editor_scene->MarkModified();
+                }
+                float wsc = water_comp->GetWaveScale();
+                if (ImGui::SliderFloat("Wave Length##water", &wsc, 0.5f, 100.0f)) {
+                    water_comp->SetWaveScale(wsc); editor_state.editor_scene->MarkModified();
+                }
+                float cl = water_comp->GetClarity();
+                if (ImGui::SliderFloat("Clarity (m)##water", &cl, 0.05f, 20.0f)) {
+                    water_comp->SetClarity(cl); editor_state.editor_scene->MarkModified();
+                }
+                float rf = water_comp->GetReflectivity();
+                if (ImGui::SliderFloat("Reflectivity##water", &rf, 0.0f, 1.0f)) {
+                    water_comp->SetReflectivity(rf); editor_state.editor_scene->MarkModified();
+                }
+                ImGui::TreePop();
+            }
+        }
+
         // Light Component Properties
         ImGui::Separator();
         auto light_comp = selected_entity->GetComponent<schizo::scene::LightComponent>();
@@ -1159,12 +1824,12 @@ void ShowInspector(EditorState& editor_state) {
             if (ImGui::TreeNode("Light")) {
                 // Light type display
                 const char* light_type_str;
-                if (light_comp->GetType() == schizo::scene::LightType::Directional) {
-                    light_type_str = "Directional (Sun)";
-                } else if (light_comp->GetType() == schizo::scene::LightType::Point) {
-                    light_type_str = "Point Light";
-                } else {
-                    light_type_str = "Spot Light";
+                switch (light_comp->GetType()) {
+                    case schizo::scene::LightType::Directional: light_type_str = "Directional (Sun)"; break;
+                    case schizo::scene::LightType::Point:       light_type_str = "Point Light";       break;
+                    case schizo::scene::LightType::Spot:        light_type_str = "Spot Light";        break;
+                    case schizo::scene::LightType::Area:        light_type_str = "Area Light (rect)"; break;
+                    default:                                    light_type_str = "Light";             break;
                 }
                 ImGui::Text("Type: %s", light_type_str);
                 
@@ -1236,6 +1901,48 @@ void ShowInspector(EditorState& editor_state) {
                             light_comp->SetSpotFalloff(falloff);
                             editor_state.editor_scene->MarkModified();
                         }
+
+                        // Cookie / gobo — a texture projected through the cone.
+                        char ck_buf[512];
+                        std::snprintf(ck_buf, sizeof(ck_buf), "%s",
+                                      light_comp->GetCookiePath().c_str());
+                        ImGui::SetNextItemWidth(-1.0f);
+                        if (ImGui::InputTextWithHint("Cookie##spot", "texture path (drag from Asset Browser)",
+                                                     ck_buf, sizeof(ck_buf))) {
+                            light_comp->SetCookiePath(ck_buf);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                        if (ImGui::BeginDragDropTarget()) {
+                            if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
+                                const char* tpath = static_cast<const char*>(pl->Data);
+                                if (tpath && tpath[0]) {
+                                    light_comp->SetCookiePath(tpath);
+                                    editor_state.editor_scene->MarkModified();
+                                }
+                            }
+                            ImGui::EndDragDropTarget();
+                        }
+                        if (!light_comp->GetCookiePath().empty() &&
+                            ImGui::SmallButton("Clear Cookie##spot")) {
+                            light_comp->SetCookiePath("");
+                            editor_state.editor_scene->MarkModified();
+                        }
+                    }
+
+                    if (light_comp->GetType() == schizo::scene::LightType::Area) {
+                        ImGui::Separator();
+                        ImGui::Text("Area Light (rectangle)");
+                        glm::vec2 sz = light_comp->GetAreaSize();
+                        if (ImGui::SliderFloat2("Size W,H##area", &sz.x, 0.1f, 20.0f)) {
+                            light_comp->SetAreaSize(sz);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                        bool two = light_comp->IsTwoSided();
+                        if (ImGui::Checkbox("Two-sided##area", &two)) {
+                            light_comp->SetTwoSided(two);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                        ImGui::TextDisabled("Emits along the entity's forward (-Z);\norient it with the Transform rotation.");
                     }
                     
                     // Shadows section
@@ -1505,17 +2212,11 @@ void ShowInspector(EditorState& editor_state) {
             // Drag-drop target for mesh assignment
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
-                    size_t asset_idx = *reinterpret_cast<const size_t*>(payload->Data);
-                    if (editor_state.asset_browser) {
-                        const auto* dragged_asset = editor_state.asset_browser->GetAssetByIndex(asset_idx);
-                        if (dragged_asset && dragged_asset->asset_type == "Mesh") {
-                            if (mesh_comp) {
-                                // Use the full path (supports absolute paths from outside project)
-                                mesh_comp->SetMesh(dragged_asset->path);
-                                spdlog::info("[Inspector] Assigned mesh: {}", dragged_asset->path);
-                                editor_state.editor_scene->MarkModified();
-                            }
-                        }
+                    const char* mpath = static_cast<const char*>(payload->Data);
+                    if (mpath && mpath[0] && mesh_comp) {
+                        mesh_comp->SetMesh(mpath);
+                        spdlog::info("[Inspector] Assigned mesh: {}", mpath);
+                        editor_state.editor_scene->MarkModified();
                     }
                 }
                 ImGui::EndDragDropTarget();
@@ -1775,7 +2476,8 @@ void ShowAssetBrowser(EditorState& editor_state) {
 void ShowViewport(EditorState& editor_state) {
     if (!editor_state.show_viewport) return;
     
-    if (ImGui::Begin("Viewport", &editor_state.show_viewport, ImGuiWindowFlags_NoMove)) {
+    ImGui::Begin("Viewport", &editor_state.show_viewport, ImGuiWindowFlags_NoMove);  // docked window = child; End() must always run
+    {
         ImVec2 content_area = ImGui::GetContentRegionAvail();
         auto scene = editor_state.editor_scene->GetScene();
 
@@ -2007,9 +2709,187 @@ void ShowViewport(EditorState& editor_state) {
         // Camera controls - only process when viewport is hovered
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) {
             ImGuiIO& io = ImGui::GetIO();
-            
+
+            // ---- Terrain sculpting (Phase A) ----
+            // Sculpt mode + selected terrain: ray-march the mouse ray onto the
+            // heightmap, draw a brush ring, and (while LMB held) apply the brush.
+            editor_state.terrain_brush_valid = false;
+            if (editor_state.terrain_sculpt_active && scene && image_drawn &&
+                editor_state.selected_entity_id != 0) {
+                auto sel = scene->GetEntityById(editor_state.selected_entity_id);
+                auto tc  = sel ? sel->GetComponent<schizo::scene::TerrainComponent>() : nullptr;
+                if (tc) {
+                    const float vx = io.MousePos.x - image_min.x;
+                    const float vy = io.MousePos.y - image_min.y;
+                    if (vx >= 0 && vy >= 0 && vx < viewport_size.x && vy < viewport_size.y) {
+                        auto [ro, rd] = editor_state.viewport_camera.GetPickingRay(
+                            vx, vy, viewport_size.x, viewport_size.y);
+                        const glm::vec3 base = sel->GetTransform()->GetWorldPosition();
+                        const float half = tc->GetSize() * 0.5f;
+                        const float cell = tc->CellSize();
+                        const float step = std::max(0.2f, cell * 0.5f);
+                        const float maxT = tc->GetSize() * 4.0f + 200.0f;
+                        bool hit = false; glm::vec3 hitp(0.0f);
+                        for (float t = 0.0f; t < maxT; t += step) {
+                            glm::vec3 lp = (ro + rd * t) - base;
+                            if (lp.x < -half || lp.x > half || lp.z < -half || lp.z > half) continue;
+                            if (lp.y <= tc->SampleHeightLocal(lp.x, lp.z)) {
+                                hit = true; hitp = ro + rd * t; break;
+                            }
+                        }
+                        if (hit) {
+                            editor_state.terrain_brush_hit   = hitp;
+                            editor_state.terrain_brush_valid = true;
+
+                            // Brush ring overlay (flat circle at the hit).
+                            auto to_scr = [&](glm::vec3 w) -> ImVec2 {
+                                glm::mat4 p = proj_matrix; p[1][1] *= -1.0f;
+                                glm::vec4 c = p * view_matrix * glm::vec4(w, 1.0f);
+                                if (c.w <= 0.0f) return ImVec2(-1e9f, -1e9f);
+                                glm::vec3 ndc = glm::vec3(c) / c.w;
+                                return ImVec2(image_min.x + (ndc.x * 0.5f + 0.5f) * viewport_size.x,
+                                              image_min.y + (ndc.y * 0.5f + 0.5f) * viewport_size.y);
+                            };
+                            ImDrawList* dl = ImGui::GetWindowDrawList();
+                            ImVec2 prev; bool first = true;
+                            for (int s = 0; s <= 32; ++s) {
+                                float a = (float)s / 32.0f * 6.2831853f;
+                                ImVec2 sp = to_scr(hitp + glm::vec3(std::cos(a), 0.0f, std::sin(a)) *
+                                                              editor_state.terrain_brush_radius);
+                                if (!first && sp.x > -1e8f && prev.x > -1e8f)
+                                    dl->AddLine(prev, sp, IM_COL32(255, 220, 80, 220), 1.5f);
+                                prev = sp; first = false;
+                            }
+
+                            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                                const float lx = hitp.x - base.x;
+                                const float lz = hitp.z - base.z;
+                                const float R  = editor_state.terrain_brush_radius;
+                                const int   res = tc->GetResolution();
+                                const int   n   = tc->VertsPerSide();
+                                const float dt  = io.DeltaTime > 0.0f ? io.DeltaTime : 0.016f;
+                                const float scale = tc->GetHeightScale() > 1e-3f ? tc->GetHeightScale() : 1.0f;
+                                const float flat_target = tc->SampleHeightLocal(lx, lz) / scale;
+                                const int cx = (int)std::floor((lx + half) / cell);
+                                const int cz = (int)std::floor((lz + half) / cell);
+                                const int rc = (int)std::ceil(R / cell) + 1;
+                                bool changed = false;
+                                if (editor_state.terrain_brush_mode >= 4) {
+                                    // Hole brushes operate on CELLS: 4 = dig
+                                    // (carve mesh + collision), 5 = fill.
+                                    const bool dig = editor_state.terrain_brush_mode == 4;
+                                    for (int iz = std::max(0, cz - rc); iz < std::min(res, cz + rc + 1); ++iz)
+                                    for (int ix = std::max(0, cx - rc); ix < std::min(res, cx + rc + 1); ++ix) {
+                                        const float ccx = -half + (ix + 0.5f) * cell;
+                                        const float ccz = -half + (iz + 0.5f) * cell;
+                                        const float d = std::sqrt((ccx - lx) * (ccx - lx) + (ccz - lz) * (ccz - lz));
+                                        if (d > R) continue;
+                                        if (tc->HasHole(ix, iz) != dig) {
+                                            tc->SetHole(ix, iz, dig);
+                                            changed = true;
+                                        }
+                                    }
+                                } else {
+                                    auto& H = tc->MutableHeights();
+                                    for (int iz = std::max(0, cz - rc); iz <= std::min(res, cz + rc); ++iz)
+                                    for (int ix = std::max(0, cx - rc); ix <= std::min(res, cx + rc); ++ix) {
+                                        const float vxw = -half + ix * cell;
+                                        const float vzw = -half + iz * cell;
+                                        const float d = std::sqrt((vxw - lx) * (vxw - lx) + (vzw - lz) * (vzw - lz));
+                                        if (d > R) continue;
+                                        const float fall = std::pow(1.0f - d / R,
+                                            0.5f + editor_state.terrain_brush_falloff * 2.0f);
+                                        const float rate = editor_state.terrain_brush_strength;
+                                        float& h = H[(size_t)iz * n + ix];
+                                        switch (editor_state.terrain_brush_mode) {
+                                            case 0: h += rate * fall * dt * 12.0f; break;  // raise
+                                            case 1: h -= rate * fall * dt * 12.0f; break;  // lower
+                                            case 2: { float avg = (tc->HeightAt(ix-1,iz) + tc->HeightAt(ix+1,iz)
+                                                                 + tc->HeightAt(ix,iz-1) + tc->HeightAt(ix,iz+1)) * 0.25f;
+                                                      h += (avg - h) * std::min(1.0f, rate * fall * dt * 6.0f); break; }
+                                            case 3: h += (flat_target - h) * std::min(1.0f, rate * fall * dt * 6.0f); break;
+                                        }
+                                        changed = true;
+                                    }
+                                }
+                                if (changed) {
+                                    // Report the brushed rect so the chunked mesh
+                                    // cache rebuilds only the touched chunks.
+                                    tc->MarkDirtyRect(cx - rc, cz - rc, cx + rc, cz + rc);
+                                    editor_state.editor_scene->MarkModified();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---- Terrain texture painting (Phase C) ----
+            // Same ray-march + ring as sculpting, but LMB paints the active
+            // layer's weight into the splatmap.
+            if (editor_state.terrain_paint_active && scene && image_drawn &&
+                editor_state.selected_entity_id != 0) {
+                auto sel = scene->GetEntityById(editor_state.selected_entity_id);
+                auto tc  = sel ? sel->GetComponent<schizo::scene::TerrainComponent>() : nullptr;
+                if (tc) {
+                    const float vx = io.MousePos.x - image_min.x;
+                    const float vy = io.MousePos.y - image_min.y;
+                    if (vx >= 0 && vy >= 0 && vx < viewport_size.x && vy < viewport_size.y) {
+                        auto [ro, rd] = editor_state.viewport_camera.GetPickingRay(
+                            vx, vy, viewport_size.x, viewport_size.y);
+                        const glm::vec3 base = sel->GetTransform()->GetWorldPosition();
+                        const float half = tc->GetSize() * 0.5f;
+                        const float cell = tc->CellSize();
+                        const float step = std::max(0.2f, cell * 0.5f);
+                        const float maxT = tc->GetSize() * 4.0f + 200.0f;
+                        bool hit = false; glm::vec3 hitp(0.0f);
+                        for (float t = 0.0f; t < maxT; t += step) {
+                            glm::vec3 lp = (ro + rd * t) - base;
+                            if (lp.x < -half || lp.x > half || lp.z < -half || lp.z > half) continue;
+                            if (lp.y <= tc->SampleHeightLocal(lp.x, lp.z)) {
+                                hit = true; hitp = ro + rd * t; break;
+                            }
+                        }
+                        if (hit) {
+                            editor_state.terrain_brush_hit   = hitp;
+                            editor_state.terrain_brush_valid = true;
+                            auto to_scr = [&](glm::vec3 w) -> ImVec2 {
+                                glm::mat4 p = proj_matrix; p[1][1] *= -1.0f;
+                                glm::vec4 c = p * view_matrix * glm::vec4(w, 1.0f);
+                                if (c.w <= 0.0f) return ImVec2(-1e9f, -1e9f);
+                                glm::vec3 ndc = glm::vec3(c) / c.w;
+                                return ImVec2(image_min.x + (ndc.x * 0.5f + 0.5f) * viewport_size.x,
+                                              image_min.y + (ndc.y * 0.5f + 0.5f) * viewport_size.y);
+                            };
+                            ImDrawList* dl = ImGui::GetWindowDrawList();
+                            ImVec2 prev; bool first = true;
+                            for (int s = 0; s <= 32; ++s) {
+                                float a = (float)s / 32.0f * 6.2831853f;
+                                ImVec2 sp = to_scr(hitp + glm::vec3(std::cos(a), 0.0f, std::sin(a)) *
+                                                              editor_state.terrain_brush_radius);
+                                if (!first && sp.x > -1e8f && prev.x > -1e8f)
+                                    dl->AddLine(prev, sp, IM_COL32(80, 200, 255, 220), 1.5f);
+                                prev = sp; first = false;
+                            }
+                            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                                const float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 0.016f;
+                                const float amount = editor_state.terrain_paint_strength *
+                                                     std::min(1.0f, dt * 8.0f);
+                                tc->PaintSplatLocal(hitp.x - base.x, hitp.z - base.z,
+                                                    editor_state.terrain_brush_radius,
+                                                    editor_state.terrain_paint_layer,
+                                                    amount, editor_state.terrain_brush_falloff);
+                                editor_state.editor_scene->MarkModified();
+                            }
+                        }
+                    }
+                }
+            }
+
             // Handle entity selection through picking and gizmo interaction
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && scene && image_drawn) {
+            // (suppressed while sculpting/painting so a click edits terrain, not selection).
+            if (!editor_state.terrain_sculpt_active && !editor_state.terrain_paint_active &&
+                ImGui::IsMouseClicked(ImGuiMouseButton_Left) && scene && image_drawn) {
                 ImVec2 mouse_pos = io.MousePos;
                 // Use the image's actual rect (captured immediately after
                 // ImGui::Image), not GetCursorScreenPos, which points BELOW
@@ -2307,7 +3187,8 @@ void ShowPreferences(EditorState& editor_state) {
         flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
     }
     
-    if (ImGui::Begin("Preferences", &editor_state.show_preferences, flags)) {
+    ImGui::Begin("Preferences", &editor_state.show_preferences, flags);  // docked window = child; End() must always run
+    {
         ImGui::Text("Editor Settings");
         ImGui::Separator();
         ImGui::Checkbox("Vsync", nullptr);
@@ -2335,7 +3216,8 @@ void ShowPlaybackControls(EditorState& editor_state) {
     ImGui::SetNextWindowSize(ImVec2(400, 80), ImGuiCond_FirstUseEver);
     
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
-    if (ImGui::Begin("Scene Playback", &editor_state.show_playback_controls, flags)) {
+    ImGui::Begin("Scene Playback", &editor_state.show_playback_controls, flags);  // docked window = child; End() must always run
+    {
         ImGui::TextUnformatted("Scene Playback Controls:");
         ImGui::Separator();
         
@@ -2389,6 +3271,352 @@ void ShowPlaybackControls(EditorState& editor_state) {
 }
 
 // ============================================================================
+// Performance Overlay (Master Plan Stage 14 — Pillar N: one profiler overlay)
+// ============================================================================
+//
+// A single window surfacing every hot path the engine exposes, replacing the
+// older Phase-6 CPU/GPU panels that read a now-superseded profiler:
+//   N1 CPU    — canonical gws::profile::Profiler per-tag zones (the same ones
+//               the spdlog frame report prints), sorted + colored by tag.
+//   N2 GPU    — engine::vulkan::GPUProfiler per-pass timestamp timings.
+//   N3 Memory — gws::memory per-tag live/peak + any registered allocators.
+//   N4 Net    — engine::network::NetProfiler view (offline until a transport
+//               is live in the session; lights up in Stage 7 integration).
+
+// Fed by the networking layer when a session is live (Stage 7 integration);
+// stays zero in a plain editor session, so the Net section reads "offline".
+engine::network::NetProfiler g_editor_net_profiler;
+
+static ImU32 PerfTagColor(const char* tag) {
+    // Stable pastel hue derived from the tag so each subsystem keeps its color.
+    uint32_t h = 2166136261u;
+    for (const char* c = tag; *c; ++c) h = (h ^ static_cast<uint8_t>(*c)) * 16777619u;
+    float r, g, b;
+    ImGui::ColorConvertHSVtoRGB((h % 360) / 360.0f, 0.55f, 0.85f, r, g, b);
+    return ImGui::GetColorU32(ImVec4(r, g, b, 1.0f));
+}
+
+static void PerfFmtBytes(char* buf, size_t n, uint64_t bytes) {
+    const char* unit[] = {"B", "KB", "MB", "GB"};
+    double v = static_cast<double>(bytes);
+    int i = 0;
+    while (v >= 1024.0 && i < 3) { v /= 1024.0; ++i; }
+    std::snprintf(buf, n, "%.1f %s", v, unit[i]);
+}
+
+// Spawn a local multiplayer test session (Unreal-style "Play as N clients"):
+// save the current scene to a shared file, become the host, and launch
+// `n_clients` extra editor processes that auto-load that scene and join. All
+// instances loading the same file keeps the scene-order NetIds aligned.
+static void LaunchMultiplayerSession(EditorState& editor_state, int n_clients, uint16_t port) {
+#ifdef _WIN32
+    // Save the current scene to an ABSOLUTE path in the host's working directory
+    // so every spawned client loads the exact same file (a relative path would
+    // depend on each process's CWD and could silently miss / fall back to the
+    // default scene — which is what made clients "load a different scene").
+    char cwd[MAX_PATH] = {0};
+    GetCurrentDirectoryA(MAX_PATH, cwd);
+    const std::string shared_scene = std::string(cwd) + "\\__mp_session.scene";
+    bool saved = editor_state.editor_scene &&
+                 editor_state.editor_scene->SaveScene(shared_scene);
+    if (!saved) {
+        spdlog::error("[net] launcher: failed to save shared scene to {}", shared_scene);
+        return;
+    }
+    spdlog::info("[net] launcher: shared scene saved to {}", shared_scene);
+
+    if (!editor_state.net_session.active())
+        editor_state.net_session.host(port);
+    editor_state.show_network_window = true;
+
+    char exe[MAX_PATH] = {0};
+    if (GetModuleFileNameA(nullptr, exe, MAX_PATH) == 0) {
+        spdlog::error("[net] launcher: GetModuleFileName failed");
+        return;
+    }
+    for (int i = 0; i < n_clients; ++i) {
+        // Quote both the exe and the scene path (both may contain spaces).
+        // --net-game: spawned clients are game windows (viewport-only), not
+        // full editor instances.
+        std::string cmd = std::string("\"") + exe + "\" --net-join 127.0.0.1:" +
+                          std::to_string(port) + " --scene \"" + shared_scene +
+                          "\" --net-game";
+        std::vector<char> mut(cmd.begin(), cmd.end());
+        mut.push_back('\0');
+        STARTUPINFOA si; ZeroMemory(&si, sizeof si); si.cb = sizeof si;
+        PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof pi);
+        // lpCurrentDirectory = the host's CWD, so children resolve relative
+        // asset paths (../../assets/...) exactly like the host does.
+        if (CreateProcessA(nullptr, mut.data(), nullptr, nullptr, FALSE, 0,
+                           nullptr, cwd, &si, &pi)) {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            spdlog::info("[net] launched client {} -> 127.0.0.1:{}", i + 1, port);
+        } else {
+            spdlog::error("[net] launcher: CreateProcess failed (err {})",
+                          static_cast<unsigned long>(GetLastError()));
+        }
+    }
+#else
+    (void)editor_state; (void)n_clients; (void)port;
+    spdlog::warn("[net] multiplayer launcher is Windows-only");
+#endif
+}
+
+// ── Multiplayer / Network panel (Stage 7) ──────────────────────────────────
+// Host / Join / Disconnect + live session status. Docked window, so End() must
+// run unconditionally (docked windows are child windows internally).
+void ShowNetworkPanel(EditorState& editor_state) {
+    if (!editor_state.show_network_window) return;
+    ImGui::Begin("Multiplayer", &editor_state.show_network_window);
+    {
+        auto& net = editor_state.net_session;
+        const auto& st = net.status();
+
+        auto role_name = [](schizo::editor::NetRole r) {
+            switch (r) {
+                case schizo::editor::NetRole::Host:   return "Host (server)";
+                case schizo::editor::NetRole::Client: return "Client";
+                default:                              return "Offline";
+            }
+        };
+        auto fmt_bytes = [](uint64_t b) {
+            static char buf[32];
+            const char* u[] = {"B", "KB", "MB", "GB"};
+            double v = static_cast<double>(b); int i = 0;
+            while (v >= 1024.0 && i < 3) { v /= 1024.0; ++i; }
+            std::snprintf(buf, sizeof buf, "%.1f %s", v, u[i]);
+            return buf;
+        };
+
+        if (!net.active()) {
+            ImGui::TextDisabled("Not connected.");
+            ImGui::Separator();
+            ImGui::TextUnformatted("Host a session:");
+            ImGui::SetNextItemWidth(90);
+            ImGui::InputText("Port##host", editor_state.net_host_port,
+                             sizeof editor_state.net_host_port,
+                             ImGuiInputTextFlags_CharsDecimal);
+            ImGui::SameLine();
+            if (ImGui::Button("Host")) {
+                const int port = std::atoi(editor_state.net_host_port);
+                if (port > 0 && port < 65536)
+                    net.host(static_cast<uint16_t>(port));
+            }
+
+            ImGui::Separator();
+            ImGui::TextUnformatted("Join a session:");
+            ImGui::SetNextItemWidth(160);
+            ImGui::InputText("IP##join", editor_state.net_join_ip,
+                             sizeof editor_state.net_join_ip);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90);
+            ImGui::InputText("Port##join", editor_state.net_join_port,
+                             sizeof editor_state.net_join_port,
+                             ImGuiInputTextFlags_CharsDecimal);
+            ImGui::SameLine();
+            if (ImGui::Button("Join")) {
+                const int port = std::atoi(editor_state.net_join_port);
+                if (port > 0 && port < 65536)
+                    net.join(editor_state.net_join_ip, static_cast<uint16_t>(port));
+            }
+            ImGui::TextDisabled("Both instances must load the same scene.\n"
+                                "The host's moving objects replicate to clients.");
+
+            ImGui::Separator();
+            ImGui::TextUnformatted("Local test (in-editor PIE):");
+            ImGui::SetNextItemWidth(120);
+            ImGui::InputInt("Clients", &editor_state.net_launch_clients);
+            editor_state.net_launch_clients =
+                std::max(1, std::min(editor_state.net_launch_clients, 7));
+            ImGui::SameLine();
+            if (ImGui::Button("Host + Launch")) {
+                const int port = std::atoi(editor_state.net_host_port);
+                if (port > 0 && port < 65536)
+                    LaunchMultiplayerSession(editor_state,
+                                             editor_state.net_launch_clients,
+                                             static_cast<uint16_t>(port));
+            }
+            ImGui::TextDisabled("Saves the scene, hosts here, and spawns N client\n"
+                                "windows that auto-join. Move each with Arrow keys.");
+        } else {
+            const bool ok = st.connected;
+            const ImVec4 green(0.4f, 0.9f, 0.4f, 1.0f), amber(0.9f, 0.7f, 0.3f, 1.0f);
+            ImGui::Text("Role:      %s", role_name(st.role));
+            ImGui::Text("Endpoint:  %s", st.endpoint.c_str());
+            if (st.role == schizo::editor::NetRole::Host) {
+                if (ok) ImGui::TextColored(green, "%zu client(s) connected", st.peer_count);
+                else    ImGui::TextColored(amber, "%s", "waiting for clients...");
+            } else {
+                ImGui::TextColored(ok ? green : amber, "%s", ok ? "connected" : "connecting...");
+            }
+            ImGui::Separator();
+            ImGui::Text("Tick:       %llu", static_cast<unsigned long long>(st.tick));
+            ImGui::Text("Peers:      %zu", st.peer_count);
+            ImGui::Text("Replicated: %zu entities", st.replicated);
+            ImGui::Text("Avatars:    %zu players", st.avatars);
+            ImGui::Text("My avatar:  %llu", static_cast<unsigned long long>(st.my_avatar));
+            ImGui::Text("Sent:       %s", fmt_bytes(st.bytes_sent));
+            ImGui::Text("Received:   %s", fmt_bytes(st.bytes_recv));
+            ImGui::Separator();
+            ImGui::TextDisabled("Move your player with the Arrow keys.\n"
+                                "Each player is a coloured '[net] Player N' cube.");
+            if (ImGui::Button("Disconnect")) net.shutdown();
+        }
+    }
+    ImGui::End();
+}
+
+void ShowPerformanceOverlay(EditorState& editor_state) {
+    if (!editor_state.show_performance) return;
+
+    ImGui::SetNextWindowPos(ImVec2(1090, 40), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(410, 580), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Performance", &editor_state.show_performance)) { ImGui::End(); return; }
+
+    // ---- Frame header + rolling history (last completed frame's stats) ----
+    auto& cpu = gws::profile::Profiler::instance();
+    const double frame_ms = cpu.last_frame_ns() / 1.0e6;
+    static float hist[120] = {};
+    static int   hist_i = 0;
+    hist[hist_i] = static_cast<float>(frame_ms);
+    hist_i = (hist_i + 1) % IM_ARRAYSIZE(hist);
+    char overlay[64];
+    std::snprintf(overlay, sizeof overlay, "%.2f ms  (%.0f FPS)",
+                  frame_ms, frame_ms > 0.0 ? 1000.0 / frame_ms : 0.0);
+    ImGui::PlotLines("##frame", hist, IM_ARRAYSIZE(hist), hist_i, overlay, 0.0f, 33.0f, ImVec2(0.0f, 45.0f));
+    ImGui::Separator();
+
+    // ---- N1 CPU (canonical scoped-zone profiler) ----
+    if (ImGui::CollapsingHeader("CPU (N1)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        std::vector<std::pair<std::string, gws::profile::Profiler::TagStat>>
+            rows(cpu.last_frame().begin(), cpu.last_frame().end());
+        std::sort(rows.begin(), rows.end(),
+                  [](const auto& a, const auto& b) { return a.second.total_ns > b.second.total_ns; });
+        const double denom = frame_ms > 0.0 ? frame_ms : 1.0;
+        if (rows.empty()) ImGui::TextDisabled("no zones this frame");
+        for (const auto& [tag, s] : rows) {
+            const double ms = s.total_ns / 1.0e6;
+            char lbl[96];
+            std::snprintf(lbl, sizeof lbl, "%s  %.2fms x%u", tag.c_str(), ms, s.calls);
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, PerfTagColor(tag.c_str()));
+            ImGui::ProgressBar(static_cast<float>(ms / denom), ImVec2(-FLT_MIN, 0.0f), lbl);
+            ImGui::PopStyleColor();
+        }
+    }
+
+    // ---- N2 GPU (per-pass timestamps) ----
+    if (ImGui::CollapsingHeader("GPU (N2)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        auto& gpu = engine::vulkan::GPUProfiler::instance();
+        const auto& passes = gpu.get_all_timings();
+        const float gpu_total = gpu.get_total_gpu_time_ms();
+        ImGui::Text("total %.2f ms   load %.0f%%", gpu_total, gpu.get_gpu_load_percent());
+        if (passes.empty()) {
+            ImGui::TextDisabled("no GPU timings (timestamps disabled?)");
+        } else {
+            std::vector<const engine::vulkan::GPUProfiler::PassTiming*> ps;
+            for (const auto& [name, p] : passes) ps.push_back(&p);
+            std::sort(ps.begin(), ps.end(),
+                      [](const auto* a, const auto* b) { return a->duration_ms > b->duration_ms; });
+            const float gdenom = gpu_total > 0.0f ? gpu_total : 1.0f;
+            for (const auto* p : ps) {
+                char lbl[96];
+                std::snprintf(lbl, sizeof lbl, "%s  %.2fms", p->name.c_str(), p->duration_ms);
+                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, PerfTagColor(p->name.c_str()));
+                ImGui::ProgressBar(p->duration_ms / gdenom, ImVec2(-FLT_MIN, 0.0f), lbl);
+                ImGui::PopStyleColor();
+            }
+        }
+    }
+
+    // ---- N3 Memory (per-tag attribution + registered allocators) ----
+    if (ImGui::CollapsingHeader("Memory (N3)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const gws::memory::MemorySnapshot snap = gws::memory::snapshot_memory();
+        char tb[32];
+        PerfFmtBytes(tb, sizeof tb, snap.total_live_bytes);
+        ImGui::Text("live %s in %zu allocs", tb, snap.total_live_count);
+        bool any = false;
+        for (const auto& u : snap.tags) {
+            if (u.stats.live_bytes == 0 && u.stats.peak_bytes == 0) continue;
+            any = true;
+            char lb[32], pb[32];
+            PerfFmtBytes(lb, sizeof lb, u.stats.live_bytes);
+            PerfFmtBytes(pb, sizeof pb, u.stats.peak_bytes);
+            ImGui::BulletText("%-9s %s  (peak %s, x%zu)", u.name, lb, pb, u.stats.live_count);
+        }
+        if (!any) {
+#if GWS_MEMORY_TRACKING
+            ImGui::TextDisabled("per-tag tracking on; nothing routed through allocate_tracked yet");
+#else
+            ImGui::TextDisabled("per-tag tracking compiled out (release build)");
+#endif
+        }
+
+        auto allocs = gws::memory::AllocatorRegistry::instance().snapshot();
+        if (!allocs.empty()) {
+            ImGui::Separator();
+            ImGui::TextDisabled("allocators (used / reserved, frag):");
+            for (const auto& [name, st] : allocs) {
+                const float occ = st.total_reserved
+                    ? static_cast<float>(st.total_allocated) / static_cast<float>(st.total_reserved) : 0.0f;
+                char ub[32], rb[32];
+                PerfFmtBytes(ub, sizeof ub, st.total_allocated);
+                PerfFmtBytes(rb, sizeof rb, st.total_reserved);
+                char lbl[112];
+                std::snprintf(lbl, sizeof lbl, "%s  %s/%s  frag %zu%%", name.c_str(), ub, rb, st.fragmentation);
+                ImGui::ProgressBar(occ, ImVec2(-FLT_MIN, 0.0f), lbl);
+            }
+        }
+    }
+
+    // ---- N4 Network (bandwidth / RTT / loss / rollback) ----
+    if (ImGui::CollapsingHeader("Network (N4)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const engine::network::NetProfileView& v = g_editor_net_profiler.view();
+        if (v.peers == 0 && v.total_bytes_sent == 0 && v.total_bytes_recv == 0) {
+            ImGui::TextDisabled("offline — no active transport in this session");
+        } else {
+            ImGui::Text("peers %zu   RTT %u ms   loss %.1f%%", v.peers, v.rtt_ms, v.packet_loss * 100.0f);
+            ImGui::Text("up %.1f kbit/s   down %.1f kbit/s",
+                        v.send_bps * 8.0 / 1000.0, v.recv_bps * 8.0 / 1000.0);
+            ImGui::Text("rollback last %zu (max %zu)", v.rollback_last, v.rollback_max);
+        }
+    }
+
+    // ---- N5 Frame capture (one-frame draw/dispatch-list snapshot) ----
+    if (ImGui::CollapsingHeader("Frame Capture (N5)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        auto& fc = gws::profile::FrameCapture::instance();
+        if (ImGui::Button(fc.armed() ? "Arming... (next frame)" : "Capture Next Frame"))
+            fc.arm();
+        if (fc.has_capture()) {
+            const gws::profile::CapturedFrame& cap = fc.last();
+            ImGui::SameLine();
+            if (ImGui::Button("Save .txt")) {
+                const std::string txt = fc.to_text();
+                if (std::FILE* f = std::fopen("frame_capture.txt", "wb")) {
+                    std::fwrite(txt.data(), 1, txt.size(), f);
+                    std::fclose(f);
+                    spdlog::info("[frame-capture] wrote frame_capture.txt ({} bytes)", txt.size());
+                }
+            }
+            ImGui::Text("frame #%llu  -  %zu draws, %llu tris",
+                        static_cast<unsigned long long>(cap.frame_index), cap.draw_count(),
+                        static_cast<unsigned long long>(cap.total_triangles()));
+            ImGui::BeginChild("##capture_list", ImVec2(0.0f, 160.0f), true);
+            for (const gws::profile::CapturedDraw& d : cap.draws) {
+                ImGui::Text("%-11s %-16s sm%u  v%u i%u%s",
+                            d.pass.c_str(), d.label.c_str(), d.submesh,
+                            d.vertices, d.indices, d.blend ? " [blend]" : "");
+            }
+            ImGui::EndChild();
+        } else {
+            ImGui::TextDisabled("no capture yet - click Capture Next Frame");
+        }
+    }
+
+    ImGui::End();
+}
+
+// ============================================================================
 // Debug Panels Window
 // ============================================================================
 
@@ -2398,7 +3626,8 @@ void ShowDebugPanels(EditorState& editor_state) {
     ImGui::SetNextWindowPos(ImVec2(1500, 40), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(400, 800), ImGuiCond_FirstUseEver);
     
-    if (ImGui::Begin("Debug Systems", &editor_state.show_debug_panels)) {
+    ImGui::Begin("Debug Systems", &editor_state.show_debug_panels);  // docked window = child; End() must always run
+    {
         ImGui::TextUnformatted("Phase 6 System Debug Tools:");
         ImGui::Separator();
         ImGui::TextDisabled("Debug panels temporarily disabled due to ImGui state issues.");
@@ -2498,13 +3727,49 @@ static void blit_to_swapchain(VkCommandBuffer cmd,
 // main()
 // ============================================================================
 
-int main() {
+int main(int argc, char** argv) {
+    // --- Multiplayer CLI (Stage 7 PIE launcher) -------------------------------
+    // Spawned client/host instances use these to auto-connect + load the shared
+    // scene on startup, so the "Play Multiplayer" launcher can bring up a whole
+    // session with no manual clicking:
+    //   --net-host <port>       host a session on <port>
+    //   --net-join <ip:port>    join a session
+    //   --scene <path>          load this scene before connecting
+    //   --net-game              game window: viewport-only fullscreen UI (no
+    //                           editor panels) — used for spawned client windows
+    std::string startup_scene;
+    std::string startup_join_ip;
+    uint16_t    startup_join_port = 0;
+    uint16_t    startup_host_port = 0;
+    bool        game_window_mode  = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--net-host" && i + 1 < argc) {
+            startup_host_port = static_cast<uint16_t>(std::atoi(argv[++i]));
+        } else if (a == "--net-join" && i + 1 < argc) {
+            const std::string hp = argv[++i];
+            const size_t colon = hp.find(':');
+            if (colon != std::string::npos) {
+                startup_join_ip   = hp.substr(0, colon);
+                startup_join_port = static_cast<uint16_t>(std::atoi(hp.c_str() + colon + 1));
+            }
+        } else if (a == "--scene" && i + 1 < argc) {
+            startup_scene = argv[++i];
+        } else if (a == "--net-game") {
+            game_window_mode = true;
+        }
+    }
+
     try {
         spdlog::set_level(spdlog::level::info);
         // Flush every info+ line immediately so logs survive a hard kill / crash
         // and show up live when stdout is redirected to a file (otherwise the C
         // runtime fully-buffers a redirected stream and the tail is lost).
         spdlog::flush_on(spdlog::level::info);
+        // Mirror all default-logger output into the in-editor "Output" panel.
+        // Installed here (before the heavy init logging) so startup lines are
+        // captured too. Lives in console_panel.cpp.
+        schizo::editor::install_console_log_sink();
         spdlog::info("=== Project Schizo Editor (Vulkan) ===");
 
         // ----------------------------------------------------------------
@@ -2700,6 +3965,72 @@ int main() {
                   /*use_rt=*/device.has_ray_tracing())
             : nullptr;
 
+        // Volumetric sun lighting / light shafts — ray-marches the sun's
+        // shadow map for single-scattered in-scattering, additively
+        // composited into the HDR. Runs after Lighting + SSR, before
+        // Transparent (it is an HDR effect, drawn before tone-mapping).
+        // Dramatic shafts need a shadow-casting directional light + occluders;
+        // without a shadow map it degrades to a soft sun-ward haze.
+        auto volumetric_light = (shadow_map)
+            ? VulkanVolumetricLightPass::create(
+                  &device, g_buffer.get(),
+                  lighting->get_output_view(),
+                  VK_FORMAT_R16G16B16A16_SFLOAT,
+                  shadow_map->get_shadow_view(),
+                  shadow_map->get_shadow_sampler(),
+                  kW, kH)
+            : nullptr;
+
+        // Froxel volumetric fog (Stage 3.3) — 3D froxel grid: per-froxel
+        // scatter (height fog + sun + local lights), front-to-back integrate,
+        // composite into HDR. Reads the SAME light buffer the deferred pass
+        // uses so point/spot lights scatter in the fog. Off by default (a
+        // heavy always-on effect); toggle in the Post-Processing panel.
+        auto froxel_fog = (shadow_map)
+            ? VulkanFroxelFogPass::create(
+                  &device, g_buffer.get(),
+                  lighting->get_output_view(),
+                  VK_FORMAT_R16G16B16A16_SFLOAT,
+                  shadow_map->get_shadow_view(),
+                  shadow_map->get_shadow_sampler(),
+                  lighting->get_light_buffer(),
+                  kW, kH)
+            : nullptr;
+        if (froxel_fog) froxel_fog->set_enabled(false);  // opt-in (heavy; Post-Processing panel)
+
+        // Volumetric clouds — full pipeline (noise bake → raymarch → temporal
+        // resolve → composite). Runs after Lighting/SSR, before the light
+        // shafts (clouds are distant sky; shafts scatter in front of them).
+        auto clouds = VulkanCloudPass::create(
+            &device, g_buffer.get(),
+            lighting->get_output_view(),
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+            kW, kH);
+
+        // Feed the cloud shadow map to the deferred lighting pass (clouds
+        // darken the ground) and the light-shaft pass (god rays through gaps).
+        if (clouds) {
+            lighting->set_cloud_shadow(clouds->get_shadow_view(),
+                                       clouds->get_shadow_sampler());
+            if (volumetric_light)
+                volumetric_light->set_cloud_shadow(clouds->get_shadow_view(),
+                                                   clouds->get_shadow_sampler());
+            if (ssr)
+                ssr->set_cloud_sky(clouds->get_cloud_sky_view(),
+                                   clouds->get_cloud_sky_sampler());
+        }
+
+        // Water surfaces (terrain expansion) — renders WaterComponent rects
+        // into the HDR target between SSR and the atmospheric composites.
+        auto water_pass = env_map
+            ? VulkanWaterPass::create(
+                  &device, g_buffer.get(),
+                  lighting->get_output_view(),
+                  VK_FORMAT_R16G16B16A16_SFLOAT,
+                  env_map->get_view(), env_map->get_sampler(),
+                  kW, kH)
+            : nullptr;
+
         // Hand the IBL textures + env cubemap to the deferred lighting
         // pass. Lighting now samples envCubemap directly at empty-depth
         // pixels (the sky branch is folded into the lighting shader), so
@@ -2794,7 +4125,13 @@ int main() {
         graph_cfg.shadow_map       = shadow_map.get();
         graph_cfg.post_processing  = post_processing.get();
         graph_cfg.transparent      = transparent.get();
-        graph_cfg.occlusion_culler = nullptr;
+        graph_cfg.occlusion_culler = nullptr;   // per-draw occlusion queries (hang hazard) stay OFF
+        // HZB occlusion culling ENABLED (Stage 3.C). The prior disable was
+        // because build_and_readback() was never called, so the CPU HZB held
+        // garbage and dropped visible objects. With the pyramid now built each
+        // frame (after Geometry), the AABB-vs-HZB test is conservative (samples
+        // the FURthest depth over the footprint, treats near-plane straddles as
+        // visible) with one frame of latency — standard, accepted popping.
         graph_cfg.hzb_culler       = hzb_culler.get();
         graph_cfg.width            = kW;
         graph_cfg.height           = kH;
@@ -2828,6 +4165,13 @@ int main() {
         // glTF asset cache. Lazily loads .gltf/.glb files referenced via
         // entity MeshComponent::mesh_path (set by drag-drop in the inspector).
         schizo::editor::AssetMeshCache asset_cache;
+
+        // Per-terrain-entity GPU mesh cache. Rebuilds a terrain's grid mesh
+        // only when its heightmap version changes (each sculpt edit).
+        schizo::editor::TerrainMeshCache terrain_cache;
+        // Per-terrain-entity splat material cache (splatmap + 4 tiling layers).
+        // Rebuilds when the splatmap / layer paths / tiling change.
+        schizo::editor::TerrainGpuCache terrain_gpu_cache;
 
         // ----------------------------------------------------------------
         // ImGui render pass: clears swapchain to dark gray, presents as PRESENT_SRC.
@@ -2907,7 +4251,9 @@ int main() {
             glfwTerminate();
             return 1;
         }
-        ImGui::GetIO().IniFilename = "editor.ini";
+        // Game windows never touch editor.ini (they draw no docked layout and
+        // must not clobber the editor's persisted one).
+        ImGui::GetIO().IniFilename = game_window_mode ? nullptr : "editor.ini";
         spdlog::info("ImGuiVulkan initialized");
 
         // ----------------------------------------------------------------
@@ -2959,7 +4305,32 @@ int main() {
         g_editor_state = &editor_state;
         glfwSetDropCallback(glfw_window, DropCallback);
 
+        // One-time dock-layout migration. editor.ini persists the dock layout,
+        // but a layout saved before a panel existed (e.g. Terminal / Output)
+        // won't place that panel — it floats. Bump kDockLayoutVersion whenever
+        // the docked-panel set changes: on a version mismatch we force one
+        // rebuild of the default arrangement, which ImGui then persists so
+        // later launches restore it (with the user's splitter sizes).
+        {
+            int saved = 0;
+            if (std::ifstream vf{"editor_layout.version"}) vf >> saved;
+            // Only REQUEST the rebuild here. The version stamp is written after
+            // the rebuilt layout is actually persisted (in the dockspace block),
+            // so a crash before that re-triggers the migration next launch
+            // rather than stranding new panels as floating windows.
+            if (saved != kEditorDockLayoutVersion)
+                editor_state.request_reset_layout = true;
+        }
+
         editor_state.asset_browser  = std::make_unique<schizo::editor::AssetBrowserPanel>();
+        // Double-clicking a .scene in the browser loads it.
+        editor_state.asset_browser->on_open_scene =
+            [&editor_state](const std::string& p) {
+                if (editor_state.editor_scene && editor_state.editor_scene->LoadScene(p))
+                    spdlog::info("[AssetBrowser] loaded scene '{}'", p);
+                else
+                    spdlog::warn("[AssetBrowser] failed to load scene '{}'", p);
+            };
         editor_state.material_editor = std::make_unique<schizo::editor::MaterialEditorPanel>();
         editor_state.asset_import_dialog = std::make_unique<schizo::editor::AssetImportDialog>();
         editor_state.scene_playback_manager = std::make_unique<schizo::editor::ScenePlaybackManager>();
@@ -2967,6 +4338,23 @@ int main() {
         editor_state.ability_panel   = std::make_unique<schizo::editor::AbilitySystemPanel>();
         editor_state.network_panel   = std::make_unique<schizo::editor::NetworkSystemPanel>();
         spdlog::info("Editor state and panels initialized");
+
+        // Custom scripts (Stage 12): register language backends + bind the
+        // engine API table (entity/transform, input, spawn, physics, render,
+        // audio) that every backend marshals onto.
+        editor_state.script_system.register_host(".py",
+            schizo::editor::make_python_host());
+        if (auto cpp_host = schizo::editor::make_cpp_host()) {
+            editor_state.script_system.register_host(".cpp", std::move(cpp_host));
+            editor_state.script_system.register_host(".cc",
+                schizo::editor::make_cpp_host());
+        }
+        if (auto cs_host = schizo::editor::make_cs_host())
+            editor_state.script_system.register_host(".cs", std::move(cs_host));
+        schizo::editor::bind_editor_script_api(editor_state.script_api,
+                                               &editor_state.script_ctx);
+        spdlog::info("[script] backends registered: .py (Python/pocketpy), "
+                     ".cpp/.cc (native C++ via g++), .cs (C#/.NET)");
 
         // ----------------------------------------------------------------
         // Populate default base scene — light + ground only. The user adds
@@ -3013,6 +4401,13 @@ int main() {
                         schizo::scene::ColliderShape::Mesh);
                     col->SetDynamic(true);
                     col->SetMass(1.0f);
+                }
+
+                // A small water pool off to the side (terrain expansion demo).
+                if (auto water = scene->CreateEntity("Water Pool")) {
+                    water->GetTransform()->SetLocalPosition(glm::vec3(12.0f, 0.35f, 0.0f));
+                    if (auto wc = water->AddComponent<schizo::scene::WaterComponent>())
+                        wc->SetSize(glm::vec2(14.0f, 10.0f));
                 }
 
                 // Stage 4: a "Player" (capsule collider + cameras) so Play works
@@ -3158,8 +4553,36 @@ int main() {
         // Per-frame transient allocator: double-buffered, one arena PER
         // worker (lock-free). reset() at the top of every frame.
         gws::memory::FrameAllocator frame_allocator(8u * 1024u * 1024u, kJobWorkers);
+        // Surface the frame allocator in the Stage 14 memory profiler (N3): a
+        // linear arena, so used/reserved occupancy with zero fragmentation.
+        gws::memory::ScopedAllocatorProbe frame_alloc_probe(
+            "frame (transient)", [&frame_allocator]() {
+                gws::memory::AllocationStats st;
+                st.total_allocated = frame_allocator.total_used();
+                st.total_reserved  = static_cast<size_t>(frame_allocator.current().capacity()) *
+                                     frame_allocator.worker_count();
+                st.peak_used       = st.total_allocated;
+                st.allocation_count = 0;
+                st.fragmentation    = 0;  // bump allocator — no external fragmentation
+                return st;
+            });
         spdlog::info("Engine foundation online: {} job workers, frame allocator {} MiB x2 per worker",
                      kJobWorkers, 8);
+
+        // ----------------------------------------------------------------
+        // Stage 6 audio: open the playback device. Per-entity AudioSource /
+        // AudioListener components are driven each frame by EditorAudioDriver;
+        // the listener defaults to the editor camera when no AudioListener
+        // entity is active.
+        // ----------------------------------------------------------------
+        gws::audio::AudioEngine audio;
+        if (!audio.init())
+            spdlog::warn("[audio] no playback device available — audio disabled");
+
+        // Drives every entity's AudioSource/AudioListener component from the OOP
+        // scene each frame (clip decode-on-first-play + per-entity voice map).
+        schizo::editor::EditorAudioDriver audio_driver(audio);
+
         {
             // One-time live self-check that the parallel path works end-to-end
             // in the real build (not just standalone tests).
@@ -3185,6 +4608,23 @@ int main() {
         bool ecs_snapshot_logged = false;
 
         // ----------------------------------------------------------------
+        // Multiplayer startup (PIE launcher): a spawned instance loads the
+        // shared scene and auto-hosts/joins so a whole session comes up with no
+        // clicking. Applied after full init, before the loop.
+        // ----------------------------------------------------------------
+        if (!startup_scene.empty()) {
+            editor_state.editor_scene->LoadScene(startup_scene);
+            spdlog::info("[net] startup loaded shared scene: {}", startup_scene);
+        }
+        if (startup_host_port != 0) {
+            editor_state.net_session.host(startup_host_port);
+            editor_state.show_network_window = true;
+        } else if (startup_join_port != 0 && !startup_join_ip.empty()) {
+            editor_state.net_session.join(startup_join_ip, startup_join_port);
+            editor_state.show_network_window = true;
+        }
+
+        // ----------------------------------------------------------------
         // Main loop
         // ----------------------------------------------------------------
         spdlog::info("Entering editor loop...");
@@ -3207,8 +4647,63 @@ int main() {
         double last_frame_wall = glfwGetTime();
         constexpr float kMaxFrameDt = 1.0f / 20.0f;  // 50 ms ceiling
 
+        // Recreate the swapchain (and the ImGui framebuffers that wrap its
+        // image views) to match the current window framebuffer size. Required
+        // whenever the OS window is resized or maximized — otherwise the
+        // swapchain goes OUT_OF_DATE, acquire_next_image() returns ~0u, and
+        // indexing imgui_framebuffers[~0u] crashes. Safe to call any time; it
+        // waits for the GPU to go idle first. The 3D scene's offscreen targets
+        // are sized to the Viewport panel (not the window) so they don't need
+        // recreation here — ImGui::Image() rescales them.
+        auto recreate_swapchain_resources = [&]() {
+            int fbw = 0, fbh = 0;
+            glfwGetFramebufferSize(glfw_window, &fbw, &fbh);
+            if (fbw == 0 || fbh == 0) return;  // minimized — caller skips the frame
+            vkDeviceWaitIdle(device.get_device());
+            for (VkFramebuffer fb : imgui_framebuffers)
+                if (fb) vkDestroyFramebuffer(device.get_device(), fb, nullptr);
+            swapchain->recreate(static_cast<uint32_t>(fbw),
+                                static_cast<uint32_t>(fbh));
+            imgui_framebuffers.assign(swapchain->get_image_count(), VK_NULL_HANDLE);
+            for (uint32_t i = 0; i < swapchain->get_image_count(); ++i) {
+                VkImageView views[] = { swapchain->get_image_view(i) };
+                VkFramebufferCreateInfo fb_info{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+                fb_info.renderPass      = imgui_render_pass;
+                fb_info.attachmentCount = 1;
+                fb_info.pAttachments    = views;
+                fb_info.width           = swapchain->get_width();
+                fb_info.height          = swapchain->get_height();
+                fb_info.layers          = 1;
+                vkCreateFramebuffer(device.get_device(), &fb_info, nullptr,
+                                    &imgui_framebuffers[i]);
+            }
+            spdlog::info("Swapchain recreated: {}x{}",
+                         swapchain->get_width(), swapchain->get_height());
+        };
+
+        // Spot-light cookie texture (loaded on demand, cached by path). One
+        // shared cookie slot — multiple cookie-spots use the last one bound.
+        std::unique_ptr<gws::renderer::gpu::Texture> cookie_tex;
+        std::string cookie_path_loaded;
+
         while (!glfwWindowShouldClose(glfw_window)) {
             glfwPollEvents();
+
+            // Match the swapchain to the window before doing any per-frame work.
+            // Done here (before begin_frame / the ImGui frame) so a resize never
+            // leaves a half-built frame. Minimized (0-size) → skip the frame.
+            {
+                int fbw = 0, fbh = 0;
+                glfwGetFramebufferSize(glfw_window, &fbw, &fbh);
+                if (fbw == 0 || fbh == 0) {
+                    glfwWaitEvents();   // sleep until restored (no busy spin)
+                    continue;
+                }
+                if (static_cast<uint32_t>(fbw) != swapchain->get_width() ||
+                    static_cast<uint32_t>(fbh) != swapchain->get_height()) {
+                    recreate_swapchain_resources();
+                }
+            }
 
             // Recycle the per-frame transient allocator (double-buffered, so
             // last frame's results survive into this frame's first reads).
@@ -3276,7 +4771,18 @@ int main() {
                 static bool prev_esc = false;
                 bool cur_esc = key(GLFW_KEY_ESCAPE);
                 if (cur_esc && !prev_esc) {
-                    if (playing) {
+                    if (game_window_mode) {
+                        // Game windows: first ESC releases the cursor, second
+                        // quits (stopping playback would just strand a blank
+                        // window — there's no editor UI to fall back to).
+                        if (playing &&
+                            editor_state.scene_playback_manager->IsCursorCaptured()) {
+                            editor_state.scene_playback_manager->SetCursorCaptured(false);
+                        } else {
+                            spdlog::info("ESC — closing game window");
+                            glfwSetWindowShouldClose(glfw_window, GLFW_TRUE);
+                        }
+                    } else if (playing) {
                         if (editor_state.scene_playback_manager->IsCursorCaptured()) {
                             editor_state.scene_playback_manager->SetCursorCaptured(false);
                         } else {
@@ -3290,6 +4796,7 @@ int main() {
                 }
                 prev_esc = cur_esc;
             }
+            if (!game_window_mode) {
             if (key(GLFW_KEY_LEFT_CONTROL) && key(GLFW_KEY_Z)) {
                 if (editor_state.undo_redo_manager.CanUndo())
                     editor_state.undo_redo_manager.Undo();
@@ -3312,6 +4819,7 @@ int main() {
                 }
                 prev_f5 = cur_f5;
             }
+            } // !game_window_mode (editor hotkeys)
 
             // V toggles first-/third-person view while playing. Edge-detected
             // so a held key only fires once.
@@ -3328,8 +4836,9 @@ int main() {
 
             // Delete key removes the selected entity. Edge-detected so a held
             // key fires once; suppressed while ImGui has a text field focused
-            // so it doesn't conflict with the rename dialog.
-            {
+            // so it doesn't conflict with the rename dialog. Disabled in game
+            // windows (no editing there).
+            if (!game_window_mode) {
                 static bool prev_delete = false;
                 bool cur_delete = key(GLFW_KEY_DELETE);
                 if (cur_delete && !prev_delete &&
@@ -3348,12 +4857,48 @@ int main() {
                 prev_delete = cur_delete;
             }
 
+            // Free-fly camera (WASD) — only in edit view. In Play mode (incl. a
+            // multiplayer session) WASD drives the first-person character.
             float cam_spd = 0.1f;
-            if (key(GLFW_KEY_W))     editor_state.viewport_camera.MoveLocal( cam_spd, 0.f, 0.f);
-            if (key(GLFW_KEY_S))     editor_state.viewport_camera.MoveLocal(-cam_spd, 0.f, 0.f);
-            if (key(GLFW_KEY_A))     editor_state.viewport_camera.MoveLocal(0.f, -cam_spd, 0.f);
-            if (key(GLFW_KEY_D))     editor_state.viewport_camera.MoveLocal(0.f,  cam_spd, 0.f);
-            if (key(GLFW_KEY_SPACE)) editor_state.viewport_camera.MoveLocal(0.f, 0.f,  cam_spd);
+            const bool playing_now_cam = editor_state.scene_playback_manager &&
+                                         editor_state.scene_playback_manager->IsPlaying();
+            if (!playing_now_cam) {
+                if (key(GLFW_KEY_W))     editor_state.viewport_camera.MoveLocal( cam_spd, 0.f, 0.f);
+                if (key(GLFW_KEY_S))     editor_state.viewport_camera.MoveLocal(-cam_spd, 0.f, 0.f);
+                if (key(GLFW_KEY_A))     editor_state.viewport_camera.MoveLocal(0.f, -cam_spd, 0.f);
+                if (key(GLFW_KEY_D))     editor_state.viewport_camera.MoveLocal(0.f,  cam_spd, 0.f);
+                if (key(GLFW_KEY_SPACE)) editor_state.viewport_camera.MoveLocal(0.f, 0.f,  cam_spd);
+            }
+
+            // Multiplayer: entering a session auto-starts Play mode so each
+            // instance is a real first-person character (once; if the scene has
+            // no 'Player' entity it falls back to the edit view). Leaving the
+            // session stops the play we started.
+            if (editor_state.net_session.active() && editor_state.scene_playback_manager) {
+                if (!editor_state.scene_playback_manager->IsPlaying() &&
+                    !editor_state.net_autoplay_started &&
+                    !editor_state.net_autoplay_failed) {
+                    auto scn = editor_state.editor_scene->GetScene();
+                    // Clients don't simulate props locally — their dynamic
+                    // colliders become kinematic bodies that follow the host's
+                    // replicated transforms (so collisions match what's drawn).
+                    editor_state.scene_playback_manager->SetNetClientMode(
+                        editor_state.net_session.role() == schizo::editor::NetRole::Client);
+                    if (scn && editor_state.scene_playback_manager->StartPlayback(scn)) {
+                        editor_state.net_autoplay_started = true;
+                        spdlog::info("[net] entered Play mode for the multiplayer session");
+                    } else {
+                        editor_state.net_autoplay_failed = true;
+                        spdlog::warn("[net] no 'Player' entity — session stays in edit view");
+                    }
+                }
+            } else if (editor_state.net_autoplay_started &&
+                       editor_state.scene_playback_manager) {
+                editor_state.scene_playback_manager->StopPlayback();
+                editor_state.scene_playback_manager->SetNetClientMode(false);
+                editor_state.net_autoplay_started = false;
+                editor_state.net_autoplay_failed  = false;
+            }
 
             if (editor_state.scene_playback_manager &&
                 editor_state.scene_playback_manager->IsPlaying())
@@ -3367,24 +4912,150 @@ int main() {
                 }
             }
 
+            // Custom scripts (Stage 12): refresh the API context and drive every
+            // ScriptComponent. Runs right after the physics/scene update (so
+            // scripts see settled transforms) and before net replication (so a
+            // host script's changes replicate the same frame).
+            {
+                const bool script_play = editor_state.scene_playback_manager &&
+                                         editor_state.scene_playback_manager->IsPlaying();
+                editor_state.script_play_time =
+                    script_play ? editor_state.script_play_time + delta_time : 0.0;
+
+                auto& ctx    = editor_state.script_ctx;
+                ctx.scene    = editor_state.editor_scene->GetScene();
+                ctx.playback = editor_state.scene_playback_manager.get();
+                ctx.window   = glfw_window;
+                // Cursor delta for scripts (independent of the play-mode
+                // capture pipeline, which only tracks while captured).
+                {
+                    static double last_sx = 0.0, last_sy = 0.0;
+                    static bool   primed  = false;
+                    double sx = 0.0, sy = 0.0;
+                    glfwGetCursorPos(glfw_window, &sx, &sy);
+                    ctx.mouse_dx = primed ? static_cast<float>(sx - last_sx) : 0.0f;
+                    ctx.mouse_dy = primed ? static_cast<float>(sy - last_sy) : 0.0f;
+                    last_sx = sx; last_sy = sy; primed = true;
+                }
+                editor_state.script_api.dt   = delta_time;
+                editor_state.script_api.time = editor_state.script_play_time;
+                editor_state.script_system.update(ctx.scene, script_play,
+                                                  delta_time, editor_state.script_api);
+            }
+
+            // Multiplayer: report this instance's player (entity id + position;
+            // the play character if playing, else the camera) and pump the
+            // session. The id lets replication skip the local player. Runs after
+            // the play Update so the reported position is this frame's, and so
+            // host-authoritative prop transforms overwrite the local sim.
+            if (editor_state.net_session.active()) {
+                glm::vec3 my_pos = editor_state.viewport_camera.GetPosition();
+                uint32_t  my_id  = 0;
+                if (editor_state.scene_playback_manager &&
+                    editor_state.scene_playback_manager->IsPlaying()) {
+                    if (auto* pl = editor_state.scene_playback_manager->GetPlayerEntity()) {
+                        my_pos = pl->GetTransform()->GetWorldPosition();
+                        my_id  = pl->GetId();
+                    }
+                }
+                editor_state.net_session.set_local_player(my_id, my_pos);
+            }
+            editor_state.net_session.tick_frame(
+                editor_state.editor_scene->GetScene(), delta_time);
+
+            // Host: ghost kinematic capsules for remote players, so clients
+            // physically push dynamic props in the authoritative simulation
+            // (results replicate back to everyone next snapshot).
+            if (editor_state.net_session.role() == schizo::editor::NetRole::Host &&
+                editor_state.scene_playback_manager &&
+                editor_state.scene_playback_manager->IsPlaying()) {
+                std::vector<glm::vec3> remote_players;
+                editor_state.net_session.remote_player_positions(remote_players);
+                editor_state.scene_playback_manager->SyncRemotePlayerBodies(
+                    remote_players, delta_time);
+            }
+
+            // Game windows exist only for their session: once the host is gone
+            // (was connected, now isn't), close instead of idling at a dead
+            // "connecting..." screen — stale windows from a previous session
+            // otherwise pile up next to the new one.
+            if (game_window_mode) {
+                static bool ever_connected = false;
+                if (editor_state.net_session.status().connected) {
+                    ever_connected = true;
+                } else if (ever_connected) {
+                    spdlog::info("[net] host disconnected — closing game window");
+                    glfwSetWindowShouldClose(glfw_window, GLFW_TRUE);
+                }
+            }
+
             // ------------------------------------------------------------
             // Build ImGui frame (no GPU commands yet)
             // ------------------------------------------------------------
             imgui->begin_frame();
 
-            {   // Dark background window
-                ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
-                ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize, ImGuiCond_Always);
-                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-                ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-                ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.1f, 0.1f, 0.1f, 1.0f));
-                ImGui::Begin("##background", nullptr,
-                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
-                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                    ImGuiWindowFlags_NoBringToFrontOnFocus);
-                ImGui::End();
-                ImGui::PopStyleColor();
-                ImGui::PopStyleVar(2);
+            // ------------------------------------------------------------
+            // Game-window mode (--net-game, spawned multiplayer clients):
+            // no menu bar, no dockspace, no panels — just the rendered game
+            // stretched over the whole window (the offscreen scene render
+            // runs every frame regardless of which panels are drawn).
+            // ------------------------------------------------------------
+            if (game_window_mode) {
+                ImGuiIO& gio = ImGui::GetIO();
+                // ShowViewport is skipped, so feed the camera aspect manually
+                // (the projection reads viewport_panel_size each frame).
+                editor_state.viewport_panel_size = { gio.DisplaySize.x, gio.DisplaySize.y };
+                if (editor_state.viewport_texture_id != VK_NULL_HANDLE) {
+                    ImGui::GetBackgroundDrawList()->AddImage(
+                        (ImTextureID)(void*)editor_state.viewport_texture_id,
+                        ImVec2(0.0f, 0.0f), gio.DisplaySize);
+                }
+                // Minimal session HUD.
+                {
+                    const auto& nst = editor_state.net_session.status();
+                    ImGui::SetNextWindowPos(ImVec2(8.0f, 8.0f), ImGuiCond_Always);
+                    ImGui::SetNextWindowBgAlpha(0.45f);
+                    ImGui::Begin("##net_hud", nullptr,
+                                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                 ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs);
+                    ImGui::Text("MULTIPLAYER  %s  |  players: %zu  |  ESC quits",
+                                nst.connected ? "connected" : "connecting...",
+                                nst.avatars + 1);
+                    ImGui::End();
+                }
+            } else {
+            // ------------------------------------------------------------
+            // Unity-style docked workspace. The main menu bar is emitted
+            // first so it reserves the top strip (reducing the viewport work
+            // area); the dockspace then fills the rest of the window. Every
+            // panel docks into this one space and tiles it — no free-floating
+            // overlap. The dockspace is LOCKED (NoUndocking | NoDockingSplit)
+            // so the user can only resize splitters or close panels; closing
+            // a panel makes its neighbours expand to refill the window.
+            // ------------------------------------------------------------
+            ShowMainMenuBar(editor_state, glfw_window);
+            {
+                ImGuiID dockspace_id = ImGui::GetID("EditorDockSpace");
+                // Build the default layout on first run (no saved dock data in
+                // editor.ini yet) or when the user picks Window > Reset Layout.
+                // Checked BEFORE submitting the dockspace, because submitting
+                // creates an (empty) node and would defeat the null check.
+                if (editor_state.request_reset_layout ||
+                    ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
+                    BuildEditorDockLayout(dockspace_id,
+                                          ImGui::GetMainViewport()->WorkSize);
+                    editor_state.request_reset_layout = false;
+                    // Persist the rebuilt layout NOW, then stamp the version, so
+                    // the two are committed together — a crash before this point
+                    // re-triggers the migration instead of leaving the version
+                    // bumped but the new panels unsaved (floating) next launch.
+                    ImGui::SaveIniSettingsToDisk(ImGui::GetIO().IniFilename);
+                    std::ofstream("editor_layout.version") << kEditorDockLayoutVersion;
+                }
+                ImGui::DockSpaceOverViewport(
+                    dockspace_id, ImGui::GetMainViewport(),
+                    ImGuiDockNodeFlags_NoUndocking | ImGuiDockNodeFlags_NoDockingSplit);
             }
 
             // Consume OS-dropped files (filled by GLFW DropCallback). Copies
@@ -3403,7 +5074,8 @@ int main() {
                                    [](unsigned char c){ return std::tolower(c); });
                     if (ext != ".obj" && ext != ".gltf" && ext != ".glb" &&
                         ext != ".fbx" && ext != ".png" && ext != ".jpg" &&
-                        ext != ".jpeg" && ext != ".tga") {
+                        ext != ".jpeg" && ext != ".tga" && ext != ".wav" &&
+                        ext != ".mp3" && ext != ".flac" && ext != ".ogg") {
                         spdlog::warn("[Drop] Skipping unsupported file: {}", src);
                         continue;
                     }
@@ -3424,7 +5096,7 @@ int main() {
                     editor_state.asset_browser->RefreshAssets();
             }
 
-            ShowMainMenuBar(editor_state, glfw_window);
+            // (ShowMainMenuBar is emitted above, before the dockspace.)
             ShowSaveDialog(editor_state);
             ShowOpenDialog(editor_state);
             ShowRenameDialog(editor_state);
@@ -3435,7 +5107,24 @@ int main() {
             ShowInspector(editor_state);
             ShowAssetBrowser(editor_state);
             ShowPlaybackControls(editor_state);
+            ShowPerformanceOverlay(editor_state);
+            ShowNetworkPanel(editor_state);
             ShowDebugPanels(editor_state);
+            // "Output" — the editor's own log output mirrored into a panel.
+            if (editor_state.show_output) {
+                if (!editor_state.console)
+                    editor_state.console =
+                        std::make_unique<schizo::editor::ConsolePanel>();
+                editor_state.console->Render(&editor_state.show_output);
+            }
+            // Embedded OS shell terminal — created on first show so the shell
+            // isn't spawned until the panel is opened; kept alive across hides.
+            if (editor_state.show_terminal) {
+                if (!editor_state.terminal)
+                    editor_state.terminal =
+                        std::make_unique<schizo::editor::TerminalPanel>();
+                editor_state.terminal->Render(&editor_state.show_terminal);
+            }
             if (editor_state.asset_import_dialog &&
                 editor_state.asset_import_dialog->IsOpen())
                 editor_state.asset_import_dialog->RenderDialog();
@@ -3444,8 +5133,9 @@ int main() {
             // Post-processing controls — inline here because post_processing
             // lives in main()'s scope (the free Show* helpers only get
             // EditorState). Toggles + live sliders for every effect.
-            if (post_processing) {
-                if (ImGui::Begin("Post-Processing")) {
+            if (post_processing && editor_state.show_post_processing) {
+                ImGui::Begin("Post-Processing", &editor_state.show_post_processing);  // docked window = child; End() must always run
+                {
                     bool bloom = post_processing->is_effect_enabled(
                         gws::renderer::gpu::PostProcessEffect::Bloom);
                     if (ImGui::Checkbox("Bloom", &bloom))
@@ -3482,6 +5172,78 @@ int main() {
                         }
                         if (!ssao->rt_available())
                             ImGui::TextDisabled("(RT unavailable on this GPU)");
+                    }
+
+                    // Volumetric sun lighting / light shafts (god rays).
+                    if (volumetric_light) {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Volumetric Light (god rays)");
+                        bool vol = volumetric_light->is_enabled();
+                        if (ImGui::Checkbox("Enable##vol", &vol))
+                            volumetric_light->set_enabled(vol);
+                        if (vol) {
+                            auto& vc = volumetric_light->mutable_config();
+                            ImGui::SliderFloat("  Intensity##vol",   &vc.intensity,    0.0f, 5.0f);
+                            ImGui::SliderFloat("  Density##vol",      &vc.density,      0.0f, 0.2f, "%.3f");
+                            ImGui::SliderFloat("  Anisotropy##vol",   &vc.anisotropy,   0.0f, 0.95f);
+                            ImGui::SliderFloat("  Max distance##vol", &vc.max_distance, 10.0f, 300.0f);
+                            ImGui::SliderInt  ("  Steps##vol",        &vc.num_steps,    8, 128);
+                        }
+                    }
+
+                    // Froxel volumetric fog (Stage 3.3).
+                    if (froxel_fog) {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Volumetric Fog (froxel)");
+                        bool fon = froxel_fog->is_enabled();
+                        if (ImGui::Checkbox("Enable##fog", &fon))
+                            froxel_fog->set_enabled(fon);
+                        if (fon) {
+                            auto& fc = froxel_fog->mutable_config();
+                            ImGui::SliderFloat("  Density##fog",       &fc.density,        0.0f, 0.08f, "%.4f");
+                            ImGui::SliderFloat("  Height base##fog",   &fc.height_base,   -50.0f, 100.0f);
+                            ImGui::SliderFloat("  Height falloff##fog",&fc.height_falloff, 0.0f, 0.5f, "%.3f");
+                            ImGui::SliderFloat("  Range##fog",         &fc.max_distance,  20.0f, 400.0f);
+                            ImGui::SliderFloat("  Sun scatter##fog",   &fc.sun_intensity,  0.0f, 3.0f);
+                            ImGui::SliderFloat("  Anisotropy##fog",    &fc.anisotropy,     0.0f, 0.9f);
+                            ImGui::SliderFloat("  Local lights##fog",  &fc.local_intensity,0.0f, 4.0f);
+                            ImGui::ColorEdit3 ("  Ambient##fog",       &fc.ambient.x);
+                        }
+                    }
+
+                    // Volumetric clouds.
+                    if (clouds) {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Volumetric Clouds");
+                        bool con = clouds->is_enabled();
+                        if (ImGui::Checkbox("Enable##cloud", &con))
+                            clouds->set_enabled(con);
+                        if (con) {
+                            auto& cc = clouds->mutable_config();
+                            ImGui::SliderFloat("  Coverage##cloud",   &cc.coverage,    0.0f, 1.0f);
+                            ImGui::SliderFloat("  Cloud size##cloud",  &cc.shape_scale, 0.0004f, 0.0040f, "%.4f");
+                            ImGui::SliderFloat("  Wispiness##cloud",   &cc.detail_strength, 0.0f, 1.0f);
+                            ImGui::SliderFloat("  Brightness##cloud",  &cc.brightness,  0.5f, 6.0f);
+                            ImGui::SliderFloat("  Density##cloud",     &cc.density,     0.1f, 4.0f);
+                            ImGui::SliderFloat("  Extinction##cloud",  &cc.extinction,  0.01f, 0.4f, "%.3f");
+                            ImGui::SliderFloat("  Wind speed##cloud",  &cc.wind_speed,  0.0f, 40.0f);
+                            ImGui::SliderInt  ("  March steps##cloud", &cc.march_steps, 16, 128);
+                            ImGui::SliderInt  ("  Light steps##cloud", &cc.light_steps, 2, 12);
+                            ImGui::SliderFloat("  Bottom alt##cloud",  &cc.cloud_bottom, 100.0f, 2000.0f);
+                            ImGui::SliderFloat("  Top alt##cloud",     &cc.cloud_top,    200.0f, 4000.0f);
+                            ImGui::SliderFloat("  Sky flatness##cloud", &cc.earth_radius, 10000.0f, 200000.0f, "%.0f");
+                            ImGui::SliderFloat("  Max distance##cloud", &cc.max_march, 500.0f, 12000.0f, "%.0f");
+                            // Render-resolution scale (recreates the cloud buffers).
+                            const char* res_items[] = { "Quarter", "Half", "Full" };
+                            const float res_scales[] = { 0.25f, 0.5f, 1.0f };
+                            int res_cur = (cc.resolution_scale <= 0.3f) ? 0
+                                        : (cc.resolution_scale >= 0.9f ? 2 : 1);
+                            if (ImGui::Combo("  Resolution##cloud", &res_cur, res_items, 3)) {
+                                cc.resolution_scale = res_scales[res_cur];
+                                clouds->rebuild_targets();
+                            }
+                            ImGui::Checkbox   ("  Temporal accumulation##cloud", &cc.temporal);
+                        }
                     }
 
                     ImGui::Separator();
@@ -3567,6 +5329,7 @@ int main() {
                 }
                 ImGui::End();
             }
+            } // end of editor UI (skipped entirely in game-window mode)
 
             // ------------------------------------------------------------
             // GPU frame
@@ -3577,11 +5340,29 @@ int main() {
             // after its fence. Pull the results into the culler so this
             // frame can skip occluded draws.
             if (graph) graph->resolve_occlusion_queries();
+            // Same fence guarantees the GPU finished the previous frame's
+            // timestamp writes — pull per-pass GPU timings into the profiler
+            // the Stage 14 Performance overlay reads (N2). Only feeds when the
+            // device supports timestamps; otherwise the GPU section stays empty.
+            if (graph && graph->resolve_timings()) graph->update_gpu_profiler();
             // Same story for the HZB readback — the GPU finished copying the
             // HZB mip to the host buffer before signalling this fence.
             if (hzb_culler) hzb_culler->pull_readback();
             uint32_t image_index = swapchain->acquire_next_image(
                 acquire_sems[current_frame]);
+            if (image_index == UINT32_MAX) {
+                // Swapchain went out of date between the top-of-loop size check
+                // and here (mid-drag resize / SUBOPTIMAL surface). Recreate and
+                // re-acquire once; if still bad, discard this already-built
+                // ImGui frame cleanly (balance NewFrame + profiler) and skip.
+                recreate_swapchain_resources();
+                image_index = swapchain->acquire_next_image(acquire_sems[current_frame]);
+                if (image_index == UINT32_MAX) {
+                    ImGui::EndFrame();
+                    GWS_PROFILE_FRAME_END();
+                    continue;
+                }
+            }
             vkResetFences(device.get_device(), 1, &frame_fences[current_frame]);
 
             VkCommandBuffer cmd = frame_cmds[current_frame];
@@ -3702,11 +5483,24 @@ int main() {
 
                 lighting->clear_lights();
                 bool has_directional = false;
+                // Per-light frustum culling: a local light whose influence
+                // sphere (position, range) can't reach anything the camera sees
+                // is skipped, so we don't burn one of the 128 light slots on it.
+                // Directional lights are infinite, so they're never culled.
+                const gws::renderer::gpu::Frustum light_frustum =
+                    gws::renderer::gpu::Frustum::from_matrix(cam.proj * cam.view);
+                uint32_t lights_total = 0, lights_culled = 0;
                 const auto& scene_entities = editor_scene.GetScene()->GetEntities();
                 for (const auto& entity : scene_entities) {
                     if (!entity || !entity->IsActiveInHierarchy()) continue;
                     auto lc = entity->GetComponent<schizo::scene::LightComponent>();
                     if (!lc || !lc->IsEnabled()) continue;
+                    ++lights_total;
+                    if (lc->GetType() != schizo::scene::LightType::Directional &&
+                        !light_frustum.is_sphere_visible(lc->GetPosition(), lc->GetRange())) {
+                        ++lights_culled;
+                        continue;
+                    }
                     const glm::vec3 color = lc->GetColor();
                     const float     intensity = lc->GetIntensity();
                     const bool      shadow = lc->GetCastShadow();
@@ -3752,9 +5546,53 @@ int main() {
                         case schizo::scene::LightType::Spot: {
                             const glm::vec2 angles_deg = lc->GetSpotAngles(); // (inner, outer)
                             const float outer_cos = glm::cos(glm::radians(angles_deg.y));
+                            const float inner_cos = glm::cos(glm::radians(angles_deg.x));
+                            // Cookie/gobo: load (cached by path), bind, and build
+                            // the projection matrix the shader samples it through.
+                            glm::mat4 cookie_vp(1.0f);
+                            bool      has_cookie = false;
+                            const std::string& ck = lc->GetCookiePath();
+                            if (!ck.empty()) {
+                                if (ck != cookie_path_loaded) {
+                                    cookie_tex = gws::renderer::gpu::Texture::create_from_file(
+                                        &device, ck, /*srgb=*/true);
+                                    cookie_path_loaded = ck;
+                                    if (cookie_tex)
+                                        lighting->set_cookie(cookie_tex->view(), cookie_tex->sampler());
+                                    else
+                                        spdlog::warn("[cookie] failed to load: {}", ck);
+                                }
+                                if (cookie_tex) {
+                                    const glm::vec3 pos = lc->GetPosition();
+                                    const glm::vec3 dir = glm::normalize(
+                                        glm::length(lc->GetDirection()) > 0.0f
+                                            ? lc->GetDirection() : glm::vec3(0, -1, 0));
+                                    const glm::vec3 up = (std::abs(dir.y) > 0.99f)
+                                        ? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0);
+                                    const float fov = glm::radians(
+                                        glm::clamp(angles_deg.y * 2.0f, 5.0f, 170.0f));
+                                    const float rng = std::max(lc->GetRange(), 0.5f);
+                                    cookie_vp = glm::perspective(fov, 1.0f, 0.05f, rng) *
+                                                glm::lookAt(pos, pos + dir, up);
+                                    has_cookie = true;
+                                }
+                            }
                             lighting->add_spot_light(lc->GetPosition(), lc->GetDirection(),
                                                      color, intensity, lc->GetRange(),
-                                                     outer_cos, shadow);
+                                                     outer_cos, inner_cos, shadow,
+                                                     cookie_vp, has_cookie);
+                            break;
+                        }
+                        case schizo::scene::LightType::Area: {
+                            // Rect lies in the entity's local XY plane; -Y so the
+                            // emitting normal points along the entity's forward (-Z).
+                            const glm::quat rot = lc->GetRotation();
+                            const glm::vec2 sz  = lc->GetAreaSize();
+                            const glm::vec3 right = rot * glm::vec3(sz.x * 0.5f, 0.0f, 0.0f);
+                            const glm::vec3 up    = rot * glm::vec3(0.0f, -sz.y * 0.5f, 0.0f);
+                            lighting->add_area_light(lc->GetPosition(), right, up, color,
+                                                     intensity, lc->GetRange(),
+                                                     lc->IsTwoSided());
                             break;
                         }
                         default: break;
@@ -3768,13 +5606,21 @@ int main() {
                                                     glm::vec3(1.0f, 0.95f, 0.85f),
                                                     1.5f, /*shadow=*/false);
                 }
+                if (lights_culled > 0) {
+                    static int light_cull_log = 0;
+                    if ((light_cull_log++ % 240) == 0)
+                        spdlog::debug("light cull: {}/{} local lights skipped (off-screen)",
+                                      lights_culled, lights_total);
+                }
             }
 
             // Build per-frame draw list from the editor scene's entities.
             // Entities with a MeshRendererComponent become DrawItems; others
             // (lights, empty parents) are skipped.
             mat_cache.prune(editor_scene.GetScene());
-            
+            terrain_cache.prune(editor_scene.GetScene());
+            terrain_gpu_cache.prune(editor_scene.GetScene());
+
             // CRITICAL FIX #5: Validate render graph before setting draw items
             if (!graph) {
                 spdlog::error("Render graph is null - skipping frame");
@@ -3792,7 +5638,7 @@ int main() {
             { GWS_PROFILE_ZONE("build_draw_items");
               schizo::editor::build_draw_items(
                   editor_scene.GetScene(), prim_cache, mat_cache, asset_cache,
-                  &device, mat_layout, mat_pool,
+                  terrain_cache, terrain_gpu_cache, &device, mat_layout, mat_pool,
                   opaque_draws, transparent_draws, &ecs_bridge); }
 
             if (!ecs_shadow_logged && ecs_bridge.entity_count() > 0) {
@@ -3907,6 +5753,63 @@ int main() {
             shadow_draws.insert(shadow_draws.end(), opaque_draws.begin(), opaque_draws.end());
             shadow_draws.insert(shadow_draws.end(), transparent_draws.begin(), transparent_draws.end());
 
+            // Stage 6: drive per-entity AudioSource/AudioListener components.
+            // The listener defaults to the editor camera (basis from the view
+            // matrix rows: right/up/-forward in world) when no AudioListener
+            // entity is active.
+            if (audio.running()) {
+                const glm::mat3 r(cam.view);
+                gws::audio::Listener cam_lis;
+                cam_lis.position    = cam.position;
+                cam_lis.forward     = -glm::vec3(r[0][2], r[1][2], r[2][2]);
+                cam_lis.up          =  glm::vec3(r[0][1], r[1][1], r[2][1]);
+                cam_lis.master_gain = 1.0f;
+
+                const bool play_mode = editor_state.scene_playback_manager &&
+                                       editor_state.scene_playback_manager->IsPlaying();
+                auto scene_for_audio = editor_state.editor_scene->GetScene();
+                // No occlusion in edit mode (scene colliders aren't in a physics
+                // world here). Play-mode scene occlusion is a follow-up.
+                audio_driver.update(scene_for_audio.get(), cam_lis, nullptr, delta_time, play_mode);
+            }
+
+            // N5 frame capture: when armed (from the Performance overlay),
+            // snapshot this frame's per-stage submission lists. One-shot + a
+            // single bool test when not armed, so it's free on normal frames.
+            {
+                auto& fc = gws::profile::FrameCapture::instance();
+                if (fc.begin(frame_count)) {
+                    const auto cap_list =
+                        [&](const char* pass,
+                            const std::vector<gws::renderer::gpu::DrawItem>& list) {
+                            for (const auto& di : list) {
+                                gws::profile::CapturedDraw d;
+                                d.pass    = pass;
+                                d.submesh = di.submesh_index;
+                                d.blend   = di.is_blend;
+                                char id[32];
+                                std::snprintf(id, sizeof id, "mesh@%p",
+                                              static_cast<const void*>(di.mesh));
+                                d.label = id;
+                                if (di.mesh) {
+                                    d.vertices = di.mesh->vertex_count();
+                                    const auto& subs = di.mesh->submeshes();
+                                    d.indices = (di.submesh_index < subs.size())
+                                        ? subs[di.submesh_index].index_count()
+                                        : di.mesh->index_count();
+                                }
+                                fc.add(std::move(d));
+                            }
+                        };
+                    cap_list("Geometry",    opaque_draws);
+                    cap_list("Transparent", transparent_draws);
+                    cap_list("Shadow",      shadow_draws);
+                    fc.end();
+                    spdlog::info("[frame-capture] frame {} -> {} draws, {} triangles",
+                                 frame_count, fc.last().draw_count(), fc.last().total_triangles());
+                }
+            }
+
             graph->begin_frame(cmd);
 
             // RT scene update — build BLAS for any newly-seen meshes and
@@ -3943,8 +5846,11 @@ int main() {
                 }
                 static int rt_log_throttle = 0;
                 if ((rt_log_throttle++ % 120) == 0) {
-                    spdlog::info("RT scene update: {} instances",
-                                 rt_scene->get_instance_count());
+                    // debug level: kept out of the default (info) console + the
+                    // Output panel so it doesn't spam every frame; raise the log
+                    // level to see it.
+                    spdlog::debug("RT scene update: {} instances",
+                                  rt_scene->get_instance_count());
                 }
             }
 
@@ -3974,6 +5880,13 @@ int main() {
                                            &calls, &tris);
                 });
             graph->execute_stage(cmd, RenderGraphStage::Geometry,   {});
+            // HZB occlusion: build the depth pyramid from THIS frame's depth
+            // (compute downsample chain) + copy the readback mip to a host
+            // buffer. pull_readback() next frame feeds test_visibility(), which
+            // ran at the top of THIS frame against the PREVIOUS frame's pyramid.
+            // Without this call the CPU HZB is never populated — the reason the
+            // occlusion test was previously dropping objects (garbage data).
+            if (hzb_culler) hzb_culler->build_and_readback(cmd);
             // SSAO compute dispatch — runs after the G-Buffer is populated
             // and before lighting samples the occlusion texture. Outside
             // the render graph because it's a compute pass and the graph
@@ -3988,13 +5901,81 @@ int main() {
                     ssao->execute(cmd, cam.view, cam.proj);
                 }
             }
+            // Cloud shadow map — produced before lighting so the deferred
+            // shading + light shafts can sample where clouds occlude the sun.
+            if (clouds) {
+                clouds->compute_shadow_map(cmd, cam.position);
+                lighting->set_cloud_shadow_params(clouds->get_shadow_params());
+            }
             graph->execute_stage(cmd, RenderGraphStage::Lighting,   {});
             // SSR — compute reflections + composite into HDR before
             // transparent fragments are drawn. Runs outside the render
             // graph because the graph models only render-pass stages and
             // SSR is a compute + render-pass pair owned by its own class.
             if (ssr) {
+                ssr->set_cloud_sky_enabled(clouds && clouds->clouds_visible());
                 ssr->execute(cmd, cam.view, cam.proj, cam.position);
+            }
+            // Water surfaces — collect every active WaterComponent and render
+            // them into the HDR target (before clouds/shafts so atmospherics
+            // layer on top of the water).
+            if (water_pass) {
+                water_pass->begin_frame();
+                if (auto wscene = editor_state.editor_scene->GetScene()) {
+                    for (const auto& went : wscene->GetEntities()) {
+                        if (!went || !went->IsActiveInHierarchy()) continue;
+                        // Standalone water surfaces.
+                        if (auto wc = went->GetComponent<schizo::scene::WaterComponent>()) {
+                            water_pass->add_water(
+                                went->GetTransform()->GetWorldPosition(),
+                                wc->GetSize(), wc->GetDeepColor(), wc->GetShallowColor(),
+                                wc->GetWaveHeight(), wc->GetWaveSpeed(), wc->GetWaveScale(),
+                                wc->GetClarity(), wc->GetReflectivity());
+                        }
+                        // Terrain-integrated water: one surface covering the
+                        // terrain rect at origin.y + water level.
+                        if (auto twc = went->GetComponent<schizo::scene::TerrainComponent>()) {
+                            if (twc->IsWaterEnabled()) {
+                                glm::vec3 base = went->GetTransform()->GetWorldPosition();
+                                base.y += twc->GetWaterLevel();
+                                water_pass->add_water(
+                                    base, glm::vec2(twc->GetSize()),
+                                    twc->GetWaterDeepColor(), twc->GetWaterShallowColor(),
+                                    twc->GetWaterWaveHeight(), twc->GetWaterWaveSpeed(),
+                                    twc->GetWaterWaveScale(), twc->GetWaterClarity(),
+                                    twc->GetWaterReflectivity());
+                            }
+                        }
+                    }
+                }
+                static float water_time = 0.0f;
+                water_time += delta_time;
+                water_pass->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                water_pass->execute(cmd, cam.view, cam.proj, cam.position, water_time);
+            }
+
+            // Volumetric clouds — distant sky layer; composite before the
+            // light shafts so shafts scatter in front of the clouds.
+            if (clouds) {
+                clouds->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                clouds->set_ambient(l_cfg.ambient_color);
+                clouds->execute(cmd, cam.view, cam.proj, cam.position);
+            }
+            // Volumetric sun lighting / light shafts — feed it the same sun +
+            // shadow VP the deferred lighting/shadow stage used, then march.
+            if (volumetric_light) {
+                volumetric_light->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                volumetric_light->set_shadow_matrix(shadow_view_proj);
+                if (clouds) volumetric_light->set_cloud_shadow_params(clouds->get_shadow_params());
+                volumetric_light->execute(cmd, cam.view, cam.proj, cam.position);
+            }
+            // Froxel fog — nearest homogeneous medium; composite last (over the
+            // shafts/clouds) so it fogs everything already lit this frame.
+            if (froxel_fog && froxel_fog->is_enabled()) {
+                froxel_fog->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                froxel_fog->set_shadow_matrix(shadow_view_proj);
+                froxel_fog->set_light_count(lighting->get_light_count());
+                froxel_fog->execute(cmd, cam.view, cam.proj, cam.position);
             }
             // Transparent stage uses a custom recorder so we can feed it
             // the back-to-front-sorted transparent draw list directly,
@@ -4046,8 +6027,11 @@ int main() {
             GWS_PROFILE_FRAME_END();
 #if GWS_PROFILE_ENABLED
             if (frame_count % 240 == 0)
-                spdlog::info("[profiler] {}",
-                             gws::profile::Profiler::instance().format_report());
+                // debug level: per-frame profiler breakdown stays out of the
+                // default console + Output panel (the Performance overlay shows
+                // live timings); raise the log level to see it here.
+                spdlog::debug("[profiler] {}",
+                              gws::profile::Profiler::instance().format_report());
 #endif
         }
 
@@ -4056,9 +6040,20 @@ int main() {
         // ----------------------------------------------------------------
         // Cleanup
         // ----------------------------------------------------------------
+        // Panels that own OS resources/threads go first: the ConPTY terminal
+        // joins its reader thread + kills the shell child.
+        spdlog::info("[exit] panels (terminal/console)...");
+        editor_state.terminal.reset();
+        editor_state.console.reset();
+
         // Stop the job workers before tearing down (joins all threads).
+        spdlog::info("[exit] audio.shutdown...");
+        audio.shutdown();   // stop + join the audio thread before teardown
+        spdlog::info("[exit] jobs.shutdown...");
         gws::jobs::JobSystem::instance().shutdown();
+        spdlog::info("[exit] device.wait_idle...");
         device.wait_idle();
+        spdlog::info("[exit] imgui/render teardown...");
 
         if (viewport_ds != VK_NULL_HANDLE)
             ImGui_ImplVulkan_RemoveTexture(viewport_ds);
@@ -4081,6 +6076,8 @@ int main() {
         // before the descriptor pool / layout are destroyed.
         mat_cache.clear();
         asset_cache.clear();
+        terrain_cache.clear();        // terrain chunk meshes (GPU buffers)
+        terrain_gpu_cache.clear();    // splat materials + textures
         prim_cache.cube.reset();
         prim_cache.plane.reset();
         prim_cache.sphere.reset();
@@ -4090,15 +6087,37 @@ int main() {
         vkDestroyDescriptorPool(device.get_device(), mat_pool, nullptr);
         vkDestroyDescriptorSetLayout(device.get_device(), mat_layout, nullptr);
 
+        // EVERY Vulkan-resource object must be destroyed BEFORE the device.
+        // These are locals declared after `device`, so without explicit resets
+        // their destructors would run AFTER device.shutdown() — the long-
+        // standing exit crash (vkDestroyPipeline on a dead device inside
+        // VulkanHzbCuller::destroy, and silently-invalid teardown for the
+        // other passes).
+        spdlog::info("[exit] releasing render passes...");
+        hzb_culler.reset();
+        occlusion_culler.reset();
+        rt_scene.reset();
+        water_pass.reset();
+        froxel_fog.reset();
+        clouds.reset();
+        volumetric_light.reset();
+        ssr.reset();
+        vxao.reset();
+        ssao.reset();
+        env_map.reset();
+        transparent.reset();
         graph.reset();
         post_processing.reset();
         shadow_map.reset();
         lighting.reset();
         g_buffer.reset();
 
+        spdlog::info("[exit] device.shutdown...");
         device.shutdown();
+        spdlog::info("[exit] glfw teardown...");
         glfwDestroyWindow(glfw_window);
         glfwTerminate();
+        spdlog::info("[exit] clean — running remaining destructors");
 
         return 0;
     }

@@ -1,0 +1,99 @@
+#version 450
+// Cloud shadow map: a top-down 2D transmittance texture. For each texel (a
+// world (x,z) ground column near the camera) it marches UP along the sun
+// direction through the cloud slab and stores how much sunlight survives
+// (Beer-Lambert transmittance). The deferred lighting pass and the light-shaft
+// pass project world points into this map to know where clouds occlude the sun
+// → cloud shadows on the ground + god rays through the gaps.
+//
+// Uses the SAME density function as cloud_raymarch.comp (kept in sync). The
+// Params block mirrors that shader's UBO; misc.w carries the map half-extent.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std140) uniform Params {
+    mat4 inv_view_proj;
+    vec4 camera_pos;
+    vec4 sun_dir;
+    vec4 sun_color;
+    vec4 ambient;
+    vec4 layer;    // x=earth_radius, y=cloud_bottom, z=cloud_top, w=coverage
+    vec4 march;    // x=density, y=extinction, z=steps, w=light_steps
+    vec4 scales;   // x=shape_scale, y=detail_scale, z=detail_strength, w=powder
+    vec4 phase;    // x=hg_forward, y=hg_back, z=ambient_scale, w=max_march
+    vec4 wind;     // xyz=wind dir, w=time
+    vec4 misc;     // w=map half-extent (world units)
+} ub;
+
+layout(set = 0, binding = 1) uniform sampler3D shapeNoise;
+layout(set = 0, binding = 2) uniform sampler3D detailNoise;
+layout(set = 0, binding = 3, r16f) uniform writeonly image2D dstShadow;
+
+float remap(float v, float lo, float hi, float nlo, float nhi) {
+    return nlo + (v - lo) / max(hi - lo, 1e-4) * (nhi - nlo);
+}
+float height_gradient(float hf) {
+    float bottom = clamp(remap(hf, 0.0, 0.10, 0.0, 1.0), 0.0, 1.0);
+    float top    = clamp(remap(hf, 0.20, 1.0, 1.0, 0.0), 0.0, 1.0);
+    return bottom * top;
+}
+
+vec3 g_center;
+
+float sample_density(vec3 p) {
+    float radius = length(p - g_center);
+    float h = radius - ub.layer.x;
+    float hf = (h - ub.layer.y) / max(ub.layer.z - ub.layer.y, 1e-3);
+    if (hf < 0.0 || hf > 1.0) return 0.0;
+
+    vec3 wind_off = ub.wind.xyz * ub.wind.w;
+    vec3 sp = (p + wind_off) * ub.scales.x;
+    vec4 shape = texture(shapeNoise, sp);
+    float base = shape.r;
+    float fbm = shape.g * 0.625 + shape.b * 0.25 + shape.a * 0.125;
+    base = remap(base, fbm - 1.0, 1.0, 0.0, 1.0);
+
+    float cov = ub.layer.w;
+    base = remap(base, 1.0 - cov, 1.0, 0.0, 1.0);
+    if (base <= 0.0) return 0.0;
+    base *= height_gradient(hf);
+
+    vec3 dp = (p + wind_off) * ub.scales.y;
+    vec3 det = texture(detailNoise, dp).rgb;
+    float det_fbm = det.r * 0.625 + det.g * 0.25 + det.b * 0.125;
+    float erosion = det_fbm * ub.scales.z;
+    base = remap(base, erosion, 1.0, 0.0, 1.0);
+
+    return clamp(base, 0.0, 1.0) * ub.march.x;
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(dstShadow);
+    if (px.x >= size.x || px.y >= size.y) return;
+
+    float he = ub.misc.w;
+    vec2 uv = (vec2(px) + 0.5) / vec2(size);
+    vec2 cam_xz = ub.camera_pos.xz;
+    vec3 ground = vec3(cam_xz.x + (uv.x * 2.0 - 1.0) * he,
+                       0.0,
+                       cam_xz.y + (uv.y * 2.0 - 1.0) * he);
+    g_center = vec3(cam_xz.x, -ub.layer.x, cam_xz.y);
+
+    vec3 L = normalize(-ub.sun_dir.xyz);
+    float trans = 1.0;
+    if (L.y > 0.05) {
+        // Slab entry/exit along L (flat-altitude approximation: y = t*L.y).
+        float t_bot = ub.layer.y / L.y;
+        float t_top = ub.layer.z / L.y;
+        const int LS = 12;
+        float dt = (t_top - t_bot) / float(LS);
+        float od = 0.0;
+        for (int i = 0; i < LS; ++i) {
+            vec3 p = ground + L * (t_bot + (float(i) + 0.5) * dt);
+            od += sample_density(p) * dt;
+        }
+        trans = exp(-od * ub.march.y);
+    }
+    imageStore(dstShadow, px, vec4(trans));
+}

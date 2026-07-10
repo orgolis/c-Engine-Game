@@ -407,12 +407,18 @@ void VulkanShadowMap::create_caster_pipeline() {
     VkPipelineRasterizationStateCreateInfo rs{};
     rs.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rs.polygonMode             = VK_POLYGON_MODE_FILL;
-    rs.cullMode                = VK_CULL_MODE_FRONT_BIT; // standard shadow trick to avoid acne
+    // Render BOTH faces into the shadow map. The usual "cull front faces" acne
+    // trick assumes consistent winding, but this engine's content is MIXED
+    // CW/CCW (OBJ/glTF/USD imports) — front-culling there drops whole faces of
+    // some casters, giving fragmented/broken shadows. CULL_NONE is winding-
+    // independent; the (now larger) depth bias handles the self-shadow acne
+    // that front-culling used to avoid.
+    rs.cullMode                = VK_CULL_MODE_NONE;
     rs.frontFace               = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth               = 1.0f;
     rs.depthBiasEnable         = VK_TRUE;
-    rs.depthBiasConstantFactor = 1.25f;
-    rs.depthBiasSlopeFactor    = 1.75f;
+    rs.depthBiasConstantFactor = 2.0f;   // primary acne control (was 1.25; +front faces now)
+    rs.depthBiasSlopeFactor    = 3.0f;   // slope-scaled kills grazing-angle acne
 
     VkPipelineMultisampleStateCreateInfo ms{};
     ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;

@@ -104,6 +104,12 @@ struct AudioSource {
     float    radius = 10.0f;
     uint32_t flags  = 0;         // bit0 looping, bit1 spatial, bit2 playing
 };
+// The "ears": one active listener entity (usually the camera/player) drives
+// the audio mixer's pan/attenuation. Pose comes from the entity's Transform.
+struct AudioListener {
+    float    master_gain = 1.0f;
+    uint32_t flags       = 1;    // bit0 active
+};
 
 // ---- Networking (Stage 7) ----
 struct NetId {
@@ -214,6 +220,11 @@ GWS_REFLECT_BEGIN(schizo::ecs::AudioSource)
     GWS_REFLECT_FIELD(flags)
 GWS_REFLECT_END()
 
+GWS_REFLECT_BEGIN(schizo::ecs::AudioListener)
+    GWS_REFLECT_FIELD(master_gain)
+    GWS_REFLECT_FIELD(flags)
+GWS_REFLECT_END()
+
 GWS_REFLECT_BEGIN(schizo::ecs::NetId)
     GWS_REFLECT_FIELD(value)
     GWS_REFLECT_FIELD(owner)
@@ -249,6 +260,7 @@ inline void register_core_components() {
     gws::reflect::reflect<Skeleton>();
     gws::reflect::reflect<AnimationState>();
     gws::reflect::reflect<AudioSource>();
+    gws::reflect::reflect<AudioListener>();
     gws::reflect::reflect<NetId>();
     gws::reflect::reflect<AbilityState>();
     gws::reflect::reflect<Health>();

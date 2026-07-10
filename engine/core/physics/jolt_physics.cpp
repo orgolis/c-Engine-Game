@@ -21,6 +21,8 @@
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayerInterfaceTable.h>
 #include <Jolt/Physics/Collision/BroadPhase/ObjectVsBroadPhaseLayerFilterTable.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
+#include <Jolt/Physics/Collision/RayCast.h>
+#include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Geometry/IndexedTriangle.h>
 #include <Jolt/Math/Float3.h>
 
@@ -244,6 +246,12 @@ void PhysicsWorld::set_transform(BodyId id, const glm::vec3& pos, const glm::qua
         EActivation::Activate);
 }
 
+void PhysicsWorld::move_kinematic(BodyId id, const glm::vec3& pos, const glm::quat& rot, float dt) {
+    if (id == kInvalidBody || dt <= 0.0f) return;
+    impl_->system.GetBodyInterface().MoveKinematic(
+        BodyID(id), RVec3(pos.x, pos.y, pos.z), Quat(rot.x, rot.y, rot.z, rot.w), dt);
+}
+
 void PhysicsWorld::set_linear_velocity(BodyId id, const glm::vec3& v) {
     if (id == kInvalidBody) return;
     impl_->system.GetBodyInterface().SetLinearVelocity(BodyID(id), Vec3(v.x, v.y, v.z));
@@ -252,6 +260,32 @@ void PhysicsWorld::set_linear_velocity(BodyId id, const glm::vec3& v) {
 glm::vec3 PhysicsWorld::get_linear_velocity(BodyId id) const {
     if (id == kInvalidBody) return glm::vec3(0.0f);
     return to_glm(impl_->system.GetBodyInterface().GetLinearVelocity(BodyID(id)));
+}
+
+void PhysicsWorld::add_impulse(BodyId id, const glm::vec3& impulse) {
+    if (id == kInvalidBody) return;
+    impl_->system.GetBodyInterface().AddImpulse(
+        BodyID(id), Vec3(impulse.x, impulse.y, impulse.z));
+}
+
+RayHit PhysicsWorld::raycast(const glm::vec3& origin, const glm::vec3& direction,
+                             float max_distance) const {
+    RayHit out;
+    const float len = glm::length(direction);
+    if (len < 1e-6f || max_distance <= 0.0f) return out;
+    const glm::vec3 dir = direction / len;                 // unit
+    const Vec3 seg(dir.x * max_distance, dir.y * max_distance, dir.z * max_distance);
+
+    // RRayCast = origin + the full segment vector; result fraction is along it.
+    RRayCast ray(RVec3(origin.x, origin.y, origin.z), seg);
+    RayCastResult result;
+    if (impl_->system.GetNarrowPhaseQuery().CastRay(ray, result)) {
+        out.hit      = true;
+        out.distance = result.mFraction * max_distance;
+        out.position = origin + dir * out.distance;
+        out.body     = static_cast<BodyId>(result.mBodyID.GetIndexAndSequenceNumber());
+    }
+    return out;
 }
 
 // --- Character controller ---

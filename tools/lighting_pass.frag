@@ -37,6 +37,10 @@ layout(set = 0, binding = 12) uniform sampler2D   ssaoTex;
 // pc.rt_shadow_enabled is non-zero; descriptor is allowed to be unbound
 // otherwise (controlled by C++ side via set_tlas).
 layout(set = 0, binding = 13) uniform accelerationStructureEXT scene_tlas;
+layout(set = 0, binding = 14) uniform sampler2D cloudShadow; // top-down sun transmittance
+layout(set = 0, binding = 15) uniform sampler2D ltc1Tex;     // LTC inverse-M (area lights)
+layout(set = 0, binding = 16) uniform sampler2D ltc2Tex;     // LTC GGX norm / fresnel / horizon
+layout(set = 0, binding = 17) uniform sampler2D cookieTex;   // spot-light cookie / gobo mask
 
 layout(push_constant) uniform Constants {
     vec3  cameraPos;
@@ -48,7 +52,16 @@ layout(push_constant) uniform Constants {
     float rtShadowEnabled; // 1.0 → use ray-query shadow path
     float rtAoEnabled;     // 1.0 → use ray-query AO instead of SSAO texture
     mat4  invViewProj;
+    vec4  cloudParams;     // x=center.x, y=center.z, z=half_extent, w=enabled
 } pc;
+
+// How much sun reaches `worldPos` through the clouds overhead (1 = clear).
+float cloudShadowFactor(vec3 worldPos) {
+    if (pc.cloudParams.w < 0.5) return 1.0;
+    vec2 uv = (worldPos.xz - pc.cloudParams.xy) / (2.0 * pc.cloudParams.z) + 0.5;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
+    return clamp(texture(cloudShadow, uv).r, 0.0, 1.0);
+}
 
 const float PI = 3.14159265359;
 
@@ -199,6 +212,37 @@ float rayQueryAO(vec3 worldPos, vec3 N, vec2 px) {
     return 1.0 - (occluded / float(AO_SAMPLES));
 }
 
+// Screen-space contact shadows (Stage 3.4): a short world-space march toward
+// the light, projected back to screen and tested against the G-buffer position
+// buffer. Adds the fine-scale contact darkening cascaded shadow maps miss
+// (object bases, crevices). Only used on the NON-RT path — ray-query shadows
+// are already contact-accurate. Costs one mat4 inverse per shaded pixel on
+// that path (the push-constant block is at the 128-byte limit, so the forward
+// view-proj cannot be passed in).
+float contactShadow(vec3 worldPos, vec3 N, vec3 Ldir) {
+    mat4 viewProj = inverse(pc.invViewProj);
+    const int   STEPS    = 8;
+    const float MAX_DIST = 0.6;    // march length (m) — contact-scale only
+    const float THICK    = 0.35;   // assumed occluder thickness (m)
+    for (int i = 1; i <= STEPS; ++i) {
+        vec3 p = worldPos + Ldir * (MAX_DIST * float(i) / float(STEPS))
+                          + N * 0.02;
+        vec4 clip = viewProj * vec4(p, 1.0);
+        if (clip.w <= 0.0) break;
+        vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
+        vec4 sp = texture(positionTex, uv);
+        if (sp.w < 0.5) continue;                       // sky pixel
+        float sceneDist  = length(sp.xyz - pc.cameraPos);
+        float sampleDist = length(p - pc.cameraPos);
+        // Occluded when the scene surface is in front of the march point but
+        // within a plausible thickness (avoids darkening from far background).
+        if (sceneDist < sampleDist - 0.02 && sampleDist - sceneDist < THICK)
+            return 0.0;
+    }
+    return 1.0;
+}
+
 float directionalShadow(vec3 worldPos, vec3 normal, Light L) {
     if (L.castsShadow == 0u) return 1.0;
     if (pc.rtShadowEnabled > 0.5) {
@@ -210,11 +254,17 @@ float directionalShadow(vec3 worldPos, vec3 normal, Light L) {
     vec4 fragPosLS = L.shadowMatrix * vec4(worldPos, 1.0);
     vec3 proj = fragPosLS.xyz / max(fragPosLS.w, 1e-4);
     proj.xy = proj.xy * 0.5 + 0.5;
-    if (proj.z > 1.0 || proj.z < 0.0 ||
-        proj.x < 0.0 || proj.x > 1.0 ||
-        proj.y < 0.0 || proj.y > 1.0) return 1.0;
-    float bias = max(0.05 * (1.0 - dot(normal, -L.direction.xyz)), 0.005);
-    return PCF(shadowMap, proj.xy, float(L.shadowMapIndex), proj.z, bias);
+    float sm = 1.0;
+    if (proj.z <= 1.0 && proj.z >= 0.0 &&
+        proj.x >= 0.0 && proj.x <= 1.0 &&
+        proj.y >= 0.0 && proj.y <= 1.0) {
+        float bias = max(0.05 * (1.0 - dot(normal, -L.direction.xyz)), 0.005);
+        sm = PCF(shadowMap, proj.xy, float(L.shadowMapIndex), proj.z, bias);
+    }
+    // Contact shadows refine the mapped result near occluders (non-RT only).
+    if (sm > 0.0)
+        sm *= contactShadow(worldPos, normal, normalize(-L.direction.xyz));
+    return sm;
 }
 
 float pointShadow(vec3 worldPos, vec3 normal, Light L) {
@@ -228,6 +278,21 @@ float pointShadow(vec3 worldPos, vec3 normal, Light L) {
     vec3 fragToLight = worldPos - L.position.xyz;
     float closest = texture(pointShadowMap, fragToLight).r * L.colorRadius.w;
     return length(fragToLight) - 0.005 > closest ? 0.0 : 1.0;
+}
+
+// Spot-light shadow. On RT GPUs (the primary path here) traces a ray toward the
+// spot's position — the correct occlusion test for a positional light (the old
+// path reused directionalShadow, which traced a parallel ray and looked wrong).
+// Without RT there is no per-spot shadow map, so it returns lit (no shadow).
+float spotShadow(vec3 worldPos, vec3 normal, Light L) {
+    if (L.castsShadow == 0u) return 1.0;
+    if (pc.rtShadowEnabled > 0.5) {
+        vec3 to_light = L.position.xyz - worldPos;
+        float dist = length(to_light);
+        if (dist < 1e-4) return 1.0;
+        return rayQueryShadow(worldPos, normal, to_light / dist, dist - 0.01);
+    }
+    return 1.0;
 }
 
 vec3 evaluateLight(Light L, vec3 N, vec3 V, vec3 worldPos,
@@ -258,10 +323,142 @@ vec3 evaluateLight(Light L, vec3 N, vec3 V, vec3 worldPos,
     float denominator = 4.0 * NdotV * NdotL + 1e-4;
     vec3 specular = numerator / denominator;
     vec3 radiance = L.colorRadius.xyz * L.direction.w * attenuation;
-    float shadow  = (L.position.w == 1.0)
-                        ? pointShadow(worldPos, N, L)
-                        : directionalShadow(worldPos, N, L);
+    // Spot cone falloff (smooth inner→outer). Without this a spot light is
+    // omnidirectional like a point. attenuation.w = cos(outer angle);
+    // _pad0 of the GLSL struct maps to the cookie flag, _pad1 = cos(inner) bits.
+    if (L.position.w == 2.0) {
+        float cosA   = dot(-lightDir, normalize(L.direction.xyz));
+        float outerC = L.attenuation.w;
+        float innerC = uintBitsToFloat(L._pad1);
+        float spotF  = clamp((cosA - outerC) / max(innerC - outerC, 1e-4), 0.0, 1.0);
+        radiance *= spotF * spotF;
+    }
+    // Spot cookie/gobo: project the surface through the spot's matrix and
+    // modulate the light by the cookie texture. Outside the projection frustum
+    // is dark, which also gives the cookie-spot a defined cone shape.
+    if (L.position.w == 2.0 && L._pad0 != 0u) {
+        vec4 cp = L.shadowMatrix * vec4(worldPos, 1.0);
+        if (cp.w > 0.0) {
+            vec2 cuv = (cp.xy / cp.w) * 0.5 + 0.5;
+            if (cuv.x >= 0.0 && cuv.x <= 1.0 && cuv.y >= 0.0 && cuv.y <= 1.0)
+                radiance *= texture(cookieTex, cuv).rgb;
+            else
+                radiance = vec3(0.0);
+        } else {
+            radiance = vec3(0.0);
+        }
+    }
+    float shadow;
+    if (L.position.w == 1.0)      shadow = pointShadow(worldPos, N, L);
+    else if (L.position.w == 2.0) shadow = spotShadow(worldPos, N, L);
+    else                          shadow = directionalShadow(worldPos, N, L);
+    // The directional (sun) light is additionally occluded by clouds overhead.
+    if (L.position.w == 0.0) shadow *= cloudShadowFactor(worldPos);
     return (kD * albedo / PI + specular) * radiance * NdotL * shadow;
+}
+
+// ---------------------------------------------------------------------------
+// Rectangular area lights via Linearly Transformed Cosines (Heitz et al.).
+// LTC1/LTC2 are the fitted 64x64 lookup tables (ltc1Tex / ltc2Tex). A Light
+// with position.w == 3 encodes: center (position.xyz), half-edge vectors
+// (direction.xyz = right, attenuation.xyz = up), intensity (direction.w),
+// colour (colorRadius.xyz), range (colorRadius.w), two_sided (attenuation.w).
+// ---------------------------------------------------------------------------
+const float LTC_LUT_SIZE  = 64.0;
+const float LTC_LUT_SCALE = (LTC_LUT_SIZE - 1.0) / LTC_LUT_SIZE;
+const float LTC_LUT_BIAS  = 0.5 / LTC_LUT_SIZE;
+
+vec3 ltcIntegrateEdgeVec(vec3 v1, vec3 v2) {
+    float x = dot(v1, v2);
+    float y = abs(x);
+    float a = 0.8543985 + (0.4965155 + 0.0145206 * y) * y;
+    float b = 3.4175940 + (4.1616724 + y) * y;
+    float v = a / b;
+    float theta_sintheta = (x > 0.0) ? v
+                         : 0.5 * inversesqrt(max(1.0 - x * x, 1e-7)) - v;
+    return cross(v1, v2) * theta_sintheta;
+}
+
+// Integrate the (clipped) rectangle against the cosine lobe transformed by Minv.
+float ltcEvaluate(vec3 N, vec3 V, vec3 P, mat3 Minv, vec3 points[4], bool twoSided) {
+    vec3 T1 = normalize(V - N * dot(V, N));
+    vec3 T2 = cross(N, T1);
+    Minv = Minv * transpose(mat3(T1, T2, N));
+
+    vec3 L0 = Minv * (points[0] - P);
+    vec3 L1 = Minv * (points[1] - P);
+    vec3 L2 = Minv * (points[2] - P);
+    vec3 L3 = Minv * (points[3] - P);
+
+    vec3 dir = points[0] - P;
+    vec3 lightNormal = cross(points[1] - points[0], points[3] - points[0]);
+    bool behind = (dot(dir, lightNormal) < 0.0);
+
+    L0 = normalize(L0); L1 = normalize(L1);
+    L2 = normalize(L2); L3 = normalize(L3);
+
+    vec3 vsum = vec3(0.0);
+    vsum += ltcIntegrateEdgeVec(L0, L1);
+    vsum += ltcIntegrateEdgeVec(L1, L2);
+    vsum += ltcIntegrateEdgeVec(L2, L3);
+    vsum += ltcIntegrateEdgeVec(L3, L0);
+
+    float len = length(vsum);
+    float z   = vsum.z / max(len, 1e-7);
+    if (behind) z = -z;
+
+    vec2 uv = vec2(z * 0.5 + 0.5, len);
+    uv = uv * LTC_LUT_SCALE + LTC_LUT_BIAS;
+    float scale = texture(ltc2Tex, uv).w;
+
+    float sum = len * scale;
+    if (!behind && !twoSided) sum = 0.0;
+    return sum;
+}
+
+vec3 evaluateAreaLight(Light L, vec3 N, vec3 V, vec3 P,
+                       vec3 albedo, float roughness, float metallic) {
+    vec3  center    = L.position.xyz;
+    vec3  right     = L.direction.xyz;
+    vec3  up        = L.attenuation.xyz;
+    float intensity = L.direction.w;
+    vec3  lightCol  = L.colorRadius.xyz;
+    float range     = L.colorRadius.w;
+    bool  twoSided  = L.attenuation.w > 0.5;
+
+    vec3 points[4];
+    points[0] = center - right - up;
+    points[1] = center + right - up;
+    points[2] = center + right + up;
+    points[3] = center - right + up;
+
+    float NdotV = clamp(dot(N, V), 0.0, 1.0);
+    vec2  cuv = vec2(roughness, sqrt(clamp(1.0 - NdotV, 0.0, 1.0)));
+    cuv = cuv * LTC_LUT_SCALE + LTC_LUT_BIAS;
+    vec4 t1 = texture(ltc1Tex, cuv);
+    vec4 t2 = texture(ltc2Tex, cuv);
+
+    mat3 Minv = mat3(
+        vec3(t1.x, 0.0, t1.y),
+        vec3(0.0,  1.0, 0.0),
+        vec3(t1.z, 0.0, t1.w));
+
+    float spec = ltcEvaluate(N, V, P, Minv, points, twoSided);
+    vec3  F0   = mix(vec3(0.04), albedo, metallic);
+    vec3  specCol = (F0 * t2.x + (1.0 - F0) * t2.y) * spec;
+
+    float diff = ltcEvaluate(N, V, P, mat3(1.0), points, twoSided);
+    vec3  diffCol = albedo * (1.0 - metallic) * diff;
+
+    vec3 result = lightCol * intensity * (specCol + diffCol) * (1.0 / (2.0 * PI));
+
+    // Soft distance falloff using the configured range.
+    if (range > 0.0) {
+        float d  = length(center - P);
+        float a  = clamp(1.0 - (d / range) * (d / range), 0.0, 1.0);
+        result  *= a * a;
+    }
+    return result;
 }
 
 void main() {
@@ -306,7 +503,11 @@ void main() {
 
     vec3 direct  = vec3(0.0);
     for (uint i = 0u; i < pc.lightCount; ++i) {
-        direct += evaluateLight(lightBuffer.lights[i], N, V, worldPos, albedo, roughness, metallic);
+        Light Lt = lightBuffer.lights[i];
+        if (Lt.position.w == 3.0)   // area (rect) light → LTC
+            direct += evaluateAreaLight(Lt, N, V, worldPos, albedo, roughness, metallic);
+        else
+            direct += evaluateLight(Lt, N, V, worldPos, albedo, roughness, metallic);
     }
     vec3 color = (ambient + direct) * occlusion + emissive;
 

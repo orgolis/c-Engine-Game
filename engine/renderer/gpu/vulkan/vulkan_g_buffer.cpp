@@ -11,6 +11,7 @@
 #include "vulkan_render_graph.h" // for DrawItem
 #include "gbuffer_demo_spirv.h"   // pre-compiled SPIR-V fallback for GCC builds
 #include "gbuffer_scene_spirv.h"  // pre-compiled SPIR-V fallback for GCC builds
+#include "gbuffer_terrain_spirv.h" // terrain splat-blend pipeline (SPIR-V)
 #include "vulkan_occlusion_culler.h"
 #include "vulkan_hzb_culler.h"
 #include "culling.h" // Frustum for per-meshlet culling
@@ -224,6 +225,9 @@ std::unique_ptr<VulkanGBuffer> VulkanGBuffer::create(VulkanDevice* device,
         // bind material textures, so there's no point creating it.
         if (config.material_set_layout != VK_NULL_HANDLE) {
             gbuffer->create_scene_pipeline();
+            // Terrain splat pipeline reuses the scene pipeline layout, so it
+            // must be built after create_scene_pipeline().
+            gbuffer->create_terrain_pipeline();
         }
 
         spdlog::info("VulkanGBuffer created: {}x{} (scene pipeline: {})",
@@ -817,6 +821,108 @@ void VulkanGBuffer::create_scene_pipeline() {
     }
 }
 
+void VulkanGBuffer::create_terrain_pipeline() {
+    VkDevice vk_device = device_->get_device();
+
+    // GCC builds can't compile GLSL at runtime → always use the precompiled
+    // SPIR-V. The terrain vertex stage is byte-identical to the scene vertex
+    // stage but kept as its own module for a self-contained shader pair.
+    auto vert = shader_registry_->create_from_spirv(
+        kGBufferTerrainVertSpv, kGBufferTerrainVertSpv_size,
+        ShaderStage::Vertex, "gbuffer_terrain.vert");
+    auto frag = shader_registry_->create_from_spirv(
+        kGBufferTerrainFragSpv, kGBufferTerrainFragSpv_size,
+        ShaderStage::Fragment, "gbuffer_terrain.frag");
+    if (!vert || !frag) {
+        spdlog::error("VulkanGBuffer: failed to create terrain shaders; terrain splat disabled");
+        return;
+    }
+
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
+    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vert->handle;
+    stages[0].pName  = "main";
+    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = frag->handle;
+    stages[1].pName  = "main";
+
+    auto binding = Mesh::vertex_binding();
+    auto attrs   = Mesh::vertex_attributes();
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vi.vertexBindingDescriptionCount   = 1;
+    vi.pVertexBindingDescriptions      = &binding;
+    vi.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrs.size());
+    vi.pVertexAttributeDescriptions    = attrs.data();
+
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    std::array<VkDynamicState, 2> dyn_states{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn{};
+    dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = static_cast<uint32_t>(dyn_states.size());
+    dyn.pDynamicStates    = dyn_states.data();
+
+    VkPipelineViewportStateCreateInfo vp{};
+    vp.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vp.viewportCount = 1;
+    vp.scissorCount  = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode    = VK_CULL_MODE_NONE; // terrain can be grazed from below
+    rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth   = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable  = VK_TRUE;
+    ds.depthWriteEnable = VK_TRUE;
+    ds.depthCompareOp   = VK_COMPARE_OP_LESS;
+
+    std::array<VkPipelineColorBlendAttachmentState, 4> cbas{};
+    for (auto& cba : cbas) {
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        cba.blendEnable    = VK_FALSE;
+    }
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = static_cast<uint32_t>(cbas.size());
+    cb.pAttachments    = cbas.data();
+
+    VkGraphicsPipelineCreateInfo info{};
+    info.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    info.stageCount          = static_cast<uint32_t>(stages.size());
+    info.pStages             = stages.data();
+    info.pVertexInputState   = &vi;
+    info.pInputAssemblyState = &ia;
+    info.pViewportState      = &vp;
+    info.pRasterizationState = &rs;
+    info.pMultisampleState   = &ms;
+    info.pDepthStencilState  = &ds;
+    info.pColorBlendState    = &cb;
+    info.pDynamicState       = &dyn;
+    info.layout              = scene_pipeline_layout_; // shared with scene pipeline
+    info.renderPass          = render_pass_;
+    info.subpass             = 0;
+
+    if (vkCreateGraphicsPipelines(vk_device, VK_NULL_HANDLE, 1, &info, nullptr,
+                                  &terrain_pipeline_) != VK_SUCCESS) {
+        spdlog::error("VulkanGBuffer: failed to create terrain pipeline; terrain splat disabled");
+        terrain_pipeline_ = VK_NULL_HANDLE;
+    }
+}
+
 void VulkanGBuffer::create_demo_vertex_buffer() {
     VkDevice vk_device = device_->get_device();
     constexpr VkDeviceSize bytes = sizeof(kDemoTriangle);
@@ -932,11 +1038,13 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
             continue;
         }
 
-        // Pick pipeline: cull-back for trustworthy CCW meshes, cull-none
-        // for untrusted (OBJ-loaded) meshes. Rebind only when changing.
-        VkPipeline pipeline = d.mesh->is_double_sided()
-                                  ? scene_pipeline_none_
-                                  : scene_pipeline_back_;
+        // Pick pipeline: terrain splat for terrain draws (when available),
+        // else cull-back for trustworthy CCW meshes, cull-none for untrusted
+        // (OBJ-loaded) meshes. Rebind only when changing.
+        VkPipeline pipeline =
+            (d.is_terrain && terrain_pipeline_ != VK_NULL_HANDLE) ? terrain_pipeline_
+            : d.mesh->is_double_sided()                           ? scene_pipeline_none_
+                                                                  : scene_pipeline_back_;
         if (pipeline != last_pipeline) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             last_pipeline = pipeline;
@@ -1062,6 +1170,10 @@ void VulkanGBuffer::cleanup() {
     if (scene_pipeline_none_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(vk_device, scene_pipeline_none_, nullptr);
         scene_pipeline_none_ = VK_NULL_HANDLE;
+    }
+    if (terrain_pipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(vk_device, terrain_pipeline_, nullptr);
+        terrain_pipeline_ = VK_NULL_HANDLE;
     }
     if (scene_pipeline_layout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(vk_device, scene_pipeline_layout_, nullptr);

@@ -13,6 +13,7 @@ target_include_directories(editor
         ${CMAKE_SOURCE_DIR}/third_party/imgui
         ${CMAKE_SOURCE_DIR}/third_party/imgui/backends
         ${CMAKE_SOURCE_DIR}/third_party/glfw/include
+        ${CMAKE_SOURCE_DIR}/third_party/pocketpy   # Python script backend (Stage 12)
 )
 
 # Link libraries
@@ -28,8 +29,10 @@ target_link_libraries(editor
         gws_jobs           # work-stealing job system (Stage 0.3)
         gws_profiler       # core CPU profiler - scoped zones (Stage 0.6)
         gws_ecs            # ECS World + components (Stage 1)
+        gws_serialization  # reflection-driven archive (net snapshots, Stage 7)
         gws_asset_pipeline # cooked-asset bundles (Stage 2)
         gws_physics        # Jolt-backed rigid bodies + character (Stage 4)
+        gws_audio          # miniaudio device + spatial voice mixer (Stage 6)
 )
 
 # Add source files
@@ -48,7 +51,15 @@ target_sources(editor
         src/character_controller_panel.cpp
         src/ability_system_panel.cpp
         src/network_system_panel.cpp
+        src/net_session.cpp
+        src/script_system.cpp
+        src/script_host_python.cpp
+        src/script_host_cpp.cpp
+        src/script_host_cs.cpp
+        src/script_api_editor.cpp
         src/scene_playback_manager.cpp
+        src/terminal_panel.cpp
+        src/console_panel.cpp
         # ImGui core
         ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui.cpp
         ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_demo.cpp

@@ -277,12 +277,20 @@ private:
     VkPipeline       scene_pipeline_none_        = VK_NULL_HANDLE;
     VkPipelineLayout scene_pipeline_layout_      = VK_NULL_HANDLE;
 
+    /// Terrain splat pipeline. Shares `scene_pipeline_layout_` (same set=1
+    /// material layout + ScenePushConstants) but uses the terrain splat-blend
+    /// fragment shader. Cull-none (terrain is viewed from above but the brim
+    /// can be grazed from below). Selected for `DrawItem::is_terrain` draws.
+    /// VK_NULL_HANDLE when no material layout was supplied (draw_items skips).
+    VkPipeline       terrain_pipeline_           = VK_NULL_HANDLE;
+
     // Helper functions
     VkFormat format_to_vk(GBufferFormat fmt);
     void create_render_pass();
     void create_framebuffer();
     void create_demo_pipeline();
     void create_scene_pipeline();
+    void create_terrain_pipeline();
     void create_demo_vertex_buffer();
     void cleanup();
 };
