@@ -3,6 +3,7 @@
 #include "entity.h"
 #include <glm/glm.hpp>
 #include <memory>
+#include <string>
 
 namespace schizo::scene {
 
@@ -126,6 +127,16 @@ public:
     /// G-Buffer actually receives.
     glm::vec3 GetEmissiveLinear() const { return emissive_ * emissive_intensity_; }
 
+    // ---- Albedo (base colour) texture --------------------------------
+    // Optional path to a base-colour texture for this primitive. When set, the
+    // editor's EntityMaterialCache loads it through the TextureManager (mipped,
+    // sRGB, deduplicated, hot-reloadable) and binds it as the material's
+    // base-colour slot; `color_` then multiplies the sampled texel. Empty = the
+    // flat `color_` only (shared white default).
+    const std::string& GetAlbedoTexturePath() const { return albedo_texture_path_; }
+    void SetAlbedoTexturePath(const std::string& p) { albedo_texture_path_ = p; }
+    bool HasAlbedoTexture() const { return !albedo_texture_path_.empty(); }
+
 protected:
     MeshType  mesh_type_      = MeshType::Cube;
     glm::vec4 color_          = glm::vec4(1.0f);  // White by default
@@ -142,6 +153,7 @@ protected:
     float     occlusion_      = 1.0f;
     glm::vec3 emissive_       = glm::vec3(0.0f);
     float     emissive_intensity_ = 1.0f;
+    std::string albedo_texture_path_;   // optional base-colour texture
 };
 
 } // namespace schizo::scene

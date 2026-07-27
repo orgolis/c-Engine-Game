@@ -102,3 +102,74 @@ target_compile_features(profiler_check PRIVATE cxx_std_17)
 if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(profiler_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
+
+# texture_check: Stage 2 texture support & handling verification against a real
+# Vulkan device (headless): SamplerCache dedup, TextureManager defaults/dedup/
+# cooked-.ctex/hot-reload, GPU mip generation, BC7/BC5 compressed upload,
+# Material shared-defaults + rewrite, streamable .vt tile access. Links the
+# renderer (Texture/Manager/Material live there) + bc7enc for the in-process
+# cook; NOT -static (the renderer stack isn't static-link-clean — run with the
+# toolchain DLLs on PATH, same as the editor).
+add_executable(texture_check texture_check/main.cpp)
+target_link_libraries(texture_check PRIVATE renderer gws_asset_pipeline bc7enc)
+target_include_directories(texture_check PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/core/asset_pipeline)
+target_compile_features(texture_check PRIVATE cxx_std_20)
+
+# model_check: headless custom-model load + culling verification — loads models
+# through the editor's own AssetMeshCache (scene_render_bridge.h) and runs the
+# CPU frustum cull over the results. Diagnoses "model falls back to a cube"
+# (load failure) and false-cull regressions without launching the editor.
+add_executable(model_check model_check/main.cpp)
+target_include_directories(model_check PRIVATE ${CMAKE_SOURCE_DIR}/editor/include)
+target_link_libraries(model_check PRIVATE renderer scene gws_ecs gws_jobs gws_serialization meshoptimizer gws_asset_pipeline)
+target_compile_features(model_check PRIVATE cxx_std_20)
+
+# anim_check: Stage 5 animation verification (headless, no device) — two-bone
+# + foot IK, and the data-driven AnimationStateMachine (transitions / blend /
+# root motion). The animation classes live in the renderer lib (pure CPU math).
+add_executable(anim_check anim_check/main.cpp)
+target_link_libraries(anim_check PRIVATE renderer)
+target_compile_features(anim_check PRIVATE cxx_std_20)
+
+# skinning_check: Stage 5 GPU compute-skinning verification (live device) —
+# builds a SkinnedMesh, runs the skinning dispatch with known bone matrices,
+# maps the output vertex buffer back, and checks the weighted transforms.
+add_executable(skinning_check skinning_check/main.cpp)
+target_link_libraries(skinning_check PRIVATE renderer)
+target_compile_features(skinning_check PRIVATE cxx_std_20)
+
+# ai_check: Stage 9 AI verification (headless, no device) — navmesh A*+funnel
+# pathfinding (detour around a wall, unreachable islands) + behavior trees
+# (selector/sequence running-memory, inverter, cooldown).
+add_executable(ai_check ai_check/main.cpp)
+target_link_libraries(ai_check PRIVATE gws_ai)
+target_compile_features(ai_check PRIVATE cxx_std_20)
+
+# ui_check: game-UI framework verification (headless, no device) — anchored
+# layout, resolution-independent scaling, pointer/click semantics, focus
+# navigation, HUD draw-list emission.
+add_executable(ui_check ui_check/main.cpp)
+target_link_libraries(ui_check PRIVATE gws_ui)
+target_compile_features(ui_check PRIVATE cxx_std_20)
+
+# world_check: world-streaming verification (headless, no device) — grid math,
+# cell load/unload with radius hysteresis, floating-origin rebase preserving
+# absolute world positions.
+add_executable(world_check world_check/main.cpp)
+target_link_libraries(world_check PRIVATE gws_world)
+target_compile_features(world_check PRIVATE cxx_std_20)
+
+# vfx_check: particle-system verification (headless, no device) — spawn-by-rate,
+# gravity/drag integration, life fade/reap, floating-origin rebase, and
+# camera-facing billboard generation (quads face any camera).
+add_executable(vfx_check vfx_check/main.cpp)
+target_link_libraries(vfx_check PRIVATE gws_vfx)
+target_compile_features(vfx_check PRIVATE cxx_std_20)
+
+# combat_check: frame-data combat verification (headless, no device) — hitbox
+# active windows, per-attack dedup, facing rotation, dodge i-frames, parry
+# punish, multi-hit cadence, poise break, floating-origin consistency.
+add_executable(combat_check combat_check/main.cpp)
+target_link_libraries(combat_check PRIVATE gws_combat)
+target_compile_features(combat_check PRIVATE cxx_std_20)

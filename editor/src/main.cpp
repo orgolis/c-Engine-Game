@@ -19,6 +19,7 @@
 #include "vulkan/vulkan_environment_map.h"
 #include "vulkan/vulkan_water_pass.h"
 #include "vulkan/vulkan_froxel_fog_pass.h"
+#include "vulkan/vulkan_ddgi_pass.h"
 #include "vulkan/vulkan_ssao_pass.h"
 #include "vulkan/vulkan_ssr_pass.h"
 #include "vulkan/vulkan_volumetric_light_pass.h"
@@ -30,6 +31,9 @@
 #include "vulkan/vulkan_render_graph.h"
 #include "vulkan/vulkan_scene_mesh.h"
 #include "vulkan/vulkan_scene_material.h"
+#include "vulkan/vulkan_texture_manager.h"  // runtime texture handling (Stage 2)
+#include "skinned_demo.h"                    // Stage 5 skinned-animation test rig
+#include "game_ui_demo.h"                     // runtime game-UI HUD demo (Game-UI pillar)
 #include "vulkan/imgui_vulkan.h"
 
 // Engine foundation (Master Plan Stage 0/1): job system, frame allocator,
@@ -2266,6 +2270,45 @@ void ShowInspector(EditorState& editor_state) {
                     editor_state.editor_scene->MarkModified();
                 }
 
+                // Albedo (base-colour) texture. Type a path or drag a texture
+                // from the Asset Browser. Loaded through the TextureManager
+                // (mipped, sRGB, deduplicated, hot-reloadable); `Color` above
+                // multiplies the sampled texel. Empty = flat colour only.
+                {
+                    static char mr_albedo_buf[260] = {0};
+                    static uint32_t mr_albedo_synced_id = 0xFFFFFFFFu;
+                    if (mr_albedo_synced_id != selected_entity->GetId()) {
+                        std::snprintf(mr_albedo_buf, sizeof mr_albedo_buf, "%s",
+                                      mr->GetAlbedoTexturePath().c_str());
+                        mr_albedo_synced_id = selected_entity->GetId();
+                    }
+                    ImGui::Text("Albedo Texture:");
+                    ImGui::InputText("##mr_albedo", mr_albedo_buf, sizeof mr_albedo_buf);
+                    if (ImGui::IsItemDeactivatedAfterEdit()) {
+                        mr->SetAlbedoTexturePath(mr_albedo_buf);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    if (ImGui::BeginDragDropTarget()) {
+                        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
+                            const char* tp = static_cast<const char*>(pl->Data);
+                            if (tp && tp[0]) {
+                                mr->SetAlbedoTexturePath(tp);
+                                std::snprintf(mr_albedo_buf, sizeof mr_albedo_buf, "%s", tp);
+                                editor_state.editor_scene->MarkModified();
+                            }
+                        }
+                        ImGui::EndDragDropTarget();
+                    }
+                    if (mr->HasAlbedoTexture()) {
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Clear##mr_albedo")) {
+                            mr->SetAlbedoTexturePath("");
+                            mr_albedo_buf[0] = '\0';
+                            editor_state.editor_scene->MarkModified();
+                        }
+                    }
+                }
+
                 float metallic = mr->GetMetallic();
                 if (ImGui::SliderFloat("Metallic##mr", &metallic, 0.0f, 1.0f)) {
                     mr->SetMetallic(metallic);
@@ -3837,6 +3880,35 @@ int main(int argc, char** argv) {
             Material::create_descriptor_pool(device.get_device(), 64);
 
         // ----------------------------------------------------------------
+        // Runtime texture handling (Master Plan Stage 2). Owns the shared
+        // SamplerCache + engine-wide default textures, deduplicates textures by
+        // content-addressed AssetId, consumes cooked `.ctex` (BC) when present,
+        // and hot-reloads changed source images in place. Declared after the
+        // device so it is destroyed *before* it (its defaults/samplers free via
+        // the still-live device). Textures loaded through it get generated mips,
+        // anisotropic + per-asset samplers, and correct per-slot sRGB.
+        // ----------------------------------------------------------------
+        TextureManager texture_manager(&device);
+        {
+            const char* cdirs[] = { "cooked", "bin/cooked", "../cooked", "assets/cooked" };
+            for (const char* d : cdirs) {
+                std::error_code cec;
+                if (std::filesystem::is_directory(d, cec)) { texture_manager.set_cooked_root(d); break; }
+            }
+        }
+        // Flag set by the reload listener when any texture hot-reloaded this
+        // poll; the loop then re-writes affected material descriptor sets (a
+        // reload rebuilds the texture's VkImageView, so a material referencing
+        // it must rewrite or it samples a destroyed view).
+        bool textures_reloaded = false;
+        texture_manager.add_reload_listener(
+            [&textures_reloaded](uint64_t id, gws::renderer::gpu::Texture* t) {
+                textures_reloaded = true;
+                spdlog::info("Editor: texture {:016x} hot-reloaded (gen {})",
+                             id, t ? t->generation() : 0u);
+            });
+
+        // ----------------------------------------------------------------
         // Deferred pipeline
         // ----------------------------------------------------------------
         GBufferConfig g_cfg{};
@@ -3997,6 +4069,38 @@ int main(int argc, char** argv) {
                   kW, kH)
             : nullptr;
         if (froxel_fog) froxel_fog->set_enabled(false);  // opt-in (heavy; Post-Processing panel)
+
+        // DDGI — dynamic diffuse GI via irradiance probes (Master Plan §3.2).
+        // Probe rays trace the same TLAS the RT effects use; hits are re-shaded
+        // from the RT instance SSBO; the composite adds probe irradiance onto
+        // the lit HDR. Requires hardware RT (create returns nullptr without it).
+        // Off by default — toggle in the Post-Processing panel.
+        auto ddgi = (env_map && device.has_ray_tracing())
+            ? VulkanDdgiPass::create(
+                  &device, g_buffer.get(),
+                  lighting->get_output_view(),
+                  VK_FORMAT_R16G16B16A16_SFLOAT,
+                  env_map->get_view(), env_map->get_sampler(),
+                  kW, kH)
+            : nullptr;
+        // DDGI grid auto-fit: the default probe grid only covers a ~30-unit box
+        // at the origin, so any scene that's bigger or offset gets no coverage
+        // and GI looks flat/wrong. We refit the grid to the scene's world AABB
+        // (computed from the opaque draw list each frame) whenever the user
+        // enables DDGI or presses "Fit to scene". These persist across frames.
+        bool      ddgi_autofit_pending = true;   // fit once as soon as draws exist
+
+        // Stage 5 skinned-animation TEST RIG — a procedural boxy biped that
+        // exercises the whole animation stack (state machine → root motion →
+        // foot IK → GPU compute skinning → G-buffer draw). Off by default;
+        // toggle in the Post-Processing panel ("Animation Demo").
+        auto anim_demo = schizo::editor::SkinnedAnimDemo::create(
+            &device, mat_layout, mat_pool, &texture_manager, glm::vec3(0.0f, 0.0f, 0.0f));
+        if (anim_demo) anim_demo->set_enabled(false);
+
+        // Runtime game-UI HUD demo (gws_ui framework, ImGui-rasterised). Off by
+        // default; toggle in the Post-Processing panel.
+        schizo::editor::GameUiDemo game_ui;
 
         // Volumetric clouds — full pipeline (noise bake → raymarch → temporal
         // resolve → composite). Runs after Lighting/SSR, before the light
@@ -4172,6 +4276,20 @@ int main(int argc, char** argv) {
         // Per-terrain-entity splat material cache (splatmap + 4 tiling layers).
         // Rebuilds when the splatmap / layer paths / tiling change.
         schizo::editor::TerrainGpuCache terrain_gpu_cache;
+
+        // ---- HZB occlusion-cull state (persists across frames) ----
+        // The CPU pyramid is one frame old, so the AABB test must use the
+        // view-proj of the frame that BUILT it — testing with the current
+        // camera against last frame's depth falsely culled anything newly
+        // revealed by camera motion (the "objects vanish while moving" bug).
+        glm::mat4 hzb_prev_vp(1.0f);
+        glm::vec3 hzb_prev_cam_pos(0.0f);
+        glm::vec3 hzb_prev_cam_fwd(0.0f, 0.0f, -1.0f);
+        bool      hzb_prev_valid = false;
+        // Occlusion hysteresis: a draw must test occluded on TWO consecutive
+        // frames before it's actually dropped (one grace frame absorbs
+        // readback latency + test jitter). Keyed by mesh+submesh+position.
+        std::unordered_map<uint64_t, uint8_t> hzb_occluded_streak;
 
         // ----------------------------------------------------------------
         // ImGui render pass: clears swapchain to dark gray, presents as PRESENT_SRC.
@@ -4689,6 +4807,20 @@ int main(int argc, char** argv) {
         while (!glfwWindowShouldClose(glfw_window)) {
             glfwPollEvents();
 
+            // Poll source-image hot reload ~once/second (not every frame — it
+            // stats watched files). Reloads changed textures in place and fires
+            // the reload listener registered above. If anything reloaded,
+            // re-write the descriptor sets of cached glTF-scene materials (their
+            // texture views were rebuilt) — the GPU is already idle from the
+            // reload's wait_idle, but wait again to be safe across frames.
+            { static int htick = 0; if (++htick >= 60) { htick = 0; texture_manager.poll_hot_reload(); } }
+            if (textures_reloaded) {
+                device.wait_idle();
+                asset_cache.rewrite_all_materials();
+                terrain_gpu_cache.rewrite_all_materials();   // terrain layer textures too
+                textures_reloaded = false;
+            }
+
             // Match the swapchain to the window before doing any per-frame work.
             // Done here (before begin_frame / the ImGui frame) so a resize never
             // leaves a half-built frame. Minimized (0-size) → skip the frame.
@@ -4715,6 +4847,11 @@ int main(int argc, char** argv) {
             last_frame_wall = now_wall;
             if (delta_time > kMaxFrameDt) delta_time = kMaxFrameDt;
             if (delta_time < 0.0f) delta_time = 0.0f;
+
+            // Tick the skinned-animation test rig (CPU: state machine + root
+            // motion + foot IK). Done early so the pose is current for both the
+            // skinning dispatch and the DrawItem appended below.
+            if (anim_demo && anim_demo->enabled()) anim_demo->advance(delta_time);
 
             // Feed dt to the post-processing chain so auto-exposure can
             // do frame-rate-independent smoothing.
@@ -4994,6 +5131,10 @@ int main(int argc, char** argv) {
             // ------------------------------------------------------------
             imgui->begin_frame();
 
+            // Runtime game-UI HUD (gws_ui) — drawn to ImGui's foreground list
+            // so it overlays the viewport. No-op unless enabled in the panel.
+            game_ui.update_and_render(delta_time);
+
             // ------------------------------------------------------------
             // Game-window mode (--net-game, spawned multiplayer clients):
             // no menu bar, no dockspace, no panels — just the rendered game
@@ -5211,6 +5352,54 @@ int main(int argc, char** argv) {
                         }
                     }
 
+                    // Animation test rig (Stage 5) — procedural skinned biped.
+                    if (anim_demo) {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Animation Demo (skinned)");
+                        bool aon = anim_demo->enabled();
+                        if (ImGui::Checkbox("Enable##animdemo", &aon))
+                            anim_demo->set_enabled(aon);
+                        ImGui::TextDisabled("  boxy biped @ origin: state machine +");
+                        ImGui::TextDisabled("  root motion + foot IK + GPU skinning");
+                    }
+
+                    // Runtime game-UI HUD (gws_ui framework).
+                    {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Game UI HUD (gws_ui)");
+                        bool uon = game_ui.enabled();
+                        if (ImGui::Checkbox("Enable##gameui", &uon))
+                            game_ui.set_enabled(uon);
+                        ImGui::TextDisabled("  anchored HUD: health/XP/ability bars,");
+                        ImGui::TextDisabled("  resolution-scaled, over the viewport");
+                    }
+
+                    // DDGI probe-grid global illumination (Master Plan §3.2).
+                    if (ddgi) {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Global Illumination (DDGI)");
+                        bool gon = ddgi->is_enabled();
+                        if (ImGui::Checkbox("Enable##ddgi", &gon)) {
+                            ddgi->set_enabled(gon);
+                            if (gon) ddgi_autofit_pending = true;  // fit on enable
+                        }
+                        if (gon) {
+                            auto& gc = ddgi->mutable_config();
+                            if (ImGui::Button("Fit grid to scene##ddgi"))
+                                ddgi_autofit_pending = true;
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(auto on enable)");
+                            ImGui::SliderFloat ("  Intensity##ddgi",   &gc.intensity,   0.0f, 4.0f);
+                            ImGui::SliderFloat ("  Hysteresis##ddgi",  &gc.hysteresis,  0.5f, 0.995f, "%.3f");
+                            ImGui::SliderFloat ("  Normal bias##ddgi", &gc.normal_bias, 0.0f, 1.0f);
+                            ImGui::DragFloat3  ("  Grid origin##ddgi", &gc.origin.x,    0.5f);
+                            ImGui::DragFloat3  ("  Probe spacing##ddgi", &gc.spacing.x, 0.1f, 0.5f, 10.0f);
+                            ImGui::TextDisabled("  %u probes (%dx%dx%d, fixed at startup)",
+                                                ddgi->probe_count(), gc.counts.x,
+                                                gc.counts.y, gc.counts.z);
+                        }
+                    }
+
                     // Volumetric clouds.
                     if (clouds) {
                         ImGui::Separator();
@@ -5372,6 +5561,11 @@ int main(int argc, char** argv) {
                 VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
             begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             vkBeginCommandBuffer(cmd, &begin_info);
+
+            // Record the skinned-rig compute skinning FIRST, so its output
+            // vertex buffer is ready before the RT-BLAS build, shadow pass, and
+            // geometry pass all read it this frame.
+            if (anim_demo && anim_demo->enabled()) anim_demo->record_skin(cmd);
 
             // Camera from viewport — use the actual panel aspect ratio
             CameraData cam{};
@@ -5639,7 +5833,50 @@ int main(int argc, char** argv) {
               schizo::editor::build_draw_items(
                   editor_scene.GetScene(), prim_cache, mat_cache, asset_cache,
                   terrain_cache, terrain_gpu_cache, &device, mat_layout, mat_pool,
-                  opaque_draws, transparent_draws, &ecs_bridge); }
+                  opaque_draws, transparent_draws, &texture_manager, &ecs_bridge); }
+
+            // Add the skinned test rig to the opaque list (drawn + shadowed).
+            // Its vertex buffer was already skinned above; the bind-pose bounds
+            // are conservative for culling.
+            if (anim_demo && anim_demo->enabled())
+                opaque_draws.push_back(anim_demo->draw_item());
+
+            // DDGI grid auto-fit: enclose the scene's world AABB (from the
+            // opaque draw list) with the fixed probe grid so probes actually
+            // cover the geometry. Runs on first enable / "Fit to scene". A
+            // grid that doesn't fit is the #1 reason DDGI looks flat or wrong.
+            if (ddgi && ddgi_autofit_pending && !opaque_draws.empty()) {
+                glm::vec3 mn( std::numeric_limits<float>::infinity());
+                glm::vec3 mx(-std::numeric_limits<float>::infinity());
+                for (const auto& d : opaque_draws) {
+                    if (!d.mesh) continue;
+                    const auto& lb = d.mesh->bounding_box();
+                    for (int c = 0; c < 8; ++c) {
+                        const glm::vec4 corner((c & 1) ? lb.max.x : lb.min.x,
+                                               (c & 2) ? lb.max.y : lb.min.y,
+                                               (c & 4) ? lb.max.z : lb.min.z, 1.0f);
+                        const glm::vec3 w = glm::vec3(d.model * corner);
+                        mn = glm::min(mn, w);
+                        mx = glm::max(mx, w);
+                    }
+                }
+                if (mn.x <= mx.x) {
+                    auto& gc = ddgi->mutable_config();
+                    const glm::vec3 pad = (mx - mn) * 0.06f + glm::vec3(0.75f);
+                    const glm::vec3 lo  = mn - pad, hi = mx + pad;
+                    const glm::vec3 ext = glm::max(hi - lo, glm::vec3(1.0f));
+                    const glm::vec3 div =
+                        glm::max(glm::vec3(gc.counts) - glm::vec3(1.0f), glm::vec3(1.0f));
+                    gc.origin       = lo;
+                    gc.spacing      = ext / div;
+                    gc.max_ray_dist = glm::length(ext) * 1.1f;  // reach across the scene
+                    ddgi_autofit_pending = false;
+                    spdlog::info("DDGI: grid fit to AABB ({:.1f},{:.1f},{:.1f})..({:.1f},{:.1f},{:.1f}), "
+                                 "spacing ({:.2f},{:.2f},{:.2f})",
+                                 lo.x, lo.y, lo.z, hi.x, hi.y, hi.z,
+                                 gc.spacing.x, gc.spacing.y, gc.spacing.z);
+                }
+            }
 
             if (!ecs_shadow_logged && ecs_bridge.entity_count() > 0) {
                 spdlog::info("ECS shadow live: {} entities synced, {} LocalToWorld "
@@ -5692,12 +5929,44 @@ int main(int argc, char** argv) {
             // transparent list. The depth-weighted compositing in the shader
             // handles inter-fragment ordering even for intersecting meshes.)
 
-            graph->set_draw_items(opaque_draws);
+            // Front-to-back sort of the opaque list (early-z: near objects
+            // fill the depth buffer first, so far fragments fail the depth
+            // test before shading — big win on overdraw-heavy scenes). Ties
+            // broken by material so identical materials draw back-to-back
+            // and the descriptor rebind count drops. The WBOIT transparent
+            // list is order-independent — left untouched.
+            {
+                GWS_PROFILE_ZONE("draw_sort");
+                const size_t n = opaque_draws.size();
+                std::vector<float> depth_key(n);
+                for (size_t i = 0; i < n; ++i) {
+                    const auto& d = opaque_draws[i];
+                    const glm::vec3 c = d.mesh
+                        ? glm::vec3(d.model * glm::vec4(d.mesh->bounding_box().center(), 1.0f))
+                        : glm::vec3(d.model[3]);
+                    depth_key[i] = -(cam.view * glm::vec4(c, 1.0f)).z;  // + = in front
+                }
+                std::vector<uint32_t> order(n);
+                for (size_t i = 0; i < n; ++i) order[i] = static_cast<uint32_t>(i);
+                std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+                    if (depth_key[a] != depth_key[b]) return depth_key[a] < depth_key[b];
+                    return opaque_draws[a].material < opaque_draws[b].material;
+                });
+                std::vector<gws::renderer::gpu::DrawItem> sorted;
+                sorted.reserve(n);
+                for (uint32_t idx : order) sorted.push_back(opaque_draws[idx]);
+                opaque_draws.swap(sorted);
+            }
 
             // HZB occlusion test for the opaque draw list — projects each
             // entity's world-space AABB into NDC and compares against the
-            // CPU-side HZB from the previous frame. Draws marked occluded
-            // are skipped by VulkanGBuffer::draw_items.
+            // CPU-side HZB from the previous frame. Filtering happens HERE
+            // (indices line up with opaque_draws) — the render graph no
+            // longer applies was_visible() itself, because it frustum-culls
+            // its copy first and the shifted indices read the wrong draw's
+            // visibility (the old "random objects disappear" bug).
+            std::vector<gws::renderer::gpu::DrawItem> geometry_draws;
+            bool hzb_did_filter = false;
             if (hzb_culler) {
                 GWS_PROFILE_ZONE("hzb_cull");
                 // Per-draw world-space AABB build — embarrassingly parallel
@@ -5733,10 +6002,70 @@ int main(int argc, char** argv) {
                     aabb_mins[i] = wmin;
                     aabb_maxs[i] = wmax;
                 });
-                if (draw_n && aabb_mins && aabb_maxs)
+                // Camera-motion gate: the pyramid is one frame old, so on a
+                // cut or fast pan/rotation the test would falsely cull
+                // objects the old depth never saw. Skip occlusion those
+                // frames (frustum culling still applies).
+                const glm::vec3 view_fwd = glm::normalize(
+                    glm::vec3(-cam.view[0][2], -cam.view[1][2], -cam.view[2][2]));
+                const bool camera_moved_fast = hzb_prev_valid &&
+                    (glm::length(cam.position - hzb_prev_cam_pos) > 1.0f ||
+                     glm::dot(view_fwd, hzb_prev_cam_fwd) < 0.996f);
+
+                if (draw_n && aabb_mins && aabb_maxs &&
+                    hzb_prev_valid && !camera_moved_fast) {
+                    // Test with the view-proj of the frame that BUILT the
+                    // current pyramid — never the current camera.
                     hzb_culler->test_visibility(aabb_mins, aabb_maxs, draw_n,
-                                                cam.proj * cam.view);
+                                                hzb_prev_vp);
+
+                    // Filter with 2-frame hysteresis: only drop a draw that
+                    // tested occluded two frames running. Keyed by mesh +
+                    // submesh + quantized position (primitives SHARE Mesh
+                    // objects across entities, so the mesh pointer alone
+                    // would alias different instances).
+                    auto draw_key = [](const gws::renderer::gpu::DrawItem& d) -> uint64_t {
+                        uint64_t h = 1469598103934665603ull;
+                        auto mix = [&h](uint64_t v) { h ^= v; h *= 1099511628211ull; };
+                        mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(d.mesh)));
+                        mix(d.submesh_index);
+                        const glm::vec3 t = glm::vec3(d.model[3]);
+                        mix(static_cast<uint64_t>(static_cast<int64_t>(t.x * 100.0f)));
+                        mix(static_cast<uint64_t>(static_cast<int64_t>(t.y * 100.0f)));
+                        mix(static_cast<uint64_t>(static_cast<int64_t>(t.z * 100.0f)));
+                        return h;
+                    };
+                    geometry_draws.reserve(draw_n);
+                    std::unordered_map<uint64_t, uint8_t> next_streak;
+                    next_streak.reserve(hzb_occluded_streak.size() + 8);
+                    for (size_t i = 0; i < draw_n; ++i) {
+                        if (hzb_culler->was_visible(static_cast<uint32_t>(i))) {
+                            geometry_draws.push_back(opaque_draws[i]);
+                            continue;
+                        }
+                        const uint64_t key = draw_key(opaque_draws[i]);
+                        auto sit = hzb_occluded_streak.find(key);
+                        const uint8_t streak = static_cast<uint8_t>(
+                            (sit != hzb_occluded_streak.end() ? sit->second : 0) + 1);
+                        next_streak[key] = std::min<uint8_t>(streak, 8);
+                        if (streak < 2) geometry_draws.push_back(opaque_draws[i]);
+                    }
+                    hzb_occluded_streak.swap(next_streak);
+                    hzb_did_filter = true;
+                } else {
+                    // No trustworthy pyramid this frame — everything visible,
+                    // and streaks reset so nothing is culled on stale data.
+                    hzb_occluded_streak.clear();
+                }
+
+                // Next frame's pyramid is built from THIS frame's depth, so
+                // remember this frame's camera for next frame's test.
+                hzb_prev_vp      = cam.proj * cam.view;
+                hzb_prev_cam_pos = cam.position;
+                hzb_prev_cam_fwd = view_fwd;
+                hzb_prev_valid   = true;
             }
+            graph->set_draw_items(hzb_did_filter ? geometry_draws : opaque_draws);
 
             // Sync the transparent pass's view of the dynamic light list each
             // frame so newly-added lights or removed lights take effect.
@@ -5844,6 +6173,15 @@ int main(int argc, char** argv) {
                     ssr->set_sun(sun_dir_for_rt, sun_color_for_rt);
                     ssr->set_ambient(l_cfg.ambient_color, l_cfg.global_ambient);
                 }
+                if (ddgi) {
+                    ddgi->set_tlas(rt_scene->get_tlas_handle());
+                    ddgi->set_instance_data_buffer(rt_scene->get_instance_data_buffer());
+                    // Probe-hit shading uses the same sun + ambient as the
+                    // deferred lighting so bounced light matches direct light.
+                    ddgi->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                    ddgi->mutable_config().ambient =
+                        l_cfg.ambient_color * l_cfg.global_ambient;
+                }
                 static int rt_log_throttle = 0;
                 if ((rt_log_throttle++ % 120) == 0) {
                     // debug level: kept out of the default (info) console + the
@@ -5864,6 +6202,17 @@ int main(int argc, char** argv) {
             // equal shadow_view_proj. Easiest: pass identity view and
             // shadow_view_proj as proj — the shadow_map's caster shader
             // only uses `proj * view * model`, so the split doesn't matter.
+            // Cull shadow casters against the LIGHT'S frustum — a perf-only
+            // filter. Never cull casters with the CAMERA frustum: an object
+            // outside the camera view whose shadow falls INTO the view must
+            // still render into the shadow map.
+            if (shadow_active && graph->is_frustum_culling_enabled()) {
+                GWS_PROFILE_ZONE("shadow_light_cull");
+                gws::renderer::gpu::Frustum light_frustum =
+                    gws::renderer::gpu::Frustum::from_matrix(shadow_view_proj);
+                gws::renderer::gpu::cull_draw_items_frustum(shadow_draws, light_frustum);
+            }
+
             const glm::mat4 sh_view = glm::mat4(1.0f);
             const glm::mat4 sh_proj = shadow_active
                 ? shadow_view_proj
@@ -5907,7 +6256,15 @@ int main(int argc, char** argv) {
                 clouds->compute_shadow_map(cmd, cam.position);
                 lighting->set_cloud_shadow_params(clouds->get_shadow_params());
             }
+            // DDGI probe trace — rays vs this frame's TLAS (built above),
+            // recorded before Lighting so the composite right after it adds
+            // up-to-date bounce light. The pass itself no-ops until the TLAS
+            // + instance buffer are bound and DDGI is enabled in the panel.
+            if (ddgi) ddgi->execute_trace(cmd);
             graph->execute_stage(cmd, RenderGraphStage::Lighting,   {});
+            // DDGI composite — adds probe irradiance (indirect diffuse) onto
+            // the freshly lit HDR before SSR/clouds/shafts/fog layer over it.
+            if (ddgi) ddgi->execute_composite(cmd);
             // SSR — compute reflections + composite into HDR before
             // transparent fragments are drawn. Runs outside the render
             // graph because the graph models only render-pass stages and
@@ -6072,6 +6429,10 @@ int main(int argc, char** argv) {
         vkFreeCommandBuffers(device.get_device(), device.get_command_pool(),
                              kMaxFrames, frame_cmds);
 
+        // Skinned test rig — its Material returns a set to mat_pool, so free it
+        // before the pool/layout below (and before the device).
+        anim_demo.reset();
+
         // Scene geometry — caches must release their meshes + materials
         // before the descriptor pool / layout are destroyed.
         mat_cache.clear();
@@ -6099,6 +6460,7 @@ int main(int argc, char** argv) {
         rt_scene.reset();
         water_pass.reset();
         froxel_fog.reset();
+        ddgi.reset();
         clouds.reset();
         volumetric_light.reset();
         ssr.reset();

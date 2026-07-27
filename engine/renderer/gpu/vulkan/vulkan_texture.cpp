@@ -11,8 +11,11 @@
 #include "vulkan_device.h"
 
 #include <spdlog/spdlog.h>
-#include <stdexcept>
+#include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <stdexcept>
 #include <vector>
 
 namespace gws::renderer::gpu {
@@ -96,6 +99,40 @@ void transition_image_layout(VkCommandBuffer cmd, VkImage img,
     vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
+// Allocate a host-visible staging buffer, upload `size` bytes from `src`, and
+// return the buffer + memory (caller frees). Returns false on failure.
+bool make_staging(VulkanDevice* device, const void* src, VkDeviceSize size,
+                  VkBuffer& out_buf, VkDeviceMemory& out_mem) {
+    VkDevice vkdev = device->get_device();
+    VkBufferCreateInfo bi{};
+    bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size        = size;
+    bi.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(vkdev, &bi, nullptr, &out_buf) != VK_SUCCESS) return false;
+
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(vkdev, out_buf, &req);
+    VkMemoryAllocateInfo ai{};
+    ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize  = req.size;
+    ai.memoryTypeIndex = device->find_memory_type(
+        req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(vkdev, &ai, nullptr, &out_mem) != VK_SUCCESS) {
+        vkDestroyBuffer(vkdev, out_buf, nullptr);
+        out_buf = VK_NULL_HANDLE;
+        return false;
+    }
+    vkBindBufferMemory(vkdev, out_buf, out_mem, 0);
+
+    void* mapped = nullptr;
+    vkMapMemory(vkdev, out_mem, 0, size, 0, &mapped);
+    std::memcpy(mapped, src, static_cast<size_t>(size));
+    vkUnmapMemory(vkdev, out_mem);
+    return true;
+}
+
 } // namespace
 
 Texture::~Texture() { destroy(); }
@@ -107,33 +144,43 @@ Texture::Texture(Texture&& other) noexcept
       sampler_(other.sampler_),
       memory_(other.memory_),
       width_(other.width_),
-      height_(other.height_) {
-    other.device_  = nullptr;
-    other.image_   = VK_NULL_HANDLE;
-    other.view_    = VK_NULL_HANDLE;
-    other.sampler_ = VK_NULL_HANDLE;
-    other.memory_  = VK_NULL_HANDLE;
-    other.width_   = 0;
-    other.height_  = 0;
+      height_(other.height_),
+      mip_levels_(other.mip_levels_),
+      generation_(other.generation_),
+      owns_sampler_(other.owns_sampler_) {
+    other.device_       = nullptr;
+    other.image_        = VK_NULL_HANDLE;
+    other.view_         = VK_NULL_HANDLE;
+    other.sampler_      = VK_NULL_HANDLE;
+    other.memory_       = VK_NULL_HANDLE;
+    other.width_        = 0;
+    other.height_       = 0;
+    other.mip_levels_   = 1;
+    other.owns_sampler_ = true;
 }
 
 Texture& Texture::operator=(Texture&& other) noexcept {
     if (this != &other) {
         destroy();
-        device_  = other.device_;
-        image_   = other.image_;
-        view_    = other.view_;
-        sampler_ = other.sampler_;
-        memory_  = other.memory_;
-        width_   = other.width_;
-        height_  = other.height_;
-        other.device_  = nullptr;
-        other.image_   = VK_NULL_HANDLE;
-        other.view_    = VK_NULL_HANDLE;
-        other.sampler_ = VK_NULL_HANDLE;
-        other.memory_  = VK_NULL_HANDLE;
-        other.width_   = 0;
-        other.height_  = 0;
+        device_       = other.device_;
+        image_        = other.image_;
+        view_         = other.view_;
+        sampler_      = other.sampler_;
+        memory_       = other.memory_;
+        width_        = other.width_;
+        height_       = other.height_;
+        mip_levels_   = other.mip_levels_;
+        generation_   = other.generation_;
+        owns_sampler_ = other.owns_sampler_;
+        other.device_       = nullptr;
+        other.image_        = VK_NULL_HANDLE;
+        other.view_         = VK_NULL_HANDLE;
+        other.sampler_      = VK_NULL_HANDLE;
+        other.memory_       = VK_NULL_HANDLE;
+        other.width_        = 0;
+        other.height_       = 0;
+        other.mip_levels_   = 1;
+        other.owns_sampler_ = true;
     }
     return *this;
 }
@@ -142,17 +189,200 @@ void Texture::destroy() {
     if (!device_) return;
     VkDevice vkdev = device_->get_device();
 
-    if (sampler_ != VK_NULL_HANDLE) { vkDestroySampler(vkdev, sampler_, nullptr); sampler_ = VK_NULL_HANDLE; }
-    if (view_    != VK_NULL_HANDLE) { vkDestroyImageView(vkdev, view_, nullptr);  view_    = VK_NULL_HANDLE; }
-    if (image_   != VK_NULL_HANDLE) { vkDestroyImage(vkdev, image_, nullptr);     image_   = VK_NULL_HANDLE; }
-    if (memory_  != VK_NULL_HANDLE) { vkFreeMemory(vkdev, memory_, nullptr);      memory_  = VK_NULL_HANDLE; }
+    // Only destroy the sampler when we own it — a borrowed cache sampler is
+    // owned by the SamplerCache.
+    if (owns_sampler_ && sampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(vkdev, sampler_, nullptr);
+    }
+    sampler_ = VK_NULL_HANDLE;
+    if (view_   != VK_NULL_HANDLE) { vkDestroyImageView(vkdev, view_, nullptr); view_   = VK_NULL_HANDLE; }
+    if (image_  != VK_NULL_HANDLE) { vkDestroyImage(vkdev, image_, nullptr);    image_  = VK_NULL_HANDLE; }
+    if (memory_ != VK_NULL_HANDLE) { vkFreeMemory(vkdev, memory_, nullptr);     memory_ = VK_NULL_HANDLE; }
     device_ = nullptr;
+}
+
+void Texture::destroy_image_only_() {
+    if (!device_) return;
+    VkDevice vkdev = device_->get_device();
+    if (view_   != VK_NULL_HANDLE) { vkDestroyImageView(vkdev, view_, nullptr); view_   = VK_NULL_HANDLE; }
+    if (image_  != VK_NULL_HANDLE) { vkDestroyImage(vkdev, image_, nullptr);    image_  = VK_NULL_HANDLE; }
+    if (memory_ != VK_NULL_HANDLE) { vkFreeMemory(vkdev, memory_, nullptr);     memory_ = VK_NULL_HANDLE; }
+}
+
+bool Texture::build_rgba_(const uint8_t* rgba, uint32_t width, uint32_t height,
+                          bool srgb, bool gen_mips) {
+    VkDevice       vkdev  = device_->get_device();
+    const VkFormat format = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    width_  = width;
+    height_ = height;
+
+    // Decide the mip count. Generating mips on the GPU requires the format to
+    // support linear blit as both source and destination; RGBA8 does on every
+    // desktop GPU, but check so we degrade to a single mip rather than error.
+    uint32_t mips = 1;
+    if (gen_mips) {
+        VkFormatProperties fp{};
+        vkGetPhysicalDeviceFormatProperties(device_->get_physical_device(), format, &fp);
+        const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+                                          VK_FORMAT_FEATURE_BLIT_SRC_BIT |
+                                          VK_FORMAT_FEATURE_BLIT_DST_BIT;
+        if ((fp.optimalTilingFeatures & need) == need) {
+            uint32_t d = std::max(width, height);
+            while (d > 1) { d >>= 1; ++mips; }
+        }
+    }
+    mip_levels_ = mips;
+
+    const VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4;
+
+    VkBuffer       staging     = VK_NULL_HANDLE;
+    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    if (!make_staging(device_, rgba, size, staging, staging_mem)) return false;
+
+    // Device-local image (mipLevels = mips; TRANSFER_SRC needed when we blit
+    // to generate the chain).
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (mips > 1) usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+
+    VkImageCreateInfo ii{};
+    ii.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ii.imageType     = VK_IMAGE_TYPE_2D;
+    ii.extent        = {width, height, 1};
+    ii.mipLevels     = mips;
+    ii.arrayLayers   = 1;
+    ii.format        = format;
+    ii.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    ii.usage         = usage;
+    ii.samples       = VK_SAMPLE_COUNT_1_BIT;
+    ii.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateImage(vkdev, &ii, nullptr, &image_) != VK_SUCCESS) {
+        vkFreeMemory(vkdev, staging_mem, nullptr); vkDestroyBuffer(vkdev, staging, nullptr);
+        return false;
+    }
+
+    VkMemoryRequirements ireq;
+    vkGetImageMemoryRequirements(vkdev, image_, &ireq);
+    VkMemoryAllocateInfo ialloc{};
+    ialloc.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ialloc.allocationSize  = ireq.size;
+    ialloc.memoryTypeIndex = device_->find_memory_type(ireq.memoryTypeBits,
+                                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (vkAllocateMemory(vkdev, &ialloc, nullptr, &memory_) != VK_SUCCESS) {
+        vkDestroyImage(vkdev, image_, nullptr); image_ = VK_NULL_HANDLE;
+        vkFreeMemory(vkdev, staging_mem, nullptr); vkDestroyBuffer(vkdev, staging, nullptr);
+        return false;
+    }
+    vkBindImageMemory(vkdev, image_, memory_, 0);
+
+    run_one_time_command(device_, [&](VkCommandBuffer cmd) {
+        // All mips -> TRANSFER_DST, then copy the base level from staging.
+        transition_image_layout(cmd, image_, VK_IMAGE_LAYOUT_UNDEFINED,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mips);
+
+        VkBufferImageCopy region{};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel   = 0;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent                 = {width, height, 1};
+        vkCmdCopyBufferToImage(cmd, staging, image_,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        if (mips == 1) {
+            transition_image_layout(cmd, image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1);
+        } else {
+            // Generate the mip chain by successively blitting level i-1 -> i,
+            // transitioning each finished source level to SHADER_READ.
+            VkImageMemoryBarrier b{};
+            b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            b.image               = image_;
+            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.subresourceRange.aspectMask   = VK_IMAGE_ASPECT_COLOR_BIT;
+            b.subresourceRange.layerCount   = 1;
+            b.subresourceRange.levelCount   = 1;
+
+            int32_t mw = static_cast<int32_t>(width);
+            int32_t mh = static_cast<int32_t>(height);
+            for (uint32_t i = 1; i < mips; ++i) {
+                // Level i-1: TRANSFER_DST -> TRANSFER_SRC (blit source).
+                b.subresourceRange.baseMipLevel = i - 1;
+                b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                b.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                                     0, nullptr, 0, nullptr, 1, &b);
+
+                const int32_t nw = mw > 1 ? mw / 2 : 1;
+                const int32_t nh = mh > 1 ? mh / 2 : 1;
+                VkImageBlit blit{};
+                blit.srcOffsets[0] = {0, 0, 0};
+                blit.srcOffsets[1] = {mw, mh, 1};
+                blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                blit.srcSubresource.mipLevel   = i - 1;
+                blit.srcSubresource.layerCount = 1;
+                blit.dstOffsets[0] = {0, 0, 0};
+                blit.dstOffsets[1] = {nw, nh, 1};
+                blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                blit.dstSubresource.mipLevel   = i;
+                blit.dstSubresource.layerCount = 1;
+                vkCmdBlitImage(cmd,
+                               image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               1, &blit, VK_FILTER_LINEAR);
+
+                // Level i-1 done as a source -> SHADER_READ.
+                b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                b.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                                     0, nullptr, 0, nullptr, 1, &b);
+
+                mw = nw; mh = nh;
+            }
+
+            // Last mip is still TRANSFER_DST -> SHADER_READ.
+            b.subresourceRange.baseMipLevel = mips - 1;
+            b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            b.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                                 0, nullptr, 0, nullptr, 1, &b);
+        }
+    });
+
+    vkFreeMemory(vkdev, staging_mem, nullptr);
+    vkDestroyBuffer(vkdev, staging, nullptr);
+
+    // View over all mips.
+    VkImageViewCreateInfo vi{};
+    vi.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image                           = image_;
+    vi.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format                          = format;
+    vi.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    vi.subresourceRange.baseMipLevel   = 0;
+    vi.subresourceRange.levelCount     = mips;
+    vi.subresourceRange.baseArrayLayer = 0;
+    vi.subresourceRange.layerCount     = 1;
+    if (vkCreateImageView(vkdev, &vi, nullptr, &view_) != VK_SUCCESS) {
+        return false;
+    }
+    return true;
 }
 
 std::unique_ptr<Texture> Texture::create_from_pixels(VulkanDevice* device,
                                                      const uint8_t* rgba_pixels,
                                                      uint32_t width, uint32_t height,
-                                                     bool srgb) {
+                                                     bool srgb, bool gen_mips,
+                                                     VkSampler shared_sampler) {
     if (!device || !rgba_pixels || width == 0 || height == 0) {
         spdlog::error("Texture::create_from_pixels: invalid args");
         return nullptr;
@@ -160,143 +390,46 @@ std::unique_ptr<Texture> Texture::create_from_pixels(VulkanDevice* device,
 
     auto out     = std::unique_ptr<Texture>(new Texture());
     out->device_ = device;
-    out->width_  = width;
-    out->height_ = height;
 
-    VkDevice vkdev    = device->get_device();
-    VkFormat format   = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-    VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4;
-
-    // 1) Staging buffer (host-visible, host-coherent)
-    VkBufferCreateInfo bi{};
-    bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bi.size        = size;
-    bi.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    VkBuffer staging = VK_NULL_HANDLE;
-    if (vkCreateBuffer(vkdev, &bi, nullptr, &staging) != VK_SUCCESS) {
+    if (!out->build_rgba_(rgba_pixels, width, height, srgb, gen_mips)) {
         return nullptr;
     }
 
-    VkMemoryRequirements mreq;
-    vkGetBufferMemoryRequirements(vkdev, staging, &mreq);
-
-    VkMemoryAllocateInfo malloc{};
-    malloc.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    malloc.allocationSize  = mreq.size;
-    malloc.memoryTypeIndex = device->find_memory_type(
-        mreq.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
-    if (vkAllocateMemory(vkdev, &malloc, nullptr, &staging_mem) != VK_SUCCESS) {
-        vkDestroyBuffer(vkdev, staging, nullptr);
-        return nullptr;
-    }
-    vkBindBufferMemory(vkdev, staging, staging_mem, 0);
-
-    void* mapped = nullptr;
-    vkMapMemory(vkdev, staging_mem, 0, size, 0, &mapped);
-    std::memcpy(mapped, rgba_pixels, static_cast<size_t>(size));
-    vkUnmapMemory(vkdev, staging_mem);
-
-    // 2) Device-local image
-    VkImageCreateInfo ii{};
-    ii.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ii.imageType     = VK_IMAGE_TYPE_2D;
-    ii.extent.width  = width;
-    ii.extent.height = height;
-    ii.extent.depth  = 1;
-    ii.mipLevels     = 1;
-    ii.arrayLayers   = 1;
-    ii.format        = format;
-    ii.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    ii.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    ii.samples       = VK_SAMPLE_COUNT_1_BIT;
-    ii.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
-
-    if (vkCreateImage(vkdev, &ii, nullptr, &out->image_) != VK_SUCCESS) {
-        vkFreeMemory(vkdev, staging_mem, nullptr);
-        vkDestroyBuffer(vkdev, staging, nullptr);
-        return nullptr;
-    }
-
-    VkMemoryRequirements ireq;
-    vkGetImageMemoryRequirements(vkdev, out->image_, &ireq);
-
-    VkMemoryAllocateInfo ialloc{};
-    ialloc.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ialloc.allocationSize  = ireq.size;
-    ialloc.memoryTypeIndex = device->find_memory_type(ireq.memoryTypeBits,
-                                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(vkdev, &ialloc, nullptr, &out->memory_) != VK_SUCCESS) {
-        vkFreeMemory(vkdev, staging_mem, nullptr);
-        vkDestroyBuffer(vkdev, staging, nullptr);
-        return nullptr;
-    }
-    vkBindImageMemory(vkdev, out->image_, out->memory_, 0);
-
-    // 3) Layout transition + copy + transition
-    run_one_time_command(device, [&](VkCommandBuffer cmd) {
-        transition_image_layout(cmd, out->image_,
-                                VK_IMAGE_LAYOUT_UNDEFINED,
-                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-        VkBufferImageCopy region{};
-        region.bufferOffset                    = 0;
-        region.bufferRowLength                 = 0;
-        region.bufferImageHeight               = 0;
-        region.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-        region.imageSubresource.mipLevel       = 0;
-        region.imageSubresource.baseArrayLayer = 0;
-        region.imageSubresource.layerCount     = 1;
-        region.imageOffset                     = {0, 0, 0};
-        region.imageExtent                     = {width, height, 1};
-        vkCmdCopyBufferToImage(cmd, staging, out->image_,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-        transition_image_layout(cmd, out->image_,
-                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    });
-
-    vkFreeMemory(vkdev, staging_mem, nullptr);
-    vkDestroyBuffer(vkdev, staging, nullptr);
-
-    // 4) View
-    VkImageViewCreateInfo vi{};
-    vi.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vi.image                           = out->image_;
-    vi.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
-    vi.format                          = format;
-    vi.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-    vi.subresourceRange.baseMipLevel   = 0;
-    vi.subresourceRange.levelCount     = 1;
-    vi.subresourceRange.baseArrayLayer = 0;
-    vi.subresourceRange.layerCount     = 1;
-    if (vkCreateImageView(vkdev, &vi, nullptr, &out->view_) != VK_SUCCESS) {
-        return nullptr;
-    }
-
-    // 5) Sampler (linear filter, repeat wrap, no anisotropy for simplicity)
-    VkSamplerCreateInfo si{};
-    si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    si.magFilter    = VK_FILTER_LINEAR;
-    si.minFilter    = VK_FILTER_LINEAR;
-    si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    si.minLod       = 0.0f;
-    si.maxLod       = 0.0f;
-    si.borderColor  = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
-    if (vkCreateSampler(vkdev, &si, nullptr, &out->sampler_) != VK_SUCCESS) {
-        return nullptr;
+    if (shared_sampler != VK_NULL_HANDLE) {
+        out->sampler_      = shared_sampler;
+        out->owns_sampler_ = false;
+    } else {
+        // Baked default sampler: linear, repeat, samples the full mip chain
+        // (maxLod = CLAMP_NONE so it stays valid across an in-place reload that
+        // changes the mip count).
+        VkSamplerCreateInfo si{};
+        si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter    = VK_FILTER_LINEAR;
+        si.minFilter    = VK_FILTER_LINEAR;
+        si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        si.minLod       = 0.0f;
+        si.maxLod       = VK_LOD_CLAMP_NONE;
+        si.borderColor  = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+        if (vkCreateSampler(device->get_device(), &si, nullptr, &out->sampler_) != VK_SUCCESS) {
+            return nullptr;
+        }
+        out->owns_sampler_ = true;
     }
 
     return out;
+}
+
+bool Texture::reload_from_pixels(const uint8_t* rgba, uint32_t width, uint32_t height,
+                                 bool srgb, bool gen_mips) {
+    if (!device_ || !rgba || width == 0 || height == 0) return false;
+    // Caller guarantees the GPU is idle. Rebuild image/view, keep the sampler.
+    destroy_image_only_();
+    if (!build_rgba_(rgba, width, height, srgb, gen_mips)) return false;
+    ++generation_;
+    return true;
 }
 
 std::unique_ptr<Texture> Texture::create_from_float_pixels(VulkanDevice* device,
@@ -316,35 +449,10 @@ std::unique_ptr<Texture> Texture::create_from_float_pixels(VulkanDevice* device,
     const VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT;
     const VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4 * sizeof(float);
 
-    // 1) Staging buffer (host-visible)
-    VkBufferCreateInfo bi{};
-    bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bi.size        = size;
-    bi.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    VkBuffer staging = VK_NULL_HANDLE;
-    if (vkCreateBuffer(vkdev, &bi, nullptr, &staging) != VK_SUCCESS) return nullptr;
-
-    VkMemoryRequirements mreq;
-    vkGetBufferMemoryRequirements(vkdev, staging, &mreq);
-    VkMemoryAllocateInfo malloc{};
-    malloc.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    malloc.allocationSize  = mreq.size;
-    malloc.memoryTypeIndex = device->find_memory_type(
-        mreq.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkBuffer       staging     = VK_NULL_HANDLE;
     VkDeviceMemory staging_mem = VK_NULL_HANDLE;
-    if (vkAllocateMemory(vkdev, &malloc, nullptr, &staging_mem) != VK_SUCCESS) {
-        vkDestroyBuffer(vkdev, staging, nullptr);
-        return nullptr;
-    }
-    vkBindBufferMemory(vkdev, staging, staging_mem, 0);
-    void* mapped = nullptr;
-    vkMapMemory(vkdev, staging_mem, 0, size, 0, &mapped);
-    std::memcpy(mapped, rgba_pixels, static_cast<size_t>(size));
-    vkUnmapMemory(vkdev, staging_mem);
+    if (!make_staging(device, rgba_pixels, size, staging, staging_mem)) return nullptr;
 
-    // 2) Device-local image
     VkImageCreateInfo ii{};
     ii.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ii.imageType     = VK_IMAGE_TYPE_2D;
@@ -358,8 +466,7 @@ std::unique_ptr<Texture> Texture::create_from_float_pixels(VulkanDevice* device,
     ii.samples       = VK_SAMPLE_COUNT_1_BIT;
     ii.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateImage(vkdev, &ii, nullptr, &out->image_) != VK_SUCCESS) {
-        vkFreeMemory(vkdev, staging_mem, nullptr);
-        vkDestroyBuffer(vkdev, staging, nullptr);
+        vkFreeMemory(vkdev, staging_mem, nullptr); vkDestroyBuffer(vkdev, staging, nullptr);
         return nullptr;
     }
     VkMemoryRequirements ireq;
@@ -370,13 +477,11 @@ std::unique_ptr<Texture> Texture::create_from_float_pixels(VulkanDevice* device,
     ialloc.memoryTypeIndex = device->find_memory_type(ireq.memoryTypeBits,
                                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (vkAllocateMemory(vkdev, &ialloc, nullptr, &out->memory_) != VK_SUCCESS) {
-        vkFreeMemory(vkdev, staging_mem, nullptr);
-        vkDestroyBuffer(vkdev, staging, nullptr);
+        vkFreeMemory(vkdev, staging_mem, nullptr); vkDestroyBuffer(vkdev, staging, nullptr);
         return nullptr;
     }
     vkBindImageMemory(vkdev, out->image_, out->memory_, 0);
 
-    // 3) Upload
     run_one_time_command(device, [&](VkCommandBuffer cmd) {
         transition_image_layout(cmd, out->image_,
                                 VK_IMAGE_LAYOUT_UNDEFINED,
@@ -394,7 +499,6 @@ std::unique_ptr<Texture> Texture::create_from_float_pixels(VulkanDevice* device,
     vkFreeMemory(vkdev, staging_mem, nullptr);
     vkDestroyBuffer(vkdev, staging, nullptr);
 
-    // 4) View
     VkImageViewCreateInfo vi{};
     vi.sType                       = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vi.image                       = out->image_;
@@ -405,7 +509,7 @@ std::unique_ptr<Texture> Texture::create_from_float_pixels(VulkanDevice* device,
     vi.subresourceRange.layerCount = 1;
     if (vkCreateImageView(vkdev, &vi, nullptr, &out->view_) != VK_SUCCESS) return nullptr;
 
-    // 5) Sampler — linear + CLAMP_TO_EDGE (LUTs must not wrap)
+    // Sampler — linear + CLAMP_TO_EDGE (LUTs must not wrap).
     VkSamplerCreateInfo si{};
     si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     si.magFilter    = VK_FILTER_LINEAR;
@@ -422,7 +526,8 @@ std::unique_ptr<Texture> Texture::create_from_float_pixels(VulkanDevice* device,
 
 std::unique_ptr<Texture> Texture::create_from_memory(VulkanDevice* device,
                                                      const uint8_t* data, size_t size,
-                                                     bool srgb) {
+                                                     bool srgb, bool gen_mips,
+                                                     VkSampler shared_sampler) {
     int w = 0, h = 0, comp = 0;
     stbi_uc* pixels = stbi_load_from_memory(data, static_cast<int>(size), &w, &h, &comp, STBI_rgb_alpha);
     if (!pixels) {
@@ -430,21 +535,47 @@ std::unique_ptr<Texture> Texture::create_from_memory(VulkanDevice* device,
         return nullptr;
     }
     auto out = create_from_pixels(device, pixels,
-                                  static_cast<uint32_t>(w), static_cast<uint32_t>(h), srgb);
+                                  static_cast<uint32_t>(w), static_cast<uint32_t>(h),
+                                  srgb, gen_mips, shared_sampler);
     stbi_image_free(pixels);
     return out;
 }
 
 std::unique_ptr<Texture> Texture::create_from_file(VulkanDevice* device,
-                                                   const std::string& path, bool srgb) {
+                                                   const std::string& path, bool srgb,
+                                                   bool gen_mips, VkSampler shared_sampler) {
+    // Read the bytes ourselves via std::filesystem::path constructed from
+    // UTF-8, then decode from memory. stbi_load(path) uses a narrow fopen
+    // which fails for non-ASCII (e.g. Cyrillic) filenames on Windows.
+    const std::filesystem::path fspath(
+        std::u8string(reinterpret_cast<const char8_t*>(path.data()), path.size()));
+    std::ifstream f(fspath, std::ios::binary | std::ios::ate);
+    if (!f) {
+        spdlog::error("Texture::create_from_file({}): cannot open file", path);
+        return nullptr;
+    }
+    const std::streamsize n = f.tellg();
+    if (n <= 0) {
+        spdlog::error("Texture::create_from_file({}): empty file", path);
+        return nullptr;
+    }
+    std::vector<uint8_t> bytes(static_cast<size_t>(n));
+    f.seekg(0);
+    if (!f.read(reinterpret_cast<char*>(bytes.data()), n)) {
+        spdlog::error("Texture::create_from_file({}): read failed", path);
+        return nullptr;
+    }
+
     int w = 0, h = 0, comp = 0;
-    stbi_uc* pixels = stbi_load(path.c_str(), &w, &h, &comp, STBI_rgb_alpha);
+    stbi_uc* pixels = stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()),
+                                            &w, &h, &comp, STBI_rgb_alpha);
     if (!pixels) {
         spdlog::error("Texture::create_from_file({}): stb_image failed: {}", path, stbi_failure_reason());
         return nullptr;
     }
     auto out = create_from_pixels(device, pixels,
-                                  static_cast<uint32_t>(w), static_cast<uint32_t>(h), srgb);
+                                  static_cast<uint32_t>(w), static_cast<uint32_t>(h),
+                                  srgb, gen_mips, shared_sampler);
     stbi_image_free(pixels);
     return out;
 }
@@ -469,7 +600,8 @@ std::unique_ptr<Texture> Texture::create_compressed(VulkanDevice* device,
                                                     uint32_t width, uint32_t height,
                                                     uint32_t mip_count,
                                                     const uint8_t* block_data,
-                                                    size_t data_size) {
+                                                    size_t data_size,
+                                                    VkSampler shared_sampler) {
     if (!device || !block_data || width == 0 || height == 0 || mip_count == 0 || data_size == 0) {
         spdlog::error("Texture::create_compressed: invalid args");
         return nullptr;
@@ -487,40 +619,18 @@ std::unique_ptr<Texture> Texture::create_compressed(VulkanDevice* device,
     }
 
     auto out     = std::unique_ptr<Texture>(new Texture());
-    out->device_ = device;
-    out->width_  = width;
-    out->height_ = height;
+    out->device_      = device;
+    out->width_       = width;
+    out->height_      = height;
+    out->mip_levels_  = mip_count;
 
     const uint32_t bb = bc_vk_block_bytes(format);
 
-    // 1) Staging buffer holding the whole concatenated mip chain.
-    VkBufferCreateInfo bi{};
-    bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bi.size        = data_size;
-    bi.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    VkBuffer staging = VK_NULL_HANDLE;
-    if (vkCreateBuffer(vkdev, &bi, nullptr, &staging) != VK_SUCCESS) return nullptr;
-
-    VkMemoryRequirements mreq;
-    vkGetBufferMemoryRequirements(vkdev, staging, &mreq);
-    VkMemoryAllocateInfo ma{};
-    ma.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ma.allocationSize  = mreq.size;
-    ma.memoryTypeIndex = device->find_memory_type(
-        mreq.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkBuffer       staging     = VK_NULL_HANDLE;
     VkDeviceMemory staging_mem = VK_NULL_HANDLE;
-    if (vkAllocateMemory(vkdev, &ma, nullptr, &staging_mem) != VK_SUCCESS) {
-        vkDestroyBuffer(vkdev, staging, nullptr); return nullptr;
-    }
-    vkBindBufferMemory(vkdev, staging, staging_mem, 0);
-    void* mapped = nullptr;
-    vkMapMemory(vkdev, staging_mem, 0, data_size, 0, &mapped);
-    std::memcpy(mapped, block_data, data_size);
-    vkUnmapMemory(vkdev, staging_mem);
+    if (!make_staging(device, block_data, data_size, staging, staging_mem)) return nullptr;
 
-    // 2) Device-local compressed image with the full mip chain.
+    // Device-local compressed image with the full mip chain.
     VkImageCreateInfo ii{};
     ii.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ii.imageType     = VK_IMAGE_TYPE_2D;
@@ -550,8 +660,8 @@ std::unique_ptr<Texture> Texture::create_compressed(VulkanDevice* device,
     }
     vkBindImageMemory(vkdev, out->image_, out->memory_, 0);
 
-    // 3) One copy region per mip (compressed: imageExtent is in texels, the
-    //    buffer offset advances by each mip's BC-block byte size).
+    // One copy region per mip (compressed: imageExtent is in texels, buffer
+    // offset advances by each mip's BC-block byte size).
     run_one_time_command(device, [&](VkCommandBuffer cmd) {
         transition_image_layout(cmd, out->image_, VK_IMAGE_LAYOUT_UNDEFINED,
                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mip_count);
@@ -581,7 +691,7 @@ std::unique_ptr<Texture> Texture::create_compressed(VulkanDevice* device,
     vkFreeMemory(vkdev, staging_mem, nullptr);
     vkDestroyBuffer(vkdev, staging, nullptr);
 
-    // 4) View over all mips.
+    // View over all mips.
     VkImageViewCreateInfo vi{};
     vi.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vi.image                           = out->image_;
@@ -594,19 +704,24 @@ std::unique_ptr<Texture> Texture::create_compressed(VulkanDevice* device,
     vi.subresourceRange.layerCount     = 1;
     if (vkCreateImageView(vkdev, &vi, nullptr, &out->view_) != VK_SUCCESS) return nullptr;
 
-    // 5) Sampler sampling the full mip chain.
-    VkSamplerCreateInfo si{};
-    si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    si.magFilter    = VK_FILTER_LINEAR;
-    si.minFilter    = VK_FILTER_LINEAR;
-    si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    si.minLod       = 0.0f;
-    si.maxLod       = static_cast<float>(mip_count - 1);
-    si.borderColor  = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
-    if (vkCreateSampler(vkdev, &si, nullptr, &out->sampler_) != VK_SUCCESS) return nullptr;
+    if (shared_sampler != VK_NULL_HANDLE) {
+        out->sampler_      = shared_sampler;
+        out->owns_sampler_ = false;
+    } else {
+        VkSamplerCreateInfo si{};
+        si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter    = VK_FILTER_LINEAR;
+        si.minFilter    = VK_FILTER_LINEAR;
+        si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        si.minLod       = 0.0f;
+        si.maxLod       = static_cast<float>(mip_count - 1);
+        si.borderColor  = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+        if (vkCreateSampler(vkdev, &si, nullptr, &out->sampler_) != VK_SUCCESS) return nullptr;
+        out->owns_sampler_ = true;
+    }
 
     return out;
 }

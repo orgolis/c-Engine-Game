@@ -25,6 +25,7 @@ class VulkanDevice;
 class Mesh;
 class Material;
 class Texture;
+class TextureManager;
 
 /**
  * @struct Scene
@@ -34,7 +35,11 @@ class Texture;
  * Scene alive for as long as the render graph references its draws.
  */
 struct Scene {
-    std::vector<std::unique_ptr<Texture>>  textures;
+    // Indexed by glTF *texture* index (image+sampler pair), not image index —
+    // so a texture's colour space and sampler are resolved per usage. Shared
+    // so textures owned by the TextureManager (external files, deduplicated
+    // across scenes) can be referenced here without double-ownership.
+    std::vector<std::shared_ptr<Texture>>  textures;
     std::vector<std::unique_ptr<Material>> materials;
     std::vector<std::unique_ptr<Mesh>>     meshes;
     std::vector<DrawItem>                  draw_items;
@@ -59,12 +64,19 @@ public:
      *                                Same layout the geometry pipeline was built against.
      * @param material_pool           Descriptor pool sized for at least the number of glTF materials.
      * @param path                    File path. Format is detected by extension.
+     * @param textures                Optional TextureManager. When supplied, external-file
+     *                                images are loaded (and deduplicated) through it, materials
+     *                                use its shared default textures, and all samplers come from
+     *                                its cache. When null, textures are decoded scene-locally
+     *                                with baked samplers (legacy behaviour) — still correct, just
+     *                                without cross-scene dedup / cooked-`.ctex` / hot-reload.
      * @return                        Owned scene, or nullptr on parse / GPU upload failure.
      */
     static std::unique_ptr<Scene> load(VulkanDevice* device,
                                        VkDescriptorSetLayout material_layout,
                                        VkDescriptorPool material_pool,
-                                       const std::string& path);
+                                       const std::string& path,
+                                       TextureManager* textures = nullptr);
 };
 
 } // namespace gws::renderer::gpu

@@ -48,7 +48,9 @@ using namespace schizo::assets;
 // v3: per-asset LZ4 compression in the bundle.
 // v4: OBJ .mtl materials + albedo textures embedded in the scene bundle by GUID.
 // v5: glTF importer + dependency-graph incremental cook (re-cook on dep change).
-static constexpr uint32_t kCookerVersion = 5;
+// v6: per-role BC format (BC5 normals, BC7 colour/data) + raw `.ctex` sibling +
+//     `.meta` sidecar (guid/format/srgb/wrap) for the runtime TextureManager.
+static constexpr uint32_t kCookerVersion = 6;
 
 // Per-asset compression codec for cooked bundles (LZ4 = fast runtime decode).
 static constexpr gws::compress::Codec kCookCodec = gws::compress::Codec::LZ4;
@@ -82,9 +84,10 @@ static uint64_t hash_deps(const std::vector<std::string>& deps) {
     return h;
 }
 
-// Decode an image file (PNG/JPG/TGA/BMP) and cook it into a BC7 mipped texture
+// Decode an image file (PNG/JPG/TGA/BMP) and cook it into a `fmt` mipped texture
 // blob (CookedTextureView format). Returns empty on read/decode failure.
-static std::vector<uint8_t> cook_texture_file(const std::string& path) {
+static std::vector<uint8_t> cook_texture_file(const std::string& path,
+                                              TexFormat fmt = TexFormat::BC7) {
     std::vector<uint8_t> src = read_file(path);
     if (src.empty()) return {};
     int w = 0, h = 0, ch = 0;
@@ -92,9 +95,58 @@ static std::vector<uint8_t> cook_texture_file(const std::string& path) {
                                                &w, &h, &ch, 4);
     if (!pix) return {};
     std::vector<uint8_t> tex = cook_texture(pix, static_cast<uint32_t>(w),
-                                            static_cast<uint32_t>(h), TexFormat::BC7);
+                                            static_cast<uint32_t>(h), fmt);
     stbi_image_free(pix);
     return tex;
+}
+
+// The BC format + colour space to cook a texture into, chosen from its filename
+// role: normal maps → BC5 (two-channel, linear); colour (albedo/basecolor/
+// diffuse/emissive) → BC7 sRGB; linear data (roughness/metallic/AO/ORM/mask/
+// height) → BC7 linear. (BC1/BC3 remain available via an explicit .meta.)
+struct TexCookOpt { TexFormat fmt; bool srgb; };
+static TexCookOpt pick_tex_opt(const std::string& path) {
+    std::string n = path;
+    for (char& c : n) c = static_cast<char>(::tolower(c));
+    auto has = [&](const char* s) { return n.find(s) != std::string::npos; };
+    if (has("normal") || has("_nrm") || has("_norm") || has("_n."))
+        return { TexFormat::BC5, false };
+    if (has("rough") || has("metal") || has("_ao") || has("occl") || has("orm") ||
+        has("mask") || has("height") || has("_spec") || has("displac") || has("_data"))
+        return { TexFormat::BC7, false };
+    return { TexFormat::BC7, true };  // colour / albedo / emissive / default
+}
+
+static const char* tex_format_name(TexFormat f) {
+    switch (f) {
+        case TexFormat::BC1: return "BC1";
+        case TexFormat::BC3: return "BC3";
+        case TexFormat::BC5: return "BC5";
+        case TexFormat::BC7: return "BC7";
+    }
+    return "BC7";
+}
+
+// Write a `.meta` sidecar: the GUID + import settings a tool/runtime reads to
+// know how the texture was cooked (colour space, format, wrap).
+static void write_meta(const std::string& meta_path, const std::string& source,
+                       AssetId guid, uint64_t hash, TexFormat fmt, bool srgb) {
+    char buf[640];
+    const int n = std::snprintf(buf, sizeof buf,
+        "{\n"
+        "  \"guid\": \"%016llx\",\n"
+        "  \"source\": \"%s\",\n"
+        "  \"hash\": \"%016llx\",\n"
+        "  \"type\": \"texture\",\n"
+        "  \"format\": \"%s\",\n"
+        "  \"srgb\": %s,\n"
+        "  \"wrap\": \"repeat\"\n"
+        "}\n",
+        static_cast<unsigned long long>(guid), source.c_str(),
+        static_cast<unsigned long long>(hash), tex_format_name(fmt),
+        srgb ? "true" : "false");
+    if (n <= 0) return;
+    write_file(meta_path, std::vector<uint8_t>(buf, buf + n));
 }
 
 // Stage 2.3 stream-ready format: cook a tiled/page-aligned virtual texture from
@@ -227,13 +279,20 @@ int main(int argc, char** argv) {
             for (const CookedMaterial& m : scene.materials) {
                 const std::string tex = m.albedo_tex;   // char[128], NUL-terminated
                 if (tex.empty() || !seen_tex.insert(tex).second) continue;
-                std::vector<uint8_t> tb = cook_texture_file(tex);
+                // Albedo is colour: BC7 sRGB.
+                std::vector<uint8_t> tb = cook_texture_file(tex, TexFormat::BC7);
                 if (tb.empty()) {
                     std::printf("    (albedo texture missing/undecodable: %s)\n", tex.c_str());
                     continue;
                 }
                 const AssetId tid = asset_id_from_path(tex);
-                std::printf("    + albedo tex %s -> guid %016llx (%zu B BC7)\n",
+                // Also emit a raw `.ctex` + `.meta` so the runtime TextureManager
+                // can load this texture standalone (not only via the scene bundle).
+                const std::string tstem = path_stem(tex);
+                write_file(out_dir + "/" + tstem + ".ctex", tb);
+                write_meta(out_dir + "/" + tstem + ".meta", tex, tid,
+                           content_hash(tb.data(), tb.size()), TexFormat::BC7, /*srgb=*/true);
+                std::printf("    + albedo tex %s -> guid %016llx (%zu B BC7 sRGB)\n",
                             tex.c_str(), static_cast<unsigned long long>(tid), tb.size());
                 extras.push_back(BundleAsset{ tid, Tag_CookedTexture, std::move(tb) });
                 ++linked_tex;
@@ -248,16 +307,26 @@ int main(int argc, char** argv) {
             std::printf("  COOK mesh   %s -> %s (%zu mesh, %zu mat, %zu tex, %zu deps, %zu verts, %zu bytes)\n",
                         path.c_str(), out_path.c_str(), scene.meshes.size(),
                         scene.materials.size(), linked_tex, scene.deps.size(), vtx, bundle.size());
-        } else {  // standalone image -> BC7 mipped texture bundle
-            std::vector<uint8_t> tex = cook_texture_file(path);
+        } else {  // standalone image -> per-role BC mipped texture
+            const TexCookOpt opt = pick_tex_opt(path);
+            std::vector<uint8_t> tex = cook_texture_file(path, opt.fmt);
             if (tex.empty()) { std::printf("  FAIL decode %s\n", path.c_str()); ++failed; continue; }
+
+            // Raw `.ctex` sibling (uncompressed CookedTextureView) + `.meta`
+            // sidecar the runtime TextureManager / editor read directly.
+            const std::string stem = path_stem(path);
+            write_file(out_dir + "/" + stem + ".ctex", tex);
+            write_meta(out_dir + "/" + stem + ".meta", path,
+                       asset_id_from_path(path), hash, opt.fmt, opt.srgb);
+
             PakWriter tw;
             tw.add(asset_id_from_path(path), Tag_CookedTexture, tex, kCookCodec);
             std::vector<uint8_t> bundle = tw.finalize();
             if (!write_file(out_path, bundle)) { std::printf("  FAIL write  %s\n", out_path.c_str()); ++failed; continue; }
             db.record(path, hash, asset_id_from_path(path), Tag_CookedTexture, kCookerVersion);
-            std::printf("  COOK tex    %s -> %s (%zu bytes BC7)\n",
-                        path.c_str(), out_path.c_str(), bundle.size());
+            std::printf("  COOK tex    %s -> %s (%s%s, %zu bytes)\n",
+                        path.c_str(), out_path.c_str(), tex_format_name(opt.fmt),
+                        opt.srgb ? " sRGB" : " linear", bundle.size());
 
             // Stage 2.3: also emit a STREAM-READY virtual texture — a tiled,
             // page-aligned `.vt` the runtime can page one tile at a time (the

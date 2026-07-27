@@ -1,0 +1,259 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+// DDGI probe trace + atlas update (Master Plan Stage 3.2 — dynamic diffuse GI).
+//
+// One workgroup per probe, 64 threads = 64 rays. Each frame:
+//   Phase A: every thread traces one ray (spherical-Fibonacci direction,
+//            rotated per frame) against the scene TLAS and shades the hit the
+//            same way ssr_rt.comp re-shades reflections (instance SSBO via
+//            buffer-device-address: albedo x (ambient + sun.N.L x shadow-ray)
+//            + emissive). Miss = env cubemap sky. Backface hit = black (the
+//            probe is inside geometry in that direction — killing its energy
+//            prevents light leaking through walls).
+//   Phase B: the workgroup cooperatively rebuilds this probe's octahedral
+//            irradiance tile (8x8 interior, cosine-weighted sum over the 64
+//            shared rays) and depth tile (16x16 interior, pow-50 weighted
+//            mean / mean^2 for Chebyshev visibility tests at sample time).
+//   Phase C: tiles are written WITH their 1-px mirrored border (bilinear
+//            across tile edges stays correct), blended over the previous
+//            frame with hysteresis for temporal stability.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std140) uniform DdgiUBO {
+    vec4  origin;     // xyz = grid origin,  w = intensity (composite only)
+    vec4  spacing;    // xyz = probe spacing, w = hysteresis
+    ivec4 counts;     // xyz = probe counts,  w = frame index
+    vec4  sun_dir;    // xyz = light->scene direction, w = normal bias (composite)
+    vec4  sun_color;  // rgb = colour x intensity, w = max ray distance
+    vec4  ambient;    // rgb = ambient at hits, w = enabled (composite gate)
+} u;
+
+layout(set = 0, binding = 1, rgba16f) uniform image2D irradianceAtlas;
+layout(set = 0, binding = 2, rg16f)   uniform image2D depthAtlas;
+layout(set = 0, binding = 3) uniform accelerationStructureEXT sceneTlas;
+
+// Same SceneVertex / instance layout as ssr_rt.comp (48-byte vertices).
+struct Vertex { vec3 pos; vec3 normal; vec2 uv; vec4 tangent; };
+layout(buffer_reference, scalar) readonly buffer VertexBuf { Vertex v[]; };
+layout(buffer_reference, scalar) readonly buffer IndexBuf  { uint   i[]; };
+
+struct RtInstanceData {
+    uint64_t vbo_addr;
+    uint64_t ibo_addr;
+    vec4  base_color;
+    float metallic;
+    float roughness;
+    float pad0, pad1;
+    vec4  emissive;
+};
+layout(set = 0, binding = 4, scalar) readonly buffer InstanceBuffer {
+    RtInstanceData instances[];
+};
+layout(set = 0, binding = 5) uniform samplerCube envCubemap;
+
+const uint  kRays    = 64u;
+const int   kIrrSize = 8;    // irradiance interior texels per side (tile = 10)
+const int   kDepSize = 16;   // depth interior texels per side (tile = 18)
+const float kSkyClampLuma = 2.0;
+
+shared vec3  s_rad[kRays];
+shared vec3  s_dir[kRays];
+shared float s_dist[kRays];
+shared vec3  s_irr[kIrrSize * kIrrSize];
+shared vec2  s_dep[kDepSize * kDepSize];
+
+// ---- octahedral helpers (must match ddgi_composite.frag) --------------------
+vec2 octWrap(vec2 v) {
+    return (1.0 - abs(v.yx)) * vec2(v.x >= 0.0 ? 1.0 : -1.0,
+                                    v.y >= 0.0 ? 1.0 : -1.0);
+}
+vec3 octDecode(vec2 f) {
+    vec3 n = vec3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
+    float t = max(-n.z, 0.0);
+    n.x += n.x >= 0.0 ? -t : t;
+    n.y += n.y >= 0.0 ? -t : t;
+    return normalize(n);
+}
+
+// 1-px octahedral border: which interior texel a tile texel mirrors.
+// Interior coords are [1..S]; borders are 0 and S+1.
+ivec2 border_src(ivec2 t, int S) {
+    bool lx = t.x == 0, hx = t.x == S + 1;
+    bool ly = t.y == 0, hy = t.y == S + 1;
+    if ((lx || hx) && (ly || hy)) return ivec2(lx ? S : 1, ly ? S : 1); // corner
+    if (lx) return ivec2(1, S + 1 - t.y);
+    if (hx) return ivec2(S, S + 1 - t.y);
+    if (ly) return ivec2(S + 1 - t.x, 1);
+    if (hy) return ivec2(S + 1 - t.x, S);
+    return t;                                                          // interior
+}
+
+// Spherical-Fibonacci direction i of n, rotated by a per-frame pair of angles
+// so the probe integrates fresh directions every frame (hysteresis averages).
+vec3 ray_direction(uint i, uint n, int frame) {
+    const float kGolden = 2.399963229728653;   // golden angle (rad)
+    float z   = 1.0 - 2.0 * (float(i) + 0.5) / float(n);
+    float r   = sqrt(max(0.0, 1.0 - z * z));
+    float phi = float(i) * kGolden;
+    vec3 d = vec3(r * cos(phi), r * sin(phi), z);
+    // Two incommensurate frame rotations (about Y then X).
+    float a = float(frame) * 1.6180339887;
+    float b = float(frame) * 0.7548776662;
+    float ca = cos(a), sa = sin(a);
+    d = vec3(ca * d.x + sa * d.z, d.y, -sa * d.x + ca * d.z);
+    float cb = cos(b), sb = sin(b);
+    d = vec3(d.x, cb * d.y - sb * d.z, sb * d.y + cb * d.z);
+    return d;
+}
+
+float sun_shadow(vec3 p, vec3 n, vec3 L) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, sceneTlas,
+        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        0xFF, p + n * 0.02, 0.001, L, 1000.0);
+    while (rayQueryProceedEXT(rq)) {}
+    return (rayQueryGetIntersectionTypeEXT(rq, true) ==
+            gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
+}
+
+void main() {
+    const uint probe = gl_WorkGroupID.x;
+    const uint tid   = gl_LocalInvocationID.x;
+    const int  cx = u.counts.x, cy = u.counts.y, cz = u.counts.z;
+    if (probe >= uint(cx * cy * cz)) return;
+
+    const int px = int(probe) % cx;
+    const int py = (int(probe) / cx) % cy;
+    const int pz = int(probe) / (cx * cy);
+    const vec3 probe_pos = u.origin.xyz + vec3(px, py, pz) * u.spacing.xyz;
+    const float max_dist = u.sun_color.w;
+
+    // ---- Phase A: trace one ray -------------------------------------------
+    vec3 dir = ray_direction(tid, kRays, u.counts.w);
+
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, sceneTlas, gl_RayFlagsOpaqueEXT, 0xFF,
+                          probe_pos, 0.01, dir, max_dist);
+    while (rayQueryProceedEXT(rq)) {}
+
+    vec3 radiance;
+    float hit_dist;
+    if (rayQueryGetIntersectionTypeEXT(rq, true) !=
+        gl_RayQueryCommittedIntersectionNoneEXT) {
+        int   inst_idx = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+        int   prim_idx = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+        vec2  bary     = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+        float t        = rayQueryGetIntersectionTEXT(rq, true);
+        hit_dist       = t;
+        vec3 hit_pos   = probe_pos + dir * t;
+
+        RtInstanceData inst = instances[inst_idx];
+        vec3 albedo  = inst.base_color.rgb;
+        vec3 world_n = -dir;   // fallback
+
+        if (inst.vbo_addr != 0ul && inst.ibo_addr != 0ul) {
+            IndexBuf  ib = IndexBuf(inst.ibo_addr);
+            VertexBuf vb = VertexBuf(inst.vbo_addr);
+            uint i0 = ib.i[prim_idx * 3 + 0];
+            uint i1 = ib.i[prim_idx * 3 + 1];
+            uint i2 = ib.i[prim_idx * 3 + 2];
+            vec3 bc = vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
+            vec3 local_n = normalize(vb.v[i0].normal * bc.x +
+                                     vb.v[i1].normal * bc.y +
+                                     vb.v[i2].normal * bc.z);
+            mat4x3 o2w = rayQueryGetIntersectionObjectToWorldEXT(rq, true);
+            world_n = normalize(mat3(o2w) * local_n);
+        }
+
+        if (dot(world_n, dir) > 0.0) {
+            // Backface: the probe sees the inside of geometry this way. Zero
+            // energy + a shortened distance so Chebyshev clamps hard here.
+            radiance = vec3(0.0);
+            hit_dist = t * 0.8;
+        } else {
+            vec3 L = normalize(-u.sun_dir.xyz);
+            float ndotl  = max(dot(world_n, L), 0.0);
+            float shadow = (ndotl > 0.0) ? sun_shadow(hit_pos, world_n, L) : 1.0;
+            radiance = albedo * u.ambient.rgb
+                     + albedo * u.sun_color.rgb * ndotl * shadow
+                     + inst.emissive.rgb;
+        }
+    } else {
+        radiance = texture(envCubemap, dir).rgb;
+        float l = max(max(radiance.r, radiance.g), radiance.b);
+        if (l > kSkyClampLuma) radiance *= kSkyClampLuma / l;
+        hit_dist = max_dist;
+    }
+
+    s_rad[tid]  = radiance;
+    s_dir[tid]  = dir;
+    s_dist[tid] = hit_dist;
+    barrier();
+
+    // ---- Phase B: rebuild interior texels from the shared rays ------------
+    // Irradiance: 8x8 = 64 interiors, one per thread. Cosine-weighted sum,
+    // scaled by the solid-angle estimator 2/N (Lambert's 1/pi folds into the
+    // composite intensity).
+    {
+        int ix = int(tid) % kIrrSize, iy = int(tid) / kIrrSize;
+        vec3 texel_dir = octDecode(((vec2(ix, iy) + 0.5) / float(kIrrSize)) * 2.0 - 1.0);
+        vec3  c = vec3(0.0);
+        float wsum = 0.0;
+        for (uint j = 0u; j < kRays; ++j) {
+            float w = max(0.0, dot(texel_dir, s_dir[j]));
+            c += w * s_rad[j];
+            wsum += w;
+        }
+        // Cosine-weighted AVERAGE incident radiance about texel_dir (RTXGI
+        // convention) — normalized by the weight sum so it's independent of
+        // ray count / sphere-sampling density. The composite multiplies by
+        // albedo × intensity to get the diffuse bounce.
+        s_irr[tid] = (wsum > 1e-4) ? (c / wsum) : vec3(0.0);
+    }
+    // Depth: 16x16 = 256 interiors, four per thread. Sharp pow-50 weighting.
+    for (int k = 0; k < 4; ++k) {
+        int t  = int(tid) * 4 + k;
+        int ix = t % kDepSize, iy = t / kDepSize;
+        vec3 texel_dir = octDecode(((vec2(ix, iy) + 0.5) / float(kDepSize)) * 2.0 - 1.0);
+        float m = 0.0, m2 = 0.0, W = 0.0;
+        for (uint j = 0u; j < kRays; ++j) {
+            float w = pow(max(0.0, dot(texel_dir, s_dir[j])), 50.0);
+            m += w * s_dist[j]; m2 += w * s_dist[j] * s_dist[j]; W += w;
+        }
+        s_dep[t] = (W > 1e-6) ? vec2(m / W, m2 / W)
+                              : vec2(max_dist, max_dist * max_dist);
+    }
+    barrier();
+
+    // ---- Phase C: write tiles (interior + mirrored border), hysteresis ----
+    // First two frames write through (the atlas holds garbage until then).
+    const float h = (u.counts.w < 2) ? 0.0 : u.spacing.w;
+    const int   tiles_row = py * cz + pz;   // tile col = px, row = y*cz + z
+
+    {   // irradiance tile: 10x10 = 100 texels
+        const ivec2 base = ivec2(px * (kIrrSize + 2), tiles_row * (kIrrSize + 2));
+        for (int t = int(tid); t < (kIrrSize + 2) * (kIrrSize + 2); t += int(kRays)) {
+            ivec2 tc  = ivec2(t % (kIrrSize + 2), t / (kIrrSize + 2));
+            ivec2 src = border_src(tc, kIrrSize);
+            vec3  val = s_irr[(src.y - 1) * kIrrSize + (src.x - 1)];
+            ivec2 at  = base + tc;
+            vec3  old = imageLoad(irradianceAtlas, at).rgb;
+            imageStore(irradianceAtlas, at, vec4(mix(val, old, h), 1.0));
+        }
+    }
+    {   // depth tile: 18x18 = 324 texels
+        const ivec2 base = ivec2(px * (kDepSize + 2), tiles_row * (kDepSize + 2));
+        for (int t = int(tid); t < (kDepSize + 2) * (kDepSize + 2); t += int(kRays)) {
+            ivec2 tc  = ivec2(t % (kDepSize + 2), t / (kDepSize + 2));
+            ivec2 src = border_src(tc, kDepSize);
+            vec2  val = s_dep[(src.y - 1) * kDepSize + (src.x - 1)];
+            ivec2 at  = base + tc;
+            vec2  old = imageLoad(depthAtlas, at).rg;
+            imageStore(depthAtlas, at, vec4(mix(val, old, h), 0.0, 0.0));
+        }
+    }
+}

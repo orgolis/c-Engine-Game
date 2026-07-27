@@ -27,14 +27,17 @@ class VulkanDevice;
 class VulkanGBuffer;
 
 struct FroxelFogConfig {
-    float density        = 0.012f;  // base extinction at height_base (per meter)
+    // Defaults retuned 2026-07-23: the original density 0.012 + ambient floor
+    // ~0.4 washed the whole frame into a flat grey-blue haze. A subtler base
+    // (fog should READ as atmosphere, not paint) — crank per-scene as needed.
+    float density        = 0.006f;  // base extinction at height_base (per meter)
     float height_base    = 0.0f;    // fog is densest at/below this world Y
-    float height_falloff = 0.08f;   // exponential thinning above height_base
+    float height_falloff = 0.10f;   // exponential thinning above height_base
     float max_distance   = 150.0f;  // froxel far plane (fog range)
     float anisotropy     = 0.6f;    // HG g for the sun (forward scattering)
     float sun_intensity  = 1.0f;
     float local_intensity = 1.0f;   // point/spot in-scatter scale
-    glm::vec3 ambient    = glm::vec3(0.35f, 0.40f, 0.50f);  // sky-ish floor
+    glm::vec3 ambient    = glm::vec3(0.10f, 0.12f, 0.16f);  // dim sky floor
 };
 
 class VulkanFroxelFogPass {

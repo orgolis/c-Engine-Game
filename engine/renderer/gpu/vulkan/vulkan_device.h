@@ -288,6 +288,14 @@ public:
     /// Find a memory type matching the requested property flags. Throws on failure.
     uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties) const;
 
+    /// True when `samplerAnisotropy` was enabled at logical-device creation.
+    /// Sampler creation must gate `anisotropyEnable` on this.
+    bool anisotropy_enabled() const { return anisotropy_enabled_; }
+
+    /// Device's `maxSamplerAnisotropy` limit (1.0 when anisotropy is disabled).
+    /// Callers must clamp their requested anisotropy to this.
+    float max_anisotropy() const { return max_anisotropy_; }
+
     /// True when the device supports hardware ray tracing via VK_KHR_ray_query
     /// + VK_KHR_acceleration_structure (and the required dependencies). When
     /// false, RT features will not be enabled even if the engine config
@@ -372,6 +380,12 @@ private:
     // were available and the rayQuery + accelerationStructure features
     // were enabled on the logical device. See `has_ray_tracing()`.
     bool ray_tracing_supported_ = false;
+
+    // Set at logical-device creation when samplerAnisotropy was supported and
+    // enabled. `max_anisotropy_` mirrors the device's limit. See
+    // `anisotropy_enabled()` / `max_anisotropy()`.
+    bool  anisotropy_enabled_ = false;
+    float max_anisotropy_     = 1.0f;
 
     // Resolved RT function pointers — populated after logical device
     // creation when ray_tracing_supported_ is true.

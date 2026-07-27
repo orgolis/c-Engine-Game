@@ -206,6 +206,17 @@ public:
     void set_frustum_culling_enabled(bool enable) { frustum_culling_enabled_ = enable; }
     bool is_frustum_culling_enabled() const { return frustum_culling_enabled_; }
 
+    /// Light-space view-proj used to cull SHADOW casters. The shadow stage
+    /// previously culled with the CAMERA frustum — wrong: an off-screen object
+    /// whose shadow falls into view lost its shadow. Set this to the shadow
+    /// map's light view-proj each frame; when unset the shadow stage skips
+    /// frustum culling entirely (conservative, never wrong).
+    void set_shadow_cull_view_proj(const glm::mat4& vp) {
+        shadow_cull_view_proj_ = vp;
+        has_shadow_cull_view_proj_ = true;
+    }
+    void clear_shadow_cull_view_proj() { has_shadow_cull_view_proj_ = false; }
+
     /// Mark the start of a new frame. Resets per-frame stats.
     void begin_frame(VkCommandBuffer cmd);
 
@@ -282,6 +293,8 @@ private:
     RenderGraphStage last_executed_ = RenderGraphStage::StageCount;
     bool frame_in_flight_ = false;
     bool frustum_culling_enabled_ = false;
+    glm::mat4 shadow_cull_view_proj_{1.0f};
+    bool has_shadow_cull_view_proj_ = false;
 
     // GPU timestamp profiling. Two slots per stage (start, end), indexed by
     // (stage * 2) and (stage * 2 + 1). `timestamp_period_ns_` is the GPU's

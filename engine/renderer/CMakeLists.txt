@@ -9,6 +9,9 @@ add_library(renderer STATIC)
 target_include_directories(renderer PUBLIC include)
 target_include_directories(renderer PUBLIC gpu)
 target_include_directories(renderer PRIVATE src)
+# Header-only, runtime-safe asset-pipeline headers (asset_id.h, texture_format.h)
+# consumed by the TextureManager for content-addressed ids + cooked `.ctex`.
+target_include_directories(renderer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../core/asset_pipeline)
 
 # Header files - GPU Abstraction Layer
 target_sources(renderer PRIVATE
@@ -43,13 +46,18 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_ssr_pass.h
     gpu/vulkan/vulkan_volumetric_light_pass.h
     gpu/vulkan/vulkan_cloud_pass.h
+    gpu/vulkan/vulkan_ddgi_pass.h
     gpu/vulkan/vulkan_rt_functions.h
     gpu/vulkan/vulkan_rt_scene.h
     gpu/vulkan/vulkan_vxao_pass.h
     gpu/vulkan/vulkan_shader_registry.h
     gpu/vulkan/vulkan_render_graph.h
     gpu/vulkan/vulkan_texture.h
+    gpu/vulkan/vulkan_sampler_cache.h
+    gpu/vulkan/vulkan_texture_manager.h
+    gpu/vulkan/vulkan_virtual_texture.h
     gpu/vulkan/vulkan_scene_mesh.h
+    gpu/vulkan/vulkan_skinned_mesh.h
     gpu/vulkan/vulkan_scene_material.h
     gpu/vulkan/vulkan_gltf_loader.h
     gpu/vulkan/culling.h
@@ -100,13 +108,18 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_water_pass.cpp
     gpu/vulkan/vulkan_froxel_fog_pass.cpp
     gpu/vulkan/vulkan_cloud_pass.cpp
+    gpu/vulkan/vulkan_ddgi_pass.cpp
     gpu/vulkan/vulkan_rt_functions.cpp
     gpu/vulkan/vulkan_rt_scene.cpp
     gpu/vulkan/vulkan_vxao_pass.cpp
     gpu/vulkan/vulkan_shader_registry.cpp
     gpu/vulkan/vulkan_render_graph.cpp
     gpu/vulkan/vulkan_texture.cpp
+    gpu/vulkan/vulkan_sampler_cache.cpp
+    gpu/vulkan/vulkan_texture_manager.cpp
+    gpu/vulkan/vulkan_virtual_texture.cpp
     gpu/vulkan/vulkan_scene_mesh.cpp
+    gpu/vulkan/vulkan_skinned_mesh.cpp
     gpu/vulkan/vulkan_scene_material.cpp
     gpu/vulkan/vulkan_gltf_loader.cpp
     gpu/vulkan/culling.cpp
@@ -203,6 +216,9 @@ target_sources(renderer PRIVATE
     include/animation.h
     include/animator.h
     include/blend_tree.h
+    include/anim_pose.h
+    include/ik.h
+    include/animation_state_machine.h
     include/animation_component.h
     include/skeletal_mesh_component.h
 )
@@ -294,6 +310,8 @@ target_sources(renderer PRIVATE
     src/animation.cpp
     src/animator.cpp
     src/blend_tree.cpp
+    src/ik.cpp
+    src/animation_state_machine.cpp
     src/animation_component.cpp
     src/skeletal_mesh_component.cpp
 )

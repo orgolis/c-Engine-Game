@@ -118,6 +118,8 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
                 file << "MESH_RENDERER_OCCLUSION="   << mr->GetOcclusion()   << "\n";
                 auto e = mr->GetEmissive();
                 file << "MESH_RENDERER_EMISSIVE="    << e.r << "," << e.g << "," << e.b << "\n";
+                if (mr->HasAlbedoTexture())
+                    file << "MESH_RENDERER_ALBEDO_TEX=" << mr->GetAlbedoTexturePath() << "\n";
             }
 
             // LightComponent — full property emission (previous version emitted
@@ -355,6 +357,7 @@ struct ParsedEntity {
     float mesh_renderer_roughness  = 0.7f;
     float mesh_renderer_occlusion  = 1.0f;
     glm::vec3 mesh_renderer_emissive{0.0f};
+    std::string mesh_renderer_albedo_tex;
 
     bool has_light = false;
     int  light_type = 0;
@@ -501,6 +504,7 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
         p.mesh_renderer_emissive = {r, g, b};
         return;
     }
+    if (starts_with(line, "MESH_RENDERER_ALBEDO_TEX", v)) { p.mesh_renderer_albedo_tex = v; return; }
 
     if (starts_with(line, "LIGHT_TYPE", v))        { p.has_light = true; p.light_type = std::stoi(v); return; }
     if (starts_with(line, "LIGHT_COLOR", v)) {
@@ -675,6 +679,7 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
             mr->SetRoughness(p.mesh_renderer_roughness);
             mr->SetOcclusion(p.mesh_renderer_occlusion);
             mr->SetEmissive(p.mesh_renderer_emissive);
+            mr->SetAlbedoTexturePath(p.mesh_renderer_albedo_tex);
         }
     }
 

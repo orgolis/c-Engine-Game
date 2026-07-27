@@ -90,10 +90,14 @@ public:
     /// chunks; pass a single submesh covering all indices for simple meshes.
     /// Each submesh's `lods` vector should already be populated — typically
     /// by `Mesh::generate_lods` before calling.
+    /// `extra_vbo_usage` adds usage bits to the vertex buffer — e.g.
+    /// VK_BUFFER_USAGE_STORAGE_BUFFER_BIT so a compute skinning pass can write
+    /// vertices into it (the SkinnedMesh output path). 0 = plain vertex buffer.
     static std::unique_ptr<Mesh> create(VulkanDevice* device,
                                         const std::vector<SceneVertex>& vertices,
                                         const std::vector<uint32_t>& indices,
-                                        std::vector<Submesh> submeshes);
+                                        std::vector<Submesh> submeshes,
+                                        VkBufferUsageFlags extra_vbo_usage = 0);
 
     /// Bind vertex+index buffers on the supplied command buffer.
     void bind(VkCommandBuffer cmd) const;
@@ -139,6 +143,10 @@ public:
     /// AS-build usage bits when the device supports ray tracing.
     VkBuffer get_vertex_buffer() const { return vbo_; }
     VkBuffer get_index_buffer()  const { return ibo_; }
+    /// Backing memory of the vertex buffer (host-visible). Exposed so a
+    /// compute-skinning pass / test can map + read the (possibly compute-
+    /// written) vertices without a staging copy.
+    VkDeviceMemory get_vertex_memory() const { return vbo_memory_; }
 
     /// Get the mesh's bounding box in local space (computed at load time).
     const AABB& bounding_box() const { return bounding_box_; }

@@ -67,9 +67,12 @@ public:
     /// instances of this layout. Caller owns the pool.
     static VkDescriptorPool create_descriptor_pool(VkDevice device, uint32_t max_materials);
 
-    /// Build a material. Any null texture pointer falls back to a 1×1
-    /// default appropriate for the slot (white for color/MR/AO, flat-blue
-    /// normal, black for emissive).
+    /// Build a material. Any null texture pointer falls back to a default:
+    /// if the matching `default_*` (shared, engine-wide — from the
+    /// TextureManager) is supplied it is used; otherwise the material mints its
+    /// own 1×1 default (white for color/MR/AO, flat-blue normal, black for
+    /// emissive). Passing the shared defaults avoids one 1×1 texture + sampler
+    /// per material.
     static std::unique_ptr<Material> create(VulkanDevice* device,
                                             VkDescriptorSetLayout layout,
                                             VkDescriptorPool pool,
@@ -78,11 +81,25 @@ public:
                                             const Texture* normal,
                                             const Texture* metallic_roughness,
                                             const Texture* occlusion,
-                                            const Texture* emissive);
+                                            const Texture* emissive,
+                                            const Texture* default_white  = nullptr,
+                                            const Texture* default_normal = nullptr,
+                                            const Texture* default_black  = nullptr);
+
+    /// Re-write the 5 image-sampler bindings from the textures this material
+    /// currently references. Call after a bound texture was hot-reloaded in
+    /// place (its `view()` changed but the object identity did not). The caller
+    /// must ensure the GPU is idle. No-op if the material bound only defaults.
+    void rewrite_textures();
 
     /// Bind this material's descriptor set. The pipeline layout must have
     /// been built with the same layout returned by `create_descriptor_set_layout`.
     void bind(VkCommandBuffer cmd, VkPipelineLayout pipeline_layout, uint32_t set_index) const;
+
+    /// The 5 textures this material references (base, normal, MR, AO, emissive),
+    /// in binding order. Entries may point at shared defaults. For hot-reload
+    /// dependency checks.
+    const Texture* const* bound_textures() const { return tex_; }
 
     VkDescriptorSet descriptor_set() const { return descriptor_set_; }
 
@@ -100,11 +117,16 @@ private:
     MaterialUniforms params_{};
 
     // Default fallback textures owned by the material when the caller
-    // didn't supply one. We keep them on the material so the descriptor
-    // set's image-sampler bindings stay live.
+    // didn't supply one AND no shared default was provided. We keep them on
+    // the material so the descriptor set's image-sampler bindings stay live.
     std::unique_ptr<Texture> fallback_white_;
     std::unique_ptr<Texture> fallback_normal_;
     std::unique_ptr<Texture> fallback_black_;
+
+    // Resolved textures bound to slots 1..5 (base, normal, MR, AO, emissive).
+    // Non-owning — may point at supplied textures, shared defaults, or the
+    // fallbacks above. Used by rewrite_textures()/bound_textures().
+    const Texture* tex_[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
 
     void destroy();
 };

@@ -395,12 +395,18 @@ void VulkanRenderGraph::record_shadow(VkCommandBuffer cmd, const StageRecorder& 
         // directional cascade); a future cascade-matrix setter will replace
         // this with per-cascade orthographic projections.
         std::vector<DrawItem> items_to_draw = draw_items_;
-        if (frustum_culling_enabled_) {
-            Frustum frustum = Frustum::from_matrix(camera_.proj * camera_.view);
+        if (frustum_culling_enabled_ && has_shadow_cull_view_proj_) {
+            // Cull casters against the LIGHT'S frustum, never the camera's:
+            // an object outside the camera view whose shadow falls INTO the
+            // view must still render into the shadow map. When no light
+            // matrix was provided this frame, skip culling entirely
+            // (conservative — drawing an extra caster is cheap, a missing
+            // shadow is a visible bug).
+            Frustum light_frustum = Frustum::from_matrix(shadow_cull_view_proj_);
             // Shadow stage doesn't update the per-frame frustum stats —
             // those track the geometry-stage view, which is the canonical
             // "what the camera sees" measurement. Pass nullptr to skip.
-            cull_draw_items_frustum(items_to_draw, frustum);
+            cull_draw_items_frustum(items_to_draw, light_frustum);
         }
         config_.shadow_map->draw_items(cmd, camera_.view, camera_.proj,
                                        camera_.position,
@@ -446,13 +452,20 @@ void VulkanRenderGraph::record_geometry(VkCommandBuffer cmd, const StageRecorder
         // per-meshlet culling on top of the entity-level cull above.
         // (Verified not to be the cause of the city-OBJ rendering bugs we
         // chased earlier — that was back-face culling, since reverted.)
+        // HZB is deliberately NOT forwarded here: was_visible() is indexed by
+        // position in the ORIGINAL draw list the caller tested, but
+        // items_to_draw was just frustum-culled — indices shift and the
+        // G-Buffer would read the WRONG draw's visibility (the "random
+        // objects disappear" bug). HZB filtering now happens in the caller
+        // (main.cpp) on the un-culled list where indices line up; the culler
+        // stays in config_ only for build_and_readback below.
         config_.g_buffer->draw_items(cmd, camera_.view, camera_.proj,
                                      camera_.position,
                                      items_to_draw.data(), items_to_draw.size(),
                                      &stats_.geometry_draw_calls,
                                      &stats_.geometry_triangles,
                                      config_.occlusion_culler,
-                                     config_.hzb_culler,
+                                     /*hzb_culler=*/nullptr,
                                      &frustum);
     } else {
         // Smoke-test fallback: paint the G-Buffer with the built-in demo

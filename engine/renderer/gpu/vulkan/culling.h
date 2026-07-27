@@ -48,6 +48,8 @@ struct AABB {
     }
 
     /// Transform AABB by a 4x4 matrix, returning new AABB (conservative).
+    /// Model matrices are affine (w stays 1), so no perspective divide — the
+    /// old /w produced NaNs for degenerate matrices and wasted a divide.
     AABB transform(const glm::mat4& m) const {
         glm::vec3 corners[8] = {
             {min.x, min.y, min.z},
@@ -64,8 +66,7 @@ struct AABB {
         glm::vec3 new_max(-1e9f);
 
         for (int i = 0; i < 8; ++i) {
-            glm::vec4 p = m * glm::vec4(corners[i], 1.0f);
-            glm::vec3 p3 = glm::vec3(p) / p.w;
+            glm::vec3 p3 = glm::vec3(m * glm::vec4(corners[i], 1.0f));
             new_min = glm::min(new_min, p3);
             new_max = glm::max(new_max, p3);
         }

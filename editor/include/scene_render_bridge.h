@@ -5,7 +5,9 @@
 #include "vulkan/vulkan_render_graph.h"
 #include "vulkan/vulkan_gltf_loader.h"
 #include "vulkan/vulkan_texture.h"
+#include "vulkan/vulkan_texture_manager.h"   // managed texture loading (Stage 2)
 #include "cooked_mesh_loader.h"   // cooked .pak bundles (Stage 2 cook->runtime loop)
+#include "asset_path_util.h"      // utf8_path / resolve_asset_path (shared w/ physics)
 #include "scene.h"
 #include "entity.h"
 #include "transform.h"
@@ -16,6 +18,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -40,9 +43,11 @@ public:
         float occlusion,
         const glm::vec3& emissive,
         float alpha_cutoff,                                    // 0 → opaque (no discard)
+        const std::string& albedo_path,                        // "" → flat colour only
         gws::renderer::gpu::VulkanDevice* device,
         VkDescriptorSetLayout layout,
-        VkDescriptorPool pool)
+        VkDescriptorPool pool,
+        gws::renderer::gpu::TextureManager* textures = nullptr)
     {
         auto it = entries_.find(entity_id);
         if (it != entries_.end()) {
@@ -54,7 +59,8 @@ public:
                 std::abs(e.emissive.r - emissive.r) < 1e-4f &&
                 std::abs(e.emissive.g - emissive.g) < 1e-4f &&
                 std::abs(e.emissive.b - emissive.b) < 1e-4f &&
-                std::abs(e.alpha_cutoff - alpha_cutoff) < 1e-4f) {
+                std::abs(e.alpha_cutoff - alpha_cutoff) < 1e-4f &&
+                e.albedo_path == albedo_path) {
                 return e.material.get();
             }
         }
@@ -66,10 +72,29 @@ public:
         // emissive_factor.a doubles as alpha_cutoff for the G-Buffer
         // shader's discard test (see MaterialUniforms comment).
         params.emissive_factor   = glm::vec4(emissive, alpha_cutoff);
+        // Optional base-colour texture, loaded through the manager (mipped,
+        // sRGB, deduplicated, hot-reloadable). Held on the Entry so it outlives
+        // the material's descriptor set. `color` still multiplies the texel.
+        std::shared_ptr<gws::renderer::gpu::Texture> albedo;
+        const gws::renderer::gpu::Texture* base = nullptr;
+        if (textures && !albedo_path.empty()) {
+            gws::renderer::gpu::TextureImportSettings st;
+            st.srgb = true; st.gen_mips = true;
+            albedo = textures->load(albedo_path, st);
+            base = albedo ? albedo.get() : nullptr;
+        }
+
+        // Route unbound slots to the manager's shared engine-wide defaults so
+        // every primitive material doesn't mint its own 1×1 white/normal/black.
+        const gws::renderer::gpu::Texture* dw = textures ? textures->white()  : nullptr;
+        const gws::renderer::gpu::Texture* dn = textures ? textures->normal() : nullptr;
+        const gws::renderer::gpu::Texture* db = textures ? textures->black()  : nullptr;
         auto mat = gws::renderer::gpu::Material::create(
             device, layout, pool, params,
-            nullptr, nullptr, nullptr, nullptr, nullptr);
-        Entry e{ color, metallic, roughness, occlusion, emissive, alpha_cutoff, std::move(mat) };
+            base, nullptr, nullptr, nullptr, nullptr,
+            dw, dn, db);
+        Entry e{ color, metallic, roughness, occlusion, emissive, alpha_cutoff,
+                 albedo_path, std::move(albedo), std::move(mat) };
         gws::renderer::gpu::Material* raw = e.material.get();
         entries_[entity_id] = std::move(e);
         return raw;
@@ -107,6 +132,8 @@ private:
         float     occlusion    = 1.0f;
         glm::vec3 emissive{0.0f};
         float     alpha_cutoff = 0.0f;
+        std::string albedo_path;
+        std::shared_ptr<gws::renderer::gpu::Texture> albedo_tex;  // keeps texture alive
         std::unique_ptr<gws::renderer::gpu::Material> material;
     };
     std::unordered_map<uint32_t, Entry> entries_;
@@ -127,7 +154,8 @@ private:
 inline bool parse_obj_file(const std::string& path,
                            std::vector<gws::renderer::gpu::SceneVertex>& out_verts,
                            std::vector<uint32_t>& out_idx) {
-    std::ifstream file(path);
+    // utf8_path: non-ASCII filenames (Cyrillic etc.) fail with a narrow ifstream.
+    std::ifstream file(utf8_path(path));
     if (!file.is_open()) return false;
 
     std::vector<glm::vec3> positions;
@@ -334,7 +362,8 @@ public:
         const std::string& path,
         gws::renderer::gpu::VulkanDevice* device,
         VkDescriptorSetLayout mat_layout,
-        VkDescriptorPool mat_pool)
+        VkDescriptorPool mat_pool,
+        gws::renderer::gpu::TextureManager* textures = nullptr)
     {
         auto it = entries_.find(path);
         if (it != entries_.end()) {
@@ -346,6 +375,11 @@ public:
             return nullptr;
         }
 
+        // Scene files carry repo-root-relative paths; resolve independent of
+        // the launch CWD (build-editor/bin vs repo root). The CACHE stays
+        // keyed on the original path so scene identity is stable.
+        const std::string disk_path = resolve_asset_path(path);
+
         std::string ext;
         size_t dot = path.find_last_of('.');
         if (dot != std::string::npos) ext = path.substr(dot);
@@ -355,21 +389,24 @@ public:
         std::unique_ptr<gws::renderer::gpu::Scene> scene;
         if (ext == ".gltf" || ext == ".glb") {
             if (device) {
+                // Pass the TextureManager so glTF textures are deduplicated,
+                // mipped, per-slot-sRGB-correct, hot-reloadable, and use the
+                // shared default textures (cooked `.ctex` when present).
                 scene = gws::renderer::gpu::GltfLoader::load(
-                    device, mat_layout, mat_pool, path);
+                    device, mat_layout, mat_pool, disk_path, textures);
             } else {
                 spdlog::error("[AssetMeshCache] Device is null for {}", path);
             }
         } else if (ext == ".obj") {
             if (device) {
-                scene = load_obj_scene(path, device, mat_layout, mat_pool);
+                scene = load_obj_scene(disk_path, device, mat_layout, mat_pool);
             } else {
                 spdlog::error("[AssetMeshCache] Device is null for {}", path);
             }
         } else if (ext == ".pak") {
             // Cooked bundle: mmap + zero-parse load (the Stage 2 fast path).
             if (device) {
-                scene = load_cooked_pak_scene(path, device, mat_layout, mat_pool);
+                scene = load_cooked_pak_scene(disk_path, device, mat_layout, mat_pool);
             } else {
                 spdlog::error("[AssetMeshCache] Device is null for {}", path);
             }
@@ -395,6 +432,18 @@ public:
         const auto* raw = scene.get();
         entries_[path] = std::move(scene);
         return raw;
+    }
+
+    /// Re-write descriptor sets of every cached scene's materials. Call after a
+    /// texture one of them references was hot-reloaded in place (its
+    /// VkImageView changed). The caller must ensure the GPU is idle.
+    void rewrite_all_materials() {
+        for (auto& [path, scene] : entries_) {
+            (void)path;
+            if (!scene) continue;
+            for (auto& m : scene->materials)
+                if (m) m->rewrite_textures();
+        }
     }
 
     void clear() { entries_.clear(); }
@@ -587,7 +636,8 @@ public:
         const schizo::scene::TerrainComponent* tc,
         gws::renderer::gpu::VulkanDevice* device,
         VkDescriptorSetLayout mat_layout,
-        VkDescriptorPool mat_pool)
+        VkDescriptorPool mat_pool,
+        gws::renderer::gpu::TextureManager* textures = nullptr)
     {
         using namespace gws::renderer::gpu;
         // Earthy base for unset layers (UNORM so the bytes are sampled as
@@ -621,8 +671,21 @@ public:
         for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
             e.layer_paths[i] = tc->GetLayerPath(i);
             e.layer_tex[i].reset();
-            if (!e.layer_paths[i].empty())
-                e.layer_tex[i] = Texture::create_from_file(device, e.layer_paths[i], /*srgb=*/true);
+            if (!e.layer_paths[i].empty()) {
+                if (textures) {
+                    // Managed path: deduplicated across terrains/meshes, GPU
+                    // mip chain, sRGB, anisotropic tiling sampler, cooked
+                    // `.ctex` when present, hot-reloadable. The manager falls
+                    // back to its shared white on failure — map that back to
+                    // "no texture" so the earthy base is used instead.
+                    TextureImportSettings st;
+                    st.srgb = true; st.gen_mips = true;
+                    auto sp = textures->load(e.layer_paths[i], st);
+                    if (sp && sp.get() != textures->white()) e.layer_tex[i] = std::move(sp);
+                } else {
+                    e.layer_tex[i] = Texture::create_from_file(device, e.layer_paths[i], /*srgb=*/true);
+                }
+            }
             layer_ptrs[i] = e.layer_tex[i] ? e.layer_tex[i].get() : base_tex_.get();
         }
 
@@ -643,6 +706,16 @@ public:
         return e.material.get();
     }
 
+    /// Re-write descriptor sets of every terrain material. Call after a layer
+    /// texture was hot-reloaded in place (its VkImageView changed). The caller
+    /// must ensure the GPU is idle.
+    void rewrite_all_materials() {
+        for (auto& [id, e] : entries_) {
+            (void)id;
+            if (e.material) e.material->rewrite_textures();
+        }
+    }
+
     void prune(const std::shared_ptr<schizo::scene::Scene>& scene) {
         if (!scene) { entries_.clear(); return; }
         std::unordered_map<uint32_t, Entry> kept;
@@ -658,7 +731,10 @@ public:
 private:
     struct Entry {
         std::unique_ptr<gws::renderer::gpu::Texture> splat_tex;
-        std::array<std::unique_ptr<gws::renderer::gpu::Texture>, schizo::scene::kTerrainLayers> layer_tex;
+        // shared_ptr: layer textures may be owned by the TextureManager (and
+        // shared with other terrains/materials); the legacy no-manager path's
+        // unique_ptr converts into it.
+        std::array<std::shared_ptr<gws::renderer::gpu::Texture>, schizo::scene::kTerrainLayers> layer_tex;
         std::array<std::string, schizo::scene::kTerrainLayers> layer_paths;
         std::unique_ptr<gws::renderer::gpu::Material> material;
         uint64_t splat_version = 0;
@@ -687,6 +763,7 @@ inline void build_draw_items(
     VkDescriptorPool mat_pool,
     std::vector<gws::renderer::gpu::DrawItem>& out_opaque,
     std::vector<gws::renderer::gpu::DrawItem>& out_transparent,
+    gws::renderer::gpu::TextureManager* textures = nullptr,
     const schizo::editor::EcsSceneBridge* ecs = nullptr)
 {
     out_opaque.clear();
@@ -714,13 +791,14 @@ inline void build_draw_items(
                 // pipeline. Falls back to a plain green material if the splat
                 // texture couldn't be built (terrain still renders, untextured).
                 gws::renderer::gpu::Material* tmat = terrain_gpu_cache.get_or_build(
-                    ent->GetId(), tc.get(), device, mat_layout, mat_pool);
+                    ent->GetId(), tc.get(), device, mat_layout, mat_pool, textures);
                 bool is_terrain = tmat != nullptr;
                 if (!tmat) {
                     tmat = mat_cache.get_or_create(
                         ent->GetId(), glm::vec4(0.42f, 0.48f, 0.34f, 1.0f),
                         0.0f, 0.95f, 1.0f, glm::vec3(0.0f), 0.0f,
-                        device, mat_layout, mat_pool);
+                        /*albedo_path=*/std::string(),
+                        device, mat_layout, mat_pool, textures);
                 }
                 if (tmat) {
                     for (const auto& cm : chunk_meshes) {
@@ -750,7 +828,7 @@ inline void build_draw_items(
         const auto* mc = ent->GetMeshComponent();
         if (mc && !mc->mesh_path.empty()) {
             const auto* loaded = asset_cache.get_or_load(
-                mc->mesh_path, device, mat_layout, mat_pool);
+                mc->mesh_path, device, mat_layout, mat_pool, textures);
             if (loaded && !loaded->draw_items.empty()) {
                 // If the entity has an explicit MeshRendererComponent with
                 // AlphaMode::Blend, treat every sub-draw as blend (manual
@@ -798,8 +876,8 @@ inline void build_draw_items(
             ent->GetId(), col,
             mr->GetMetallic(), mr->GetRoughness(),
             mr->GetOcclusion(), mr->GetEmissiveLinear(),
-            alpha_cutoff,
-            device, mat_layout, mat_pool);
+            alpha_cutoff, mr->GetAlbedoTexturePath(),
+            device, mat_layout, mat_pool, textures);
         if (!mat) continue;
 
         gws::renderer::gpu::DrawItem di;

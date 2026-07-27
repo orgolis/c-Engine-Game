@@ -1,0 +1,65 @@
+#version 450
+// GPU compute skinning (Animation Stage 5). One thread per vertex: linear-
+// blend-skin the input vertex by up to 4 weighted bone matrices, writing a
+// plain SceneVertex (pos/nrm/uv/tangent) into the OUTPUT vertex buffer. That
+// output is an ordinary vertex buffer, so the existing G-buffer / shadow /
+// cull / RT paths consume the skinned result with zero changes.
+//
+// The caller uploads `skin[j] = boneGlobal[j] * inverseBind[j]` for every bone
+// (precomputed on the CPU each frame), so this shader just blends them.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// Input: std430, all vec4/uvec4 (16-byte aligned) so the C++ GpuSkinnedVertex
+// (5 x 16 = 80 bytes) matches exactly. UVs are packed into the .w lanes.
+struct InVertex {
+    vec4  pos_uvx;   // xyz = position, w = uv.x
+    vec4  nrm_uvy;   // xyz = normal,   w = uv.y
+    vec4  tangent;   // xyzw
+    uvec4 joints;    // 4 bone indices
+    vec4  weights;   // 4 bone weights
+};
+layout(std430, set = 0, binding = 0) readonly buffer InBuf  { InVertex v[]; } inb;
+layout(std430, set = 0, binding = 1) readonly buffer BoneBuf { mat4 m[]; }    bones;
+// Output: a flat float array laid out EXACTLY as the 48-byte SceneVertex
+// (pos12 + nrm12 + uv8 + tangent16 = 12 floats). A std430 struct of vec3s
+// would pad to 16 and break the vertex-attribute stride, so we write floats.
+layout(std430, set = 0, binding = 2) writeonly buffer OutBuf { float data[]; } outb;
+
+layout(push_constant) uniform PC {
+    uint vertex_count;
+    uint bone_count;
+} pc;
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.vertex_count) return;
+
+    InVertex iv = inb.v[i];
+
+    mat4 skin = mat4(0.0);
+    float wsum = 0.0;
+    for (int k = 0; k < 4; ++k) {
+        float w = iv.weights[k];
+        uint  j = iv.joints[k];
+        if (w > 0.0 && j < pc.bone_count) { skin += bones.m[j] * w; wsum += w; }
+    }
+    // Unweighted / unbound vertex → pass through (identity).
+    if (wsum < 1e-5) skin = mat4(1.0);
+
+    vec3 pos = vec3(iv.pos_uvx.x, iv.pos_uvx.y, iv.pos_uvx.z);
+    vec3 nrm = vec3(iv.nrm_uvy.x, iv.nrm_uvy.y, iv.nrm_uvy.z);
+    vec2 uv  = vec2(iv.pos_uvx.w, iv.nrm_uvy.w);
+
+    vec3 p = vec3(skin * vec4(pos, 1.0));
+    mat3 nm = mat3(skin);                 // normals: no non-uniform scale expected
+    vec3 n = normalize(nm * nrm);
+    vec3 t = normalize(nm * iv.tangent.xyz);
+
+    const uint o = i * 12u;               // 12 floats == 48-byte SceneVertex
+    outb.data[o + 0u] = p.x; outb.data[o + 1u] = p.y; outb.data[o + 2u] = p.z;
+    outb.data[o + 3u] = n.x; outb.data[o + 4u] = n.y; outb.data[o + 5u] = n.z;
+    outb.data[o + 6u] = uv.x; outb.data[o + 7u] = uv.y;
+    outb.data[o + 8u] = t.x; outb.data[o + 9u] = t.y; outb.data[o + 10u] = t.z;
+    outb.data[o + 11u] = iv.tangent.w;
+}

@@ -6,6 +6,22 @@
 #include <map>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
+
+// Open a file whose name is UTF-8 (the project's convention). A narrow
+// std::ifstream goes through the ANSI codepage on Windows and fails for
+// non-ASCII filenames (e.g. Cyrillic); constructing the path from UTF-8 uses
+// the wide Win32 API. Shared by the ASCII + binary loaders below.
+namespace tinygltf { namespace detail {
+inline std::filesystem::path utf8_path(const std::string& s) {
+#if defined(__cpp_char8_t)
+    return std::filesystem::path(
+        std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size()));
+#else
+    return std::filesystem::u8path(s);
+#endif
+}
+}}  // namespace tinygltf::detail
 #include <sstream>
 #include <cmath>
 #include <algorithm>
@@ -488,7 +504,7 @@ private:
 class TinyGLTF {
 public:
     bool LoadASCIIFromFile(Model* model, std::string* err, std::string* warn, const std::string& filename) {
-        std::ifstream ifs(filename, std::ios::binary);
+        std::ifstream ifs(detail::utf8_path(filename), std::ios::binary);
         if (!ifs) {
             if (err) *err = "Cannot open file: " + filename;
             return false;
@@ -508,7 +524,7 @@ public:
     }
 
     bool LoadBinaryFromFile(Model* model, std::string* err, std::string* warn, const std::string& filename) {
-        std::ifstream ifs(filename, std::ios::binary);
+        std::ifstream ifs(detail::utf8_path(filename), std::ios::binary);
         if (!ifs) {
             if (err) *err = "Cannot open file: " + filename;
             return false;

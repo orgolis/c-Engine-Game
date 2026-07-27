@@ -74,6 +74,7 @@ Material::Material(Material&& other) noexcept
       fallback_white_(std::move(other.fallback_white_)),
       fallback_normal_(std::move(other.fallback_normal_)),
       fallback_black_(std::move(other.fallback_black_)) {
+    for (int i = 0; i < 5; ++i) { tex_[i] = other.tex_[i]; other.tex_[i] = nullptr; }
     other.device_         = nullptr;
     other.pool_           = VK_NULL_HANDLE;
     other.descriptor_set_ = VK_NULL_HANDLE;
@@ -92,6 +93,7 @@ Material& Material::operator=(Material&& other) noexcept {
         fallback_white_  = std::move(other.fallback_white_);
         fallback_normal_ = std::move(other.fallback_normal_);
         fallback_black_  = std::move(other.fallback_black_);
+        for (int i = 0; i < 5; ++i) { tex_[i] = other.tex_[i]; other.tex_[i] = nullptr; }
         other.device_         = nullptr;
         other.pool_           = VK_NULL_HANDLE;
         other.descriptor_set_ = VK_NULL_HANDLE;
@@ -125,7 +127,10 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
                                            const Texture* normal,
                                            const Texture* metallic_roughness,
                                            const Texture* occlusion,
-                                           const Texture* emissive) {
+                                           const Texture* emissive,
+                                           const Texture* default_white,
+                                           const Texture* default_normal,
+                                           const Texture* default_black) {
     if (!device || layout == VK_NULL_HANDLE || pool == VK_NULL_HANDLE) {
         spdlog::error("Material::create: missing device/layout/pool");
         return nullptr;
@@ -184,21 +189,31 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
         }
     }
 
-    // 3) Materialise fallback textures for any missing slot. We hold them on
-    //    `out` so their views/samplers live as long as the descriptor set.
+    // 3) Resolve each slot. Preference: supplied texture → shared engine-wide
+    //    default (from the TextureManager) → a material-owned 1×1 fallback.
+    //    Using the shared defaults avoids one 1×1 texture + sampler per
+    //    material for the common "no emissive / no AO" case.
     auto pick = [&](const Texture* supplied,
+                    const Texture* shared_default,
                     std::unique_ptr<Texture>& fallback,
                     auto fallback_factory) -> const Texture* {
-        if (supplied) return supplied;
-        if (!fallback) fallback = fallback_factory(device);
+        if (supplied)       return supplied;
+        if (shared_default) return shared_default;
+        if (!fallback)      fallback = fallback_factory(device);
         return fallback.get();
     };
 
-    const Texture* base_tex   = pick(base_color,         out->fallback_white_,  &Texture::create_default_white);
-    const Texture* normal_tex = pick(normal,             out->fallback_normal_, &Texture::create_default_normal);
-    const Texture* mr_tex     = pick(metallic_roughness, out->fallback_white_,  &Texture::create_default_white);
-    const Texture* ao_tex     = pick(occlusion,          out->fallback_white_,  &Texture::create_default_white);
-    const Texture* emis_tex   = pick(emissive,           out->fallback_black_,  &Texture::create_default_black);
+    const Texture* base_tex   = pick(base_color,         default_white,  out->fallback_white_,  &Texture::create_default_white);
+    const Texture* normal_tex = pick(normal,             default_normal, out->fallback_normal_, &Texture::create_default_normal);
+    const Texture* mr_tex     = pick(metallic_roughness, default_white,  out->fallback_white_,  &Texture::create_default_white);
+    const Texture* ao_tex     = pick(occlusion,          default_white,  out->fallback_white_,  &Texture::create_default_white);
+    const Texture* emis_tex   = pick(emissive,           default_black,  out->fallback_black_,  &Texture::create_default_black);
+
+    out->tex_[0] = base_tex;
+    out->tex_[1] = normal_tex;
+    out->tex_[2] = mr_tex;
+    out->tex_[3] = ao_tex;
+    out->tex_[4] = emis_tex;
 
     // 4) Write descriptor set
     VkDescriptorBufferInfo bufinfo{};
@@ -242,6 +257,28 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
     vkUpdateDescriptorSets(vkdev, static_cast<uint32_t>(writes.size()),
                            writes.data(), 0, nullptr);
     return out;
+}
+
+void Material::rewrite_textures() {
+    if (!device_ || descriptor_set_ == VK_NULL_HANDLE) return;
+    for (const Texture* t : tex_) if (!t) return;  // never fully resolved
+
+    std::array<VkDescriptorImageInfo, 5> imgs{};
+    std::array<VkWriteDescriptorSet, 5>  writes{};
+    for (uint32_t i = 0; i < 5; ++i) {
+        imgs[i].sampler     = tex_[i]->sampler();
+        imgs[i].imageView   = tex_[i]->view();
+        imgs[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet          = descriptor_set_;
+        writes[i].dstBinding      = i + 1;  // bindings 1..5 (0 is the UBO)
+        writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].descriptorCount = 1;
+        writes[i].pImageInfo      = &imgs[i];
+    }
+    vkUpdateDescriptorSets(device_->get_device(),
+                           static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void Material::bind(VkCommandBuffer cmd, VkPipelineLayout pipeline_layout,

@@ -11,6 +11,7 @@
 #include "vulkan_scene_mesh.h"
 #include "vulkan_scene_material.h"
 #include "vulkan_texture.h"
+#include "vulkan_texture_manager.h"
 
 #include "tinygltf.hpp"
 #include <stb_image.h>
@@ -100,12 +101,36 @@ glm::mat4 build_node_transform(const tinygltf::Node& node) {
     return glm::translate(glm::mat4(1.0f), t) * glm::mat4_cast(r) * glm::scale(glm::mat4(1.0f), s);
 }
 
+// glTF wrap mode (GL enum) → Vulkan address mode.
+VkSamplerAddressMode gltf_wrap(int mode) {
+    switch (mode) {
+        case 33071: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;    // CLAMP_TO_EDGE
+        case 33648: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;  // MIRRORED_REPEAT
+        case 10497: default: return VK_SAMPLER_ADDRESS_MODE_REPEAT;  // REPEAT
+    }
+}
+
+// glTF min filter (GL enum) → (Vulkan min filter, mipmap mode). glTF encodes
+// both the minification filter and the mip filter in one enum.
+void gltf_min_filter(int mode, VkFilter& out_filter, VkSamplerMipmapMode& out_mip) {
+    switch (mode) {
+        case 9728: out_filter = VK_FILTER_NEAREST; out_mip = VK_SAMPLER_MIPMAP_MODE_NEAREST; break; // NEAREST
+        case 9729: out_filter = VK_FILTER_LINEAR;  out_mip = VK_SAMPLER_MIPMAP_MODE_NEAREST; break; // LINEAR
+        case 9984: out_filter = VK_FILTER_NEAREST; out_mip = VK_SAMPLER_MIPMAP_MODE_NEAREST; break; // NEAREST_MIPMAP_NEAREST
+        case 9985: out_filter = VK_FILTER_LINEAR;  out_mip = VK_SAMPLER_MIPMAP_MODE_NEAREST; break; // LINEAR_MIPMAP_NEAREST
+        case 9986: out_filter = VK_FILTER_NEAREST; out_mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;  break; // NEAREST_MIPMAP_LINEAR
+        case 9987: out_filter = VK_FILTER_LINEAR;  out_mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;  break; // LINEAR_MIPMAP_LINEAR
+        default:   out_filter = VK_FILTER_LINEAR;  out_mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;  break;
+    }
+}
+
 } // namespace
 
 std::unique_ptr<Scene> GltfLoader::load(VulkanDevice* device,
                                         VkDescriptorSetLayout material_layout,
                                         VkDescriptorPool material_pool,
-                                        const std::string& path) {
+                                        const std::string& path,
+                                        TextureManager* textures) {
     if (!device) {
         spdlog::error("GltfLoader::load: null device");
         return nullptr;
@@ -137,38 +162,87 @@ std::unique_ptr<Scene> GltfLoader::load(VulkanDevice* device,
 
     auto scene = std::make_unique<Scene>();
 
-    // 1) Decode and upload images. Indexed by glTF image index. The glTF
-    //    `texture` table maps (image, sampler) pairs but we collapse to one
-    //    Texture per image for now; sampler defaults are fine for most assets.
-    scene->textures.reserve(model.images.size());
-    for (size_t i = 0; i < model.images.size(); ++i) {
-        DecodedImage di = decode_glb_image(model, model.images[i], gltf_dir);
-        if (!di.pixels) {
-            scene->textures.push_back(nullptr);
-            continue;
+    // 1) Build one Texture per glTF *texture* (image + sampler), decided per
+    //    usage: baseColor/emissive are sRGB, normal/MR/occlusion are linear.
+    //    (The same image referenced by two textures with different sampler or
+    //    colour space yields two GPU textures — correct, if rare.)
+
+    // 1a) Classify each texture index's colour space by scanning materials.
+    std::vector<bool> tex_is_srgb(model.textures.size(), false);
+    auto mark_srgb = [&](int ti) {
+        if (ti >= 0 && ti < (int)tex_is_srgb.size()) tex_is_srgb[ti] = true;
+    };
+    for (const auto& gm : model.materials) {
+        mark_srgb(gm.pbrMetallicRoughness.baseColorTexture.index);
+        mark_srgb(gm.emissiveTexture.index);
+        // normalTexture / metallicRoughnessTexture / occlusionTexture stay linear.
+    }
+
+    // 1b) Build a SamplerDesc from a glTF sampler index (defaults when -1).
+    auto sampler_desc_for = [&](int sampler_index) -> SamplerDesc {
+        SamplerDesc d;
+        d.max_anisotropy = 16.0f;  // clamped to device limit by the cache
+        if (sampler_index >= 0 && sampler_index < (int)model.samplers.size()) {
+            const auto& s = model.samplers[sampler_index];
+            d.address_u = gltf_wrap(s.wrapS);
+            d.address_v = gltf_wrap(s.wrapT);
+            d.address_w = d.address_u;
+            d.mag_filter = (s.magFilter == 9728) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+            gltf_min_filter(s.minFilter, d.min_filter, d.mipmap_mode);
         }
-        // sRGB heuristic: baseColor and emissive textures are sRGB; normal/MR/AO
-        // are linear. We can't decide per-texture without walking the materials,
-        // so default to sRGB and swap the few linear ones below by re-uploading
-        // when the material refers to them — simpler approach: upload everything
-        // as UNORM here, and let the shader's interpretation handle it. This is
-        // imperfect for true sRGB albedo but close enough for a first pass; a
-        // future loader version can do the per-slot sRGB decision properly.
-        auto tex = Texture::create_from_pixels(device, di.pixels,
-                                               static_cast<uint32_t>(di.width),
-                                               static_cast<uint32_t>(di.height),
-                                               /*srgb=*/false);
-        stbi_image_free(di.pixels);
-        scene->textures.push_back(std::move(tex));
+        return d;
+    };
+
+    // 1c) Upload each glTF texture.
+    scene->textures.resize(model.textures.size());
+    for (size_t ti = 0; ti < model.textures.size(); ++ti) {
+        const auto& gt = model.textures[ti];
+        if (gt.source < 0 || gt.source >= (int)model.images.size()) continue;
+        const tinygltf::Image& img = model.images[gt.source];
+        const bool        srgb = tex_is_srgb[ti];
+        const SamplerDesc sd   = sampler_desc_for(gt.sampler);
+
+        const bool external_file = !img.uri.empty() && img.bufferView < 0 &&
+                                   img.uri.rfind("data:", 0) != 0;
+
+        std::shared_ptr<Texture> tex;
+        if (textures && external_file) {
+            // Route external files through the manager: dedup across scenes,
+            // cooked-`.ctex` support, hot reload.
+            TextureImportSettings st;
+            st.srgb     = srgb;
+            st.gen_mips = true;
+            st.sampler  = sd;
+            const std::string p =
+                (std::filesystem::path(gltf_dir) / img.uri).lexically_normal().generic_string();
+            tex = textures->load(p, st);
+        } else {
+            // Embedded/data-URI image, or no manager: decode + upload directly,
+            // borrowing a cached sampler when a manager is present.
+            DecodedImage di = decode_glb_image(model, img, gltf_dir);
+            if (di.pixels) {
+                const VkSampler s = textures ? textures->sampler(sd) : VK_NULL_HANDLE;
+                tex = Texture::create_from_pixels(device, di.pixels,
+                                                  static_cast<uint32_t>(di.width),
+                                                  static_cast<uint32_t>(di.height),
+                                                  srgb, /*gen_mips=*/true, s);
+                stbi_image_free(di.pixels);
+            }
+        }
+        scene->textures[ti] = std::move(tex);
     }
 
     // Helper: glTF Texture index → our Texture* (or nullptr).
     auto resolve_tex = [&](int tex_index) -> const Texture* {
-        if (tex_index < 0 || tex_index >= (int)model.textures.size()) return nullptr;
-        const int img_idx = model.textures[tex_index].source;
-        if (img_idx < 0 || img_idx >= (int)scene->textures.size())    return nullptr;
-        return scene->textures[img_idx].get();
+        if (tex_index < 0 || tex_index >= (int)scene->textures.size()) return nullptr;
+        return scene->textures[tex_index].get();
     };
+
+    // Shared engine-wide defaults for unbound material slots (avoids one 1×1
+    // texture + sampler per material). Null when no manager was supplied.
+    const Texture* def_white  = textures ? textures->white()  : nullptr;
+    const Texture* def_normal = textures ? textures->normal() : nullptr;
+    const Texture* def_black  = textures ? textures->black()  : nullptr;
 
     // 2) Build materials.
     // Track per-material alpha mode so the DrawItems we emit later know
@@ -204,7 +278,8 @@ std::unique_ptr<Scene> GltfLoader::load(VulkanDevice* device,
                                     resolve_tex(gm.normalTexture.index),
                                     resolve_tex(gm.pbrMetallicRoughness.metallicRoughnessTexture.index),
                                     resolve_tex(gm.occlusionTexture.index),
-                                    resolve_tex(gm.emissiveTexture.index));
+                                    resolve_tex(gm.emissiveTexture.index),
+                                    def_white, def_normal, def_black);
         scene->materials.push_back(std::move(mat));
     }
     // Always have at least one fallback material so meshes with material=-1
@@ -212,7 +287,8 @@ std::unique_ptr<Scene> GltfLoader::load(VulkanDevice* device,
     if (scene->materials.empty()) {
         scene->materials.push_back(
             Material::create(device, material_layout, material_pool, MaterialUniforms{},
-                             nullptr, nullptr, nullptr, nullptr, nullptr));
+                             nullptr, nullptr, nullptr, nullptr, nullptr,
+                             def_white, def_normal, def_black));
     }
 
     // 3) Build meshes (one Mesh per glTF mesh; submeshes per primitive).

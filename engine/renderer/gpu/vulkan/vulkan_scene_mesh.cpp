@@ -124,7 +124,8 @@ void Mesh::destroy() {
 std::unique_ptr<Mesh> Mesh::create(VulkanDevice* device,
                                    const std::vector<SceneVertex>& vertices,
                                    const std::vector<uint32_t>& indices,
-                                   std::vector<Submesh> submeshes) {
+                                   std::vector<Submesh> submeshes,
+                                   VkBufferUsageFlags extra_vbo_usage) {
     if (!device || vertices.empty() || indices.empty()) {
         spdlog::error("Mesh::create: invalid args (vertices={}, indices={})",
                       vertices.size(), indices.size());
@@ -260,7 +261,7 @@ std::unique_ptr<Mesh> Mesh::create(VulkanDevice* device,
     // Add the AS-build + device-address usage bits when the device
     // supports ray tracing — they're harmless on non-RT paths and let
     // VulkanRtScene build a BLAS from the same buffers without copying.
-    VkBufferUsageFlags vbo_usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    VkBufferUsageFlags vbo_usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | extra_vbo_usage;
     VkBufferUsageFlags ibo_usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     if (device->has_ray_tracing()) {
         const VkBufferUsageFlags rt_bits =

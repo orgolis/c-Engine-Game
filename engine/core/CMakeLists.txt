@@ -21,3 +21,8 @@ add_subdirectory(ability)   # Ability system - abilities, effects, modifiers, sk
 add_subdirectory(network)   # Network system - multiplayer, deterministic simulation, rollback
 add_subdirectory(audio)     # Audio: miniaudio device + custom voice mixer (Stage 6)
 add_subdirectory(gameplay)  # Game runtime foundations (abilities, combat, NPC AI, deterministic state)
+add_subdirectory(ai)        # AI: triangle navmesh (A* + funnel) + behavior trees (Stage 9)
+add_subdirectory(ui)        # Runtime game-UI framework (widgets/layout/input) — Game-UI pillar
+add_subdirectory(world)     # World streaming: grid + cell load/unload + floating origin
+add_subdirectory(vfx)       # VFX: CPU particle system + camera-facing billboards
+add_subdirectory(combat)    # Combat: frame-data hitbox windows + dodge/parry/poise

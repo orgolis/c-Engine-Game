@@ -33,6 +33,8 @@ target_link_libraries(editor
         gws_asset_pipeline # cooked-asset bundles (Stage 2)
         gws_physics        # Jolt-backed rigid bodies + character (Stage 4)
         gws_audio          # miniaudio device + spatial voice mixer (Stage 6)
+        gws_ai             # navmesh + behavior trees (Stage 9)
+        gws_ui             # runtime game-UI framework (HUD/menus) — Game-UI pillar
 )
 
 # Add source files

@@ -5,6 +5,7 @@
 #include "entity.h"
 #include "collider_component.h"
 #include "mesh_component.h"
+#include "asset_path_util.h"       // resolve_asset_path / utf8_path (shared w/ render loader)
 #include "terrain_component.h"
 #include "water_component.h"
 #include "physics/jolt_physics.h"   // Stage 4 — Jolt-backed PhysicsWorld
@@ -37,7 +38,8 @@ namespace {
 // ----------------------------------------------------------------------------
 
 bool LoadMeshTriangles_OBJ(const std::string& path, std::vector<glm::vec3>& out) {
-    std::ifstream f(path);
+    // utf8_path: non-ASCII filenames (Cyrillic etc.) fail with a narrow ifstream.
+    std::ifstream f(utf8_path(path));
     if (!f.is_open()) return false;
 
     std::vector<glm::vec3> positions;
@@ -167,12 +169,16 @@ bool LoadMeshTriangles_GLTF(const std::string& path, std::vector<glm::vec3>& out
 bool LoadMeshTriangles(const std::string& path, std::vector<glm::vec3>& out) {
     out.clear();
     if (path.empty()) return false;
+    // Resolve CWD-independently (the editor runs from build-editor/bin) — MUST
+    // match the render mesh loader (scene_render_bridge.h) or a model renders
+    // while its collider silently fails to load.
+    const std::string disk = resolve_asset_path(path);
     std::string ext;
-    size_t dot = path.find_last_of('.');
-    if (dot != std::string::npos) ext = path.substr(dot);
+    size_t dot = disk.find_last_of('.');
+    if (dot != std::string::npos) ext = disk.substr(dot);
     for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (ext == ".obj")  return LoadMeshTriangles_OBJ(path, out);
-    if (ext == ".gltf" || ext == ".glb") return LoadMeshTriangles_GLTF(path, out);
+    if (ext == ".obj")  return LoadMeshTriangles_OBJ(disk, out);
+    if (ext == ".gltf" || ext == ".glb") return LoadMeshTriangles_GLTF(disk, out);
     auto logger = spdlog::get("editor");
     if (logger) logger->warn("MeshCollider: unsupported extension '{}' for '{}'", ext, path);
     return false;

@@ -665,6 +665,22 @@ void VulkanDevice::create_logical_device() {
     // Device features
     VkPhysicalDeviceFeatures device_features{};
 
+    // Enable anisotropic filtering when the GPU supports it (near-universal).
+    // Recorded on the device so the sampler cache only *requests* anisotropy
+    // when it is actually enabled here — otherwise the validation layers flag
+    // any sampler built with anisotropyEnable=VK_TRUE.
+    {
+        VkPhysicalDeviceFeatures supported{};
+        vkGetPhysicalDeviceFeatures(physical_device, &supported);
+        if (supported.samplerAnisotropy) {
+            device_features.samplerAnisotropy = VK_TRUE;
+            anisotropy_enabled_ = true;
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties(physical_device, &props);
+            max_anisotropy_ = props.limits.maxSamplerAnisotropy;
+        }
+    }
+
     // Device extensions — swapchain is required; the four KHR ray-tracing
     // extensions are added if the physical device advertises all of them.
     std::vector<const char*> extensions = {
