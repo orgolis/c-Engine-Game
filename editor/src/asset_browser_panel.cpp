@@ -132,6 +132,15 @@ AssetBrowserPanel::AssetBrowserPanel() {
 
 AssetBrowserPanel::~AssetBrowserPanel() = default;
 
+void AssetBrowserPanel::Reroot() {
+    detect_roots();
+    std::error_code ec;
+    current_ = fs::exists(cwd_ / "assets", ec) ? (cwd_ / "assets") : cwd_;
+    selected_ = -1;
+    search_buf_[0] = '\0';
+    dirty_ = true;
+}
+
 void AssetBrowserPanel::detect_roots() {
     std::error_code ec;
     cwd_ = fs::current_path(ec);

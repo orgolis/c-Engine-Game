@@ -169,11 +169,40 @@ struct Node {
     std::string name;
     int mesh = -1;
     int parent = -1;
+    int skin = -1;   // index into Model::skins (-1 = not a skinned-mesh node)
     std::vector<int> children;
     std::vector<float> translation = {0, 0, 0};
     std::vector<float> rotation = {0, 0, 0, 1};
     std::vector<float> scale = {1, 1, 1};
     std::vector<float> matrix;
+};
+
+// Skinning: a Skin binds a mesh to a joint (bone) hierarchy.
+struct Skin {
+    std::string name;
+    int inverseBindMatrices = -1;  // accessor of MAT4[jointCount] (mesh->bone space)
+    int skeleton = -1;             // common root node (optional)
+    std::vector<int> joints;       // node indices, one per joint
+};
+
+// Keyframe animation (samplers + channels targeting node TRS).
+struct AnimationSampler {
+    int input  = -1;                     // accessor of keyframe times (SCALAR float)
+    int output = -1;                     // accessor of values (VEC3 / VEC4)
+    std::string interpolation = "LINEAR";
+};
+struct AnimationChannelTarget {
+    int node = -1;
+    std::string path;                    // "translation" | "rotation" | "scale" | "weights"
+};
+struct AnimationChannel {
+    int sampler = -1;
+    AnimationChannelTarget target;
+};
+struct Animation {
+    std::string name;
+    std::vector<AnimationSampler> samplers;
+    std::vector<AnimationChannel> channels;
 };
 
 struct Scene {
@@ -259,6 +288,8 @@ struct Model {
     std::vector<Sampler> samplers;
     std::vector<Texture> textures;
     std::vector<Material> materials;
+    std::vector<Skin> skins;
+    std::vector<Animation> animations;
     int scene = 0;
     std::string path;
 
@@ -569,21 +600,26 @@ public:
             return false;
         }
 
-        // Read BIN chunk
+        // Read BIN chunk. NOTE: model->buffers is still empty here (they are
+        // parsed by LoadFromJson below), so we must inject the BIN data AFTER
+        // the JSON is parsed — otherwise .glb geometry is silently dropped.
+        std::vector<uint8_t> bin_data;
         ifs.read(reinterpret_cast<char*>(&chunkLength), 4);
         ifs.read(reinterpret_cast<char*>(&chunkType), 4);
-
         if (chunkType == 0x004E4942) { // 'BIN\0'
-            std::vector<uint8_t> bin_data(chunkLength);
+            bin_data.resize(chunkLength);
             ifs.read(reinterpret_cast<char*>(bin_data.data()), chunkLength);
-
-            // Store binary data in the model
-            if (!model->buffers.empty()) {
-                model->buffers[0].data = bin_data;
-            }
         }
 
-        return LoadFromJson(model, json_data, filename, err, warn);
+        if (!LoadFromJson(model, json_data, filename, err, warn)) return false;
+
+        // GLB keeps all geometry in the BIN chunk; buffer[0] has an empty uri,
+        // so LoadFromJson leaves its data empty — fill it from the BIN chunk.
+        if (!bin_data.empty() && !model->buffers.empty() &&
+            model->buffers[0].data.empty()) {
+            model->buffers[0].data = std::move(bin_data);
+        }
+        return true;
     }
 
 private:
@@ -684,7 +720,15 @@ private:
                 Node node;
                 node.name = node_json.GetStringAsString("name", "");
                 node.mesh = node_json.GetNumberAsInt("mesh", -1);
+                node.skin = node_json.GetNumberAsInt("skin", -1);
 
+                if (node_json.Has("matrix")) {
+                    const auto& m = node_json.GetArrayAsArray("matrix");
+                    if (m.size() >= 16) {
+                        node.matrix.resize(16);
+                        for (int i = 0; i < 16; ++i) node.matrix[i] = (float)m[i].number_value;
+                    }
+                }
                 if (node_json.Has("translation")) {
                     const auto& trans = node_json.GetArrayAsArray("translation");
                     if (trans.size() >= 3) {
@@ -837,6 +881,48 @@ private:
                 }
 
                 model->materials.push_back(mat);
+            }
+        }
+
+        // Parse skins (joint hierarchy + inverse-bind matrices)
+        if (json_data.Has("skins")) {
+            const auto& skins_json = json_data.GetArrayAsArray("skins");
+            for (const auto& s_json : skins_json) {
+                Skin skin;
+                skin.name                = s_json.GetStringAsString("name", "");
+                skin.inverseBindMatrices = s_json.GetNumberAsInt("inverseBindMatrices", -1);
+                skin.skeleton            = s_json.GetNumberAsInt("skeleton", -1);
+                const auto& joints = s_json.GetArrayAsArray("joints");
+                for (const auto& j : joints)
+                    skin.joints.push_back(static_cast<int>(j.number_value));
+                model->skins.push_back(skin);
+            }
+        }
+
+        // Parse animations (samplers + channels targeting node TRS)
+        if (json_data.Has("animations")) {
+            const auto& anims_json = json_data.GetArrayAsArray("animations");
+            for (const auto& a_json : anims_json) {
+                Animation anim;
+                anim.name = a_json.GetStringAsString("name", "");
+                for (const auto& s_json : a_json.GetArrayAsArray("samplers")) {
+                    AnimationSampler samp;
+                    samp.input         = s_json.GetNumberAsInt("input", -1);
+                    samp.output        = s_json.GetNumberAsInt("output", -1);
+                    samp.interpolation = s_json.GetStringAsString("interpolation", "LINEAR");
+                    anim.samplers.push_back(samp);
+                }
+                for (const auto& c_json : a_json.GetArrayAsArray("channels")) {
+                    AnimationChannel chan;
+                    chan.sampler = c_json.GetNumberAsInt("sampler", -1);
+                    if (c_json.Has("target")) {
+                        const auto& t = c_json.Get("target");
+                        chan.target.node = t.GetNumberAsInt("node", -1);
+                        chan.target.path = t.GetStringAsString("path", "");
+                    }
+                    anim.channels.push_back(chan);
+                }
+                model->animations.push_back(anim);
             }
         }
 

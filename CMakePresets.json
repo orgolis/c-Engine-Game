@@ -1,5 +1,6 @@
 {
   "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
   "vendor": {
     "gameworldshaper.ai/cmake": {
       "autoFormat": true
@@ -9,113 +10,99 @@
     {
       "name": "default",
       "hidden": true,
-      "description": "Default configuration with common settings",
+      "description": "Common settings shared by every preset.",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "CMAKE_CXX_STANDARD": "20",
         "CMAKE_CXX_STANDARD_REQUIRED": "ON",
         "CMAKE_CXX_EXTENSIONS": "OFF",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "BUILD_TESTS": "ON",
         "BUILD_SHARED_LIBS": "OFF"
       }
     },
     {
-      "name": "windows-msvc-debug",
-      "displayName": "Windows MSVC Debug",
+      "name": "windows-base",
+      "hidden": true,
       "inherits": "default",
-      "generator": "Visual Studio 17 2022",
+      "description": "Windows canonical toolchain: Ninja + Strawberry MinGW g++ (the toolchain this project actually builds with). Compiler and Ninja are pinned by absolute path so the build can never silently fall back to MSVC.",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "C:/Strawberry/c/bin/gcc.exe",
+        "CMAKE_CXX_COMPILER": "C:/Strawberry/c/bin/c++.exe",
+        "CMAKE_MAKE_PROGRAM": "C:/Strawberry/c/bin/ninja.exe"
+      }
+    },
+    {
+      "name": "windows-debug",
+      "displayName": "Windows (Ninja + g++) Debug",
+      "inherits": "windows-base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug"
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
       }
     },
     {
-      "name": "windows-msvc-release",
-      "displayName": "Windows MSVC Release",
-      "inherits": "default",
-      "generator": "Visual Studio 17 2022",
+      "name": "windows-release",
+      "displayName": "Windows (Ninja + g++) Release",
+      "inherits": "windows-base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
       }
     },
     {
-      "name": "linux-gcc-debug",
+      "name": "linux-debug",
       "displayName": "Linux GCC Debug",
       "inherits": "default",
       "generator": "Unix Makefiles",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_C_COMPILER": "gcc",
         "CMAKE_CXX_COMPILER": "g++"
-      },
+      }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux GCC Release",
+      "inherits": "default",
+      "generator": "Unix Makefiles",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
         "rhs": "Linux"
-      }
-    },
-    {
-      "name": "linux-gcc-release",
-      "displayName": "Linux GCC Release",
-      "inherits": "default",
-      "generator": "Unix Makefiles",
+      },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_COMPILER": "gcc",
         "CMAKE_CXX_COMPILER": "g++"
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Linux"
       }
     }
   ],
   "buildPresets": [
-    {
-      "name": "windows-debug",
-      "configurePreset": "windows-msvc-debug",
-      "jobs": 4
-    },
-    {
-      "name": "windows-release",
-      "configurePreset": "windows-msvc-release",
-      "jobs": 4
-    },
-    {
-      "name": "linux-debug-build",
-      "configurePreset": "linux-gcc-debug",
-      "jobs": 4
-    },
-    {
-      "name": "linux-release-build",
-      "configurePreset": "linux-gcc-release",
-      "jobs": 4
-    }
+    { "name": "windows-debug", "configurePreset": "windows-debug", "jobs": 8 },
+    { "name": "windows-release", "configurePreset": "windows-release", "jobs": 8 },
+    { "name": "linux-debug", "configurePreset": "linux-debug", "jobs": 8 },
+    { "name": "linux-release", "configurePreset": "linux-release", "jobs": 8 }
   ],
   "testPresets": [
     {
-      "name": "test-linux-debug",
-      "configurePreset": "linux-gcc-debug",
-      "output": {
-        "outputOnFailure": true
-      }
+      "name": "windows-debug",
+      "configurePreset": "windows-debug",
+      "output": { "outputOnFailure": true }
     },
     {
-      "name": "test-windows-debug",
-      "configurePreset": "windows-msvc-debug",
-      "output": {
-        "outputOnFailure": true
-      }
+      "name": "linux-debug",
+      "configurePreset": "linux-debug",
+      "output": { "outputOnFailure": true }
     }
   ]
 }

@@ -1,156 +1,104 @@
-# Documentation Structure
+# Project Schizo / Game-Worldshaper — Documentation Index
 
-This documentation folder is organized into a hierarchical structure for easy navigation and maintenance. Each subfolder contains related documentation for different aspects of the c-Engine-Game project.
+**Last updated:** 2026-07-27
 
-## Folder Organization
-
-### 📂 **EngineTechnicalRework/**
-Vulkan migration planning and engine technical rework documentation. Contains phase-based planning, status reports, and technical pre-planning documents.
-
-**Key files:**
-- `REWORK_MASTER_PLAN.md` - Comprehensive master plan for engine rework
-- `DEVELOPMENT_PLAN.md` - Development roadmap
-- `DEPENDENCIES_AND_LIBRARIES.md` - Library and dependency documentation
-- `phase-*-status.md` - Individual phase status reports
+This folder holds all design, architecture, and planning documentation for the engine
+(`gws::` / `schizo::` namespaces, Vulkan renderer under `gws::renderer::gpu::`). Start
+with the source-of-truth roadmap below, then drill into the folder that matches your task.
 
 ---
 
-### 📂 **architecture/**
-Technical engine systems and architectural documentation. Covers graphics abstractions, physics modules, and high-level system design.
+## 🧭 Start here — the source of truth
 
-**Key files:**
-- `ENGINE_ARCHITECTURE_OVERVIEW.md` - Overall engine architecture
-- `GRAPHICS-ABSTRACTION-LAYER.md` - Graphics rendering abstraction
-- `physics_module.md` - Physics system documentation
-- `HZB_OCCLUSION_CULLING.md` - Occlusion culling implementation
-- `PHASE_*_*.md` - Phase-specific architecture documents
+**[`EngineMasterPlan/AAA_ENGINE_MASTER_PLAN.md`](EngineMasterPlan/AAA_ENGINE_MASTER_PLAN.md)**
+is the single, dependency-ordered roadmap. It maps the 15-pillar AAA engine plan onto the
+*actual current state of the codebase* and re-orders it into **16 stages** by hard dependency.
+When any other doc disagrees with reality, this one wins — and it verifies claims against
+`*.cpp`, not against status docs.
 
----
+It has two **companion** plans (still current, narrower scope):
 
-### 📂 **systems/**
-Game engine systems documentation (non-Vulkan migration). Covers individual rendering and gameplay systems.
+| Companion | Scope |
+|-----------|-------|
+| [`EngineTechnicalRework/EXECUTION_CHECKLIST.md`](EngineTechnicalRework/EXECUTION_CHECKLIST.md) | Renderer rework, the OpenGL→Vulkan migration (Phases 0–7) |
+| [`phase-6-planning/IMPLEMENTATION-ROADMAP.md`](phase-6-planning/IMPLEMENTATION-ROADMAP.md) | Gameplay systems (character controller, abilities, networking) |
 
-**Contains:**
-- `DEFERRED-RENDERING-SYSTEM.md` - Deferred rendering pipeline
-- `LIGHTING-SYSTEM.md` - Lighting system architecture
-- `MATERIAL-AND-PBR-SYSTEM.md` - Material and PBR system
-- `MESH-AND-GEOMETRY-SYSTEM.md` - Mesh and geometry management
-- `POST-PROCESSING-SYSTEM.md` - Post-processing effects
-- `SCENE-MANAGEMENT-SYSTEM.md` - Scene organization and management
+> **Historical note:** the Phase 0–7 renderer plan and the Phase-6 gameplay plan predate the
+> master plan. They remain accurate for their subsystems and are referenced by the master plan,
+> but they are *not* the overall project status. Treat their "current phase" wording as historical.
 
 ---
 
-### 📂 **references/**
-Quick reference guides for developers. Concise, searchable references for common systems.
+## 📂 Folder map
 
-**Contains:**
-- `*-QUICK-REFERENCE.md` - Quick reference for each system
-- System-specific API and usage guides
-- Fast lookup for common tasks and patterns
+### `EngineMasterPlan/` — current roadmap
+- `AAA_ENGINE_MASTER_PLAN.md` — **the 16-stage living roadmap (read this first)**
 
----
+### `EngineTechnicalRework/` — renderer rework planning (Phases 0–7)
+- `EXECUTION_CHECKLIST.md` — phase/week checklist for the Vulkan migration
+- `REWORK_MASTER_PLAN.md` — renderer redesign strategy
+- `DEVELOPMENT_PLAN.md` — renderer development roadmap
+- `DEPENDENCIES_AND_LIBRARIES.md` — build dependencies & Vulkan SDK setup
+- `CLEANUP_GUIDE.md` — file removal/archival guidance for the migration
+- `DOCUMENTATION_PACKAGE_SUMMARY.md` — index of the rework doc package
 
-### 📂 **testing/**
-Testing, debugging, and quality assurance documentation. Includes testing strategies and debugging guides.
+### `architecture/` — technical system design
+- `ENGINE_ARCHITECTURE_OVERVIEW.md` — overall engine architecture
+- `GRAPHICS-ABSTRACTION-LAYER.md` — render API abstraction
+- `PHASE_4_DEFERRED_PIPELINE.md` — deferred rendering pipeline
+- `PHASE_5_CULLING.md` — frustum culling
+- `HZB_OCCLUSION_CULLING.md` — hierarchical-Z occlusion culling
+- `PHASE_6_EDITOR_AND_HZB_CULLING.md`, `PHASE_6_EDITOR_COMPLETE.md` — editor + HZB
+- `PHASE_7_GPU_PROFILER.md`, `PHASE_7_GPU_PROFILER_COMPLETE.md` — GPU profiling
+- `physics_module.md` — physics (Jolt) system
 
-**Contains:**
-- `CAMERA_*.md` - Camera system testing and debugging guides
-- `PHYSICS-TESTING.md` - Physics system testing
-- `TESTING_GAMEPLAY.md` - Gameplay testing guidelines
-- Diagnostic and debugging instructions for various systems
+### `systems/` — engine subsystem deep-dives
+`DEFERRED-RENDERING-SYSTEM.md` · `LIGHTING-SYSTEM.md` · `MATERIAL-AND-PBR-SYSTEM.md` ·
+`MESH-AND-GEOMETRY-SYSTEM.md` · `POST-PROCESSING-SYSTEM.md` · `SCENE-MANAGEMENT-SYSTEM.md`
 
----
+### `references/` — quick-reference cheat sheets
+One `*-QUICK-REFERENCE.md` per system (deferred rendering, graphics, lighting, material,
+mesh, post-processing, scene management) plus `WEEK-5-6-QUICK-REFERENCE.md`.
 
-### 📂 **design/**
-Game design documentation. Design specifications and game design documents.
+### `testing/` — testing & debugging guides
+Camera debug/diagnostic guides (`CAMERA_*.md`), `PHYSICS-TESTING.md`, `TESTING_GAMEPLAY.md`,
+`QUICK_START_CAMERA_TEST.md`, `IN_GAME_CAMERA_TEST.md`.
 
-**Contains:**
-- `GAME-DESIGN.md` - Game design document and specifications
+### `phase-6-planning/` — gameplay systems planning
+Detailed specs and process docs: `IMPLEMENTATION-ROADMAP.md` (companion plan above),
+`CHARACTER-CONTROLLER-SPECIFICATION.md`, `ABILITY-SYSTEM-SPECIFICATION.md`,
+`NETWORKING-SPECIFICATION.md`, `SYSTEM-INTERACTIONS-DETAILED.md`, `TESTING-STRATEGY.md`,
+`CODE-REVIEW-CHECKLIST.md`, `INTEGRATION-CHECKPOINTS.md`, `BUILD-COMPILATION-GUIDE.md`,
+`RISK-CONTINGENCY-PLAN.md`, `ARCHITECTURE-COMPLETE-SYSTEMS.md`, and the
+`DOCUMENTATION-NAVIGATION-GUIDE.md` / `COMPLETE-DOCS-OVERVIEW.md` overviews.
 
----
+### `design/` & `game-design/` — game design
+- `design/GAME-DESIGN.md` — game design document
+- `game-design/project-schizo.md` — *Project Schizo* concept (open-world multiplayer action-RPG)
 
-### 📂 **archive/**
-Completed and historical work. Old phases and deprecated documentation kept for reference.
-
-**Contains:**
-- `PHASE-2-*.md` - Phase 2 completion documents
-- `PHASE-6-*.md` - Phase 6 completion and editor integration
-- `WEEK-5-6-*.md` - Weekly completion summaries
-- `ENGINE-ROADMAP.md` - Legacy roadmap (superseded)
-
----
-
-### 📂 **legacy/**
-Reserved for old/obsolete documentation. Currently empty, available for future organization needs.
-
----
-
-### 📂 **game-design/** (Existing)
-Additional game design resources and specifications.
-
-**Contains:**
-- `project-schizo.md` - Project Schizo game design
-
----
-
-### 📂 **phase-6-planning/** (Existing)
-Phase 6 detailed planning and implementation documentation.
-
-**Key files:**
-- `IMPLEMENTATION-ROADMAP.md` - Implementation roadmap
-- `TESTING-STRATEGY.md` - Testing approach
-- `CODE-REVIEW-CHECKLIST.md` - Code review guidelines
-- `SYSTEM-INTERACTIONS-DETAILED.md` - System interaction documentation
+### `archive/` — completed & historical work
+Finished phase summaries and superseded planning docs (Phase 1–3 status, Phase 6 week-by-week,
+legacy roadmap, early pre-planning). Kept for "how we did X before" reference only — not current.
 
 ---
 
-## Quick Navigation Guide
+## Quick navigation
 
-### 👨‍💻 For Developers
-1. **Understanding the engine**: Start with `architecture/ENGINE_ARCHITECTURE_OVERVIEW.md`
-2. **Learning a specific system**: Check `systems/[SYSTEM]-SYSTEM.md`
-3. **Quick lookup**: Use `references/[SYSTEM]-QUICK-REFERENCE.md`
-4. **Debugging**: See `testing/` folder for debugging guides
-
-### 📋 For Project Managers
-1. **Current status**: Check `EngineTechnicalRework/REWORK_MASTER_PLAN.md`
-2. **Phase status**: Browse `EngineTechnicalRework/phase-*-status.md`
-3. **Roadmap**: Review `phase-6-planning/IMPLEMENTATION-ROADMAP.md`
-
-### 🎮 For Game Designers
-1. **Game design**: See `design/GAME-DESIGN.md`
-2. **Project details**: Review `game-design/project-schizo.md`
-
-### 🧪 For QA/Testers
-1. **Testing strategy**: `phase-6-planning/TESTING-STRATEGY.md`
-2. **System-specific tests**: `testing/` folder
-3. **Debugging guides**: Various `testing/` files
+| I want to… | Go to |
+|------------|-------|
+| Know what to build next | `EngineMasterPlan/AAA_ENGINE_MASTER_PLAN.md` |
+| Understand the renderer | `architecture/` + `systems/` |
+| Look something up fast | `references/` |
+| Debug / test a system | `testing/` |
+| See the game vision | `design/GAME-DESIGN.md`, `game-design/project-schizo.md` |
+| Find old completed work | `archive/` |
 
 ---
 
-## File Statistics
+## Maintenance rules
 
-- **Total Folders**: 9 (EngineTechnicalRework, architecture, systems, references, testing, design, archive, legacy, game-design, phase-6-planning)
-- **Total Documentation Files**: 70+ organized markdown files
-- **Organization Levels**: 2-3 levels deep
-
----
-
-## Organization Principles
-
-1. **Logical Grouping**: Related documents are grouped by system or purpose
-2. **Clear Categorization**: Prefixes and folder names indicate content type
-3. **Discoverability**: Quick references and guides make content easy to find
-4. **Archival**: Completed phases stored separately to reduce clutter
-5. **Maintainability**: Consistent naming and structure for ease of updates
-
----
-
-## Maintenance Notes
-
-- When adding new documentation, place it in the most appropriate folder
-- Archive phase-specific or completed documents after project phases complete
-- Update this README when adding new top-level categories
-- Keep quick references synchronized with system documentation
-
-Last Updated: 2024
+- **One source of truth:** keep overall status in `AAA_ENGINE_MASTER_PLAN.md`. Don't create new
+  top-level "status" or "reorganization" docs at the repo root — they drift out of date fast.
+- **Archive, don't scatter:** move completed phase/week docs into `archive/`.
+- **Keep this index current:** when you add a top-level folder or a companion plan, update the map above.
+- **Verify before trusting a ✅:** status ticks reflect intent; confirm against source.

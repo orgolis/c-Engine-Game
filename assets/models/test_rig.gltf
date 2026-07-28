@@ -1,0 +1,34 @@
+{
+"asset":{"version":"2.0"},
+"scene":0,
+"scenes":[{"nodes":[0,2]}],
+"nodes":[
+  {"name":"root","translation":[0,0,0],"children":[1]},
+  {"name":"tip","translation":[0,1,0]},
+  {"name":"mesh","mesh":0,"skin":0}
+],
+"skins":[{"joints":[0,1],"inverseBindMatrices":5}],
+"meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"JOINTS_0":2,"WEIGHTS_0":3},"indices":4}]}],
+"animations":[{"name":"bend","samplers":[{"input":6,"output":7,"interpolation":"LINEAR"}],"channels":[{"sampler":0,"target":{"node":1,"path":"rotation"}}]}],
+"accessors":[
+  {"bufferView":0,"componentType":5126,"count":4,"type":"VEC3"},
+  {"bufferView":1,"componentType":5126,"count":4,"type":"VEC3"},
+  {"bufferView":2,"componentType":5123,"count":4,"type":"VEC4"},
+  {"bufferView":3,"componentType":5126,"count":4,"type":"VEC4"},
+  {"bufferView":4,"componentType":5123,"count":6,"type":"SCALAR"},
+  {"bufferView":5,"componentType":5126,"count":2,"type":"MAT4"},
+  {"bufferView":6,"componentType":5126,"count":2,"type":"SCALAR"},
+  {"bufferView":7,"componentType":5126,"count":2,"type":"VEC4"}
+],
+"bufferViews":[
+  {"buffer":0,"byteOffset":0,"byteLength":48},
+  {"buffer":0,"byteOffset":48,"byteLength":48},
+  {"buffer":0,"byteOffset":96,"byteLength":32},
+  {"buffer":0,"byteOffset":128,"byteLength":64},
+  {"buffer":0,"byteOffset":192,"byteLength":12},
+  {"buffer":0,"byteOffset":204,"byteLength":128},
+  {"buffer":0,"byteOffset":332,"byteLength":8},
+  {"buffer":0,"byteOffset":340,"byteLength":32}
+],
+"buffers":[{"uri":"test_rig.bin","byteLength":372}]
+}

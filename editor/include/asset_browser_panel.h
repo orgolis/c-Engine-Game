@@ -62,6 +62,11 @@ public:
     /// Navigate to a directory (absolute or CWD-relative).
     void SetDirectory(const std::string& path);
 
+    /// Re-detect roots against the current working directory and jump to its
+    /// assets/. Call after a project becomes the CWD so the browser only shows
+    /// the open project (project sandbox).
+    void Reroot();
+
     /// Invoked when the user double-clicks a .scene file (main.cpp wires this
     /// to EditorScene::LoadScene).
     std::function<void(const std::string& runtime_relative_path)> on_open_scene;

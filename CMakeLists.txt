@@ -26,10 +26,52 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# MinGW: large translation units (notably the monolithic editor main.cpp, ~6.5k
+# lines) overflow the default COFF object format in Debug (-g), failing to
+# assemble with "file too big". Big-obj lifts the section/size limit. Harmless
+# for small objects, so applied to every target (incl. third_party subdirs).
+if(MINGW)
+    add_compile_options(-Wa,-mbig-obj)
+endif()
+
 # Set output directories
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
+# ============================================================================
+# Redistributable runtime (Phase 3): the editor + hub link the MinGW g++ runtime
+# dynamically (renderer stack isn't static-link-clean), so on a clean Windows box
+# they need these 3 DLLs next to the exe. We copy them beside every built exe
+# (so dev builds run without the toolchain on PATH) and install() them so the
+# packaged product is self-contained. vulkan-1.dll is a system DLL (GPU drivers).
+# ============================================================================
+if(MINGW OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    get_filename_component(GWS_MINGW_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    set(GWS_RUNTIME_DLLS
+        "${GWS_MINGW_BIN}/libgcc_s_seh-1.dll"
+        "${GWS_MINGW_BIN}/libstdc++-6.dll"
+        "${GWS_MINGW_BIN}/libwinpthread-1.dll")
+endif()
+
+# Copy the runtime DLLs next to a target after build, and install() them to
+# `dest`. No-op on non-MinGW toolchains.
+function(gws_bundle_runtime tgt dest)
+    if(GWS_RUNTIME_DLLS)
+        foreach(dll ${GWS_RUNTIME_DLLS})
+            add_custom_command(TARGET ${tgt} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${dll}" "$<TARGET_FILE_DIR:${tgt}>"
+                VERBATIM)
+        endforeach()
+        install(FILES ${GWS_RUNTIME_DLLS} DESTINATION "${dest}")
+    endif()
+endfunction()
+
+# The engine package is flat (editor.exe + DLLs + content at the root). CI
+# uploads it as a release asset; the Hub downloads it, finds editor.exe, and
+# installs it into %LOCALAPPDATA%/GameWorldshaper/Engines/<version>/.
+set(GWS_ENGINE_DEST ".")
 
 # Options
 option(BUILD_SHARED_LIBS "Build shared libraries" OFF)
@@ -179,6 +221,9 @@ endif()
 # Add subdirectories
 add_subdirectory(engine)
 add_subdirectory(editor)
+# NOTE: the Hub launcher now lives in its own repository (GameWorldshaperHub).
+# This repo builds only the engine + editor, and publishes an engine package
+# (see the release CI + engine-only CPack layout below) that the Hub installs.
 add_subdirectory(game)
 add_subdirectory(tools)   # offline content tools (assetcook, Stage 2.2)
 
@@ -196,3 +241,20 @@ message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  Build Tests: ${BUILD_TESTS}")
 message(STATUS "  Build Docs: ${BUILD_DOCS}")
 message(STATUS "")
+
+# ============================================================================
+# Packaging: CPack produces the ENGINE package (a release asset the Hub installs).
+# Layout is flat — editor.exe + runtime DLLs + default content at the package
+# root. On each release the CI (.github/workflows/release-engine.yml) runs
+# `cpack -G ZIP` and uploads the resulting zip; the Hub downloads it, finds
+# editor.exe, and installs it under %LOCALAPPDATA%/GameWorldshaper/Engines/<ver>/.
+# ============================================================================
+set(CPACK_PACKAGE_NAME "GameWorldshaper-Engine")
+set(CPACK_PACKAGE_VENDOR "GameWorldshaper")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "GameWorldshaper engine + editor (Hub-installable package)")
+if(WIN32)
+    set(CPACK_GENERATOR "ZIP")   # the engine package is a plain zip asset
+endif()
+
+include(CPack)

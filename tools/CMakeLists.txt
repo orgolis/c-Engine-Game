@@ -139,6 +139,16 @@ add_executable(skinning_check skinning_check/main.cpp)
 target_link_libraries(skinning_check PRIVATE renderer)
 target_compile_features(skinning_check PRIVATE cxx_std_20)
 
+# NOTE: hub_check / update_check moved to the standalone GameWorldshaperHub repo
+# (its tests/ + hub_selftest) along with the Hub itself.
+
+# skinned_import_check: rigged-glTF import verification (headless, no device) —
+# generates a minimal rig, imports it via load_skinned_gltf, and checks the
+# skeleton hierarchy, joint remap, inverse-bind, and animation sampling.
+add_executable(skinned_import_check skinned_import_check/main.cpp)
+target_link_libraries(skinned_import_check PRIVATE renderer)
+target_compile_features(skinned_import_check PRIVATE cxx_std_20)
+
 # ai_check: Stage 9 AI verification (headless, no device) — navmesh A*+funnel
 # pathfinding (detour around a wall, unreachable islands) + behavior trees
 # (selector/sequence running-memory, inverter, cooldown).

@@ -58,6 +58,7 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_virtual_texture.h
     gpu/vulkan/vulkan_scene_mesh.h
     gpu/vulkan/vulkan_skinned_mesh.h
+    gpu/vulkan/skinned_gltf_loader.h
     gpu/vulkan/vulkan_scene_material.h
     gpu/vulkan/vulkan_gltf_loader.h
     gpu/vulkan/culling.h
@@ -120,6 +121,7 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_virtual_texture.cpp
     gpu/vulkan/vulkan_scene_mesh.cpp
     gpu/vulkan/vulkan_skinned_mesh.cpp
+    gpu/vulkan/skinned_gltf_loader.cpp
     gpu/vulkan/vulkan_scene_material.cpp
     gpu/vulkan/vulkan_gltf_loader.cpp
     gpu/vulkan/culling.cpp

@@ -41,6 +41,9 @@ target_link_libraries(editor
 target_sources(editor
     PRIVATE
         src/main.cpp
+        src/project.cpp
+        src/project_launcher.cpp
+        src/project_paths.cpp
         src/ecs_bridge.cpp
         src/editor_scene.cpp
         src/scene_serializer.cpp
@@ -84,5 +87,18 @@ endif()
 # comdlg32 — MinGW-w64 doesn't auto-link it, MSVC does. Pull it in
 # explicitly on Windows so both toolchains build the editor.
 if(WIN32)
-    target_link_libraries(editor PRIVATE comdlg32)
+    # comdlg32: GetOpenFileName/GetSaveFileName (scene dialogs).
+    # shell32 + ole32: SHBrowseForFolder + CoTaskMemFree (project-folder picker).
+    target_link_libraries(editor PRIVATE comdlg32 shell32 ole32)
 endif()
+
+# --- Install / packaging (Phase 3): the editor ships as a versioned engine the
+#     Hub can discover under <install>/Engines/<version>/ ---
+gws_bundle_runtime(editor "${GWS_ENGINE_DEST}")   # runtime DLLs + install
+install(TARGETS editor RUNTIME DESTINATION "${GWS_ENGINE_DEST}")
+# Minimal engine default content. The sky is procedural (no HDR needed) and the
+# heavy dev models in assets/models are NOT shipped — projects carry their own.
+install(DIRECTORY
+            ${CMAKE_SOURCE_DIR}/assets/skies
+            ${CMAKE_SOURCE_DIR}/assets/scripts
+        DESTINATION "${GWS_ENGINE_DEST}/assets" OPTIONAL)

@@ -33,16 +33,23 @@ target_link_libraries(gws_tests PRIVATE
     Catch2::Catch2WithMain
 )
 
-# Include directories - expose all core headers
-# The engine folder must be in the path to find "core/math.h"
+# Include directories - expose all core headers.
+# - ${CMAKE_SOURCE_DIR}/engine  → resolves engine-relative includes like "core/math.h"
+# - ${CMAKE_SOURCE_DIR}         → resolves repo-root includes like
+#                                 <engine/renderer/gpu/vulkan/ui_manager.h>
 target_include_directories(gws_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/engine
 )
 
-# Register tests with CTest
+# Register tests with CTest.
+# DISCOVERY_MODE PRE_TEST: enumerate test cases when `ctest` runs, NOT at build
+# time. The default (POST_BUILD) executes gws_tests.exe during the build to list
+# tests; under MinGW that launch fails with 0xc0000139 (runtime DLLs not on the
+# build system's PATH) and breaks the whole `all` target. PRE_TEST defers it.
 include(CTest)
 include(Catch)
-catch_discover_tests(gws_tests)
+catch_discover_tests(gws_tests DISCOVERY_MODE PRE_TEST)
 
 # Physics demo executable (simple console test) - DISABLED since physics module is disabled
 # add_executable(physics_demo

@@ -33,6 +33,7 @@
 #include "vulkan/vulkan_scene_material.h"
 #include "vulkan/vulkan_texture_manager.h"  // runtime texture handling (Stage 2)
 #include "skinned_demo.h"                    // Stage 5 skinned-animation test rig
+#include "imported_skinned_actor.h"          // rigged-glTF import → GPU skin (Path B)
 #include "game_ui_demo.h"                     // runtime game-UI HUD demo (Game-UI pillar)
 #include "vulkan/imgui_vulkan.h"
 
@@ -60,6 +61,9 @@
 
 // Editor / scene headers
 #include "editor_scene.h"
+#include "project.h"            // modular project model (manifest + features)
+#include "project_launcher.h"  // first-run project launcher UI
+#include "project_paths.h"     // per-project content sandbox (working-dir scoping)
 #include "scene.h"
 #include "entity_factory.h"
 #include "transform_component.h"
@@ -255,6 +259,22 @@ struct EditorState {
     schizo::editor::EditorScriptCtx script_ctx;
     schizo::editor::ScriptApi       script_api;
     double script_play_time = 0.0;   // seconds since Play started
+
+    // ---- Project system (modular features + launcher) ----
+    // The launcher shows first; once a project is chosen it loads, `features`
+    // is set from its manifest, and the editor proper takes over. Non-launcher
+    // runtime modes (net-spawned game windows) default `features` to all-on.
+    bool                        in_launcher = true;      // showing the project launcher?
+    bool                        project_loaded = false;
+    schizo::project::ProjectManifest project;
+    schizo::project::FeatureSet  features = schizo::project::FeatureSet::all();
+    bool                        show_project_settings = false;
+
+    bool feature_on(schizo::project::Feature f) const { return features.has(f); }
+
+    // Path B: a requested rigged-model import (path set by the File menu,
+    // consumed in the loop where the device + material pool are in scope).
+    std::string pending_skinned_import;
 };
 
 // ============================================================================
@@ -328,10 +348,24 @@ static std::string OpenAudioDialogNative() {
     ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     return GetOpenFileNameA(&ofn) ? std::string(buf) : std::string();
 }
+
+static std::string OpenModelDialogNative(GLFWwindow* window) {
+    char buf[MAX_PATH] = {0};
+    OPENFILENAMEA ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = window ? glfwGetWin32Window(window) : NULL;
+    ofn.lpstrFile   = buf;
+    ofn.nMaxFile    = sizeof(buf);
+    ofn.lpstrFilter = "Rigged Model (*.gltf;*.glb)\0*.gltf;*.glb\0All Files\0*.*\0";
+    ofn.lpstrTitle  = "Import Skinned Model";
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    return GetOpenFileNameA(&ofn) ? std::string(buf) : std::string();
+}
 #else
 static std::string OpenSceneDialogNative(GLFWwindow*) { return {}; }
 static std::string SaveSceneDialogNative(GLFWwindow*) { return {}; }
 static std::string OpenAudioDialogNative() { return {}; }
+static std::string OpenModelDialogNative(GLFWwindow*) { return {}; }
 #endif
 
 // Stable content GUID from a path — mirrors schizo::assets::asset_id_from_path
@@ -544,12 +578,38 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
                 }
             }
             ImGui::Separator();
+            // Import a rigged character (.gltf/.glb) → GPU-skinned actor.
+            // Gated by the Animation feature (modular project system).
+            if (editor_state.feature_on(schizo::project::Feature::Animation) &&
+                ImGui::MenuItem("Import Skinned Model (.glb/.gltf)...")) {
+                std::string path = OpenModelDialogNative(glfw_window);
+                if (!path.empty()) editor_state.pending_skinned_import = path;
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem("Exit", "Alt+F4")) {
                 spdlog::info("Exit requested");
             }
             ImGui::EndMenu();
         }
-        
+
+        // Project menu — the current project + its modular feature set.
+        if (ImGui::BeginMenu("Project")) {
+            if (editor_state.project_loaded) {
+                ImGui::MenuItem(("Current: " + editor_state.project.name).c_str(),
+                                nullptr, false, false);
+                ImGui::Separator();
+            }
+            if (ImGui::MenuItem("Project Settings (Features)...", nullptr, false,
+                                editor_state.project_loaded)) {
+                editor_state.show_project_settings = true;
+            }
+            if (ImGui::MenuItem("Close Project (back to Launcher)", nullptr, false,
+                                editor_state.project_loaded)) {
+                editor_state.in_launcher = true;
+            }
+            ImGui::EndMenu();
+        }
+
         // Edit menu
         if (ImGui::BeginMenu("Edit")) {
             bool can_undo = editor_state.undo_redo_manager.CanUndo();
@@ -585,7 +645,8 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             ImGui::MenuItem("Post-Processing", nullptr, &editor_state.show_post_processing);
             ImGui::MenuItem("Output (Log)", nullptr, &editor_state.show_output);
             ImGui::MenuItem("Terminal", nullptr, &editor_state.show_terminal);
-            ImGui::MenuItem("Multiplayer (Network)", nullptr, &editor_state.show_network_window);
+            if (editor_state.feature_on(schizo::project::Feature::Networking))
+                ImGui::MenuItem("Multiplayer (Network)", nullptr, &editor_state.show_network_window);
             ImGui::Separator();
             if (ImGui::MenuItem("Reset Layout")) {
                 // Rebuild the default Unity-style dock arrangement next frame.
@@ -693,7 +754,8 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 ImGui::CloseCurrentPopup();
             }
 
-            if (ImGui::MenuItem("Water")) {
+            if (editor_state.feature_on(schizo::project::Feature::Terrain) &&
+                ImGui::MenuItem("Water")) {
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
                     [scene, &editor_state]() {
                         auto ent = scene->CreateEntity("Water");
@@ -714,7 +776,8 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 ImGui::CloseCurrentPopup();
             }
 
-            if (ImGui::MenuItem("Terrain")) {
+            if (editor_state.feature_on(schizo::project::Feature::Terrain) &&
+                ImGui::MenuItem("Terrain")) {
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
                     [scene, &editor_state]() {
                         auto ent = scene->CreateEntity("Terrain");
@@ -3780,8 +3843,12 @@ int main(int argc, char** argv) {
     //   --scene <path>          load this scene before connecting
     //   --net-game              game window: viewport-only fullscreen UI (no
     //                           editor panels) — used for spawned client windows
+    //   --project <path>        open this project (its manifest) directly,
+    //                           bypassing the in-editor launcher (the Hub uses
+    //                           this to open a project in its bound engine).
     std::string startup_scene;
     std::string startup_join_ip;
+    std::string startup_project;
     uint16_t    startup_join_port = 0;
     uint16_t    startup_host_port = 0;
     bool        game_window_mode  = false;
@@ -3798,6 +3865,8 @@ int main(int argc, char** argv) {
             }
         } else if (a == "--scene" && i + 1 < argc) {
             startup_scene = argv[++i];
+        } else if (a == "--project" && i + 1 < argc) {
+            startup_project = argv[++i];
         } else if (a == "--net-game") {
             game_window_mode = true;
         }
@@ -3814,6 +3883,11 @@ int main(int argc, char** argv) {
         // captured too. Lives in console_panel.cpp.
         schizo::editor::install_console_log_sink();
         spdlog::info("=== Project Schizo Editor (Vulkan) ===");
+
+        // Lock the engine content base BEFORE any asset load (self-heals the CWD
+        // to a dir containing assets/, so bundled defaults resolve no matter how
+        // the editor was launched — repo root, Hub with the exe dir, or install).
+        schizo::editor::init_base_dir();
 
         // ----------------------------------------------------------------
         // GLFW + window (Vulkan, no OpenGL context)
@@ -4097,6 +4171,11 @@ int main(int argc, char** argv) {
         auto anim_demo = schizo::editor::SkinnedAnimDemo::create(
             &device, mat_layout, mat_pool, &texture_manager, glm::vec3(0.0f, 0.0f, 0.0f));
         if (anim_demo) anim_demo->set_enabled(false);
+
+        // Path B: a rigged character imported from a real .gltf/.glb at runtime
+        // (File > Import Skinned Model). Driven through the same skin path as the
+        // procedural demo above. Null until the user imports one.
+        std::unique_ptr<schizo::editor::ImportedSkinnedActor> imported_actor;
 
         // Runtime game-UI HUD demo (gws_ui framework, ImGui-rasterised). Off by
         // default; toggle in the Post-Processing panel.
@@ -4420,6 +4499,10 @@ int main(int argc, char** argv) {
         editor_state.editor_scene       = &editor_scene;
         editor_state.viewport_texture_id = viewport_ds;
 
+        // Recent-projects list for the launcher (from the user config dir).
+        schizo::project::ProjectsRegistry projects_registry;
+        projects_registry.load();
+
         g_editor_state = &editor_state;
         glfwSetDropCallback(glfw_window, DropCallback);
 
@@ -4742,6 +4825,38 @@ int main(int argc, char** argv) {
             editor_state.show_network_window = true;
         }
 
+        // --project <path>: the Hub opens a project directly in its bound engine
+        // version — load the manifest (features + scene) and skip the launcher.
+        if (!startup_project.empty()) {
+            schizo::project::ProjectManifest pm;
+            if (schizo::project::ProjectManifest::load(startup_project, pm)) {
+                editor_state.project        = pm;
+                editor_state.features       = pm.features;
+                editor_state.project_loaded = true;
+                schizo::editor::set_project_root(pm.project_dir);  // sandbox CWD
+                const std::string scene_path = pm.default_scene_path();
+                std::error_code sec;
+                if (std::filesystem::exists(scene_path, sec))
+                    editor_state.editor_scene->LoadScene(scene_path);
+                else {
+                    editor_state.editor_scene->NewScene(pm.name);
+                    editor_state.editor_scene->SaveScene(scene_path);
+                }
+                editor_state.in_launcher = false;
+                spdlog::info("[project] opened via --project: '{}' ({})", pm.name, scene_path);
+            } else {
+                spdlog::error("[project] --project load failed: {}", startup_project);
+            }
+        }
+
+        // Net-spawned / game-window instances skip the launcher and run with
+        // every feature on (they load the shared scene above or from CLI args).
+        // A normal launch starts in the launcher (in_launcher defaults true).
+        if (game_window_mode || !startup_scene.empty() ||
+            startup_host_port != 0 || startup_join_port != 0) {
+            editor_state.in_launcher = false;
+        }
+
         // ----------------------------------------------------------------
         // Main loop
         // ----------------------------------------------------------------
@@ -4852,6 +4967,24 @@ int main(int argc, char** argv) {
             // motion + foot IK). Done early so the pose is current for both the
             // skinning dispatch and the DrawItem appended below.
             if (anim_demo && anim_demo->enabled()) anim_demo->advance(delta_time);
+
+            // Consume a requested rigged-model import (device + pools in scope).
+            if (!editor_state.pending_skinned_import.empty()) {
+                device.wait_idle();
+                std::string perr;
+                auto act = schizo::editor::ImportedSkinnedActor::create(
+                    &device, mat_layout, mat_pool, &texture_manager,
+                    editor_state.pending_skinned_import, glm::vec3(0.0f, 0.0f, 0.0f), &perr);
+                if (act) {
+                    imported_actor = std::move(act);
+                    spdlog::info("[skinned] imported '{}' ({} clip(s))",
+                                 imported_actor->name(), imported_actor->clip_count());
+                } else {
+                    spdlog::error("[skinned] import failed: {}", perr);
+                }
+                editor_state.pending_skinned_import.clear();
+            }
+            if (imported_actor) imported_actor->advance(delta_time);
 
             // Feed dt to the post-processing chain so auto-exposure can
             // do frame-rate-independent smoothing.
@@ -5165,6 +5298,38 @@ int main(int argc, char** argv) {
                                 nst.avatars + 1);
                     ImGui::End();
                 }
+            } else if (editor_state.in_launcher) {
+                // --------------------------------------------------------
+                // Project launcher — shown before any project is open. It
+                // draws over the whole window; the editor menu/dockspace/
+                // panels are skipped until a project is chosen or created.
+                // --------------------------------------------------------
+                schizo::project::ProjectManifest chosen;
+                bool launcher_quit = false;
+                if (schizo::project::draw_launcher(projects_registry, chosen, launcher_quit)) {
+                    editor_state.project        = chosen;
+                    editor_state.features       = chosen.features;
+                    editor_state.project_loaded = true;
+                    // Enter the project sandbox (project folder becomes the CWD)
+                    // and re-scope the asset browser to it.
+                    schizo::editor::set_project_root(chosen.project_dir);
+                    if (editor_state.asset_browser) editor_state.asset_browser->Reroot();
+
+                    // Load the project's default scene, creating it if missing.
+                    const std::string scene_path = chosen.default_scene_path();
+                    std::error_code sec;
+                    if (std::filesystem::exists(scene_path, sec)) {
+                        editor_state.editor_scene->LoadScene(scene_path);
+                    } else {
+                        editor_state.editor_scene->NewScene(chosen.name);
+                        editor_state.editor_scene->SaveScene(scene_path);
+                    }
+                    editor_state.in_launcher = false;
+                    spdlog::info("[project] opened '{}' ({}) features=0x{:x}",
+                                 chosen.name, scene_path, editor_state.features.raw());
+                }
+                if (launcher_quit)
+                    glfwSetWindowShouldClose(glfw_window, GLFW_TRUE);
             } else {
             // ------------------------------------------------------------
             // Unity-style docked workspace. The main menu bar is emitted
@@ -5249,8 +5414,25 @@ int main(int argc, char** argv) {
             ShowAssetBrowser(editor_state);
             ShowPlaybackControls(editor_state);
             ShowPerformanceOverlay(editor_state);
-            ShowNetworkPanel(editor_state);
-            ShowDebugPanels(editor_state);
+            // Feature-gated panels: only shown if the project enables the system.
+            if (editor_state.feature_on(schizo::project::Feature::Networking))
+                ShowNetworkPanel(editor_state);
+            if (editor_state.feature_on(schizo::project::Feature::Combat))
+                ShowDebugPanels(editor_state);
+            // Project Settings — add/remove features on the open project. Saving
+            // the manifest persists the change for next launch.
+            if (editor_state.show_project_settings) {
+                if (schizo::project::draw_feature_settings(editor_state.features,
+                                                           &editor_state.show_project_settings)) {
+                    editor_state.project.features = editor_state.features;
+                    if (!editor_state.project.project_dir.empty()) {
+                        const std::string mp =
+                            (std::filesystem::path(editor_state.project.project_dir) /
+                             schizo::project::kManifestFilename).string();
+                        schizo::project::ProjectManifest::save(mp, editor_state.project);
+                    }
+                }
+            }
             // "Output" — the editor's own log output mirrored into a panel.
             if (editor_state.show_output) {
                 if (!editor_state.console)
@@ -5566,6 +5748,7 @@ int main(int argc, char** argv) {
             // vertex buffer is ready before the RT-BLAS build, shadow pass, and
             // geometry pass all read it this frame.
             if (anim_demo && anim_demo->enabled()) anim_demo->record_skin(cmd);
+            if (imported_actor) imported_actor->record_skin(cmd);
 
             // Camera from viewport — use the actual panel aspect ratio
             CameraData cam{};
@@ -5840,6 +6023,8 @@ int main(int argc, char** argv) {
             // are conservative for culling.
             if (anim_demo && anim_demo->enabled())
                 opaque_draws.push_back(anim_demo->draw_item());
+            if (imported_actor)
+                opaque_draws.push_back(imported_actor->draw_item());
 
             // DDGI grid auto-fit: enclose the scene's world AABB (from the
             // opaque draw list) with the fixed probe grid so probes actually
@@ -6432,6 +6617,7 @@ int main(int argc, char** argv) {
         // Skinned test rig — its Material returns a set to mat_pool, so free it
         // before the pool/layout below (and before the device).
         anim_demo.reset();
+        imported_actor.reset();   // returns its Material's set to mat_pool before free
 
         // Scene geometry — caches must release their meshes + materials
         // before the descriptor pool / layout are destroyed.
