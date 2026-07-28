@@ -64,7 +64,7 @@ function(gws_bundle_runtime tgt dest)
                         "${dll}" "$<TARGET_FILE_DIR:${tgt}>"
                 VERBATIM)
         endforeach()
-        install(FILES ${GWS_RUNTIME_DLLS} DESTINATION "${dest}")
+        install(FILES ${GWS_RUNTIME_DLLS} DESTINATION "${dest}" COMPONENT engine)
     endif()
 endfunction()
 
@@ -256,5 +256,12 @@ set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "GameWorldshaper engine + editor (Hub-inst
 if(WIN32)
     set(CPACK_GENERATOR "ZIP")   # the engine package is a plain zip asset
 endif()
+# Package ONLY the "engine" component (editor + runtime DLLs + content) into one
+# archive, so the third-party libraries' own install() rules (Jolt/GLFW/enet
+# headers + libs) are excluded from the release asset.
+set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+set(CPACK_COMPONENTS_ALL engine)
+set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
+set(CPACK_ARCHIVE_FILE_NAME "GameWorldshaper-Engine-${PROJECT_VERSION}-win64")
 
 include(CPack)
