@@ -41,10 +41,37 @@ subsystem gets:
 
 ## 1. Current-state snapshot (the honest baseline)
 
-> ⚠️ **This snapshot is the 2026-06-12 baseline and is SUPERSEDED.** Audio, AI, World, Scripting,
-> VFX, Combat, volumetrics/clouds/DDGI, terrain/water and more have shipped since. For the current
-> status and prioritized remaining-work tree see [`REMAINING_WORK.md`](REMAINING_WORK.md). The table
-> below is kept as the historical baseline the stages were planned against.
+> ⚠️ **The pillar table further below is the 2026-06-12 planning baseline and is SUPERSEDED.** The
+> authoritative current status is the table immediately below (verified 2026-07-30) and
+> [`REMAINING_WORK.md`](REMAINING_WORK.md). The old table is kept only as the baseline the stages
+> were planned against.
+
+### Verified stage status — 2026-07-30
+
+Legend: 🟢 done / acceptance met · 🟡 core built, integration or breadth remains · 🔴 not started.
+"Verified" = a headless `tools/*_check` (or live editor session) confirms it.
+
+| # | Stage | Status | Verified by | What still remains |
+|---|-------|--------|-------------|--------------------|
+| 0 | Foundation (memory·jobs·reflection·serialization·logging·profiler) | 🟢 core built+verified | profiler_check; live editor | **Integration debt**: editor inspector/scene-save still on legacy (not core reflection/serialization); not all hot systems on `parallel_for` |
+| 1 | ECS | 🟢 acceptance met | live editor (100k @ 3.7 ms) | ECS is a per-frame **shadow** of the OOP scene; full data-ownership takeover pending |
+| 2 | Asset pipeline | 🟢 acceptance met | texture_check, model_check | optional BC6H/Oodle; VT **runtime** (belongs to Stage 8) |
+| 3 | Rendering completion | 🟡 ~75% | live editor + shaders | **GPU-driven indirect/mesh-shader (3.1)**, **virtual shadow maps (3.4)**, **material layering/hair/skin (3.5)** |
+| 4 | Physics (Jolt) | 🟢 acceptance met | physics_check | bone hitboxes (St10); cloth/ropes/destruction (deferred) |
+| 5 | Animation | 🟢 core done+verified | anim_check, skinning_check, skinned_import_check | motion matching + anim streaming (later-tier); graph editor = St11; player wiring = St10 |
+| 6 | Audio | 🟢 core acceptance met | audio_check | bus graph, reverb, DSP, streaming, procedural |
+| 7 | Networking | 🟢 core done + live MP | net/repl/prediction/mp_check + 2-process | **headless dedicated server (H3)**, **interest management/AOI (H4)**, delta-encoding + snapshot interpolation |
+| 8 | World | 🟡 core lib verified, **not integrated** | world_check (21/21) | wire to editor camera + async job load; HLOD; material/anim LOD; procedural gen |
+| 9 | AI | 🟡 nav + BT done ("start") | ai_check (21/21) | utility AI, GOAP, crowds; integration (bake-from-scene, path-follow, perception) |
+| 10 | Gameplay integration | 🟡 partial | combat_check, vfx_check; live | loot/itemization, vehicles, quests/progression; server-authoritative wiring |
+| 11 | Editor & tooling | 🟢 strong | live editor | + terrain editor + project **Hub** (now its own repo); anim-graph editor, visual scripting, richer debug viz |
+| 12 | Scripting | 🟢 done (exceeds plan) | script_check | Python + C++ + C# all built (plan asked only for Lua) |
+| 13 | Platform | 🔴 Windows-only | — | Linux (+ headless server), consoles, mobile |
+| 14 | Performance infra | 🟢 all 5 pillars built | profiler_check + overlay | captured-baseline regression gating |
+| 15 | Modern AAA | 🔴 mostly not started | — | Nanite-like geometry, Lumen-grade GI (DDGI is a step), crowd sim, world sim, destruction |
+
+**Core (Stages 0–3) ≈ 80–85% done** — the substrate is built and verified; the remainder is *adoption/integration* (editor + gameplay onto the new core, ECS as single source of truth) and *rendering breadth*, not greenfield.
+
 
 | Pillar            | State                                      | What exists in tree                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | ----------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -723,9 +750,16 @@ prediction; forced packet loss/latency reconciles smoothly; headless server runs
 > entities + a move to an empty client world). **Step 3 prediction+reconciliation DONE:** `prediction.h`
 > (`PredictionClient` predict+buffer+reconcile, `PredictionServer` authoritative; pluggable deterministic
 > `SimStep`) — verified by `tools/prediction_check` under simulated latency (converges, responsive, no
-> rubber-band, corrects to authoritative on divergence). Next: step 4 headless server, step 5 interest
-> management, plus delta-encoding + interpolation, and wiring the `SimStep` to Jolt + packets onto the
-> live Transport.
+> rubber-band, corrects to authoritative on divergence).
+>
+> **UPDATE 2026-07-30 — core done + multiplayer LIVE in the editor.** The verified transport +
+> replication stack is wired into the editor as `NetSession` (ENet + `replication.h`): first-person
+> host/client sessions, client-authoritative player positions, host-authoritative prop sync, avatar
+> cloning, and a "Host + Launch" PIE launcher — verified by `tools/mp_check` **and a live 2-process
+> session**. So H1 replication + H2 prediction are functionally complete and playable. **Genuinely
+> remaining (Stage-7 acceptance):** H3 **headless dedicated server** (Linux/Windows, no renderer/audio),
+> H4 **interest management / AOI** + bandwidth-budgeted prioritization, and delta-encoding + snapshot
+> interpolation for scale.
 
 # STAGE 8 — World Systems (Pillar I)
 
@@ -856,9 +890,11 @@ identical sim builds and runs on Windows + Linux; renderer runs on Linux Vulkan.
 
 # STAGE 14 — Performance Infrastructure (Pillar N) — **CONTINUOUS**
 
-> **STATUS 2026-06-15 — unified overlay landed; 3/5 pillars live, N2 ready, N5 pending.**
-> A single in-editor **Performance** window (View → Performance) now surfaces every hot
-> path in one place, replacing the dead Phase-6 panels:
+> **STATUS 2026-06-15 (overlay landed) → 2026-07-30: all 5 pillars built + in the unified overlay.**
+> N1 CPU · N2 GPU · N3 memory · N4 network · N5 frame-capture are all implemented and verified
+> (`tools/profiler_check`); the only remainder is **captured-baseline regression gating** (compare a
+> saved capture/timings against a budget in CI). A single in-editor **Performance** window (View →
+> Performance) surfaces every hot path in one place, replacing the dead Phase-6 panels:
 >
 > - **N1 CPU** ✅ — reads the canonical `gws::profile::Profiler` (the same per-tag scoped
 >   zones the spdlog frame report prints; `ecs_sync`/`build_draw_items`/`hzb_cull` etc.),
