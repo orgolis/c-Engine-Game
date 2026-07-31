@@ -60,7 +60,7 @@ Legend: 🟢 done / acceptance met · 🟡 core built, integration or breadth re
 | 4 | Physics (Jolt) | 🟢 acceptance met | physics_check | bone hitboxes (St10); cloth/ropes/destruction (deferred) |
 | 5 | Animation | 🟢 core done+verified | anim_check, skinning_check, skinned_import_check | motion matching + anim streaming (later-tier); graph editor = St11; player wiring = St10 |
 | 6 | Audio | 🟢 core acceptance met | audio_check | bus graph, reverb, DSP, streaming, procedural |
-| 7 | Networking | 🟢 core done + live MP | net/repl/prediction/mp_check + 2-process | **headless dedicated server (H3)**, **interest management/AOI (H4)**, delta-encoding + snapshot interpolation |
+| 7 | Networking | 🟢 core + live MP + **headless server** | net/repl/prediction/mp/**server**_check + 2-process | **interest management/AOI (H4)**, delta-encoding + snapshot interpolation |
 | 8 | World | 🟡 core lib verified, **not integrated** | world_check (21/21) | wire to editor camera + async job load; HLOD; material/anim LOD; procedural gen |
 | 9 | AI | 🟡 nav + BT done ("start") | ai_check (21/21) | utility AI, GOAP, crowds; integration (bake-from-scene, path-follow, perception) |
 | 10 | Gameplay integration | 🟡 partial | combat_check, vfx_check; live | loot/itemization, vehicles, quests/progression; server-authoritative wiring |
@@ -756,10 +756,16 @@ prediction; forced packet loss/latency reconciles smoothly; headless server runs
 > replication stack is wired into the editor as `NetSession` (ENet + `replication.h`): first-person
 > host/client sessions, client-authoritative player positions, host-authoritative prop sync, avatar
 > cloning, and a "Host + Launch" PIE launcher — verified by `tools/mp_check` **and a live 2-process
-> session**. So H1 replication + H2 prediction are functionally complete and playable. **Genuinely
-> remaining (Stage-7 acceptance):** H3 **headless dedicated server** (Linux/Windows, no renderer/audio),
-> H4 **interest management / AOI** + bandwidth-budgeted prioritization, and delta-encoding + snapshot
-> interpolation for scale.
+> session**. So H1 replication + H2 prediction are functionally complete and playable.
+>
+> **H3 headless dedicated server — DONE 2026-07-31.** `engine/core/network/dedicated_server.h`
+> (`DedicatedServer`: authoritative ECS world + transport + per-client input ingest + world-snapshot
+> broadcast at a fixed tick, **no renderer/audio/window**) + a deployable `tools/dedicated_server`
+> binary (66 Hz fixed step, `--port`/`--tickrate`). Verified end-to-end over **real loopback UDP** by
+> `tools/server_check` (connect → avatar spawn → client input → authoritative apply → replicate to
+> client → disconnect → despawn, **ALL OK, 12**). **Genuinely remaining:** H4 **interest management /
+> AOI** + bandwidth-budgeted prioritization; delta-encoding + snapshot interpolation; and stepping
+> Jolt physics inside the server tick (it currently applies a kinematic move).
 
 # STAGE 8 — World Systems (Pillar I)
 

@@ -44,6 +44,24 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(repl_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# dedicated_server: Stage 7 H3 — headless authoritative server (ECS world +
+# transport + replication at a fixed tick, no renderer/audio). Deployable binary.
+add_executable(dedicated_server dedicated_server/main.cpp)
+target_link_libraries(dedicated_server PRIVATE network gws_ecs gws_serialization)
+target_compile_features(dedicated_server PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(dedicated_server PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
+# server_check: verifies the dedicated server end-to-end over real loopback UDP
+# (connect -> avatar spawn -> input -> authoritative apply -> replicate -> despawn).
+add_executable(server_check server_check/main.cpp)
+target_link_libraries(server_check PRIVATE network gws_ecs gws_serialization)
+target_compile_features(server_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(server_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # mp_check: Stage 7 editor NetSession integration (host<->client scene transform
 # replication through the editor's NetSession, over real OOP scenes).
 add_executable(mp_check mp_check/main.cpp ${CMAKE_SOURCE_DIR}/editor/src/net_session.cpp)

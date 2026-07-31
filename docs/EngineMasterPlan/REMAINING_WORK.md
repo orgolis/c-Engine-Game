@@ -54,9 +54,12 @@ The cross-cutting integration debt specifically:
   wiring to the real player (Stage 10); job-parallel sampling benchmarked at 1k.
 - **Stage 6 — Audio** 🟢 core acceptance met (256-voice lock-free spatial mixer + occlusion).
   **Remaining:** bus graph, reverb zones, DSP inserts, streaming, procedural.
-- **Stage 7 — Networking** 🟢 core done + **multiplayer live in-editor** (transport + replication + prediction,
-  `NetSession`, PIE launcher; verified `mp_check` + 2-process).
-  **Remaining:** **headless dedicated server** (H3), **interest management / AOI** (H4), delta-encoding + snapshot interpolation.
+- **Stage 7 — Networking** 🟢 core + multiplayer live in-editor + **headless dedicated server** (H3).
+  Transport + replication + prediction; `NetSession` + PIE launcher; `DedicatedServer` (authoritative ECS
+  world + input ingest at a fixed tick, no renderer/audio) + a deployable `tools/dedicated_server` binary —
+  verified `mp_check`, **`server_check` (12)**, + live 2-process.
+  **Remaining:** **interest management / AOI** (H4); delta-encoding + snapshot interpolation; stepping Jolt
+  physics inside the server tick.
 - **Stage 8 — World** 🟡 core lib verified (grid partition + streaming manager + floating origin, `world_check` 21/21),
   **but not integrated.**
   **Remaining:** wire to the editor camera + `gws_jobs` async load; apply origin-rebase to the live scene; HLOD;
@@ -84,7 +87,8 @@ The cross-cutting integration debt specifically:
 **Tier 1 — unblocks the actual game**
 - Finish the **ECS migration** (make ECS authoritative; retire the OOP shadow) — cleans up gameplay/save/net.
 - **GPU-driven rendering completion** (3.1) — the open-world instance-count enabler.
-- **Networking: headless dedicated server + interest management (AOI)** — required for real multiplayer.
+- **Networking: interest management (AOI)** + delta-encoding — the remaining scale pieces (the headless
+  dedicated server is done + verified; step physics inside its tick next).
 - **World-streaming integration** (wire the verified `gws_world` lib into the editor/world) + **AI integration**
   (bake navmesh, agent path-follow, perception) — makes the open world + enemies real.
 
