@@ -60,7 +60,7 @@ Legend: 🟢 done / acceptance met · 🟡 core built, integration or breadth re
 | 4 | Physics (Jolt) | 🟢 acceptance met | physics_check | bone hitboxes (St10); cloth/ropes/destruction (deferred) |
 | 5 | Animation | 🟢 core done+verified | anim_check, skinning_check, skinned_import_check | motion matching + anim streaming (later-tier); graph editor = St11; player wiring = St10 |
 | 6 | Audio | 🟢 core acceptance met | audio_check | bus graph, reverb, DSP, streaming, procedural |
-| 7 | Networking | 🟢 core + live MP + **headless server** | net/repl/prediction/mp/**server**_check + 2-process | **interest management/AOI (H4)**, delta-encoding + snapshot interpolation |
+| 7 | Networking | 🟢 core + live MP + **headless server w/ physics-in-tick** | net/repl/prediction/mp/**server_check (19)** + 2-process | **interest management/AOI (H4)**, delta-encoding + snapshot interpolation |
 | 8 | World | 🟡 core lib verified, **not integrated** | world_check (21/21) | wire to editor camera + async job load; HLOD; material/anim LOD; procedural gen |
 | 9 | AI | 🟡 nav + BT done ("start") | ai_check (21/21) | utility AI, GOAP, crowds; integration (bake-from-scene, path-follow, perception) |
 | 10 | Gameplay integration | 🟡 partial | combat_check, vfx_check; live | loot/itemization, vehicles, quests/progression; server-authoritative wiring |
@@ -758,14 +758,17 @@ prediction; forced packet loss/latency reconciles smoothly; headless server runs
 > cloning, and a "Host + Launch" PIE launcher — verified by `tools/mp_check` **and a live 2-process
 > session**. So H1 replication + H2 prediction are functionally complete and playable.
 >
-> **H3 headless dedicated server — DONE 2026-07-31.** `engine/core/network/dedicated_server.h`
-> (`DedicatedServer`: authoritative ECS world + transport + per-client input ingest + world-snapshot
-> broadcast at a fixed tick, **no renderer/audio/window**) + a deployable `tools/dedicated_server`
-> binary (66 Hz fixed step, `--port`/`--tickrate`). Verified end-to-end over **real loopback UDP** by
-> `tools/server_check` (connect → avatar spawn → client input → authoritative apply → replicate to
-> client → disconnect → despawn, **ALL OK, 12**). **Genuinely remaining:** H4 **interest management /
-> AOI** + bandwidth-budgeted prioritization; delta-encoding + snapshot interpolation; and stepping
-> Jolt physics inside the server tick (it currently applies a kinematic move).
+> **H3 headless dedicated server — DONE 2026-07-31 (physics-in-tick added 2026-08-05).**
+> `engine/core/network/dedicated_server.h` (`DedicatedServer`: authoritative ECS world + transport +
+> per-client input ingest + a **pluggable per-tick sim-step** + world-snapshot broadcast at a fixed tick,
+> **no renderer/audio/window**) + a deployable `tools/dedicated_server` binary (66 Hz fixed step,
+> `--port`/`--tickrate`). **Authoritative Jolt physics now runs inside the tick** via the sim-step hook,
+> which drives a `PhysicsScene` — the `network` lib stays Jolt-free; the *binary* links `gws_physics`.
+> Verified end-to-end over **real loopback UDP** by `tools/server_check` (connect → avatar spawn → client
+> input → authoritative apply → replicate → disconnect → despawn, **plus** a dynamic body that falls from
+> y=5, settles on the ground, replicates to the client, and lands **bit-identically across two isolated
+> sims** — determinism, **ALL OK, 19**). **Genuinely remaining:** H4 **interest management / AOI** +
+> bandwidth-budgeted prioritization; delta-encoding + snapshot interpolation.
 
 # STAGE 8 — World Systems (Pillar I)
 

@@ -9,10 +9,14 @@
 //
 //   on connect(peer)    -> spawn a replicated avatar entity (NetId + Transform)
 //   on receive(peer)    -> parse the client's InputMsg (magic-tagged), store it
-//   tick(dt)            -> apply each client's latest input to its avatar
-//                          (kinematic step; wrap physics/AI here later),
+//   tick(dt)            -> apply each client's latest input to its avatar,
+//                          run the optional sim-step hook (physics/AI),
 //                          advance the server tick, broadcast a world snapshot
 //   on disconnect(peer) -> despawn the avatar
+//
+// Physics/AI are wired in via set_sim_step() rather than a hard dependency, so
+// the `network` lib stays free of Jolt: the server *binary* links `gws_physics`
+// and installs a hook that drives a PhysicsScene inside the fixed step.
 //
 // Header-only, "bring your own ECS + serialization": the consumer links
 // `network` + `gws_ecs` + `gws_serialization`. Reuses write_snapshot() from
@@ -27,6 +31,7 @@
 #include "ecs/components.h"
 
 #include <cstring>
+#include <functional>
 #include <unordered_map>
 
 namespace engine::network {
@@ -64,8 +69,6 @@ public:
         }
 
         // 2) Apply each client's latest input to its avatar (authoritative move).
-        //    (A real build steps Jolt physics + AI systems here inside the fixed
-        //     step; the kinematic move keeps this dependency-light + deterministic.)
         for (auto& [peer, c] : clients_) {
             if (!c.has_input) continue;
             if (auto* t = world_.try_get<schizo::ecs::Transform>(c.entity)) {
@@ -75,9 +78,13 @@ public:
             c.acked_input_tick = static_cast<int64_t>(c.input.tick);
         }
 
+        // 3) Step world systems (physics/AI) inside the fixed tick, if installed.
+        //    Kept as a hook so the network lib carries no Jolt dependency.
+        if (sim_step_) sim_step_(world_, dt);
+
         ++tick_;
 
-        // 3) Broadcast one world snapshot (unreliable, high-rate state).
+        // 4) Broadcast one world snapshot (unreliable, high-rate state).
         const std::vector<uint8_t> snap = write_snapshot(world_, tick_);
         transport_->broadcast(snap.data(), snap.size(), Channel::Unreliable);
         transport_->flush();
@@ -87,6 +94,12 @@ public:
     uint64_t            tick_count() const { return tick_; }
     size_t              client_count() const { return clients_.size(); }
     void                set_move_speed(float s) { move_speed_ = s; }
+
+    // Optional per-tick world simulation (physics/AI). Runs each fixed tick after
+    // inputs are applied and before the snapshot. The `network` lib stays Jolt-free;
+    // the server binary installs a hook that drives a PhysicsScene here.
+    using SimStepFn = std::function<void(schizo::ecs::World&, float /*dt*/)>;
+    void set_sim_step(SimStepFn fn) { sim_step_ = std::move(fn); }
 
     // Last input tick the server applied for a peer (-1 if none / unknown).
     int64_t acked_input_tick(PeerId peer) const {
@@ -139,6 +152,7 @@ private:
     std::unique_ptr<Transport>                transport_;
     schizo::ecs::World                        world_;
     std::unordered_map<PeerId, ClientState>   clients_;
+    SimStepFn sim_step_;
     uint64_t next_netid_ = 1;
     uint64_t tick_       = 0;
     float    move_speed_ = 5.0f;

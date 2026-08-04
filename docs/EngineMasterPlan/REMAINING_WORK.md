@@ -54,12 +54,13 @@ The cross-cutting integration debt specifically:
   wiring to the real player (Stage 10); job-parallel sampling benchmarked at 1k.
 - **Stage 6 — Audio** 🟢 core acceptance met (256-voice lock-free spatial mixer + occlusion).
   **Remaining:** bus graph, reverb zones, DSP inserts, streaming, procedural.
-- **Stage 7 — Networking** 🟢 core + multiplayer live in-editor + **headless dedicated server** (H3).
+- **Stage 7 — Networking** 🟢 core + multiplayer live in-editor + **headless dedicated server** (H3) with
+  **authoritative Jolt physics in the server tick**.
   Transport + replication + prediction; `NetSession` + PIE launcher; `DedicatedServer` (authoritative ECS
-  world + input ingest at a fixed tick, no renderer/audio) + a deployable `tools/dedicated_server` binary —
-  verified `mp_check`, **`server_check` (12)**, + live 2-process.
-  **Remaining:** **interest management / AOI** (H4); delta-encoding + snapshot interpolation; stepping Jolt
-  physics inside the server tick.
+  world + input ingest + a pluggable per-tick sim-step running a `PhysicsScene`, no renderer/audio) + a
+  deployable `tools/dedicated_server` binary — verified `mp_check`, **`server_check` (19)** (incl. a falling
+  body that settles, replicates, and is bit-identical across two isolated sims), + live 2-process.
+  **Remaining:** **interest management / AOI** (H4); delta-encoding + snapshot interpolation.
 - **Stage 8 — World** 🟡 core lib verified (grid partition + streaming manager + floating origin, `world_check` 21/21),
   **but not integrated.**
   **Remaining:** wire to the editor camera + `gws_jobs` async load; apply origin-rebase to the live scene; HLOD;
@@ -88,7 +89,7 @@ The cross-cutting integration debt specifically:
 - Finish the **ECS migration** (make ECS authoritative; retire the OOP shadow) — cleans up gameplay/save/net.
 - **GPU-driven rendering completion** (3.1) — the open-world instance-count enabler.
 - **Networking: interest management (AOI)** + delta-encoding — the remaining scale pieces (the headless
-  dedicated server is done + verified; step physics inside its tick next).
+  dedicated server is done + verified, now with authoritative Jolt physics in its tick).
 - **World-streaming integration** (wire the verified `gws_world` lib into the editor/world) + **AI integration**
   (bake navmesh, agent path-follow, perception) — makes the open world + enemies real.
 
