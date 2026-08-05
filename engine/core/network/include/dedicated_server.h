@@ -8,38 +8,46 @@
 // pieces into a real server loop that runs with NO renderer/audio/window:
 //
 //   on connect(peer)    -> spawn a replicated avatar entity (NetId + Transform)
-//   on receive(peer)    -> parse the client's InputMsg (magic-tagged), store it
+//   on receive(peer)    -> parse the client's InputMsg or AckMsg (magic-tagged)
 //   tick(dt)            -> apply each client's latest input to its avatar,
 //                          run the optional sim-step hook (physics/AI),
-//                          advance the server tick, send each client a snapshot
+//                          advance the server tick, send each client a delta
 //   on disconnect(peer) -> despawn the avatar
 //
-// Interest management (AOI): with set_aoi_radius(r>0) the server sends each client
-// only the replicated entities within r of that client's avatar (plus the client's
-// own avatar), and a despawn list for entities that just left its interest set —
-// so bandwidth scales with what a client can see, not with world size. r<=0
-// (default) keeps the simple full-world broadcast.
+// Interest management (AOI): with set_aoi_radius(r>0) a client is only relevant to
+// entities within r of its avatar (plus its own avatar); r<=0 (default) makes the
+// whole replicated world relevant.
+//
+// Delta-encoding (ack-based): each client acks the tick it last received; the
+// server keeps that acknowledged state as a per-client BASELINE and sends only the
+// entities whose serialized component bytes differ from it, plus a despawn list for
+// baseline entities no longer relevant. Because the baseline only advances on an
+// ack, every change (and despawn) keeps being re-sent until the client confirms it
+// — so the scheme is self-healing over the Unreliable snapshot channel with no
+// separate redundancy counter. A client that never acks simply keeps getting full
+// state each tick (delta against an empty baseline), so it degrades gracefully.
 //
 // Physics/AI are wired in via set_sim_step() rather than a hard dependency, so
 // the `network` lib stays free of Jolt: the server *binary* links `gws_physics`
 // and installs a hook that drives a PhysicsScene inside the fixed step.
 //
 // Header-only, "bring your own ECS + serialization": the consumer links
-// `network` + `gws_ecs` + `gws_serialization`. Reuses write_snapshot() from
-// replication.h and InputPacket from prediction.h, so the wire format matches
-// the client side already verified by repl_check / prediction_check.
+// `network` + `gws_ecs` + `gws_serialization`. Reuses the replication.h snapshot
+// format + InputPacket from prediction.h, so the wire matches the client side
+// already verified by repl_check / prediction_check.
 
 #include "transport.h"
-#include "replication.h"   // write_snapshot, kNetIdReplicated
+#include "replication.h"   // write_snapshot_blobs, kNetIdReplicated
 #include "prediction.h"    // InputPacket
 
 #include "ecs/world.h"
 #include "ecs/components.h"
 
+#include <algorithm>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -50,14 +58,19 @@ namespace engine::network {
 inline constexpr uint32_t kInputMagic = 0x54504E49u;  // 'INPT'
 struct InputMsg { uint32_t magic; uint64_t tick; float move_x; float move_z; };
 
-// AOI: how many extra ticks a "leaving" entity's despawn is re-sent. Snapshots
-// ride the Unreliable channel, so a one-shot removal could be dropped and strand
-// a ghost on the client — repeating it a few ticks makes the despawn reliable.
-inline constexpr int kAoiRemovalRedundancy = 4;
+// Client -> server acknowledgement: "I have applied snapshot tick T". Advances the
+// server's per-client delta baseline. Sent on the Reliable channel.
+inline constexpr uint32_t kAckMagic = 0x314B4341u;  // 'ACK1'
+struct AckMsg { uint32_t magic; uint64_t tick; };
+
+// Cap on retained per-client sent-state history (ticks kept until acked). A client
+// that stops acking just falls back to full snapshots; this bounds the memory.
+inline constexpr size_t kMaxSnapshotHistory = 256;
 
 inline InputMsg make_input_msg(uint64_t tick, float move_x, float move_z) {
     return InputMsg{kInputMagic, tick, move_x, move_z};
 }
+inline AckMsg make_ack_msg(uint64_t tick) { return AckMsg{kAckMagic, tick}; }
 
 class DedicatedServer {
 public:
@@ -98,8 +111,8 @@ public:
 
         ++tick_;
 
-        // 4) Send state snapshots (unreliable, high-rate): a per-client AOI slice
-        //    when a radius is set, otherwise one full-world broadcast.
+        // 4) Send each client a delta (unreliable, high-rate): only the relevant
+        //    entities whose bytes changed since that client's acked baseline.
         send_snapshots();
         transport_->flush();
     }
@@ -115,14 +128,26 @@ public:
     using SimStepFn = std::function<void(schizo::ecs::World&, float /*dt*/)>;
     void set_sim_step(SimStepFn fn) { sim_step_ = std::move(fn); }
 
-    // Interest management: replicate only entities within `r` of a client's avatar
-    // (r<=0 disables AOI -> full-world broadcast, the default).
+    // Interest management: an entity is relevant to a client only within `r` of its
+    // avatar (r<=0 -> the whole replicated world is relevant, the default).
     void  set_aoi_radius(float r) { aoi_radius_ = r; }
     float aoi_radius() const      { return aoi_radius_; }
-    // How many entities the server currently replicates to a peer (0 if unknown).
+
+    // Entities a peer is confirmed to hold (its acked baseline size); 0 if unknown.
     size_t relevant_count(PeerId peer) const {
         auto it = clients_.find(peer);
-        return it == clients_.end() ? 0 : it->second.relevant.size();
+        return it == clients_.end() ? 0 : it->second.baseline.size();
+    }
+    // Introspection for the last delta the server built for a peer (test/debug).
+    size_t last_delta_entities(PeerId peer) const {
+        auto it = clients_.find(peer);
+        return it == clients_.end() ? 0 : it->second.last_delta.size();
+    }
+    bool in_last_delta(PeerId peer, uint64_t netid) const {
+        auto it = clients_.find(peer);
+        if (it == clients_.end()) return false;
+        const auto& d = it->second.last_delta;
+        return std::find(d.begin(), d.end(), netid) != d.end();
     }
 
     // Last input tick the server applied for a peer (-1 if none / unknown).
@@ -137,14 +162,21 @@ public:
     }
 
 private:
+    // Serialized replicated state keyed by NetId (one component blob per entity).
+    using StateMap = std::unordered_map<uint64_t, std::vector<uint8_t>>;
+
     struct ClientState {
         schizo::ecs::Entity entity{};
         uint64_t netid = 0;
         InputPacket input{};
         bool     has_input        = false;
         int64_t  acked_input_tick = -1;
-        std::unordered_set<uint64_t>      relevant;  // netids currently replicated (AOI)
-        std::unordered_map<uint64_t, int> leaving;   // netid -> ticks its despawn is still re-sent
+        // Delta-encoding: baseline = state the client has acknowledged; history =
+        // states sent since, kept until an ack advances the baseline to one of them.
+        StateMap                    baseline;
+        uint64_t                    baseline_tick = 0;
+        std::map<uint64_t, StateMap> history;
+        std::vector<uint64_t>       last_delta;   // netids in the most recent delta
     };
 
     void on_connect(PeerId peer) {
@@ -168,62 +200,87 @@ private:
     }
 
     void on_receive(PeerId peer, const std::vector<uint8_t>& data) {
-        if (data.size() < sizeof(InputMsg)) return;
-        InputMsg m{};
-        std::memcpy(&m, data.data(), sizeof(m));
-        if (m.magic != kInputMagic) return;
+        if (data.size() < sizeof(uint32_t)) return;
+        uint32_t magic = 0;
+        std::memcpy(&magic, data.data(), sizeof(magic));
         auto it = clients_.find(peer);
         if (it == clients_.end()) return;
-        it->second.input     = InputPacket{m.tick, m.move_x, m.move_z};
-        it->second.has_input = true;
+
+        if (magic == kInputMagic && data.size() >= sizeof(InputMsg)) {
+            InputMsg m{};
+            std::memcpy(&m, data.data(), sizeof(m));
+            it->second.input     = InputPacket{m.tick, m.move_x, m.move_z};
+            it->second.has_input = true;
+        } else if (magic == kAckMagic && data.size() >= sizeof(AckMsg)) {
+            AckMsg a{};
+            std::memcpy(&a, data.data(), sizeof(a));
+            on_ack(it->second, a.tick);
+        }
     }
 
-    // Send this tick's state. AOI off -> one full-world broadcast. AOI on -> per
-    // client, only entities within the radius of its avatar, plus a (redundant)
-    // despawn list for entities that just left its interest set.
-    void send_snapshots() {
-        if (aoi_radius_ <= 0.0f) {
-            const std::vector<uint8_t> snap = write_snapshot(world_, tick_);
-            transport_->broadcast(snap.data(), snap.size(), Channel::Unreliable);
-            return;
-        }
-        const float r2 = aoi_radius_ * aoi_radius_;
-        for (auto& [peer, c] : clients_) {
-            glm::vec3 center(0.0f);
-            if (auto* ct = world_.try_get<schizo::ecs::Transform>(c.entity)) center = ct->position;
+    // Advance a client's delta baseline to the acked tick's sent state (if we still
+    // have it), then drop the now-superseded history.
+    void on_ack(ClientState& c, uint64_t acked_tick) {
+        if (acked_tick <= c.baseline_tick) return;
+        auto h = c.history.find(acked_tick);
+        if (h == c.history.end()) return;         // too old / never sent — ignore
+        c.baseline      = h->second;
+        c.baseline_tick = acked_tick;
+        c.history.erase(c.history.begin(), c.history.upper_bound(acked_tick));
+    }
 
-            // Which replicated entities are relevant to this client right now.
-            std::unordered_set<uint64_t> now;
-            world_.each<schizo::ecs::NetId, schizo::ecs::Transform>(
-                [&](schizo::ecs::Entity, schizo::ecs::NetId& nid, schizo::ecs::Transform& t) {
-                    if (!(nid.flags & kNetIdReplicated)) return;
+    // Serialize the entities relevant to a client (AOI-filtered) into a StateMap of
+    // netid -> component bytes. Relevance = within the radius of the client's avatar
+    // (its own avatar always included); radius<=0 means the whole world is relevant.
+    StateMap relevant_state(const ClientState& c) {
+        glm::vec3 center(0.0f);
+        const bool aoi = aoi_radius_ > 0.0f;
+        if (aoi) if (auto* ct = world_.try_get<schizo::ecs::Transform>(c.entity)) center = ct->position;
+        const float r2 = aoi_radius_ * aoi_radius_;
+
+        StateMap cur;
+        world_.each<schizo::ecs::NetId, schizo::ecs::Transform>(
+            [&](schizo::ecs::Entity, schizo::ecs::NetId& nid, schizo::ecs::Transform& t) {
+                if (!(nid.flags & kNetIdReplicated)) return;
+                if (aoi && nid.value != c.netid) {
                     const float dx = t.position.x - center.x;
                     const float dy = t.position.y - center.y;
                     const float dz = t.position.z - center.z;
-                    if (nid.value == c.netid || (dx * dx + dy * dy + dz * dz) <= r2)
-                        now.insert(nid.value);
-                });
+                    if (dx * dx + dy * dy + dz * dz > r2) return;
+                }
+                cur.emplace(nid.value, gws::serialize::save(t));
+            });
+        return cur;
+    }
 
-            // Entities that just left -> schedule a redundant despawn; anything
-            // that (re)entered cancels a pending despawn.
-            for (uint64_t id : c.relevant)
-                if (!now.count(id)) c.leaving[id] = kAoiRemovalRedundancy;
-            for (uint64_t id : now) c.leaving.erase(id);
+    // Send each client a delta: entities whose bytes differ from its acked baseline,
+    // plus a despawn list for baseline entities no longer relevant. Nothing to say
+    // (no changes, no despawns) -> no packet, the real bandwidth win.
+    void send_snapshots() {
+        for (auto& [peer, c] : clients_) {
+            StateMap cur = relevant_state(c);
 
-            std::vector<uint64_t> removed;
-            removed.reserve(c.leaving.size());
-            for (auto lit = c.leaving.begin(); lit != c.leaving.end();) {
-                removed.push_back(lit->first);
-                if (--lit->second <= 0) lit = c.leaving.erase(lit);
-                else                    ++lit;
+            std::vector<std::pair<uint64_t, const std::vector<uint8_t>*>> changed;
+            for (const auto& [id, blob] : cur) {
+                auto b = c.baseline.find(id);
+                if (b == c.baseline.end() || b->second != blob) changed.emplace_back(id, &blob);
             }
+            std::vector<uint64_t> removed;
+            for (const auto& [id, blob] : c.baseline)
+                if (cur.find(id) == cur.end()) removed.push_back(id);
 
-            auto keep = [&now](const schizo::ecs::NetId& nid, const schizo::ecs::Transform&) {
-                return now.find(nid.value) != now.end();
-            };
-            const std::vector<uint8_t> snap = write_snapshot_filtered(world_, tick_, keep, removed);
+            // Record what this delta covers (introspection) regardless of sending.
+            c.last_delta.clear();
+            c.last_delta.reserve(changed.size());
+            for (const auto& [id, blob] : changed) c.last_delta.push_back(id);
+
+            if (changed.empty() && removed.empty()) continue;  // baseline already current
+
+            const std::vector<uint8_t> snap = write_snapshot_blobs(tick_, changed, removed);
             transport_->send(peer, snap.data(), snap.size(), Channel::Unreliable);
-            c.relevant = std::move(now);
+
+            c.history[tick_] = std::move(cur);
+            while (c.history.size() > kMaxSnapshotHistory) c.history.erase(c.history.begin());
         }
     }
 

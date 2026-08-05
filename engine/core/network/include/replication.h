@@ -30,6 +30,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace engine::network {
@@ -102,6 +103,30 @@ inline std::vector<uint8_t> write_snapshot_filtered(
         });
     std::memcpy(&buf[count_pos], &count, sizeof(count));
     // Trailing removed-list section (NetIds to despawn on the client).
+    detail::put(buf, static_cast<uint32_t>(removed.size()));
+    for (uint64_t id : removed) detail::put(buf, id);
+    return buf;
+}
+
+// Emit a snapshot from already-serialized component blobs — the wire format is
+// identical to write_snapshot()/write_snapshot_filtered() (magic, tick, count,
+// [netid, len, bytes]..., removed_count, [netid]...). Delta encoders diff in
+// serialized-bytes space, so they hold the blobs already and would otherwise
+// re-serialize; this lets them emit exactly the entities that changed. `changed`
+// points at caller-owned blobs (not copied), so keep them alive across the call.
+inline std::vector<uint8_t> write_snapshot_blobs(
+        uint64_t tick,
+        const std::vector<std::pair<uint64_t, const std::vector<uint8_t>*>>& changed,
+        const std::vector<uint64_t>& removed) {
+    std::vector<uint8_t> buf;
+    detail::put(buf, kSnapshotMagic);
+    detail::put(buf, tick);
+    detail::put(buf, static_cast<uint32_t>(changed.size()));
+    for (const auto& [nid, blob] : changed) {
+        detail::put(buf, nid);
+        detail::put(buf, static_cast<uint32_t>(blob->size()));
+        buf.insert(buf.end(), blob->begin(), blob->end());
+    }
     detail::put(buf, static_cast<uint32_t>(removed.size()));
     for (uint64_t id : removed) detail::put(buf, id);
     return buf;

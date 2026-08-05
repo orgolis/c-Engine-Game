@@ -7,6 +7,7 @@
 #include "dedicated_server.h"
 #include "transport.h"
 #include "replication.h"   // apply_snapshot
+#include "interpolation.h" // TransformInterpolator
 #include "physics/physics_scene.h"
 
 #include "ecs/world.h"
@@ -76,15 +77,23 @@ int main() {
     std::unordered_map<uint64_t, ecs::Entity> netmap;
     bool connected = false;
 
-    // Service both hosts; apply any snapshots the client receives.
+    // Service both hosts; apply snapshots the client receives and ACK each one so
+    // the server's delta baseline for this client advances.
     auto pump = [&](int iters) {
         for (int i = 0; i < iters; ++i) {
             server.tick(dt);
             NetEvent ev;
             while (client->poll(ev, 2)) {
-                if (ev.type == NetEvent::Type::Connect)      connected = true;
-                else if (ev.type == NetEvent::Type::Receive) apply_snapshot(client_world, netmap, ev.data);
+                if (ev.type == NetEvent::Type::Connect) connected = true;
+                else if (ev.type == NetEvent::Type::Receive) {
+                    const uint64_t t = apply_snapshot(client_world, netmap, ev.data);
+                    if (t) {
+                        const AckMsg a = make_ack_msg(t);
+                        client->send(sp, &a, sizeof(a), Channel::Reliable);
+                    }
+                }
             }
+            client->flush();
         }
     };
 
@@ -178,6 +187,42 @@ int main() {
     check("AOI leave: client despawns an entity that left range", netmap.count(near_nid) == 0);
     check("AOI sends this client fewer entities than the full world",
           server.relevant_count(sp) < server.world().count<ecs::NetId>());
+
+    // ---- Delta-encoding (ack-based) ----
+    // Everything is synced + acked. Move ONE entity: it must show up in the delta;
+    // once it stops (and the client acks the new value) it drops out — the server
+    // stops spending bytes on unchanged state.
+    server.world().get<ecs::Transform>(far_e).position = glm::vec3(6.0f, 0.0f, 0.0f);
+    pump(1);
+    check("delta includes an entity that changed", server.in_last_delta(sp, far_nid));
+    pump(30);  // far now still; acks advance the baseline to cover it
+    check("delta omits an entity that stopped changing", !server.in_last_delta(sp, far_nid));
+    check("idle delta is smaller than the full relevant set",
+          server.last_delta_entities(sp) < server.relevant_count(sp));
+    check("client keeps the settled entity after it left the delta", netmap.count(far_nid) == 1);
+    check("client's value matches the server after delta convergence",
+          std::fabs(client_world.get<ecs::Transform>(netmap[far_nid]).position.x - 6.0f) < 0.01f);
+
+    // ---- Client-side snapshot interpolation ----
+    {
+        engine::network::TransformInterpolator interp;
+        interp.record(42, 10, glm::vec3(0.0f, 0.0f, 0.0f));
+        interp.record(42, 20, glm::vec3(10.0f, 0.0f, 0.0f));
+        glm::vec3 mid{}, quarter{}, lo{}, hi{}, unknown{}, delayed{};
+        const bool got = interp.sample_at(42, 15.0, mid);
+        check("interpolation: midpoint between two snapshots", got && std::fabs(mid.x - 5.0f) < 1e-4f);
+        interp.sample_at(42, 12.5, quarter);
+        check("interpolation: quarter point", std::fabs(quarter.x - 2.5f) < 1e-4f);
+        interp.sample_at(42, 5.0, lo);    // before first -> clamp to first
+        interp.sample_at(42, 99.0, hi);   // after last  -> clamp to last
+        check("interpolation: clamps before-first / after-last",
+              std::fabs(lo.x - 0.0f) < 1e-4f && std::fabs(hi.x - 10.0f) < 1e-4f);
+        check("interpolation: reports a missing entity", !interp.sample_at(999, 15.0, unknown));
+        // Trailing-delay render: newest tick 20, delay 2 -> render tick 18 -> x=8.
+        interp.set_delay_ticks(2.0);
+        check("interpolation: delayed render trails the newest sample",
+              interp.sample(42, delayed) && std::fabs(delayed.x - 8.0f) < 1e-4f);
+    }
 
     client->disconnect(sp);
     client->flush();
