@@ -60,7 +60,7 @@ Legend: 🟢 done / acceptance met · 🟡 core built, integration or breadth re
 | 4 | Physics (Jolt) | 🟢 acceptance met | physics_check | bone hitboxes (St10); cloth/ropes/destruction (deferred) |
 | 5 | Animation | 🟢 core done+verified | anim_check, skinning_check, skinned_import_check | motion matching + anim streaming (later-tier); graph editor = St11; player wiring = St10 |
 | 6 | Audio | 🟢 core acceptance met | audio_check | bus graph, reverb, DSP, streaming, procedural |
-| 7 | Networking | 🟢 core + live MP + **headless server w/ physics-in-tick + AOI** | net/repl/prediction/mp/**server_check (25)** + 2-process | delta-encoding + snapshot interpolation |
+| 7 | Networking | 🟢 **feature-complete** — live MP + headless server (physics+AOI+delta+interp) | net/repl/prediction/mp/**server_check (35)** + 2-process | depth: component-delta, rotation slerp, bandwidth-budget, zone handoff |
 | 8 | World | 🟡 core lib verified, **not integrated** | world_check (21/21) | wire to editor camera + async job load; HLOD; material/anim LOD; procedural gen |
 | 9 | AI | 🟡 nav + BT done ("start") | ai_check (21/21) | utility AI, GOAP, crowds; integration (bake-from-scene, path-follow, perception) |
 | 10 | Gameplay integration | 🟡 partial | combat_check, vfx_check; live | loot/itemization, vehicles, quests/progression; server-authoritative wiring |
@@ -776,10 +776,24 @@ prediction; forced packet loss/latency reconciles smoothly; headless server runs
 > the Unreliable channel. Built on a new `write_snapshot_filtered()` in `replication.h` whose entity
 > section is byte-identical to `write_snapshot()` with the removed-list **appended**, so the plain-snapshot
 > path (editor `NetSession` / `ReplicationServer`) is unchanged — confirmed by `mp_check` still green.
-> `server_check` (now **ALL OK, 25**) adds AOI: in-range replicates, out-of-range excluded, own avatar
-> always kept, an entity that **enters** range starts replicating, one that **leaves** is despawned on the
-> client, and the server sends this client fewer entities than the full world. **Genuinely remaining:**
-> delta-encoding + snapshot interpolation.
+> `server_check` adds AOI: in-range replicates, out-of-range excluded, own avatar always kept, an entity
+> that **enters** range starts replicating, one that **leaves** is despawned on the client, and the server
+> sends this client fewer entities than the full world.
+>
+> **Delta-encoding + snapshot interpolation — DONE 2026-08-05 (Stage 7 now feature-complete).**
+> *Delta (server):* each client acks the tick it applied (`AckMsg`, Reliable); the server keeps that
+> acknowledged state as a per-client **baseline** and each tick sends only the relevant entities whose
+> serialized bytes differ from it, plus a despawn list for baseline entities no longer relevant. The baseline
+> advances only on an ack, so every change/despawn re-sends until confirmed — **self-healing over the
+> Unreliable snapshot channel**, which also subsumes the AOI redundancy counter; a never-acking client
+> degrades to full snapshots, and an idle world sends no packet at all. `replication.h` gains
+> `write_snapshot_blobs()` (emit already-diffed blobs, wire format unchanged → editor `NetSession` path
+> untouched, `mp_check` still green). *Interpolation (client):* `interpolation.h` `TransformInterpolator`
+> buffers timestamped samples per entity and renders at a trailing delay, lerping between the two bracketing
+> samples (clamped at the ends). `server_check` is now **ALL OK, 35** (physics settle/replicate/determinism;
+> AOI filter/enter/leave/trim; delta changed-in / unchanged-out / idle-shrink / convergence; interpolation
+> midpoint / quarter / clamp / missing / trailing-delay). **Genuinely remaining (depth):** component-granular
+> delta, rotation slerp, bandwidth-budget prioritization, zone-server handoff.
 
 # STAGE 8 — World Systems (Pillar I)
 

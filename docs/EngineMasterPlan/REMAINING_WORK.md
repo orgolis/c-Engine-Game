@@ -54,15 +54,20 @@ The cross-cutting integration debt specifically:
   wiring to the real player (Stage 10); job-parallel sampling benchmarked at 1k.
 - **Stage 6 — Audio** 🟢 core acceptance met (256-voice lock-free spatial mixer + occlusion).
   **Remaining:** bus graph, reverb zones, DSP inserts, streaming, procedural.
-- **Stage 7 — Networking** 🟢 core + multiplayer live in-editor + **headless dedicated server** (H3) with
-  **authoritative Jolt physics in the server tick** + **interest management / AOI** (H4).
+- **Stage 7 — Networking** 🟢 **feature-complete.** Core + multiplayer live in-editor + **headless dedicated
+  server** (H3) with **authoritative Jolt physics in the tick** + **interest management / AOI** (H4) +
+  **ack-based delta-encoding** + **client-side snapshot interpolation**.
   Transport + replication + prediction; `NetSession` + PIE launcher; `DedicatedServer` (authoritative ECS
   world + input ingest + a pluggable per-tick sim-step running a `PhysicsScene`, no renderer/audio) + a
-  deployable `tools/dedicated_server` binary. **AOI** (`set_aoi_radius`) sends each client only the entities
-  within its radius + a redundant despawn list for entities that leave — verified `mp_check` (editor path
-  un-regressed), **`server_check` (25)** (incl. physics settle/replicate/determinism **and** AOI
-  filter-out / enter / leave-despawn / bandwidth-trim), + live 2-process.
-  **Remaining:** delta-encoding + snapshot interpolation.
+  deployable `tools/dedicated_server` binary. **AOI** (`set_aoi_radius`) makes only nearby entities relevant;
+  **delta** keeps a per-client acked baseline and sends only entities whose bytes changed (+ despawns),
+  self-healing over the Unreliable channel; **interpolation** (`interpolation.h`) renders remote entities at
+  a trailing delay between buffered samples. Verified `mp_check` (editor path un-regressed), **`server_check`
+  (35)** (physics settle/replicate/determinism; AOI filter/enter/leave/trim; delta changed-in/unchanged-out/
+  idle-shrink/convergence; interpolation midpoint/clamp/delay), + live 2-process.
+  **Remaining (depth, not blocking):** component-granular delta (currently per-entity Transform blob);
+  rotation slerp in interpolation; entity prioritization under an explicit bandwidth budget; zone-server
+  handoff (couples with Stage 8).
 - **Stage 8 — World** 🟡 core lib verified (grid partition + streaming manager + floating origin, `world_check` 21/21),
   **but not integrated.**
   **Remaining:** wire to the editor camera + `gws_jobs` async load; apply origin-rebase to the live scene; HLOD;
@@ -90,9 +95,10 @@ The cross-cutting integration debt specifically:
 **Tier 1 — unblocks the actual game**
 - Finish the **ECS migration** (make ECS authoritative; retire the OOP shadow) — cleans up gameplay/save/net.
 - **GPU-driven rendering completion** (3.1) — the open-world instance-count enabler.
-- **Networking: delta-encoding + snapshot interpolation** — the last scale/smoothness pieces (the headless
-  dedicated server is done + verified, with authoritative Jolt physics in its tick **and interest
-  management / AOI**).
+- **Networking** ✅ **Stage 7 is feature-complete** — headless dedicated server with authoritative physics,
+  interest management (AOI), ack-based delta-encoding, and snapshot interpolation are all done + verified.
+  (Depth left for later: component-granular delta, rotation slerp, bandwidth-budget prioritization, zone
+  handoff.)
 - **World-streaming integration** (wire the verified `gws_world` lib into the editor/world) + **AI integration**
   (bake navmesh, agent path-follow, perception) — makes the open world + enemies real.
 
