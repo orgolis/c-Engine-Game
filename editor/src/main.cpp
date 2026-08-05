@@ -142,6 +142,11 @@ struct EditorState {
     bool show_terminal = true;          // embedded OS shell terminal panel
     bool show_output = true;            // editor log output console panel
 
+    // Transient status line shown over the viewport (mesh apply/import result etc).
+    std::string status_message;
+    double      status_message_time = 0.0;   // ImGui::GetTime() when last set
+    void set_status(const std::string& m) { status_message = m; status_message_time = ImGui::GetTime(); }
+
     // Terrain sculpting (Phase A). Brush state shared by the Inspector's
     // Terrain section and the viewport sculpt handler.
     bool  terrain_sculpt_active  = false;  // LMB-drag sculpts the selected terrain
@@ -1050,15 +1055,18 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                         }
                     }
                     
-                    // Also accept mesh assets — payload is the runtime-relative
-                    // path string (asset browser drag).
+                    // Also accept mesh assets — import into the project + assign.
                     if (const ImGuiPayload* mesh_payload = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
-                        const char* mesh_path = static_cast<const char*>(mesh_payload->Data);
-                        if (mesh_path && mesh_path[0]) {
-                            entity->SetMesh(mesh_path);
-                            spdlog::info("Assigned mesh '{}' to entity '{}'",
-                                         mesh_path, entity->GetName());
-                            editor_state.editor_scene->MarkModified();
+                        const char* dropped = static_cast<const char*>(mesh_payload->Data);
+                        if (dropped && dropped[0]) {
+                            const std::string proj = schizo::editor::import_asset_into_project(dropped, "models");
+                            if (!proj.empty()) {
+                                entity->SetMesh(proj);
+                                editor_state.editor_scene->MarkModified();
+                                editor_state.set_status("Applied mesh: " + proj + "  (on '" + entity->GetName() + "')");
+                            } else {
+                                editor_state.set_status(std::string("Mesh not found on disk: ") + dropped);
+                            }
                         }
                     }
                     
@@ -2276,14 +2284,19 @@ void ShowInspector(EditorState& editor_state) {
             ImGui::Text("Assign Mesh:");
             ImGui::InputText("Current Mesh##mesh_selector", const_cast<char*>("(drag asset here)"), 256, ImGuiInputTextFlags_ReadOnly);
             
-            // Drag-drop target for mesh assignment
+            // Drag-drop target for mesh assignment — import into project + assign.
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
-                    const char* mpath = static_cast<const char*>(payload->Data);
-                    if (mpath && mpath[0] && mesh_comp) {
-                        mesh_comp->SetMesh(mpath);
-                        spdlog::info("[Inspector] Assigned mesh: {}", mpath);
-                        editor_state.editor_scene->MarkModified();
+                    const char* dropped = static_cast<const char*>(payload->Data);
+                    if (dropped && dropped[0] && mesh_comp) {
+                        const std::string proj = schizo::editor::import_asset_into_project(dropped, "models");
+                        if (!proj.empty()) {
+                            mesh_comp->SetMesh(proj);
+                            editor_state.editor_scene->MarkModified();
+                            editor_state.set_status("Applied mesh: " + proj);
+                        } else {
+                            editor_state.set_status(std::string("Mesh not found on disk: ") + dropped);
+                        }
                     }
                 }
                 ImGui::EndDragDropTarget();
@@ -3266,16 +3279,21 @@ void ShowViewport(EditorState& editor_state) {
             // DROP TARGET - Viewport can receive mesh assets
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* mesh_payload = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
-                    const char* mesh_path = (const char*)mesh_payload->Data;
+                    const char* dropped = (const char*)mesh_payload->Data;
                     if (scene && editor_state.selected_entity_id != 0) {
                         auto entity = scene->GetEntityById(editor_state.selected_entity_id);
-                        if (entity) {
-                            entity->SetMesh(mesh_path);
-                            spdlog::info("Assigned mesh '{}' to entity '{}' via viewport drop", mesh_path, entity->GetName());
-                            editor_state.editor_scene->MarkModified();
+                        if (entity && dropped && dropped[0]) {
+                            const std::string proj = schizo::editor::import_asset_into_project(dropped, "models");
+                            if (!proj.empty()) {
+                                entity->SetMesh(proj);
+                                editor_state.editor_scene->MarkModified();
+                                editor_state.set_status("Applied mesh: " + proj + "  (on '" + entity->GetName() + "')");
+                            } else {
+                                editor_state.set_status(std::string("Mesh not found on disk: ") + dropped);
+                            }
                         }
                     } else {
-                        spdlog::warn("Cannot assign mesh: no entity selected");
+                        editor_state.set_status("Select an entity first, then drop the mesh on it.");
                     }
                 }
                 ImGui::EndDragDropTarget();
@@ -5414,6 +5432,31 @@ int main(int argc, char** argv) {
             ShowAssetBrowser(editor_state);
             ShowPlaybackControls(editor_state);
             ShowPerformanceOverlay(editor_state);
+
+            // Transient status toast (mesh apply/import result, etc.), top-center.
+            if (!editor_state.status_message.empty()) {
+                const double age = ImGui::GetTime() - editor_state.status_message_time;
+                if (age > 5.0) {
+                    editor_state.status_message.clear();
+                } else {
+                    const float alpha = age < 4.0 ? 1.0f : static_cast<float>(1.0 - (age - 4.0));
+                    const ImGuiViewport* vp = ImGui::GetMainViewport();
+                    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f,
+                                                   vp->WorkPos.y + 42.0f),
+                                            ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+                    ImGui::SetNextWindowBgAlpha(0.85f * alpha);
+                    const ImGuiWindowFlags f = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                                               ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                                               ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+                    if (ImGui::Begin("##status_toast", nullptr, f)) {
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, alpha));
+                        ImGui::TextUnformatted(editor_state.status_message.c_str());
+                        ImGui::PopStyleColor();
+                    }
+                    ImGui::End();
+                }
+            }
+
             // Feature-gated panels: only shown if the project enables the system.
             if (editor_state.feature_on(schizo::project::Feature::Networking))
                 ShowNetworkPanel(editor_state);

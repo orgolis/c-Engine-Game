@@ -506,9 +506,14 @@ void AssetBrowserPanel::render_entries() {
             }
 
             // Drag source (files only): typed payload carrying the path string.
+            // Meshes carry the ABSOLUTE path so the drop can always locate the
+            // source file and import it into the project (a project-relative path
+            // can fail to resolve depending on the launch CWD). Other asset types
+            // keep the runtime-relative path.
             if (!e.is_dir && ImGui::BeginDragDropSource()) {
-                ImGui::SetDragDropPayload(payload_for(e.type),
-                                          e.rel_path.c_str(), e.rel_path.size() + 1);
+                const std::string& data =
+                    (0 == std::strcmp(e.type, "Mesh")) ? e.abs_path : e.rel_path;
+                ImGui::SetDragDropPayload(payload_for(e.type), data.c_str(), data.size() + 1);
                 ImGui::Text("%s  (%s)", e.name.c_str(), e.type);
                 ImGui::EndDragDropSource();
             }
