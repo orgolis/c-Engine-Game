@@ -60,11 +60,12 @@ void VulkanDevice::initialize(const RenderConfig& config) {
     
     GWS_LOG_INFO("Initializing Vulkan device: {}", config.app_name);
     
-    // Create Vulkan instance
-    create_instance(config);
-    
-    // Setup debug messenger if enabled
-    if (config.enable_validation) {
+    // Create Vulkan instance (may clear this->config.enable_validation if the
+    // validation layer isn't installed on this machine).
+    create_instance(this->config);
+
+    // Setup debug messenger only if validation actually ended up enabled.
+    if (this->config.enable_validation) {
         setup_debug_messenger();
     }
     
@@ -531,7 +532,22 @@ void VulkanDevice::set_debug_enabled(bool enabled) {
 // Private Implementation
 // ============================================================================
 
-void VulkanDevice::create_instance(const RenderConfig& config) {
+// True if VK_LAYER_KHRONOS_validation is actually installed (i.e. the Vulkan SDK
+// or the standalone validation layers are present on this machine).
+static bool validation_layer_available() {
+    uint32_t count = 0;
+    if (vkEnumerateInstanceLayerProperties(&count, nullptr) != VK_SUCCESS || count == 0)
+        return false;
+    std::vector<VkLayerProperties> layers(count);
+    if (vkEnumerateInstanceLayerProperties(&count, layers.data()) != VK_SUCCESS)
+        return false;
+    for (const auto& l : layers)
+        if (std::strcmp(l.layerName, "VK_LAYER_KHRONOS_validation") == 0)
+            return true;
+    return false;
+}
+
+void VulkanDevice::create_instance(RenderConfig& config) {
     // Application info
     VkApplicationInfo app_info{};
     app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -540,30 +556,58 @@ void VulkanDevice::create_instance(const RenderConfig& config) {
     app_info.pEngineName = "GameWorldshaper";
     app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
     app_info.apiVersion = VK_API_VERSION_1_3;
-    
+
     // Required extensions
     std::vector<const char*> extensions = {
         VK_KHR_SURFACE_EXTENSION_NAME,
         VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
     };
-    
-    // Validation layers
+
+    // Validation layers — ONLY enable when requested AND actually installed. On a
+    // machine without the Vulkan SDK the layer is absent; requesting it anyway
+    // makes vkCreateInstance fail with VK_ERROR_LAYER_NOT_PRESENT, which (with the
+    // instance left null) crashed the editor immediately on other devices.
     std::vector<const char*> layers;
     if (config.enable_validation) {
-        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-        layers.push_back("VK_LAYER_KHRONOS_validation");
+        if (validation_layer_available()) {
+            extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            layers.push_back("VK_LAYER_KHRONOS_validation");
+            GWS_LOG_INFO("Vulkan validation layers enabled");
+        } else {
+            config.enable_validation = false;
+            GWS_LOG_WARN("VK_LAYER_KHRONOS_validation not installed — running without validation");
+        }
     }
-    
+
     // Create instance
     VkInstanceCreateInfo create_info{};
     create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     create_info.pApplicationInfo = &app_info;
-    create_info.enabledExtensionCount = extensions.size();
+    create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     create_info.ppEnabledExtensionNames = extensions.data();
-    create_info.enabledLayerCount = layers.size();
+    create_info.enabledLayerCount = static_cast<uint32_t>(layers.size());
     create_info.ppEnabledLayerNames = layers.data();
-    
-    vkCreateInstance(&create_info, nullptr, &instance);
+
+    VkResult res = vkCreateInstance(&create_info, nullptr, &instance);
+    if (res != VK_SUCCESS && !layers.empty()) {
+        // The driver rejected the layer/extension anyway — retry without them
+        // rather than proceed with a null instance.
+        GWS_LOG_WARN("vkCreateInstance failed with validation ({}); retrying without it",
+                     static_cast<int>(res));
+        config.enable_validation = false;
+        extensions.pop_back();   // drop VK_EXT_DEBUG_UTILS (pushed alongside the layer)
+        create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+        create_info.ppEnabledExtensionNames = extensions.data();
+        create_info.enabledLayerCount = 0;
+        create_info.ppEnabledLayerNames = nullptr;
+        res = vkCreateInstance(&create_info, nullptr, &instance);
+    }
+    if (res != VK_SUCCESS) {
+        instance = VK_NULL_HANDLE;
+        GWS_LOG_ERROR("❌ vkCreateInstance failed ({}) — no compatible Vulkan driver present?",
+                      static_cast<int>(res));
+        return;
+    }
     GWS_LOG_INFO("✅ Vulkan instance created");
 }
 

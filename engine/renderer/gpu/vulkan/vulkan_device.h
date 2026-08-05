@@ -328,7 +328,7 @@ private:
     // Initialization Helpers
     // ========================================================================
 
-    void create_instance(const RenderConfig& config);
+    void create_instance(RenderConfig& config);   // may clear enable_validation if the layer is absent
     void setup_debug_messenger();
     void pick_physical_device();
     void create_logical_device();
