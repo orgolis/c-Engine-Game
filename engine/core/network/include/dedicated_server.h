@@ -11,8 +11,14 @@
 //   on receive(peer)    -> parse the client's InputMsg (magic-tagged), store it
 //   tick(dt)            -> apply each client's latest input to its avatar,
 //                          run the optional sim-step hook (physics/AI),
-//                          advance the server tick, broadcast a world snapshot
+//                          advance the server tick, send each client a snapshot
 //   on disconnect(peer) -> despawn the avatar
+//
+// Interest management (AOI): with set_aoi_radius(r>0) the server sends each client
+// only the replicated entities within r of that client's avatar (plus the client's
+// own avatar), and a despawn list for entities that just left its interest set —
+// so bandwidth scales with what a client can see, not with world size. r<=0
+// (default) keeps the simple full-world broadcast.
 //
 // Physics/AI are wired in via set_sim_step() rather than a hard dependency, so
 // the `network` lib stays free of Jolt: the server *binary* links `gws_physics`
@@ -33,6 +39,9 @@
 #include <cstring>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace engine::network {
 
@@ -40,6 +49,11 @@ namespace engine::network {
 // tag lets the server ignore anything that isn't an input (future client msgs).
 inline constexpr uint32_t kInputMagic = 0x54504E49u;  // 'INPT'
 struct InputMsg { uint32_t magic; uint64_t tick; float move_x; float move_z; };
+
+// AOI: how many extra ticks a "leaving" entity's despawn is re-sent. Snapshots
+// ride the Unreliable channel, so a one-shot removal could be dropped and strand
+// a ghost on the client — repeating it a few ticks makes the despawn reliable.
+inline constexpr int kAoiRemovalRedundancy = 4;
 
 inline InputMsg make_input_msg(uint64_t tick, float move_x, float move_z) {
     return InputMsg{kInputMagic, tick, move_x, move_z};
@@ -84,9 +98,9 @@ public:
 
         ++tick_;
 
-        // 4) Broadcast one world snapshot (unreliable, high-rate state).
-        const std::vector<uint8_t> snap = write_snapshot(world_, tick_);
-        transport_->broadcast(snap.data(), snap.size(), Channel::Unreliable);
+        // 4) Send state snapshots (unreliable, high-rate): a per-client AOI slice
+        //    when a radius is set, otherwise one full-world broadcast.
+        send_snapshots();
         transport_->flush();
     }
 
@@ -100,6 +114,16 @@ public:
     // the server binary installs a hook that drives a PhysicsScene here.
     using SimStepFn = std::function<void(schizo::ecs::World&, float /*dt*/)>;
     void set_sim_step(SimStepFn fn) { sim_step_ = std::move(fn); }
+
+    // Interest management: replicate only entities within `r` of a client's avatar
+    // (r<=0 disables AOI -> full-world broadcast, the default).
+    void  set_aoi_radius(float r) { aoi_radius_ = r; }
+    float aoi_radius() const      { return aoi_radius_; }
+    // How many entities the server currently replicates to a peer (0 if unknown).
+    size_t relevant_count(PeerId peer) const {
+        auto it = clients_.find(peer);
+        return it == clients_.end() ? 0 : it->second.relevant.size();
+    }
 
     // Last input tick the server applied for a peer (-1 if none / unknown).
     int64_t acked_input_tick(PeerId peer) const {
@@ -119,6 +143,8 @@ private:
         InputPacket input{};
         bool     has_input        = false;
         int64_t  acked_input_tick = -1;
+        std::unordered_set<uint64_t>      relevant;  // netids currently replicated (AOI)
+        std::unordered_map<uint64_t, int> leaving;   // netid -> ticks its despawn is still re-sent
     };
 
     void on_connect(PeerId peer) {
@@ -128,7 +154,10 @@ private:
         schizo::ecs::Transform t;
         t.position = glm::vec3(1.5f * static_cast<float>(clients_.size()), 0.0f, 0.0f);  // spread avatars
         world_.add<schizo::ecs::Transform>(e, t);
-        clients_[peer] = ClientState{e, nid};
+        ClientState cs;
+        cs.entity = e;
+        cs.netid  = nid;
+        clients_[peer] = std::move(cs);
     }
 
     void on_disconnect(PeerId peer) {
@@ -149,6 +178,55 @@ private:
         it->second.has_input = true;
     }
 
+    // Send this tick's state. AOI off -> one full-world broadcast. AOI on -> per
+    // client, only entities within the radius of its avatar, plus a (redundant)
+    // despawn list for entities that just left its interest set.
+    void send_snapshots() {
+        if (aoi_radius_ <= 0.0f) {
+            const std::vector<uint8_t> snap = write_snapshot(world_, tick_);
+            transport_->broadcast(snap.data(), snap.size(), Channel::Unreliable);
+            return;
+        }
+        const float r2 = aoi_radius_ * aoi_radius_;
+        for (auto& [peer, c] : clients_) {
+            glm::vec3 center(0.0f);
+            if (auto* ct = world_.try_get<schizo::ecs::Transform>(c.entity)) center = ct->position;
+
+            // Which replicated entities are relevant to this client right now.
+            std::unordered_set<uint64_t> now;
+            world_.each<schizo::ecs::NetId, schizo::ecs::Transform>(
+                [&](schizo::ecs::Entity, schizo::ecs::NetId& nid, schizo::ecs::Transform& t) {
+                    if (!(nid.flags & kNetIdReplicated)) return;
+                    const float dx = t.position.x - center.x;
+                    const float dy = t.position.y - center.y;
+                    const float dz = t.position.z - center.z;
+                    if (nid.value == c.netid || (dx * dx + dy * dy + dz * dz) <= r2)
+                        now.insert(nid.value);
+                });
+
+            // Entities that just left -> schedule a redundant despawn; anything
+            // that (re)entered cancels a pending despawn.
+            for (uint64_t id : c.relevant)
+                if (!now.count(id)) c.leaving[id] = kAoiRemovalRedundancy;
+            for (uint64_t id : now) c.leaving.erase(id);
+
+            std::vector<uint64_t> removed;
+            removed.reserve(c.leaving.size());
+            for (auto lit = c.leaving.begin(); lit != c.leaving.end();) {
+                removed.push_back(lit->first);
+                if (--lit->second <= 0) lit = c.leaving.erase(lit);
+                else                    ++lit;
+            }
+
+            auto keep = [&now](const schizo::ecs::NetId& nid, const schizo::ecs::Transform&) {
+                return now.find(nid.value) != now.end();
+            };
+            const std::vector<uint8_t> snap = write_snapshot_filtered(world_, tick_, keep, removed);
+            transport_->send(peer, snap.data(), snap.size(), Channel::Unreliable);
+            c.relevant = std::move(now);
+        }
+    }
+
     std::unique_ptr<Transport>                transport_;
     schizo::ecs::World                        world_;
     std::unordered_map<PeerId, ClientState>   clients_;
@@ -156,6 +234,7 @@ private:
     uint64_t next_netid_ = 1;
     uint64_t tick_       = 0;
     float    move_speed_ = 5.0f;
+    float    aoi_radius_ = 0.0f;   // <=0 disables AOI (full-world broadcast)
 };
 
 }  // namespace engine::network

@@ -150,6 +150,35 @@ int main() {
     check("server tick advanced", server.tick_count() > 100);
     check("server acked the client input", server.acked_input_tick(sp) >= 0);
 
+    // ---- Interest management (AOI) ----
+    // Radius 15 around the client's avatar (near the origin). Seed a NEAR marker
+    // (in range) and a FAR marker (out of range); markers are Transform-only so
+    // physics ignores them and we can move them by hand.
+    server.set_aoi_radius(15.0f);
+    const uint64_t near_nid = 6000, far_nid = 6001;
+    const ecs::Entity near_e = server.world().create();
+    server.world().add<ecs::NetId>(near_e, ecs::NetId{near_nid, 0, kNetIdReplicated});
+    server.world().add<ecs::Transform>(near_e, ecs::Transform{glm::vec3(10.0f, 0.0f, 0.0f)});
+    const ecs::Entity far_e = server.world().create();
+    server.world().add<ecs::NetId>(far_e, ecs::NetId{far_nid, 0, kNetIdReplicated});
+    server.world().add<ecs::Transform>(far_e, ecs::Transform{glm::vec3(40.0f, 0.0f, 0.0f)});
+    pump(30);
+    check("AOI replicates the in-range entity",        netmap.count(near_nid) == 1);
+    check("AOI excludes the out-of-range entity",      netmap.count(far_nid) == 0);
+    check("AOI still replicates the client's avatar",  netmap.count(nid) == 1);
+
+    // ENTER: bring the far marker into range -> client should start receiving it.
+    server.world().get<ecs::Transform>(far_e).position = glm::vec3(8.0f, 0.0f, 0.0f);
+    pump(30);
+    check("AOI enter: client receives an entity that came into range", netmap.count(far_nid) == 1);
+
+    // LEAVE: push the near marker far away -> client should DESPAWN it (removed list).
+    server.world().get<ecs::Transform>(near_e).position = glm::vec3(200.0f, 0.0f, 0.0f);
+    pump(30);
+    check("AOI leave: client despawns an entity that left range", netmap.count(near_nid) == 0);
+    check("AOI sends this client fewer entities than the full world",
+          server.relevant_count(sp) < server.world().count<ecs::NetId>());
+
     client->disconnect(sp);
     client->flush();
     pump(120);

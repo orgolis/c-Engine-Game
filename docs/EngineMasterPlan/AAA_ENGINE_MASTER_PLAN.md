@@ -60,7 +60,7 @@ Legend: 🟢 done / acceptance met · 🟡 core built, integration or breadth re
 | 4 | Physics (Jolt) | 🟢 acceptance met | physics_check | bone hitboxes (St10); cloth/ropes/destruction (deferred) |
 | 5 | Animation | 🟢 core done+verified | anim_check, skinning_check, skinned_import_check | motion matching + anim streaming (later-tier); graph editor = St11; player wiring = St10 |
 | 6 | Audio | 🟢 core acceptance met | audio_check | bus graph, reverb, DSP, streaming, procedural |
-| 7 | Networking | 🟢 core + live MP + **headless server w/ physics-in-tick** | net/repl/prediction/mp/**server_check (19)** + 2-process | **interest management/AOI (H4)**, delta-encoding + snapshot interpolation |
+| 7 | Networking | 🟢 core + live MP + **headless server w/ physics-in-tick + AOI** | net/repl/prediction/mp/**server_check (25)** + 2-process | delta-encoding + snapshot interpolation |
 | 8 | World | 🟡 core lib verified, **not integrated** | world_check (21/21) | wire to editor camera + async job load; HLOD; material/anim LOD; procedural gen |
 | 9 | AI | 🟡 nav + BT done ("start") | ai_check (21/21) | utility AI, GOAP, crowds; integration (bake-from-scene, path-follow, perception) |
 | 10 | Gameplay integration | 🟡 partial | combat_check, vfx_check; live | loot/itemization, vehicles, quests/progression; server-authoritative wiring |
@@ -767,8 +767,19 @@ prediction; forced packet loss/latency reconciles smoothly; headless server runs
 > Verified end-to-end over **real loopback UDP** by `tools/server_check` (connect → avatar spawn → client
 > input → authoritative apply → replicate → disconnect → despawn, **plus** a dynamic body that falls from
 > y=5, settles on the ground, replicates to the client, and lands **bit-identically across two isolated
-> sims** — determinism, **ALL OK, 19**). **Genuinely remaining:** H4 **interest management / AOI** +
-> bandwidth-budgeted prioritization; delta-encoding + snapshot interpolation.
+> sims** — determinism).
+>
+> **H4 interest management / AOI — DONE 2026-08-05.** `DedicatedServer::set_aoi_radius(r)` switches the
+> per-tick full-world broadcast for a **per-client relevancy slice**: each client is sent only the
+> replicated entities within `r` of its avatar (plus its own avatar), and a **despawn list** for entities
+> that just left its interest set — re-sent for a few ticks (`kAoiRemovalRedundancy`) since snapshots ride
+> the Unreliable channel. Built on a new `write_snapshot_filtered()` in `replication.h` whose entity
+> section is byte-identical to `write_snapshot()` with the removed-list **appended**, so the plain-snapshot
+> path (editor `NetSession` / `ReplicationServer`) is unchanged — confirmed by `mp_check` still green.
+> `server_check` (now **ALL OK, 25**) adds AOI: in-range replicates, out-of-range excluded, own avatar
+> always kept, an entity that **enters** range starts replicating, one that **leaves** is despawned on the
+> client, and the server sends this client fewer entities than the full world. **Genuinely remaining:**
+> delta-encoding + snapshot interpolation.
 
 # STAGE 8 — World Systems (Pillar I)
 

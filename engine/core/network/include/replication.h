@@ -26,6 +26,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -72,6 +73,40 @@ inline std::vector<uint8_t> write_snapshot(schizo::ecs::World& world, uint64_t t
     return buf;
 }
 
+// Interest-management (AOI) snapshot: like write_snapshot() but includes only
+// entities for which keep(nid, transform) is true, followed by a trailing list
+// of NetIds the receiver should DESPAWN (they left this client's interest set).
+// The entity section is byte-for-byte a write_snapshot(); the removed list is
+// appended, so a reader that stops after the entities just ignores it, and
+// apply_snapshot() below consumes it when present — keeping the plain-snapshot
+// path (editor NetSession / ReplicationServer) unchanged.
+inline std::vector<uint8_t> write_snapshot_filtered(
+        schizo::ecs::World& world, uint64_t tick,
+        const std::function<bool(const schizo::ecs::NetId&, const schizo::ecs::Transform&)>& keep,
+        const std::vector<uint64_t>& removed) {
+    std::vector<uint8_t> buf;
+    detail::put(buf, kSnapshotMagic);
+    detail::put(buf, tick);
+    const size_t count_pos = buf.size();
+    uint32_t count = 0;
+    detail::put(buf, count);
+    world.each<schizo::ecs::NetId, schizo::ecs::Transform>(
+        [&](schizo::ecs::Entity, schizo::ecs::NetId& nid, schizo::ecs::Transform& t) {
+            if (!(nid.flags & kNetIdReplicated)) return;
+            if (keep && !keep(nid, t)) return;
+            detail::put(buf, nid.value);
+            std::vector<uint8_t> tb = gws::serialize::save(t);
+            detail::put(buf, static_cast<uint32_t>(tb.size()));
+            buf.insert(buf.end(), tb.begin(), tb.end());
+            ++count;
+        });
+    std::memcpy(&buf[count_pos], &count, sizeof(count));
+    // Trailing removed-list section (NetIds to despawn on the client).
+    detail::put(buf, static_cast<uint32_t>(removed.size()));
+    for (uint64_t id : removed) detail::put(buf, id);
+    return buf;
+}
+
 // Apply a snapshot to a client world: find-or-create each entity by NetId and
 // overwrite its replicated components. Returns the snapshot tick (0 on parse
 // failure). `netid_map` persists across calls (NetId -> client entt entity).
@@ -102,6 +137,20 @@ inline uint64_t apply_snapshot(schizo::ecs::World& world,
         schizo::ecs::Transform t;
         if (gws::serialize::load(p, len, t)) world.add<schizo::ecs::Transform>(e, t);
         p += len;
+    }
+
+    // Optional trailing removed-list (AOI despawns). Plain snapshots end after the
+    // entities, so this read simply fails there and leaves the world untouched.
+    uint32_t removed_count = 0;
+    if (detail::get(p, end, removed_count)) {
+        for (uint32_t i = 0; i < removed_count; ++i) {
+            uint64_t rid = 0;
+            if (!detail::get(p, end, rid)) break;
+            auto it = netid_map.find(rid);
+            if (it == netid_map.end()) continue;
+            if (world.valid(it->second)) world.destroy(it->second);
+            netid_map.erase(it);
+        }
     }
     return tick;
 }

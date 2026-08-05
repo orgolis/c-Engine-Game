@@ -55,12 +55,14 @@ The cross-cutting integration debt specifically:
 - **Stage 6 — Audio** 🟢 core acceptance met (256-voice lock-free spatial mixer + occlusion).
   **Remaining:** bus graph, reverb zones, DSP inserts, streaming, procedural.
 - **Stage 7 — Networking** 🟢 core + multiplayer live in-editor + **headless dedicated server** (H3) with
-  **authoritative Jolt physics in the server tick**.
+  **authoritative Jolt physics in the server tick** + **interest management / AOI** (H4).
   Transport + replication + prediction; `NetSession` + PIE launcher; `DedicatedServer` (authoritative ECS
   world + input ingest + a pluggable per-tick sim-step running a `PhysicsScene`, no renderer/audio) + a
-  deployable `tools/dedicated_server` binary — verified `mp_check`, **`server_check` (19)** (incl. a falling
-  body that settles, replicates, and is bit-identical across two isolated sims), + live 2-process.
-  **Remaining:** **interest management / AOI** (H4); delta-encoding + snapshot interpolation.
+  deployable `tools/dedicated_server` binary. **AOI** (`set_aoi_radius`) sends each client only the entities
+  within its radius + a redundant despawn list for entities that leave — verified `mp_check` (editor path
+  un-regressed), **`server_check` (25)** (incl. physics settle/replicate/determinism **and** AOI
+  filter-out / enter / leave-despawn / bandwidth-trim), + live 2-process.
+  **Remaining:** delta-encoding + snapshot interpolation.
 - **Stage 8 — World** 🟡 core lib verified (grid partition + streaming manager + floating origin, `world_check` 21/21),
   **but not integrated.**
   **Remaining:** wire to the editor camera + `gws_jobs` async load; apply origin-rebase to the live scene; HLOD;
@@ -88,8 +90,9 @@ The cross-cutting integration debt specifically:
 **Tier 1 — unblocks the actual game**
 - Finish the **ECS migration** (make ECS authoritative; retire the OOP shadow) — cleans up gameplay/save/net.
 - **GPU-driven rendering completion** (3.1) — the open-world instance-count enabler.
-- **Networking: interest management (AOI)** + delta-encoding — the remaining scale pieces (the headless
-  dedicated server is done + verified, now with authoritative Jolt physics in its tick).
+- **Networking: delta-encoding + snapshot interpolation** — the last scale/smoothness pieces (the headless
+  dedicated server is done + verified, with authoritative Jolt physics in its tick **and interest
+  management / AOI**).
 - **World-streaming integration** (wire the verified `gws_world` lib into the editor/world) + **AI integration**
   (bake navmesh, agent path-follow, perception) — makes the open world + enemies real.
 
