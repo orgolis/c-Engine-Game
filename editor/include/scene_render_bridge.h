@@ -411,11 +411,18 @@ public:
                 spdlog::error("[AssetMeshCache] Device is null for {}", path);
             }
         } else {
-            spdlog::warn("[AssetMeshCache] Unsupported extension: {}", path);
+            spdlog::error("[AssetMeshCache] Unsupported mesh extension '{}' for '{}'", ext, path);
         }
 
         if (!scene) {
-            spdlog::warn("[AssetMeshCache] Failed to load: {}", path);
+            // Report the ACTUAL cause: was the file found on disk, or did it parse
+            // to nothing? "MISSING" => a path problem; "present" => a parse/upload
+            // problem. This is what turns a silent "stays a cube" into a fixable log.
+            std::error_code ec2;
+            const bool on_disk = std::filesystem::exists(utf8_path(disk_path), ec2);
+            spdlog::error("[AssetMeshCache] Failed to load '{}' (resolved '{}', file {}) — "
+                          "the object keeps its primitive shape",
+                          path, disk_path, on_disk ? "present but load failed" : "NOT FOUND on disk");
             entries_[path] = nullptr;  // Cache the failure
             return nullptr;
         }

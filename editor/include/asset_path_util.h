@@ -32,7 +32,7 @@ inline std::string resolve_asset_path(const std::string& path) {
     if (path.empty() || fs::exists(utf8_path(path), ec)) return path;
     if (utf8_path(path).is_absolute()) return path;
     std::string prefix;
-    for (int up = 1; up <= 4; ++up) {
+    for (int up = 1; up <= 8; ++up) {   // deeper trees (project sandbox, build/bin) need more hops
         prefix += "../";
         const std::string candidate = prefix + path;
         if (fs::exists(utf8_path(candidate), ec)) {
