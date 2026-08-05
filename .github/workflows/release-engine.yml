@@ -76,8 +76,7 @@ jobs:
           ls -la dist
 
       - name: Upload to the GitHub Release
-        shell: pwsh
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2   # NOTE: no `shell:` — it's invalid on a `uses:` step
         with:
           files: dist/engine-*-win64.zip
           fail_on_unmatched_files: true

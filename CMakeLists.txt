@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
-project(GameWorldshaper 
-    VERSION 0.1.0 
+project(GameWorldshaper
+    VERSION 0.1.1
     DESCRIPTION "A custom 3D game engine for an open-world multiplayer action RPG"
     LANGUAGES C CXX)
 
@@ -263,5 +263,9 @@ set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
 set(CPACK_COMPONENTS_ALL engine)
 set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
 set(CPACK_ARCHIVE_FILE_NAME "GameWorldshaper-Engine-${PROJECT_VERSION}-win64")
+# Strip debug symbols from the packaged editor.exe + DLLs. The build is a debug
+# build (-g), which makes editor.exe ~160 MB; the symbols aren't needed to RUN
+# it, so stripping shrinks the download dramatically without a Release rebuild.
+set(CPACK_STRIP_FILES TRUE)
 
 include(CPack)
