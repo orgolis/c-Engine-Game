@@ -52,6 +52,7 @@
 #include "vulkan/gpu_profiler.h"    // N2: per-pass GPU timing
 #include "ecs/components.h"
 #include "ecs_bridge.h"        // shadow ECS mirror of the scene (Stage 1.4 step 1)
+#include "component_inspector.h"  // generic reflection-driven ECS component authoring (F2)
 
 // ImGui headers
 #include <imgui.h>
@@ -146,6 +147,10 @@ struct EditorState {
     std::string status_message;
     double      status_message_time = 0.0;   // ImGui::GetTime() when last set
     void set_status(const std::string& m) { status_message = m; status_message_time = ImGui::GetTime(); }
+
+    // The persistent ECS bridge (set in main). Lets the inspector author gameplay
+    // components on an entity's authoritative ECS entity (F1/F2).
+    schizo::editor::EcsSceneBridge* ecs_bridge = nullptr;
 
     // Terrain sculpting (Phase A). Brush state shared by the Inspector's
     // Terrain section and the viewport sculpt handler.
@@ -2316,7 +2321,23 @@ void ShowInspector(EditorState& editor_state) {
             } else {
                 ImGui::TextDisabled("No mesh assigned");
             }
-            
+
+            ImGui::TreePop();
+        }
+
+        // ---- Gameplay Components (authoritative ECS, reflection-driven) ----
+        // Every authorable ECS component (Health, Ability State, …) renders here
+        // generically — no per-component UI code. This is the ECS-authoritative
+        // path for gameplay state (F1/F2).
+        ImGui::Separator();
+        if (ImGui::TreeNodeEx("Gameplay Components (ECS)", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (editor_state.ecs_bridge && selected_entity) {
+                if (schizo::editor::draw_ecs_component_inspector(
+                        *editor_state.ecs_bridge, selected_entity->GetTransform()))
+                    editor_state.editor_scene->MarkModified();
+            } else {
+                ImGui::TextDisabled("ECS bridge unavailable.");
+            }
             ImGui::TreePop();
         }
         
@@ -4822,6 +4843,7 @@ int main(int argc, char** argv) {
         // reads the OOP scene, so this can't change what's drawn — it proves
         // the ECS data path runs live on real scene data.
         schizo::editor::EcsSceneBridge ecs_bridge;
+        editor_state.ecs_bridge = &ecs_bridge;   // inspector authors gameplay components on it
         bool ecs_shadow_logged = false;
         bool ecs_persist_logged = false;
         bool ecs_snapshot_logged = false;

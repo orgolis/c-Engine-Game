@@ -19,6 +19,15 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# gameplay_check: F1/F2 ECS gameplay-authoring data path (authorable registry +
+# reflection-driven read/write that the editor inspector uses).
+add_executable(gameplay_check gameplay_check/main.cpp)
+target_link_libraries(gameplay_check PRIVATE gws_ecs gws_reflection)
+target_compile_features(gameplay_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(gameplay_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # physics_check: Stage 4 Jolt physics verification (drop / determinism / scale /
 # character / ECS bridge).
 add_executable(physics_check physics_check/main.cpp)

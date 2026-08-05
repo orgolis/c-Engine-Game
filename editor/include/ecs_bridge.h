@@ -16,13 +16,18 @@
 // stays free of the C++20 EnTT include cost.
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 
 #include <glm/fwd.hpp>
 
 namespace schizo::scene { class Scene; class Transform; }
+namespace schizo::ecs   { class World; }   // fwd (keeps EnTT out of includers)
 
 namespace schizo::editor {
+
+// Sentinel for "this OOP entity has no ECS entity yet" (not synced).
+inline constexpr uint32_t kNoEcsEntity = 0xFFFFFFFFu;
 
 class EcsSceneBridge {
 public:
@@ -36,6 +41,16 @@ public:
     // one's LOCAL transform), then run the transform -> LocalToWorld system in
     // parallel. Cheap and side-effect-free w.r.t. the scene; safe every frame.
     void sync_and_run(const std::shared_ptr<schizo::scene::Scene>& scene);
+
+    // --- Authoritative gameplay-ECS access (F1) ---
+    // The persistent ECS world. Gameplay components added to an entity here
+    // SURVIVE the per-frame sync (it reuses entities + only rewrites Transform/
+    // MeshRenderer), so this is the authoritative home for gameplay state.
+    schizo::ecs::World& world();
+    // The stable ECS entity id for an OOP entity (keyed by its Transform, as used
+    // during sync), or kNoEcsEntity if it hasn't been synced yet. Returned as a
+    // raw uint32 so includers need no EnTT.
+    uint32_t ecs_entity_id(const schizo::scene::Transform* tf) const;
 
     // Authoritative read path (Stage 1.4 step 2): the ECS-computed world matrix
     // for the OOP entity owning `tf`, or nullptr if it wasn't in the last

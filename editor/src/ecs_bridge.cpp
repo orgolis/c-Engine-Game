@@ -62,6 +62,14 @@ const glm::mat4* EcsSceneBridge::world_matrix(
     return it == impl_->result.end() ? nullptr : &it->second;
 }
 
+ecs::World& EcsSceneBridge::world() { return impl_->world; }
+
+uint32_t EcsSceneBridge::ecs_entity_id(const schizo::scene::Transform* tf) const {
+    auto it = impl_->tf_to_entity.find(const_cast<scene::Transform*>(tf));
+    if (it == impl_->tf_to_entity.end()) return kNoEcsEntity;
+    return entt::to_integral(it->second);
+}
+
 bool EcsSceneBridge::snapshot_selfcheck(
     size_t& out_bytes, size_t& out_reloaded_entities) const {
     ecs::World& world = impl_->world;
