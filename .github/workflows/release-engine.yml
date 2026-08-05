@@ -47,9 +47,9 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
 
       - name: Install the Vulkan SDK
-        shell: pwsh    # this action runs in PowerShell, not MSYS2
         # Any maintained Vulkan-SDK installer action works; pin a version that
-        # matches what the engine expects (find_package(Vulkan)).
+        # matches what the engine expects (find_package(Vulkan)). No `shell:` here
+        # — it's invalid on a `uses:` step (this action runs on its own).
         uses: jakoch/install-vulkan-sdk-action@v1
         with:
           vulkan_version: 1.4.341.1
