@@ -279,14 +279,14 @@ G-modules become data + rules on top.
 ### G2 · Combat & Abilities 🟡 — **Depends on:** G0, Physics, Animation, VFX
 | Sub-feature | Status |
 |---|---|
-| Melee combat: combos, frame-data hitboxes, i-frames, parry, poise | ✅ core |
+| Melee combat: combos, frame-data hitboxes, i-frames, parry, poise | ✅ **`CombatActor`** (ECS) — frame-data attacks (startup/active/recovery), sphere hit/hurtboxes, single/multi-hit dedup, dodge i-frames, parry (attacker punished), poise→stagger. Damage routed through G0 (`apply_damage` + resist/immunity); on-hit `GameplayEffect`s; hit/parry/whiff/stagger events + drives the target FSM. Fixed 60 Hz. |
 | Per-bone hitboxes (rides Animation) | 🔴 |
 | Ranged combat: aiming, projectiles/ballistics, hitscan | 🔴 |
-| Spells / abilities: cast, channel, cooldown, resource cost, targeting | 🔴 |
+| Spells / abilities: cast, channel, cooldown, resource cost, targeting | 🟡 (via G0) — `Ability` gives cost/cooldown/tag-gate + effects; cast/channel time + targeting modes remain. |
 | Targeting / lock-on / soft-aim | 🔴 |
-| Status effects: stun, slow, burn, poison, bleed, root (via G0 effects) | 🔴 |
+| Status effects: stun, slow, burn, poison, bleed, root (via G0 effects) | ✅ — G0 `GameplayEffect`s (DoT/tags/timed) applied as `on_hit_effects` or by abilities; verified bleed-on-hit. |
 | Threat / aggro | 🔴 |
-| Hit reactions, knockback, launch, ragdoll, death | 🔴 |
+| Hit reactions, knockback, launch, ragdoll, death | 🟡 — hitstun/stagger + FSM death state ✅; knockback/launch/ragdoll pending (rides Physics/Animation). |
 
 ### G3 · Stats & Progression 🔴 — **Depends on:** G0
 | Sub-feature | Status |

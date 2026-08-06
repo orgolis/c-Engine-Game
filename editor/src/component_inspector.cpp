@@ -9,6 +9,7 @@
 #include "ecs/gameplay_abilities.h"    // read-only abilities/cooldown view
 #include "ecs/gameplay_triggers.h"     // custom drawer for Trigger Volume
 #include "ecs/gameplay_state_machine.h" // custom drawer for State Machine
+#include "ecs/gameplay_combat.h"        // custom drawer for Combat Actor
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -183,6 +184,37 @@ bool draw_state_machine(ecs::World& w, ecs::Entity e, void* comp) {
     return changed;
 }
 
+// Inspector for the G2 CombatActor: authored config + live attack state + a
+// "test attack" button to start a default light attack (drives combat live).
+bool draw_combat_actor(void* comp) {
+    auto& a = *static_cast<ecs::CombatActor*>(comp);
+    bool changed = false;
+
+    if (ImGui::DragFloat("max poise", &a.max_poise, 1.0f, 0.0f, 0.0f))   changed = true;
+    if (ImGui::DragFloat("hurt radius", &a.hurt_radius, 0.05f, 0.0f, 0.0f)) changed = true;
+    if (ImGui::DragFloat("hurt height", &a.hurt_height, 0.05f, 0.0f, 0.0f)) changed = true;
+    char dt[48]; std::snprintf(dt, sizeof(dt), "%s", a.damage_type.c_str());
+    if (ImGui::InputText("damage type", dt, sizeof(dt))) { a.damage_type = dt; changed = true; }
+
+    const char* st = "Idle";
+    switch (a.state) {
+        case ecs::CombatState::Startup:  st = "Startup";  break;
+        case ecs::CombatState::Active:   st = "Active";   break;
+        case ecs::CombatState::Recovery: st = "Recovery"; break;
+        case ecs::CombatState::Hitstun:  st = "Hitstun";  break;
+        default: break;
+    }
+    ImGui::Text("state: %s  frame: %d  poise: %.0f", st, a.frame, a.poise);
+    if (a.iframe_left > 0) { ImGui::SameLine(); ImGui::TextColored(ImVec4(0.4f,0.8f,1,1), "[i-frames]"); }
+    if (a.parry_left  > 0) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1,0.9f,0.3f,1), "[parry]"); }
+
+    if (ImGui::SmallButton("Test attack")) {
+        ecs::AttackFrameData atk;   // default light attack
+        if (ecs::combat_start_attack(a, atk)) changed = true;
+    }
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -218,6 +250,8 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (ImGui::Checkbox("enabled (triggers volumes)", &a.enabled)) changed = true;
                     } else if (std::strcmp(ct.name, "State Machine") == 0) {
                         if (draw_state_machine(w, e, comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Combat Actor") == 0) {
+                        if (draw_combat_actor(comp)) changed = true;
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }

@@ -11,6 +11,7 @@
 #include "ecs/gameplay_events.h"         // G0 event bus + timer manager
 #include "ecs/gameplay_triggers.h"       // G0 trigger-volume overlap system
 #include "ecs/gameplay_state_machine.h"  // G1 gameplay state machine
+#include "ecs/gameplay_combat.h"         // G2 ECS melee combat (fixed-tick)
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -70,6 +71,7 @@ struct EcsSceneBridge::Impl {
     // G0 gameplay services, one per world. Ticked/flushed by tick_gameplay().
     ecs::GameplayEventBus event_bus;
     ecs::TimerManager     timer_mgr;
+    float                 combat_accum = 0.0f;   // fixed 60 Hz accumulator for frame-data combat
 };
 
 // TRS compose (defined below; forward-declared for draw_benchmark above the def).
@@ -87,6 +89,14 @@ void EcsSceneBridge::tick_gameplay(float dt) {
     ecs::tick_effects(impl_->world, dt);                          // active effects: periodic ticks + expiry
     ecs::tick_abilities(impl_->world, dt);                        // ability cooldowns
     ecs::tick_state_machines(impl_->world, &impl_->event_bus, dt); // G1: FSM start/age/timeout -> events
+    // G2: frame-data combat runs at a FIXED 60 Hz (deterministic startup/active
+    // frames), regardless of render frame rate.
+    impl_->combat_accum += dt;
+    const float kCombatStep = 1.0f / 60.0f;
+    for (int guard = 0; impl_->combat_accum >= kCombatStep && guard < 8; ++guard) {
+        ecs::tick_combat(impl_->world, impl_->event_bus);
+        impl_->combat_accum -= kCombatStep;
+    }
     ecs::tick_triggers(impl_->world, impl_->event_bus);           // enter/exit -> events
     impl_->timer_mgr.tick(dt);                                   // one-shot / repeating timers
     impl_->event_bus.flush();                                    // dispatch everything queued this frame
@@ -244,6 +254,7 @@ EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_tags_component();        // G0: GameplayTags is authorable
     ecs::register_trigger_components();    // G0: Trigger Volume + Trigger Actor authorable
     ecs::register_state_machine_component(); // G1: State Machine authorable
+    ecs::register_combat_component();       // G2: Combat Actor authorable
 }
 
 EcsSceneBridge::~EcsSceneBridge() = default;

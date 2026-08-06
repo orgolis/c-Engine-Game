@@ -13,6 +13,7 @@
 #include "ecs/gameplay_events.h"
 #include "ecs/gameplay_triggers.h"
 #include "ecs/gameplay_state_machine.h"
+#include "ecs/gameplay_combat.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -27,6 +28,20 @@ static int g_fail = 0;
 static void check(const char* what, bool ok) {
     std::cout << (ok ? "  [ OK ] " : "  [FAIL] ") << what << "\n";
     if (!ok) ++g_fail;
+}
+
+// Two facing combat actors 1.3 apart (attacker at origin, +Z forward); the target
+// has a Health attribute so hits route through G0. Default hitbox reaches it.
+static void setup_combat_pair(ecs::World& w, ecs::Entity& atk, ecs::Entity& tgt, float tgt_max_poise = 100.0f) {
+    atk = w.create(); tgt = w.create();
+    w.add<ecs::Transform>(atk, ecs::Transform{});
+    ecs::Transform tt; tt.position = glm::vec3(0.0f, 0.0f, 1.3f);
+    w.add<ecs::Transform>(tgt, tt);
+    w.add<ecs::CombatActor>(atk, ecs::CombatActor{});
+    ecs::CombatActor ct; ct.max_poise = tgt_max_poise; ct.poise = tgt_max_poise;
+    w.add<ecs::CombatActor>(tgt, ct);
+    w.add<ecs::AttributeSet>(tgt, ecs::AttributeSet{});
+    w.get<ecs::AttributeSet>(tgt).define("Health", 100, 0, 100);
 }
 
 int main() {
@@ -452,6 +467,87 @@ int main() {
                   sm2.states.size() == 4 && sm2.transitions.size() == 5 && sm2.initial == "idle" &&
                   sm2.states[2].name == "dodge" && sm2.states[2].tags.size() == 2 &&
                   sm2.states[2].duration == 0.4f && sm2.transitions[2].block_tags.size() == 1);
+        }
+    }
+
+    // G2: ECS melee combat — frame-data hitboxes resolved through G0 (damage,
+    // resist, status), poise/stagger, i-frames, parry, events + FSM drive.
+    {
+        // basic hit: damage through G0, single-hit dedup, event, drives target FSM.
+        ecs::World w; ecs::Entity atk, tgt; setup_combat_pair(w, atk, tgt);
+        ecs::StateMachine sm;
+        sm.states = { {"idle", {}, 0.0f, ""}, {"stagger", {"state.stagger"}, 0.0f, ""} };
+        sm.transitions = { {"", "stagger", "hit", {}, {}} };
+        sm.initial = "idle";
+        w.add<ecs::StateMachine>(tgt, sm);
+
+        ecs::GameplayEventBus bus;
+        int hits = 0; float last_dmg = 0.0f;
+        bus.subscribe("combat.hit", [&](const ecs::GameplayEvent& e) { ++hits; last_dmg = e.value; });
+
+        ecs::tick_state_machines(w, &bus, 0.0f); bus.flush();   // start the FSM in idle
+        ecs::combat_start_attack(w.get<ecs::CombatActor>(atk), ecs::AttackFrameData{});
+        for (int i = 0; i < 14; ++i) ecs::tick_combat(w, bus);
+        bus.flush();
+        check("melee hit routes damage through G0 (100 -> 75)", w.get<ecs::AttributeSet>(tgt).get("Health") == 75.0f);
+        check("single-hit attack lands exactly once (dedup)", hits == 1 && last_dmg == 25.0f);
+        check("combat hit drives the target FSM (-> stagger)", w.get<ecs::StateMachine>(tgt).current == "stagger");
+    }
+    {   // i-frames (dodge) make the hit whiff
+        ecs::World w; ecs::Entity atk, tgt; setup_combat_pair(w, atk, tgt);
+        ecs::GameplayEventBus bus;
+        ecs::combat_start_dodge(w.get<ecs::CombatActor>(tgt), 100);
+        ecs::combat_start_attack(w.get<ecs::CombatActor>(atk), ecs::AttackFrameData{});
+        for (int i = 0; i < 14; ++i) ecs::tick_combat(w, bus);
+        check("i-frames make the hit whiff (no damage)", w.get<ecs::AttributeSet>(tgt).get("Health") == 100.0f);
+    }
+    {   // parry: no damage + the attacker is punished (staggered)
+        ecs::World w; ecs::Entity atk, tgt; setup_combat_pair(w, atk, tgt);
+        ecs::GameplayEventBus bus;
+        ecs::combat_start_parry(w.get<ecs::CombatActor>(tgt), 100);
+        ecs::combat_start_attack(w.get<ecs::CombatActor>(atk), ecs::AttackFrameData{});
+        for (int i = 0; i < 14; ++i) ecs::tick_combat(w, bus);
+        check("parry deals no damage + staggers the attacker",
+              w.get<ecs::AttributeSet>(tgt).get("Health") == 100.0f &&
+              w.get<ecs::CombatActor>(atk).state == ecs::CombatState::Hitstun);
+    }
+    {   // poise break staggers the target
+        ecs::World w; ecs::Entity atk, tgt; setup_combat_pair(w, atk, tgt, /*max_poise=*/20.0f);
+        ecs::GameplayEventBus bus;
+        ecs::combat_start_attack(w.get<ecs::CombatActor>(atk), ecs::AttackFrameData{});   // poise_damage 30 > 20
+        for (int i = 0; i < 14; ++i) ecs::tick_combat(w, bus);
+        check("poise break staggers the target (Hitstun)", w.get<ecs::CombatActor>(tgt).state == ecs::CombatState::Hitstun);
+    }
+    {   // on-hit GameplayEffect (bleed DoT) applies a G0 status to the target
+        ecs::World w; ecs::Entity atk, tgt; setup_combat_pair(w, atk, tgt);
+        ecs::GameplayEventBus bus;
+        w.get<ecs::CombatActor>(atk).on_hit_effects.push_back(ecs::make_dot("Bleed", "Health", -2.0f, 1.0f, 3.0f));
+        ecs::combat_start_attack(w.get<ecs::CombatActor>(atk), ecs::AttackFrameData{});
+        for (int i = 0; i < 14; ++i) ecs::tick_combat(w, bus);
+        check("on-hit effect applies a G0 status (bleed active)",
+              w.has<ecs::ActiveEffects>(tgt) && !w.get<ecs::ActiveEffects>(tgt).effects.empty());
+    }
+    {   // combat damage honours G0 resistance by damage type
+        ecs::World w; ecs::Entity atk, tgt; setup_combat_pair(w, atk, tgt);
+        w.get<ecs::AttributeSet>(tgt).define("resist.physical", 0.5f, 0.0f, 1.0f);
+        ecs::GameplayEventBus bus;
+        ecs::combat_start_attack(w.get<ecs::CombatActor>(atk), ecs::AttackFrameData{});
+        for (int i = 0; i < 14; ++i) ecs::tick_combat(w, bus);
+        check("combat damage respects G0 resistance (25 -> 12.5; 100 -> 87.5)",
+              w.get<ecs::AttributeSet>(tgt).get("Health") == 87.5f);
+    }
+    {   // authorable + custom serialize round-trip of the config
+        ecs::register_combat_component();
+        const ecs::AuthorableComponent* cc = ecs::find_authorable("Combat Actor");
+        check("Combat Actor is authorable via custom hooks", cc && cc->serialize && cc->deserialize);
+        if (cc) {
+            ecs::CombatActor a; a.max_poise = 55.0f; a.hurt_radius = 0.9f; a.hurt_height = 1.4f; a.damage_type = "fire";
+            const auto bytes = ecs::serialize_authorable(*cc, &a);
+            ecs::CombatActor a2;
+            ecs::deserialize_authorable(*cc, &a2, bytes.data(), bytes.size());
+            check("Combat Actor serialize round-trips (config + poise reset)",
+                  a2.max_poise == 55.0f && a2.hurt_radius == 0.9f && a2.hurt_height == 1.4f &&
+                  a2.damage_type == "fire" && a2.poise == 55.0f);
         }
     }
 
