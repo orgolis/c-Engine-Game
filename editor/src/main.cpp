@@ -4844,6 +4844,7 @@ int main(int argc, char** argv) {
         // the ECS data path runs live on real scene data.
         schizo::editor::EcsSceneBridge ecs_bridge;
         editor_state.ecs_bridge = &ecs_bridge;   // inspector authors gameplay components on it
+        editor_scene.SetEcsBridge(&ecs_bridge);  // scene save/load persist the .gameplay sidecar (F3)
         bool ecs_shadow_logged = false;
         bool ecs_persist_logged = false;
         bool ecs_snapshot_logged = false;

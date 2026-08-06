@@ -10,6 +10,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace ecs = schizo::ecs;
 
@@ -66,6 +67,35 @@ int main() {
     // remove — the inspector's Remove button.
     health->remove(w, e);
     check("component removed", !health->has(w, e));
+
+    // F3: a component round-trips through reflection bytes (the exact mechanism
+    // save_gameplay/load_gameplay use for the .gameplay sidecar).
+    {
+        struct Sink : gws::reflect::IByteSink {
+            std::vector<uint8_t>* b;
+            void write(const void* d, size_t n) override {
+                auto p = static_cast<const uint8_t*>(d); b->insert(b->end(), p, p + n);
+            }
+        };
+        struct Src : gws::reflect::IByteSource {
+            const uint8_t* p; const uint8_t* e;
+            bool read(void* o, size_t n) override { if (p + n > e) return false; std::memcpy(o, p, n); p += n; return true; }
+            bool skip(size_t n) override { if (p + n > e) return false; p += n; return true; }
+        };
+        const auto* ti = gws::reflect::reflect<ecs::Health>();
+        ecs::Health src_c; src_c.current = 42.0f; src_c.max = 250.0f; src_c.regen = 3.0f;
+        std::vector<uint8_t> bytes; Sink sink; sink.b = &bytes;
+        for (const auto& f : ti->fields)
+            if (f.serializer.write) f.serializer.write(sink, reinterpret_cast<const char*>(&src_c) + f.offset);
+
+        ecs::Health dst_c{};
+        Src rd; rd.p = bytes.data(); rd.e = bytes.data() + bytes.size();
+        for (const auto& f : ti->fields)
+            if (f.serializer.read) f.serializer.read(rd, reinterpret_cast<char*>(&dst_c) + f.offset);
+
+        check("F3: component round-trips through reflection bytes",
+              dst_c.current == 42.0f && dst_c.max == 250.0f && dst_c.regen == 3.0f);
+    }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }
     std::cout << "gameplay_check: " << g_fail << " FAILED\n";

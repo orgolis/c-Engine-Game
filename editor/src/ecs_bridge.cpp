@@ -2,9 +2,11 @@
 
 #include "ecs/world.h"
 #include "ecs/components.h"
+#include "ecs/authorable_components.h"   // authorable registry (gameplay persistence)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
 #include "ecs/render_collect.h"
+#include "reflection/reflection.h"       // generic field (de)serialization
 
 #include "scene.h"
 #include "entity.h"
@@ -17,6 +19,9 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -68,6 +73,114 @@ uint32_t EcsSceneBridge::ecs_entity_id(const schizo::scene::Transform* tf) const
     auto it = impl_->tf_to_entity.find(const_cast<scene::Transform*>(tf));
     if (it == impl_->tf_to_entity.end()) return kNoEcsEntity;
     return entt::to_integral(it->second);
+}
+
+// ---- Generic, reflection-driven component (de)serialization (F3) ----
+// POD gameplay components stream field-by-field via the reflection FieldSerializer
+// (so field types/versions stay explicit, not a raw memcpy of the whole struct).
+namespace {
+struct VecSink : gws::reflect::IByteSink {
+    std::vector<uint8_t>& b;
+    explicit VecSink(std::vector<uint8_t>& v) : b(v) {}
+    void write(const void* d, size_t n) override {
+        const uint8_t* p = static_cast<const uint8_t*>(d);
+        b.insert(b.end(), p, p + n);
+    }
+};
+struct SpanSource : gws::reflect::IByteSource {
+    const uint8_t* p; const uint8_t* end;
+    SpanSource(const uint8_t* d, size_t n) : p(d), end(d + n) {}
+    bool read(void* out, size_t n) override {
+        if (p + n > end) return false;
+        std::memcpy(out, p, n); p += n; return true;
+    }
+    bool skip(size_t n) override { if (p + n > end) return false; p += n; return true; }
+};
+std::vector<uint8_t> serialize_fields(const void* obj, const gws::reflect::TypeInfo& ti) {
+    std::vector<uint8_t> out; VecSink sink(out);
+    for (const auto& f : ti.fields)
+        if (f.serializer.write) f.serializer.write(sink, static_cast<const char*>(obj) + f.offset);
+    return out;
+}
+void deserialize_fields(void* obj, const gws::reflect::TypeInfo& ti, const uint8_t* d, size_t n) {
+    SpanSource src(d, n);
+    for (const auto& f : ti.fields)
+        if (f.serializer.read) { if (!f.serializer.read(src, static_cast<char*>(obj) + f.offset)) return; }
+}
+std::string to_hex(const std::vector<uint8_t>& b) {
+    static const char* H = "0123456789abcdef";
+    std::string s; s.reserve(b.size() * 2);
+    for (uint8_t c : b) { s += H[c >> 4]; s += H[c & 15]; }
+    return s;
+}
+std::vector<uint8_t> from_hex(const std::string& s) {
+    auto v = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return 0;
+    };
+    std::vector<uint8_t> b; b.reserve(s.size() / 2);
+    for (size_t i = 0; i + 1 < s.size(); i += 2)
+        b.push_back(static_cast<uint8_t>((v(s[i]) << 4) | v(s[i + 1])));
+    return b;
+}
+}  // namespace
+
+bool EcsSceneBridge::save_gameplay(
+    const std::shared_ptr<schizo::scene::Scene>& scene, const std::string& path) {
+    if (!scene) return false;
+    std::ofstream out(path, std::ios::trunc);
+    if (!out) return false;
+    out << "# GameWorldshaper gameplay components (entity-index keyed)\n";
+    const auto& ents = scene->GetEntities();
+    for (size_t i = 0; i < ents.size(); ++i) {
+        const auto& e = ents[i];
+        if (!e) continue;
+        const uint32_t id = ecs_entity_id(e->GetTransform());
+        if (id == kNoEcsEntity) continue;
+        const ecs::Entity ee = static_cast<ecs::Entity>(id);
+        bool header = false;
+        for (const auto& ct : ecs::authorable_components()) {
+            if (!ct.type || !ct.has(impl_->world, ee)) continue;
+            void* comp = ct.get(impl_->world, ee);
+            if (!comp) continue;
+            if (!header) { out << "ENTITY " << i << "\n"; header = true; }
+            out << ct.name << '\t' << to_hex(serialize_fields(comp, *ct.type)) << "\n";
+        }
+    }
+    return true;
+}
+
+bool EcsSceneBridge::load_gameplay(
+    const std::shared_ptr<schizo::scene::Scene>& scene, const std::string& path) {
+    if (!scene) return false;
+    std::ifstream in(path);
+    if (!in) return true;             // no sidecar -> nothing to restore (not an error)
+    sync_and_run(scene);              // create ECS entities for the freshly-loaded scene
+    const auto& ents = scene->GetEntities();
+    std::string line;
+    int idx = -1;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        if (line.compare(0, 7, "ENTITY ") == 0) { idx = std::atoi(line.c_str() + 7); continue; }
+        if (idx < 0 || idx >= static_cast<int>(ents.size()) || !ents[idx]) continue;
+        const size_t tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        const std::string name = line.substr(0, tab);
+        const ecs::AuthorableComponent* ct = ecs::find_authorable(name.c_str());
+        if (!ct || !ct->type) continue;
+        const uint32_t id = ecs_entity_id(ents[idx]->GetTransform());
+        if (id == kNoEcsEntity) continue;
+        const ecs::Entity ee = static_cast<ecs::Entity>(id);
+        ct->add(impl_->world, ee);    // default-construct, then overwrite from bytes
+        if (void* comp = ct->get(impl_->world, ee)) {
+            const std::vector<uint8_t> bytes = from_hex(line.substr(tab + 1));
+            deserialize_fields(comp, *ct->type, bytes.data(), bytes.size());
+        }
+    }
+    return true;
 }
 
 bool EcsSceneBridge::snapshot_selfcheck(

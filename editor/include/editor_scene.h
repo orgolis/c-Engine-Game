@@ -10,6 +10,8 @@ namespace schizo::scene {
 
 namespace schizo::editor {
 
+class EcsSceneBridge;
+
 /**
  * @class EditorScene
  * @brief Manages the current scene being edited
@@ -59,11 +61,16 @@ public:
      * @brief Mark scene as modified
      */
     void MarkModified() { has_unsaved_changes_ = true; }
-    
+
+    // Wire the ECS bridge so save/load also persist authoritative gameplay
+    // components to a `.gameplay` sidecar (F3). Optional — null = OOP-only save.
+    void SetEcsBridge(EcsSceneBridge* b) { ecs_bridge_ = b; }
+
 private:
     std::shared_ptr<schizo::scene::Scene> scene_;
     std::string scene_filepath_;
     bool has_unsaved_changes_ = false;
+    EcsSceneBridge* ecs_bridge_ = nullptr;
 };
 
 } // namespace schizo::editor

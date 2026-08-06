@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include <glm/fwd.hpp>
 
@@ -51,6 +52,15 @@ public:
     // during sync), or kNoEcsEntity if it hasn't been synced yet. Returned as a
     // raw uint32 so includers need no EnTT.
     uint32_t ecs_entity_id(const schizo::scene::Transform* tf) const;
+
+    // --- Gameplay-component persistence (F3) ---
+    // Save/load every scene entity's AUTHORABLE ECS components to a sidecar file,
+    // keyed by the entity's INDEX in scene->GetEntities() (stable across save/load,
+    // like NetId). Generic over the authorable-components registry via reflection —
+    // no per-component code. save writes; load syncs first (to create ECS entities)
+    // then applies. This is F3 and the seed of game-save (G9).
+    bool save_gameplay(const std::shared_ptr<schizo::scene::Scene>& scene, const std::string& path);
+    bool load_gameplay(const std::shared_ptr<schizo::scene::Scene>& scene, const std::string& path);
 
     // Authoritative read path (Stage 1.4 step 2): the ECS-computed world matrix
     // for the OOP entity owning `tf`, or nullptr if it wasn't in the last
