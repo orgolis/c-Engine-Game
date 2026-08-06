@@ -10,6 +10,7 @@
 #include "ecs/gameplay_abilities.h"      // G0 ability cooldown tick
 #include "ecs/gameplay_events.h"         // G0 event bus + timer manager
 #include "ecs/gameplay_triggers.h"       // G0 trigger-volume overlap system
+#include "ecs/gameplay_state_machine.h"  // G1 gameplay state machine
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -83,11 +84,12 @@ const glm::mat4* EcsSceneBridge::world_matrix(
 ecs::World& EcsSceneBridge::world() { return impl_->world; }
 
 void EcsSceneBridge::tick_gameplay(float dt) {
-    ecs::tick_effects(impl_->world, dt);                      // active effects: periodic ticks + expiry
-    ecs::tick_abilities(impl_->world, dt);                    // ability cooldowns
-    ecs::tick_triggers(impl_->world, impl_->event_bus);       // enter/exit -> events
-    impl_->timer_mgr.tick(dt);                               // one-shot / repeating timers
-    impl_->event_bus.flush();                                // dispatch everything queued this frame
+    ecs::tick_effects(impl_->world, dt);                          // active effects: periodic ticks + expiry
+    ecs::tick_abilities(impl_->world, dt);                        // ability cooldowns
+    ecs::tick_state_machines(impl_->world, &impl_->event_bus, dt); // G1: FSM start/age/timeout -> events
+    ecs::tick_triggers(impl_->world, impl_->event_bus);           // enter/exit -> events
+    impl_->timer_mgr.tick(dt);                                   // one-shot / repeating timers
+    impl_->event_bus.flush();                                    // dispatch everything queued this frame
 }
 
 ecs::GameplayEventBus& EcsSceneBridge::events() { return impl_->event_bus; }
@@ -241,6 +243,7 @@ EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_attribute_component();   // G0: AttributeSet is authorable
     ecs::register_tags_component();        // G0: GameplayTags is authorable
     ecs::register_trigger_components();    // G0: Trigger Volume + Trigger Actor authorable
+    ecs::register_state_machine_component(); // G1: State Machine authorable
 }
 
 EcsSceneBridge::~EcsSceneBridge() = default;

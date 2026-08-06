@@ -8,6 +8,7 @@
 #include "ecs/gameplay_effects.h"      // read-only active-effects view
 #include "ecs/gameplay_abilities.h"    // read-only abilities/cooldown view
 #include "ecs/gameplay_triggers.h"     // custom drawer for Trigger Volume
+#include "ecs/gameplay_state_machine.h" // custom drawer for State Machine
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -148,6 +149,40 @@ bool draw_trigger_volume(void* comp) {
     return changed;
 }
 
+// Inspector for the data-driven StateMachine (G1): current state + structure,
+// plus a manual event-send box to drive/tune transitions live in the editor.
+bool draw_state_machine(ecs::World& w, ecs::Entity e, void* comp) {
+    auto& sm = *static_cast<ecs::StateMachine*>(comp);
+    bool changed = false;
+
+    ImGui::Text("Current: %s", sm.current.empty() ? "(not started)" : sm.current.c_str());
+    ImGui::SameLine(); ImGui::TextDisabled("(%.1fs in state)", sm.time_in_state);
+
+    if (ImGui::TreeNode("States")) {
+        for (const auto& s : sm.states) {
+            std::string tags;
+            for (const auto& t : s.tags) { tags += t; tags += ' '; }
+            ImGui::BulletText("%s  [%s]%s", s.name.c_str(), tags.c_str(),
+                              s.duration > 0.0f ? "  (timed)" : "");
+        }
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Transitions")) {
+        for (const auto& t : sm.transitions)
+            ImGui::BulletText("%s --%s--> %s", t.from.empty() ? "*" : t.from.c_str(),
+                              t.on_event.c_str(), t.to.c_str());
+        ImGui::TreePop();
+    }
+
+    static char ev[64] = "hit";
+    ImGui::SetNextItemWidth(160);
+    ImGui::InputText("##smevent", ev, sizeof(ev));
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Send event") && ev[0])
+        if (ecs::send_state_event(w, e, sm, ev)) changed = true;
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -181,6 +216,8 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                     } else if (std::strcmp(ct.name, "Trigger Actor") == 0) {
                         auto& a = *static_cast<ecs::TriggerActor*>(comp);
                         if (ImGui::Checkbox("enabled (triggers volumes)", &a.enabled)) changed = true;
+                    } else if (std::strcmp(ct.name, "State Machine") == 0) {
+                        if (draw_state_machine(w, e, comp)) changed = true;
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }

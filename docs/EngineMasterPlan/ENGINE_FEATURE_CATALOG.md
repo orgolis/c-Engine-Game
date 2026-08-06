@@ -273,8 +273,8 @@ G-modules become data + rules on top.
 | Camera systems (third-person orbit, first-person, aim, lock-on, cinematic) | 🔴 |
 | Movement set: sprint, dodge/roll, jump, crouch, climb, swim, glide, dash | 🟡 (swim ✅) |
 | Mounts / vehicles | 🔴 |
-| Stamina / resource-gated actions | 🔴 |
-| Player state machine (idle/move/combat/interact/dead) | 🔴 |
+| Stamina / resource-gated actions | ✅ (via G0) — a resource-gated action = a G0 `Ability` (cost=an attribute like Stamina + cooldown + granted state tags). |
+| Player state machine (idle/move/combat/interact/dead) | ✅ **`StateMachine`** — data-driven FSM; states grant/remove `GameplayTags`, transitions fire on named events + are tag-gated, states auto-time-out; enter/exit broadcast on the event bus. Ticked live (`tick_state_machines`). |
 
 ### G2 · Combat & Abilities 🟡 — **Depends on:** G0, Physics, Animation, VFX
 | Sub-feature | Status |

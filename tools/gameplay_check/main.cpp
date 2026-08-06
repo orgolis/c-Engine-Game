@@ -12,6 +12,7 @@
 #include "ecs/gameplay_damage.h"
 #include "ecs/gameplay_events.h"
 #include "ecs/gameplay_triggers.h"
+#include "ecs/gameplay_state_machine.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -383,6 +384,74 @@ int main() {
             check("Trigger Volume serialize round-trips (shape/size/events)",
                   tv2.shape == 1 && tv2.radius == 2.0f &&
                   tv2.enter_event == "zone.enter" && tv2.exit_event == "zone.exit");
+        }
+    }
+
+    // G1: gameplay state machine — a player-like FSM (idle/move/dodge/dead).
+    // States grant tags; transitions fire on events + are tag-gated; dodge times
+    // out back to idle. All data. Enter/exit broadcast on the bus.
+    {
+        ecs::World sw;
+        ecs::GameplayEventBus bus;
+        std::string entered;
+        bus.subscribe("state.entered", [&](const ecs::GameplayEvent& e) { entered = e.param; });
+
+        const ecs::Entity p = sw.create();
+        ecs::StateMachine sm;
+        sm.states = {
+            {"idle",  {"state.idle"},               0.0f, ""},
+            {"move",  {"state.move"},               0.0f, ""},
+            {"dodge", {"state.dodge", "state.iframe"}, 0.4f, "dodge.end"},   // times out
+            {"dead",  {"state.dead"},               0.0f, ""},
+        };
+        sm.transitions = {
+            {"idle",  "move",  "input.move",  {}, {}},
+            {"move",  "idle",  "input.stop",  {}, {}},
+            {"",      "dodge", "input.dodge", {}, {"state.dodge"}},  // from any, not while dodging
+            {"dodge", "idle",  "dodge.end",   {}, {}},               // fired by the timeout
+            {"",      "dead",  "died",        {}, {}},               // from any
+        };
+        sm.initial = "idle";
+        sw.add<ecs::StateMachine>(p, sm);
+
+        ecs::tick_state_machines(sw, &bus, 0.016f);   // first tick starts the machine
+        bus.flush();
+        auto& live = sw.get<ecs::StateMachine>(p);
+        check("FSM starts in the initial state + grants its tags",
+              live.current == "idle" && entered == "idle" &&
+              sw.has<ecs::GameplayTags>(p) && sw.get<ecs::GameplayTags>(p).has("state.idle"));
+
+        ecs::send_state_event(sw, p, live, "input.move", &bus);
+        check("event transition swaps state + tags (idle->move)",
+              live.current == "move" &&
+              sw.get<ecs::GameplayTags>(p).has("state.move") &&
+              !sw.get<ecs::GameplayTags>(p).has("state.idle"));
+
+        ecs::send_state_event(sw, p, live, "input.dodge", &bus);
+        check("from-any transition works (move->dodge) + grants iframe",
+              live.current == "dodge" && sw.get<ecs::GameplayTags>(p).has("state.iframe"));
+
+        const bool blocked = ecs::send_state_event(sw, p, live, "input.dodge", &bus);
+        check("block-tag gate prevents re-dodge while dodging", !blocked && live.current == "dodge");
+
+        ecs::tick_state_machines(sw, &bus, 0.5f);   // dodge (0.4s) times out -> dodge.end -> idle
+        check("state times out and auto-transitions (dodge->idle)",
+              live.current == "idle" && !sw.get<ecs::GameplayTags>(p).has("state.iframe"));
+
+        ecs::send_state_event(sw, p, live, "died", &bus);
+        check("global 'died' transition reaches dead from any state", live.current == "dead");
+
+        ecs::register_state_machine_component();
+        const ecs::AuthorableComponent* smc = ecs::find_authorable("State Machine");
+        check("State Machine is authorable via custom hooks", smc && smc->serialize && smc->deserialize);
+        if (smc) {
+            const auto bytes = ecs::serialize_authorable(*smc, &sm);
+            ecs::StateMachine sm2;
+            ecs::deserialize_authorable(*smc, &sm2, bytes.data(), bytes.size());
+            check("State Machine serialize round-trips (states + transitions + initial)",
+                  sm2.states.size() == 4 && sm2.transitions.size() == 5 && sm2.initial == "idle" &&
+                  sm2.states[2].name == "dodge" && sm2.states[2].tags.size() == 2 &&
+                  sm2.states[2].duration == 0.4f && sm2.transitions[2].block_tags.size() == 1);
         }
     }
 
