@@ -5,6 +5,7 @@
 // ============================================================================
 #include "ecs/world.h"
 #include "ecs/authorable_components.h"
+#include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
 #include <cstring>
@@ -95,6 +96,26 @@ int main() {
 
         check("F3: component round-trips through reflection bytes",
               dst_c.current == 42.0f && dst_c.max == 250.0f && dst_c.regen == 3.0f);
+    }
+
+    // F4: prefab capture -> text -> from_text -> instantiate round-trip.
+    {
+        ecs::World pw;
+        const ecs::Entity src = pw.create();
+        pw.add<ecs::Health>(src, ecs::Health{});      pw.get<ecs::Health>(src).current = 77.0f;
+        pw.add<ecs::AbilityState>(src, ecs::AbilityState{}); pw.get<ecs::AbilityState>(src).charges = 5;
+
+        ecs::Prefab pf = ecs::Prefab::capture(pw, src, "Enemy");
+        check("prefab captures the present components", pf.components.size() == 2);
+
+        ecs::Prefab pf2 = ecs::Prefab::from_text(pf.to_text());
+        check("prefab round-trips through text", pf2.name == "Enemy" && pf2.components.size() == 2);
+
+        const ecs::Entity spawned = pw.create();      // instantiate onto a fresh entity
+        pf2.apply(pw, spawned);
+        check("prefab instantiation restores components + values",
+              pw.has<ecs::Health>(spawned)       && pw.get<ecs::Health>(spawned).current == 77.0f &&
+              pw.has<ecs::AbilityState>(spawned) && pw.get<ecs::AbilityState>(spawned).charges == 5u);
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }

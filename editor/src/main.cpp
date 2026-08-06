@@ -764,6 +764,32 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 ImGui::CloseCurrentPopup();
             }
 
+            // Spawn from a saved prefab (F4): instantiate a cube, then apply the
+            // prefab's gameplay components. Lists prefabs/*.prefab.
+            if (editor_state.ecs_bridge && ImGui::BeginMenu("From Prefab")) {
+                std::error_code ec;
+                bool any = false;
+                if (std::filesystem::exists("prefabs", ec)) {
+                    for (const auto& de : std::filesystem::directory_iterator("prefabs", ec)) {
+                        if (de.path().extension() != ".prefab") continue;
+                        any = true;
+                        const std::string stem = de.path().stem().string();
+                        if (ImGui::MenuItem(stem.c_str())) {
+                            if (auto ent = schizo::scene::EntityFactory::CreateCube(scene)) {
+                                editor_state.ecs_bridge->sync_and_run(scene);  // create its ECS entity
+                                editor_state.ecs_bridge->apply_prefab_file(
+                                    ent->GetTransform(), de.path().string());
+                                editor_state.editor_scene->MarkModified();
+                                editor_state.set_status("Spawned prefab: " + stem);
+                            }
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                }
+                if (!any) ImGui::TextDisabled("(no prefabs — save one from the Inspector)");
+                ImGui::EndMenu();
+            }
+
             if (editor_state.feature_on(schizo::project::Feature::Terrain) &&
                 ImGui::MenuItem("Water")) {
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
@@ -2335,6 +2361,17 @@ void ShowInspector(EditorState& editor_state) {
                 if (schizo::editor::draw_ecs_component_inspector(
                         *editor_state.ecs_bridge, selected_entity->GetTransform()))
                     editor_state.editor_scene->MarkModified();
+
+                // Save this entity's gameplay components as a reusable prefab (F4).
+                ImGui::Dummy(ImVec2(0, 4));
+                if (ImGui::Button("Save as Prefab")) {
+                    std::error_code ec; std::filesystem::create_directories("prefabs", ec);
+                    const std::string path = "prefabs/" + selected_entity->GetName() + ".prefab";
+                    if (editor_state.ecs_bridge->save_entity_prefab(selected_entity->GetTransform(), path))
+                        editor_state.set_status("Saved prefab: " + path);
+                    else
+                        editor_state.set_status("Nothing to save — add a gameplay component first.");
+                }
             } else {
                 ImGui::TextDisabled("ECS bridge unavailable.");
             }

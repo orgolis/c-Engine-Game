@@ -3,6 +3,8 @@
 #include "ecs/world.h"
 #include "ecs/components.h"
 #include "ecs/authorable_components.h"   // authorable registry (gameplay persistence)
+#include "ecs/component_serialize.h"     // generic reflection-driven (de)serialization
+#include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
 #include "ecs/render_collect.h"
@@ -23,6 +25,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -75,57 +78,8 @@ uint32_t EcsSceneBridge::ecs_entity_id(const schizo::scene::Transform* tf) const
     return entt::to_integral(it->second);
 }
 
-// ---- Generic, reflection-driven component (de)serialization (F3) ----
-// POD gameplay components stream field-by-field via the reflection FieldSerializer
-// (so field types/versions stay explicit, not a raw memcpy of the whole struct).
-namespace {
-struct VecSink : gws::reflect::IByteSink {
-    std::vector<uint8_t>& b;
-    explicit VecSink(std::vector<uint8_t>& v) : b(v) {}
-    void write(const void* d, size_t n) override {
-        const uint8_t* p = static_cast<const uint8_t*>(d);
-        b.insert(b.end(), p, p + n);
-    }
-};
-struct SpanSource : gws::reflect::IByteSource {
-    const uint8_t* p; const uint8_t* end;
-    SpanSource(const uint8_t* d, size_t n) : p(d), end(d + n) {}
-    bool read(void* out, size_t n) override {
-        if (p + n > end) return false;
-        std::memcpy(out, p, n); p += n; return true;
-    }
-    bool skip(size_t n) override { if (p + n > end) return false; p += n; return true; }
-};
-std::vector<uint8_t> serialize_fields(const void* obj, const gws::reflect::TypeInfo& ti) {
-    std::vector<uint8_t> out; VecSink sink(out);
-    for (const auto& f : ti.fields)
-        if (f.serializer.write) f.serializer.write(sink, static_cast<const char*>(obj) + f.offset);
-    return out;
-}
-void deserialize_fields(void* obj, const gws::reflect::TypeInfo& ti, const uint8_t* d, size_t n) {
-    SpanSource src(d, n);
-    for (const auto& f : ti.fields)
-        if (f.serializer.read) { if (!f.serializer.read(src, static_cast<char*>(obj) + f.offset)) return; }
-}
-std::string to_hex(const std::vector<uint8_t>& b) {
-    static const char* H = "0123456789abcdef";
-    std::string s; s.reserve(b.size() * 2);
-    for (uint8_t c : b) { s += H[c >> 4]; s += H[c & 15]; }
-    return s;
-}
-std::vector<uint8_t> from_hex(const std::string& s) {
-    auto v = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        return 0;
-    };
-    std::vector<uint8_t> b; b.reserve(s.size() / 2);
-    for (size_t i = 0; i + 1 < s.size(); i += 2)
-        b.push_back(static_cast<uint8_t>((v(s[i]) << 4) | v(s[i + 1])));
-    return b;
-}
-}  // namespace
+// Generic reflection-driven component (de)serialization lives in
+// ecs/component_serialize.h (shared with prefabs); used via ecs:: below.
 
 bool EcsSceneBridge::save_gameplay(
     const std::shared_ptr<schizo::scene::Scene>& scene, const std::string& path) {
@@ -146,7 +100,7 @@ bool EcsSceneBridge::save_gameplay(
             void* comp = ct.get(impl_->world, ee);
             if (!comp) continue;
             if (!header) { out << "ENTITY " << i << "\n"; header = true; }
-            out << ct.name << '\t' << to_hex(serialize_fields(comp, *ct.type)) << "\n";
+            out << ct.name << '\t' << ecs::to_hex(ecs::serialize_component(comp, *ct.type)) << "\n";
         }
     }
     return true;
@@ -176,10 +130,36 @@ bool EcsSceneBridge::load_gameplay(
         const ecs::Entity ee = static_cast<ecs::Entity>(id);
         ct->add(impl_->world, ee);    // default-construct, then overwrite from bytes
         if (void* comp = ct->get(impl_->world, ee)) {
-            const std::vector<uint8_t> bytes = from_hex(line.substr(tab + 1));
-            deserialize_fields(comp, *ct->type, bytes.data(), bytes.size());
+            const std::vector<uint8_t> bytes = ecs::from_hex(line.substr(tab + 1));
+            ecs::deserialize_component(comp, *ct->type, bytes.data(), bytes.size());
         }
     }
+    return true;
+}
+
+bool EcsSceneBridge::save_entity_prefab(const schizo::scene::Transform* tf, const std::string& path) {
+    const uint32_t id = ecs_entity_id(tf);
+    if (id == kNoEcsEntity) return false;
+    // Name = the file's stem (after the last slash, before the last dot).
+    std::string name = path;
+    if (const size_t s = name.find_last_of("/\\"); s != std::string::npos) name = name.substr(s + 1);
+    if (const size_t d = name.find_last_of('.');  d != std::string::npos) name = name.substr(0, d);
+
+    const ecs::Prefab p = ecs::Prefab::capture(impl_->world, static_cast<ecs::Entity>(id), name);
+    if (p.empty()) return false;   // nothing to save (no gameplay components on it)
+    std::ofstream out(path, std::ios::trunc);
+    if (!out) return false;
+    out << p.to_text();
+    return true;
+}
+
+bool EcsSceneBridge::apply_prefab_file(const schizo::scene::Transform* tf, const std::string& path) {
+    const uint32_t id = ecs_entity_id(tf);
+    if (id == kNoEcsEntity) return false;
+    std::ifstream in(path);
+    if (!in) return false;
+    std::stringstream ss; ss << in.rdbuf();
+    ecs::Prefab::from_text(ss.str()).apply(impl_->world, static_cast<ecs::Entity>(id));
     return true;
 }
 

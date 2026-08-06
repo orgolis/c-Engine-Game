@@ -62,6 +62,14 @@ public:
     bool save_gameplay(const std::shared_ptr<schizo::scene::Scene>& scene, const std::string& path);
     bool load_gameplay(const std::shared_ptr<schizo::scene::Scene>& scene, const std::string& path);
 
+    // --- Prefabs (F4) ---
+    // Capture an entity's authorable components into a `.prefab` file (a template).
+    // Returns false if the entity has no gameplay components / isn't synced.
+    bool save_entity_prefab(const schizo::scene::Transform* tf, const std::string& path);
+    // Load a `.prefab` and apply its components onto an entity — the instantiate
+    // step of spawning. The caller creates the OOP entity + syncs first.
+    bool apply_prefab_file(const schizo::scene::Transform* tf, const std::string& path);
+
     // Authoritative read path (Stage 1.4 step 2): the ECS-computed world matrix
     // for the OOP entity owning `tf`, or nullptr if it wasn't in the last
     // sync (callers fall back to the OOP matrix). Valid until the next
