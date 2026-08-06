@@ -8,6 +8,8 @@
 #include "ecs/gameplay_attributes.h"
 #include "ecs/gameplay_tags.h"
 #include "ecs/gameplay_effects.h"
+#include "ecs/gameplay_abilities.h"
+#include "ecs/gameplay_damage.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -213,6 +215,78 @@ int main() {
         check("duration buff applies on start (40 -> 90)", set.get("Health") == 90.0f);
         ecs::tick_effects(ew, 1.5f);
         check("buff reverts on expiry (90 -> 40)", set.get("Health") == 40.0f);
+    }
+
+    // G0: ability system — cost (attribute) + cooldown + tag gate, applying
+    // effects on activation. All data — a game defines its own abilities.
+    {
+        ecs::World aw;
+        const ecs::Entity caster = aw.create();
+        const ecs::Entity target = aw.create();
+
+        aw.add<ecs::AttributeSet>(caster, ecs::AttributeSet{});
+        aw.get<ecs::AttributeSet>(caster).define("Stamina", 100, 0, 100);
+        aw.add<ecs::AttributeSet>(target, ecs::AttributeSet{});
+        aw.get<ecs::AttributeSet>(target).define("Health", 100, 0, 100);
+
+        ecs::AbilitySet set;
+        ecs::Ability dash;
+        dash.name = "Power Strike";
+        dash.cost_attribute = "Stamina"; dash.cost = 30.0f; dash.cooldown = 5.0f;
+        dash.block_tags = {"state.stunned"};
+        dash.effects_target.push_back(ecs::make_instant("Strike", "Health", -40.0f));
+        set.abilities.push_back(ecs::AbilitySlot{dash, 0.0f});
+        aw.add<ecs::AbilitySet>(caster, set);
+
+        bool activated = ecs::try_activate_ability(aw, caster, 0, target);
+        check("ability activates (cost paid, effect applied)",
+              activated && aw.get<ecs::AttributeSet>(caster).get("Stamina") == 70.0f &&
+              aw.get<ecs::AttributeSet>(target).get("Health") == 60.0f);
+        check("ability is on cooldown after activation",
+              aw.get<ecs::AbilitySet>(caster).abilities[0].cooldown_remaining == 5.0f);
+
+        bool again = ecs::try_activate_ability(aw, caster, 0, target);
+        check("cannot re-activate while on cooldown", !again &&
+              aw.get<ecs::AttributeSet>(caster).get("Stamina") == 70.0f);
+
+        ecs::tick_abilities(aw, 5.0f);
+        check("cooldown ticks down to ready",
+              aw.get<ecs::AbilitySet>(caster).abilities[0].cooldown_remaining == 0.0f);
+
+        // block tag gates activation
+        aw.add<ecs::GameplayTags>(caster, ecs::GameplayTags{});
+        aw.get<ecs::GameplayTags>(caster).add("state.stunned");
+        check("blocked tag prevents activation", !ecs::try_activate_ability(aw, caster, 0, target));
+        aw.get<ecs::GameplayTags>(caster).remove_exact("state.stunned");
+
+        // insufficient cost gates activation
+        aw.get<ecs::AttributeSet>(caster).set("Stamina", 10.0f);
+        check("insufficient cost prevents activation", !ecs::try_activate_ability(aw, caster, 0, target));
+    }
+
+    // G0: damage pipeline — data-driven types, resistance (attribute) + immunity
+    // (tag), resolving to an instant effect on the health attribute.
+    {
+        ecs::World dw;
+        const ecs::Entity mob = dw.create();
+        dw.add<ecs::AttributeSet>(mob, ecs::AttributeSet{});
+        auto& a = dw.get<ecs::AttributeSet>(mob);
+        a.define("Health", 100, 0, 100);
+        a.define("resist.fire", 0.5f, 0, 1);      // 50% fire resist (any type name works)
+
+        float dealt = ecs::apply_damage(dw, mob, ecs::DamageInfo{40.0f, "fire"});
+        check("typed damage reduced by resistance (40 -> 20)",
+              dealt == 20.0f && a.get("Health") == 80.0f);
+
+        float untyped = ecs::apply_damage(dw, mob, ecs::DamageInfo{30.0f, ""});
+        check("untyped damage ignores resistance (full 30)",
+              untyped == 30.0f && a.get("Health") == 50.0f);
+
+        dw.add<ecs::GameplayTags>(mob, ecs::GameplayTags{});
+        dw.get<ecs::GameplayTags>(mob).add("immune.fire");
+        float blocked = ecs::apply_damage(dw, mob, ecs::DamageInfo{99.0f, "fire"});
+        check("immunity tag nullifies typed damage (0, health unchanged)",
+              blocked == 0.0f && a.get("Health") == 50.0f);
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }

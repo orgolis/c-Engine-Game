@@ -7,6 +7,7 @@
 #include "ecs/gameplay_attributes.h"     // G0 data-driven attributes
 #include "ecs/gameplay_tags.h"           // G0 data-driven tags
 #include "ecs/gameplay_effects.h"        // G0 effects engine (tick)
+#include "ecs/gameplay_abilities.h"      // G0 ability cooldown tick
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -75,7 +76,10 @@ const glm::mat4* EcsSceneBridge::world_matrix(
 
 ecs::World& EcsSceneBridge::world() { return impl_->world; }
 
-void EcsSceneBridge::tick_effects(float dt) { ecs::tick_effects(impl_->world, dt); }
+void EcsSceneBridge::tick_effects(float dt) {
+    ecs::tick_effects(impl_->world, dt);      // active effects: periodic ticks + expiry
+    ecs::tick_abilities(impl_->world, dt);    // ability cooldowns
+}
 
 uint32_t EcsSceneBridge::ecs_entity_id(const schizo::scene::Transform* tf) const {
     auto it = impl_->tf_to_entity.find(const_cast<scene::Transform*>(tf));

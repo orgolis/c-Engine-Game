@@ -6,6 +6,7 @@
 #include "ecs/gameplay_attributes.h"   // custom drawer for the data-driven AttributeSet
 #include "ecs/gameplay_tags.h"         // custom drawer for data-driven GameplayTags
 #include "ecs/gameplay_effects.h"      // read-only active-effects view
+#include "ecs/gameplay_abilities.h"    // read-only abilities/cooldown view
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -156,6 +157,19 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
             if (ImGui::SmallButton((std::string("Add ") + ct.name).c_str())) { ct.add(w, e); changed = true; }
         }
         ImGui::PopID();
+    }
+
+    // Read-only view of the entity's abilities + live cooldowns (G0).
+    if (w.has<ecs::AbilitySet>(e)) {
+        const auto& set = w.get<ecs::AbilitySet>(e);
+        if (!set.abilities.empty() && ImGui::CollapsingHeader("Abilities (runtime)")) {
+            for (const auto& s : set.abilities) {
+                if (s.cooldown_remaining > 0.0f)
+                    ImGui::BulletText("%s  (cooldown %.1fs)", s.ability.name.c_str(), s.cooldown_remaining);
+                else
+                    ImGui::BulletText("%s  (ready)", s.ability.name.c_str());
+            }
+        }
     }
 
     // Read-only view of runtime effects currently active on the entity (G0).
