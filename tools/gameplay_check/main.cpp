@@ -5,6 +5,7 @@
 // ============================================================================
 #include "ecs/world.h"
 #include "ecs/authorable_components.h"
+#include "ecs/gameplay_attributes.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -116,6 +117,38 @@ int main() {
         check("prefab instantiation restores components + values",
               pw.has<ecs::Health>(spawned)       && pw.get<ecs::Health>(spawned).current == 77.0f &&
               pw.has<ecs::AbilityState>(spawned) && pw.get<ecs::AbilityState>(spawned).charges == 5u);
+    }
+
+    // G0: data-driven AttributeSet — define ARBITRARY stats; custom-serialize;
+    // flow through the same authorable/save/prefab path as POD components.
+    {
+        ecs::register_attribute_component();
+        const ecs::AuthorableComponent* attrs = ecs::find_authorable("Attributes");
+        check("AttributeSet is authorable via custom hooks",
+              attrs && attrs->type == nullptr && attrs->serialize && attrs->deserialize);
+        if (attrs) {
+            ecs::World aw;
+            const ecs::Entity a = aw.create();
+            attrs->add(aw, a);
+            auto& set = *static_cast<ecs::AttributeSet*>(attrs->get(aw, a));
+            set.define("Health", 120, 0, 120);   // any names — a game defines its own
+            set.define("Sanity", 80, 0, 100);
+            set.set("Health", 42);
+            check("define/set arbitrary attributes",
+                  set.get("Health") == 42.0f && set.get("Sanity") == 80.0f && set.attributes.size() == 2);
+
+            const auto bytes = ecs::serialize_authorable(*attrs, &set);
+            ecs::AttributeSet set2;
+            ecs::deserialize_authorable(*attrs, &set2, bytes.data(), bytes.size());
+            check("AttributeSet custom serialize round-trips",
+                  set2.get("Health") == 42.0f && set2.get("Sanity") == 80.0f && set2.attributes.size() == 2);
+
+            const ecs::Entity spawned2 = aw.create();
+            ecs::Prefab::from_text(ecs::Prefab::capture(aw, a, "Monster").to_text()).apply(aw, spawned2);
+            const auto* set3 = static_cast<ecs::AttributeSet*>(attrs->get(aw, spawned2));
+            check("prefab carries the data-driven attributes",
+                  set3 && set3->get("Health") == 42.0f && set3->get("Sanity") == 80.0f);
+        }
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }

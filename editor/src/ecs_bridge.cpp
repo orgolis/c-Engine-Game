@@ -4,6 +4,7 @@
 #include "ecs/components.h"
 #include "ecs/authorable_components.h"   // authorable registry (gameplay persistence)
 #include "ecs/component_serialize.h"     // generic reflection-driven (de)serialization
+#include "ecs/gameplay_attributes.h"     // G0 data-driven attributes
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -96,11 +97,11 @@ bool EcsSceneBridge::save_gameplay(
         const ecs::Entity ee = static_cast<ecs::Entity>(id);
         bool header = false;
         for (const auto& ct : ecs::authorable_components()) {
-            if (!ct.type || !ct.has(impl_->world, ee)) continue;
+            if (!ct.has(impl_->world, ee)) continue;
             void* comp = ct.get(impl_->world, ee);
             if (!comp) continue;
             if (!header) { out << "ENTITY " << i << "\n"; header = true; }
-            out << ct.name << '\t' << ecs::to_hex(ecs::serialize_component(comp, *ct.type)) << "\n";
+            out << ct.name << '\t' << ecs::to_hex(ecs::serialize_authorable(ct, comp)) << "\n";
         }
     }
     return true;
@@ -124,14 +125,14 @@ bool EcsSceneBridge::load_gameplay(
         if (tab == std::string::npos) continue;
         const std::string name = line.substr(0, tab);
         const ecs::AuthorableComponent* ct = ecs::find_authorable(name.c_str());
-        if (!ct || !ct->type) continue;
+        if (!ct) continue;
         const uint32_t id = ecs_entity_id(ents[idx]->GetTransform());
         if (id == kNoEcsEntity) continue;
         const ecs::Entity ee = static_cast<ecs::Entity>(id);
         ct->add(impl_->world, ee);    // default-construct, then overwrite from bytes
         if (void* comp = ct->get(impl_->world, ee)) {
             const std::vector<uint8_t> bytes = ecs::from_hex(line.substr(tab + 1));
-            ecs::deserialize_component(comp, *ct->type, bytes.data(), bytes.size());
+            ecs::deserialize_authorable(*ct, comp, bytes.data(), bytes.size());
         }
     }
     return true;
@@ -217,6 +218,7 @@ size_t EcsSceneBridge::draw_benchmark(size_t n, double& out_ms) {
 
 EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_core_components();
+    ecs::register_attribute_component();   // G0: AttributeSet is authorable
 }
 
 EcsSceneBridge::~EcsSceneBridge() = default;

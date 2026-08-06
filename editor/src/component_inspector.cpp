@@ -3,6 +3,7 @@
 #include "ecs_bridge.h"
 #include "ecs/world.h"
 #include "ecs/authorable_components.h"
+#include "ecs/gameplay_attributes.h"   // custom drawer for the data-driven AttributeSet
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -12,6 +13,8 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <string>
 
 namespace schizo::editor {
@@ -59,6 +62,38 @@ bool draw_field(const gws::reflect::FieldInfo& f, void* p) {
     return false;
 }
 
+// Custom inspector for the data-driven AttributeSet: define ANY attributes per
+// game (Health, Stamina, Sanity, Heat…). Each row is editable; add/remove freely.
+bool draw_attribute_set(void* comp) {
+    auto& s = *static_cast<ecs::AttributeSet*>(comp);
+    bool changed = false;
+    int remove_idx = -1;
+    for (size_t i = 0; i < s.attributes.size(); ++i) {
+        auto& a = s.attributes[i];
+        ImGui::PushID(static_cast<int>(i));
+        char buf[64]; std::snprintf(buf, sizeof(buf), "%s", a.name.c_str());
+        if (ImGui::InputText("name", buf, sizeof(buf))) { a.name = buf; changed = true; }
+        if (ImGui::SliderFloat("current", &a.current, a.min, a.max)) changed = true;
+        if (ImGui::DragFloat("base", &a.base, 0.5f)) changed = true;
+        if (ImGui::DragFloat("min", &a.min, 0.5f))   changed = true;
+        if (ImGui::DragFloat("max", &a.max, 0.5f))   changed = true;
+        if (ImGui::SmallButton("Remove attribute")) remove_idx = static_cast<int>(i);
+        ImGui::Separator();
+        ImGui::PopID();
+    }
+    if (remove_idx >= 0) { s.attributes.erase(s.attributes.begin() + remove_idx); changed = true; }
+
+    static char new_name[64] = "Health";
+    ImGui::SetNextItemWidth(160);
+    ImGui::InputText("##newattr", new_name, sizeof(new_name));
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Add attribute") && new_name[0]) {
+        s.define(new_name, 100.0f, 0.0f, 100.0f);
+        changed = true;
+    }
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -73,16 +108,21 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
     bool changed = false;
 
     for (const auto& ct : ecs::authorable_components()) {
-        if (!ct.type) continue;
         ImGui::PushID(ct.name);
         if (ct.has(w, e)) {
             if (ImGui::CollapsingHeader(ct.name, ImGuiTreeNodeFlags_DefaultOpen)) {
                 if (void* comp = ct.get(w, e)) {
-                    gws::reflect::for_each_field(
-                        comp, *ct.type,
-                        [&](const gws::reflect::FieldInfo& f, void* fp) {
-                            if (draw_field(f, fp)) changed = true;
-                        });
+                    if (ct.type) {   // POD component -> generic reflection fields
+                        gws::reflect::for_each_field(
+                            comp, *ct.type,
+                            [&](const gws::reflect::FieldInfo& f, void* fp) {
+                                if (draw_field(f, fp)) changed = true;
+                            });
+                    } else if (std::strcmp(ct.name, "Attributes") == 0) {
+                        if (draw_attribute_set(comp)) changed = true;   // data-driven
+                    } else {
+                        ImGui::TextDisabled("(no inspector for this component)");
+                    }
                 }
                 if (ImGui::SmallButton("Remove component")) { ct.remove(w, e); changed = true; }
             }

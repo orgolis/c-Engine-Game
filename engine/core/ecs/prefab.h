@@ -29,9 +29,9 @@ struct Prefab {
     static Prefab capture(World& w, Entity e, const std::string& name = "Prefab") {
         Prefab p; p.name = name;
         for (const auto& ct : authorable_components()) {
-            if (!ct.type || !ct.has(w, e)) continue;
+            if (!ct.has(w, e)) continue;
             if (void* c = ct.get(w, e))
-                p.components.emplace_back(ct.name, serialize_component(c, *ct.type));
+                p.components.emplace_back(ct.name, serialize_authorable(ct, c));
         }
         return p;
     }
@@ -40,10 +40,10 @@ struct Prefab {
     void apply(World& w, Entity e) const {
         for (const auto& [cname, bytes] : components) {
             const AuthorableComponent* ct = find_authorable(cname.c_str());
-            if (!ct || !ct->type) continue;
+            if (!ct) continue;
             ct->add(w, e);
             if (void* c = ct->get(w, e))
-                deserialize_component(c, *ct->type, bytes.data(), bytes.size());
+                deserialize_authorable(*ct, c, bytes.data(), bytes.size());
         }
     }
 
