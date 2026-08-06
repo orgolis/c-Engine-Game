@@ -255,7 +255,7 @@ The GAS-style backbone everything else plugs into. Build this first; the other
 G-modules become data + rules on top.
 | Sub-feature | Status | Notes |
 |---|---|---|
-| Attribute set (data-driven stats: health, stamina, STR/DEX/INT, resist…) | 🔴 | reflection/ECS-backed |
+| Attribute set (data-driven stats: health, stamina, STR/DEX/INT, resist…) | ✅ | **`AttributeSet`** — define ANY named attributes per game; authorable/saveable/prefab-able (custom drawer). Engine bakes in no fixed stats. |
 | Gameplay Ability System (abilities, costs, cooldowns, cast/channel) | 🔴 | the core loop |
 | Gameplay Effects (instant / duration / periodic; modifiers, stacking) | 🔴 | buffs/debuffs/DoTs |
 | Gameplay Tags (hierarchical tags for state/conditions) | 🔴 | drives everything |
