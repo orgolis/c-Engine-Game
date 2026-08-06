@@ -16,6 +16,8 @@
 #include "ecs/gameplay_combat.h"
 #include "ecs/gameplay_progression.h"
 #include "ecs/gameplay_skills.h"
+#include "ecs/gameplay_items.h"
+#include "ecs/gameplay_inventory.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -658,6 +660,114 @@ int main() {
                   t2.nodes.size() == 1 && t2.nodes[0].id == "n1" && t2.nodes[0].cost == 3 &&
                   t2.nodes[0].prerequisites.size() == 1 && t2.nodes[0].grants.size() == 1 &&
                   t2.nodes[0].grants[0].amount == 8.0f && t2.nodes[0].granted_tags.size() == 2);
+        }
+    }
+
+    // G4: items — registry, stacking inventory, procedural rolls, loot, equip
+    // (modifiers/tags through G0), set bonuses, consumables, serialize.
+    {
+        // seed a small item catalog
+        ecs::ItemDef potion; potion.id = "potion_hp"; potion.name = "Health Potion";
+        potion.kind = ecs::ItemKind::Consumable; potion.max_stack = 10; potion.weight = 0.1f;
+        potion.on_use.push_back(ecs::make_instant("Heal", "Health", +40.0f));
+        ecs::register_item(potion);
+
+        ecs::ItemDef sword; sword.id = "sword_iron"; sword.name = "Iron Sword";
+        sword.kind = ecs::ItemKind::Weapon; sword.equip_slot = "weapon"; sword.weight = 3.0f;
+        sword.modifiers.push_back({"AttackPower", 12.0f});
+        sword.affix_pool.push_back({"of Might", "AttackPower", 3.0f, 5.0f});
+        ecs::register_item(sword);
+
+        ecs::ItemDef helm; helm.id = "helm_set"; helm.name = "Guardian Helm";
+        helm.kind = ecs::ItemKind::Armor; helm.equip_slot = "head"; helm.weight = 2.0f;
+        helm.modifiers.push_back({"Armor", 5.0f}); helm.set_id = "guardian";
+        ecs::register_item(helm);
+        ecs::ItemDef chest; chest.id = "chest_set"; chest.name = "Guardian Chest";
+        chest.kind = ecs::ItemKind::Armor; chest.equip_slot = "chest"; chest.weight = 6.0f;
+        chest.modifiers.push_back({"Armor", 10.0f}); chest.set_id = "guardian";
+        ecs::register_item(chest);
+        ecs::register_set_bonus({"guardian", 2, {{"Armor", 20.0f}}, {"set.guardian"}});
+
+        check("item registry stores + finds defs", ecs::find_item("sword_iron") != nullptr &&
+              ecs::find_item("sword_iron")->name == "Iron Sword");
+
+        // stacking inventory
+        ecs::Inventory inv; inv.max_slots = 5;
+        int leftover = ecs::inventory_add(inv, ecs::ItemInstance{"potion_hp", 7, 0, {}});
+        leftover += ecs::inventory_add(inv, ecs::ItemInstance{"potion_hp", 5, 0, {}});
+        check("stackable items stack up to max_stack (12 -> stacks of 10+2)",
+              leftover == 0 && ecs::inventory_count(inv, "potion_hp") == 12 && inv.items.size() == 2);
+        check("inventory removal spans stacks", ecs::inventory_remove(inv, "potion_hp", 11) == 11 &&
+              ecs::inventory_count(inv, "potion_hp") == 1);
+
+        // slot cap
+        ecs::Inventory small; small.max_slots = 1;
+        int lo = ecs::inventory_add(small, ecs::ItemInstance{"sword_iron", 3, 0, {}});  // not stackable
+        check("slot cap rejects overflow (max_stack 1, 1 slot)", small.items.size() == 1 && lo == 2);
+
+        // procedural roll (deterministic RNG)
+        ecs::Rng rng(12345);
+        ecs::ItemInstance rolled = ecs::roll_item("sword_iron", 1, rng);
+        check("procedural roll adds an affix + bumps rarity",
+              rolled.affixes.size() == 1 && rolled.affixes[0].attribute == "AttackPower" &&
+              rolled.affixes[0].amount >= 3.0f && rolled.affixes[0].amount <= 5.0f && rolled.rarity == sword.rarity + 1);
+        auto mods = ecs::item_modifiers(rolled);
+        check("rolled item modifiers = base + affix (2 entries)", mods.size() == 2);
+
+        // loot table (deterministic + repeatable)
+        ecs::DropTable table; table.rolls = 3;
+        table.entries.push_back({"potion_hp", 1.0f, 1.0f, 1, 3, 0});
+        table.entries.push_back({"sword_iron", 1.0f, 1.0f, 1, 1, 1});
+        ecs::Rng r1(999), r2(999);
+        auto loot1 = ecs::roll_loot(table, r1);
+        auto loot2 = ecs::roll_loot(table, r2);
+        check("loot table drops items", !loot1.empty() && loot1.size() <= 3);
+        check("loot rolls are deterministic for a fixed seed",
+              loot1.size() == loot2.size() && (loot1.empty() || loot1[0].def_id == loot2[0].def_id));
+
+        // equip -> modifiers + tags flow to G0; set bonus at 2 pieces
+        ecs::World w; const ecs::Entity e = w.create();
+        w.add<ecs::AttributeSet>(e, ecs::AttributeSet{});
+        auto& a = w.get<ecs::AttributeSet>(e);
+        a.define("AttackPower", 0, 0, 999);
+        a.define("Armor", 0, 0, 999);
+        ecs::equip_item(w, e, ecs::ItemInstance{"sword_iron", 1, 0, {}});
+        check("equip applies item modifier to G0 attribute (AttackPower +12)", a.get("AttackPower") == 12.0f);
+        auto has_tag = [&](const char* t) { return w.has<ecs::GameplayTags>(e) && w.get<ecs::GameplayTags>(e).has(t); };
+        ecs::equip_item(w, e, ecs::ItemInstance{"helm_set", 1, 0, {}});
+        check("one set piece: no set bonus yet (Armor 5)", a.get("Armor") == 5.0f && !has_tag("set.guardian"));
+        ecs::equip_item(w, e, ecs::ItemInstance{"chest_set", 1, 0, {}});
+        check("two set pieces: set bonus applies (Armor 5+10+20) + tag",
+              a.get("Armor") == 35.0f && has_tag("set.guardian"));
+        ecs::unequip_slot(w, e, "chest");
+        check("unequip reverts exactly (set bonus lost -> Armor 5, tag gone)",
+              a.get("Armor") == 5.0f && !has_tag("set.guardian"));
+        ecs::unequip_slot(w, e, "weapon");
+        check("unequip weapon reverts its modifier (AttackPower -> 0)", a.get("AttackPower") == 0.0f);
+
+        // consumable use applies on-use effect + decrements
+        ecs::Inventory cinv; ecs::inventory_add(cinv, ecs::ItemInstance{"potion_hp", 2, 0, {}});
+        w.get<ecs::AttributeSet>(e).define("Health", 100, 0, 100);
+        w.get<ecs::AttributeSet>(e).set("Health", 50);
+        check("consumable use heals via G0 + decrements stack",
+              ecs::use_item(w, e, cinv, 0) && w.get<ecs::AttributeSet>(e).get("Health") == 90.0f &&
+              ecs::inventory_count(cinv, "potion_hp") == 1);
+
+        // authorable + serialize round-trip
+        ecs::register_inventory_components();
+        const ecs::AuthorableComponent* ic = ecs::find_authorable("Inventory");
+        const ecs::AuthorableComponent* ec = ecs::find_authorable("Equipment");
+        check("Inventory + Equipment are authorable", ic && ic->serialize && ec && ec->serialize);
+        if (ic) {
+            ecs::Inventory s; s.max_slots = 8; s.max_weight = 50.0f;
+            s.items.push_back({"sword_iron", 1, 2, {{"AttackPower", 4.5f, "of Might"}}});
+            s.items.push_back({"potion_hp", 5, 0, {}});
+            auto b = ecs::serialize_authorable(*ic, &s);
+            ecs::Inventory s2; ecs::deserialize_authorable(*ic, &s2, b.data(), b.size());
+            check("Inventory serialize round-trips (items + affixes)",
+                  s2.max_slots == 8 && s2.max_weight == 50.0f && s2.items.size() == 2 &&
+                  s2.items[0].affixes.size() == 1 && s2.items[0].affixes[0].amount == 4.5f &&
+                  s2.items[1].quantity == 5);
         }
     }
 

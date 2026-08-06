@@ -12,6 +12,8 @@
 #include "ecs/gameplay_combat.h"        // custom drawer for Combat Actor
 #include "ecs/gameplay_progression.h"   // G3 drawers: Derived Stats / Regen / Progression
 #include "ecs/gameplay_skills.h"        // G3 drawers: Skill Tree / Unlocked Skills
+#include "ecs/gameplay_items.h"         // G4 item registry (names/kinds)
+#include "ecs/gameplay_inventory.h"     // G4 drawers: Inventory / Equipment
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -285,6 +287,51 @@ bool draw_skill_tree(ecs::World& w, ecs::Entity e, void* comp) {
     return changed;
 }
 
+// G4 · Inventory: list stacks (name x qty, weight), use/equip/drop buttons.
+bool draw_inventory(ecs::World& w, ecs::Entity e, void* comp) {
+    auto& inv = *static_cast<ecs::Inventory*>(comp);
+    bool changed = false;
+    ImGui::Text("%d/%s slots   %.1f%s kg",
+                static_cast<int>(inv.items.size()),
+                inv.max_slots > 0 ? std::to_string(inv.max_slots).c_str() : "inf.",
+                ecs::inventory_weight(inv),
+                inv.max_weight > 0.0f ? ("/" + std::to_string(static_cast<int>(inv.max_weight))).c_str() : "");
+    int use = -1, drop = -1, equip = -1;
+    for (size_t i = 0; i < inv.items.size(); ++i) {
+        const ecs::ItemInstance& it = inv.items[i];
+        const ecs::ItemDef* d = ecs::find_item(it.def_id);
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::BulletText("%s x%d%s", d ? d->name.c_str() : it.def_id.c_str(), it.quantity,
+                          it.affixes.empty() ? "" : "  (rolled)");
+        if (d && d->kind == ecs::ItemKind::Consumable) { ImGui::SameLine(); if (ImGui::SmallButton("Use")) use = static_cast<int>(i); }
+        if (d && !d->equip_slot.empty()) { ImGui::SameLine(); if (ImGui::SmallButton("Equip")) equip = static_cast<int>(i); }
+        ImGui::SameLine(); if (ImGui::SmallButton("Drop")) drop = static_cast<int>(i);
+        ImGui::PopID();
+    }
+    if (equip >= 0) { ecs::equip_item(w, e, inv.items[equip]); ecs::inventory_remove(inv, inv.items[equip].def_id, 1); changed = true; }
+    else if (use >= 0)  { ecs::use_item(w, e, inv, static_cast<size_t>(use)); changed = true; }
+    else if (drop >= 0) { inv.items.erase(inv.items.begin() + drop); changed = true; }
+    return changed;
+}
+
+// G4 · Equipment: show each slot + unequip.
+bool draw_equipment(ecs::World& w, ecs::Entity e, void* comp) {
+    auto& eq = *static_cast<ecs::Equipment*>(comp);
+    bool changed = false;
+    int unequip = -1;
+    for (size_t i = 0; i < eq.slots.size(); ++i) {
+        const ecs::ItemDef* d = ecs::find_item(eq.slots[i].item.def_id);
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::BulletText("%s: %s", eq.slots[i].slot.c_str(), d ? d->name.c_str() : eq.slots[i].item.def_id.c_str());
+        ImGui::SameLine(); if (ImGui::SmallButton("Unequip")) unequip = static_cast<int>(i);
+        ImGui::PopID();
+    }
+    if (unequip >= 0) { ecs::unequip_slot(w, e, eq.slots[unequip].slot); changed = true; }
+    ImGui::TextDisabled("applied: %d modifiers, %d tags",
+                        static_cast<int>(eq.applied.size()), static_cast<int>(eq.applied_tags.size()));
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -333,6 +380,10 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                     } else if (std::strcmp(ct.name, "Unlocked Skills") == 0) {
                         const auto& un = *static_cast<ecs::UnlockedSkills*>(comp);
                         ImGui::TextDisabled("%d unlocked", static_cast<int>(un.unlocked.size()));
+                    } else if (std::strcmp(ct.name, "Inventory") == 0) {
+                        if (draw_inventory(w, e, comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Equipment") == 0) {
+                        if (draw_equipment(w, e, comp)) changed = true;
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }

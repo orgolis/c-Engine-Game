@@ -14,6 +14,8 @@
 #include "ecs/gameplay_combat.h"         // G2 ECS melee combat (fixed-tick)
 #include "ecs/gameplay_progression.h"    // G3 derived stats / regen / leveling
 #include "ecs/gameplay_skills.h"         // G3 skill trees
+#include "ecs/gameplay_items.h"          // G4 item defs / instances / loot
+#include "ecs/gameplay_inventory.h"      // G4 inventory + equipment
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -260,6 +262,7 @@ EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_combat_component();       // G2: Combat Actor authorable
     ecs::register_progression_components(); // G3: Derived Stats / Regeneration / Progression
     ecs::register_skill_components();       // G3: Skill Tree / Unlocked Skills
+    ecs::register_inventory_components();    // G4: Inventory / Equipment
 }
 
 EcsSceneBridge::~EcsSceneBridge() = default;

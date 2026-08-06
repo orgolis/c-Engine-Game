@@ -297,16 +297,16 @@ G-modules become data + rules on top.
 | Skill / talent trees, perks | ✅ **`SkillTree`/`UnlockedSkills`** — nodes with cost/prerequisites, permanent stat grants + granted tags; `unlock_skill` (spends points), `skill.unlocked` event. |
 | Classes / builds, respec | ✅ `respec` reverts every node exactly + refunds points. A "class" = a prefab (starting `AttributeSet` + `SkillTree` + abilities). |
 
-### G4 · Items & Inventory 🔴 — **Depends on:** G0
+### G4 · Items & Inventory 🟢 — **Depends on:** G0
 | Sub-feature | Status |
 |---|---|
-| Item definitions (data-driven) + rarity / tiers | 🔴 |
-| Procedural item generation (affixes / rolls) | 🔴 |
-| Inventory (grid/list, stacking, weight/slots) | 🔴 |
-| Equipment / loadout (slots, set bonuses) | 🔴 |
-| Loot system (drop tables, rolls, ground loot) | 🔴 |
-| Consumables (potions, food, scrolls), currency | 🔴 |
-| Item comparison / tooltips | 🔴 |
+| Item definitions (data-driven) + rarity / tiers | ✅ **`ItemDef`** registry (id/kind/rarity/stack/weight/slot/modifiers/tags/on-use/affix-pool/set); no engine change per item. |
+| Procedural item generation (affixes / rolls) | ✅ `roll_item` picks from the affix pool with a deterministic seedable `Rng` (repeatable + net-safe); rolls bump rarity. |
+| Inventory (grid/list, stacking, weight/slots) | ✅ **`Inventory`** — stacking to max_stack, slot + weight caps, add/remove/count. |
+| Equipment / loadout (slots, set bonuses) | ✅ **`Equipment`** — one item/slot; equip applies modifiers→AttributeSet + tags (reverts EXACTLY); `SetBonus` registry applies at N pieces. |
+| Loot system (drop tables, rolls, ground loot) | ✅ **`DropTable`** weighted + per-entry chance + qty range + affix rolls → `roll_loot` (deterministic). Ground-loot spawn = game code (spawn an entity holding the instance). |
+| Consumables (potions, food, scrolls), currency | ✅ `use_item` applies the def's on-use `GameplayEffect`s + decrements; currency = an `ItemKind::Currency` stack (or a G0 attribute). |
+| Item comparison / tooltips | 🟡 data-ready (`item_modifiers`/`find_item` expose everything a tooltip/compare needs); UI later. |
 
 ### G5 · Economy & Crafting 🔴 — **Depends on:** G4
 | Sub-feature | Status |
