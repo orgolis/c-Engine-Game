@@ -424,4 +424,67 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
     return changed;
 }
 
+void draw_inventory_ui(EcsSceneBridge& bridge) {
+    ecs::World& w = bridge.world();
+    w.each<ecs::Inventory>([&](ecs::Entity e, ecs::Inventory& inv) {
+        auto* tags = w.try_get<ecs::GameplayTags>(e);
+        if (!tags || !tags->has("ui.inventory_open")) return;
+
+        char title[64];
+        std::snprintf(title, sizeof(title), "Inventory###inv_%u", static_cast<unsigned>(e));
+        bool open = true;
+        ImGui::SetNextWindowSize(ImVec2(360, 420), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin(title, &open)) {
+            ImGui::Text("%d/%s slots    %.1f kg",
+                        static_cast<int>(inv.items.size()),
+                        inv.max_slots > 0 ? std::to_string(inv.max_slots).c_str() : "inf.",
+                        ecs::inventory_weight(inv));
+            ImGui::Separator();
+
+            int use = -1, drop = -1, equip = -1;
+            if (inv.items.empty()) ImGui::TextDisabled("(empty)");
+            for (size_t i = 0; i < inv.items.size(); ++i) {
+                const ecs::ItemInstance& it = inv.items[i];
+                const ecs::ItemDef* d = ecs::find_item(it.def_id);
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::Text("%s  x%d%s", d ? d->name.c_str() : it.def_id.c_str(), it.quantity,
+                            it.affixes.empty() ? "" : "  (rolled)");
+                ImGui::SameLine(200.0f);
+                if (d && d->kind == ecs::ItemKind::Consumable) { if (ImGui::SmallButton("Use")) use = static_cast<int>(i); ImGui::SameLine(); }
+                if (d && !d->equip_slot.empty())              { if (ImGui::SmallButton("Equip")) equip = static_cast<int>(i); ImGui::SameLine(); }
+                if (ImGui::SmallButton("Drop")) drop = static_cast<int>(i);
+                ImGui::PopID();
+            }
+            if (equip >= 0) { ecs::equip_item(w, e, inv.items[equip], &bridge.events()); ecs::inventory_remove(inv, inv.items[equip].def_id, 1); }
+            else if (use >= 0)  ecs::use_item(w, e, inv, static_cast<size_t>(use), &bridge.events());
+            else if (drop >= 0) inv.items.erase(inv.items.begin() + drop);
+
+            if (auto* eq = w.try_get<ecs::Equipment>(e); eq && !eq->slots.empty()) {
+                ImGui::Separator();
+                ImGui::TextUnformatted("Equipped");
+                int unequip = -1;
+                for (size_t i = 0; i < eq->slots.size(); ++i) {
+                    const ecs::ItemDef* d = ecs::find_item(eq->slots[i].item.def_id);
+                    ImGui::PushID(1000 + static_cast<int>(i));
+                    ImGui::BulletText("%s: %s", eq->slots[i].slot.c_str(),
+                                      d ? d->name.c_str() : eq->slots[i].item.def_id.c_str());
+                    ImGui::SameLine(); if (ImGui::SmallButton("Unequip")) unequip = static_cast<int>(i);
+                    ImGui::PopID();
+                }
+                if (unequip >= 0) ecs::unequip_slot(w, e, eq->slots[unequip].slot, &bridge.events());
+            }
+
+            if (auto* a = w.try_get<ecs::AttributeSet>(e)) {
+                ImGui::Separator();
+                ImGui::Text("Health %.0f    AttackPower %.0f    Armor %.0f",
+                            a->get("Health"), a->get("AttackPower"), a->get("Armor"));
+            }
+            ImGui::Separator();
+            if (ImGui::Button("Close")) open = false;
+        }
+        ImGui::End();
+        if (!open) tags->remove_exact("ui.inventory_open");   // window 'X' or Close button
+    });
+}
+
 }  // namespace schizo::editor
