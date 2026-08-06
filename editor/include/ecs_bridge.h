@@ -48,6 +48,10 @@ public:
     // SURVIVE the per-frame sync (it reuses entities + only rewrites Transform/
     // MeshRenderer), so this is the authoritative home for gameplay state.
     schizo::ecs::World& world();
+
+    // Advance active gameplay effects (DoTs, buffs, timed tags) by dt (G0).
+    // Call each frame from the editor/runtime update.
+    void tick_effects(float dt);
     // The stable ECS entity id for an OOP entity (keyed by its Transform, as used
     // during sync), or kNoEcsEntity if it hasn't been synced yet. Returned as a
     // raw uint32 so includers need no EnTT.

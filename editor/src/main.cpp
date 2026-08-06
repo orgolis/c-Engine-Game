@@ -6113,7 +6113,8 @@ int main(int argc, char** argv) {
             // ready, then feed them to the draw-list builder (authoritative:
             // build_draw_items reads ECS LocalToWorld, OOP matrix is fallback).
             { GWS_PROFILE_ZONE("ecs_sync");
-              ecs_bridge.sync_and_run(editor_scene.GetScene()); }
+              ecs_bridge.sync_and_run(editor_scene.GetScene());
+              ecs_bridge.tick_effects(delta_time); }   // G0: advance DoTs/buffs/timed tags
 
             { GWS_PROFILE_ZONE("build_draw_items");
               schizo::editor::build_draw_items(

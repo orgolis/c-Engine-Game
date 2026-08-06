@@ -7,6 +7,7 @@
 #include "ecs/authorable_components.h"
 #include "ecs/gameplay_attributes.h"
 #include "ecs/gameplay_tags.h"
+#include "ecs/gameplay_effects.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -172,6 +173,46 @@ int main() {
         ecs::GameplayTags g2; tags->deserialize(&g2, tb.data(), tb.size());
         check("tags round-trip through custom serialize",
               g2.tags.size() == 2 && g2.has("state.stunned") && g2.has_exact("element.fire"));
+    }
+
+    // G0: gameplay effects — instant / periodic DoT / duration-tag / buff-revert,
+    // all operating on the data-driven attributes + tags by NAME.
+    {
+        ecs::World ew;
+        const ecs::Entity e = ew.create();
+        ew.add<ecs::AttributeSet>(e, ecs::AttributeSet{});
+        auto& set = ew.get<ecs::AttributeSet>(e);
+        set.define("Health", 100, 0, 100);
+
+        ecs::apply_effect(ew, e, ecs::make_instant("Hit", "Health", -30.0f));
+        check("instant effect changes attribute (100 -> 70)", set.get("Health") == 70.0f);
+
+        ecs::apply_effect(ew, e, ecs::make_dot("Poison", "Health", -5.0f, 1.0f, 3.0f));
+        ecs::tick_effects(ew, 1.0f);
+        ecs::tick_effects(ew, 1.0f);
+        check("periodic DoT applies each period (70 -> 60)", set.get("Health") == 60.0f);
+        ecs::tick_effects(ew, 1.5f);   // final tick then expiry
+        check("DoT applies final tick + expires (-> 55, none active)",
+              set.get("Health") == 55.0f && ew.get<ecs::ActiveEffects>(e).effects.empty());
+
+        ecs::GameplayEffect stun;
+        stun.name = "Stun"; stun.duration_type = ecs::EffectDurationType::Duration; stun.duration = 2.0f;
+        stun.granted_tags = {"state.stunned"};
+        ecs::apply_effect(ew, e, stun);
+        check("duration effect grants a tag while active",
+              ew.has<ecs::GameplayTags>(e) && ew.get<ecs::GameplayTags>(e).has("state.stunned"));
+        ecs::tick_effects(ew, 2.5f);
+        check("granted tag is removed on expiry", !ew.get<ecs::GameplayTags>(e).has("state.stunned"));
+
+        set.set("Health", 40.0f);
+        ecs::GameplayEffect buff;
+        buff.name = "Fortify"; buff.duration_type = ecs::EffectDurationType::Duration; buff.duration = 1.0f;
+        buff.revert_on_end = true;
+        buff.modifiers.push_back({"Health", ecs::EffectOp::Add, 50.0f});
+        ecs::apply_effect(ew, e, buff);
+        check("duration buff applies on start (40 -> 90)", set.get("Health") == 90.0f);
+        ecs::tick_effects(ew, 1.5f);
+        check("buff reverts on expiry (90 -> 40)", set.get("Health") == 40.0f);
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }

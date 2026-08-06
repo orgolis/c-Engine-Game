@@ -5,6 +5,7 @@
 #include "ecs/authorable_components.h"
 #include "ecs/gameplay_attributes.h"   // custom drawer for the data-driven AttributeSet
 #include "ecs/gameplay_tags.h"         // custom drawer for data-driven GameplayTags
+#include "ecs/gameplay_effects.h"      // read-only active-effects view
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -155,6 +156,19 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
             if (ImGui::SmallButton((std::string("Add ") + ct.name).c_str())) { ct.add(w, e); changed = true; }
         }
         ImGui::PopID();
+    }
+
+    // Read-only view of runtime effects currently active on the entity (G0).
+    if (w.has<ecs::ActiveEffects>(e)) {
+        const auto& ae = w.get<ecs::ActiveEffects>(e);
+        if (!ae.effects.empty() && ImGui::CollapsingHeader("Active Effects (runtime)")) {
+            for (const auto& fx : ae.effects) {
+                if (fx.def.duration_type == ecs::EffectDurationType::Duration)
+                    ImGui::BulletText("%s  (%.1fs left)", fx.def.name.c_str(), fx.remaining);
+                else
+                    ImGui::BulletText("%s", fx.def.name.c_str());
+            }
+        }
     }
     return changed;
 }
