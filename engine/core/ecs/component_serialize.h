@@ -41,6 +41,34 @@ inline void put_bytes(std::vector<uint8_t>& b, const void* d, size_t n) {
 inline bool get_bytes(const uint8_t*& p, const uint8_t* e, void* out, size_t n) {
     if (p + n > e) return false; std::memcpy(out, p, n); p += n; return true;
 }
+
+// Shared string / string-vector / scalar helpers for the hand-written custom
+// serializers (state machine, combat, progression, items, …).
+inline void put_str(std::vector<uint8_t>& out, const std::string& s) {
+    const uint32_t n = static_cast<uint32_t>(s.size());
+    put_bytes(out, &n, 4); put_bytes(out, s.data(), n);
+}
+inline void put_str_vec(std::vector<uint8_t>& out, const std::vector<std::string>& v) {
+    const uint32_t n = static_cast<uint32_t>(v.size());
+    put_bytes(out, &n, 4);
+    for (const auto& s : v) put_str(out, s);
+}
+inline bool get_str(const uint8_t*& p, const uint8_t* e, std::string& s) {
+    uint32_t n = 0;
+    if (!get_bytes(p, e, &n, 4) || p + n > e) return false;
+    s.assign(reinterpret_cast<const char*>(p), n); p += n; return true;
+}
+inline bool get_str_vec(const uint8_t*& p, const uint8_t* e, std::vector<std::string>& v) {
+    uint32_t n = 0;
+    if (!get_bytes(p, e, &n, 4)) return false;
+    v.clear();
+    for (uint32_t i = 0; i < n; ++i) { std::string s; if (!get_str(p, e, s)) return false; v.push_back(std::move(s)); }
+    return true;
+}
+inline void put_f32(std::vector<uint8_t>& out, float f) { put_bytes(out, &f, 4); }
+inline void put_i32(std::vector<uint8_t>& out, int32_t i) { put_bytes(out, &i, 4); }
+inline bool get_f32(const uint8_t*& p, const uint8_t* e, float& f) { return get_bytes(p, e, &f, 4); }
+inline bool get_i32(const uint8_t*& p, const uint8_t* e, int32_t& i) { return get_bytes(p, e, &i, 4); }
 }  // namespace detail
 
 // Serialize a component instance's reflected fields to a byte buffer.

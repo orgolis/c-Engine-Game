@@ -10,6 +10,8 @@
 #include "ecs/gameplay_triggers.h"     // custom drawer for Trigger Volume
 #include "ecs/gameplay_state_machine.h" // custom drawer for State Machine
 #include "ecs/gameplay_combat.h"        // custom drawer for Combat Actor
+#include "ecs/gameplay_progression.h"   // G3 drawers: Derived Stats / Regen / Progression
+#include "ecs/gameplay_skills.h"        // G3 drawers: Skill Tree / Unlocked Skills
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -215,6 +217,74 @@ bool draw_combat_actor(void* comp) {
     return changed;
 }
 
+// G3 · Progression: level/XP/points + a live "Grant XP" button.
+bool draw_progression(ecs::World& w, ecs::Entity e, void* comp) {
+    auto& p = *static_cast<ecs::Progression*>(comp);
+    bool changed = false;
+    ImGui::Text("Level %d   XP %.0f / %.0f   Points %d",
+                p.level, p.xp, p.curve.threshold(p.level + 1), p.skill_points);
+    if (ImGui::DragInt("points / level", &p.points_per_level, 0.1f, 0, 20)) changed = true;
+    ImGui::TextDisabled("curve: %.0f + %.0f*n + %.0f*n^2", p.curve.base, p.curve.linear, p.curve.quadratic);
+    if (ImGui::SmallButton("Grant 100 XP")) { ecs::grant_xp(w, e, 100.0f); changed = true; }
+    return changed;
+}
+
+// G3 · Regeneration: edit per-attribute regen rates.
+bool draw_regeneration(void* comp) {
+    auto& r = *static_cast<ecs::Regeneration*>(comp);
+    bool changed = false;
+    int remove = -1;
+    for (size_t i = 0; i < r.entries.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        char nm[48]; std::snprintf(nm, sizeof(nm), "%s", r.entries[i].attribute.c_str());
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::InputText("attr", nm, sizeof(nm))) { r.entries[i].attribute = nm; changed = true; }
+        ImGui::SameLine(); ImGui::SetNextItemWidth(90);
+        if (ImGui::DragFloat("/s", &r.entries[i].per_second, 0.1f)) changed = true;
+        ImGui::SameLine(); if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+        ImGui::PopID();
+    }
+    if (remove >= 0) { r.entries.erase(r.entries.begin() + remove); changed = true; }
+    if (ImGui::SmallButton("Add regen")) { r.entries.push_back({"Health", 1.0f}); changed = true; }
+    return changed;
+}
+
+// G3 · Derived Stats: read-only formulas + a Recompute button.
+bool draw_derived_stats(ecs::World& w, ecs::Entity e, void* comp) {
+    const auto& ds = *static_cast<ecs::DerivedStats*>(comp);
+    for (const auto& d : ds.stats) {
+        std::string f = d.target + (d.set_max ? ".max = " : " = ") + std::to_string(d.base);
+        for (const auto& t : d.terms) { f += " + " + std::to_string(t.coeff) + "*" + t.source; }
+        ImGui::BulletText("%s", f.c_str());
+    }
+    if (ImGui::SmallButton("Recompute")) { ecs::recompute_derived(w, e); return true; }
+    return false;
+}
+
+// G3 · Skill Tree: list nodes with Unlock buttons (spends Progression points).
+bool draw_skill_tree(ecs::World& w, ecs::Entity e, void* comp) {
+    auto& tree = *static_cast<ecs::SkillTree*>(comp);
+    bool changed = false;
+    const ecs::UnlockedSkills* un = w.try_get<ecs::UnlockedSkills>(e);
+    for (const auto& n : tree.nodes) {
+        const bool have = un && ecs::skill_unlocked(*un, n.id);
+        ImGui::PushID(n.id.c_str());
+        if (have) {
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1), "[x] %s (%d)", n.name.c_str(), n.cost);
+        } else {
+            ImGui::Text("[ ] %s (%d)", n.name.c_str(), n.cost);
+            ImGui::SameLine();
+            const bool ok = ecs::can_unlock(w, e, n.id);
+            if (!ok) ImGui::BeginDisabled();
+            if (ImGui::SmallButton("Unlock") && ecs::unlock_skill(w, e, n.id)) changed = true;
+            if (!ok) ImGui::EndDisabled();
+        }
+        ImGui::PopID();
+    }
+    if (ImGui::SmallButton("Respec")) { ecs::respec(w, e); changed = true; }
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -252,6 +322,17 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_state_machine(w, e, comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Combat Actor") == 0) {
                         if (draw_combat_actor(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Progression") == 0) {
+                        if (draw_progression(w, e, comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Regeneration") == 0) {
+                        if (draw_regeneration(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Derived Stats") == 0) {
+                        if (draw_derived_stats(w, e, comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Skill Tree") == 0) {
+                        if (draw_skill_tree(w, e, comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Unlocked Skills") == 0) {
+                        const auto& un = *static_cast<ecs::UnlockedSkills*>(comp);
+                        ImGui::TextDisabled("%d unlocked", static_cast<int>(un.unlocked.size()));
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }

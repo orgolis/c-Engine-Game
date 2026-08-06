@@ -288,14 +288,14 @@ G-modules become data + rules on top.
 | Threat / aggro | 🔴 |
 | Hit reactions, knockback, launch, ragdoll, death | 🟡 — hitstun/stagger + FSM death state ✅; knockback/launch/ragdoll pending (rides Physics/Animation). |
 
-### G3 · Stats & Progression 🔴 — **Depends on:** G0
+### G3 · Stats & Progression 🟢 — **Depends on:** G0
 | Sub-feature | Status |
 |---|---|
-| Attributes + derived stats | 🔴 |
-| Health / mana / stamina resources + regen | 🔴 |
-| Leveling & XP curves | 🔴 |
-| Skill / talent trees, perks | 🔴 |
-| Classes / builds, respec | 🔴 |
+| Attributes + derived stats | ✅ `AttributeSet` (G0) + **`DerivedStats`** — target = base + Σ(coeff*source), `set_max` for resource caps; `recompute_derived`. |
+| Health / mana / stamina resources + regen | ✅ **`Regeneration`** — per-attribute rate, `tick_regen` (clamped). |
+| Leveling & XP curves | ✅ **`Progression`** — data-driven `XpCurve` (base+linear+quad), `grant_xp` levels up, points/level, per-level attribute growth, `level.up` event. |
+| Skill / talent trees, perks | ✅ **`SkillTree`/`UnlockedSkills`** — nodes with cost/prerequisites, permanent stat grants + granted tags; `unlock_skill` (spends points), `skill.unlocked` event. |
+| Classes / builds, respec | ✅ `respec` reverts every node exactly + refunds points. A "class" = a prefab (starting `AttributeSet` + `SkillTree` + abilities). |
 
 ### G4 · Items & Inventory 🔴 — **Depends on:** G0
 | Sub-feature | Status |

@@ -12,6 +12,8 @@
 #include "ecs/gameplay_triggers.h"       // G0 trigger-volume overlap system
 #include "ecs/gameplay_state_machine.h"  // G1 gameplay state machine
 #include "ecs/gameplay_combat.h"         // G2 ECS melee combat (fixed-tick)
+#include "ecs/gameplay_progression.h"    // G3 derived stats / regen / leveling
+#include "ecs/gameplay_skills.h"         // G3 skill trees
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -88,6 +90,7 @@ ecs::World& EcsSceneBridge::world() { return impl_->world; }
 void EcsSceneBridge::tick_gameplay(float dt) {
     ecs::tick_effects(impl_->world, dt);                          // active effects: periodic ticks + expiry
     ecs::tick_abilities(impl_->world, dt);                        // ability cooldowns
+    ecs::tick_regen(impl_->world, dt);                            // G3: resource regeneration
     ecs::tick_state_machines(impl_->world, &impl_->event_bus, dt); // G1: FSM start/age/timeout -> events
     // G2: frame-data combat runs at a FIXED 60 Hz (deterministic startup/active
     // frames), regardless of render frame rate.
@@ -255,6 +258,8 @@ EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_trigger_components();    // G0: Trigger Volume + Trigger Actor authorable
     ecs::register_state_machine_component(); // G1: State Machine authorable
     ecs::register_combat_component();       // G2: Combat Actor authorable
+    ecs::register_progression_components(); // G3: Derived Stats / Regeneration / Progression
+    ecs::register_skill_components();       // G3: Skill Tree / Unlocked Skills
 }
 
 EcsSceneBridge::~EcsSceneBridge() = default;

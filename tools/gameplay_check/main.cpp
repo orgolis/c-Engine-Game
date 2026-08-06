@@ -14,6 +14,8 @@
 #include "ecs/gameplay_triggers.h"
 #include "ecs/gameplay_state_machine.h"
 #include "ecs/gameplay_combat.h"
+#include "ecs/gameplay_progression.h"
+#include "ecs/gameplay_skills.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -548,6 +550,114 @@ int main() {
             check("Combat Actor serialize round-trips (config + poise reset)",
                   a2.max_poise == 55.0f && a2.hurt_radius == 0.9f && a2.hurt_height == 1.4f &&
                   a2.damage_type == "fire" && a2.poise == 55.0f);
+        }
+    }
+
+    // G3: derived stats — MaxHealth from Vitality, AttackPower from Strength.
+    {
+        ecs::World w; const ecs::Entity e = w.create();
+        w.add<ecs::AttributeSet>(e, ecs::AttributeSet{});
+        auto& a = w.get<ecs::AttributeSet>(e);
+        a.define("Vitality", 10, 0, 100);
+        a.define("Strength", 5,  0, 100);
+        ecs::DerivedStats ds;
+        ds.stats.push_back({"Health", 50.0f, {{"Vitality", 10.0f}}, /*set_max=*/true});
+        ds.stats.push_back({"AttackPower", 0.0f, {{"Strength", 2.0f}}, false});
+        w.add<ecs::DerivedStats>(e, ds);
+        ecs::recompute_derived(w, e);
+        check("derived MaxHealth = 50 + 10*Vitality (=150)", a.get("Health") == 150.0f && a.find("Health")->max == 150.0f);
+        check("derived AttackPower = 2*Strength (=10)", a.get("AttackPower") == 10.0f);
+        a.set("Vitality", 20); ecs::recompute_derived(w, e);
+        check("derived recompute tracks source change (Health max -> 250)", a.find("Health")->max == 250.0f);
+    }
+    // G3: resource regeneration over time.
+    {
+        ecs::World w; const ecs::Entity e = w.create();
+        w.add<ecs::AttributeSet>(e, ecs::AttributeSet{});
+        w.get<ecs::AttributeSet>(e).define("Stamina", 100, 0, 100);
+        w.get<ecs::AttributeSet>(e).set("Stamina", 40);
+        ecs::Regeneration r; r.entries.push_back({"Stamina", 20.0f});   // 20/s
+        w.add<ecs::Regeneration>(e, r);
+        ecs::tick_regen(w, 1.0f);
+        check("regen adds rate*dt (40 -> 60)", w.get<ecs::AttributeSet>(e).get("Stamina") == 60.0f);
+        ecs::tick_regen(w, 10.0f);
+        check("regen clamps at the attribute max (100)", w.get<ecs::AttributeSet>(e).get("Stamina") == 100.0f);
+    }
+    // G3: leveling — XP curve, level-up, points, per-level growth, event.
+    {
+        ecs::World w; ecs::GameplayEventBus bus;
+        const ecs::Entity e = w.create();
+        w.add<ecs::AttributeSet>(e, ecs::AttributeSet{});
+        w.get<ecs::AttributeSet>(e).define("Strength", 5, 0, 999);
+        ecs::Progression prog;
+        prog.curve = {100.0f, 0.0f, 0.0f};        // flat 100 XP per level
+        prog.points_per_level = 2;
+        prog.per_level_growth.push_back({"Strength", 1.0f});
+        w.add<ecs::Progression>(e, prog);
+        int levelups = 0;
+        bus.subscribe("level.up", [&](const ecs::GameplayEvent&) { ++levelups; });
+
+        int gained = ecs::grant_xp(w, e, 250.0f, &bus);   // 100+100 -> 2 levels, 50 banked
+        bus.flush();
+        auto& p = w.get<ecs::Progression>(e);
+        check("XP grants the right number of levels (2)", gained == 2 && p.level == 3);
+        check("leftover XP is banked (50)", p.xp == 50.0f);
+        check("skill points accrue per level (4)", p.skill_points == 4);
+        check("per-level growth raised the attribute (Str 5 -> 7)", w.get<ecs::AttributeSet>(e).get("Strength") == 7.0f);
+        check("level.up event fired per level (2)", levelups == 2);
+    }
+    // G3: skill tree — cost/prereq gate, permanent grants, respec reverts exactly.
+    {
+        ecs::World w; const ecs::Entity e = w.create();
+        w.add<ecs::AttributeSet>(e, ecs::AttributeSet{});
+        w.get<ecs::AttributeSet>(e).define("Strength", 10, 0, 999);
+        ecs::Progression prog; prog.skill_points = 3; w.add<ecs::Progression>(e, prog);
+        ecs::SkillTree tree;
+        tree.nodes.push_back({"might1", "Might I",  1, {},           {{"Strength", 5.0f}}, {}});
+        tree.nodes.push_back({"might2", "Might II", 2, {"might1"},   {{"Strength", 5.0f}}, {"ability.power_strike"}});
+        w.add<ecs::SkillTree>(e, tree);
+        w.add<ecs::UnlockedSkills>(e, ecs::UnlockedSkills{});
+
+        check("cannot unlock a node behind an unmet prerequisite", !ecs::can_unlock(w, e, "might2"));
+        check("unlock spends points + applies the grant (Str 10 -> 15)",
+              ecs::unlock_skill(w, e, "might1") && w.get<ecs::AttributeSet>(e).get("Strength") == 15.0f &&
+              w.get<ecs::Progression>(e).skill_points == 2);
+        check("prerequisite now met -> unlock grants tag + stat (Str -> 20)",
+              ecs::unlock_skill(w, e, "might2") && w.get<ecs::AttributeSet>(e).get("Strength") == 20.0f &&
+              w.get<ecs::GameplayTags>(e).has("ability.power_strike"));
+
+        const int refunded = ecs::respec(w, e);
+        check("respec reverts every grant + tag and refunds points",
+              refunded == 3 && w.get<ecs::AttributeSet>(e).get("Strength") == 10.0f &&
+              w.get<ecs::Progression>(e).skill_points == 3 &&
+              w.get<ecs::UnlockedSkills>(e).unlocked.empty() &&
+              !w.get<ecs::GameplayTags>(e).has("ability.power_strike"));
+    }
+    // G3: authorable + serialize round-trips for the new components.
+    {
+        ecs::register_progression_components();
+        ecs::register_skill_components();
+        const ecs::AuthorableComponent* pc = ecs::find_authorable("Progression");
+        const ecs::AuthorableComponent* tc = ecs::find_authorable("Skill Tree");
+        check("Progression + Skill Tree are authorable", pc && pc->serialize && tc && tc->serialize);
+        if (pc && tc) {
+            ecs::Progression p; p.level = 7; p.xp = 33.0f; p.skill_points = 4;
+            p.curve = {120.0f, 40.0f, 5.0f}; p.per_level_growth.push_back({"Vitality", 2.0f});
+            auto pb = ecs::serialize_authorable(*pc, &p);
+            ecs::Progression p2; ecs::deserialize_authorable(*pc, &p2, pb.data(), pb.size());
+            check("Progression serialize round-trips",
+                  p2.level == 7 && p2.xp == 33.0f && p2.skill_points == 4 &&
+                  p2.curve.quadratic == 5.0f && p2.per_level_growth.size() == 1 &&
+                  p2.per_level_growth[0].attribute == "Vitality");
+
+            ecs::SkillTree t;
+            t.nodes.push_back({"n1", "Node", 3, {"root"}, {{"Strength", 8.0f}}, {"tag.a", "tag.b"}});
+            auto tb = ecs::serialize_authorable(*tc, &t);
+            ecs::SkillTree t2; ecs::deserialize_authorable(*tc, &t2, tb.data(), tb.size());
+            check("Skill Tree serialize round-trips",
+                  t2.nodes.size() == 1 && t2.nodes[0].id == "n1" && t2.nodes[0].cost == 3 &&
+                  t2.nodes[0].prerequisites.size() == 1 && t2.nodes[0].grants.size() == 1 &&
+                  t2.nodes[0].grants[0].amount == 8.0f && t2.nodes[0].granted_tags.size() == 2);
         }
     }
 

@@ -129,29 +129,7 @@ inline void tick_state_machines(World& w, GameplayEventBus* bus, float dt) {
 }
 
 // ---- custom serialization (states + transitions + initial; runtime skipped) ----
-namespace detail {
-inline void put_str(std::vector<uint8_t>& out, const std::string& s) {
-    const uint32_t n = static_cast<uint32_t>(s.size());
-    put_bytes(out, &n, 4); put_bytes(out, s.data(), n);
-}
-inline void put_str_vec(std::vector<uint8_t>& out, const std::vector<std::string>& v) {
-    const uint32_t n = static_cast<uint32_t>(v.size());
-    put_bytes(out, &n, 4);
-    for (const auto& s : v) put_str(out, s);
-}
-inline bool get_str(const uint8_t*& p, const uint8_t* e, std::string& s) {
-    uint32_t n = 0;
-    if (!get_bytes(p, e, &n, 4) || p + n > e) return false;
-    s.assign(reinterpret_cast<const char*>(p), n); p += n; return true;
-}
-inline bool get_str_vec(const uint8_t*& p, const uint8_t* e, std::vector<std::string>& v) {
-    uint32_t n = 0;
-    if (!get_bytes(p, e, &n, 4)) return false;
-    v.clear();
-    for (uint32_t i = 0; i < n; ++i) { std::string s; if (!get_str(p, e, s)) return false; v.push_back(std::move(s)); }
-    return true;
-}
-}  // namespace detail
+// String/vector helpers live in component_serialize.h (detail::put_str, …).
 
 inline void serialize_state_machine(const void* obj, std::vector<uint8_t>& out) {
     const auto& sm = *static_cast<const StateMachine*>(obj);
