@@ -145,11 +145,17 @@ void AssetBrowserPanel::detect_roots() {
     std::error_code ec;
     cwd_ = fs::current_path(ec);
 
-    // Project root: nearest ancestor holding both CMakeLists.txt and assets/.
+    // Project root: the nearest ancestor that is a real project (has a
+    // `project.schizo` manifest) — this is what the Hub launches us into. Fall
+    // back to the dev-tree heuristic (CMakeLists.txt + assets/) so running from
+    // the source repo still roots at the repo. Checking project.schizo FIRST is
+    // what keeps the browser scoped to the PROJECT, not the engine/repo it runs in.
     project_root_ = cwd_;
     fs::path probe = cwd_;
-    for (int i = 0; i < 6 && !probe.empty(); ++i) {
-        if (fs::exists(probe / "CMakeLists.txt", ec) && fs::exists(probe / "assets", ec)) {
+    for (int i = 0; i < 8 && !probe.empty(); ++i) {
+        const bool is_project = fs::exists(probe / "project.schizo", ec);
+        const bool is_devtree = fs::exists(probe / "CMakeLists.txt", ec) && fs::exists(probe / "assets", ec);
+        if (is_project || is_devtree) {
             project_root_ = probe;
             break;
         }

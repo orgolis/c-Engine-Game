@@ -4946,6 +4946,8 @@ int main(int argc, char** argv) {
                 editor_state.features       = pm.features;
                 editor_state.project_loaded = true;
                 schizo::editor::set_project_root(pm.project_dir);  // sandbox CWD
+                if (editor_state.asset_browser)                    // re-scope the browser to THIS project
+                    editor_state.asset_browser->Reroot();          // (was rooted at the engine dir at construction)
                 const std::string scene_path = pm.default_scene_path();
                 std::error_code sec;
                 if (std::filesystem::exists(scene_path, sec))
