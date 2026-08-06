@@ -6114,7 +6114,7 @@ int main(int argc, char** argv) {
             // build_draw_items reads ECS LocalToWorld, OOP matrix is fallback).
             { GWS_PROFILE_ZONE("ecs_sync");
               ecs_bridge.sync_and_run(editor_scene.GetScene());
-              ecs_bridge.tick_effects(delta_time); }   // G0: advance DoTs/buffs/timed tags
+              ecs_bridge.tick_gameplay(delta_time); }   // G0: effects/abilities/triggers/timers/events
 
             { GWS_PROFILE_ZONE("build_draw_items");
               schizo::editor::build_draw_items(

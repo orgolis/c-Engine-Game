@@ -10,6 +10,8 @@
 #include "ecs/gameplay_effects.h"
 #include "ecs/gameplay_abilities.h"
 #include "ecs/gameplay_damage.h"
+#include "ecs/gameplay_events.h"
+#include "ecs/gameplay_triggers.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -287,6 +289,101 @@ int main() {
         float blocked = ecs::apply_damage(dw, mob, ecs::DamageInfo{99.0f, "fire"});
         check("immunity tag nullifies typed damage (0, health unchanged)",
               blocked == 0.0f && a.get("Health") == 50.0f);
+    }
+
+    // G0: event bus — named + wildcard pub/sub, deferred flush, no re-entrancy.
+    {
+        ecs::GameplayEventBus bus;
+        int dmg_count = 0; float dmg_total = 0.0f; int all_count = 0;
+        bus.subscribe("damage.dealt", [&](const ecs::GameplayEvent& e) { ++dmg_count; dmg_total += e.value; });
+        bus.subscribe("*",            [&](const ecs::GameplayEvent&)   { ++all_count; });
+
+        ecs::GameplayEvent e1; e1.name = "damage.dealt"; e1.value = 10.0f;
+        ecs::GameplayEvent e2; e2.name = "damage.dealt"; e2.value = 25.0f;
+        ecs::GameplayEvent e3; e3.name = "item.pickup";
+        bus.publish(e1); bus.publish(e2); bus.publish(e3);
+        check("events queue until flush", bus.pending() == 3 && dmg_count == 0);
+        bus.flush();
+        check("named subscriber gets only matching events (2, sum 35)", dmg_count == 2 && dmg_total == 35.0f);
+        check("wildcard subscriber gets all events (3)", all_count == 3);
+        check("queue drained after flush", bus.pending() == 0);
+
+        ecs::GameplayEventBus bus2;
+        int fired = 0;
+        bus2.subscribe("chain", [&](const ecs::GameplayEvent&) {
+            if (fired == 0) { ecs::GameplayEvent n; n.name = "chain"; bus2.publish(n); }
+            ++fired;
+        });
+        ecs::GameplayEvent c; c.name = "chain"; bus2.publish(c);
+        bus2.flush();
+        check("event re-published during dispatch is deferred (not re-entrant)", fired == 1 && bus2.pending() == 1);
+        bus2.flush();
+        check("deferred event dispatched on the next flush", fired == 2 && bus2.pending() == 0);
+    }
+
+    // G0: timer manager — one-shot after() + repeating every() + cancel.
+    {
+        ecs::TimerManager tm;
+        int oneshot = 0;
+        tm.after(1.0f, [&] { ++oneshot; });
+        tm.tick(0.5f);
+        check("one-shot timer does not fire early", oneshot == 0);
+        tm.tick(0.6f);   // total 1.1
+        check("one-shot fires after its delay + is removed", oneshot == 1 && tm.active() == 0);
+
+        int reps = 0;
+        const auto id = tm.every(0.5f, [&] { ++reps; });
+        tm.tick(1.25f);   // catches up: fires at 0.5 and 1.0
+        check("repeating timer fires each interval (2)", reps == 2);
+        tm.cancel(id);
+        tm.tick(1.0f);
+        check("cancelled timer stops firing", reps == 2 && tm.active() == 0);
+    }
+
+    // G0: trigger volumes — actor enter/exit publishes events on the bus.
+    {
+        ecs::World tw;
+        ecs::GameplayEventBus bus;
+        std::string last_event; ecs::Entity last_actor = ecs::null_entity;
+        bus.subscribe("*", [&](const ecs::GameplayEvent& e) { last_event = e.name; last_actor = e.instigator; });
+
+        const ecs::Entity vol = tw.create();
+        tw.add<ecs::Transform>(vol, ecs::Transform{});   // volume at origin
+        ecs::TriggerVolume tv;
+        tv.shape = 1; tv.radius = 2.0f; tv.enter_event = "zone.enter"; tv.exit_event = "zone.exit";
+        tw.add<ecs::TriggerVolume>(vol, tv);
+
+        const ecs::Entity actor = tw.create();
+        ecs::Transform at; at.position = glm::vec3(10.0f, 0.0f, 0.0f);   // far away
+        tw.add<ecs::Transform>(actor, at);
+        tw.add<ecs::TriggerActor>(actor, ecs::TriggerActor{});
+
+        ecs::tick_triggers(tw, bus); bus.flush();
+        check("no event while actor is outside the volume", last_event.empty());
+
+        tw.get<ecs::Transform>(actor).position = glm::vec3(1.0f, 0.0f, 0.0f);   // inside r=2
+        ecs::tick_triggers(tw, bus); bus.flush();
+        check("enter event fires when the actor enters", last_event == "zone.enter" && last_actor == actor);
+
+        last_event.clear();
+        ecs::tick_triggers(tw, bus); bus.flush();
+        check("no repeat enter while still inside", last_event.empty());
+
+        tw.get<ecs::Transform>(actor).position = glm::vec3(10.0f, 0.0f, 0.0f);   // leave
+        ecs::tick_triggers(tw, bus); bus.flush();
+        check("exit event fires when the actor leaves", last_event == "zone.exit" && last_actor == actor);
+
+        ecs::register_trigger_components();
+        const ecs::AuthorableComponent* tvc = ecs::find_authorable("Trigger Volume");
+        check("Trigger Volume is authorable via custom hooks", tvc && tvc->serialize && tvc->deserialize);
+        if (tvc) {
+            const auto bytes = ecs::serialize_authorable(*tvc, &tv);
+            ecs::TriggerVolume tv2;
+            ecs::deserialize_authorable(*tvc, &tv2, bytes.data(), bytes.size());
+            check("Trigger Volume serialize round-trips (shape/size/events)",
+                  tv2.shape == 1 && tv2.radius == 2.0f &&
+                  tv2.enter_event == "zone.enter" && tv2.exit_event == "zone.exit");
+        }
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }

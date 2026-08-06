@@ -250,7 +250,10 @@ each a candidate toggle. Most ride the engine modules above (Physics, Animation,
 AI, Networking, Scripting, Game UI). A shared **G0 gameplay framework** underpins
 the rest, so build it first.
 
-### G0 · Gameplay Framework Core 🔴 — the shared substrate
+### G0 · Gameplay Framework Core 🟢 — the shared substrate (core complete)
+> Attributes, tags, effects, abilities, damage, event bus, timers, triggers all ✅ + verified
+> (`tools/gameplay_check`, 57 checks). Only *data-def-as-assets* remains = the deferred **F5**
+> (authored per-module as each lands). All data-driven — the engine bakes in no fixed stats/types.
 The GAS-style backbone everything else plugs into. Build this first; the other
 G-modules become data + rules on top.
 | Sub-feature | Status | Notes |
@@ -260,7 +263,7 @@ G-modules become data + rules on top.
 | Gameplay Effects (instant / duration / periodic; modifiers, stacking) | ✅ | **`GameplayEffect`** — data-defined modifiers on attributes by name + granted tags; instant/DoT/HoT/timed-buff w/ revert; live `tick_effects`. |
 | Gameplay Tags (hierarchical tags for state/conditions) | ✅ | **`GameplayTags`** — any user-defined tags; hierarchical match (child satisfies parent query); authorable/saveable/prefab-able. |
 | Damage / mitigation pipeline (types, resist, crit, execution) | ✅ | **`apply_damage`/`DamageInfo`** — data-driven damage types by name; `resist.<type>` attribute mitigation + `immune.<type>` tag; resolves to an instant effect on the health attribute. |
-| Event / messaging bus + trigger volumes + cooldown/timer manager | 🔴 | |
+| Event / messaging bus + trigger volumes + cooldown/timer manager | ✅ | **`GameplayEventBus`** (named + `*` pub/sub, deferred flush, no re-entrancy) + **`TimerManager`** (after/every/cancel) + **`TriggerVolume`/`TriggerActor`** (box/sphere overlap → enter/exit events). Owned + ticked by the bridge (`tick_gameplay`). |
 | Data-driven definitions (items/abilities/quests as assets) + scripting hooks | 🔴 | rides Scripting/Assets |
 
 ### G1 · Player & Movement 🟡 — **Depends on:** Physics, Animation

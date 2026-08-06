@@ -7,6 +7,7 @@
 #include "ecs/gameplay_tags.h"         // custom drawer for data-driven GameplayTags
 #include "ecs/gameplay_effects.h"      // read-only active-effects view
 #include "ecs/gameplay_abilities.h"    // read-only abilities/cooldown view
+#include "ecs/gameplay_triggers.h"     // custom drawer for Trigger Volume
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -119,6 +120,34 @@ bool draw_gameplay_tags(void* comp) {
     return changed;
 }
 
+// Custom inspector for the data-driven TriggerVolume: shape + size + the event
+// names it publishes on enter/exit (any game gives those events meaning).
+bool draw_trigger_volume(void* comp) {
+    auto& v = *static_cast<ecs::TriggerVolume*>(comp);
+    bool changed = false;
+
+    int shape = static_cast<int>(v.shape);
+    if (ImGui::RadioButton("Box", &shape, 0)) changed = true;      // radios, not a combo
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Sphere", &shape, 1)) changed = true;
+    v.shape = static_cast<uint32_t>(shape);
+
+    if (v.shape == 1) {
+        if (ImGui::DragFloat("radius", &v.radius, 0.1f, 0.0f, 0.0f)) changed = true;
+    } else {
+        if (ImGui::DragFloat3("half extents", glm::value_ptr(v.half_extents), 0.1f)) changed = true;
+    }
+
+    char enter[96]; std::snprintf(enter, sizeof(enter), "%s", v.enter_event.c_str());
+    if (ImGui::InputText("enter event", enter, sizeof(enter))) { v.enter_event = enter; changed = true; }
+    char exit[96]; std::snprintf(exit, sizeof(exit), "%s", v.exit_event.c_str());
+    if (ImGui::InputText("exit event", exit, sizeof(exit))) { v.exit_event = exit; changed = true; }
+
+    if (ImGui::Checkbox("fire enter once", &v.once)) changed = true;
+    ImGui::TextDisabled("currently inside: %d", static_cast<int>(v.inside.size()));
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -147,6 +176,11 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_attribute_set(comp)) changed = true;   // data-driven
                     } else if (std::strcmp(ct.name, "Tags") == 0) {
                         if (draw_gameplay_tags(comp)) changed = true;   // data-driven
+                    } else if (std::strcmp(ct.name, "Trigger Volume") == 0) {
+                        if (draw_trigger_volume(comp)) changed = true;  // data-driven
+                    } else if (std::strcmp(ct.name, "Trigger Actor") == 0) {
+                        auto& a = *static_cast<ecs::TriggerActor*>(comp);
+                        if (ImGui::Checkbox("enabled (triggers volumes)", &a.enabled)) changed = true;
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }

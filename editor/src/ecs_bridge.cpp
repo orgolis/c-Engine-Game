@@ -8,6 +8,8 @@
 #include "ecs/gameplay_tags.h"           // G0 data-driven tags
 #include "ecs/gameplay_effects.h"        // G0 effects engine (tick)
 #include "ecs/gameplay_abilities.h"      // G0 ability cooldown tick
+#include "ecs/gameplay_events.h"         // G0 event bus + timer manager
+#include "ecs/gameplay_triggers.h"       // G0 trigger-volume overlap system
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -63,6 +65,10 @@ struct EcsSceneBridge::Impl {
     // Authoritative read path: OOP Transform* -> ECS-computed world matrix,
     // refreshed every sync. Rendering queries this instead of GetWorldMatrix().
     std::unordered_map<scene::Transform*, glm::mat4> result;
+
+    // G0 gameplay services, one per world. Ticked/flushed by tick_gameplay().
+    ecs::GameplayEventBus event_bus;
+    ecs::TimerManager     timer_mgr;
 };
 
 // TRS compose (defined below; forward-declared for draw_benchmark above the def).
@@ -76,10 +82,16 @@ const glm::mat4* EcsSceneBridge::world_matrix(
 
 ecs::World& EcsSceneBridge::world() { return impl_->world; }
 
-void EcsSceneBridge::tick_effects(float dt) {
-    ecs::tick_effects(impl_->world, dt);      // active effects: periodic ticks + expiry
-    ecs::tick_abilities(impl_->world, dt);    // ability cooldowns
+void EcsSceneBridge::tick_gameplay(float dt) {
+    ecs::tick_effects(impl_->world, dt);                      // active effects: periodic ticks + expiry
+    ecs::tick_abilities(impl_->world, dt);                    // ability cooldowns
+    ecs::tick_triggers(impl_->world, impl_->event_bus);       // enter/exit -> events
+    impl_->timer_mgr.tick(dt);                               // one-shot / repeating timers
+    impl_->event_bus.flush();                                // dispatch everything queued this frame
 }
+
+ecs::GameplayEventBus& EcsSceneBridge::events() { return impl_->event_bus; }
+ecs::TimerManager&     EcsSceneBridge::timers() { return impl_->timer_mgr; }
 
 uint32_t EcsSceneBridge::ecs_entity_id(const schizo::scene::Transform* tf) const {
     auto it = impl_->tf_to_entity.find(const_cast<scene::Transform*>(tf));
@@ -228,6 +240,7 @@ EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_core_components();
     ecs::register_attribute_component();   // G0: AttributeSet is authorable
     ecs::register_tags_component();        // G0: GameplayTags is authorable
+    ecs::register_trigger_components();    // G0: Trigger Volume + Trigger Actor authorable
 }
 
 EcsSceneBridge::~EcsSceneBridge() = default;
