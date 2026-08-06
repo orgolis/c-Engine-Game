@@ -790,6 +790,19 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 ImGui::EndMenu();
             }
 
+            // Spawn a cube pre-loaded with every G0–G4 gameplay system (attributes,
+            // progression, skill tree, state machine, combat, ability, inventory)
+            // so they can be exercised live from the Inspector. Great for testing.
+            if (editor_state.ecs_bridge && ImGui::MenuItem("Gameplay Test Dummy")) {
+                if (auto ent = schizo::scene::EntityFactory::CreateCube(scene)) {
+                    editor_state.ecs_bridge->sync_and_run(scene);   // create its ECS entity
+                    editor_state.ecs_bridge->make_gameplay_dummy(ent->GetTransform());
+                    editor_state.editor_scene->MarkModified();
+                    editor_state.set_status("Spawned Gameplay Test Dummy — select it, see Inspector > Gameplay Components (ECS)");
+                }
+                ImGui::CloseCurrentPopup();
+            }
+
             if (editor_state.feature_on(schizo::project::Feature::Terrain) &&
                 ImGui::MenuItem("Water")) {
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
@@ -4882,6 +4895,7 @@ int main(int argc, char** argv) {
         schizo::editor::EcsSceneBridge ecs_bridge;
         editor_state.ecs_bridge = &ecs_bridge;   // inspector authors gameplay components on it
         editor_scene.SetEcsBridge(&ecs_bridge);  // scene save/load persist the .gameplay sidecar (F3)
+        ecs_bridge.seed_demo_content();          // so Inventory/Equipment have real items to test with
         bool ecs_shadow_logged = false;
         bool ecs_persist_logged = false;
         bool ecs_snapshot_logged = false;

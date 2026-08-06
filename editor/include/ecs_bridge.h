@@ -62,6 +62,17 @@ public:
     // "ecs/gameplay_events.h" for the full types.
     schizo::ecs::GameplayEventBus& events();
     schizo::ecs::TimerManager&     timers();
+
+    // --- Demo / testing helpers ---
+    // Register a small demo item catalog + a set bonus (idempotent) so the
+    // Inventory/Equipment inspectors have real items to work with.
+    void seed_demo_content();
+    // Populate the ECS entity mapped to `tf` with a full gameplay loadout
+    // (attributes, derived stats, regen, progression, a skill tree, a state
+    // machine, a combat actor, an ability, and a starting inventory) so every
+    // G0–G4 system can be exercised live from the Inspector. Returns false if the
+    // entity hasn't been synced yet. Calls seed_demo_content() first.
+    bool make_gameplay_dummy(const schizo::scene::Transform* tf);
     // The stable ECS entity id for an OOP entity (keyed by its Transform, as used
     // during sync), or kNoEcsEntity if it hasn't been synced yet. Returned as a
     // raw uint32 so includers need no EnTT.

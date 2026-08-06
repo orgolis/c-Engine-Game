@@ -110,6 +110,91 @@ void EcsSceneBridge::tick_gameplay(float dt) {
 ecs::GameplayEventBus& EcsSceneBridge::events() { return impl_->event_bus; }
 ecs::TimerManager&     EcsSceneBridge::timers() { return impl_->timer_mgr; }
 
+void EcsSceneBridge::seed_demo_content() {
+    static bool seeded = false;
+    if (seeded) return;
+    seeded = true;
+    using namespace ecs;
+    { ItemDef d; d.id = "potion_hp"; d.name = "Health Potion"; d.kind = ItemKind::Consumable;
+      d.max_stack = 10; d.weight = 0.1f; d.on_use.push_back(make_instant("Heal", "Health", +40.0f)); register_item(d); }
+    { ItemDef d; d.id = "sword_iron"; d.name = "Iron Sword"; d.kind = ItemKind::Weapon;
+      d.equip_slot = "weapon"; d.weight = 3.0f; d.modifiers.push_back({"AttackPower", 12.0f});
+      d.affix_pool.push_back({"of Might", "AttackPower", 3.0f, 5.0f}); register_item(d); }
+    { ItemDef d; d.id = "helm_set"; d.name = "Guardian Helm"; d.kind = ItemKind::Armor;
+      d.equip_slot = "head"; d.weight = 2.0f; d.modifiers.push_back({"Armor", 5.0f}); d.set_id = "guardian"; register_item(d); }
+    { ItemDef d; d.id = "chest_set"; d.name = "Guardian Chest"; d.kind = ItemKind::Armor;
+      d.equip_slot = "chest"; d.weight = 6.0f; d.modifiers.push_back({"Armor", 10.0f}); d.set_id = "guardian"; register_item(d); }
+    register_set_bonus({"guardian", 2, {{"Armor", 20.0f}}, {"set.guardian"}});
+}
+
+bool EcsSceneBridge::make_gameplay_dummy(const scene::Transform* tf) {
+    seed_demo_content();
+    const uint32_t id = ecs_entity_id(tf);
+    if (id == kNoEcsEntity) return false;
+    using namespace ecs;
+    World& w = impl_->world;
+    const Entity e = static_cast<Entity>(id);
+
+    AttributeSet attrs;
+    attrs.define("Health", 100, 0, 100);
+    attrs.define("Stamina", 100, 0, 100);
+    attrs.define("Strength", 10, 0, 999);
+    attrs.define("Vitality", 10, 0, 999);
+    attrs.define("AttackPower", 0, 0, 999);
+    attrs.define("Armor", 0, 0, 999);
+    attrs.define("resist.fire", 0.25f, 0, 1);
+    w.add<AttributeSet>(e, attrs);
+
+    DerivedStats ds; ds.stats.push_back({"AttackPower", 0.0f, {{"Strength", 2.0f}}, false});
+    w.add<DerivedStats>(e, ds);
+
+    Regeneration rg; rg.entries.push_back({"Stamina", 15.0f}); rg.entries.push_back({"Health", 2.0f});
+    w.add<Regeneration>(e, rg);
+
+    Progression prog; prog.curve = {100.0f, 0.0f, 0.0f}; prog.points_per_level = 1; prog.skill_points = 3;
+    prog.per_level_growth.push_back({"Strength", 1.0f});
+    w.add<Progression>(e, prog);
+
+    SkillTree tree;
+    tree.nodes.push_back({"might1", "Might I",  1, {},         {{"Strength", 5.0f}}, {}});
+    tree.nodes.push_back({"might2", "Might II", 2, {"might1"}, {{"Strength", 5.0f}}, {"ability.power_strike"}});
+    w.add<SkillTree>(e, tree);
+    w.add<UnlockedSkills>(e, UnlockedSkills{});
+
+    GameplayTags tags; tags.add("faction.player");
+    w.add<GameplayTags>(e, tags);
+
+    StateMachine sm;
+    sm.states = { {"idle", {"state.idle"}, 0.0f, ""}, {"move", {"state.move"}, 0.0f, ""},
+                  {"dodge", {"state.dodge", "state.iframe"}, 0.4f, "dodge.end"}, {"dead", {"state.dead"}, 0.0f, ""} };
+    sm.transitions = { {"idle", "move", "input.move", {}, {}}, {"move", "idle", "input.stop", {}, {}},
+                       {"", "dodge", "input.dodge", {}, {"state.dodge"}}, {"dodge", "idle", "dodge.end", {}, {}},
+                       {"", "dead", "died", {}, {}} };
+    sm.initial = "idle";
+    w.add<StateMachine>(e, sm);
+
+    CombatActor ca; ca.damage_type = "physical";
+    w.add<CombatActor>(e, ca);
+
+    AbilitySet abil;
+    Ability dash; dash.name = "Dash"; dash.cost_attribute = "Stamina"; dash.cost = 30.0f; dash.cooldown = 3.0f;
+    { GameplayEffect fx; fx.name = "Dashing"; fx.duration_type = EffectDurationType::Duration;
+      fx.duration = 0.3f; fx.granted_tags = {"state.dashing"}; dash.effects_self.push_back(fx); }
+    abil.abilities.push_back({dash, 0.0f});
+    w.add<AbilitySet>(e, abil);
+
+    Inventory inv; inv.max_slots = 20;
+    inventory_add(inv, ItemInstance{"potion_hp", 5, 0, {}});
+    inventory_add(inv, ItemInstance{"sword_iron", 1, 0, {}});
+    inventory_add(inv, ItemInstance{"helm_set", 1, 0, {}});
+    inventory_add(inv, ItemInstance{"chest_set", 1, 0, {}});
+    w.add<Inventory>(e, inv);
+    w.add<Equipment>(e, Equipment{});
+
+    recompute_derived(w, e);
+    return true;
+}
+
 uint32_t EcsSceneBridge::ecs_entity_id(const schizo::scene::Transform* tf) const {
     auto it = impl_->tf_to_entity.find(const_cast<scene::Transform*>(tf));
     if (it == impl_->tf_to_entity.end()) return kNoEcsEntity;
