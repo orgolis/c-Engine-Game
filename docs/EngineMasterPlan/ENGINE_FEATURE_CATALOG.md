@@ -257,7 +257,7 @@ G-modules become data + rules on top.
 |---|---|---|
 | Attribute set (data-driven stats: health, stamina, STR/DEX/INT, resist…) | ✅ | **`AttributeSet`** — define ANY named attributes per game; authorable/saveable/prefab-able (custom drawer). Engine bakes in no fixed stats. |
 | Gameplay Ability System (abilities, costs, cooldowns, cast/channel) | 🔴 | the core loop |
-| Gameplay Effects (instant / duration / periodic; modifiers, stacking) | 🔴 | buffs/debuffs/DoTs |
+| Gameplay Effects (instant / duration / periodic; modifiers, stacking) | ✅ | **`GameplayEffect`** — data-defined modifiers on attributes by name + granted tags; instant/DoT/HoT/timed-buff w/ revert; live `tick_effects`. |
 | Gameplay Tags (hierarchical tags for state/conditions) | ✅ | **`GameplayTags`** — any user-defined tags; hierarchical match (child satisfies parent query); authorable/saveable/prefab-able. |
 | Damage / mitigation pipeline (types, resist, crit, execution) | 🔴 | |
 | Event / messaging bus + trigger volumes + cooldown/timer manager | 🔴 | |
