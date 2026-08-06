@@ -6,6 +6,7 @@
 #include "ecs/world.h"
 #include "ecs/authorable_components.h"
 #include "ecs/gameplay_attributes.h"
+#include "ecs/gameplay_tags.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -149,6 +150,28 @@ int main() {
             check("prefab carries the data-driven attributes",
                   set3 && set3->get("Health") == 42.0f && set3->get("Sanity") == 80.0f);
         }
+    }
+
+    // G0: data-driven GameplayTags — hierarchical, user-defined, same path.
+    {
+        ecs::register_tags_component();
+        const ecs::AuthorableComponent* tags = ecs::find_authorable("Tags");
+        check("GameplayTags is authorable via custom hooks", tags && tags->serialize && tags->deserialize);
+
+        ecs::GameplayTags g;
+        g.add("state.stunned.hard");
+        g.add("element.fire");
+        g.add("element.fire");                       // dedup
+        check("tags add + dedup", g.tags.size() == 2);
+        check("hierarchical match: parent query hits child",
+              g.has("state") && g.has("state.stunned") && g.has("state.stunned.hard"));
+        check("no false match on a different branch", !g.has("state.frozen") && !g.has("element.ice"));
+        check("exact vs hierarchical", g.has_exact("element.fire") && !g.has_exact("element"));
+
+        std::vector<uint8_t> tb; tags->serialize(&g, tb);
+        ecs::GameplayTags g2; tags->deserialize(&g2, tb.data(), tb.size());
+        check("tags round-trip through custom serialize",
+              g2.tags.size() == 2 && g2.has("state.stunned") && g2.has_exact("element.fire"));
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }

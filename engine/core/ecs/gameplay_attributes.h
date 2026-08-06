@@ -56,14 +56,7 @@ struct AttributeSet {
 };
 
 // ---- custom serialization: count, then per attribute (name, base, current, min, max) ----
-namespace detail {
-inline void put_bytes(std::vector<uint8_t>& b, const void* d, size_t n) {
-    const uint8_t* p = static_cast<const uint8_t*>(d); b.insert(b.end(), p, p + n);
-}
-inline bool get_bytes(const uint8_t*& p, const uint8_t* e, void* out, size_t n) {
-    if (p + n > e) return false; std::memcpy(out, p, n); p += n; return true;
-}
-}  // namespace detail
+// Byte helpers (detail::put_bytes/get_bytes) come from component_serialize.h.
 
 inline void serialize_attribute_set(const void* obj, std::vector<uint8_t>& out) {
     const AttributeSet& s = *static_cast<const AttributeSet*>(obj);

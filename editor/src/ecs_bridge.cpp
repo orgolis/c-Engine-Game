@@ -5,6 +5,7 @@
 #include "ecs/authorable_components.h"   // authorable registry (gameplay persistence)
 #include "ecs/component_serialize.h"     // generic reflection-driven (de)serialization
 #include "ecs/gameplay_attributes.h"     // G0 data-driven attributes
+#include "ecs/gameplay_tags.h"           // G0 data-driven tags
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -219,6 +220,7 @@ size_t EcsSceneBridge::draw_benchmark(size_t n, double& out_ms) {
 EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_core_components();
     ecs::register_attribute_component();   // G0: AttributeSet is authorable
+    ecs::register_tags_component();        // G0: GameplayTags is authorable
 }
 
 EcsSceneBridge::~EcsSceneBridge() = default;

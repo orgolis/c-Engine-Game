@@ -4,6 +4,7 @@
 #include "ecs/world.h"
 #include "ecs/authorable_components.h"
 #include "ecs/gameplay_attributes.h"   // custom drawer for the data-driven AttributeSet
+#include "ecs/gameplay_tags.h"         // custom drawer for data-driven GameplayTags
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -94,6 +95,28 @@ bool draw_attribute_set(void* comp) {
     return changed;
 }
 
+// Custom inspector for data-driven GameplayTags: add/remove any hierarchical tag.
+bool draw_gameplay_tags(void* comp) {
+    auto& g = *static_cast<ecs::GameplayTags*>(comp);
+    bool changed = false;
+    int remove_idx = -1;
+    for (size_t i = 0; i < g.tags.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::BulletText("%s", g.tags[i].c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) remove_idx = static_cast<int>(i);
+        ImGui::PopID();
+    }
+    if (remove_idx >= 0) { g.tags.erase(g.tags.begin() + remove_idx); changed = true; }
+
+    static char new_tag[96] = "state.stunned";
+    ImGui::SetNextItemWidth(200);
+    ImGui::InputText("##newtag", new_tag, sizeof(new_tag));
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Add tag") && new_tag[0]) { g.add(new_tag); changed = true; }
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -120,6 +143,8 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                             });
                     } else if (std::strcmp(ct.name, "Attributes") == 0) {
                         if (draw_attribute_set(comp)) changed = true;   // data-driven
+                    } else if (std::strcmp(ct.name, "Tags") == 0) {
+                        if (draw_gameplay_tags(comp)) changed = true;   // data-driven
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }

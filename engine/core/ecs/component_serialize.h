@@ -33,6 +33,14 @@ struct SpanSource : gws::reflect::IByteSource {
     }
     bool skip(size_t n) override { if (p + n > e) return false; p += n; return true; }
 };
+
+// Primitive append/read for hand-written custom serializers (AttributeSet, Tags…).
+inline void put_bytes(std::vector<uint8_t>& b, const void* d, size_t n) {
+    const uint8_t* p = static_cast<const uint8_t*>(d); b.insert(b.end(), p, p + n);
+}
+inline bool get_bytes(const uint8_t*& p, const uint8_t* e, void* out, size_t n) {
+    if (p + n > e) return false; std::memcpy(out, p, n); p += n; return true;
+}
 }  // namespace detail
 
 // Serialize a component instance's reflected fields to a byte buffer.
