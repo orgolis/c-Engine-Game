@@ -90,6 +90,10 @@ private:
     // Pending modal state
     std::string pending_delete_;             // abs path awaiting confirmation
     char        new_folder_buf_[128] = {};
+    char        new_file_buf_[128]   = {};   // filename for the "New <file>" modal
+    std::string new_file_template_;          // content written to a new file
+    bool        want_new_folder_ = false;    // menu -> open the New Folder modal
+    bool        want_new_file_   = false;    // menu -> open the New File modal
 
     // ---- helpers ----
     void detect_roots();
@@ -100,6 +104,7 @@ private:
     void render_tree_dir(const std::filesystem::path& dir, int depth);
     void render_entries();
     void render_context_menu(const AssetEntry& e);
+    void render_new_menu();                  // "New" items (folder / script / item-defs / text)
     void render_modals();
     void navigate(const std::filesystem::path& dir);
 

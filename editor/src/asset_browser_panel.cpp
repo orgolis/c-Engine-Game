@@ -85,6 +85,62 @@ void os_reveal(const std::string& abs) {
 #endif
 }
 
+// Starter templates for the "New" menu (kept in sync with the script SDKs).
+constexpr const char* kTemplatePy = R"(# New script — attach via Inspector > Add Component > Script.
+import engine
+
+def on_start(e):
+    engine.log("script started on entity " + str(e))
+
+def on_update(e, dt):
+    pass
+)";
+constexpr const char* kTemplateCs = R"(using Schizo;
+
+public static class Script {
+    public static void OnStart(Api api, uint entity) { api.Log("C# script started"); }
+    public static void OnUpdate(Api api, uint entity, float dt) { }
+}
+)";
+constexpr const char* kTemplateCpp = R"(#include "schizo_script.h"
+
+SCHIZO_SCRIPT void on_start(const SchizoScriptApi* api, unsigned entity) {
+    api->log(api->ctx, "C++ script started");
+}
+SCHIZO_SCRIPT void on_update(const SchizoScriptApi* api, unsigned entity, float dt) {}
+)";
+constexpr const char* kTemplateItems = R"(# Item definitions (.items) — loaded into the catalog at startup / Tools > Reload Item Defs.
+item my_item
+  name My Item
+  kind consumable          # misc|weapon|armor|consumable|material|currency
+  max_stack 10
+  weight 0.1
+  on_use Health 25
+end
+)";
+
+// Draw a small file-explorer-style icon (folder or document) at `tl`, size h x h,
+// tinted by the entry's type color. No icon font needed — pure draw-list shapes.
+void draw_entry_icon(ImDrawList* dl, ImVec2 tl, float h, const AssetEntry& e) {
+    const float p = 1.0f;
+    const ImVec2 a(tl.x + p, tl.y + p);
+    const ImVec2 b(tl.x + h - p, tl.y + h - p);
+    const ImU32 accent = ImGui::GetColorU32(type_color(e.type));
+    if (e.is_dir) {
+        const ImU32 fill = ImGui::GetColorU32(ImVec4(1.00f, 0.80f, 0.35f, 1.0f));
+        const float w = b.x - a.x, hh = b.y - a.y;
+        dl->AddRectFilled(ImVec2(a.x, a.y + hh * 0.15f), ImVec2(a.x + w * 0.5f, a.y + hh * 0.38f), fill, 1.5f);  // tab
+        dl->AddRectFilled(ImVec2(a.x, a.y + hh * 0.30f), b, fill, 2.0f);                                        // body
+    } else {
+        const ImU32 page = ImGui::GetColorU32(ImVec4(0.90f, 0.90f, 0.93f, 1.0f));
+        const ImU32 fold = ImGui::GetColorU32(ImVec4(0.62f, 0.63f, 0.68f, 1.0f));
+        const float f = (b.x - a.x) * 0.36f;
+        dl->AddRectFilled(a, b, page, 2.0f);                                                       // page body
+        dl->AddTriangleFilled(ImVec2(b.x - f, a.y), ImVec2(b.x, a.y), ImVec2(b.x, a.y + f), fold); // folded corner
+        dl->AddRectFilled(ImVec2(a.x + 1, b.y - (b.y - a.y) * 0.30f), ImVec2(b.x - 1, b.y - 2), accent, 1.0f);  // type bar
+    }
+}
+
 }  // namespace
 
 const char* AssetBrowserPanel::classify(const std::string& e) {
@@ -323,6 +379,9 @@ void AssetBrowserPanel::render_toolbar() {
         if (here) ImGui::PopStyleColor();
     }
     ImGui::SameLine();
+    if (ImGui::SmallButton("New...")) ImGui::OpenPopup("##ab_newmenu");
+    if (ImGui::BeginPopup("##ab_newmenu")) { render_new_menu(); ImGui::EndPopup(); }
+    ImGui::SameLine();
     if (ImGui::SmallButton(show_tree_ ? "Hide Tree" : "Show Tree")) show_tree_ = !show_tree_;
     ImGui::SameLine();
     if (ImGui::SmallButton("Refresh")) dirty_ = true;
@@ -464,15 +523,13 @@ void AssetBrowserPanel::render_entries() {
     };
 
     // Background context menu (empty space): folder-level actions.
-    bool want_new_folder = false;
     if (ImGui::BeginPopupContextWindow("##ab_bg", ImGuiPopupFlags_MouseButtonRight |
                                                   ImGuiPopupFlags_NoOpenOverItems)) {
-        if (ImGui::MenuItem("New Folder...")) { want_new_folder = true; new_folder_buf_[0] = '\0'; }
+        if (ImGui::BeginMenu("New")) { render_new_menu(); ImGui::EndMenu(); }
         if (ImGui::MenuItem("Reveal in Explorer")) os_reveal(current_.string());
         if (ImGui::MenuItem("Refresh")) dirty_ = true;
         ImGui::EndPopup();
     }
-    if (want_new_folder) ImGui::OpenPopup("New Folder##ab");
 
     if (ImGui::BeginTable("##ab_list", 3,
                           ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
@@ -491,11 +548,18 @@ void AssetBrowserPanel::render_entries() {
             ImGui::TableSetColumnIndex(0);
             ImGui::PushID(i);
 
-            ImGui::PushStyleColor(ImGuiCol_Text, type_color(e.type));
+            // A hidden full-row Selectable handles hit-testing; the icon + name are
+            // drawn on top so every file gets an explorer-style type icon.
+            const ImVec2  icon_tl = ImGui::GetCursorScreenPos();
+            const float   icon_h  = ImGui::GetTextLineHeight();
             const bool clicked = ImGui::Selectable(
-                e.name.c_str(), selected_ == i,
-                ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick);
-            ImGui::PopStyleColor();
+                "##row", selected_ == i,
+                ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick,
+                ImVec2(0, icon_h));
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            draw_entry_icon(dl, icon_tl, icon_h, e);
+            dl->AddText(ImVec2(icon_tl.x + icon_h + 5.0f, icon_tl.y),
+                        ImGui::GetColorU32(type_color(e.type)), e.name.c_str());
             if (clicked) {
                 selected_ = i;
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
@@ -552,7 +616,29 @@ void AssetBrowserPanel::render_context_menu(const AssetEntry& e) {
     }
 }
 
+void AssetBrowserPanel::render_new_menu() {
+    if (ImGui::MenuItem("Folder...")) { want_new_folder_ = true; new_folder_buf_[0] = '\0'; }
+    ImGui::Separator();
+    auto file = [&](const char* label, const char* defname, const char* tmpl) {
+        if (ImGui::MenuItem(label)) {
+            std::snprintf(new_file_buf_, sizeof new_file_buf_, "%s", defname);
+            new_file_template_ = tmpl;
+            want_new_file_ = true;
+        }
+    };
+    file("Python Script (.py)", "new_script.py",  kTemplatePy);
+    file("C# Script (.cs)",     "new_script.cs",  kTemplateCs);
+    file("C++ Script (.cpp)",   "new_script.cpp", kTemplateCpp);
+    ImGui::Separator();
+    file("Item Definitions (.items)", "items.items", kTemplateItems);
+    file("Text File (.txt)",          "notes.txt",   "");
+}
+
 void AssetBrowserPanel::render_modals() {
+    // Open the New Folder / New File modals requested from a (now-closed) menu.
+    if (want_new_folder_) { ImGui::OpenPopup("New Folder##ab"); want_new_folder_ = false; }
+    if (want_new_file_)   { ImGui::OpenPopup("New File##ab");   want_new_file_   = false; }
+
     // Delete confirmation.
     if (!pending_delete_.empty() && !ImGui::IsPopupOpen("Delete?##ab"))
         ImGui::OpenPopup("Delete?##ab");
@@ -588,6 +674,34 @@ void AssetBrowserPanel::render_modals() {
             dirty_ = true;
             ImGui::CloseCurrentPopup();
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    // New file (script / item-defs / text) from a template.
+    if (ImGui::BeginPopupModal("New File##ab", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextDisabled("Created in: %s", current_.filename().string().c_str());
+        ImGui::SetNextItemWidth(280);
+        const bool submit = ImGui::InputText("Name##ab_nfile", new_file_buf_, sizeof new_file_buf_,
+                                             ImGuiInputTextFlags_EnterReturnsTrue);
+        std::error_code ec;
+        const bool exists = new_file_buf_[0] && fs::exists(current_ / new_file_buf_, ec);
+        if (exists) ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.35f, 1.0f), "A file with that name already exists.");
+        ImGui::BeginDisabled(!new_file_buf_[0] || exists);
+        if ((ImGui::Button("Create", ImVec2(120, 0)) || submit) && new_file_buf_[0] && !exists) {
+            const fs::path dst = current_ / new_file_buf_;
+            std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+            if (out.is_open()) {
+                out << new_file_template_;
+                spdlog::info("[AssetBrowser] created '{}'", dst.string());
+            } else {
+                spdlog::warn("[AssetBrowser] could not create '{}'", dst.string());
+            }
+            dirty_ = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
