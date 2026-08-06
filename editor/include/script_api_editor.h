@@ -16,6 +16,7 @@ namespace schizo::scene { class Scene; }
 namespace schizo::editor {
 
 class ScenePlaybackManager;
+class EcsSceneBridge;
 
 /// Everything the editor ScriptApi needs. main.cpp owns ONE persistent
 /// instance (the table captures its address) and refreshes the pointers +
@@ -24,6 +25,7 @@ struct EditorScriptCtx {
     std::shared_ptr<schizo::scene::Scene> scene;
     ScenePlaybackManager* playback = nullptr;
     GLFWwindow*           window   = nullptr;
+    EcsSceneBridge*       bridge   = nullptr;   // ECS gameplay components (G0–G4)
     float mouse_dx = 0.0f, mouse_dy = 0.0f;   // this frame's cursor delta (px)
 };
 

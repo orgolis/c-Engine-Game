@@ -61,6 +61,30 @@ struct ScriptApi {
     // ---- audio ----
     void (*audio_play)(void* ctx, uint32_t e) = nullptr;   // start entity's AudioSource
     void (*audio_stop)(void* ctx, uint32_t e) = nullptr;
+
+    // ---- gameplay (G0–G4) ----
+    // Operate on the entity's ECS gameplay components (via the editor's ECS
+    // bridge). Entities are the same scene ids used above. Attribute/tag/item
+    // names are strings a game defines. No-ops if the entity has no matching
+    // component. (Appended at the end so the ABI prefix stays stable.)
+    float (*get_attribute)(void* ctx, uint32_t e, const char* name) = nullptr;
+    void  (*set_attribute)(void* ctx, uint32_t e, const char* name, float value) = nullptr;
+    void  (*adjust_attribute)(void* ctx, uint32_t e, const char* name, float delta) = nullptr;
+    bool  (*has_tag)(void* ctx, uint32_t e, const char* tag) = nullptr;
+    void  (*add_tag)(void* ctx, uint32_t e, const char* tag) = nullptr;
+    void  (*remove_tag)(void* ctx, uint32_t e, const char* tag) = nullptr;
+    float (*apply_damage)(void* ctx, uint32_t e, float amount, const char* type) = nullptr;  // -> dealt
+    void  (*apply_heal)(void* ctx, uint32_t e, const char* attribute, float amount) = nullptr;
+    bool  (*activate_ability)(void* ctx, uint32_t e, int index, uint32_t target) = nullptr;
+    void  (*grant_xp)(void* ctx, uint32_t e, float amount) = nullptr;
+    int   (*get_level)(void* ctx, uint32_t e) = nullptr;
+    bool  (*unlock_skill)(void* ctx, uint32_t e, const char* node_id) = nullptr;
+    bool  (*send_state_event)(void* ctx, uint32_t e, const char* event) = nullptr;
+    bool  (*in_state)(void* ctx, uint32_t e, const char* state) = nullptr;
+    int   (*add_item)(void* ctx, uint32_t e, const char* def_id, int qty) = nullptr;  // -> leftover
+    int   (*item_count)(void* ctx, uint32_t e, const char* def_id) = nullptr;
+    bool  (*equip_item)(void* ctx, uint32_t e, const char* def_id) = nullptr;
+    bool  (*use_item)(void* ctx, uint32_t e, const char* def_id) = nullptr;
 };
 
 }  // namespace schizo::editor

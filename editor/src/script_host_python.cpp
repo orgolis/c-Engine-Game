@@ -50,6 +50,10 @@ pkpy::PyVar vec3_tuple(pkpy::VM* vm, const float v[3]) {
 }
 float farg(pkpy::VM* vm, pkpy::PyVar v) { return static_cast<float>(CAST_F(v)); }
 uint32_t earg(pkpy::VM* vm, pkpy::PyVar v) { return static_cast<uint32_t>(CAST(pkpy::i64, v)); }
+std::string sarg(pkpy::VM* vm, pkpy::PyVar v) {
+    pkpy::Str s = CAST(pkpy::Str&, v);
+    return std::string(s.data, static_cast<size_t>(s.size));
+}
 
 // -- the `engine` module ------------------------------------------------------
 void build_engine_module(pkpy::VM* vm) {
@@ -226,6 +230,83 @@ void build_engine_module(pkpy::VM* vm) {
     vm->bind(mod, "audio_stop(e: int) -> None", [](pkpy::VM* vm, pkpy::ArgsView args) {
         if (g_api && g_api->audio_stop) g_api->audio_stop(g_api->ctx, earg(vm, args[0]));
         return vm->None;
+    });
+
+    // ---- gameplay (G0–G4) ----
+    vm->bind(mod, "get_attribute(e: int, name: str) -> float", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        float r = 0.0f;
+        if (g_api && g_api->get_attribute) r = g_api->get_attribute(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str());
+        return VAR(static_cast<pkpy::f64>(r));
+    });
+    vm->bind(mod, "set_attribute(e: int, name: str, value: float) -> None", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->set_attribute) g_api->set_attribute(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(), farg(vm, args[2]));
+        return vm->None;
+    });
+    vm->bind(mod, "adjust_attribute(e: int, name: str, delta: float) -> None", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->adjust_attribute) g_api->adjust_attribute(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(), farg(vm, args[2]));
+        return vm->None;
+    });
+    vm->bind(mod, "has_tag(e: int, tag: str) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        bool r = g_api && g_api->has_tag && g_api->has_tag(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str());
+        return VAR(r);
+    });
+    vm->bind(mod, "add_tag(e: int, tag: str) -> None", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->add_tag) g_api->add_tag(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str());
+        return vm->None;
+    });
+    vm->bind(mod, "remove_tag(e: int, tag: str) -> None", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->remove_tag) g_api->remove_tag(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str());
+        return vm->None;
+    });
+    vm->bind(mod, "apply_damage(e: int, amount: float, type: str) -> float", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        float r = 0.0f;
+        if (g_api && g_api->apply_damage) r = g_api->apply_damage(g_api->ctx, earg(vm, args[0]), farg(vm, args[1]), sarg(vm, args[2]).c_str());
+        return VAR(static_cast<pkpy::f64>(r));
+    });
+    vm->bind(mod, "apply_heal(e: int, attribute: str, amount: float) -> None", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->apply_heal) g_api->apply_heal(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(), farg(vm, args[2]));
+        return vm->None;
+    });
+    vm->bind(mod, "activate_ability(e: int, index: int, target: int) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        bool r = g_api && g_api->activate_ability &&
+                 g_api->activate_ability(g_api->ctx, earg(vm, args[0]), static_cast<int>(CAST(pkpy::i64, args[1])), earg(vm, args[2]));
+        return VAR(r);
+    });
+    vm->bind(mod, "grant_xp(e: int, amount: float) -> None", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->grant_xp) g_api->grant_xp(g_api->ctx, earg(vm, args[0]), farg(vm, args[1]));
+        return vm->None;
+    });
+    vm->bind(mod, "get_level(e: int) -> int", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        pkpy::i64 r = (g_api && g_api->get_level) ? g_api->get_level(g_api->ctx, earg(vm, args[0])) : 0;
+        return VAR(r);
+    });
+    vm->bind(mod, "unlock_skill(e: int, node_id: str) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        bool r = g_api && g_api->unlock_skill && g_api->unlock_skill(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str());
+        return VAR(r);
+    });
+    vm->bind(mod, "send_state_event(e: int, event: str) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        bool r = g_api && g_api->send_state_event && g_api->send_state_event(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str());
+        return VAR(r);
+    });
+    vm->bind(mod, "in_state(e: int, state: str) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        bool r = g_api && g_api->in_state && g_api->in_state(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str());
+        return VAR(r);
+    });
+    vm->bind(mod, "add_item(e: int, def_id: str, qty: int) -> int", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        pkpy::i64 r = (g_api && g_api->add_item) ? g_api->add_item(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(), static_cast<int>(CAST(pkpy::i64, args[2]))) : 0;
+        return VAR(r);
+    });
+    vm->bind(mod, "item_count(e: int, def_id: str) -> int", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        pkpy::i64 r = (g_api && g_api->item_count) ? g_api->item_count(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str()) : 0;
+        return VAR(r);
+    });
+    vm->bind(mod, "equip_item(e: int, def_id: str) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        bool r = g_api && g_api->equip_item && g_api->equip_item(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str());
+        return VAR(r);
+    });
+    vm->bind(mod, "use_item(e: int, def_id: str) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        bool r = g_api && g_api->use_item && g_api->use_item(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str());
+        return VAR(r);
     });
 
     // Common key / button constants (GLFW codes) so scripts don't hardcode.

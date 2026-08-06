@@ -4,6 +4,7 @@
 
 #include "script_api_editor.h"
 #include "scene_playback_manager.h"
+#include "ecs_bridge.h"
 
 #include "scene.h"
 #include "entity.h"
@@ -13,6 +14,19 @@
 #include "collider_component.h"
 #include "audio_components.h"
 #include "physics/jolt_physics.h"   // Stage 4 — Jolt-backed PhysicsWorld
+
+// Gameplay ECS (G0–G4) — scripts drive these via the ECS bridge.
+#include "ecs/world.h"
+#include "ecs/gameplay_attributes.h"
+#include "ecs/gameplay_tags.h"
+#include "ecs/gameplay_effects.h"
+#include "ecs/gameplay_damage.h"
+#include "ecs/gameplay_abilities.h"
+#include "ecs/gameplay_state_machine.h"
+#include "ecs/gameplay_progression.h"
+#include "ecs/gameplay_skills.h"
+#include "ecs/gameplay_items.h"
+#include "ecs/gameplay_inventory.h"
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/quaternion.hpp>
@@ -189,6 +203,129 @@ void api_audio_stop(void* ctx, uint32_t e) {
             src->SetPlaying(false);
 }
 
+// ---- gameplay (G0–G4): map a scene id -> its ECS entity via the bridge ----
+namespace ecs = schizo::ecs;
+
+// Resolve a script entity id to (world, ecs entity). Returns false if unmapped.
+bool gp_entity(void* ctx, uint32_t e, ecs::World*& w, ecs::Entity& out) {
+    auto* c = C(ctx);
+    if (!c->bridge || !c->scene || !e) return false;
+    auto ent = c->scene->GetEntityById(e);
+    if (!ent) return false;
+    const uint32_t id = c->bridge->ecs_entity_id(ent->GetTransform());
+    if (id == kNoEcsEntity) return false;
+    w = &c->bridge->world();
+    out = static_cast<ecs::Entity>(id);
+    return true;
+}
+
+float api_get_attribute(void* ctx, uint32_t e, const char* name) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent) || !name) return 0.0f;
+    auto* a = w->try_get<ecs::AttributeSet>(ent);
+    return a ? a->get(name) : 0.0f;
+}
+void api_set_attribute(void* ctx, uint32_t e, const char* name, float value) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent) || !name) return;
+    if (auto* a = w->try_get<ecs::AttributeSet>(ent)) a->set(name, value);
+}
+void api_adjust_attribute(void* ctx, uint32_t e, const char* name, float delta) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent) || !name) return;
+    if (auto* a = w->try_get<ecs::AttributeSet>(ent)) a->adjust(name, delta);
+}
+bool api_has_tag(void* ctx, uint32_t e, const char* tag) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent) || !tag) return false;
+    auto* g = w->try_get<ecs::GameplayTags>(ent);
+    return g && g->has(tag);
+}
+void api_add_tag(void* ctx, uint32_t e, const char* tag) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent) || !tag) return;
+    if (!w->has<ecs::GameplayTags>(ent)) w->add<ecs::GameplayTags>(ent, ecs::GameplayTags{});
+    w->get<ecs::GameplayTags>(ent).add(tag);
+}
+void api_remove_tag(void* ctx, uint32_t e, const char* tag) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent) || !tag) return;
+    if (auto* g = w->try_get<ecs::GameplayTags>(ent)) g->remove_exact(tag);
+}
+float api_apply_damage(void* ctx, uint32_t e, float amount, const char* type) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return 0.0f;
+    return ecs::apply_damage(*w, ent, ecs::DamageInfo{amount, type ? type : ""});
+}
+void api_apply_heal(void* ctx, uint32_t e, const char* attribute, float amount) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return;
+    ecs::apply_effect(*w, ent, ecs::make_instant("Heal", attribute ? attribute : "Health", amount));
+}
+bool api_activate_ability(void* ctx, uint32_t e, int index, uint32_t target) {
+    ecs::World* w; ecs::Entity caster;
+    if (!gp_entity(ctx, e, w, caster) || index < 0) return false;
+    ecs::Entity tgt = ecs::null_entity;
+    if (target) { ecs::World* tw; ecs::Entity te; if (gp_entity(ctx, target, tw, te) && tw == w) tgt = te; }
+    return ecs::try_activate_ability(*w, caster, static_cast<size_t>(index), tgt);
+}
+void api_grant_xp(void* ctx, uint32_t e, float amount) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return;
+    ecs::grant_xp(*w, ent, amount, &C(ctx)->bridge->events());
+}
+int api_get_level(void* ctx, uint32_t e) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return 0;
+    auto* p = w->try_get<ecs::Progression>(ent);
+    return p ? p->level : 0;
+}
+bool api_unlock_skill(void* ctx, uint32_t e, const char* node_id) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent) || !node_id) return false;
+    return ecs::unlock_skill(*w, ent, node_id, &C(ctx)->bridge->events());
+}
+bool api_send_state_event(void* ctx, uint32_t e, const char* event) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent) || !event) return false;
+    auto* sm = w->try_get<ecs::StateMachine>(ent);
+    return sm && ecs::send_state_event(*w, ent, *sm, event, &C(ctx)->bridge->events());
+}
+bool api_in_state(void* ctx, uint32_t e, const char* state) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent) || !state) return false;
+    auto* sm = w->try_get<ecs::StateMachine>(ent);
+    return sm && sm->current == state;
+}
+int api_add_item(void* ctx, uint32_t e, const char* def_id, int qty) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent) || !def_id) return qty;
+    if (!w->has<ecs::Inventory>(ent)) w->add<ecs::Inventory>(ent, ecs::Inventory{});
+    return ecs::inventory_add(w->get<ecs::Inventory>(ent), ecs::ItemInstance{def_id, qty, 0, {}});
+}
+int api_item_count(void* ctx, uint32_t e, const char* def_id) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent) || !def_id) return 0;
+    auto* inv = w->try_get<ecs::Inventory>(ent);
+    return inv ? ecs::inventory_count(*inv, def_id) : 0;
+}
+bool api_equip_item(void* ctx, uint32_t e, const char* def_id) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent) || !def_id) return false;
+    if (auto* inv = w->try_get<ecs::Inventory>(ent)) ecs::inventory_remove(*inv, def_id, 1);
+    return ecs::equip_item(*w, ent, ecs::ItemInstance{def_id, 1, 0, {}}, &C(ctx)->bridge->events());
+}
+bool api_use_item(void* ctx, uint32_t e, const char* def_id) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent) || !def_id) return false;
+    auto* inv = w->try_get<ecs::Inventory>(ent);
+    if (!inv) return false;
+    for (size_t i = 0; i < inv->items.size(); ++i)
+        if (inv->items[i].def_id == def_id)
+            return ecs::use_item(*w, ent, *inv, i, &C(ctx)->bridge->events());
+    return false;
+}
+
 }  // namespace
 
 void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
@@ -213,6 +350,26 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.set_emissive       = &api_set_emissive;
     api.audio_play         = &api_audio_play;
     api.audio_stop         = &api_audio_stop;
+
+    // ---- gameplay (G0–G4) ----
+    api.get_attribute      = &api_get_attribute;
+    api.set_attribute      = &api_set_attribute;
+    api.adjust_attribute   = &api_adjust_attribute;
+    api.has_tag            = &api_has_tag;
+    api.add_tag            = &api_add_tag;
+    api.remove_tag         = &api_remove_tag;
+    api.apply_damage       = &api_apply_damage;
+    api.apply_heal         = &api_apply_heal;
+    api.activate_ability   = &api_activate_ability;
+    api.grant_xp           = &api_grant_xp;
+    api.get_level          = &api_get_level;
+    api.unlock_skill       = &api_unlock_skill;
+    api.send_state_event   = &api_send_state_event;
+    api.in_state           = &api_in_state;
+    api.add_item           = &api_add_item;
+    api.item_count         = &api_item_count;
+    api.equip_item         = &api_equip_item;
+    api.use_item           = &api_use_item;
 }
 
 }  // namespace schizo::editor

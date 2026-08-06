@@ -56,6 +56,26 @@ namespace Schizo
 
         public delegate* unmanaged[Cdecl]<void*, uint, void> audio_play;
         public delegate* unmanaged[Cdecl]<void*, uint, void> audio_stop;
+
+        // ---- gameplay (G0-G4); appended at the end so the ABI prefix is stable ----
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, float> get_attribute;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, float, void> set_attribute;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, float, void> adjust_attribute;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, byte> has_tag;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, void> add_tag;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, void> remove_tag;
+        public delegate* unmanaged[Cdecl]<void*, uint, float, byte*, float> apply_damage;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, float, void> apply_heal;
+        public delegate* unmanaged[Cdecl]<void*, uint, int, uint, byte> activate_ability;
+        public delegate* unmanaged[Cdecl]<void*, uint, float, void> grant_xp;
+        public delegate* unmanaged[Cdecl]<void*, uint, int> get_level;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, byte> unlock_skill;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, byte> send_state_event;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, byte> in_state;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, int, int> add_item;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, int> item_count;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, byte> equip_item;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, byte> use_item;
     }
 
     /// Friendly wrapper handed to your OnStart/OnUpdate.
@@ -135,6 +155,44 @@ namespace Schizo
 
         public void AudioPlay(uint e) => p->audio_play(p->ctx, e);
         public void AudioStop(uint e) => p->audio_stop(p->ctx, e);
+
+        // ---- gameplay (G0-G4) ----
+        private static byte[] Utf8(string s) => Encoding.UTF8.GetBytes(s + "\0");
+
+        public float GetAttribute(uint e, string name)
+        { var b = Utf8(name); fixed (byte* bp = b) return p->get_attribute(p->ctx, e, bp); }
+        public void SetAttribute(uint e, string name, float value)
+        { var b = Utf8(name); fixed (byte* bp = b) p->set_attribute(p->ctx, e, bp, value); }
+        public void AdjustAttribute(uint e, string name, float delta)
+        { var b = Utf8(name); fixed (byte* bp = b) p->adjust_attribute(p->ctx, e, bp, delta); }
+        public bool HasTag(uint e, string tag)
+        { var b = Utf8(tag); fixed (byte* bp = b) return p->has_tag(p->ctx, e, bp) != 0; }
+        public void AddTag(uint e, string tag)
+        { var b = Utf8(tag); fixed (byte* bp = b) p->add_tag(p->ctx, e, bp); }
+        public void RemoveTag(uint e, string tag)
+        { var b = Utf8(tag); fixed (byte* bp = b) p->remove_tag(p->ctx, e, bp); }
+        public float ApplyDamage(uint e, float amount, string type)
+        { var b = Utf8(type); fixed (byte* bp = b) return p->apply_damage(p->ctx, e, amount, bp); }
+        public void ApplyHeal(uint e, string attribute, float amount)
+        { var b = Utf8(attribute); fixed (byte* bp = b) p->apply_heal(p->ctx, e, bp, amount); }
+        public bool ActivateAbility(uint e, int index, uint target = 0)
+        => p->activate_ability(p->ctx, e, index, target) != 0;
+        public void GrantXp(uint e, float amount) => p->grant_xp(p->ctx, e, amount);
+        public int GetLevel(uint e) => p->get_level(p->ctx, e);
+        public bool UnlockSkill(uint e, string nodeId)
+        { var b = Utf8(nodeId); fixed (byte* bp = b) return p->unlock_skill(p->ctx, e, bp) != 0; }
+        public bool SendStateEvent(uint e, string ev)
+        { var b = Utf8(ev); fixed (byte* bp = b) return p->send_state_event(p->ctx, e, bp) != 0; }
+        public bool InState(uint e, string state)
+        { var b = Utf8(state); fixed (byte* bp = b) return p->in_state(p->ctx, e, bp) != 0; }
+        public int AddItem(uint e, string defId, int qty)
+        { var b = Utf8(defId); fixed (byte* bp = b) return p->add_item(p->ctx, e, bp, qty); }
+        public int ItemCount(uint e, string defId)
+        { var b = Utf8(defId); fixed (byte* bp = b) return p->item_count(p->ctx, e, bp); }
+        public bool EquipItem(uint e, string defId)
+        { var b = Utf8(defId); fixed (byte* bp = b) return p->equip_item(p->ctx, e, bp) != 0; }
+        public bool UseItem(uint e, string defId)
+        { var b = Utf8(defId); fixed (byte* bp = b) return p->use_item(p->ctx, e, bp) != 0; }
 
         // GLFW key codes.
         public const int KeySpace = 32;

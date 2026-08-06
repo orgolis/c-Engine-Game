@@ -43,6 +43,9 @@ static_assert(offsetof(SchizoScriptApi, spawn_primitive) ==
 static_assert(offsetof(SchizoScriptApi, audio_stop) ==
               offsetof(schizo::editor::ScriptApi, audio_stop),
               "schizo_script.h drifted from script_api.h (audio_stop)");
+static_assert(offsetof(SchizoScriptApi, use_item) ==
+              offsetof(schizo::editor::ScriptApi, use_item),
+              "schizo_script.h drifted from script_api.h (use_item)");
 
 namespace schizo::editor {
 

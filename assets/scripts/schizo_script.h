@@ -57,6 +57,26 @@ typedef struct SchizoScriptApi {
 
     void (*audio_play)(void* ctx, unsigned e);
     void (*audio_stop)(void* ctx, unsigned e);
+
+    /* ---- gameplay (G0-G4); appended at the end so the ABI prefix is stable ---- */
+    float (*get_attribute)(void* ctx, unsigned e, const char* name);
+    void  (*set_attribute)(void* ctx, unsigned e, const char* name, float value);
+    void  (*adjust_attribute)(void* ctx, unsigned e, const char* name, float delta);
+    bool  (*has_tag)(void* ctx, unsigned e, const char* tag);
+    void  (*add_tag)(void* ctx, unsigned e, const char* tag);
+    void  (*remove_tag)(void* ctx, unsigned e, const char* tag);
+    float (*apply_damage)(void* ctx, unsigned e, float amount, const char* type);
+    void  (*apply_heal)(void* ctx, unsigned e, const char* attribute, float amount);
+    bool  (*activate_ability)(void* ctx, unsigned e, int index, unsigned target);
+    void  (*grant_xp)(void* ctx, unsigned e, float amount);
+    int   (*get_level)(void* ctx, unsigned e);
+    bool  (*unlock_skill)(void* ctx, unsigned e, const char* node_id);
+    bool  (*send_state_event)(void* ctx, unsigned e, const char* event);
+    bool  (*in_state)(void* ctx, unsigned e, const char* state);
+    int   (*add_item)(void* ctx, unsigned e, const char* def_id, int qty);
+    int   (*item_count)(void* ctx, unsigned e, const char* def_id);
+    bool  (*equip_item)(void* ctx, unsigned e, const char* def_id);
+    bool  (*use_item)(void* ctx, unsigned e, const char* def_id);
 } SchizoScriptApi;
 
 }  // extern "C"
