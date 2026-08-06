@@ -493,8 +493,8 @@ integration debt**. Build gameplay on today's core and you build it twice.
 |---|---|---|---|
 | **F1** | **Make ECS authoritative** — retire the OOP shadow; inspector/gizmo/save write ECS; gameplay off `GetComponent<T>()` *(Stage 1)* | Gameplay = components + systems. G0 attributes/abilities/effects must live in a real authoritative ECS. | 🟡→ **gameplay ECS is now the authoritative home** (persistent world exposed; components survive sync; `authorable_components` registry). Transform/mesh still OOP. |
 | **F2** | **Editor inspector → core reflection** *(Stage 0)* | A new gameplay component should auto-appear + be editable with **no hand-written UI per component**. | ✅ **generic reflection inspector** — "Gameplay Components (ECS)" section draws/edits any authorable component via `for_each_field` (verified `gameplay_check`). |
-| **F3** | **Scene-save + game-save → core serialization** *(Stage 0 remaining)* | Gameplay state must persist. Editor save is JSON; reflection-serialization only drives ECS snapshots today. Needed for authoring persistence **and** G9 save/load. | 🟡 JSON only |
-| **F4** | **Prefabs / archetypes** *(Stage 1, 🟡)* | Spawning is fundamental — enemy / item / projectile / NPC = instantiate a template. No prefab system yet. | 🔴 |
+| **F3** | **Scene-save + game-save → core serialization** *(Stage 0)* | Gameplay state must persist → authoring saves **and** G9 save/load. | ✅ **gameplay components persist** via a reflection-driven `.gameplay` sidecar (index-keyed like NetId; generic; verified). Seeds game-save. |
+| **F4** | **Prefabs / archetypes** *(Stage 1)* | Spawning is fundamental — enemy / item / projectile / NPC = instantiate a template. | ✅ **`Prefab` capture/apply/serialize** (`prefab.h`) + editor "Save as Prefab" / "From Prefab" spawn (verified round-trip). |
 | **F5** | **Gameplay data-definitions as assets** *(rides Assets ✅ + reflection)* | Items / abilities / quests authored as data, cooked + loaded. Asset pipeline ✅, but no data-def asset type. (Scripting M12 ✅ is a stopgap.) | 🔴 |
 
 > **F1–F3 share one root:** make the **ECS + core reflection/serialization** the authoritative spine and
