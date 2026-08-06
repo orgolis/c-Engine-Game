@@ -698,6 +698,22 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
                     }
                 }
             }
+
+            // F5: item-definition data files (.items) in assets/gameplay/.
+            ImGui::Separator();
+            if (editor_state.ecs_bridge && ImGui::MenuItem("Reload Item Defs (.items)")) {
+                const int n = editor_state.ecs_bridge->load_gameplay_data("assets/gameplay");
+                editor_state.set_status("Reloaded " + std::to_string(n) + " item def(s) from assets/gameplay/");
+            }
+            if (editor_state.ecs_bridge && ImGui::MenuItem("Create example .items")) {
+                std::error_code ec; std::filesystem::create_directories("assets/gameplay", ec);
+                if (editor_state.ecs_bridge->create_example_items("assets/gameplay/example.items")) {
+                    const int n = editor_state.ecs_bridge->load_gameplay_data("assets/gameplay");
+                    editor_state.set_status("Wrote assets/gameplay/example.items — loaded " + std::to_string(n) + " item def(s)");
+                } else {
+                    editor_state.set_status("Could not write assets/gameplay/example.items");
+                }
+            }
             ImGui::EndMenu();
         }
         
@@ -4896,6 +4912,10 @@ int main(int argc, char** argv) {
         editor_state.ecs_bridge = &ecs_bridge;   // inspector authors gameplay components on it
         editor_scene.SetEcsBridge(&ecs_bridge);  // scene save/load persist the .gameplay sidecar (F3)
         ecs_bridge.seed_demo_content();          // so Inventory/Equipment have real items to test with
+        {   // F5: load any author-written .items data files into the item catalog
+            const int n = ecs_bridge.load_gameplay_data("assets/gameplay");
+            if (n > 0) spdlog::info("Loaded {} item def(s) from assets/gameplay/*.items", n);
+        }
         bool ecs_shadow_logged = false;
         bool ecs_persist_logged = false;
         bool ecs_snapshot_logged = false;

@@ -16,6 +16,7 @@
 #include "ecs/gameplay_skills.h"         // G3 skill trees
 #include "ecs/gameplay_items.h"          // G4 item defs / instances / loot
 #include "ecs/gameplay_inventory.h"      // G4 inventory + equipment
+#include "ecs/gameplay_item_file.h"      // F5 .items data-file loader
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -125,6 +126,15 @@ void EcsSceneBridge::seed_demo_content() {
     { ItemDef d; d.id = "chest_set"; d.name = "Guardian Chest"; d.kind = ItemKind::Armor;
       d.equip_slot = "chest"; d.weight = 6.0f; d.modifiers.push_back({"Armor", 10.0f}); d.set_id = "guardian"; register_item(d); }
     register_set_bonus({"guardian", 2, {{"Armor", 20.0f}}, {"set.guardian"}});
+}
+
+int EcsSceneBridge::load_gameplay_data(const std::string& dir) { return ecs::load_items_dir(dir); }
+
+bool EcsSceneBridge::create_example_items(const std::string& path) {
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return false;
+    f << ecs::item_file_template();
+    return static_cast<bool>(f);
 }
 
 bool EcsSceneBridge::make_gameplay_dummy(const scene::Transform* tf) {

@@ -67,6 +67,11 @@ public:
     // Register a small demo item catalog + a set bonus (idempotent) so the
     // Inventory/Equipment inspectors have real items to work with.
     void seed_demo_content();
+    // Scan a directory for *.items data files and register them into the item
+    // catalog (F5 authoring path). Returns the number of item defs registered.
+    int  load_gameplay_data(const std::string& dir);
+    // Write a starter .items template to `path`. Returns false if unwritable.
+    bool create_example_items(const std::string& path);
     // Populate the ECS entity mapped to `tf` with a full gameplay loadout
     // (attributes, derived stats, regen, progression, a skill tree, a state
     // machine, a combat actor, an ability, and a starting inventory) so every

@@ -18,6 +18,7 @@
 #include "ecs/gameplay_skills.h"
 #include "ecs/gameplay_items.h"
 #include "ecs/gameplay_inventory.h"
+#include "ecs/gameplay_item_file.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -769,6 +770,55 @@ int main() {
                   s2.items[0].affixes.size() == 1 && s2.items[0].affixes[0].amount == 4.5f &&
                   s2.items[1].quantity == 5);
         }
+    }
+
+    // F5: .items data-file parsing -> item catalog (author items as data).
+    {
+        const std::string text =
+            "# demo items\n"
+            "item file_potion\n"
+            "  name File Potion\n"
+            "  kind consumable\n"
+            "  max_stack 20\n"
+            "  weight 0.2\n"
+            "  on_use Health 55\n"
+            "end\n"
+            "item file_axe\n"
+            "  name Iron Axe\n"
+            "  kind weapon\n"
+            "  slot weapon\n"
+            "  weight 4\n"
+            "  mod AttackPower 18\n"
+            "  tag weapon.axe\n"
+            "  affix AttackPower 2 6 of Fury\n"
+            "  set berserker\n"
+            "end\n";
+        const auto defs = ecs::parse_items_text(text);
+        check("parse .items reads all blocks (2)", defs.size() == 2);
+        const int n = ecs::register_items_text(text);
+        check("register_items_text registers into the catalog", n == 2 && ecs::find_item("file_axe") != nullptr);
+        const ecs::ItemDef* axe = ecs::find_item("file_axe");
+        check("parsed weapon fields are correct",
+              axe && axe->name == "Iron Axe" && axe->kind == ecs::ItemKind::Weapon &&
+              axe->equip_slot == "weapon" && axe->weight == 4.0f &&
+              axe->modifiers.size() == 1 && axe->modifiers[0].amount == 18.0f &&
+              axe->granted_tags.size() == 1 && axe->set_id == "berserker");
+        check("parsed affix (attribute min max name...)",
+              axe->affix_pool.size() == 1 && axe->affix_pool[0].attribute == "AttackPower" &&
+              axe->affix_pool[0].min_roll == 2.0f && axe->affix_pool[0].max_roll == 6.0f &&
+              axe->affix_pool[0].name == "of Fury");
+        const ecs::ItemDef* pot = ecs::find_item("file_potion");
+        check("parsed consumable on_use effect",
+              pot && pot->kind == ecs::ItemKind::Consumable && pot->max_stack == 20 &&
+              pot->on_use.size() == 1 && pot->on_use[0].modifiers.size() == 1 &&
+              pot->on_use[0].modifiers[0].attribute == "Health" && pot->on_use[0].modifiers[0].magnitude == 55.0f);
+        // a data-file item is usable end-to-end (equip flows through G0)
+        ecs::World w; const ecs::Entity e = w.create();
+        w.add<ecs::AttributeSet>(e, ecs::AttributeSet{});
+        w.get<ecs::AttributeSet>(e).define("AttackPower", 0, 0, 999);
+        ecs::equip_item(w, e, ecs::ItemInstance{"file_axe", 1, 0, {}});
+        check("data-file item equips + applies its modifier (AttackPower 18)",
+              w.get<ecs::AttributeSet>(e).get("AttackPower") == 18.0f);
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }
