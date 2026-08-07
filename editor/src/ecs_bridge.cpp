@@ -24,6 +24,7 @@
 #include "ecs/gameplay_npc.h"            // G8 factions / aggro / spawners
 #include "ecs/gameplay_savegame.h"       // G9 save/load + world flags
 #include "ecs/gameplay_social.h"         // G10 parties / guilds / chat / trade
+#include "ecs/gameplay_logic.h"          // scene logic graph (events -> actions)
 #include "ecs/gameplay_weapons.h"        // G12 weapons / ammo / projectiles
 #include "ecs/gameplay_vehicles.h"       // G13 vehicles / racing
 #include "ecs/gameplay_building.h"       // G14 building / automation
@@ -48,6 +49,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <sstream>
@@ -89,6 +91,9 @@ struct EcsSceneBridge::Impl {
     ecs::GameplayEventBus event_bus;
     ecs::TimerManager     timer_mgr;
     ecs::SocialState      social_state;          // G10 parties/guilds/trades/leaderboard
+    ecs::LogicGraph       logic_graph;           // scene logic graph (authored by the node panel)
+    ecs::LogicRuntime     logic_runtime;         // executes the graph during Play
+    ecs::Entity           world_flags_entity = ecs::null_entity;   // holds WorldFlags for Set Flag actions
     float                 combat_accum = 0.0f;   // fixed 60 Hz accumulator for frame-data combat
 };
 
@@ -132,6 +137,34 @@ void EcsSceneBridge::tick_gameplay(float dt) {
 ecs::GameplayEventBus& EcsSceneBridge::events() { return impl_->event_bus; }
 ecs::TimerManager&     EcsSceneBridge::timers() { return impl_->timer_mgr; }
 ecs::SocialState&      EcsSceneBridge::social() { return impl_->social_state; }
+
+ecs::LogicGraph& EcsSceneBridge::logic_graph() { return impl_->logic_graph; }
+
+void EcsSceneBridge::start_logic() {
+    if (impl_->world_flags_entity == ecs::null_entity) {   // a persistent, sync-safe flags holder
+        impl_->world_flags_entity = impl_->world.create();
+        impl_->world.add<ecs::WorldFlags>(impl_->world_flags_entity, ecs::WorldFlags{});
+    }
+    impl_->logic_runtime.start(impl_->logic_graph, impl_->world, impl_->event_bus, impl_->world_flags_entity);
+}
+void EcsSceneBridge::stop_logic()          { impl_->logic_runtime.stop(); }
+void EcsSceneBridge::logic_on_key(int key) { if (impl_->logic_runtime.running()) impl_->logic_runtime.on_key(key); }
+
+bool EcsSceneBridge::save_logic(const std::string& path) {
+    if (impl_->logic_graph.empty()) { std::error_code ec; std::filesystem::remove(path, ec); return true; }
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) return false;
+    f << ecs::logic_to_text(impl_->logic_graph);
+    return static_cast<bool>(f);
+}
+bool EcsSceneBridge::load_logic(const std::string& path) {
+    impl_->logic_runtime.stop();
+    std::ifstream f(path, std::ios::binary);
+    if (!f) { impl_->logic_graph = ecs::LogicGraph{}; return false; }
+    std::stringstream ss; ss << f.rdbuf();
+    impl_->logic_graph = ecs::logic_from_text(ss.str());
+    return true;
+}
 
 void EcsSceneBridge::seed_demo_content() {
     static bool seeded = false;

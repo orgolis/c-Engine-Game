@@ -23,7 +23,7 @@
 #include <glm/fwd.hpp>
 
 namespace schizo::scene { class Scene; class Transform; }
-namespace schizo::ecs   { class World; class GameplayEventBus; class TimerManager; struct SocialState; }  // fwd (keeps EnTT out of includers)
+namespace schizo::ecs   { class World; class GameplayEventBus; class TimerManager; struct SocialState; struct LogicGraph; }  // fwd (keeps EnTT out of includers)
 
 namespace schizo::editor {
 
@@ -64,6 +64,14 @@ public:
     schizo::ecs::TimerManager&     timers();
     // G10 multiplayer-social session state (parties/guilds/trades/leaderboard).
     schizo::ecs::SocialState&      social();
+
+    // --- Scene logic graph (Blueprint-style events -> actions) ---
+    schizo::ecs::LogicGraph& logic_graph();     // the scene's graph (edited by the node panel)
+    void start_logic();                          // begin executing the graph (on Play)
+    void stop_logic();                           // stop executing (on Stop)
+    void logic_on_key(int glfw_key);             // feed a key press to On Key nodes
+    bool save_logic(const std::string& path);    // write the graph to a .logic sidecar
+    bool load_logic(const std::string& path);    // read a .logic sidecar (empties if missing)
 
     // --- Demo / testing helpers ---
     // Register a small demo item catalog + a set bonus (idempotent) so the

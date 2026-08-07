@@ -75,6 +75,7 @@
 #include "collider_component.h"
 #include "audio_components.h"
 #include "asset_browser_panel.h"
+#include "logic_graph_panel.h"   // visual node editor for the scene logic graph
 #include "material_editor_panel.h"
 #include "asset_import_dialog.h"
 #include "transform_gizmo.h"
@@ -136,6 +137,7 @@ struct EditorState {
     bool show_scene_hierarchy = true;
     bool show_inspector = true;
     bool show_asset_browser = true;
+    bool show_logic_graph = false;   // scene logic-graph node editor
     bool show_viewport = true;
     bool show_demo_window = false;
     bool show_preferences = false;
@@ -647,6 +649,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             ImGui::MenuItem("Scene Hierarchy", nullptr, &editor_state.show_scene_hierarchy);
             ImGui::MenuItem("Inspector", nullptr, &editor_state.show_inspector);
             ImGui::MenuItem("Asset Browser", nullptr, &editor_state.show_asset_browser);
+            ImGui::MenuItem("Logic Graph", nullptr, &editor_state.show_logic_graph);
             ImGui::MenuItem("Viewport", nullptr, &editor_state.show_viewport);
             ImGui::Separator();
             ImGui::MenuItem("Playback Controls", nullptr, &editor_state.show_playback_controls);
@@ -6218,10 +6221,31 @@ int main(int argc, char** argv) {
               ecs_bridge.sync_and_run(editor_scene.GetScene());
               ecs_bridge.tick_gameplay(delta_time); }   // G0: effects/abilities/triggers/timers/events
 
+            // Scene logic graph: start/stop with Play, and feed key presses to
+            // On Key nodes while playing.
+            {
+                static bool logic_was_playing = false;
+                const bool logic_playing = editor_state.scene_playback_manager &&
+                                           editor_state.scene_playback_manager->IsPlaying();
+                if (logic_playing && !logic_was_playing) ecs_bridge.start_logic();
+                if (!logic_playing && logic_was_playing) ecs_bridge.stop_logic();
+                logic_was_playing = logic_playing;
+                if (logic_playing) {
+                    static bool logic_prev_key[128] = {false};
+                    for (int k = 32; k < 97; ++k) {   // space..'`' (letters/digits/common)
+                        const bool down = glfwGetKey(glfw_window, k) == GLFW_PRESS;
+                        if (down && !logic_prev_key[k]) ecs_bridge.logic_on_key(k);
+                        logic_prev_key[k] = down;
+                    }
+                }
+            }
+
             // Draw the gameplay UI (HUD + inventory/character/quest windows) for any
             // entity a script opened via "ui.*" intent tags. Scripts can't draw ImGui,
             // so they set the intent tags and the engine renders it here.
             schizo::editor::draw_gameplay_ui(ecs_bridge);
+            if (editor_state.show_logic_graph)
+                schizo::editor::draw_logic_graph_panel(ecs_bridge, &editor_state.show_logic_graph);
 
             { GWS_PROFILE_ZONE("build_draw_items");
               schizo::editor::build_draw_items(

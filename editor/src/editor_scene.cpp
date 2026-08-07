@@ -30,7 +30,10 @@ bool EditorScene::SaveScene(const std::string& filepath) {
         scene_filepath_ = filepath;
         has_unsaved_changes_ = false;
         // Persist authoritative gameplay ECS components alongside the scene (F3).
-        if (ecs_bridge_) ecs_bridge_->save_gameplay(scene_, filepath + ".gameplay");
+        if (ecs_bridge_) {
+            ecs_bridge_->save_gameplay(scene_, filepath + ".gameplay");
+            ecs_bridge_->save_logic(filepath + ".logic");   // scene logic graph
+        }
         return true;
     }
     return false;
@@ -43,7 +46,10 @@ bool EditorScene::LoadScene(const std::string& filepath) {
         scene_filepath_ = filepath;
         has_unsaved_changes_ = false;
         // Restore authoritative gameplay ECS components (F3); no-op if no sidecar.
-        if (ecs_bridge_) ecs_bridge_->load_gameplay(scene_, filepath + ".gameplay");
+        if (ecs_bridge_) {
+            ecs_bridge_->load_gameplay(scene_, filepath + ".gameplay");
+            ecs_bridge_->load_logic(filepath + ".logic");   // scene logic graph (empties if none)
+        }
         return true;
     }
     return false;

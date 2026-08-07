@@ -46,6 +46,7 @@ target_sources(editor
         src/project_paths.cpp
         src/ecs_bridge.cpp
         src/component_inspector.cpp
+        src/logic_graph_panel.cpp
         src/editor_scene.cpp
         src/scene_serializer.cpp
         src/mesh_generator.cpp
