@@ -1233,7 +1233,39 @@ void ShowInspector(EditorState& editor_state) {
     {
         auto scene = editor_state.editor_scene->GetScene();
         if (!scene || editor_state.selected_entity_id == 0) {
-            ImGui::Text("No entity selected");
+            ImGui::TextDisabled("No entity selected.");
+            if (scene) {
+                // ---- Scene Environment (scene-bound sky) ----
+                ImGui::Separator();
+                ImGui::TextUnformatted("Scene Environment");
+                ImGui::TextDisabled("Each scene stores its own sky HDR.");
+
+                char sky[260]; std::snprintf(sky, sizeof(sky), "%s", scene->GetSkyHdr().c_str());
+                ImGui::SetNextItemWidth(-90);
+                if (ImGui::InputText("Sky HDR", sky, sizeof(sky))) {
+                    scene->SetSkyHdr(sky); editor_state.editor_scene->MarkModified();
+                }
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
+                        scene->SetSkyHdr(std::string(static_cast<const char*>(pl->Data)));
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Clear")) { scene->SetSkyHdr(""); editor_state.editor_scene->MarkModified(); }
+                if (scene->GetSkyHdr().empty()) ImGui::TextDisabled("(procedural gradient sky)");
+                ImGui::TextDisabled("Drag an .hdr here, or type a project-relative path.");
+
+                float intensity = scene->GetSkyIntensity();
+                ImGui::SetNextItemWidth(-90);
+                if (ImGui::DragFloat("Sky Intensity", &intensity, 0.02f, 0.0f, 10.0f)) {
+                    scene->SetSkyIntensity(intensity); editor_state.editor_scene->MarkModified();
+                }
+                ImGui::Dummy(ImVec2(0, 4));
+                ImGui::TextWrapped("Save the scene, then reopen the project to apply a new sky "
+                                   "(live sky hot-swap is a follow-up).");
+            }
             ImGui::End();
             return;
         }
@@ -4157,18 +4189,50 @@ int main(int argc, char** argv) {
         std::unique_ptr<VulkanEnvironmentMap> env_map;
         {
             namespace fs = std::filesystem;
-            const fs::path skies_dir = "assets/skies";
-            fs::path hdr_path;
             std::error_code ec;
-            if (fs::exists(skies_dir, ec) && fs::is_directory(skies_dir, ec)) {
-                for (const auto& entry : fs::directory_iterator(skies_dir, ec)) {
-                    const auto ext = entry.path().extension().string();
-                    if (ext == ".hdr" || ext == ".HDR") {
-                        hdr_path = entry.path();
-                        break;
+            fs::path hdr_path;
+
+            // Scene-bound sky: prefer the STARTUP scene's SKY_HDR (peeked from the
+            // .scene header) so a project/scene opens with its own declared sky.
+            auto peek_scene_sky = [](const std::string& scene_file) -> std::string {
+                std::ifstream f(scene_file);
+                std::string line;
+                while (std::getline(f, line)) {
+                    if (line.compare(0, 8, "SKY_HDR=") == 0) return line.substr(8);
+                    if (line.compare(0, 13, "ENTITY_COUNT=") == 0) break;   // end of header
+                }
+                return {};
+            };
+            {
+                std::string scene_path;
+                if (!startup_project.empty()) {
+                    schizo::project::ProjectManifest pm;
+                    if (schizo::project::ProjectManifest::load(startup_project, pm))
+                        scene_path = pm.default_scene_path();
+                } else if (!startup_scene.empty()) {
+                    scene_path = startup_scene;
+                }
+                if (!scene_path.empty()) {
+                    std::string sky = peek_scene_sky(scene_path);
+                    if (!sky.empty()) {
+                        fs::path p(sky);
+                        if (p.is_relative() && !startup_project.empty())
+                            p = fs::path(startup_project).parent_path() / p;
+                        if (fs::exists(p, ec)) hdr_path = p;
                     }
                 }
             }
+
+            // Fallback: first assets/skies/*.hdr in the working dir.
+            if (hdr_path.empty()) {
+                const fs::path skies_dir = "assets/skies";
+                if (fs::exists(skies_dir, ec) && fs::is_directory(skies_dir, ec))
+                    for (const auto& entry : fs::directory_iterator(skies_dir, ec)) {
+                        const auto ext = entry.path().extension().string();
+                        if (ext == ".hdr" || ext == ".HDR") { hdr_path = entry.path(); break; }
+                    }
+            }
+
             if (!hdr_path.empty()) {
                 env_map = VulkanEnvironmentMap::create_from_hdr(
                     &device, hdr_path.string(), 512);

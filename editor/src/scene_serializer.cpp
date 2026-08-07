@@ -59,6 +59,9 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
 
     try {
         file << "SCENE_NAME=" << scene->GetName() << "\n";
+        // Scene-bound environment (sky). Empty SKY_HDR = procedural sky.
+        file << "SKY_HDR=" << scene->GetSkyHdr() << "\n";
+        file << "SKY_INTENSITY=" << scene->GetSkyIntensity() << "\n";
         file << "ENTITY_COUNT=" << scene->GetEntityCount() << "\n";
         file << "\n";
 
@@ -856,16 +859,23 @@ std::shared_ptr<schizo::scene::Scene> SceneSerializer::LoadScene(const std::stri
 
     try {
         std::string scene_name = "Loaded_Scene";
+        std::string sky_hdr;
+        float sky_intensity = 1.0f;
         std::string line;
 
-        // Read scene header. Stop after SCENE_NAME so we don't accidentally
-        // consume the first entity's lines.
+        // Read the scene header (SCENE_NAME + scene-bound environment). Stop at
+        // ENTITY_COUNT (the last header key) so we don't consume entity lines.
         while (std::getline(file, line)) {
             std::string v;
-            if (starts_with(line, "SCENE_NAME", v)) { scene_name = v; break; }
+            if (starts_with(line, "SCENE_NAME", v))    { scene_name = v; continue; }
+            if (starts_with(line, "SKY_HDR", v))        { sky_hdr = v; continue; }
+            if (starts_with(line, "SKY_INTENSITY", v))  { sky_intensity = std::stof(v); continue; }
+            if (starts_with(line, "ENTITY_COUNT", v))   { break; }
         }
 
         auto scene = std::make_shared<schizo::scene::Scene>(scene_name);
+        scene->SetSkyHdr(sky_hdr);
+        scene->SetSkyIntensity(sky_intensity);
 
         // Pass 1: parse every entity block into a ParsedEntity. We can't wire
         // parent_id yet — parent entity may appear later in the file.

@@ -28,10 +28,16 @@ struct SceneConfig {
     
     // Physics
     glm::vec3 gravity = glm::vec3(0.0f, -9.81f, 0.0f);
-    
+
     // Update settings
     float fixed_timestep = 0.02f;  // 50 FPS fixed update
     float max_frame_time = 0.1f;   // Cap frame time
+
+    // Environment / sky (scene-bound). `sky_hdr` is a project-relative path to an
+    // equirectangular .hdr (empty = the procedural gradient sky). `sky_intensity`
+    // scales the environment/IBL contribution.
+    std::string sky_hdr;
+    float       sky_intensity = 1.0f;
 };
 
 // ============================================================================
@@ -80,6 +86,12 @@ public:
      * @brief Get gravity vector
      */
     glm::vec3 GetGravity() const { return config_.gravity; }
+
+    // ========== Environment / sky (scene-bound) ==========
+    const std::string& GetSkyHdr() const { return config_.sky_hdr; }
+    void  SetSkyHdr(const std::string& path) { config_.sky_hdr = path; }
+    float GetSkyIntensity() const { return config_.sky_intensity; }
+    void  SetSkyIntensity(float v) { config_.sky_intensity = v; }
     
     // ========== Entity Management ==========
     
