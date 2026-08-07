@@ -19,6 +19,7 @@
 #include "ecs/gameplay_quests.h"        // G6 drawer: Quest Log
 #include "ecs/gameplay_npc.h"           // G8 drawers: Faction / Aggro / Spawner
 #include "ecs/gameplay_savegame.h"      // G9 drawers: World Flags / Save Id
+#include "ecs/gameplay_weapons.h"       // G12 drawer: Weapon
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -466,6 +467,28 @@ bool draw_world_flags(void* comp) {
     return changed;
 }
 
+// G12 · Weapon: equipped weapon + ammo, with a picker from the weapon registry.
+bool draw_weapon(void* comp) {
+    auto& ws = *static_cast<ecs::WeaponState*>(comp);
+    bool changed = false;
+    const ecs::WeaponDef* cur = ecs::find_weapon(ws.weapon_id);
+    if (ImGui::BeginCombo("weapon", cur ? cur->name.c_str() : ws.weapon_id.c_str())) {
+        for (const auto& d : ecs::weapon_registry())
+            if (ImGui::Selectable(d.name.c_str(), d.id == ws.weapon_id)) {
+                ws.weapon_id = d.id; ws.ammo_in_mag = d.mag_size; changed = true;
+            }
+        ImGui::EndCombo();
+    }
+    if (ImGui::DragInt("ammo in mag", &ws.ammo_in_mag, 0.2f, 0, 999)) changed = true;
+    if (ImGui::DragInt("reserve", &ws.reserve, 0.2f, 0, 9999)) changed = true;
+    if (cur) ImGui::TextDisabled("%.0f dmg %s  |  %.0f rpm  |  mag %d%s",
+                                 cur->damage, cur->damage_type.c_str(), cur->rpm, cur->mag_size,
+                                 cur->projectile_speed > 0 ? "  (projectile)" : "  (hitscan)");
+    if (ws.reloading > 0.0f) ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "reloading %.1fs", ws.reloading);
+    else if (ws.cooldown > 0.0f) ImGui::TextDisabled("cooldown %.2fs", ws.cooldown);
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -540,6 +563,8 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         auto& s = *static_cast<ecs::SaveId*>(comp);
                         int v = static_cast<int>(s.value);
                         if (ImGui::DragInt("save key", &v, 1.0f, 0, 0)) { s.value = static_cast<uint64_t>(v < 0 ? 0 : v); changed = true; }
+                    } else if (std::strcmp(ct.name, "Weapon") == 0) {
+                        if (draw_weapon(comp)) changed = true;
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }

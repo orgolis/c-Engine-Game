@@ -26,6 +26,7 @@
 #include "ecs/gameplay_npc.h"
 #include "ecs/gameplay_savegame.h"
 #include "ecs/gameplay_social.h"
+#include "ecs/gameplay_weapons.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -1171,6 +1172,74 @@ int main() {
         check("leaderboard sorts high-to-low + tracks best score",
               ecs::rank_of(s, "Alice") == 1 && ecs::rank_of(s, "Cara") == 3 &&
               ecs::top_scores(s, 2).size() == 2 && ecs::top_scores(s, 2)[0].name == "Alice");
+    }
+
+    // G12: shooter — hitscan + projectiles resolved through G0/G2, ammo, reload.
+    {
+        ecs::WeaponDef rifle; rifle.id = "g12_rifle"; rifle.name = "Rifle"; rifle.damage = 25.0f;
+        rifle.damage_type = "kinetic"; rifle.rpm = 600.0f; rifle.mag_size = 5; rifle.spread_deg = 0.0f; rifle.range = 100.0f;
+        ecs::register_weapon(rifle);
+        ecs::WeaponDef rocket; rocket.id = "g12_rocket"; rocket.name = "Launcher"; rocket.damage = 60.0f;
+        rocket.damage_type = "explosive"; rocket.rpm = 60.0f; rocket.mag_size = 1; rocket.projectile_speed = 20.0f; rocket.range = 100.0f;
+        ecs::register_weapon(rocket);
+
+        ecs::World w; ecs::GameplayEventBus bus;
+        const ecs::Entity shooter = w.create();
+        w.add<ecs::Transform>(shooter, ecs::Transform{});                 // at origin
+        const ecs::Entity target = w.create();
+        ecs::Transform tt; tt.position = glm::vec3(0.0f, 0.0f, 10.0f);     // 10m down +Z
+        w.add<ecs::Transform>(target, tt);
+        w.add<ecs::CombatActor>(target, ecs::CombatActor{});              // hurtbox at (0,1,10) r=0.6
+        w.add<ecs::AttributeSet>(target, ecs::AttributeSet{});
+        w.get<ecs::AttributeSet>(target).define("Health", 100, 0, 100);
+
+        ecs::WeaponState ws; ws.weapon_id = "g12_rifle"; ws.ammo_in_mag = 5; ws.reserve = 10;
+        w.add<ecs::WeaponState>(shooter, ws);
+        const glm::vec3 origin(0, 1, 0), aim(0, 0, 1);
+
+        int hits = 0;
+        bus.subscribe("weapon.hit", [&](const ecs::GameplayEvent&) { ++hits; });
+        auto& live = w.get<ecs::WeaponState>(shooter);
+        check("hitscan shot hits the target + damages via G0 (100 -> 75) + spends ammo",
+              ecs::fire_weapon(w, shooter, origin, aim, live, &bus) && (bus.flush(), true) &&
+              w.get<ecs::AttributeSet>(target).get("Health") == 75.0f && hits == 1 && live.ammo_in_mag == 4);
+        check("cannot fire again while on cooldown", !ecs::fire_weapon(w, shooter, origin, aim, live, &bus));
+        ecs::tick_weapons(w, 0.2f);   // 600 rpm -> 0.1s cooldown, cleared
+        check("fires again after the cooldown elapses", ecs::fire_weapon(w, shooter, origin, aim, live, &bus));
+
+        // empty the mag, then reload from reserve
+        live.ammo_in_mag = 0;
+        check("cannot fire on an empty magazine", !ecs::fire_weapon(w, shooter, origin, aim, live, &bus));
+        ecs::reload_weapon(live);
+        check("reload starts", live.reloading > 0.0f);
+        ecs::tick_weapons(w, rifle.reload_time + 0.1f);
+        check("reload refills the magazine from reserve (mag 5, reserve 5)",
+              live.ammo_in_mag == 5 && live.reserve == 5);
+
+        // projectile weapon: spawns a projectile that travels + hits
+        w.get<ecs::AttributeSet>(target).set("Health", 100.0f);
+        ecs::WeaponState pw; pw.weapon_id = "g12_rocket"; pw.ammo_in_mag = 1;
+        const ecs::Entity gunner = w.create();
+        w.add<ecs::Transform>(gunner, ecs::Transform{});
+        w.add<ecs::WeaponState>(gunner, pw);
+        auto& plive = w.get<ecs::WeaponState>(gunner);
+        ecs::fire_weapon(w, gunner, origin, aim, plive, &bus);
+        check("projectile weapon spawns a projectile", w.count<ecs::Projectile>() == 1);
+        ecs::tick_projectiles(w, 0.5f, &bus);   // 20 m/s * 0.5 = 10 m -> reaches the target
+        check("projectile travels + hits + applies damage + despawns (100 -> 40)",
+              w.get<ecs::AttributeSet>(target).get("Health") == 40.0f && w.count<ecs::Projectile>() == 0);
+
+        // authorable + serialize
+        ecs::register_weapon_components();
+        const ecs::AuthorableComponent* wc = ecs::find_authorable("Weapon");
+        check("Weapon is authorable", wc && wc->serialize && wc->deserialize);
+        if (wc) {
+            ecs::WeaponState src; src.weapon_id = "g12_rifle"; src.ammo_in_mag = 3; src.reserve = 7;
+            const auto b = ecs::serialize_authorable(*wc, &src);
+            ecs::WeaponState dst; ecs::deserialize_authorable(*wc, &dst, b.data(), b.size());
+            check("Weapon serialize round-trips",
+                  dst.weapon_id == "g12_rifle" && dst.ammo_in_mag == 3 && dst.reserve == 7);
+        }
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }

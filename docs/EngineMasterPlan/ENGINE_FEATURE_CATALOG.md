@@ -384,17 +384,17 @@ G-modules become data + rules on top.
 
 ## Genre modules (define a specific kind of game)
 
-### G12 · Shooter / Gunplay 🔴 — **Depends on:** G0, G2, Physics, Animation, VFX
+### G12 · Shooter / Gunplay 🟡 — **Depends on:** G0, G2, Physics, Animation, VFX
 *(Destiny 2, Cyberpunk, Phasmophobia, Resident Evil)*
 | Sub-feature | Status |
 |---|---|
-| Weapons framework (data-driven: fire modes, magazines, reload) | 🔴 |
-| Ballistics: projectiles + hitscan, penetration, damage falloff | 🔴 |
-| Recoil / spread / bloom patterns, aim-down-sights (ADS) | 🔴 |
-| Gunfeel: muzzle flash, tracers, shells, camera shake, impact decals/FX | 🔴 |
+| Weapons framework (data-driven: fire modes, magazines, reload) | ✅ **`WeaponDef`** registry (fire mode, damage+type, rpm→cooldown, mag, spread, range, hitscan/projectile, reload) + **`WeaponState`** (ammo/reserve/cooldown/reload); `fire_weapon`/`reload_weapon`/`tick_weapons`. Scripts: `fire_weapon(e)`/`reload_weapon(e)`. |
+| Ballistics: projectiles + hitscan, penetration, damage falloff | 🟡 hitscan (ray-vs-hurtbox → G0 damage) + **`Projectile`** (travel + hurtbox collision, `tick_projectiles`) ✅; penetration/falloff = follow-up. |
+| Recoil / spread / bloom patterns, aim-down-sights (ADS) | 🟡 per-shot spread cone (`apply_spread`, deterministic) ✅; recoil curves/ADS = follow-up. |
+| Gunfeel: muzzle flash, tracers, shells, camera shake, impact decals/FX | 🔴 (rides VFX; weapon.fire/weapon.hit events are the hooks) |
 | Cover system, weapon sway/handling | 🔴 |
-| Ammo + weapon inventory, attachments / mods | 🔴 |
-| Hit markers, headshots, weak points | 🔴 |
+| Ammo + weapon inventory, attachments / mods | 🟡 ammo ✅; weapon inventory = G4 items; attachments = follow-up. |
+| Hit markers, headshots, weak points | 🔴 (hit events exist; weak-points = per-part hurtboxes, follow-up) |
 
 ### G13 · Vehicles & Driving 🔴 — **Depends on:** Physics *(Forza, Cyberpunk)*
 | Sub-feature | Status |

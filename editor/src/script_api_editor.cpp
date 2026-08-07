@@ -28,6 +28,7 @@
 #include "ecs/gameplay_items.h"
 #include "ecs/gameplay_inventory.h"
 #include "ecs/gameplay_interaction.h"
+#include "ecs/gameplay_weapons.h"
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/quaternion.hpp>
@@ -331,6 +332,26 @@ bool api_interact(void* ctx, uint32_t e) {
     if (!gp_entity(ctx, e, w, ent)) return false;
     return ecs::try_interact(*w, ent, &C(ctx)->bridge->events());
 }
+bool api_fire_weapon(void* ctx, uint32_t e) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return false;
+    auto* ws = w->try_get<ecs::WeaponState>(ent);
+    auto* tf = w->try_get<ecs::Transform>(ent);
+    if (!ws || !tf) return false;
+    const glm::vec3 fwd = glm::normalize(tf->rotation * glm::vec3(0.0f, 0.0f, 1.0f));   // Transform forward (+Z)
+    const glm::vec3 origin = tf->position + glm::vec3(0.0f, 1.0f, 0.0f);                // ~eye height
+    return ecs::fire_weapon(*w, ent, origin, fwd, *ws, &C(ctx)->bridge->events(),
+                            static_cast<uint64_t>(ws->ammo_in_mag) + 1u);
+}
+bool api_reload_weapon(void* ctx, uint32_t e) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return false;
+    auto* ws = w->try_get<ecs::WeaponState>(ent);
+    if (!ws) return false;
+    const float before = ws->reloading;
+    ecs::reload_weapon(*ws);
+    return ws->reloading > 0.0f && before <= 0.0f;
+}
 
 }  // namespace
 
@@ -377,6 +398,8 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.equip_item         = &api_equip_item;
     api.use_item           = &api_use_item;
     api.interact           = &api_interact;
+    api.fire_weapon        = &api_fire_weapon;
+    api.reload_weapon      = &api_reload_weapon;
 }
 
 }  // namespace schizo::editor

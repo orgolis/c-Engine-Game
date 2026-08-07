@@ -77,6 +77,8 @@ namespace Schizo
         public delegate* unmanaged[Cdecl]<void*, uint, byte*, byte> equip_item;
         public delegate* unmanaged[Cdecl]<void*, uint, byte*, byte> use_item;
         public delegate* unmanaged[Cdecl]<void*, uint, byte> interact;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte> fire_weapon;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte> reload_weapon;
     }
 
     /// Friendly wrapper handed to your OnStart/OnUpdate.
@@ -195,6 +197,8 @@ namespace Schizo
         public bool UseItem(uint e, string defId)
         { var b = Utf8(defId); fixed (byte* bp = b) return p->use_item(p->ctx, e, bp) != 0; }
         public bool Interact(uint e) => p->interact(p->ctx, e) != 0;
+        public bool FireWeapon(uint e) => p->fire_weapon(p->ctx, e) != 0;
+        public bool ReloadWeapon(uint e) => p->reload_weapon(p->ctx, e) != 0;
 
         // GLFW key codes.
         public const int KeySpace = 32;

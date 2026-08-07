@@ -87,6 +87,9 @@ struct ScriptApi {
     bool  (*use_item)(void* ctx, uint32_t e, const char* def_id) = nullptr;
     // G7: interact with the nearest interactable in range of entity `e`.
     bool  (*interact)(void* ctx, uint32_t e) = nullptr;
+    // G12: fire / reload entity `e`'s Weapon (aims along its Transform forward).
+    bool  (*fire_weapon)(void* ctx, uint32_t e) = nullptr;
+    bool  (*reload_weapon)(void* ctx, uint32_t e) = nullptr;
 };
 
 }  // namespace schizo::editor

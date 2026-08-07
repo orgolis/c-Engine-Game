@@ -24,6 +24,7 @@
 #include "ecs/gameplay_npc.h"            // G8 factions / aggro / spawners
 #include "ecs/gameplay_savegame.h"       // G9 save/load + world flags
 #include "ecs/gameplay_social.h"         // G10 parties / guilds / chat / trade
+#include "ecs/gameplay_weapons.h"        // G12 weapons / ammo / projectiles
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -114,6 +115,8 @@ void EcsSceneBridge::tick_gameplay(float dt) {
     ecs::tick_triggers(impl_->world, impl_->event_bus);           // enter/exit -> events
     ecs::tick_harvest(impl_->world, dt);                          // G5: harvest-node respawn cooldowns
     ecs::tick_spawners(impl_->world, dt, &impl_->event_bus);      // G8: encounter spawner requests
+    ecs::tick_weapons(impl_->world, dt);                          // G12: weapon cooldown / reload
+    ecs::tick_projectiles(impl_->world, dt, &impl_->event_bus);   // G12: projectile travel + hits
     impl_->timer_mgr.tick(dt);                                   // one-shot / repeating timers
     impl_->event_bus.flush();                                    // dispatch everything queued this frame
 }
@@ -144,6 +147,12 @@ void EcsSceneBridge::seed_demo_content() {
     register_recipe({"smelt_iron", "Smelt Iron Ingot", {{"iron_ore", 2}}, {{"iron_ingot", 1}}, "", ""});
     register_recipe({"forge_sword", "Forge Iron Sword", {{"iron_ingot", 3}}, {{"sword_iron", 1}}, "station.forge", ""});
     register_salvage({"sword_iron", {{"iron_ingot", 1}}});
+
+    // G12 demo weapons (a hitscan rifle + a projectile launcher).
+    { WeaponDef d; d.id = "rifle"; d.name = "Assault Rifle"; d.fire_mode = FireMode::Auto;
+      d.damage = 18.0f; d.damage_type = "kinetic"; d.rpm = 600.0f; d.mag_size = 30; d.spread_deg = 1.5f; d.range = 120.0f; register_weapon(d); }
+    { WeaponDef d; d.id = "launcher"; d.name = "Rocket Launcher"; d.fire_mode = FireMode::Semi;
+      d.damage = 90.0f; d.damage_type = "explosive"; d.rpm = 40.0f; d.mag_size = 1; d.projectile_speed = 30.0f; d.range = 150.0f; d.reload_time = 2.5f; register_weapon(d); }
 }
 
 int EcsSceneBridge::load_gameplay_data(const std::string& dir) { return ecs::load_items_dir(dir); }
@@ -381,6 +390,7 @@ EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_quest_component();          // G6: Quest Log
     ecs::register_npc_components();            // G8: Faction / Aggro / Spawner
     ecs::register_persistence_components();    // G9: Save Id / World Flags
+    ecs::register_weapon_components();          // G12: Weapon
 
     // G6: route every gameplay event into quest progress (deferred flush = safe).
     impl_->event_bus.subscribe("*", [impl = impl_.get()](const ecs::GameplayEvent& ev) {

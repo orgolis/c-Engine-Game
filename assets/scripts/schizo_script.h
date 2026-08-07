@@ -78,6 +78,8 @@ typedef struct SchizoScriptApi {
     bool  (*equip_item)(void* ctx, unsigned e, const char* def_id);
     bool  (*use_item)(void* ctx, unsigned e, const char* def_id);
     bool  (*interact)(void* ctx, unsigned e);   /* G7: use the nearest interactable in range */
+    bool  (*fire_weapon)(void* ctx, unsigned e);   /* G12: fire the entity's Weapon */
+    bool  (*reload_weapon)(void* ctx, unsigned e); /* G12: reload the entity's Weapon */
 } SchizoScriptApi;
 
 }  // extern "C"
