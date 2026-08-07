@@ -32,6 +32,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -648,9 +649,14 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
     bool changed = false;
 
     for (const auto& ct : ecs::authorable_components()) {
+        if (!ct.has(w, e)) continue;   // present-only; add absent ones via the search popup below
         ImGui::PushID(ct.name);
-        if (ct.has(w, e)) {
-            if (ImGui::CollapsingHeader(ct.name, ImGuiTreeNodeFlags_DefaultOpen)) {
+        const bool ct_open = ImGui::CollapsingHeader(ct.name, ImGuiTreeNodeFlags_DefaultOpen);
+        if (ImGui::BeginPopupContextItem("##comp_ctx")) {   // Unity-style per-component context menu
+            if (ImGui::MenuItem("Remove Component")) { ct.remove(w, e); changed = true; }
+            ImGui::EndPopup();
+        }
+        if (ct_open) {
                 if (void* comp = ct.get(w, e)) {
                     if (ct.type) {   // POD component -> generic reflection fields
                         gws::reflect::for_each_field(
@@ -746,12 +752,31 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         ImGui::TextDisabled("(no inspector for this component)");
                     }
                 }
-                if (ImGui::SmallButton("Remove component")) { ct.remove(w, e); changed = true; }
             }
-        } else {
-            if (ImGui::SmallButton((std::string("Add ") + ct.name).c_str())) { ct.add(w, e); changed = true; }
-        }
         ImGui::PopID();
+    }
+
+    // Unity-style "Add Component" search popup (replaces the per-component Add buttons).
+    ImGui::Dummy(ImVec2(0, 4));
+    if (ImGui::Button("Add Component", ImVec2(-1.0f, 0.0f))) ImGui::OpenPopup("##add_component");
+    if (ImGui::BeginPopup("##add_component")) {
+        static char comp_filter[64] = "";
+        ImGui::SetNextItemWidth(220);
+        ImGui::InputTextWithHint("##cf", "search components...", comp_filter, sizeof comp_filter);
+        ImGui::Separator();
+        std::string flt;
+        for (const char* p = comp_filter; *p; ++p) flt += static_cast<char>(std::tolower(static_cast<unsigned char>(*p)));
+        int shown = 0;
+        for (const auto& ct : ecs::authorable_components()) {
+            if (ct.has(w, e)) continue;
+            std::string low;
+            for (const char* p = ct.name; *p; ++p) low += static_cast<char>(std::tolower(static_cast<unsigned char>(*p)));
+            if (!flt.empty() && low.find(flt) == std::string::npos) continue;
+            if (ImGui::Selectable(ct.name)) { ct.add(w, e); changed = true; ImGui::CloseCurrentPopup(); }
+            ++shown;
+        }
+        if (shown == 0) ImGui::TextDisabled("(no matching components)");
+        ImGui::EndPopup();
     }
 
     // Read-only view of the entity's abilities + live cooldowns (G0).
