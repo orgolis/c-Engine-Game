@@ -327,14 +327,14 @@ G-modules become data + rules on top.
 | Cutscenes / scripted sequences | 🔴 |
 | Lore / codex, voice-over hooks | 🔴 |
 
-### G7 · World Interaction 🔴 — **Depends on:** G0, Physics
+### G7 · World Interaction 🟡 — **Depends on:** G0, Physics
 | Sub-feature | Status |
 |---|---|
-| Interaction system (prompts, usables, focus) | 🔴 |
-| Containers / chests / lootables | 🔴 |
-| Doors / gates / levers / switches / puzzles | 🔴 |
-| Pickups, harvest nodes, traps / hazards | 🔴 |
-| Gameplay destructibles | 🔴 |
+| Interaction system (prompts, usables, focus) | ✅ **`Interactable`** (prompt/event/range/enabled/consume) + `nearest_interactable` (proximity focus) + `interact`/`try_interact` (fires the event on the bus). Exposed to scripts as `interact(e)`. |
+| Containers / chests / lootables | ✅ a chest = an entity with an `Inventory` + an `Interactable` ("container.open"); loot via `transfer_item` (G5). |
+| Doors / gates / levers / switches / puzzles | 🟡 any `Interactable` fires a named event; wire the door/switch reaction via a G0 event handler / state machine (no dedicated door mover yet — rides Physics/anim). |
+| Pickups, harvest nodes, traps / hazards | ✅ pickups (**`Pickup`** → grants an item + consume-on-use) + harvest nodes (G5); traps/hazards = a trigger volume (G0) applying a damage effect. |
+| Gameplay destructibles | 🔴 (rides Physics) |
 | Fast travel / waypoints, points-of-interest / discovery | 🔴 |
 
 ### G8 · NPCs & Encounters 🔴 — **Depends on:** AI, G0, G2

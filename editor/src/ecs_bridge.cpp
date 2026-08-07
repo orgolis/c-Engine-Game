@@ -19,6 +19,7 @@
 #include "ecs/gameplay_item_file.h"      // F5 .items data-file loader
 #include "ecs/gameplay_crafting.h"       // G5 recipes + salvage
 #include "ecs/gameplay_economy.h"        // G5 vendors / wallet / transfer / harvest
+#include "ecs/gameplay_interaction.h"    // G7 interactables / pickups
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -369,6 +370,7 @@ EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_skill_components();       // G3: Skill Tree / Unlocked Skills
     ecs::register_inventory_components();    // G4: Inventory / Equipment
     ecs::register_economy_components();       // G5: Vendor / Harvest Node
+    ecs::register_interaction_components();    // G7: Interactable / Pickup
 }
 
 EcsSceneBridge::~EcsSceneBridge() = default;

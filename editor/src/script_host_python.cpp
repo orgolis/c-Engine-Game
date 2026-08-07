@@ -308,6 +308,10 @@ void build_engine_module(pkpy::VM* vm) {
         bool r = g_api && g_api->use_item && g_api->use_item(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str());
         return VAR(r);
     });
+    vm->bind(mod, "interact(e: int) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        bool r = g_api && g_api->interact && g_api->interact(g_api->ctx, earg(vm, args[0]));
+        return VAR(r);
+    });
 
     // Common key / button constants (GLFW codes) so scripts don't hardcode.
     auto set_const = [&](const char* name, pkpy::i64 v) { mod->attr().set(name, VAR(v)); };

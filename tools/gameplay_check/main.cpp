@@ -21,6 +21,7 @@
 #include "ecs/gameplay_item_file.h"
 #include "ecs/gameplay_crafting.h"
 #include "ecs/gameplay_economy.h"
+#include "ecs/gameplay_interaction.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -912,6 +913,73 @@ int main() {
             check("Vendor serialize round-trips",
                   v2.entries.size() == 1 && v2.entries[0].item_id == "g5_ingot" &&
                   v2.entries[0].price == 10.0f && v2.sell_ratio == 0.5f && v2.currency == "Gold");
+        }
+    }
+
+    // G7: world interaction — proximity, pickups, container transfer, events.
+    {
+        ecs::register_item(ecs::ItemDef{"g7_potion", "Potion", ecs::ItemKind::Consumable, 0, 10, 0.1f, 5.0f, "", {}, {}, {}, {}, ""});
+        ecs::World w;
+        ecs::GameplayEventBus bus;
+        std::string last_event; ecs::Entity last_src = ecs::null_entity;
+        bus.subscribe("*", [&](const ecs::GameplayEvent& e) { last_event = e.name; last_src = e.instigator; });
+
+        const ecs::Entity player = w.create();
+        w.add<ecs::Transform>(player, ecs::Transform{});   // at origin
+
+        // a ground pickup 1.5m away (in range), consumed on use
+        const ecs::Entity pot = w.create();
+        ecs::Transform pt; pt.position = glm::vec3(1.5f, 0.0f, 0.0f);
+        w.add<ecs::Transform>(pot, pt);
+        w.add<ecs::Interactable>(pot, ecs::Interactable{"Pick up", "pickup.potion", 2.0f, true, true});
+        w.add<ecs::Pickup>(pot, ecs::Pickup{"g7_potion", 2});
+
+        // a lever far away (out of range)
+        const ecs::Entity lever = w.create();
+        ecs::Transform lt; lt.position = glm::vec3(20.0f, 0.0f, 0.0f);
+        w.add<ecs::Transform>(lever, lt);
+        w.add<ecs::Interactable>(lever, ecs::Interactable{"Pull", "lever.pull", 2.0f, true, false});
+
+        check("nearest_interactable finds the in-range one, ignores the far one",
+              ecs::nearest_interactable(w, glm::vec3(0)) == pot);
+
+        check("interact grants the pickup + fires events + consumes",
+              ecs::try_interact(w, player, &bus) &&
+              w.has<ecs::Inventory>(player) &&
+              ecs::inventory_count(w.get<ecs::Inventory>(player), "g7_potion") == 2 &&
+              !w.get<ecs::Interactable>(pot).enabled);
+        bus.flush();
+        check("pickup event was published", last_event == "pickup" && last_src == player);
+
+        check("consumed interactable is no longer the nearest",
+              ecs::nearest_interactable(w, glm::vec3(0)) == ecs::null_entity);
+        check("nothing to interact with in range -> false", !ecs::try_interact(w, player, &bus));
+
+        // container: an entity with an Inventory + an Interactable; transfer works
+        const ecs::Entity chest = w.create();
+        w.add<ecs::Transform>(chest, ecs::Transform{});
+        w.add<ecs::Interactable>(chest, ecs::Interactable{"Open", "container.open", 2.0f, true, false});
+        w.add<ecs::Inventory>(chest, ecs::Inventory{});
+        ecs::inventory_add(w.get<ecs::Inventory>(chest), ecs::ItemInstance{"g7_potion", 3, 0, {}});
+        check("interact with a container fires its open event",
+              ecs::interact(w, player, chest, &bus));
+        bus.flush();
+        const int moved = ecs::transfer_item(w, chest, player, "g7_potion", 3);
+        check("loot the container via transfer_item (chest 3 -> player)",
+              moved == 3 && ecs::inventory_count(w.get<ecs::Inventory>(player), "g7_potion") == 5 &&
+              ecs::inventory_count(w.get<ecs::Inventory>(chest), "g7_potion") == 0);
+
+        // authorable + serialize round-trip
+        ecs::register_interaction_components();
+        const ecs::AuthorableComponent* ic = ecs::find_authorable("Interactable");
+        check("Interactable is authorable", ic && ic->serialize && ic->deserialize);
+        if (ic) {
+            ecs::Interactable src{"Talk", "npc.talk", 3.5f, true, false};
+            const auto b = ecs::serialize_authorable(*ic, &src);
+            ecs::Interactable dst; ecs::deserialize_authorable(*ic, &dst, b.data(), b.size());
+            check("Interactable serialize round-trips",
+                  dst.prompt == "Talk" && dst.event == "npc.talk" && dst.range == 3.5f &&
+                  dst.enabled && !dst.consume_on_use);
         }
     }
 

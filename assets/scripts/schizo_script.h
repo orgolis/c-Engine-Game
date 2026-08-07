@@ -77,6 +77,7 @@ typedef struct SchizoScriptApi {
     int   (*item_count)(void* ctx, unsigned e, const char* def_id);
     bool  (*equip_item)(void* ctx, unsigned e, const char* def_id);
     bool  (*use_item)(void* ctx, unsigned e, const char* def_id);
+    bool  (*interact)(void* ctx, unsigned e);   /* G7: use the nearest interactable in range */
 } SchizoScriptApi;
 
 }  // extern "C"

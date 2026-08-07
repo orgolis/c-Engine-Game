@@ -85,6 +85,8 @@ struct ScriptApi {
     int   (*item_count)(void* ctx, uint32_t e, const char* def_id) = nullptr;
     bool  (*equip_item)(void* ctx, uint32_t e, const char* def_id) = nullptr;
     bool  (*use_item)(void* ctx, uint32_t e, const char* def_id) = nullptr;
+    // G7: interact with the nearest interactable in range of entity `e`.
+    bool  (*interact)(void* ctx, uint32_t e) = nullptr;
 };
 
 }  // namespace schizo::editor

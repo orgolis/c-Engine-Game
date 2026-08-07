@@ -27,6 +27,7 @@
 #include "ecs/gameplay_skills.h"
 #include "ecs/gameplay_items.h"
 #include "ecs/gameplay_inventory.h"
+#include "ecs/gameplay_interaction.h"
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/quaternion.hpp>
@@ -325,6 +326,11 @@ bool api_use_item(void* ctx, uint32_t e, const char* def_id) {
             return ecs::use_item(*w, ent, *inv, i, &C(ctx)->bridge->events());
     return false;
 }
+bool api_interact(void* ctx, uint32_t e) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return false;
+    return ecs::try_interact(*w, ent, &C(ctx)->bridge->events());
+}
 
 }  // namespace
 
@@ -370,6 +376,7 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.item_count         = &api_item_count;
     api.equip_item         = &api_equip_item;
     api.use_item           = &api_use_item;
+    api.interact           = &api_interact;
 }
 
 }  // namespace schizo::editor

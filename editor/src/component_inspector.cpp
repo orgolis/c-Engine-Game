@@ -15,6 +15,7 @@
 #include "ecs/gameplay_items.h"         // G4 item registry (names/kinds)
 #include "ecs/gameplay_inventory.h"     // G4 drawers: Inventory / Equipment
 #include "ecs/gameplay_economy.h"       // G5 drawers: Vendor / Harvest Node
+#include "ecs/gameplay_interaction.h"   // G7 drawers: Interactable / Pickup
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -373,6 +374,31 @@ bool draw_harvest_node(void* comp) {
     return changed;
 }
 
+// G7 · Interactable: prompt / event / range / flags.
+bool draw_interactable(void* comp) {
+    auto& it = *static_cast<ecs::Interactable*>(comp);
+    bool changed = false;
+    char pr[96]; std::snprintf(pr, sizeof(pr), "%s", it.prompt.c_str());
+    if (ImGui::InputText("prompt", pr, sizeof(pr))) { it.prompt = pr; changed = true; }
+    char ev[96]; std::snprintf(ev, sizeof(ev), "%s", it.event.c_str());
+    if (ImGui::InputText("event", ev, sizeof(ev))) { it.event = ev; changed = true; }
+    if (ImGui::DragFloat("range", &it.range, 0.1f, 0.0f, 0.0f)) changed = true;
+    if (ImGui::Checkbox("enabled", &it.enabled)) changed = true;
+    ImGui::SameLine();
+    if (ImGui::Checkbox("consume on use", &it.consume_on_use)) changed = true;
+    return changed;
+}
+
+// G7 · Pickup: which item + how many the interactor receives.
+bool draw_pickup(void* comp) {
+    auto& p = *static_cast<ecs::Pickup*>(comp);
+    bool changed = false;
+    char id[64]; std::snprintf(id, sizeof(id), "%s", p.item_id.c_str());
+    if (ImGui::InputText("item id", id, sizeof(id))) { p.item_id = id; changed = true; }
+    if (ImGui::DragInt("quantity", &p.quantity, 0.1f, 1, 999)) changed = true;
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -429,6 +455,10 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_vendor(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Harvest Node") == 0) {
                         if (draw_harvest_node(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Interactable") == 0) {
+                        if (draw_interactable(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Pickup") == 0) {
+                        if (draw_pickup(comp)) changed = true;
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }
