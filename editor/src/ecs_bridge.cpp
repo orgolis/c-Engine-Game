@@ -28,6 +28,7 @@
 #include "ecs/gameplay_vehicles.h"       // G13 vehicles / racing
 #include "ecs/gameplay_building.h"       // G14 building / automation
 #include "ecs/gameplay_survival.h"       // G15 needs / sanity / light / fear
+#include "ecs/gameplay_stealth.h"        // G16 vision cones / awareness / hearing
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -123,6 +124,7 @@ void EcsSceneBridge::tick_gameplay(float dt) {
     ecs::tick_race(impl_->world, dt, &impl_->event_bus);          // G13: race clocks / checkpoints / laps
     ecs::tick_factory(impl_->world, dt, &impl_->event_bus);       // G14: extractors / machines / conveyors / power
     ecs::tick_survival(impl_->world, dt, &impl_->event_bus);      // G15: needs / sanity / flashlight / fear
+    ecs::tick_stealth(impl_->world, dt, &impl_->event_bus);       // G16: vision cones / awareness
     impl_->timer_mgr.tick(dt);                                   // one-shot / repeating timers
     impl_->event_bus.flush();                                    // dispatch everything queued this frame
 }
@@ -413,10 +415,16 @@ EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_vehicle_components();          // G13: Vehicle / Race Progress
     ecs::register_building_components();          // G14: Building / Extractor / Machine / Generator / Conveyor
     ecs::register_survival_components();          // G15: Needs / Sanity / Flashlight / Light Source / Fear Source
+    ecs::register_stealth_components();           // G16: Vision Cone / Awareness / Stealth / Hearing
 
     // G6: route every gameplay event into quest progress (deferred flush = safe).
     impl_->event_bus.subscribe("*", [impl = impl_.get()](const ecs::GameplayEvent& ev) {
         ecs::advance_quests(impl->world, ev, &impl->event_bus);
+    });
+    // G16: a gunshot is loud — alert guards within earshot of the shooter.
+    impl_->event_bus.subscribe("weapon.fire", [impl = impl_.get()](const ecs::GameplayEvent& ev) {
+        if (const auto* t = impl->world.try_get<ecs::Transform>(ev.instigator))
+            ecs::emit_noise(impl->world, t->position, 25.0f, &impl->event_bus, ev.instigator);
     });
 }
 

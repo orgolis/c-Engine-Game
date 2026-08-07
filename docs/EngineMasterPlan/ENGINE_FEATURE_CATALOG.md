@@ -428,14 +428,14 @@ G-modules become data + rules on top.
 | Horror presentation: scripted/dynamic scares, VHS/handheld-cam post-FX, audio stingers | 🔴 (rides VFX/post + Audio; events are the triggers) |
 | Permadeath / consequence, scarce resources | 🟡 (death/consequence via G0 Health + tags; scarce resources = tune drop rates) |
 
-### G16 · Stealth & Detection 🔴 — **Depends on:** AI, G0 *(Cyberpunk, horror, many)*
+### G16 · Stealth & Detection 🟡 — **Depends on:** AI, G0 *(Cyberpunk, horror, many)*
 | Sub-feature | Status |
 |---|---|
-| Perception: sight cones, hearing, light/shadow visibility (rides AI) | 🔴 |
-| Alert states / search / investigation | 🔴 |
-| Takedowns / stealth kills, distractions / lures | 🔴 |
-| Cover / lean / peek, noise generation | 🔴 |
-| Detection meter / awareness UI | 🔴 |
+| Perception: sight cones, hearing, light/shadow visibility (rides AI) | ✅ **`VisionCone`** (fov+range, `can_see`) + **`Hearing`** (`emit_noise` alerts within earshot; gunfire auto-emits). Light/shadow visibility = wire G15 light state into detectability. |
+| Alert states / search / investigation | ✅ **`Awareness`** meter → Unaware/Suspicious/Alert with events (`stealth.suspicious`/`alert`/`lost`); rises on sight (closer+more-detectable = faster), decays on lost. Search-to-last-known = follow-up. |
+| Takedowns / stealth kills, distractions / lures | 🟡 stealth kill = a G2 hit while target is Unaware; distraction = `emit_noise` at a point (both compose). |
+| Cover / lean / peek, noise generation | 🟡 noise generation ✅ (`emit_noise`); cover/lean = movement + LOS (Physics). |
+| Detection meter / awareness UI | 🟡 the `Awareness.level` meter is exposed (inspector shows it); HUD widget = G11. |
 
 > **Cross-cutting features the reference games also need:** proximity/positional **voice chat**
 > (Phasmophobia — rides Audio M6 + Networking M11); **replay & photo mode** (Forza — rides the

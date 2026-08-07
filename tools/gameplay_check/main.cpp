@@ -30,6 +30,7 @@
 #include "ecs/gameplay_vehicles.h"
 #include "ecs/gameplay_building.h"
 #include "ecs/gameplay_survival.h"
+#include "ecs/gameplay_stealth.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -1458,6 +1459,83 @@ int main() {
             ecs::Sanity dst; ecs::deserialize_authorable(*sc, &dst, b.data(), b.size());
             check("Sanity serialize round-trips",
                   dst.value == 60.0f && dst.max == 120.0f && dst.dark_drain == 8.0f && dst.light_regen == 4.0f);
+        }
+    }
+
+    // G16: stealth & detection — vision cones, awareness states, hearing.
+    {
+        ecs::World w; ecs::GameplayEventBus bus;
+        // a guard at origin facing +Z (identity rotation)
+        const ecs::Entity guard = w.create();
+        w.add<ecs::Transform>(guard, ecs::Transform{});
+        w.add<ecs::VisionCone>(guard, ecs::VisionCone{90.0f, 15.0f});
+        w.add<ecs::Awareness>(guard, ecs::Awareness{0, ecs::Alertness::Unaware, 0xFFFFFFFFu, 1.0f, 0.5f});
+        w.add<ecs::Hearing>(guard, ecs::Hearing{20.0f});
+
+        // vision geometry
+        check("target in front + in range is visible",
+              ecs::can_see(glm::vec3(0), glm::vec3(0, 0, 1), 90.0f, 15.0f, glm::vec3(0, 0, 5)));
+        check("target behind is not visible",
+              !ecs::can_see(glm::vec3(0), glm::vec3(0, 0, 1), 90.0f, 15.0f, glm::vec3(0, 0, -5)));
+        check("target beyond range is not visible",
+              !ecs::can_see(glm::vec3(0), glm::vec3(0, 0, 1), 90.0f, 15.0f, glm::vec3(0, 0, 40)));
+
+        // a normal-detectability intruder in the cone -> awareness rises to Alert
+        const ecs::Entity intruder = w.create();
+        w.add<ecs::Transform>(intruder, ecs::Transform{glm::vec3(0, 0, 4)});
+        w.add<ecs::Stealth>(intruder, ecs::Stealth{1.0f});
+        std::string ev;
+        bus.subscribe("stealth.suspicious", [&](const ecs::GameplayEvent&) { ev = "suspicious"; });
+        bus.subscribe("stealth.alert", [&](const ecs::GameplayEvent& e) { ev = "alert"; });
+
+        ecs::tick_stealth(w, 0.2f, &bus); bus.flush();
+        check("seeing an intruder raises awareness + targets them",
+              w.get<ecs::Awareness>(guard).level > 0.0f && w.get<ecs::Awareness>(guard).target == static_cast<uint32_t>(intruder));
+        for (int i = 0; i < 20; ++i) { ecs::tick_stealth(w, 0.2f, &bus); bus.flush(); }
+        check("sustained sight escalates to ALERT (+ event)",
+              w.get<ecs::Awareness>(guard).state == ecs::Alertness::Alert && ev == "alert");
+
+        // intruder leaves the cone -> awareness decays back down
+        w.get<ecs::Transform>(intruder).position = glm::vec3(0, 0, -10);   // behind the guard
+        for (int i = 0; i < 20; ++i) ecs::tick_stealth(w, 0.2f, &bus);
+        check("losing sight decays awareness back to unaware",
+              w.get<ecs::Awareness>(guard).state == ecs::Alertness::Unaware);
+
+        // a crouched (low-detectability) target raises awareness slower than a normal one
+        auto rise_for = [&](float det) {
+            ecs::World ww; const ecs::Entity g = ww.create();
+            ww.add<ecs::Transform>(g, ecs::Transform{});
+            ww.add<ecs::VisionCone>(g, ecs::VisionCone{90.0f, 15.0f});
+            ww.add<ecs::Awareness>(g, ecs::Awareness{0, ecs::Alertness::Unaware, 0xFFFFFFFFu, 1.0f, 0.5f});
+            const ecs::Entity tg = ww.create();
+            ww.add<ecs::Transform>(tg, ecs::Transform{glm::vec3(0, 0, 4)});
+            ww.add<ecs::Stealth>(tg, ecs::Stealth{det});
+            ecs::tick_stealth(ww, 0.5f, nullptr);
+            return ww.get<ecs::Awareness>(g).level;
+        };
+        check("lower detectability raises awareness more slowly", rise_for(0.25f) < rise_for(1.0f));
+
+        // hearing: a noise near the guard bumps its awareness even if it can't see
+        ecs::Awareness& ga = w.get<ecs::Awareness>(guard);
+        ga.level = 0.0f; ga.state = ecs::Alertness::Unaware;
+        int heard = 0;
+        bus.subscribe("stealth.noise", [&](const ecs::GameplayEvent&) { ++heard; });
+        ecs::emit_noise(w, glm::vec3(0, 0, 2), 25.0f, &bus);   // within the guard's hearing radius
+        bus.flush();
+        check("a nearby noise is heard + bumps awareness", heard == 1 && ga.level > 0.0f);
+        ecs::emit_noise(w, glm::vec3(0, 0, 500), 25.0f, &bus);   // far away
+        bus.flush();
+        check("a distant noise is not heard", heard == 1);
+
+        // authorable serialize
+        ecs::register_stealth_components();
+        const ecs::AuthorableComponent* vc = ecs::find_authorable("Vision Cone");
+        check("Vision Cone is authorable", vc && vc->serialize);
+        if (vc) {
+            ecs::VisionCone src{110.0f, 22.0f};
+            const auto b = ecs::serialize_authorable(*vc, &src);
+            ecs::VisionCone dst; ecs::deserialize_authorable(*vc, &dst, b.data(), b.size());
+            check("Vision Cone serialize round-trips", dst.fov_deg == 110.0f && dst.range == 22.0f);
         }
     }
 

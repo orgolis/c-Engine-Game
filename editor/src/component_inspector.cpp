@@ -23,6 +23,7 @@
 #include "ecs/gameplay_vehicles.h"      // G13 drawers: Vehicle / Race Progress
 #include "ecs/gameplay_building.h"      // G14 drawers: Extractor / Machine / Generator / Conveyor
 #include "ecs/gameplay_survival.h"      // G15 drawers: Needs / Sanity / Flashlight / Fear Source
+#include "ecs/gameplay_stealth.h"       // G16 drawers: Vision Cone / Awareness / Stealth / Hearing
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -607,6 +608,32 @@ bool draw_fearsource(void* comp) {
     return changed;
 }
 
+// G16 · stealth components.
+bool draw_vision_cone(void* comp) {
+    auto& v = *static_cast<ecs::VisionCone*>(comp);
+    bool changed = false;
+    if (ImGui::DragFloat("FOV (deg)", &v.fov_deg, 1.0f, 1.0f, 360.0f)) changed = true;
+    if (ImGui::DragFloat("range", &v.range, 0.2f, 0.0f, 0.0f)) changed = true;
+    return changed;
+}
+bool draw_awareness(void* comp) {
+    auto& a = *static_cast<ecs::Awareness*>(comp);
+    bool changed = false;
+    const char* st = a.state == ecs::Alertness::Alert ? "ALERT"
+                   : (a.state == ecs::Alertness::Suspicious ? "suspicious" : "unaware");
+    ImGui::Text("state: %s   meter %.0f%%", st, a.level * 100.0f);
+    if (a.target != 0xFFFFFFFFu) { ImGui::SameLine(); ImGui::TextDisabled("(target %u)", a.target); }
+    if (ImGui::DragFloat("rise/s", &a.rise, 0.05f)) changed = true;
+    if (ImGui::DragFloat("decay/s", &a.decay, 0.05f)) changed = true;
+    return changed;
+}
+bool draw_stealth(void* comp) {
+    auto& s = *static_cast<ecs::Stealth*>(comp);
+    if (ImGui::SliderFloat("detectability", &s.detectability, 0.0f, 2.0f)) return true;
+    ImGui::TextDisabled("< 1 = stealthier (crouch / cover)");
+    return false;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -706,6 +733,15 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                     } else if (std::strcmp(ct.name, "Light Source") == 0) {
                         auto& l = *static_cast<ecs::LightSource*>(comp);
                         if (ImGui::DragFloat("radius", &l.radius, 0.1f)) changed = true;
+                    } else if (std::strcmp(ct.name, "Vision Cone") == 0) {
+                        if (draw_vision_cone(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Awareness") == 0) {
+                        if (draw_awareness(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Stealth") == 0) {
+                        if (draw_stealth(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Hearing") == 0) {
+                        auto& h = *static_cast<ecs::Hearing*>(comp);
+                        if (ImGui::DragFloat("hearing radius", &h.radius, 0.2f)) changed = true;
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }
