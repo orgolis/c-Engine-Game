@@ -79,6 +79,7 @@ namespace Schizo
         public delegate* unmanaged[Cdecl]<void*, uint, byte> interact;
         public delegate* unmanaged[Cdecl]<void*, uint, byte> fire_weapon;
         public delegate* unmanaged[Cdecl]<void*, uint, byte> reload_weapon;
+        public delegate* unmanaged[Cdecl]<void*, uint, float, float, int, int, void> drive;
     }
 
     /// Friendly wrapper handed to your OnStart/OnUpdate.
@@ -199,6 +200,8 @@ namespace Schizo
         public bool Interact(uint e) => p->interact(p->ctx, e) != 0;
         public bool FireWeapon(uint e) => p->fire_weapon(p->ctx, e) != 0;
         public bool ReloadWeapon(uint e) => p->reload_weapon(p->ctx, e) != 0;
+        public void Drive(uint e, float throttle, float steer, bool brake = false, bool boost = false)
+            => p->drive(p->ctx, e, throttle, steer, brake ? 1 : 0, boost ? 1 : 0);
 
         // GLFW key codes.
         public const int KeySpace = 32;

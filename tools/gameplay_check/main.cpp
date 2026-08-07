@@ -27,6 +27,7 @@
 #include "ecs/gameplay_savegame.h"
 #include "ecs/gameplay_social.h"
 #include "ecs/gameplay_weapons.h"
+#include "ecs/gameplay_vehicles.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -1239,6 +1240,88 @@ int main() {
             ecs::WeaponState dst; ecs::deserialize_authorable(*wc, &dst, b.data(), b.size());
             check("Weapon serialize round-trips",
                   dst.weapon_id == "g12_rifle" && dst.ammo_in_mag == 3 && dst.reserve == 7);
+        }
+    }
+
+    // G13: vehicles & racing — arcade drive model + checkpoints/laps/ranking.
+    {
+        ecs::VehicleDef car; car.id = "g13_car"; car.name = "Car"; car.max_speed = 40.0f; car.accel = 20.0f;
+        car.turn_rate = 90.0f; car.drag = 5.0f; car.boost_mult = 1.5f; car.boost_accel = 30.0f;
+        ecs::register_vehicle(car);
+
+        ecs::World w; ecs::GameplayEventBus bus;
+        const ecs::Entity v = w.create();
+        w.add<ecs::Transform>(v, ecs::Transform{});
+        w.add<ecs::Vehicle>(v, ecs::Vehicle{"g13_car", 0, 0, 100, 100});
+        auto& veh = w.get<ecs::Vehicle>(v);
+
+        // accelerate straight (+Z at heading 0)
+        for (int i = 0; i < 60; ++i) ecs::drive_vehicle(w, v, {1.0f, 0.0f, false, false}, 1.0f / 60.0f);
+        check("throttle accelerates + moves the vehicle forward (+Z)",
+              veh.speed > 15.0f && w.get<ecs::Transform>(v).position.z > 5.0f &&
+              std::abs(w.get<ecs::Transform>(v).position.x) < 0.01f);
+        const float cruise = veh.speed;
+
+        // boost goes faster + drains the nitro
+        ecs::drive_vehicle(w, v, {1.0f, 0.0f, false, true}, 0.1f);
+        check("boost accelerates harder + consumes nitro", veh.speed > cruise && veh.boost < 100.0f);
+
+        // steering turns the heading (only while moving)
+        const float h0 = veh.heading;
+        ecs::drive_vehicle(w, v, {1.0f, 1.0f, false, false}, 0.2f);
+        check("steering changes heading while moving", veh.heading != h0);
+
+        // braking sheds speed
+        const float pre_brake = veh.speed;
+        ecs::drive_vehicle(w, v, {0.0f, 0.0f, true, false}, 0.5f);
+        check("braking reduces speed", veh.speed < pre_brake);
+
+        // a parked vehicle can't steer
+        ecs::Vehicle parked{"g13_car", 0, 0, 100, 100};
+        const ecs::Entity pk = w.create();
+        w.add<ecs::Transform>(pk, ecs::Transform{});
+        w.add<ecs::Vehicle>(pk, parked);
+        ecs::drive_vehicle(w, pk, {0.0f, 1.0f, false, false}, 0.5f);
+        check("a stationary vehicle does not turn", w.get<ecs::Vehicle>(pk).heading == 0.0f);
+
+        // racing: a 2-checkpoint / 2-lap track
+        ecs::RaceTrack trk; trk.id = "g13_track"; trk.laps = 2;
+        trk.checkpoints = { {{0, 0, 10}, 3}, {{0, 0, 0}, 3} };
+        ecs::register_track(trk);
+        const ecs::Entity racer = w.create();
+        w.add<ecs::Transform>(racer, ecs::Transform{});
+        w.add<ecs::RaceProgress>(racer, ecs::RaceProgress{"g13_track"});
+        int laps = 0; bool finished = false;
+        bus.subscribe("race.lap", [&](const ecs::GameplayEvent&) { ++laps; });
+        bus.subscribe("race.finish", [&](const ecs::GameplayEvent&) { finished = true; });
+
+        auto teleport = [&](float z) { w.get<ecs::Transform>(racer).position = glm::vec3(0, 0, z); ecs::tick_race(w, 0.1f, &bus); bus.flush(); };
+        teleport(10.0f);   // checkpoint 0
+        check("crossing a checkpoint advances progress",
+              w.get<ecs::RaceProgress>(racer).next_checkpoint == 1);
+        teleport(0.0f);    // checkpoint 1 -> lap 1
+        teleport(10.0f); teleport(0.0f);   // lap 2 -> finish
+        check("completing laps records them + finishes the race",
+              laps == 2 && finished && w.get<ecs::RaceProgress>(racer).finished &&
+              w.get<ecs::RaceProgress>(racer).best_lap > 0.0f);
+
+        // ranking: a racer further along outranks one behind
+        const ecs::Entity behind = w.create();
+        w.add<ecs::Transform>(behind, ecs::Transform{});
+        w.add<ecs::RaceProgress>(behind, ecs::RaceProgress{"g13_track"});   // lap 0
+        const std::vector<ecs::Entity> field = {racer, behind};
+        check("race_rank orders by progress", ecs::race_rank(w, racer, field) == 1 && ecs::race_rank(w, behind, field) == 2);
+
+        // authorable serialize
+        ecs::register_vehicle_components();
+        const ecs::AuthorableComponent* vc = ecs::find_authorable("Vehicle");
+        check("Vehicle is authorable", vc && vc->serialize);
+        if (vc) {
+            ecs::Vehicle src{"g13_car", 10, 1.5f, 40, 80};
+            const auto b = ecs::serialize_authorable(*vc, &src);
+            ecs::Vehicle dst; ecs::deserialize_authorable(*vc, &dst, b.data(), b.size());
+            check("Vehicle serialize round-trips (id + max_boost, runtime reset)",
+                  dst.vehicle_id == "g13_car" && dst.max_boost == 80.0f && dst.speed == 0.0f && dst.boost == 80.0f);
         }
     }
 

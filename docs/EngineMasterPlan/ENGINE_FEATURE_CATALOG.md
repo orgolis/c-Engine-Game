@@ -396,14 +396,14 @@ G-modules become data + rules on top.
 | Ammo + weapon inventory, attachments / mods | 🟡 ammo ✅; weapon inventory = G4 items; attachments = follow-up. |
 | Hit markers, headshots, weak points | 🔴 (hit events exist; weak-points = per-part hurtboxes, follow-up) |
 
-### G13 · Vehicles & Driving 🔴 — **Depends on:** Physics *(Forza, Cyberpunk)*
+### G13 · Vehicles & Driving 🟡 — **Depends on:** Physics *(Forza, Cyberpunk)*
 | Sub-feature | Status |
 |---|---|
-| Vehicle physics: suspension, tires (friction/slip), drivetrain, engine/gearbox | 🔴 |
-| Handling models (arcade ↔ sim), aerodynamics, damage model | 🔴 |
-| Vehicle types: cars, bikes, hover, aircraft, boats | 🔴 |
+| Vehicle physics: suspension, tires (friction/slip), drivetrain, engine/gearbox | 🟡 arcade drive model (`VehicleDef`/`Vehicle` + `drive_vehicle`: throttle/brake/drag, speed-scaled steering, reverse) ✅; sim suspension/tires/gearbox = Physics/Jolt follow-up. |
+| Handling models (arcade ↔ sim), aerodynamics, damage model | 🟡 arcade handling ✅ (per-vehicle accel/top/turn/grip data); sim + damage = follow-up. |
+| Vehicle types: cars, bikes, hover, aircraft, boats | 🟡 the drive model is data-tunable per vehicle (a car today); air/boat = extra models. |
 | Enter/exit, seats, driving camera, cockpit | 🔴 |
-| **Racing framework**: track splines, checkpoints, laps, timing, grid/standings | 🔴 |
+| **Racing framework**: track splines, checkpoints, laps, timing, grid/standings | ✅ **`RaceTrack`** (checkpoints + laps) + **`RaceProgress`** (`tick_race`: checkpoint crossing, lap/best-lap timing, finish) + `race_rank` standings; splines = follow-up. Boost/nitro ✅. |
 | Racing AI (racing line, rubber-band), ghosts / replay, photo mode | 🔴 |
 
 ### G14 · Building & Automation 🔴 — **Depends on:** G0, Physics *(Satisfactory, base-builders)*

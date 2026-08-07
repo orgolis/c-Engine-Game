@@ -52,6 +52,9 @@ static_assert(offsetof(SchizoScriptApi, interact) ==
 static_assert(offsetof(SchizoScriptApi, reload_weapon) ==
               offsetof(schizo::editor::ScriptApi, reload_weapon),
               "schizo_script.h drifted from script_api.h (reload_weapon)");
+static_assert(offsetof(SchizoScriptApi, drive) ==
+              offsetof(schizo::editor::ScriptApi, drive),
+              "schizo_script.h drifted from script_api.h (drive)");
 
 namespace schizo::editor {
 

@@ -25,6 +25,7 @@
 #include "ecs/gameplay_savegame.h"       // G9 save/load + world flags
 #include "ecs/gameplay_social.h"         // G10 parties / guilds / chat / trade
 #include "ecs/gameplay_weapons.h"        // G12 weapons / ammo / projectiles
+#include "ecs/gameplay_vehicles.h"       // G13 vehicles / racing
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -117,6 +118,7 @@ void EcsSceneBridge::tick_gameplay(float dt) {
     ecs::tick_spawners(impl_->world, dt, &impl_->event_bus);      // G8: encounter spawner requests
     ecs::tick_weapons(impl_->world, dt);                          // G12: weapon cooldown / reload
     ecs::tick_projectiles(impl_->world, dt, &impl_->event_bus);   // G12: projectile travel + hits
+    ecs::tick_race(impl_->world, dt, &impl_->event_bus);          // G13: race clocks / checkpoints / laps
     impl_->timer_mgr.tick(dt);                                   // one-shot / repeating timers
     impl_->event_bus.flush();                                    // dispatch everything queued this frame
 }
@@ -153,6 +155,13 @@ void EcsSceneBridge::seed_demo_content() {
       d.damage = 18.0f; d.damage_type = "kinetic"; d.rpm = 600.0f; d.mag_size = 30; d.spread_deg = 1.5f; d.range = 120.0f; register_weapon(d); }
     { WeaponDef d; d.id = "launcher"; d.name = "Rocket Launcher"; d.fire_mode = FireMode::Semi;
       d.damage = 90.0f; d.damage_type = "explosive"; d.rpm = 40.0f; d.mag_size = 1; d.projectile_speed = 30.0f; d.range = 150.0f; d.reload_time = 2.5f; register_weapon(d); }
+
+    // G13 demo vehicle + a simple square track.
+    { VehicleDef d; d.id = "hatchback"; d.name = "Hatchback"; d.max_speed = 45.0f; d.accel = 16.0f;
+      d.turn_rate = 100.0f; d.boost_mult = 1.6f; register_vehicle(d); }
+    { RaceTrack t; t.id = "loop"; t.laps = 3;
+      t.checkpoints = { {{50, 0, 0}, 8}, {{50, 0, 50}, 8}, {{0, 0, 50}, 8}, {{0, 0, 0}, 8} };
+      register_track(t); }
 }
 
 int EcsSceneBridge::load_gameplay_data(const std::string& dir) { return ecs::load_items_dir(dir); }
@@ -391,6 +400,7 @@ EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_npc_components();            // G8: Faction / Aggro / Spawner
     ecs::register_persistence_components();    // G9: Save Id / World Flags
     ecs::register_weapon_components();          // G12: Weapon
+    ecs::register_vehicle_components();          // G13: Vehicle / Race Progress
 
     // G6: route every gameplay event into quest progress (deferred flush = safe).
     impl_->event_bus.subscribe("*", [impl = impl_.get()](const ecs::GameplayEvent& ev) {

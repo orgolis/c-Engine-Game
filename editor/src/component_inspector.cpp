@@ -20,6 +20,7 @@
 #include "ecs/gameplay_npc.h"           // G8 drawers: Faction / Aggro / Spawner
 #include "ecs/gameplay_savegame.h"      // G9 drawers: World Flags / Save Id
 #include "ecs/gameplay_weapons.h"       // G12 drawer: Weapon
+#include "ecs/gameplay_vehicles.h"      // G13 drawers: Vehicle / Race Progress
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -489,6 +490,34 @@ bool draw_weapon(void* comp) {
     return changed;
 }
 
+// G13 · Vehicle: pick a vehicle def + live speed/heading/boost readout.
+bool draw_vehicle(void* comp) {
+    auto& v = *static_cast<ecs::Vehicle*>(comp);
+    bool changed = false;
+    const ecs::VehicleDef* cur = ecs::find_vehicle(v.vehicle_id);
+    if (ImGui::BeginCombo("vehicle", cur ? cur->name.c_str() : v.vehicle_id.c_str())) {
+        for (const auto& d : ecs::vehicle_registry())
+            if (ImGui::Selectable(d.name.c_str(), d.id == v.vehicle_id)) { v.vehicle_id = d.id; changed = true; }
+        ImGui::EndCombo();
+    }
+    if (ImGui::DragFloat("max boost", &v.max_boost, 1.0f, 0.0f, 0.0f)) changed = true;
+    ImGui::TextDisabled("speed %.1f m/s  heading %.0f deg  boost %.0f",
+                        v.speed, v.heading * 57.2958f, v.boost);
+    return changed;
+}
+// G13 · Race Progress: track + live lap/checkpoint/timing readout.
+bool draw_race_progress(void* comp) {
+    auto& rp = *static_cast<ecs::RaceProgress*>(comp);
+    bool changed = false;
+    char id[64]; std::snprintf(id, sizeof(id), "%s", rp.track_id.c_str());
+    if (ImGui::InputText("track id", id, sizeof(id))) { rp.track_id = id; changed = true; }
+    const ecs::RaceTrack* trk = ecs::find_track(rp.track_id);
+    ImGui::Text("Lap %d/%d  checkpoint %d%s", rp.lap, trk ? trk->laps : 0, rp.next_checkpoint,
+                rp.finished ? "  [FINISHED]" : "");
+    ImGui::TextDisabled("total %.1fs  lap %.1fs  best %.1fs", rp.time, rp.lap_time, rp.best_lap);
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -565,6 +594,10 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (ImGui::DragInt("save key", &v, 1.0f, 0, 0)) { s.value = static_cast<uint64_t>(v < 0 ? 0 : v); changed = true; }
                     } else if (std::strcmp(ct.name, "Weapon") == 0) {
                         if (draw_weapon(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Vehicle") == 0) {
+                        if (draw_vehicle(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Race Progress") == 0) {
+                        if (draw_race_progress(comp)) changed = true;
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }

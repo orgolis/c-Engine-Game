@@ -90,6 +90,8 @@ struct ScriptApi {
     // G12: fire / reload entity `e`'s Weapon (aims along its Transform forward).
     bool  (*fire_weapon)(void* ctx, uint32_t e) = nullptr;
     bool  (*reload_weapon)(void* ctx, uint32_t e) = nullptr;
+    // G13: drive entity `e`'s Vehicle one step (throttle/steer in [-1,1]).
+    void  (*drive)(void* ctx, uint32_t e, float throttle, float steer, int brake, int boost) = nullptr;
 };
 
 }  // namespace schizo::editor

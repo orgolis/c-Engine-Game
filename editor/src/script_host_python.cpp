@@ -320,6 +320,13 @@ void build_engine_module(pkpy::VM* vm) {
         bool r = g_api && g_api->reload_weapon && g_api->reload_weapon(g_api->ctx, earg(vm, args[0]));
         return VAR(r);
     });
+    vm->bind(mod, "drive(e: int, throttle: float, steer: float, brake: bool, boost: bool) -> None",
+             [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->drive)
+            g_api->drive(g_api->ctx, earg(vm, args[0]), farg(vm, args[1]), farg(vm, args[2]),
+                         CAST(bool, args[3]) ? 1 : 0, CAST(bool, args[4]) ? 1 : 0);
+        return vm->None;
+    });
 
     // Common key / button constants (GLFW codes) so scripts don't hardcode.
     auto set_const = [&](const char* name, pkpy::i64 v) { mod->attr().set(name, VAR(v)); };

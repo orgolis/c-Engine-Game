@@ -29,6 +29,7 @@
 #include "ecs/gameplay_inventory.h"
 #include "ecs/gameplay_interaction.h"
 #include "ecs/gameplay_weapons.h"
+#include "ecs/gameplay_vehicles.h"
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/quaternion.hpp>
@@ -352,6 +353,13 @@ bool api_reload_weapon(void* ctx, uint32_t e) {
     ecs::reload_weapon(*ws);
     return ws->reloading > 0.0f && before <= 0.0f;
 }
+void api_drive(void* ctx, uint32_t e, float throttle, float steer, int brake, int boost) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return;
+    ecs::VehicleInput in;
+    in.throttle = throttle; in.steer = steer; in.brake = brake != 0; in.boost = boost != 0;
+    ecs::drive_vehicle(*w, ent, in, C(ctx)->dt);
+}
 
 }  // namespace
 
@@ -400,6 +408,7 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.interact           = &api_interact;
     api.fire_weapon        = &api_fire_weapon;
     api.reload_weapon      = &api_reload_weapon;
+    api.drive              = &api_drive;
 }
 
 }  // namespace schizo::editor

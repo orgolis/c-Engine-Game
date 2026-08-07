@@ -5311,6 +5311,7 @@ int main(int argc, char** argv) {
                 ctx.playback = editor_state.scene_playback_manager.get();
                 ctx.window   = glfw_window;
                 ctx.bridge   = editor_state.ecs_bridge;   // gameplay ECS (G0–G4) for scripts
+                ctx.dt       = delta_time;                // for continuous calls (e.g. drive)
                 // Cursor delta for scripts (independent of the play-mode
                 // capture pipeline, which only tracks while captured).
                 {

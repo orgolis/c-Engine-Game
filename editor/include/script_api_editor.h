@@ -26,6 +26,7 @@ struct EditorScriptCtx {
     ScenePlaybackManager* playback = nullptr;
     GLFWwindow*           window   = nullptr;
     EcsSceneBridge*       bridge   = nullptr;   // ECS gameplay components (G0–G4)
+    float dt = 0.0f;                            // this frame's delta time (s), for continuous gameplay calls
     float mouse_dx = 0.0f, mouse_dy = 0.0f;   // this frame's cursor delta (px)
 };
 
