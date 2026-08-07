@@ -357,16 +357,18 @@ G-modules become data + rules on top.
 | Difficulty / level scaling, New Game+ | 🔴 |
 | Achievements / stats tracking | 🔴 |
 
-### G10 · Multiplayer Social 🔴 — **Depends on:** Networking, G0
+### G10 · Multiplayer Social 🟡 — **Depends on:** Networking, G0
 | Sub-feature | Status |
 |---|---|
-| Parties / groups, shared quests | 🔴 |
-| Guilds / clans, text chat | 🔴 |
-| **Proximity / positional voice chat** (push-to-talk) — rides Audio + Networking | 🔴 |
-| Sessions / matchmaking / lobbies | 🔴 |
+| Parties / groups, shared quests | ✅ **`Party`** (create/join/leave/kick/leader-promote/disband) in `SocialState`; `shared_quests` flag. |
+| Guilds / clans, text chat | ✅ **`Guild`** (ranks, promote-below-self) + **chat routing** (`chat_recipients`: say=proximity, party/guild=membership, whisper, global). |
+| **Proximity / positional voice chat** (push-to-talk) — rides Audio + Networking | 🔴 (say-chat gives the proximity model; voice = Audio + net) |
+| Sessions / matchmaking / lobbies | 🔴 (rides Networking transport) |
 | Shared world / instancing / sharding | 🔴 |
-| PvP (arenas, open-world), co-op | 🔴 |
-| Trading, leaderboards | 🔴 |
+| PvP (arenas, open-world), co-op | 🟡 (factions/combat/damage exist; MP sync rides the Stage-7 net stack) |
+| Trading, leaderboards | ✅ **`TradeSession`** (offer/confirm/atomic swap of items+gold via `transfer_item`/wallet) + **`leaderboard`** (submit/sort/rank/top). |
+
+> All G10 logic is deterministic + tested offline (`gameplay_check`); the transport/replication is the integration point (the feature-complete Stage-7 net stack). The bridge owns a `SocialState` (`bridge.social()`).
 
 ### G11 · Gameplay UI 🟡 — **Depends on:** Game UI, and the G-modules it visualizes
 | Sub-feature | Status |

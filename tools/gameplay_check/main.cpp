@@ -25,6 +25,7 @@
 #include "ecs/gameplay_quests.h"
 #include "ecs/gameplay_npc.h"
 #include "ecs/gameplay_savegame.h"
+#include "ecs/gameplay_social.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -1106,6 +1107,70 @@ int main() {
         check("world flags set/get + overwrite",
               ecs::world_flag(wf, "boss.dragon.killed") == 1 && ecs::world_flag(wf, "chests.opened") == 4 &&
               ecs::world_flag(wf, "missing") == 0 && wf.flags.size() == 2);
+    }
+
+    // G10: multiplayer social — parties, guilds, chat routing, trade, leaderboard.
+    {
+        ecs::SocialState s;
+        const ecs::PlayerId p1 = 1, p2 = 2, p3 = 3;
+
+        // parties
+        const uint64_t party = ecs::create_party(s, p1);
+        check("create party puts the leader in it", party != 0 &&
+              ecs::party_of(s, p1) && ecs::party_of(s, p1)->leader == p1);
+        check("join party adds a member", ecs::join_party(s, party, p2) &&
+              ecs::party_of(s, p2) == ecs::party_of(s, p1));
+        ecs::join_party(s, party, p3);
+        check("kick requires the leader + removes the target",
+              !ecs::kick_from_party(s, p2, p3) && ecs::kick_from_party(s, p1, p3) && ecs::party_of(s, p3) == nullptr);
+        check("leader leaving promotes another member",
+              ecs::leave_party(s, p1) && ecs::party_of(s, p2)->leader == p2);
+        ecs::leave_party(s, p2);
+        check("last member leaving disbands the party", ecs::find_party(s, party) == nullptr);
+
+        // guilds (ranks)
+        const uint64_t guild = ecs::create_guild(s, "Wolves", p1);
+        ecs::join_guild(s, guild, p2);
+        check("founder is guild leader (rank 2), joiner is member (rank 0)",
+              ecs::guild_rank(*ecs::find_guild(s, guild), p1) == 2 && ecs::guild_rank(*ecs::find_guild(s, guild), p2) == 0);
+        check("leader can promote a member below their own rank", ecs::set_guild_rank(s, guild, p1, p2, 1));
+        check("a member cannot promote at/above the promoter", !ecs::set_guild_rank(s, guild, p2, p1, 2));
+
+        // chat routing
+        ecs::World w;
+        auto mk = [&](float x) { ecs::Entity e = w.create(); ecs::Transform t; t.position = glm::vec3(x, 0, 0); w.add<ecs::Transform>(e, t); return static_cast<ecs::PlayerId>(e); };
+        const ecs::PlayerId a = mk(0.0f), b = mk(3.0f), c = mk(50.0f);
+        const std::vector<ecs::PlayerId> online = {a, b, c};
+        ecs::create_party(s, a); ecs::join_party(s, ecs::party_of(s, a)->id, b);
+        check("party chat reaches only party members",
+              ecs::chat_recipients(w, s, a, ecs::ChatChannel::Party, 0, 30.0f, online).size() == 2);
+        check("say chat reaches only players in range",
+              ecs::chat_recipients(w, s, a, ecs::ChatChannel::Say, 0, 10.0f, online).size() == 2);   // a + b, not c
+        check("whisper reaches sender + target", ecs::chat_recipients(w, s, a, ecs::ChatChannel::Whisper, c, 10.0f, online).size() == 2);
+        check("global reaches everyone online", ecs::chat_recipients(w, s, a, ecs::ChatChannel::Global, 0, 10.0f, online).size() == 3);
+
+        // trade: swap items + gold once both confirm
+        ecs::register_item(ecs::ItemDef{"g10_gem", "Gem", ecs::ItemKind::Material, 0, 99, 0.0f, 100.0f, "", {}, {}, {}, {}, ""});
+        const ecs::Entity ea = static_cast<ecs::Entity>(a), eb = static_cast<ecs::Entity>(b);
+        w.add<ecs::Inventory>(ea, ecs::Inventory{}); ecs::inventory_add(w.get<ecs::Inventory>(ea), ecs::ItemInstance{"g10_gem", 2, 0, {}});
+        w.add<ecs::AttributeSet>(eb, ecs::AttributeSet{}); ecs::wallet_add(w, eb, 500.0f);
+        const uint64_t trade = ecs::open_trade(s, a, b);
+        ecs::TradeSession* ts = ecs::find_trade(s, trade);
+        ecs::trade_offer_item(*ts, a, "g10_gem", 2);
+        ecs::trade_set_gold(*ts, b, 300.0f);
+        check("trade needs both confirmations", !ecs::trade_complete(w, s, trade));
+        ecs::trade_confirm(*ts, a); ecs::trade_confirm(*ts, b);
+        check("trade swaps items + gold when both confirm",
+              ecs::trade_complete(w, s, trade) &&
+              ecs::inventory_count(w.get<ecs::Inventory>(eb), "g10_gem") == 2 &&
+              ecs::wallet_balance(w, ea) == 300.0f && ecs::wallet_balance(w, eb) == 200.0f);
+
+        // leaderboard
+        ecs::submit_score(s, "Alice", 100); ecs::submit_score(s, "Bob", 250); ecs::submit_score(s, "Cara", 175);
+        ecs::submit_score(s, "Alice", 300);   // improve
+        check("leaderboard sorts high-to-low + tracks best score",
+              ecs::rank_of(s, "Alice") == 1 && ecs::rank_of(s, "Cara") == 3 &&
+              ecs::top_scores(s, 2).size() == 2 && ecs::top_scores(s, 2)[0].name == "Alice");
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }

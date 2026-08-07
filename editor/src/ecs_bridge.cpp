@@ -23,6 +23,7 @@
 #include "ecs/gameplay_quests.h"         // G6 quests (event-driven objectives)
 #include "ecs/gameplay_npc.h"            // G8 factions / aggro / spawners
 #include "ecs/gameplay_savegame.h"       // G9 save/load + world flags
+#include "ecs/gameplay_social.h"         // G10 parties / guilds / chat / trade
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -82,6 +83,7 @@ struct EcsSceneBridge::Impl {
     // G0 gameplay services, one per world. Ticked/flushed by tick_gameplay().
     ecs::GameplayEventBus event_bus;
     ecs::TimerManager     timer_mgr;
+    ecs::SocialState      social_state;          // G10 parties/guilds/trades/leaderboard
     float                 combat_accum = 0.0f;   // fixed 60 Hz accumulator for frame-data combat
 };
 
@@ -118,6 +120,7 @@ void EcsSceneBridge::tick_gameplay(float dt) {
 
 ecs::GameplayEventBus& EcsSceneBridge::events() { return impl_->event_bus; }
 ecs::TimerManager&     EcsSceneBridge::timers() { return impl_->timer_mgr; }
+ecs::SocialState&      EcsSceneBridge::social() { return impl_->social_state; }
 
 void EcsSceneBridge::seed_demo_content() {
     static bool seeded = false;

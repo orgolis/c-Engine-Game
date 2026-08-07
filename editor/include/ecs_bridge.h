@@ -23,7 +23,7 @@
 #include <glm/fwd.hpp>
 
 namespace schizo::scene { class Scene; class Transform; }
-namespace schizo::ecs   { class World; class GameplayEventBus; class TimerManager; }  // fwd (keeps EnTT out of includers)
+namespace schizo::ecs   { class World; class GameplayEventBus; class TimerManager; struct SocialState; }  // fwd (keeps EnTT out of includers)
 
 namespace schizo::editor {
 
@@ -62,6 +62,8 @@ public:
     // "ecs/gameplay_events.h" for the full types.
     schizo::ecs::GameplayEventBus& events();
     schizo::ecs::TimerManager&     timers();
+    // G10 multiplayer-social session state (parties/guilds/trades/leaderboard).
+    schizo::ecs::SocialState&      social();
 
     // --- Demo / testing helpers ---
     // Register a small demo item catalog + a set bonus (idempotent) so the
