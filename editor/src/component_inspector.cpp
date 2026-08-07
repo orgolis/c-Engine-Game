@@ -16,6 +16,9 @@
 #include "ecs/gameplay_inventory.h"     // G4 drawers: Inventory / Equipment
 #include "ecs/gameplay_economy.h"       // G5 drawers: Vendor / Harvest Node
 #include "ecs/gameplay_interaction.h"   // G7 drawers: Interactable / Pickup
+#include "ecs/gameplay_quests.h"        // G6 drawer: Quest Log
+#include "ecs/gameplay_npc.h"           // G8 drawers: Faction / Aggro / Spawner
+#include "ecs/gameplay_savegame.h"      // G9 drawers: World Flags / Save Id
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -399,6 +402,70 @@ bool draw_pickup(void* comp) {
     return changed;
 }
 
+// G6 · Quest Log: read-only journal (active quests + stage/objective counts).
+bool draw_quest_log(void* comp) {
+    const auto& log = *static_cast<ecs::QuestLog*>(comp);
+    if (log.active.empty() && log.completed.empty()) { ImGui::TextDisabled("(no quests)"); return false; }
+    for (const auto& q : log.active) {
+        const ecs::QuestDef* d = ecs::find_quest(q.quest_id);
+        ImGui::BulletText("%s  (stage %d/%d)", d ? d->name.c_str() : q.quest_id.c_str(),
+                          q.stage + 1, d ? static_cast<int>(d->stages.size()) : 0);
+        if (d && q.stage < static_cast<int>(d->stages.size())) {
+            const auto& st = d->stages[q.stage];
+            for (size_t i = 0; i < st.objectives.size() && i < q.counts.size(); ++i)
+                ImGui::Text("    - %s  %d/%d", st.objectives[i].description.c_str(), q.counts[i], st.objectives[i].required);
+        }
+    }
+    for (const auto& c : log.completed) ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1), "  [done] %s", c.c_str());
+    return false;
+}
+// G8 · Faction: which faction this entity belongs to.
+bool draw_faction(void* comp) {
+    auto& f = *static_cast<ecs::Faction*>(comp);
+    char b[64]; std::snprintf(b, sizeof(b), "%s", f.faction.c_str());
+    if (ImGui::InputText("faction", b, sizeof(b))) { f.faction = b; return true; }
+    return false;
+}
+// G8 · Aggro: leash + live target/threat readout.
+bool draw_aggro(void* comp) {
+    auto& a = *static_cast<ecs::Aggro*>(comp);
+    bool changed = ImGui::DragFloat("leash", &a.leash, 0.5f, 0.0f, 0.0f);
+    if (a.target != 0xFFFFFFFFu) ImGui::TextDisabled("target: entity %u  (%d threats)", a.target, static_cast<int>(a.table.size()));
+    else                         ImGui::TextDisabled("no target  (%d threats)", static_cast<int>(a.table.size()));
+    return changed;
+}
+// G8 · Spawner: what/how-many/how-often + live count.
+bool draw_spawner(void* comp) {
+    auto& s = *static_cast<ecs::Spawner*>(comp);
+    bool changed = false;
+    char id[64]; std::snprintf(id, sizeof(id), "%s", s.spawn_id.c_str());
+    if (ImGui::InputText("spawn id", id, sizeof(id))) { s.spawn_id = id; changed = true; }
+    if (ImGui::DragInt("max alive", &s.max_alive, 0.1f, 0, 999)) changed = true;
+    if (ImGui::DragFloat("interval (s)", &s.interval, 0.1f, 0.0f, 0.0f)) changed = true;
+    if (ImGui::DragFloat("radius", &s.radius, 0.1f, 0.0f, 0.0f)) changed = true;
+    ImGui::TextDisabled("alive: %d", s.alive);
+    return changed;
+}
+// G9 · World Flags: key -> int store (chests opened, bosses killed, …).
+bool draw_world_flags(void* comp) {
+    auto& wf = *static_cast<ecs::WorldFlags*>(comp);
+    bool changed = false;
+    int remove = -1;
+    for (size_t i = 0; i < wf.flags.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        char k[64]; std::snprintf(k, sizeof(k), "%s", wf.flags[i].first.c_str());
+        ImGui::SetNextItemWidth(160);
+        if (ImGui::InputText("key", k, sizeof(k))) { wf.flags[i].first = k; changed = true; }
+        ImGui::SameLine(); ImGui::SetNextItemWidth(80);
+        if (ImGui::DragInt("val", &wf.flags[i].second)) changed = true;
+        ImGui::SameLine(); if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+        ImGui::PopID();
+    }
+    if (remove >= 0) { wf.flags.erase(wf.flags.begin() + remove); changed = true; }
+    if (ImGui::SmallButton("Add flag")) { wf.flags.push_back({"flag", 1}); changed = true; }
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -459,6 +526,20 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_interactable(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Pickup") == 0) {
                         if (draw_pickup(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Quest Log") == 0) {
+                        if (draw_quest_log(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Faction") == 0) {
+                        if (draw_faction(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Aggro") == 0) {
+                        if (draw_aggro(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Spawner") == 0) {
+                        if (draw_spawner(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "World Flags") == 0) {
+                        if (draw_world_flags(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Save Id") == 0) {
+                        auto& s = *static_cast<ecs::SaveId*>(comp);
+                        int v = static_cast<int>(s.value);
+                        if (ImGui::DragInt("save key", &v, 1.0f, 0, 0)) { s.value = static_cast<uint64_t>(v < 0 ? 0 : v); changed = true; }
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }

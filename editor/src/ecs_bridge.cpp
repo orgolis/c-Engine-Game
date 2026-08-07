@@ -20,6 +20,9 @@
 #include "ecs/gameplay_crafting.h"       // G5 recipes + salvage
 #include "ecs/gameplay_economy.h"        // G5 vendors / wallet / transfer / harvest
 #include "ecs/gameplay_interaction.h"    // G7 interactables / pickups
+#include "ecs/gameplay_quests.h"         // G6 quests (event-driven objectives)
+#include "ecs/gameplay_npc.h"            // G8 factions / aggro / spawners
+#include "ecs/gameplay_savegame.h"       // G9 save/load + world flags
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -108,6 +111,7 @@ void EcsSceneBridge::tick_gameplay(float dt) {
     }
     ecs::tick_triggers(impl_->world, impl_->event_bus);           // enter/exit -> events
     ecs::tick_harvest(impl_->world, dt);                          // G5: harvest-node respawn cooldowns
+    ecs::tick_spawners(impl_->world, dt, &impl_->event_bus);      // G8: encounter spawner requests
     impl_->timer_mgr.tick(dt);                                   // one-shot / repeating timers
     impl_->event_bus.flush();                                    // dispatch everything queued this frame
 }
@@ -371,6 +375,14 @@ EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_inventory_components();    // G4: Inventory / Equipment
     ecs::register_economy_components();       // G5: Vendor / Harvest Node
     ecs::register_interaction_components();    // G7: Interactable / Pickup
+    ecs::register_quest_component();          // G6: Quest Log
+    ecs::register_npc_components();            // G8: Faction / Aggro / Spawner
+    ecs::register_persistence_components();    // G9: Save Id / World Flags
+
+    // G6: route every gameplay event into quest progress (deferred flush = safe).
+    impl_->event_bus.subscribe("*", [impl = impl_.get()](const ecs::GameplayEvent& ev) {
+        ecs::advance_quests(impl->world, ev, &impl->event_bus);
+    });
 }
 
 EcsSceneBridge::~EcsSceneBridge() = default;

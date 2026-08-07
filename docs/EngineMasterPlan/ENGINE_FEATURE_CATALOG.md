@@ -317,11 +317,11 @@ G-modules become data + rules on top.
 | Upgrading / enchanting / salvage | ✅ **`SalvageDef`**/`salvage` (item → materials); upgrade/enchant = a recipe variant over the same primitives. |
 | Trading (player↔player, MP) | 🟡 `transfer_item` (inventory→inventory) is the local primitive; full P2P trade rides Networking. |
 
-### G6 · Quests & Narrative 🔴 — **Depends on:** G0, Scripting
+### G6 · Quests & Narrative 🟡 — **Depends on:** G0, Scripting
 | Sub-feature | Status |
 |---|---|
-| Quest system (objectives, stages, triggers, branching, rewards) | 🔴 |
-| Quest log / journal | 🔴 |
+| Quest system (objectives, stages, triggers, branching, rewards) | ✅ **`QuestDef`** (registry) — ordered stages of event-driven objectives (advance on a matching bus event + optional param + owner filter); `advance_quests` routes every event; last stage grants a **reward** (items/XP/currency/tags) + fires quest.complete. Branching-by-choice rides dialogue. |
+| Quest log / journal | ✅ **`QuestLog`** — active progress + completed list; custom-serialized (persists via G9); inspector journal view. |
 | Dialogue system (branching, choices, conditions, skill checks) | 🔴 |
 | Dialogue / conversation UI | 🔴 |
 | Cutscenes / scripted sequences | 🔴 |
@@ -337,21 +337,21 @@ G-modules become data + rules on top.
 | Gameplay destructibles | 🔴 (rides Physics) |
 | Fast travel / waypoints, points-of-interest / discovery | 🔴 |
 
-### G8 · NPCs & Encounters 🔴 — **Depends on:** AI, G0, G2
+### G8 · NPCs & Encounters 🟡 — **Depends on:** AI, G0, G2
 | Sub-feature | Status |
 |---|---|
-| NPC framework (schedules / routines / needs) | 🔴 |
-| Enemy archetypes + spawners + encounters (waves, arenas) | 🔴 |
-| Bosses (phases, mechanics) | 🔴 |
+| NPC framework (schedules / routines / needs) | 🔴 (rides AI behaviour trees) |
+| Enemy archetypes + spawners + encounters (waves, arenas) | 🟡 **`Spawner`** fires "spawn.request" per interval up to a live cap (`tick_spawners` + `spawner_report_death`); archetypes = prefabs; waves/arenas compose. Instantiation = integration layer. |
+| Bosses (phases, mechanics) | 🔴 (compose with G1 state machine + G2) |
 | Companions / pets / summons | 🔴 |
-| Factions & reputation | 🔴 |
+| Factions & reputation | ✅ **`Faction`** + data-driven relationship table (`set_faction_standing`/`are_hostile`) + reputation as `rep.<faction>` attributes; **`Aggro`** threat table picks the highest-threat target. |
 | Wildlife / ambient life, dynamic world events | 🔴 |
 
-### G9 · Persistence & World State 🔴 — **Depends on:** Serialization
+### G9 · Persistence & World State 🟡 — **Depends on:** Serialization
 | Sub-feature | Status |
 |---|---|
-| Save / load game state (slots, autosave) | 🔴 |
-| World-state persistence (chests opened, bosses killed, quest flags) | 🔴 |
+| Save / load game state (slots, autosave) | 🟡 **`SaveGame`** captures every `SaveId`-keyed entity's authorable components (via F4 Prefab) → text; `apply` restores by SaveId (creates missing); `save_game_file`/`load_game_file`. Slots/autosave + editor Save/Load menu = follow-up. (F3 `.gameplay` sidecar already persists scene gameplay.) |
+| World-state persistence (chests opened, bosses killed, quest flags) | ✅ **`WorldFlags`** key→int store (`set_world_flag`/`world_flag`), authorable + saved. QuestLog persists too. |
 | Checkpoints / respawn / bonfire-style rest | 🔴 |
 | Day-night cycle + weather (gameplay-affecting) | 🔴 |
 | Difficulty / level scaling, New Game+ | 🔴 |

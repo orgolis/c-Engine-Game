@@ -22,6 +22,9 @@
 #include "ecs/gameplay_crafting.h"
 #include "ecs/gameplay_economy.h"
 #include "ecs/gameplay_interaction.h"
+#include "ecs/gameplay_quests.h"
+#include "ecs/gameplay_npc.h"
+#include "ecs/gameplay_savegame.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -981,6 +984,128 @@ int main() {
                   dst.prompt == "Talk" && dst.event == "npc.talk" && dst.range == 3.5f &&
                   dst.enabled && !dst.consume_on_use);
         }
+    }
+
+    // G6: quests — event-driven objectives, stages, rewards, journal.
+    {
+        ecs::register_item(ecs::ItemDef{"g6_reward", "Reward", ecs::ItemKind::Misc, 0, 10, 0.0f, 0.0f, "", {}, {}, {}, {}, ""});
+        ecs::QuestDef q;
+        q.id = "hunt"; q.name = "Hunt";
+        q.stages.push_back({"Slay wolves", {{"Kill 3 wolves", "combat.hit", "wolf", 3, true}}});
+        q.stages.push_back({"Collect pelts", {{"Pick up 2 pelts", "pickup", "pelt", 2, true}}});
+        q.reward.items.push_back({"g6_reward", 1});
+        q.reward.xp = 100.0f; q.reward.currency = 50.0f; q.reward.tags.push_back("quest.hunt.done");
+        ecs::register_quest(q);
+
+        ecs::World w; ecs::GameplayEventBus bus;
+        const ecs::Entity player = w.create();
+        w.add<ecs::AttributeSet>(player, ecs::AttributeSet{});
+        w.add<ecs::Progression>(player, ecs::Progression{});
+        bus.subscribe("*", [&](const ecs::GameplayEvent& ev) { ecs::advance_quests(w, ev, &bus); });
+
+        ecs::start_quest(w, player, "hunt", &bus);
+        check("quest starts + is in the active log", w.has<ecs::QuestLog>(player) &&
+              ecs::find_progress(w.get<ecs::QuestLog>(player), "hunt") != nullptr);
+
+        auto hit_wolf = [&] { ecs::GameplayEvent e; e.name = "combat.hit"; e.instigator = player; e.param = "wolf"; bus.publish(e); bus.flush(); };
+        hit_wolf(); hit_wolf();
+        check("objective counts matching events (2/3)",
+              ecs::find_progress(w.get<ecs::QuestLog>(player), "hunt")->counts[0] == 2);
+        { ecs::GameplayEvent e; e.name = "combat.hit"; e.instigator = player; e.param = "rat"; bus.publish(e); bus.flush(); }
+        check("objective ignores non-matching param (still 2/3)",
+              ecs::find_progress(w.get<ecs::QuestLog>(player), "hunt")->counts[0] == 2);
+        hit_wolf();   // 3/3 -> advance to stage 2
+        check("completing a stage advances to the next",
+              ecs::find_progress(w.get<ecs::QuestLog>(player), "hunt")->stage == 1);
+
+        auto pick_pelt = [&] { ecs::GameplayEvent e; e.name = "pickup"; e.instigator = player; e.param = "pelt"; bus.publish(e); bus.flush(); };
+        pick_pelt(); pick_pelt();   // 2/2 -> quest complete + reward
+        auto& log = w.get<ecs::QuestLog>(player);
+        check("finishing the last stage completes the quest",
+              log.active.empty() && log.completed.size() == 1 && log.completed[0] == "hunt");
+        check("quest reward granted (item + XP + currency + tag)",
+              ecs::inventory_count(w.get<ecs::Inventory>(player), "g6_reward") == 1 &&
+              w.get<ecs::Progression>(player).xp == 100.0f &&
+              ecs::wallet_balance(w, player) == 50.0f &&
+              w.get<ecs::GameplayTags>(player).has("quest.hunt.done"));
+    }
+
+    // G8: NPCs — factions, reputation, aggro/threat, spawners.
+    {
+        ecs::set_faction_standing("bandits", "town", ecs::Standing::Hostile);
+        ecs::World w; ecs::GameplayEventBus bus;
+        const ecs::Entity guard  = w.create();  w.add<ecs::Faction>(guard,  ecs::Faction{"town"});
+        const ecs::Entity bandit = w.create();  w.add<ecs::Faction>(bandit, ecs::Faction{"bandits"});
+        const ecs::Entity friend_ = w.create(); w.add<ecs::Faction>(friend_, ecs::Faction{"town"});
+        check("hostile factions are hostile", ecs::are_hostile(w, guard, bandit));
+        check("same faction is not hostile", !ecs::are_hostile(w, guard, friend_) &&
+              ecs::standing_between(w, guard, friend_) == ecs::Standing::Friendly);
+
+        ecs::adjust_reputation(w, guard, "town", 25.0f);
+        ecs::adjust_reputation(w, guard, "town", -5.0f);
+        check("reputation accumulates per faction", ecs::reputation(w, guard, "town") == 20.0f);
+
+        w.add<ecs::Aggro>(bandit, ecs::Aggro{});
+        ecs::add_threat(w, bandit, guard, 10.0f);
+        ecs::add_threat(w, bandit, friend_, 25.0f);
+        check("aggro targets the highest-threat source", ecs::aggro_target(w, bandit) == friend_);
+        ecs::add_threat(w, bandit, guard, 30.0f);   // guard now 40 > 25
+        check("aggro retargets when threat shifts", ecs::aggro_target(w, bandit) == guard);
+        ecs::clear_threat(w, bandit);
+        check("clearing threat drops the target", ecs::aggro_target(w, bandit) == ecs::null_entity);
+
+        // spawner: request every interval up to max_alive, resumes after a death
+        const ecs::Entity spawner = w.create();
+        w.add<ecs::Spawner>(spawner, ecs::Spawner{"g8_wolf", 2, 1.0f, 5.0f, 0.0f, 0});
+        int requests = 0;
+        bus.subscribe("spawn.request", [&](const ecs::GameplayEvent&) { ++requests; });
+        ecs::tick_spawners(w, 1.0f, &bus); bus.flush();   // alive 0->1, request
+        ecs::tick_spawners(w, 1.0f, &bus); bus.flush();   // alive 1->2, request
+        ecs::tick_spawners(w, 1.0f, &bus); bus.flush();   // at max -> no request
+        check("spawner requests up to max_alive then stops", requests == 2 &&
+              w.get<ecs::Spawner>(spawner).alive == 2);
+        ecs::spawner_report_death(w, spawner);
+        ecs::tick_spawners(w, 1.0f, &bus); bus.flush();   // one died -> request again
+        check("spawner resumes after a reported death", requests == 3);
+    }
+
+    // G9: persistence — SaveGame captures/restores gameplay state by SaveId.
+    {
+        ecs::register_persistence_components();
+        ecs::register_attribute_component();
+
+        ecs::World src;
+        const ecs::Entity p = src.create();
+        src.add<ecs::SaveId>(p, ecs::SaveId{1001});
+        src.add<ecs::AttributeSet>(p, ecs::AttributeSet{});
+        src.get<ecs::AttributeSet>(p).define("Health", 100, 0, 100);
+        src.get<ecs::AttributeSet>(p).set("Health", 42);
+        src.add<ecs::Inventory>(p, ecs::Inventory{});
+        ecs::inventory_add(src.get<ecs::Inventory>(p), ecs::ItemInstance{"g6_reward", 3, 0, {}});
+
+        const std::string text = ecs::SaveGame::capture(src).to_text();
+        check("SaveGame captures SaveId'd entities", ecs::SaveGame::from_text(text).entries.size() == 1);
+
+        // restore into a FRESH world (no entities): apply creates + keys them
+        ecs::World dst;
+        ecs::SaveGame::from_text(text).apply(dst);
+        ecs::Entity restored = ecs::null_entity;
+        dst.each<ecs::SaveId>([&](ecs::Entity e, ecs::SaveId& s) { if (s.value == 1001) restored = e; });
+        check("SaveGame restores an entity by its SaveId", restored != ecs::null_entity);
+        check("restored gameplay state matches (Health 42 + 3 items)",
+              restored != ecs::null_entity &&
+              dst.get<ecs::AttributeSet>(restored).get("Health") == 42.0f &&
+              dst.has<ecs::Inventory>(restored) &&
+              ecs::inventory_count(dst.get<ecs::Inventory>(restored), "g6_reward") == 3);
+
+        // world flags
+        ecs::WorldFlags wf;
+        ecs::set_world_flag(wf, "boss.dragon.killed", 1);
+        ecs::set_world_flag(wf, "chests.opened", 3);
+        ecs::set_world_flag(wf, "chests.opened", 4);   // overwrite
+        check("world flags set/get + overwrite",
+              ecs::world_flag(wf, "boss.dragon.killed") == 1 && ecs::world_flag(wf, "chests.opened") == 4 &&
+              ecs::world_flag(wf, "missing") == 0 && wf.flags.size() == 2);
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }
