@@ -85,6 +85,7 @@ private:
     bool  search_recursive_ = false;
     int   type_filter_ = 0;                  // 0 = All
     bool  show_tree_ = true;
+    bool  grid_view_ = true;                 // tiles (Unreal-style) vs list
     bool  dirty_ = true;                     // re-list on next frame
 
     // Pending modal state

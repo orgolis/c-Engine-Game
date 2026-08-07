@@ -382,6 +382,8 @@ void AssetBrowserPanel::render_toolbar() {
     if (ImGui::SmallButton("New...")) ImGui::OpenPopup("##ab_newmenu");
     if (ImGui::BeginPopup("##ab_newmenu")) { render_new_menu(); ImGui::EndPopup(); }
     ImGui::SameLine();
+    if (ImGui::SmallButton(grid_view_ ? "List" : "Tiles")) grid_view_ = !grid_view_;
+    ImGui::SameLine();
     if (ImGui::SmallButton(show_tree_ ? "Hide Tree" : "Show Tree")) show_tree_ = !show_tree_;
     ImGui::SameLine();
     if (ImGui::SmallButton("Refresh")) dirty_ = true;
@@ -531,6 +533,56 @@ void AssetBrowserPanel::render_entries() {
         ImGui::EndPopup();
     }
 
+    // ---- Tiles (thumbnail grid) view — the Unreal-style content browser look ----
+    if (grid_view_) {
+        const float tile_w = 92.0f;
+        const float icon   = 46.0f;
+        const float label_h = ImGui::GetTextLineHeight() * 2.0f + 4.0f;
+        const float cell_h = 6.0f + icon + 8.0f + label_h;
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const int per_row = std::max(1, static_cast<int>(avail / (tile_w + 8.0f)));
+
+        ImGui::BeginChild("##ab_grid", ImVec2(0, 0));
+        int col = 0;
+        bool navigated = false;
+        for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
+            const AssetEntry& e = entries_[i];
+            if (local_filter && lower(e.name).find(needle) == std::string::npos) continue;
+            if (!passes_type(e)) continue;
+
+            ImGui::PushID(i);
+            const ImVec2 cur = ImGui::GetCursorScreenPos();
+            const bool clicked = ImGui::Selectable("##tile", selected_ == i,
+                                                   ImGuiSelectableFlags_AllowDoubleClick, ImVec2(tile_w, cell_h));
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            draw_entry_icon(dl, ImVec2(cur.x + (tile_w - icon) * 0.5f, cur.y + 6.0f), icon, e);
+            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(cur.x + 3.0f, cur.y + 6.0f + icon + 6.0f),
+                        ImGui::GetColorU32(type_color(e.type)), e.name.c_str(), nullptr, tile_w - 6.0f);
+
+            if (clicked) {
+                selected_ = i;
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    if (e.is_dir) { navigate(e.abs_path); navigated = true; ImGui::PopID(); break; }
+                    else if (0 == std::strcmp(e.type, "Scene") && on_open_scene) on_open_scene(e.rel_path);
+                    else os_open(e.abs_path);
+                }
+            }
+            if (!e.is_dir && ImGui::BeginDragDropSource()) {
+                const std::string& data = (0 == std::strcmp(e.type, "Mesh")) ? e.abs_path : e.rel_path;
+                ImGui::SetDragDropPayload(payload_for(e.type), data.c_str(), data.size() + 1);
+                ImGui::Text("%s  (%s)", e.name.c_str(), e.type);
+                ImGui::EndDragDropSource();
+            }
+            render_context_menu(e);
+            ImGui::PopID();
+
+            if (++col < per_row) ImGui::SameLine(0.0f, 8.0f); else col = 0;
+        }
+        (void)navigated;
+        ImGui::EndChild();
+        return;
+    }
+
     if (ImGui::BeginTable("##ab_list", 3,
                           ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
                           ImGuiTableFlags_SizingStretchProp)) {
@@ -626,12 +678,20 @@ void AssetBrowserPanel::render_new_menu() {
             want_new_file_ = true;
         }
     };
-    file("Python Script (.py)", "new_script.py",  kTemplatePy);
-    file("C# Script (.cs)",     "new_script.cs",  kTemplateCs);
-    file("C++ Script (.cpp)",   "new_script.cpp", kTemplateCpp);
-    ImGui::Separator();
-    file("Item Definitions (.items)", "items.items", kTemplateItems);
-    file("Text File (.txt)",          "notes.txt",   "");
+    if (ImGui::BeginMenu("Script")) {
+        file("Python (.py)", "new_script.py",  kTemplatePy);
+        file("C# (.cs)",     "new_script.cs",  kTemplateCs);
+        file("C++ (.cpp)",   "new_script.cpp", kTemplateCpp);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Gameplay")) {
+        file("Item Definitions (.items)", "items.items", kTemplateItems);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Misc")) {
+        file("Text File (.txt)", "notes.txt", "");
+        ImGui::EndMenu();
+    }
 }
 
 void AssetBrowserPanel::render_modals() {
