@@ -92,6 +92,8 @@ struct ScriptApi {
     bool  (*reload_weapon)(void* ctx, uint32_t e) = nullptr;
     // G13: drive entity `e`'s Vehicle one step (throttle/steer in [-1,1]).
     void  (*drive)(void* ctx, uint32_t e, float throttle, float steer, int brake, int boost) = nullptr;
+    // G15: toggle entity `e`'s Flashlight; returns the new on-state.
+    bool  (*toggle_flashlight)(void* ctx, uint32_t e) = nullptr;
 };
 
 }  // namespace schizo::editor

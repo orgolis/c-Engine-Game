@@ -327,6 +327,10 @@ void build_engine_module(pkpy::VM* vm) {
                          CAST(bool, args[3]) ? 1 : 0, CAST(bool, args[4]) ? 1 : 0);
         return vm->None;
     });
+    vm->bind(mod, "toggle_flashlight(e: int) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        bool r = g_api && g_api->toggle_flashlight && g_api->toggle_flashlight(g_api->ctx, earg(vm, args[0]));
+        return VAR(r);
+    });
 
     // Common key / button constants (GLFW codes) so scripts don't hardcode.
     auto set_const = [&](const char* name, pkpy::i64 v) { mod->attr().set(name, VAR(v)); };

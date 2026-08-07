@@ -29,6 +29,7 @@
 #include "ecs/gameplay_weapons.h"
 #include "ecs/gameplay_vehicles.h"
 #include "ecs/gameplay_building.h"
+#include "ecs/gameplay_survival.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -1388,6 +1389,75 @@ int main() {
             ecs::Machine dst; ecs::deserialize_authorable(*mc, &dst, b.data(), b.size());
             check("Machine serialize round-trips (recipe + power, runtime reset)",
                   dst.recipe_id == "g14_smelt" && dst.power_use == 25 && dst.progress == 0.0f && !dst.crafting);
+        }
+    }
+
+    // G15: survival & horror — needs decay, sanity in dark/light/fear, flashlight.
+    {
+        ecs::World w; ecs::GameplayEventBus bus;
+
+        // needs: hunger drains + fires a critical event at the threshold
+        const ecs::Entity survivor = w.create();
+        w.add<ecs::Transform>(survivor, ecs::Transform{});
+        w.add<ecs::AttributeSet>(survivor, ecs::AttributeSet{});
+        w.get<ecs::AttributeSet>(survivor).define("Hunger", 100, 0, 100);
+        ecs::Needs needs; needs.needs.push_back({"Hunger", 10.0f, 15.0f, "hunger.critical", false});
+        w.add<ecs::Needs>(survivor, needs);
+        std::string crit;
+        bus.subscribe("hunger.critical", [&](const ecs::GameplayEvent&) { crit = "fired"; });
+
+        ecs::tick_survival(w, 5.0f, &bus);   // Hunger 100 -> 50
+        check("needs decay over time (Hunger 100 -> 50)", w.get<ecs::AttributeSet>(survivor).get("Hunger") == 50.0f);
+        ecs::tick_survival(w, 4.0f, &bus); bus.flush();   // -> 10, crosses critical 15
+        check("need fires its critical event at the threshold",
+              w.get<ecs::AttributeSet>(survivor).get("Hunger") == 10.0f && crit == "fired");
+        // eat: restore hunger via an instant effect (as a food item would)
+        ecs::apply_effect(w, survivor, ecs::make_instant("Eat", "Hunger", +60.0f));
+        check("consuming food restores the need (10 -> 70)", w.get<ecs::AttributeSet>(survivor).get("Hunger") == 70.0f);
+
+        // sanity: drains in darkness, regenerates in light
+        w.add<ecs::Sanity>(survivor, ecs::Sanity{100, 100, 10.0f, 5.0f, false});
+        ecs::tick_survival(w, 2.0f, &bus);   // no light -> dark drain 10/s * 2 = 20
+        check("sanity drains in darkness (100 -> 80)", w.get<ecs::Sanity>(survivor).value == 80.0f);
+        const ecs::Entity lamp = w.create();
+        w.add<ecs::Transform>(lamp, ecs::Transform{});         // at origin, near the survivor
+        w.add<ecs::LightSource>(lamp, ecs::LightSource{10.0f});
+        ecs::tick_survival(w, 2.0f, &bus);   // in light -> regen 5/s * 2 = 10
+        check("sanity regenerates in light (80 -> 90)", w.get<ecs::Sanity>(survivor).value == 90.0f);
+
+        // fear source drains sanity even in light
+        const ecs::Entity ghost = w.create();
+        w.add<ecs::Transform>(ghost, ecs::Transform{});
+        w.add<ecs::FearSource>(ghost, ecs::FearSource{10.0f, 30.0f});
+        int low = 0;
+        bus.subscribe("sanity.low", [&](const ecs::GameplayEvent&) { ++low; });
+        ecs::tick_survival(w, 3.0f, &bus); bus.flush();   // fear 30/s * 3 = 90 -> below 20 -> sanity.low
+        check("a fear source drains sanity + fires sanity.low",
+              w.get<ecs::Sanity>(survivor).value == 0.0f && low == 1);
+
+        // flashlight: on -> battery drains; provides its own light; toggle
+        const ecs::Entity explorer = w.create();
+        w.add<ecs::Transform>(explorer, ecs::Transform{glm::vec3(100, 0, 0)});   // far from any light
+        w.add<ecs::Sanity>(explorer, ecs::Sanity{100, 100, 10.0f, 5.0f, false});
+        w.add<ecs::Flashlight>(explorer, ecs::Flashlight{20.0f, 100.0f, 10.0f, true, 6.0f});
+        ecs::tick_survival(w, 1.0f, &bus);   // flashlight on -> in own light -> regen; battery 20 -> 10
+        check("flashlight lights the holder (sanity regens) + drains battery",
+              w.get<ecs::Sanity>(explorer).value == 100.0f && w.get<ecs::Flashlight>(explorer).battery == 10.0f);
+        ecs::tick_survival(w, 2.0f, &bus);   // battery hits 0 -> off -> now in the dark
+        check("flashlight dies when the battery empties",
+              w.get<ecs::Flashlight>(explorer).battery == 0.0f && !w.get<ecs::Flashlight>(explorer).on);
+        check("toggle_flashlight refuses a dead battery", !ecs::toggle_flashlight(w, explorer));
+
+        // authorable serialize
+        ecs::register_survival_components();
+        const ecs::AuthorableComponent* sc = ecs::find_authorable("Sanity");
+        check("Sanity is authorable", sc && sc->serialize);
+        if (sc) {
+            ecs::Sanity src{60, 120, 8, 4, false};
+            const auto b = ecs::serialize_authorable(*sc, &src);
+            ecs::Sanity dst; ecs::deserialize_authorable(*sc, &dst, b.data(), b.size());
+            check("Sanity serialize round-trips",
+                  dst.value == 60.0f && dst.max == 120.0f && dst.dark_drain == 8.0f && dst.light_regen == 4.0f);
         }
     }
 

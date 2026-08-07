@@ -22,6 +22,7 @@
 #include "ecs/gameplay_weapons.h"       // G12 drawer: Weapon
 #include "ecs/gameplay_vehicles.h"      // G13 drawers: Vehicle / Race Progress
 #include "ecs/gameplay_building.h"      // G14 drawers: Extractor / Machine / Generator / Conveyor
+#include "ecs/gameplay_survival.h"      // G15 drawers: Needs / Sanity / Flashlight / Fear Source
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -556,6 +557,56 @@ bool draw_conveyor(void* comp) {
     return changed;
 }
 
+// G15 · survival/horror components.
+bool draw_needs(void* comp) {
+    auto& n = *static_cast<ecs::Needs*>(comp);
+    bool changed = false;
+    int remove = -1;
+    for (size_t i = 0; i < n.needs.size(); ++i) {
+        auto& nd = n.needs[i];
+        ImGui::PushID(static_cast<int>(i));
+        char a[48]; std::snprintf(a, sizeof(a), "%s", nd.attribute.c_str());
+        ImGui::SetNextItemWidth(110);
+        if (ImGui::InputText("attr", a, sizeof(a))) { nd.attribute = a; changed = true; }
+        ImGui::SameLine(); ImGui::SetNextItemWidth(70);
+        if (ImGui::DragFloat("drain/s", &nd.rate, 0.05f)) changed = true;
+        ImGui::SameLine(); ImGui::SetNextItemWidth(70);
+        if (ImGui::DragFloat("crit", &nd.critical, 0.5f)) changed = true;
+        ImGui::SameLine(); if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+        ImGui::PopID();
+    }
+    if (remove >= 0) { n.needs.erase(n.needs.begin() + remove); changed = true; }
+    if (ImGui::SmallButton("Add need")) { n.needs.push_back({"Hunger", 1.0f, 15.0f, "need.critical", false}); changed = true; }
+    return changed;
+}
+bool draw_sanity(void* comp) {
+    auto& s = *static_cast<ecs::Sanity*>(comp);
+    bool changed = false;
+    if (ImGui::SliderFloat("sanity", &s.value, 0.0f, s.max)) changed = true;
+    if (ImGui::DragFloat("max", &s.max, 1.0f, 1.0f, 0.0f)) changed = true;
+    if (ImGui::DragFloat("dark drain/s", &s.dark_drain, 0.1f)) changed = true;
+    if (ImGui::DragFloat("light regen/s", &s.light_regen, 0.1f)) changed = true;
+    if (s.low) ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "LOW SANITY");
+    return changed;
+}
+bool draw_flashlight(void* comp) {
+    auto& f = *static_cast<ecs::Flashlight*>(comp);
+    bool changed = false;
+    if (ImGui::Checkbox("on", &f.on)) changed = true;
+    ImGui::SameLine(); ImGui::TextDisabled("battery %.0f/%.0f", f.battery, f.max_battery);
+    if (ImGui::DragFloat("max battery", &f.max_battery, 1.0f, 0.0f, 0.0f)) changed = true;
+    if (ImGui::DragFloat("drain/s", &f.drain, 0.1f)) changed = true;
+    if (ImGui::DragFloat("radius", &f.radius, 0.1f)) changed = true;
+    return changed;
+}
+bool draw_fearsource(void* comp) {
+    auto& f = *static_cast<ecs::FearSource*>(comp);
+    bool changed = false;
+    if (ImGui::DragFloat("radius", &f.radius, 0.1f)) changed = true;
+    if (ImGui::DragFloat("sanity drain/s", &f.drain, 0.5f)) changed = true;
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -644,6 +695,17 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_generator(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Conveyor") == 0) {
                         if (draw_conveyor(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Needs") == 0) {
+                        if (draw_needs(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Sanity") == 0) {
+                        if (draw_sanity(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Flashlight") == 0) {
+                        if (draw_flashlight(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Fear Source") == 0) {
+                        if (draw_fearsource(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Light Source") == 0) {
+                        auto& l = *static_cast<ecs::LightSource*>(comp);
+                        if (ImGui::DragFloat("radius", &l.radius, 0.1f)) changed = true;
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }

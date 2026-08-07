@@ -30,6 +30,7 @@
 #include "ecs/gameplay_interaction.h"
 #include "ecs/gameplay_weapons.h"
 #include "ecs/gameplay_vehicles.h"
+#include "ecs/gameplay_survival.h"
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/quaternion.hpp>
@@ -360,6 +361,11 @@ void api_drive(void* ctx, uint32_t e, float throttle, float steer, int brake, in
     in.throttle = throttle; in.steer = steer; in.brake = brake != 0; in.boost = boost != 0;
     ecs::drive_vehicle(*w, ent, in, C(ctx)->dt);
 }
+bool api_toggle_flashlight(void* ctx, uint32_t e) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return false;
+    return ecs::toggle_flashlight(*w, ent);
+}
 
 }  // namespace
 
@@ -409,6 +415,7 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.fire_weapon        = &api_fire_weapon;
     api.reload_weapon      = &api_reload_weapon;
     api.drive              = &api_drive;
+    api.toggle_flashlight  = &api_toggle_flashlight;
 }
 
 }  // namespace schizo::editor

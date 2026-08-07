@@ -80,6 +80,7 @@ namespace Schizo
         public delegate* unmanaged[Cdecl]<void*, uint, byte> fire_weapon;
         public delegate* unmanaged[Cdecl]<void*, uint, byte> reload_weapon;
         public delegate* unmanaged[Cdecl]<void*, uint, float, float, int, int, void> drive;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte> toggle_flashlight;
     }
 
     /// Friendly wrapper handed to your OnStart/OnUpdate.
@@ -202,6 +203,7 @@ namespace Schizo
         public bool ReloadWeapon(uint e) => p->reload_weapon(p->ctx, e) != 0;
         public void Drive(uint e, float throttle, float steer, bool brake = false, bool boost = false)
             => p->drive(p->ctx, e, throttle, steer, brake ? 1 : 0, boost ? 1 : 0);
+        public bool ToggleFlashlight(uint e) => p->toggle_flashlight(p->ctx, e) != 0;
 
         // GLFW key codes.
         public const int KeySpace = 32;

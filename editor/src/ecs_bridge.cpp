@@ -27,6 +27,7 @@
 #include "ecs/gameplay_weapons.h"        // G12 weapons / ammo / projectiles
 #include "ecs/gameplay_vehicles.h"       // G13 vehicles / racing
 #include "ecs/gameplay_building.h"       // G14 building / automation
+#include "ecs/gameplay_survival.h"       // G15 needs / sanity / light / fear
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -121,6 +122,7 @@ void EcsSceneBridge::tick_gameplay(float dt) {
     ecs::tick_projectiles(impl_->world, dt, &impl_->event_bus);   // G12: projectile travel + hits
     ecs::tick_race(impl_->world, dt, &impl_->event_bus);          // G13: race clocks / checkpoints / laps
     ecs::tick_factory(impl_->world, dt, &impl_->event_bus);       // G14: extractors / machines / conveyors / power
+    ecs::tick_survival(impl_->world, dt, &impl_->event_bus);      // G15: needs / sanity / flashlight / fear
     impl_->timer_mgr.tick(dt);                                   // one-shot / repeating timers
     impl_->event_bus.flush();                                    // dispatch everything queued this frame
 }
@@ -410,6 +412,7 @@ EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_weapon_components();          // G12: Weapon
     ecs::register_vehicle_components();          // G13: Vehicle / Race Progress
     ecs::register_building_components();          // G14: Building / Extractor / Machine / Generator / Conveyor
+    ecs::register_survival_components();          // G15: Needs / Sanity / Flashlight / Light Source / Fear Source
 
     // G6: route every gameplay event into quest progress (deferred flush = safe).
     impl_->event_bus.subscribe("*", [impl = impl_.get()](const ecs::GameplayEvent& ev) {

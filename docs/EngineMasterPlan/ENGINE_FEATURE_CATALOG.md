@@ -417,16 +417,16 @@ G-modules become data + rules on top.
 | Blueprints (copy-paste), persistence of built structures | 🟡 buildings are prefab-able (F4) + save-able (G9 authorable); blueprint copy-paste UI = follow-up. |
 | Massive-object-count perf | 🔴 (rides GPU-driven rendering + streaming) |
 
-### G15 · Survival & Horror 🔴 — **Depends on:** G0 *(Resident Evil, Phasmophobia, survival)*
+### G15 · Survival & Horror 🟡 — **Depends on:** G0 *(Resident Evil, Phasmophobia, survival)*
 | Sub-feature | Status |
 |---|---|
-| Needs: hunger / thirst / temperature / oxygen / fatigue | 🔴 |
-| Sanity / fear / tension systems | 🔴 |
-| Light & dark gameplay (flashlight, darkness, exposure) | 🔴 |
-| Constrained inventory / weight / item management (RE-style) | 🔴 |
-| Investigation gear (EMF, camera, sensors — Phasmophobia) | 🔴 |
-| Horror presentation: scripted/dynamic scares, VHS/handheld-cam post-FX, audio stingers | 🔴 |
-| Permadeath / consequence, scarce resources | 🔴 |
+| Needs: hunger / thirst / temperature / oxygen / fatigue | ✅ **`Needs`** — any G0 attributes that decay over time + fire a critical event at a threshold; restored by food/water item on-use effects. |
+| Sanity / fear / tension systems | ✅ **`Sanity`** drains in darkness or near a **`FearSource`** (proximity), regenerates in light; fires `sanity.low`. |
+| Light & dark gameplay (flashlight, darkness, exposure) | ✅ **`LightSource`** + **`Flashlight`** (battery drains while on, dies at 0, lights the holder); `toggle_flashlight` script verb; darkness = no light in range. |
+| Constrained inventory / weight / item management (RE-style) | ✅ (via G4 `Inventory` slot + weight caps). |
+| Investigation gear (EMF, camera, sensors — Phasmophobia) | 🔴 (a sensor = a proximity check vs a tagged entity → event; small follow-up) |
+| Horror presentation: scripted/dynamic scares, VHS/handheld-cam post-FX, audio stingers | 🔴 (rides VFX/post + Audio; events are the triggers) |
+| Permadeath / consequence, scarce resources | 🟡 (death/consequence via G0 Health + tags; scarce resources = tune drop rates) |
 
 ### G16 · Stealth & Detection 🔴 — **Depends on:** AI, G0 *(Cyberpunk, horror, many)*
 | Sub-feature | Status |

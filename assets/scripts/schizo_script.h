@@ -81,6 +81,7 @@ typedef struct SchizoScriptApi {
     bool  (*fire_weapon)(void* ctx, unsigned e);   /* G12: fire the entity's Weapon */
     bool  (*reload_weapon)(void* ctx, unsigned e); /* G12: reload the entity's Weapon */
     void  (*drive)(void* ctx, unsigned e, float throttle, float steer, int brake, int boost); /* G13 */
+    bool  (*toggle_flashlight)(void* ctx, unsigned e);   /* G15: toggle the entity's Flashlight */
 } SchizoScriptApi;
 
 }  // extern "C"
