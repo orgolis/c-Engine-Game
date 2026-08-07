@@ -21,6 +21,7 @@
 #include "ecs/gameplay_savegame.h"      // G9 drawers: World Flags / Save Id
 #include "ecs/gameplay_weapons.h"       // G12 drawer: Weapon
 #include "ecs/gameplay_vehicles.h"      // G13 drawers: Vehicle / Race Progress
+#include "ecs/gameplay_building.h"      // G14 drawers: Extractor / Machine / Generator / Conveyor
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -518,6 +519,43 @@ bool draw_race_progress(void* comp) {
     return changed;
 }
 
+// G14 · building components (Extractor / Machine / Generator / Conveyor).
+bool draw_extractor(void* comp) {
+    auto& x = *static_cast<ecs::Extractor*>(comp);
+    bool changed = false;
+    char id[64]; std::snprintf(id, sizeof(id), "%s", x.item_id.c_str());
+    if (ImGui::InputText("mines item", id, sizeof(id))) { x.item_id = id; changed = true; }
+    if (ImGui::DragFloat("rate (/s)", &x.rate, 0.1f, 0.0f, 0.0f)) changed = true;
+    return changed;
+}
+bool draw_machine(void* comp) {
+    auto& m = *static_cast<ecs::Machine*>(comp);
+    bool changed = false;
+    const ecs::MachineRecipe* r = ecs::find_machine_recipe(m.recipe_id);
+    if (ImGui::BeginCombo("recipe", m.recipe_id.empty() ? "(none)" : m.recipe_id.c_str())) {
+        for (const auto& mr : ecs::machine_recipe_registry())
+            if (ImGui::Selectable(mr.id.c_str(), mr.id == m.recipe_id)) { m.recipe_id = mr.id; changed = true; }
+        ImGui::EndCombo();
+    }
+    if (ImGui::DragInt("power use", &m.power_use, 0.2f, 0, 999)) changed = true;
+    if (m.crafting && r) ImGui::TextDisabled("crafting %.0f%%", 100.0f * m.progress / (r->time > 0 ? r->time : 1));
+    else                 ImGui::TextDisabled("idle");
+    return changed;
+}
+bool draw_generator(void* comp) {
+    auto& g = *static_cast<ecs::Generator*>(comp);
+    return ImGui::DragInt("power", &g.power, 0.5f, 0, 99999);
+}
+bool draw_conveyor(void* comp) {
+    auto& c = *static_cast<ecs::Conveyor*>(comp);
+    bool changed = false;
+    char id[64]; std::snprintf(id, sizeof(id), "%s", c.item_id.c_str());
+    if (ImGui::InputText("moves item", id, sizeof(id))) { c.item_id = id; changed = true; }
+    if (ImGui::DragFloat("rate (/s)", &c.rate, 0.1f, 0.0f, 0.0f)) changed = true;
+    ImGui::TextDisabled("from entity %u -> %u (linked at runtime)", c.from, c.to);
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -598,6 +636,14 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_vehicle(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Race Progress") == 0) {
                         if (draw_race_progress(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Extractor") == 0) {
+                        if (draw_extractor(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Machine") == 0) {
+                        if (draw_machine(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Generator") == 0) {
+                        if (draw_generator(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Conveyor") == 0) {
+                        if (draw_conveyor(comp)) changed = true;
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }

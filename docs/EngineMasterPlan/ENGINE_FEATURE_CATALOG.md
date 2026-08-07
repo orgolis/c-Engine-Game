@@ -406,15 +406,15 @@ G-modules become data + rules on top.
 | **Racing framework**: track splines, checkpoints, laps, timing, grid/standings | ✅ **`RaceTrack`** (checkpoints + laps) + **`RaceProgress`** (`tick_race`: checkpoint crossing, lap/best-lap timing, finish) + `race_rank` standings; splines = follow-up. Boost/nitro ✅. |
 | Racing AI (racing line, rubber-band), ghosts / replay, photo mode | 🔴 |
 
-### G14 · Building & Automation 🔴 — **Depends on:** G0, Physics *(Satisfactory, base-builders)*
+### G14 · Building & Automation 🟡 — **Depends on:** G0, Physics *(Satisfactory, base-builders)*
 | Sub-feature | Status |
 |---|---|
-| Placement (grid + free, snapping, rotation, validation, ghost preview) | 🔴 |
-| Structures: foundations / walls / floors / supports | 🔴 |
-| Resource logistics: conveyors, pipes, storage, splitters/mergers | 🔴 |
-| Networks: power / fluid / signal (graph simulation) | 🔴 |
-| Machines / crafting chains / production simulation at scale | 🔴 |
-| Blueprints (copy-paste), persistence of built structures | 🔴 |
+| Placement (grid + free, snapping, rotation, validation, ghost preview) | 🟡 **`BuildableDef`** (build cost) + `can_build`/`place_building` (pay from inventory → create the building) ✅; grid-snap/rotation/ghost = editor/UI follow-up. |
+| Structures: foundations / walls / floors / supports | 🔴 (rides Physics/mesh) |
+| Resource logistics: conveyors, pipes, storage, splitters/mergers | ✅ **`Conveyor`** (rate-limited transfer between building buffers = G4 Inventories); storage = an Inventory; splitters/mergers = multiple conveyors. |
+| Networks: power / fluid / signal (graph simulation) | 🟡 **power** (`Generator` gen vs `Machine` draw → `factory_powered` gates machines) ✅; fluid/signal graphs = follow-up. |
+| Machines / crafting chains / production simulation at scale | ✅ **`Extractor`** (auto-mine into buffer) + **`Machine`** (timed `MachineRecipe`: inputs→progress→outputs) + `tick_factory`; chains = extractor→conveyor→machine (verified). Scale rides GPU-driven rendering. |
+| Blueprints (copy-paste), persistence of built structures | 🟡 buildings are prefab-able (F4) + save-able (G9 authorable); blueprint copy-paste UI = follow-up. |
 | Massive-object-count perf | 🔴 (rides GPU-driven rendering + streaming) |
 
 ### G15 · Survival & Horror 🔴 — **Depends on:** G0 *(Resident Evil, Phasmophobia, survival)*

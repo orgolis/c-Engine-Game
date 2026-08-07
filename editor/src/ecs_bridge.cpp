@@ -26,6 +26,7 @@
 #include "ecs/gameplay_social.h"         // G10 parties / guilds / chat / trade
 #include "ecs/gameplay_weapons.h"        // G12 weapons / ammo / projectiles
 #include "ecs/gameplay_vehicles.h"       // G13 vehicles / racing
+#include "ecs/gameplay_building.h"       // G14 building / automation
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -119,6 +120,7 @@ void EcsSceneBridge::tick_gameplay(float dt) {
     ecs::tick_weapons(impl_->world, dt);                          // G12: weapon cooldown / reload
     ecs::tick_projectiles(impl_->world, dt, &impl_->event_bus);   // G12: projectile travel + hits
     ecs::tick_race(impl_->world, dt, &impl_->event_bus);          // G13: race clocks / checkpoints / laps
+    ecs::tick_factory(impl_->world, dt, &impl_->event_bus);       // G14: extractors / machines / conveyors / power
     impl_->timer_mgr.tick(dt);                                   // one-shot / repeating timers
     impl_->event_bus.flush();                                    // dispatch everything queued this frame
 }
@@ -162,6 +164,12 @@ void EcsSceneBridge::seed_demo_content() {
     { RaceTrack t; t.id = "loop"; t.laps = 3;
       t.checkpoints = { {{50, 0, 0}, 8}, {{50, 0, 50}, 8}, {{0, 0, 50}, 8}, {{0, 0, 0}, 8} };
       register_track(t); }
+
+    // G14 demo buildables + a smelting recipe (ore -> ingot).
+    register_buildable({"miner",   "Miner",   {}});
+    register_buildable({"smelter", "Smelter", {{"iron_ingot", 2}}});
+    register_buildable({"conveyor","Conveyor",{{"iron_ingot", 1}}});
+    register_machine_recipe({"smelt", {{"iron_ore", 1}}, {{"iron_ingot", 1}}, 2.0f});
 }
 
 int EcsSceneBridge::load_gameplay_data(const std::string& dir) { return ecs::load_items_dir(dir); }
@@ -401,6 +409,7 @@ EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_persistence_components();    // G9: Save Id / World Flags
     ecs::register_weapon_components();          // G12: Weapon
     ecs::register_vehicle_components();          // G13: Vehicle / Race Progress
+    ecs::register_building_components();          // G14: Building / Extractor / Machine / Generator / Conveyor
 
     // G6: route every gameplay event into quest progress (deferred flush = safe).
     impl_->event_bus.subscribe("*", [impl = impl_.get()](const ecs::GameplayEvent& ev) {

@@ -28,6 +28,7 @@
 #include "ecs/gameplay_social.h"
 #include "ecs/gameplay_weapons.h"
 #include "ecs/gameplay_vehicles.h"
+#include "ecs/gameplay_building.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -1322,6 +1323,71 @@ int main() {
             ecs::Vehicle dst; ecs::deserialize_authorable(*vc, &dst, b.data(), b.size());
             check("Vehicle serialize round-trips (id + max_boost, runtime reset)",
                   dst.vehicle_id == "g13_car" && dst.max_boost == 80.0f && dst.speed == 0.0f && dst.boost == 80.0f);
+        }
+    }
+
+    // G14: building & automation — extractor -> conveyor -> machine, power-gated.
+    {
+        ecs::register_item(ecs::ItemDef{"g14_ore", "Ore", ecs::ItemKind::Material, 0, 999, 0.0f, 0.0f, "", {}, {}, {}, {}, ""});
+        ecs::register_item(ecs::ItemDef{"g14_ingot", "Ingot", ecs::ItemKind::Material, 0, 999, 0.0f, 0.0f, "", {}, {}, {}, {}, ""});
+        ecs::register_item(ecs::ItemDef{"g14_plate", "Plate", ecs::ItemKind::Material, 0, 999, 0.0f, 0.0f, "", {}, {}, {}, {}, ""});
+        ecs::register_machine_recipe({"g14_smelt", {{"g14_ore", 1}}, {{"g14_ingot", 1}}, 2.0f});
+        ecs::register_buildable({"g14_smelter", "Smelter", {{"g14_plate", 3}}});
+
+        ecs::World w; ecs::GameplayEventBus bus;
+
+        // extractor mines ore into its own buffer
+        const ecs::Entity miner = w.create();
+        w.add<ecs::Inventory>(miner, ecs::Inventory{});
+        w.add<ecs::Extractor>(miner, ecs::Extractor{"g14_ore", 2.0f, 0.0f});
+        ecs::tick_factory(w, 1.0f, &bus);
+        check("extractor mines items into its buffer (2 ore/s)",
+              ecs::inventory_count(w.get<ecs::Inventory>(miner), "g14_ore") == 2);
+
+        // conveyor moves ore from the miner to a smelter
+        const ecs::Entity smelter = w.create();
+        w.add<ecs::Inventory>(smelter, ecs::Inventory{});
+        w.add<ecs::Machine>(smelter, ecs::Machine{"g14_smelt", 0.0f, false, 10});
+        const ecs::Entity belt = w.create();
+        w.add<ecs::Conveyor>(belt, ecs::Conveyor{static_cast<uint32_t>(miner), static_cast<uint32_t>(smelter), "g14_ore", 5.0f, 0.0f});
+        ecs::tick_factory(w, 1.0f, &bus);   // miner +2 (now 4 total mined, 2 moved), belt moves 2 available
+        check("conveyor moves items between building buffers",
+              ecs::inventory_count(w.get<ecs::Inventory>(smelter), "g14_ore") >= 1);
+
+        // machine won't run without power
+        ecs::tick_factory(w, 3.0f, &bus);
+        check("machine idle while unpowered (power < 0)", !ecs::factory_powered(w) &&
+              ecs::inventory_count(w.get<ecs::Inventory>(smelter), "g14_ingot") == 0);
+
+        // add a generator -> powered -> machine smelts ore into ingots
+        const ecs::Entity gen = w.create();
+        w.add<ecs::Generator>(gen, ecs::Generator{20});
+        check("adding a generator powers the factory", ecs::factory_powered(w));
+        ecs::tick_factory(w, 2.5f, &bus);   // consumes 1 ore, 2s recipe -> 1 ingot
+        check("powered machine consumes inputs + produces outputs",
+              ecs::inventory_count(w.get<ecs::Inventory>(smelter), "g14_ingot") >= 1);
+
+        // build cost: place a smelter from the builder's inventory
+        const ecs::Entity builder = w.create();
+        w.add<ecs::Inventory>(builder, ecs::Inventory{});
+        ecs::inventory_add(w.get<ecs::Inventory>(builder), ecs::ItemInstance{"g14_plate", 5, 0, {}});
+        check("can build when the cost is affordable (5 plates >= 3)", ecs::can_build(w, builder, "g14_smelter"));
+        const ecs::Entity placed = ecs::place_building(w, builder, "g14_smelter", glm::vec3(0));
+        check("place_building pays the cost + creates a building",
+              placed != ecs::null_entity && w.has<ecs::Building>(placed) && w.has<ecs::Inventory>(placed) &&
+              ecs::inventory_count(w.get<ecs::Inventory>(builder), "g14_plate") == 2);
+        check("cannot build once resources run out", !ecs::can_build(w, builder, "g14_smelter"));
+
+        // authorable serialize
+        ecs::register_building_components();
+        const ecs::AuthorableComponent* mc = ecs::find_authorable("Machine");
+        check("Machine is authorable", mc && mc->serialize);
+        if (mc) {
+            ecs::Machine src{"g14_smelt", 1.0f, true, 25};
+            const auto b = ecs::serialize_authorable(*mc, &src);
+            ecs::Machine dst; ecs::deserialize_authorable(*mc, &dst, b.data(), b.size());
+            check("Machine serialize round-trips (recipe + power, runtime reset)",
+                  dst.recipe_id == "g14_smelt" && dst.power_use == 25 && dst.progress == 0.0f && !dst.crafting);
         }
     }
 
