@@ -14,6 +14,7 @@
 #include "ecs/gameplay_skills.h"        // G3 drawers: Skill Tree / Unlocked Skills
 #include "ecs/gameplay_items.h"         // G4 item registry (names/kinds)
 #include "ecs/gameplay_inventory.h"     // G4 drawers: Inventory / Equipment
+#include "ecs/gameplay_economy.h"       // G5 drawers: Vendor / Harvest Node
 #include "reflection/reflection.h"
 
 #include <imgui.h>
@@ -332,6 +333,46 @@ bool draw_equipment(ecs::World& w, ecs::Entity e, void* comp) {
     return changed;
 }
 
+// G5 · Vendor: edit the stock list (item id / price / stock), sell ratio, currency.
+bool draw_vendor(void* comp) {
+    auto& v = *static_cast<ecs::Vendor*>(comp);
+    bool changed = false;
+    int remove = -1;
+    for (size_t i = 0; i < v.entries.size(); ++i) {
+        auto& en = v.entries[i];
+        ImGui::PushID(static_cast<int>(i));
+        char id[64]; std::snprintf(id, sizeof(id), "%s", en.item_id.c_str());
+        ImGui::SetNextItemWidth(140);
+        if (ImGui::InputText("item", id, sizeof(id))) { en.item_id = id; changed = true; }
+        ImGui::SameLine(); ImGui::SetNextItemWidth(80);
+        if (ImGui::DragFloat("price", &en.price, 1.0f, 0.0f, 0.0f)) changed = true;
+        ImGui::SameLine(); ImGui::SetNextItemWidth(80);
+        if (ImGui::DragInt("stock", &en.stock, 1.0f, -1, 0)) changed = true;   // -1 = unlimited
+        ImGui::SameLine(); if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+        ImGui::PopID();
+    }
+    if (remove >= 0) { v.entries.erase(v.entries.begin() + remove); changed = true; }
+    if (ImGui::SmallButton("Add stock item")) { v.entries.push_back({"potion_hp", 20.0f, -1}); changed = true; }
+    if (ImGui::DragFloat("sell ratio", &v.sell_ratio, 0.01f, 0.0f, 1.0f)) changed = true;
+    char cur[32]; std::snprintf(cur, sizeof(cur), "%s", v.currency.c_str());
+    if (ImGui::InputText("currency", cur, sizeof(cur))) { v.currency = cur; changed = true; }
+    return changed;
+}
+
+// G5 · Harvest Node: what it yields + respawn time (+ live cooldown).
+bool draw_harvest_node(void* comp) {
+    auto& h = *static_cast<ecs::HarvestNode*>(comp);
+    bool changed = false;
+    char id[64]; std::snprintf(id, sizeof(id), "%s", h.item_id.c_str());
+    if (ImGui::InputText("yields item", id, sizeof(id))) { h.item_id = id; changed = true; }
+    if (ImGui::DragInt("min qty", &h.min_qty, 0.1f, 0, 999)) changed = true;
+    if (ImGui::DragInt("max qty", &h.max_qty, 0.1f, 0, 999)) changed = true;
+    if (ImGui::DragFloat("respawn (s)", &h.respawn, 0.1f, 0.0f, 0.0f)) changed = true;
+    if (h.cooldown > 0.0f) ImGui::TextDisabled("depleted (%.1fs to respawn)", h.cooldown);
+    else                   ImGui::TextDisabled("ready");
+    return changed;
+}
+
 }  // namespace
 
 bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
@@ -384,6 +425,10 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_inventory(w, e, comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Equipment") == 0) {
                         if (draw_equipment(w, e, comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Vendor") == 0) {
+                        if (draw_vendor(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Harvest Node") == 0) {
+                        if (draw_harvest_node(comp)) changed = true;
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
                     }

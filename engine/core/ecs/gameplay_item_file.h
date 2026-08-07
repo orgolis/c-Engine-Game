@@ -92,6 +92,7 @@ inline std::vector<ItemDef> parse_items_text(const std::string& text) {
         else if (key == "rarity")    { ls >> cur.rarity; }
         else if (key == "max_stack") { ls >> cur.max_stack; }
         else if (key == "weight")    { ls >> cur.weight; }
+        else if (key == "value")     { ls >> cur.value; }
         else if (key == "slot")      { ls >> cur.equip_slot; }
         else if (key == "set")       { ls >> cur.set_id; }
         else if (key == "tag")       { std::string t; ls >> t; if (!t.empty()) cur.granted_tags.push_back(t); }

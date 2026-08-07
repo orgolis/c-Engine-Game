@@ -38,6 +38,7 @@ struct ItemDef {
     int         rarity = 0;                  // 0 common … N (game-defined tiers)
     int         max_stack = 1;
     float       weight = 0.0f;
+    float       value  = 0.0f;               // intrinsic worth (G5 economy: sell price base)
     std::string equip_slot;                  // "" if not equippable ("weapon","head",…)
     std::vector<ItemModifier>   modifiers;   // base equipped bonuses
     std::vector<std::string>    granted_tags;// granted while equipped

@@ -308,14 +308,14 @@ G-modules become data + rules on top.
 | Consumables (potions, food, scrolls), currency | ✅ `use_item` applies the def's on-use `GameplayEffect`s + decrements; currency = an `ItemKind::Currency` stack (or a G0 attribute). |
 | Item comparison / tooltips | 🟡 data-ready (`item_modifiers`/`find_item` expose everything a tooltip/compare needs); UI later. |
 
-### G5 · Economy & Crafting 🔴 — **Depends on:** G4
+### G5 · Economy & Crafting 🟢 — **Depends on:** G4
 | Sub-feature | Status |
 |---|---|
-| Vendors / shops (buy / sell, restock) | 🔴 |
-| Crafting (recipes, stations, materials) | 🔴 |
-| Gathering / harvesting nodes | 🔴 |
-| Upgrading / enchanting / salvage | 🔴 |
-| Trading (player↔player, MP) | 🔴 |
+| Vendors / shops (buy / sell, restock) | ✅ **`Vendor`** — stock list (item/price/qty), `vendor_buy` (pay currency, decrement stock) + `vendor_sell` (pay `ItemDef::value` × ratio); currency = a G0 attribute wallet (`wallet_*`, default "Gold"). Timed restock = follow-up. |
+| Crafting (recipes, stations, materials) | ✅ **`RecipeDef`** registry — inputs→outputs, station-tag + skill-tag gated; `can_craft`/`craft` over the G4 inventory. |
+| Gathering / harvesting nodes | ✅ **`HarvestNode`** — yields items on `harvest`, then respawns after a cooldown (`tick_harvest`). |
+| Upgrading / enchanting / salvage | ✅ **`SalvageDef`**/`salvage` (item → materials); upgrade/enchant = a recipe variant over the same primitives. |
+| Trading (player↔player, MP) | 🟡 `transfer_item` (inventory→inventory) is the local primitive; full P2P trade rides Networking. |
 
 ### G6 · Quests & Narrative 🔴 — **Depends on:** G0, Scripting
 | Sub-feature | Status |

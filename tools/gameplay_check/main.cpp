@@ -19,6 +19,8 @@
 #include "ecs/gameplay_items.h"
 #include "ecs/gameplay_inventory.h"
 #include "ecs/gameplay_item_file.h"
+#include "ecs/gameplay_crafting.h"
+#include "ecs/gameplay_economy.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -819,6 +821,98 @@ int main() {
         ecs::equip_item(w, e, ecs::ItemInstance{"file_axe", 1, 0, {}});
         check("data-file item equips + applies its modifier (AttackPower 18)",
               w.get<ecs::AttributeSet>(e).get("AttackPower") == 18.0f);
+    }
+
+    // G5: crafting + salvage — recipes over G4 inventory, station/skill gated.
+    {
+        ecs::register_item(ecs::ItemDef{"g5_ore", "Ore", ecs::ItemKind::Material, 0, 50, 0.5f, 3.0f, "", {}, {}, {}, {}, ""});
+        ecs::register_item(ecs::ItemDef{"g5_ingot", "Ingot", ecs::ItemKind::Material, 0, 50, 0.6f, 8.0f, "", {}, {}, {}, {}, ""});
+        ecs::register_item(ecs::ItemDef{"g5_blade", "Blade", ecs::ItemKind::Weapon, 0, 1, 3.0f, 60.0f, "weapon", {{"AttackPower", 12.0f}}, {}, {}, {}, ""});
+        ecs::register_recipe({"g5_smelt", "Smelt", {{"g5_ore", 2}}, {{"g5_ingot", 1}}, "", ""});
+        ecs::register_recipe({"g5_forge", "Forge", {{"g5_ingot", 3}}, {{"g5_blade", 1}}, "station.forge", ""});
+        ecs::register_salvage({"g5_blade", {{"g5_ingot", 1}}});
+
+        ecs::World w; const ecs::Entity e = w.create();
+        w.add<ecs::Inventory>(e, ecs::Inventory{});
+        auto& inv = w.get<ecs::Inventory>(e);
+        ecs::inventory_add(inv, ecs::ItemInstance{"g5_ore", 4, 0, {}});
+
+        check("recipe registry finds a recipe", ecs::find_recipe("g5_smelt") != nullptr);
+        check("craft consumes inputs + produces outputs (4 ore -> 2 ingot, 0 ore)",
+              ecs::craft(w, e, "g5_smelt") && ecs::craft(w, e, "g5_smelt") &&
+              ecs::inventory_count(inv, "g5_ingot") == 2 && ecs::inventory_count(inv, "g5_ore") == 0);
+        check("craft fails without enough inputs", !ecs::craft(w, e, "g5_smelt"));
+
+        // station-gated recipe: needs the forge tag
+        ecs::inventory_add(inv, ecs::ItemInstance{"g5_ingot", 1, 0, {}});   // now 3 ingots
+        check("station-gated recipe blocked without the station tag", !ecs::craft(w, e, "g5_forge"));
+        w.add<ecs::GameplayTags>(e, ecs::GameplayTags{});
+        w.get<ecs::GameplayTags>(e).add("station.forge");
+        check("station-gated recipe crafts with the station tag (3 ingot -> 1 blade)",
+              ecs::craft(w, e, "g5_forge") && ecs::inventory_count(inv, "g5_blade") == 1 &&
+              ecs::inventory_count(inv, "g5_ingot") == 0);
+        check("salvage breaks an item into materials (blade -> 1 ingot)",
+              ecs::salvage(w, e, "g5_blade") && ecs::inventory_count(inv, "g5_blade") == 0 &&
+              ecs::inventory_count(inv, "g5_ingot") == 1);
+    }
+
+    // G5: economy — wallet, vendor buy/sell, transfer, harvest.
+    {
+        ecs::World w;
+        ecs::GameplayEventBus bus;
+        const ecs::Entity shop  = w.create();
+        const ecs::Entity buyer = w.create();
+
+        ecs::Vendor vend;
+        vend.entries.push_back({"g5_ingot", 10.0f, 5});   // 10 gold each, 5 in stock
+        vend.sell_ratio = 0.5f;
+        w.add<ecs::Vendor>(shop, vend);
+
+        w.add<ecs::AttributeSet>(buyer, ecs::AttributeSet{});
+        ecs::wallet_add(w, buyer, 100.0f);   // 100 gold
+        check("wallet balance reflects deposits", ecs::wallet_balance(w, buyer) == 100.0f);
+
+        check("cannot buy more than affordable", !ecs::vendor_buy(w, shop, buyer, "g5_ingot", 20));
+        check("vendor_buy deducts gold + gives item + decrements stock (buy 3 = 30g)",
+              ecs::vendor_buy(w, shop, buyer, "g5_ingot", 3, &bus) &&
+              ecs::wallet_balance(w, buyer) == 70.0f &&
+              ecs::inventory_count(w.get<ecs::Inventory>(buyer), "g5_ingot") == 3 &&
+              w.get<ecs::Vendor>(shop).entries[0].stock == 2);
+        check("vendor_sell removes item + pays value*ratio (sell 1 ingot: value 8 * 0.5 = 4)",
+              ecs::vendor_sell(w, shop, buyer, "g5_ingot", 1, &bus) &&
+              ecs::wallet_balance(w, buyer) == 74.0f &&
+              ecs::inventory_count(w.get<ecs::Inventory>(buyer), "g5_ingot") == 2);
+
+        // transfer between inventories (container/trade basis)
+        const ecs::Entity chest = w.create();
+        const int moved = ecs::transfer_item(w, buyer, chest, "g5_ingot", 5);   // only has 2
+        check("transfer_item moves what it can between inventories",
+              moved == 2 && ecs::inventory_count(w.get<ecs::Inventory>(buyer), "g5_ingot") == 0 &&
+              ecs::inventory_count(w.get<ecs::Inventory>(chest), "g5_ingot") == 2);
+
+        // harvest node with respawn cooldown
+        const ecs::Entity node = w.create();
+        w.add<ecs::HarvestNode>(node, ecs::HarvestNode{"g5_ore", 3, 3, 5.0f, 0.0f});
+        check("harvest yields items + then goes on cooldown",
+              ecs::harvest(w, node, buyer, &bus) &&
+              ecs::inventory_count(w.get<ecs::Inventory>(buyer), "g5_ore") == 3 &&
+              w.get<ecs::HarvestNode>(node).cooldown == 5.0f);
+        check("cannot harvest again while depleted", !ecs::harvest(w, node, buyer, &bus));
+        ecs::tick_harvest(w, 5.0f);
+        check("harvest node respawns after its cooldown",
+              w.get<ecs::HarvestNode>(node).cooldown == 0.0f && ecs::harvest(w, node, buyer, &bus));
+
+        // authorable + serialize round-trip
+        ecs::register_economy_components();
+        const ecs::AuthorableComponent* vc = ecs::find_authorable("Vendor");
+        check("Vendor is authorable", vc && vc->serialize && vc->deserialize);
+        if (vc) {
+            const auto b = ecs::serialize_authorable(*vc, &vend);
+            ecs::Vendor v2; ecs::deserialize_authorable(*vc, &v2, b.data(), b.size());
+            check("Vendor serialize round-trips",
+                  v2.entries.size() == 1 && v2.entries[0].item_id == "g5_ingot" &&
+                  v2.entries[0].price == 10.0f && v2.sell_ratio == 0.5f && v2.currency == "Gold");
+        }
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }

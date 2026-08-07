@@ -17,6 +17,8 @@
 #include "ecs/gameplay_items.h"          // G4 item defs / instances / loot
 #include "ecs/gameplay_inventory.h"      // G4 inventory + equipment
 #include "ecs/gameplay_item_file.h"      // F5 .items data-file loader
+#include "ecs/gameplay_crafting.h"       // G5 recipes + salvage
+#include "ecs/gameplay_economy.h"        // G5 vendors / wallet / transfer / harvest
 #include "ecs/prefab.h"                  // prefab capture / instantiate (F4)
 #include "ecs/parallel.h"
 #include "ecs/snapshot.h"
@@ -104,6 +106,7 @@ void EcsSceneBridge::tick_gameplay(float dt) {
         impl_->combat_accum -= kCombatStep;
     }
     ecs::tick_triggers(impl_->world, impl_->event_bus);           // enter/exit -> events
+    ecs::tick_harvest(impl_->world, dt);                          // G5: harvest-node respawn cooldowns
     impl_->timer_mgr.tick(dt);                                   // one-shot / repeating timers
     impl_->event_bus.flush();                                    // dispatch everything queued this frame
 }
@@ -117,15 +120,22 @@ void EcsSceneBridge::seed_demo_content() {
     seeded = true;
     using namespace ecs;
     { ItemDef d; d.id = "potion_hp"; d.name = "Health Potion"; d.kind = ItemKind::Consumable;
-      d.max_stack = 10; d.weight = 0.1f; d.on_use.push_back(make_instant("Heal", "Health", +40.0f)); register_item(d); }
+      d.max_stack = 10; d.weight = 0.1f; d.value = 15.0f; d.on_use.push_back(make_instant("Heal", "Health", +40.0f)); register_item(d); }
     { ItemDef d; d.id = "sword_iron"; d.name = "Iron Sword"; d.kind = ItemKind::Weapon;
-      d.equip_slot = "weapon"; d.weight = 3.0f; d.modifiers.push_back({"AttackPower", 12.0f});
+      d.equip_slot = "weapon"; d.weight = 3.0f; d.value = 60.0f; d.modifiers.push_back({"AttackPower", 12.0f});
       d.affix_pool.push_back({"of Might", "AttackPower", 3.0f, 5.0f}); register_item(d); }
     { ItemDef d; d.id = "helm_set"; d.name = "Guardian Helm"; d.kind = ItemKind::Armor;
-      d.equip_slot = "head"; d.weight = 2.0f; d.modifiers.push_back({"Armor", 5.0f}); d.set_id = "guardian"; register_item(d); }
+      d.equip_slot = "head"; d.weight = 2.0f; d.value = 40.0f; d.modifiers.push_back({"Armor", 5.0f}); d.set_id = "guardian"; register_item(d); }
     { ItemDef d; d.id = "chest_set"; d.name = "Guardian Chest"; d.kind = ItemKind::Armor;
-      d.equip_slot = "chest"; d.weight = 6.0f; d.modifiers.push_back({"Armor", 10.0f}); d.set_id = "guardian"; register_item(d); }
+      d.equip_slot = "chest"; d.weight = 6.0f; d.value = 80.0f; d.modifiers.push_back({"Armor", 10.0f}); d.set_id = "guardian"; register_item(d); }
     register_set_bonus({"guardian", 2, {{"Armor", 20.0f}}, {"set.guardian"}});
+
+    // G5 demo materials + a recipe + a salvage rule so crafting/economy are testable.
+    { ItemDef d; d.id = "iron_ore";  d.name = "Iron Ore";  d.kind = ItemKind::Material; d.max_stack = 50; d.weight = 0.5f; d.value = 3.0f;  register_item(d); }
+    { ItemDef d; d.id = "iron_ingot"; d.name = "Iron Ingot"; d.kind = ItemKind::Material; d.max_stack = 50; d.weight = 0.6f; d.value = 8.0f; register_item(d); }
+    register_recipe({"smelt_iron", "Smelt Iron Ingot", {{"iron_ore", 2}}, {{"iron_ingot", 1}}, "", ""});
+    register_recipe({"forge_sword", "Forge Iron Sword", {{"iron_ingot", 3}}, {{"sword_iron", 1}}, "station.forge", ""});
+    register_salvage({"sword_iron", {{"iron_ingot", 1}}});
 }
 
 int EcsSceneBridge::load_gameplay_data(const std::string& dir) { return ecs::load_items_dir(dir); }
@@ -358,6 +368,7 @@ EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
     ecs::register_progression_components(); // G3: Derived Stats / Regeneration / Progression
     ecs::register_skill_components();       // G3: Skill Tree / Unlocked Skills
     ecs::register_inventory_components();    // G4: Inventory / Equipment
+    ecs::register_economy_components();       // G5: Vendor / Harvest Node
 }
 
 EcsSceneBridge::~EcsSceneBridge() = default;
