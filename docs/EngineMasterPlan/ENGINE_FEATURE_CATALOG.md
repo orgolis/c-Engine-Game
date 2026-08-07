@@ -373,11 +373,13 @@ G-modules become data + rules on top.
 ### G11 · Gameplay UI 🟡 — **Depends on:** Game UI, and the G-modules it visualizes
 | Sub-feature | Status |
 |---|---|
-| HUD (health/mana/stamina, hotbar, buffs, crosshair) | 🟡 (HUD demo ✅) |
-| Menus: inventory, character/stats, skills, map, quest log | 🔴 |
+| HUD (health/mana/stamina, hotbar, buffs, crosshair) | ✅ engine-drawn HUD overlay (`draw_gameplay_ui`, tag `ui.hud`) — Health/Stamina/Sanity/Nitro bars + weapon ammo + a quest tracker, reading whatever gameplay components the entity has. |
+| Menus: inventory, character/stats, skills, map, quest log | 🟡 **inventory** (use/equip/drop), **character/stats** (attributes/level/XP/equipped), **quest journal** windows ✅ (toggled by `ui.*_open` intent tags a script sets); skills/map = follow-up. |
 | Minimap / world map + markers / objective waypoints | 🔴 |
-| Floating damage numbers, notifications / toasts, tooltips | 🔴 |
-| Vendor / crafting / dialogue screens | 🔴 |
+| Floating damage numbers, notifications / toasts, tooltips | 🔴 (events exist: `combat.hit`/`weapon.hit` carry damage) |
+| Vendor / crafting / dialogue screens | 🔴 (data all exists — G5 vendor/recipes; needs the screen) |
+
+> Pattern: scripts can't draw ImGui, so a script sets a `ui.*` intent tag (add_tag/remove_tag) and the engine renders the panel (`draw_gameplay_ui`, called each frame). See `assets/scripts/gameplay_ui.py` (HUD + I/C/J toggles).
 
 > G0–G11 are the *general* gameplay layer (most games use some of them). The **genre
 > modules** below are the specialised systems that define a specific kind of game.

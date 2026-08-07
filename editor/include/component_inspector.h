@@ -22,4 +22,13 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
 // scripts can't draw ImGui, so the script sets the intent and the engine renders.
 void draw_inventory_ui(EcsSceneBridge& bridge);
 
+// G11 · gameplay UI. Draws, for entities tagged with the matching "ui.*" intent
+// (a script toggles them via add_tag/remove_tag), a HUD overlay (health/stamina/
+// sanity/ammo/awareness + a quest tracker) and the character-sheet and quest-
+// journal windows — plus the inventory window above. Call once per frame; scripts
+// can't draw ImGui, so they set the intent tags and the engine renders.
+//   ui.hud            -> HUD overlay              ui.inventory_open -> inventory
+//   ui.character_open -> character/stats sheet    ui.quest_open     -> quest journal
+void draw_gameplay_ui(EcsSceneBridge& bridge);
+
 }  // namespace schizo::editor

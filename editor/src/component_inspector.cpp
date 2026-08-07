@@ -845,4 +845,115 @@ void draw_inventory_ui(EcsSceneBridge& bridge) {
     });
 }
 
+// ---- G11 gameplay UI: HUD overlay + character sheet + quest journal ----
+namespace {
+
+void hud_bar(const char* label, float v, float max, ImU32 col) {
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, col);
+    ImGui::ProgressBar(max > 0.0f ? v / max : 0.0f, ImVec2(150, 0), "");
+    ImGui::PopStyleColor();
+    ImGui::SameLine(); ImGui::Text("%s %.0f/%.0f", label, v, max);
+}
+
+}  // namespace
+
+void draw_gameplay_ui(EcsSceneBridge& bridge) {
+    draw_inventory_ui(bridge);
+    ecs::World& w = bridge.world();
+
+    // collect entities by UI-intent tag (gather first, then draw)
+    std::vector<ecs::Entity> hud, sheet, journal;
+    w.each<ecs::GameplayTags>([&](ecs::Entity e, ecs::GameplayTags& t) {
+        if (t.has("ui.hud")) hud.push_back(e);
+        if (t.has("ui.character_open")) sheet.push_back(e);
+        if (t.has("ui.quest_open")) journal.push_back(e);
+    });
+
+    // --- HUD overlay (top-left, non-interactive) ---
+    for (ecs::Entity e : hud) {
+        char id[48]; std::snprintf(id, sizeof(id), "HUD###hud_%u", static_cast<unsigned>(e));
+        ImGui::SetNextWindowPos(ImVec2(14, 14), ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.55f);
+        if (ImGui::Begin(id, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNav |
+                         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoInputs)) {
+            if (auto* a = w.try_get<ecs::AttributeSet>(e)) {
+                if (auto* h = a->find("Health"))  hud_bar("HP",  h->current, h->max, IM_COL32(200, 60, 60, 255));
+                if (auto* s = a->find("Stamina")) hud_bar("SP",  s->current, s->max, IM_COL32(70, 190, 90, 255));
+                if (auto* b = a->find("Boost"))   hud_bar("Boost", b->current, b->max, IM_COL32(230, 200, 60, 255));
+            }
+            if (auto* s = w.try_get<ecs::Sanity>(e))   hud_bar("Sanity", s->value, s->max, IM_COL32(150, 110, 220, 255));
+            if (auto* v = w.try_get<ecs::Vehicle>(e))  hud_bar("Nitro",  v->boost, v->max_boost, IM_COL32(230, 200, 60, 255));
+            if (auto* ws = w.try_get<ecs::WeaponState>(e)) {
+                const ecs::WeaponDef* d = ecs::find_weapon(ws->weapon_id);
+                ImGui::Text("%s  %d / %d%s", d ? d->name.c_str() : ws->weapon_id.c_str(),
+                            ws->ammo_in_mag, ws->reserve, ws->reloading > 0 ? "  (reloading)" : "");
+            }
+            if (auto* ql = w.try_get<ecs::QuestLog>(e)) if (!ql->active.empty()) {
+                const auto& q = ql->active.front();
+                const ecs::QuestDef* qd = ecs::find_quest(q.quest_id);
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.9f, 0.85f, 0.4f, 1), "%s", qd ? qd->name.c_str() : q.quest_id.c_str());
+                if (qd && q.stage < static_cast<int>(qd->stages.size()))
+                    for (size_t i = 0; i < qd->stages[q.stage].objectives.size() && i < q.counts.size(); ++i)
+                        ImGui::Text("  %s %d/%d", qd->stages[q.stage].objectives[i].description.c_str(),
+                                    q.counts[i], qd->stages[q.stage].objectives[i].required);
+            }
+        }
+        ImGui::End();
+    }
+
+    // --- character / stats sheet ---
+    for (ecs::Entity e : sheet) {
+        char id[48]; std::snprintf(id, sizeof(id), "Character###char_%u", static_cast<unsigned>(e));
+        bool open = true;
+        ImGui::SetNextWindowSize(ImVec2(320, 400), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin(id, &open)) {
+            if (auto* p = w.try_get<ecs::Progression>(e))
+                ImGui::Text("Level %d   XP %.0f   Points %d", p->level, p->xp, p->skill_points);
+            ImGui::Separator();
+            if (auto* a = w.try_get<ecs::AttributeSet>(e)) {
+                ImGui::TextUnformatted("Attributes");
+                for (const auto& at : a->attributes) ImGui::Text("  %s  %.0f / %.0f", at.name.c_str(), at.current, at.max);
+            }
+            if (auto* eq = w.try_get<ecs::Equipment>(e); eq && !eq->slots.empty()) {
+                ImGui::Separator(); ImGui::TextUnformatted("Equipped");
+                for (const auto& s : eq->slots) {
+                    const ecs::ItemDef* d = ecs::find_item(s.item.def_id);
+                    ImGui::BulletText("%s: %s", s.slot.c_str(), d ? d->name.c_str() : s.item.def_id.c_str());
+                }
+            }
+        }
+        ImGui::End();
+        if (!open) w.get<ecs::GameplayTags>(e).remove_exact("ui.character_open");
+    }
+
+    // --- quest journal ---
+    for (ecs::Entity e : journal) {
+        char id[48]; std::snprintf(id, sizeof(id), "Quests###quest_%u", static_cast<unsigned>(e));
+        bool open = true;
+        ImGui::SetNextWindowSize(ImVec2(340, 380), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin(id, &open)) {
+            const auto& log = w.get<ecs::QuestLog>(e);
+            if (log.active.empty() && log.completed.empty()) ImGui::TextDisabled("(no quests)");
+            for (const auto& q : log.active) {
+                const ecs::QuestDef* qd = ecs::find_quest(q.quest_id);
+                if (ImGui::CollapsingHeader(qd ? qd->name.c_str() : q.quest_id.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+                    if (qd) {
+                        ImGui::TextDisabled("%s", qd->description.c_str());
+                        if (q.stage < static_cast<int>(qd->stages.size()))
+                            for (size_t i = 0; i < qd->stages[q.stage].objectives.size() && i < q.counts.size(); ++i)
+                                ImGui::Text("  - %s  %d/%d", qd->stages[q.stage].objectives[i].description.c_str(),
+                                            q.counts[i], qd->stages[q.stage].objectives[i].required);
+                    }
+                }
+            }
+            for (const auto& c : log.completed) ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1), "[done] %s", c.c_str());
+        }
+        ImGui::End();
+        if (!open) w.get<ecs::GameplayTags>(e).remove_exact("ui.quest_open");
+    }
+}
+
 }  // namespace schizo::editor

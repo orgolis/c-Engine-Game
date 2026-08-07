@@ -6154,10 +6154,10 @@ int main(int argc, char** argv) {
               ecs_bridge.sync_and_run(editor_scene.GetScene());
               ecs_bridge.tick_gameplay(delta_time); }   // G0: effects/abilities/triggers/timers/events
 
-            // Draw the interactable inventory GUI for any entity a script opened
-            // (tag "ui.inventory_open"). Scripts can't draw ImGui, so they set the
-            // intent tag and the engine renders it here (see inventory_toggle.py).
-            schizo::editor::draw_inventory_ui(ecs_bridge);
+            // Draw the gameplay UI (HUD + inventory/character/quest windows) for any
+            // entity a script opened via "ui.*" intent tags. Scripts can't draw ImGui,
+            // so they set the intent tags and the engine renders it here.
+            schizo::editor::draw_gameplay_ui(ecs_bridge);
 
             { GWS_PROFILE_ZONE("build_draw_items");
               schizo::editor::build_draw_items(
