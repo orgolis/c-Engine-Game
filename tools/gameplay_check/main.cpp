@@ -31,6 +31,7 @@
 #include "ecs/gameplay_building.h"
 #include "ecs/gameplay_survival.h"
 #include "ecs/gameplay_stealth.h"
+#include "ecs/gameplay_logic.h"
 #include "ecs/prefab.h"
 #include "reflection/reflection.h"
 
@@ -1537,6 +1538,56 @@ int main() {
             ecs::VisionCone dst; ecs::deserialize_authorable(*vc, &dst, b.data(), b.size());
             check("Vision Cone serialize round-trips", dst.fov_deg == 110.0f && dst.range == 22.0f);
         }
+    }
+
+    // Scene logic graph — On Start / On Event nodes drive Emit / Set Flag actions.
+    {
+        ecs::World w; ecs::GameplayEventBus bus;
+        const ecs::Entity world_ent = w.create();
+        w.add<ecs::WorldFlags>(world_ent, ecs::WorldFlags{});
+
+        ecs::LogicGraph g;
+        // On Start -> Set Flag "started"=1
+        const int start = g.add_node(ecs::LogicNodeKind::OnStart, 0, 0);
+        const int f1 = g.add_node(ecs::LogicNodeKind::SetFlag, 0, 0); g.find(f1)->param = "started"; g.find(f1)->param2 = "1";
+        g.link(start, f1);
+        // On Event "ping" -> Emit "pong" + Set Flag "pinged"=1
+        const int onping = g.add_node(ecs::LogicNodeKind::OnEvent, 0, 0); g.find(onping)->param = "ping";
+        const int emit = g.add_node(ecs::LogicNodeKind::EmitEvent, 0, 0); g.find(emit)->param = "pong";
+        const int f2 = g.add_node(ecs::LogicNodeKind::SetFlag, 0, 0); g.find(f2)->param = "pinged"; g.find(f2)->param2 = "1";
+        g.link(onping, emit); g.link(onping, f2);
+
+        int pong = 0;
+        bus.subscribe("pong", [&](const ecs::GameplayEvent&) { ++pong; });
+
+        ecs::LogicRuntime rt;
+        rt.start(g, w, bus, world_ent);
+        check("On Start action runs when the graph starts (flag set)",
+              ecs::world_flag(w.get<ecs::WorldFlags>(world_ent), "started") == 1);
+
+        { ecs::GameplayEvent e; e.name = "ping"; bus.publish(e); }
+        bus.flush();   // dispatch "ping" -> OnEvent fires -> emits "pong" (deferred) + sets flag
+        check("On Event action runs on a matching bus event (flag set)",
+              ecs::world_flag(w.get<ecs::WorldFlags>(world_ent), "pinged") == 1);
+        bus.flush();   // dispatch the deferred "pong"
+        check("Emit Event action publishes a new event", pong == 1);
+
+        // On Key node fired by the editor
+        const int onkey = g.add_node(ecs::LogicNodeKind::OnKey, 0, 0); g.find(onkey)->param = "70";   // 'F'
+        const int f3 = g.add_node(ecs::LogicNodeKind::SetFlag, 0, 0); g.find(f3)->param = "keyed"; g.find(f3)->param2 = "1";
+        g.link(onkey, f3);
+        rt.stop(); rt.start(g, w, bus, world_ent);   // re-arm with the new nodes
+        rt.on_key(70);
+        check("On Key action runs when the editor feeds the key",
+              ecs::world_flag(w.get<ecs::WorldFlags>(world_ent), "keyed") == 1);
+        rt.stop();
+
+        // text round-trip (scene .logic sidecar)
+        const std::string text = ecs::logic_to_text(g);
+        ecs::LogicGraph g2 = ecs::logic_from_text(text);
+        check("logic graph serialize round-trips (nodes + links)",
+              g2.nodes.size() == g.nodes.size() && g2.links.size() == g.links.size() &&
+              g2.find(onping) && g2.find(onping)->param == "ping");
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }
