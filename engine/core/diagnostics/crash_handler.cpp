@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -27,6 +28,13 @@ namespace {
 
 CrashConfig                                    g_config;
 std::atomic<bool>                              g_installed{false};
+
+// Create a directory tree (all intermediate components), no-throw.
+void ensure_dir(const std::string& dir) {
+    if (dir.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+}
 std::atomic<bool>                              g_in_handler{false};
 std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> g_ring;
 
@@ -355,8 +363,8 @@ void signal_handler(int sig) {
 
 void install_crash_handler(const CrashConfig& cfg) {
     g_config = cfg;
+    ensure_dir(g_config.report_dir);
 #if defined(_WIN32)
-    if (!g_config.report_dir.empty()) CreateDirectoryA(g_config.report_dir.c_str(), nullptr);
     SetUnhandledExceptionFilter(seh_filter);
     // Route CRT fatal errors (invalid-parameter, pure-virtual) through abort→SIGABRT.
     SetErrorMode(SetErrorMode(0) | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
@@ -390,9 +398,7 @@ void init_logging(const std::string& log_dir, const std::string& app_name, size_
     // Rotating file: survives the process, tail is the pre-crash history.
     if (!log_dir.empty()) {
         try {
-#if defined(_WIN32)
-            CreateDirectoryA(log_dir.c_str(), nullptr);
-#endif
+            ensure_dir(log_dir);
             const std::string path = log_dir + "/" + app_name + ".log";
             auto file = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
                 to_filename(path), /*max_size*/ static_cast<size_t>(5 * 1024 * 1024),
