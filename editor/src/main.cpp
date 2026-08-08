@@ -92,6 +92,11 @@
 #include "script_api_editor.h"
 #include "script_component.h"
 #include "script_params.h"       // Stage 12: script public-field declarations
+#include "diagnostics/crash_handler.h"   // crash reports + persistent/ring logging
+
+#ifndef GWS_ENGINE_VERSION
+#define GWS_ENGINE_VERSION "dev"
+#endif
 #include "water_component.h"     // terrain expansion: water surfaces
 #include "terminal_panel.h"
 #include "console_panel.h"
@@ -4066,11 +4071,35 @@ int main(int argc, char** argv) {
         // and show up live when stdout is redirected to a file (otherwise the C
         // runtime fully-buffers a redirected stream and the tail is lost).
         spdlog::flush_on(spdlog::level::info);
+
+        // ---- Diagnostics: persistent logging + crash handler (install EARLY) ----
+        // Reports/dumps/logs go to %LOCALAPPDATA%/GameWorldshaper/diagnostics so
+        // they survive the process and are easy to find (and send) after a crash.
+        std::string diag_dir;
+        if (const char* la = std::getenv("LOCALAPPDATA"))
+            diag_dir = std::string(la) + "\\GameWorldshaper\\diagnostics";
+        else
+            diag_dir = "diagnostics";
+        gws::diag::init_logging(diag_dir, "editor");
+        {
+            gws::diag::CrashConfig cc;
+            cc.app_name   = "editor";
+            cc.version    = GWS_ENGINE_VERSION;
+            cc.report_dir = diag_dir;
+            cc.context_provider = [sp = startup_project, ss = startup_scene]() {
+                std::string s;
+                s += std::string("project: ") + (sp.empty() ? "(none / launcher)" : sp) + "\n";
+                if (!ss.empty()) s += "scene(arg): " + ss + "\n";
+                return s;
+            };
+            gws::diag::install_crash_handler(cc);
+        }
+
         // Mirror all default-logger output into the in-editor "Output" panel.
         // Installed here (before the heavy init logging) so startup lines are
         // captured too. Lives in console_panel.cpp.
         schizo::editor::install_console_log_sink();
-        spdlog::info("=== Project Schizo Editor (Vulkan) ===");
+        spdlog::info("=== Project Schizo Editor (Vulkan) v{} ===", GWS_ENGINE_VERSION);
 
         // Lock the engine content base BEFORE any asset load (self-heals the CWD
         // to a dir containing assets/, so bundled defaults resolve no matter how
@@ -7018,6 +7047,9 @@ int main(int argc, char** argv) {
     catch (const std::exception& e) {
         spdlog::error("Exception: {}", e.what());
         std::cerr << "ERROR: " << e.what() << std::endl;
+        // Caught here, so it never reached std::terminate — write a report anyway
+        // (stack from this point + recent log + minidump) so it's diagnosable.
+        gws::diag::write_report(std::string("caught std::exception: ") + e.what());
         return 1;
     }
 }

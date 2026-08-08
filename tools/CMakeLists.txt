@@ -214,3 +214,10 @@ target_compile_features(vfx_check PRIVATE cxx_std_20)
 add_executable(combat_check combat_check/main.cpp)
 target_link_libraries(combat_check PRIVATE gws_combat)
 target_compile_features(combat_check PRIVATE cxx_std_20)
+
+# crash_check: crash-handler verification — spawns child processes that segfault
+# / abort / throw and confirms each leaves a crash report + minidump on disk,
+# plus in-process ring-buffer + write_report checks.
+add_executable(crash_check crash_check/main.cpp)
+target_link_libraries(crash_check PRIVATE gws_diagnostics)
+target_compile_features(crash_check PRIVATE cxx_std_20)
