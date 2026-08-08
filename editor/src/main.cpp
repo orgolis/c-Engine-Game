@@ -1941,49 +1941,68 @@ void ShowInspector(EditorState& editor_state) {
                     ImGui::TextDisabled("(runs in Play mode; edits hot-reload live)");
                 }
 
-                // ── Public parameters ──────────────────────────────────────
-                // Declared in the script via `@param <name> <type> <default>`
-                // comments; edited here, read at runtime via engine.get_param_*.
-                // All widgets commit on change (value re-seeded from the stored
-                // override each frame — same pattern as the Sky HDR field).
-                auto params = schizo::editor::scan_script_params(script_comp->GetScriptPath());
-                if (!params.empty()) {
-                    ImGui::SeparatorText("Parameters");
-                    for (const auto& pr : params) {
-                        const std::string* ov = script_comp->FindParam(pr.name);
-                        const std::string cur = ov ? *ov : pr.def;
-                        const std::string label =
-                            (pr.label.empty() ? pr.name : pr.label) + "##param_" + pr.name;
-                        if (pr.type == "float") {
-                            float v = std::strtof(cur.c_str(), nullptr);
-                            if (ImGui::DragFloat(label.c_str(), &v, 0.1f)) {
-                                char b[64]; std::snprintf(b, sizeof b, "%g", v);
-                                script_comp->SetParam(pr.name, b);
-                                editor_state.editor_scene->MarkModified();
-                            }
-                        } else if (pr.type == "int") {
-                            int v = std::atoi(cur.c_str());
-                            if (ImGui::DragInt(label.c_str(), &v)) {
-                                script_comp->SetParam(pr.name, std::to_string(v));
-                                editor_state.editor_scene->MarkModified();
-                            }
-                        } else if (pr.type == "bool") {
-                            bool v = (cur == "1" || cur == "true" || cur == "True");
-                            if (ImGui::Checkbox(label.c_str(), &v)) {
-                                script_comp->SetParam(pr.name, v ? "1" : "0");
-                                editor_state.editor_scene->MarkModified();
-                            }
-                        } else {  // string
-                            char b[256]; std::snprintf(b, sizeof b, "%s", cur.c_str());
-                            if (ImGui::InputText(label.c_str(), b, sizeof b)) {
-                                script_comp->SetParam(pr.name, b);
-                                editor_state.editor_scene->MarkModified();
+                // ── Public fields ──────────────────────────────────────────
+                // Auto-discovered from module-level variables (e.g. `speed = 5.0`
+                // in a .py) AND `# @param name type default` comments. Edited
+                // here; the values are pushed into the running Python script's
+                // globals on start (and readable in any language via
+                // engine.get_param_*). Always shown so there's feedback even when
+                // there are no fields. Widgets commit on change (re-seeded from
+                // the stored override each frame — same pattern as the Sky HDR).
+                ImGui::SeparatorText("Fields");
+                {
+                    namespace fs = std::filesystem;
+                    const std::string spath = script_comp->GetScriptPath();
+                    std::error_code pec;
+                    const bool file_ok = !spath.empty() && fs::exists(spath, pec);
+                    std::vector<schizo::editor::ScriptParam> params;
+                    if (file_ok) params = schizo::editor::scan_script_params(spath);
+
+                    if (spath.empty()) {
+                        ImGui::TextDisabled("Assign a script file to expose its fields.");
+                    } else if (!file_ok) {
+                        ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.35f, 1.0f),
+                                           "Script not found (relative to project):\n  %s", spath.c_str());
+                    } else if (params.empty()) {
+                        ImGui::TextDisabled("No public fields. Add a top-level variable\n"
+                                            "(e.g.  speed = 5.0 ), or  # @param name type default.");
+                    } else {
+                        for (const auto& pr : params) {
+                            const std::string* ov = script_comp->FindParam(pr.name);
+                            const std::string cur = ov ? *ov : pr.def;
+                            const std::string label =
+                                (pr.label.empty() ? pr.name : pr.label) + "##fld_" + pr.name;
+                            if (pr.type == "float") {
+                                float v = std::strtof(cur.c_str(), nullptr);
+                                if (ImGui::DragFloat(label.c_str(), &v, 0.1f)) {
+                                    char b[64]; std::snprintf(b, sizeof b, "%g", v);
+                                    script_comp->SetParam(pr.name, b);
+                                    editor_state.editor_scene->MarkModified();
+                                }
+                            } else if (pr.type == "int") {
+                                int v = std::atoi(cur.c_str());
+                                if (ImGui::DragInt(label.c_str(), &v)) {
+                                    script_comp->SetParam(pr.name, std::to_string(v));
+                                    editor_state.editor_scene->MarkModified();
+                                }
+                            } else if (pr.type == "bool") {
+                                bool v = (cur == "1" || cur == "true" || cur == "True");
+                                if (ImGui::Checkbox(label.c_str(), &v)) {
+                                    script_comp->SetParam(pr.name, v ? "1" : "0");
+                                    editor_state.editor_scene->MarkModified();
+                                }
+                            } else {  // string
+                                char b[256]; std::snprintf(b, sizeof b, "%s", cur.c_str());
+                                if (ImGui::InputText(label.c_str(), b, sizeof b)) {
+                                    script_comp->SetParam(pr.name, b);
+                                    editor_state.editor_scene->MarkModified();
+                                }
                             }
                         }
-                    }
-                    if (ImGui::SmallButton("Reset to defaults##scriptparams")) {
-                        script_comp->ClearParams();
-                        editor_state.editor_scene->MarkModified();
+                        if (ImGui::SmallButton("Reset to defaults##scriptfields")) {
+                            script_comp->ClearParams();
+                            editor_state.editor_scene->MarkModified();
+                        }
                     }
                 }
                 ImGui::TreePop();

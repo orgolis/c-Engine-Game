@@ -36,6 +36,8 @@ const char* kind_label(ecs::LogicNodeKind k) {
         case ecs::LogicNodeKind::ClearFlag:  return "Clear Flag";
         case ecs::LogicNodeKind::ToggleFlag: return "Toggle Flag";
         case ecs::LogicNodeKind::Branch:     return "Branch (if)";
+        case ecs::LogicNodeKind::DoOnce:     return "Do Once";
+        case ecs::LogicNodeKind::Delay:      return "Delay";
     }
     return "Node";
 }
@@ -54,6 +56,8 @@ const char* param_hint(ecs::LogicNodeKind k) {
         case ecs::LogicNodeKind::ClearFlag:  return "flag key";
         case ecs::LogicNodeKind::ToggleFlag: return "flag key";
         case ecs::LogicNodeKind::Branch:     return "flag key";
+        case ecs::LogicNodeKind::DoOnce:     return "";
+        case ecs::LogicNodeKind::Delay:      return "seconds";
     }
     return "";
 }
@@ -127,7 +131,7 @@ void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open) {
         const ImVec2 tl(origin.x + n.x, origin.y + n.y);
         const ImVec2 br(tl.x + kNodeW, tl.y + kNodeH);
         const bool ev  = ecs::logic_is_event(n.kind);
-        const bool brn = ecs::logic_is_branch(n.kind);
+        const bool brn = static_cast<uint32_t>(n.kind) >= 200;   // flow nodes (Branch/Do Once/Delay)
         // Blue = event, teal = flow/branch, purple = action.
         const ImU32 body  = ev  ? IM_COL32(46, 74, 112, 255)
                           : brn ? IM_COL32(44, 92, 84, 255)
@@ -212,6 +216,8 @@ void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open) {
         ImGui::Separator();
         ImGui::TextDisabled("Flow");
         if (ImGui::MenuItem("Branch (if)")) g.add_node(ecs::LogicNodeKind::Branch, ax, ay);
+        if (ImGui::MenuItem("Do Once"))     g.add_node(ecs::LogicNodeKind::DoOnce, ax, ay);
+        if (ImGui::MenuItem("Delay"))       g.add_node(ecs::LogicNodeKind::Delay, ax, ay);
         ImGui::EndPopup();
     }
 

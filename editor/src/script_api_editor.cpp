@@ -32,6 +32,7 @@
 #include "ecs/gameplay_weapons.h"
 #include "ecs/gameplay_vehicles.h"
 #include "ecs/gameplay_survival.h"
+#include "ecs/gameplay_events.h"        // GameplayEvent (emit_event)
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/quaternion.hpp>
@@ -405,6 +406,41 @@ int api_get_param_string(void* ctx, uint32_t e, const char* name,
     return n;
 }
 
+// ---- world flags + events (bridge scripts <-> the scene logic graph) ----
+int api_get_flag(void* ctx, const char* key) {
+    auto* c = C(ctx);
+    return (c->bridge && key) ? c->bridge->world_flag(key) : 0;
+}
+void api_set_flag(void* ctx, const char* key, int value) {
+    auto* c = C(ctx);
+    if (c->bridge && key) c->bridge->set_world_flag(key, value);
+}
+void api_emit_event(void* ctx, const char* name) {
+    auto* c = C(ctx);
+    if (c->bridge && name) { ecs::GameplayEvent ev; ev.name = name; c->bridge->events().publish(ev); }
+}
+
+// ---- spatial helpers ----
+float api_distance(void* ctx, uint32_t a, uint32_t b) {
+    auto ea = ent_of(ctx, a), eb = ent_of(ctx, b);
+    if (!ea || !eb) return -1.0f;
+    return glm::distance(ea->GetTransform()->GetWorldPosition(),
+                         eb->GetTransform()->GetWorldPosition());
+}
+void api_translate(void* ctx, uint32_t e, const float d[3]) {
+    if (auto ent = ent_of(ctx, e)) {
+        auto* t = ent->GetTransform();
+        t->SetWorldPosition(t->GetWorldPosition() + glm::vec3(d[0], d[1], d[2]));
+    }
+}
+bool api_get_forward(void* ctx, uint32_t e, float out[3]) {
+    auto ent = ent_of(ctx, e);
+    if (!ent) return false;
+    const glm::vec3 f = glm::normalize(ent->GetTransform()->GetWorldRotation() * glm::vec3(0, 0, -1));
+    out[0] = f.x; out[1] = f.y; out[2] = f.z;
+    return true;
+}
+
 }  // namespace
 
 void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
@@ -458,6 +494,12 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.get_param_int      = &api_get_param_int;
     api.get_param_bool     = &api_get_param_bool;
     api.get_param_string   = &api_get_param_string;
+    api.get_flag           = &api_get_flag;
+    api.set_flag           = &api_set_flag;
+    api.emit_event         = &api_emit_event;
+    api.distance           = &api_distance;
+    api.translate          = &api_translate;
+    api.get_forward        = &api_get_forward;
 }
 
 }  // namespace schizo::editor

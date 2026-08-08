@@ -105,6 +105,19 @@ struct ScriptApi {
     bool  (*get_param_bool)(void* ctx, uint32_t e, const char* name, int def) = nullptr;
     int   (*get_param_string)(void* ctx, uint32_t e, const char* name,
                               char* out, int out_size, const char* def) = nullptr;
+
+    // ---- world flags + events (bridge to the scene logic graph, G9/G0) ----
+    // Flags are a shared key->int store: the visual logic graph's Set/Clear/
+    // Toggle/On-Flag nodes and scripts see the same values. emit_event publishes
+    // a gameplay event that drives On Event logic nodes, triggers, and quests.
+    int  (*get_flag)(void* ctx, const char* key) = nullptr;
+    void (*set_flag)(void* ctx, const char* key, int value) = nullptr;
+    void (*emit_event)(void* ctx, const char* name) = nullptr;
+
+    // ---- spatial helpers (operate on entity Transforms) ----
+    float (*distance)(void* ctx, uint32_t a, uint32_t b) = nullptr;             // world-space
+    void  (*translate)(void* ctx, uint32_t e, const float delta[3]) = nullptr;  // move by delta
+    bool  (*get_forward)(void* ctx, uint32_t e, float out[3]) = nullptr;        // -Z forward, world
 };
 
 }  // namespace schizo::editor

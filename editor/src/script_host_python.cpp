@@ -18,6 +18,10 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 #if defined(__GNUC__)
 #pragma GCC diagnostic push
@@ -367,6 +371,40 @@ void build_engine_module(pkpy::VM* vm) {
         return VAR(pkpy::Str(buf));
     });
 
+    // ---- world flags + events (bridge to the scene logic graph) ----
+    vm->bind(mod, "get_flag(key: str) -> int", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        pkpy::i64 r = (g_api && g_api->get_flag) ? g_api->get_flag(g_api->ctx, sarg(vm, args[0]).c_str()) : 0;
+        return VAR(r);
+    });
+    vm->bind(mod, "set_flag(key: str, value: int) -> None", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->set_flag)
+            g_api->set_flag(g_api->ctx, sarg(vm, args[0]).c_str(), static_cast<int>(CAST(pkpy::i64, args[1])));
+        return vm->None;
+    });
+    vm->bind(mod, "emit_event(name: str) -> None", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->emit_event) g_api->emit_event(g_api->ctx, sarg(vm, args[0]).c_str());
+        return vm->None;
+    });
+
+    // ---- spatial helpers ----
+    vm->bind(mod, "distance(a: int, b: int) -> float", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        float d = (g_api && g_api->distance) ? g_api->distance(g_api->ctx, earg(vm, args[0]), earg(vm, args[1])) : -1.0f;
+        return VAR(static_cast<pkpy::f64>(d));
+    });
+    vm->bind(mod, "translate(e: int, dx: float, dy: float, dz: float) -> None",
+             [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->translate) {
+            float d[3] = { farg(vm, args[1]), farg(vm, args[2]), farg(vm, args[3]) };
+            g_api->translate(g_api->ctx, earg(vm, args[0]), d);
+        }
+        return vm->None;
+    });
+    vm->bind(mod, "get_forward(e: int) -> tuple", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        float v[3] = {0, 0, -1};
+        if (g_api && g_api->get_forward) g_api->get_forward(g_api->ctx, earg(vm, args[0]), v);
+        return vec3_tuple(vm, v);
+    });
+
     // Common key / button constants (GLFW codes) so scripts don't hardcode.
     auto set_const = [&](const char* name, pkpy::i64 v) { mod->attr().set(name, VAR(v)); };
     set_const("KEY_SPACE", 32);
@@ -385,6 +423,7 @@ public:
         : vm_(std::move(vm)), api_(api), on_start_(on_start), on_update_(on_update) {}
 
     bool start(uint32_t entity, std::string& err) override {
+        inject_params(entity);   // push inspector-authored public-field values into globals
         if (on_start_ == nullptr) return true;   // optional hook
         return call1(on_start_, entity, /*with_dt=*/false, 0.0f, err);
     }
@@ -394,6 +433,49 @@ public:
     }
 
 private:
+    // Unity-style public fields: for every module-level global of a simple type
+    // (bool/int/float/str), ask the host for the entity's inspector-authored
+    // override (keyed by the variable NAME) and write it back into the global.
+    // get_param_* returns the override or the passed default, so un-overridden
+    // globals keep their script default. Runs on start() + every hot reload, so
+    // a script that just does `speed = 5.0` and uses `speed` respects the value
+    // the user typed in the Inspector — no @param / get_param call required.
+    void inject_params(uint32_t entity) {
+        if (!api_) return;
+        auto* vm = vm_.get();
+        if (vm->_main == nullptr) return;
+        std::vector<std::pair<pkpy::StrName, pkpy::PyVar>> updates;
+        vm->_main->attr().apply([&](pkpy::StrName name, pkpy::PyVar val) {
+            const std::string_view sv = name.sv();
+            if (sv.empty() || sv[0] == '_') return;
+            const std::string nm(sv);
+            if (pkpy::is_type(val, vm->tp_bool)) {
+                if (!api_->get_param_bool) return;
+                const int cur = CAST(bool, val) ? 1 : 0;
+                updates.emplace_back(name, VAR(api_->get_param_bool(api_->ctx, entity, nm.c_str(), cur)));
+            } else if (pkpy::is_int(val)) {
+                if (!api_->get_param_int) return;
+                const int cur = static_cast<int>(CAST(pkpy::i64, val));
+                updates.emplace_back(name, VAR(static_cast<pkpy::i64>(
+                    api_->get_param_int(api_->ctx, entity, nm.c_str(), cur))));
+            } else if (pkpy::is_float(val)) {
+                if (!api_->get_param_float) return;
+                const float cur = static_cast<float>(CAST(pkpy::f64, val));
+                updates.emplace_back(name, VAR(static_cast<pkpy::f64>(
+                    api_->get_param_float(api_->ctx, entity, nm.c_str(), cur))));
+            } else if (pkpy::is_type(val, vm->tp_str)) {
+                if (!api_->get_param_string) return;
+                pkpy::Str s = CAST(pkpy::Str&, val);
+                const std::string cur(s.data, static_cast<size_t>(s.size));
+                char buf[256];
+                api_->get_param_string(api_->ctx, entity, nm.c_str(), buf,
+                                       static_cast<int>(sizeof buf), cur.c_str());
+                updates.emplace_back(name, VAR(pkpy::Str(buf)));
+            }
+        });
+        for (auto& u : updates) vm->_main->attr().set(u.first, u.second);
+    }
+
     bool call1(pkpy::PyVar fn, uint32_t entity, bool with_dt, float dt, std::string& err) {
         auto* vm = vm_.get();
         g_api = api_;

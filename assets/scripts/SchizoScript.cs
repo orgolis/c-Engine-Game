@@ -86,6 +86,13 @@ namespace Schizo
         public delegate* unmanaged[Cdecl]<void*, uint, byte*, int, int> get_param_int;
         public delegate* unmanaged[Cdecl]<void*, uint, byte*, int, byte> get_param_bool;
         public delegate* unmanaged[Cdecl]<void*, uint, byte*, byte*, int, byte*, int> get_param_string;
+        // world flags + events + spatial helpers.
+        public delegate* unmanaged[Cdecl]<void*, byte*, int> get_flag;
+        public delegate* unmanaged[Cdecl]<void*, byte*, int, void> set_flag;
+        public delegate* unmanaged[Cdecl]<void*, byte*, void> emit_event;
+        public delegate* unmanaged[Cdecl]<void*, uint, uint, float> distance;
+        public delegate* unmanaged[Cdecl]<void*, uint, float*, void> translate;
+        public delegate* unmanaged[Cdecl]<void*, uint, float*, byte> get_forward;
     }
 
     /// Friendly wrapper handed to your OnStart/OnUpdate.
@@ -226,6 +233,19 @@ namespace Schizo
                 n = p->get_param_string(p->ctx, e, np, outbuf, 256, dp);
             return Encoding.UTF8.GetString(outbuf, n);
         }
+
+        // ---- world flags + events + spatial ----
+        public int GetFlag(string key)
+        { var b = Utf8(key); fixed (byte* bp = b) return p->get_flag(p->ctx, bp); }
+        public void SetFlag(string key, int value)
+        { var b = Utf8(key); fixed (byte* bp = b) p->set_flag(p->ctx, bp, value); }
+        public void EmitEvent(string name)
+        { var b = Utf8(name); fixed (byte* bp = b) p->emit_event(p->ctx, bp); }
+        public float Distance(uint a, uint b) => p->distance(p->ctx, a, b);
+        public void Translate(uint e, float dx, float dy, float dz)
+        { float* v = stackalloc float[3] { dx, dy, dz }; p->translate(p->ctx, e, v); }
+        public (float x, float y, float z) GetForward(uint e)
+        { float* v = stackalloc float[3]; p->get_forward(p->ctx, e, v); return (v[0], v[1], v[2]); }
 
         // GLFW key codes.
         public const int KeySpace = 32;

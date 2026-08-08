@@ -39,8 +39,10 @@ enum class LogicNodeKind : uint32_t {
     Log        = 102, // log param
     ClearFlag  = 103, // set a WorldFlag to 0 (param = key)
     ToggleFlag = 104, // flip a WorldFlag 0<->1 (param = key)
-    // ---- flow (200+) — propagate downstream only if the condition holds ----
-    Branch     = 200, // param = flag key, param2 = condition (e.g. ">=3", "==1", "!=0")
+    // ---- flow (200+) ----
+    Branch     = 200, // propagate downstream only if a flag condition holds (param=key, param2=cond)
+    DoOnce     = 201, // propagate the FIRST time it's hit each run, then block (reset on restart)
+    Delay      = 202, // propagate downstream after `param` seconds (driven by the runtime tick)
 };
 inline bool logic_is_event(LogicNodeKind k)  { return static_cast<uint32_t>(k) < 100; }
 inline bool logic_is_branch(LogicNodeKind k) { return k == LogicNodeKind::Branch; }
@@ -122,28 +124,56 @@ inline void logic_do_action(World& w, GameplayEventBus& bus, Entity flags_entity
     }
 }
 
+// Per-run state needed by stateful flow nodes. Supplied by the LogicRuntime; the
+// free logic_fire() passes an empty ctx, so Do Once / Delay act as pass-throughs
+// in the stateless case (e.g. simple unit tests).
+struct LogicActivationCtx {
+    std::vector<std::pair<int, float>>* pending       = nullptr;  // Delay: (delay-node id, remaining sec)
+    std::vector<int>*                   once_consumed = nullptr;  // Do Once: node ids already fired this run
+};
+
 // Activate a node: run its action (if any), then propagate to every downstream
-// node — UNLESS it is a Branch whose condition is false. `visited` guards
-// against link cycles (each node activates at most once per fire).
+// node — UNLESS a flow node stops it (Branch condition false / Do Once already
+// fired / Delay defers). `visited` guards against link cycles (each node
+// activates at most once per fire).
 inline void logic_activate(LogicGraph& g, World& w, GameplayEventBus& bus,
-                           Entity flags_entity, int node_id, std::vector<int>& visited) {
+                           Entity flags_entity, int node_id, std::vector<int>& visited,
+                           const LogicActivationCtx& ctx = {}) {
     if (std::find(visited.begin(), visited.end(), node_id) != visited.end()) return;
     visited.push_back(node_id);
     LogicNode* n = g.find(node_id);
     if (!n) return;
 
     bool proceed = true;
-    if (logic_is_branch(n->kind)) {
-        proceed = logic_eval_condition(w, flags_entity, n->param, n->param2);
-    } else if (!logic_is_event(n->kind)) {
-        logic_do_action(w, bus, flags_entity, *n);
+    switch (n->kind) {
+        case LogicNodeKind::Branch:
+            proceed = logic_eval_condition(w, flags_entity, n->param, n->param2);
+            break;
+        case LogicNodeKind::DoOnce:
+            if (ctx.once_consumed) {
+                if (std::find(ctx.once_consumed->begin(), ctx.once_consumed->end(), node_id) != ctx.once_consumed->end())
+                    proceed = false;
+                else
+                    ctx.once_consumed->push_back(node_id);
+            }
+            break;
+        case LogicNodeKind::Delay:
+            if (ctx.pending) {   // scheduled by the runtime; stop propagating now
+                ctx.pending->push_back({node_id, std::max(0.0f, static_cast<float>(std::atof(n->param.c_str())))});
+                proceed = false;
+            }
+            break;
+        default:
+            if (!logic_is_event(n->kind)) logic_do_action(w, bus, flags_entity, *n);
+            break;
     }
     if (!proceed) return;
     for (const auto& l : g.links)
-        if (l.from == node_id) logic_activate(g, w, bus, flags_entity, l.to, visited);
+        if (l.from == node_id) logic_activate(g, w, bus, flags_entity, l.to, visited, ctx);
 }
 
-// Fire an event/source node: activate its downstream chain.
+// Fire an event/source node: activate its downstream chain (stateless — Do Once
+// and Delay pass through; use LogicRuntime for their real behavior).
 inline void logic_fire(LogicGraph& g, World& w, GameplayEventBus& bus, Entity flags_entity, int event_node_id) {
     std::vector<int> visited;
     logic_activate(g, w, bus, flags_entity, event_node_id, visited);
@@ -158,18 +188,27 @@ struct LogicRuntime {
     GameplayEventBus* bus   = nullptr;
     Entity            flags_entity = null_entity;
     std::vector<GameplayEventBus::SubId> subs;
-    std::vector<std::pair<int, float>> tick_accum;  // OnTick node id -> elapsed seconds
-    std::vector<std::pair<int, int>>   flag_state;   // OnFlag node id -> last condition truth
+    std::vector<std::pair<int, float>> tick_accum;    // OnTick node id -> elapsed seconds
+    std::vector<std::pair<int, int>>   flag_state;     // OnFlag node id -> last condition truth
+    std::vector<std::pair<int, float>> pending;        // Delay: (delay-node id, remaining seconds)
+    std::vector<int>                   once_consumed;  // Do Once: node ids already fired this run
+
+    LogicActivationCtx actx() { return LogicActivationCtx{&pending, &once_consumed}; }
+    // Fire a node's downstream chain with this run's flow state (Do Once / Delay).
+    void fire(int node_id) {
+        std::vector<int> visited;
+        logic_activate(*graph, *world, *bus, flags_entity, node_id, visited, actx());
+    }
 
     void start(LogicGraph& g, World& w, GameplayEventBus& b, Entity flags_e) {
         stop();
         graph = &g; world = &w; bus = &b; flags_entity = flags_e;
-        tick_accum.clear(); flag_state.clear();
-        for (auto& n : g.nodes) if (n.kind == LogicNodeKind::OnStart) logic_fire(g, w, b, flags_e, n.id);
+        tick_accum.clear(); flag_state.clear(); pending.clear(); once_consumed.clear();
+        for (auto& n : g.nodes) if (n.kind == LogicNodeKind::OnStart) fire(n.id);
         for (auto& n : g.nodes) if (n.kind == LogicNodeKind::OnEvent) {
             const int nid = n.id;
             subs.push_back(b.subscribe(n.param, [this, nid](const GameplayEvent&) {
-                if (graph) logic_fire(*graph, *world, *bus, flags_entity, nid);
+                if (graph) fire(nid);
             }));
         }
         // Seed repeating-timer accumulators and flag-edge baselines.
@@ -183,17 +222,33 @@ struct LogicRuntime {
     // Drive time-based events. Call once per frame while playing.
     void tick(float dt) {
         if (!graph) return;
+        // 1) Fire any Delay nodes whose timer elapsed, then propagate THEIR
+        //    downstream (fresh chain). Collect ready ids first so re-scheduling a
+        //    chained Delay doesn't disturb this pass.
+        std::vector<int> ready;
+        for (auto& p : pending) { p.second -= dt; if (p.second <= 0.0f) ready.push_back(p.first); }
+        if (!ready.empty()) {
+            pending.erase(std::remove_if(pending.begin(), pending.end(),
+                          [](const std::pair<int, float>& p) { return p.second <= 0.0f; }), pending.end());
+            for (const int delay_id : ready) {
+                std::vector<int> visited;
+                for (const auto& l : graph->links)
+                    if (l.from == delay_id)
+                        logic_activate(*graph, *world, *bus, flags_entity, l.to, visited, actx());
+            }
+        }
+        // 2) Repeating timers + flag-edge events.
         for (auto& n : graph->nodes) {
             if (n.kind == LogicNodeKind::OnTick) {
                 const float interval = std::max(0.05f, static_cast<float>(std::atof(n.param.c_str())));
                 for (auto& a : tick_accum) if (a.first == n.id) {
                     a.second += dt;
-                    if (a.second >= interval) { a.second = 0.0f; logic_fire(*graph, *world, *bus, flags_entity, n.id); }
+                    if (a.second >= interval) { a.second = 0.0f; fire(n.id); }
                 }
             } else if (n.kind == LogicNodeKind::OnFlag) {
                 const bool now = logic_eval_condition(*world, flags_entity, n.param, n.param2);
                 for (auto& s : flag_state) if (s.first == n.id) {
-                    if (now && s.second == 0) logic_fire(*graph, *world, *bus, flags_entity, n.id);  // rising edge
+                    if (now && s.second == 0) fire(n.id);  // rising edge
                     s.second = now ? 1 : 0;
                 }
             }
@@ -202,18 +257,16 @@ struct LogicRuntime {
     void on_key(int key) {
         if (!graph) return;
         const std::string k = std::to_string(key);
-        for (auto& n : graph->nodes) if (n.kind == LogicNodeKind::OnKey && n.param == k)
-            logic_fire(*graph, *world, *bus, flags_entity, n.id);
+        for (auto& n : graph->nodes) if (n.kind == LogicNodeKind::OnKey && n.param == k) fire(n.id);
     }
     void on_key_up(int key) {
         if (!graph) return;
         const std::string k = std::to_string(key);
-        for (auto& n : graph->nodes) if (n.kind == LogicNodeKind::OnKeyUp && n.param == k)
-            logic_fire(*graph, *world, *bus, flags_entity, n.id);
+        for (auto& n : graph->nodes) if (n.kind == LogicNodeKind::OnKeyUp && n.param == k) fire(n.id);
     }
     void stop() {
         if (bus) for (auto s : subs) bus->unsubscribe(s);
-        subs.clear(); tick_accum.clear(); flag_state.clear();
+        subs.clear(); tick_accum.clear(); flag_state.clear(); pending.clear(); once_consumed.clear();
         graph = nullptr; world = nullptr; bus = nullptr;
     }
     bool running() const { return graph != nullptr; }

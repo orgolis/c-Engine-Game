@@ -62,6 +62,12 @@ public:
     // "ecs/gameplay_events.h" for the full types.
     schizo::ecs::GameplayEventBus& events();
     schizo::ecs::TimerManager&     timers();
+
+    // World flags (G9) — a persistent key->int store shared by the logic graph
+    // (Set/Clear/Toggle/On Flag nodes) and scripts (engine.get_flag/set_flag), so
+    // visual logic and code can drive each other. Ensures the holder entity.
+    int  world_flag(const std::string& key);
+    void set_world_flag(const std::string& key, int value);
     // G10 multiplayer-social session state (parties/guilds/trades/leaderboard).
     schizo::ecs::SocialState&      social();
 

@@ -147,6 +147,22 @@ void EcsSceneBridge::start_logic() {
     }
     impl_->logic_runtime.start(impl_->logic_graph, impl_->world, impl_->event_bus, impl_->world_flags_entity);
 }
+int EcsSceneBridge::world_flag(const std::string& key) {
+    if (impl_->world_flags_entity == ecs::null_entity ||
+        !impl_->world.has<ecs::WorldFlags>(impl_->world_flags_entity))
+        return 0;
+    return ecs::world_flag(impl_->world.get<ecs::WorldFlags>(impl_->world_flags_entity), key);
+}
+void EcsSceneBridge::set_world_flag(const std::string& key, int value) {
+    if (impl_->world_flags_entity == ecs::null_entity) {   // ensure the persistent holder
+        impl_->world_flags_entity = impl_->world.create();
+        impl_->world.add<ecs::WorldFlags>(impl_->world_flags_entity, ecs::WorldFlags{});
+    } else if (!impl_->world.has<ecs::WorldFlags>(impl_->world_flags_entity)) {
+        impl_->world.add<ecs::WorldFlags>(impl_->world_flags_entity, ecs::WorldFlags{});
+    }
+    ecs::set_world_flag(impl_->world.get<ecs::WorldFlags>(impl_->world_flags_entity), key, value);
+}
+
 void EcsSceneBridge::stop_logic()          { impl_->logic_runtime.stop(); }
 void EcsSceneBridge::logic_tick(float dt)  { if (impl_->logic_runtime.running()) impl_->logic_runtime.tick(dt); }
 void EcsSceneBridge::logic_on_key(int key) { if (impl_->logic_runtime.running()) impl_->logic_runtime.on_key(key); }

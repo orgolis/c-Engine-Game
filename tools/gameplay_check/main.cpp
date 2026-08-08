@@ -1653,6 +1653,37 @@ int main() {
             const bool edge_fired = ecs::world_flag(w4.get<ecs::WorldFlags>(fe4), "dead") == 1;
             check("On Flag fires on the rising edge of its condition", no_spurious && edge_fired);
             rt4.stop();
+
+            // Do Once: only the first activation of a run propagates.
+            ecs::World w5; ecs::GameplayEventBus bus5;
+            const ecs::Entity fe5 = w5.create(); w5.add<ecs::WorldFlags>(fe5, ecs::WorldFlags{});
+            ecs::LogicGraph og5;
+            const int n_oe  = og5.add_node(ecs::LogicNodeKind::OnEvent, 0, 0);    og5.find(n_oe)->param = "go";
+            const int n_do  = og5.add_node(ecs::LogicNodeKind::DoOnce, 0, 0);
+            const int n_tog = og5.add_node(ecs::LogicNodeKind::ToggleFlag, 0, 0); og5.find(n_tog)->param = "t";
+            og5.link(n_oe, n_do); og5.link(n_do, n_tog);
+            ecs::LogicRuntime rt5; rt5.start(og5, w5, bus5, fe5);
+            { ecs::GameplayEvent e; e.name = "go"; bus5.publish(e); } bus5.flush();   // 1st -> toggles to 1
+            { ecs::GameplayEvent e; e.name = "go"; bus5.publish(e); } bus5.flush();   // 2nd -> Do Once blocks
+            check("Do Once fires once then blocks", ecs::world_flag(w5.get<ecs::WorldFlags>(fe5), "t") == 1);
+            rt5.stop();
+
+            // Delay: propagates downstream only after the interval elapses (via tick).
+            ecs::World w6; ecs::GameplayEventBus bus6;
+            const ecs::Entity fe6 = w6.create(); w6.add<ecs::WorldFlags>(fe6, ecs::WorldFlags{});
+            ecs::LogicGraph dg6;
+            const int n_ds = dg6.add_node(ecs::LogicNodeKind::OnStart, 0, 0);
+            const int n_dl = dg6.add_node(ecs::LogicNodeKind::Delay, 0, 0);   dg6.find(n_dl)->param = "0.1";
+            const int n_df = dg6.add_node(ecs::LogicNodeKind::SetFlag, 0, 0); dg6.find(n_df)->param = "delayed"; dg6.find(n_df)->param2 = "1";
+            dg6.link(n_ds, n_dl); dg6.link(n_dl, n_df);
+            ecs::LogicRuntime rt6; rt6.start(dg6, w6, bus6, fe6);   // OnStart hits Delay -> scheduled, not fired
+            const bool delay_pending = ecs::world_flag(w6.get<ecs::WorldFlags>(fe6), "delayed") == 0;
+            rt6.tick(0.05f);
+            const bool delay_notyet  = ecs::world_flag(w6.get<ecs::WorldFlags>(fe6), "delayed") == 0;
+            rt6.tick(0.06f);   // 0.11 >= 0.1 -> elapses, propagates
+            const bool delay_fired   = ecs::world_flag(w6.get<ecs::WorldFlags>(fe6), "delayed") == 1;
+            check("Delay defers downstream until its timer elapses", delay_pending && delay_notyet && delay_fired);
+            rt6.stop();
         }
 
         // text round-trip (scene .logic sidecar)

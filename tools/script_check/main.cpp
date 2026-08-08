@@ -20,11 +20,14 @@
 #include "entity_factory.h"
 #include "script_component.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -75,10 +78,31 @@ float mini_get_param_float(void* c, uint32_t e, const char* name, float def) {
     const std::string* v = mini_param(c, e, name);
     return v ? std::strtof(v->c_str(), nullptr) : def;
 }
+int mini_get_param_int(void* c, uint32_t e, const char* name, int def) {
+    const std::string* v = mini_param(c, e, name);
+    return v ? std::atoi(v->c_str()) : def;
+}
 bool mini_get_param_bool(void* c, uint32_t e, const char* name, int def) {
     const std::string* v = mini_param(c, e, name);
     if (!v) return def != 0;
     return (*v == "1" || *v == "true" || *v == "True");
+}
+int mini_get_param_string(void* c, uint32_t e, const char* name, char* out, int out_size, const char* def) {
+    if (!out || out_size <= 0) return 0;
+    const std::string* v = mini_param(c, e, name);
+    const std::string s = v ? *v : (def ? std::string(def) : std::string());
+    const int n = std::min(static_cast<int>(s.size()), out_size - 1);
+    std::memcpy(out, s.data(), static_cast<size_t>(n)); out[n] = '\0';
+    return n;
+}
+std::map<std::string, int> g_mini_flags;
+int  mini_get_flag(void*, const char* key) { auto it = g_mini_flags.find(key); return it == g_mini_flags.end() ? 0 : it->second; }
+void mini_set_flag(void*, const char* key, int v) { g_mini_flags[key] = v; }
+float mini_distance(void* c, uint32_t a, uint32_t b) {
+    auto* m = static_cast<MiniCtx*>(c);
+    auto ea = m->scn->GetEntityById(a), eb = m->scn->GetEntityById(b);
+    if (!ea || !eb) return -1.0f;
+    return glm::distance(ea->GetTransform()->GetWorldPosition(), eb->GetTransform()->GetWorldPosition());
 }
 }  // namespace
 
@@ -121,8 +145,13 @@ int main() {
     api.get_position    = &mini_get_pos;
     api.set_position    = &mini_set_pos;
     api.spawn_primitive = &mini_spawn;
-    api.get_param_float = &mini_get_param_float;
-    api.get_param_bool  = &mini_get_param_bool;
+    api.get_param_float  = &mini_get_param_float;
+    api.get_param_int    = &mini_get_param_int;
+    api.get_param_bool   = &mini_get_param_bool;
+    api.get_param_string = &mini_get_param_string;
+    api.get_flag         = &mini_get_flag;
+    api.set_flag         = &mini_set_flag;
+    api.distance         = &mini_distance;
 
     for (int i = 0; i < 3; ++i) { api.dt = 0.016f; sys.update(scn, true, 0.016f, api); }
 
@@ -298,10 +327,70 @@ int main() {
         std::remove("script_check_params.py");
     }
 
+    // ---- Unity-style public fields: auto-discovery + global injection --------
+    // A script with plain module-level variables (NO @param, NO get_param calls)
+    // must (a) expose them as fields and (b) pick up Inspector overrides at run.
+    bool fields_ok = false;
+    {
+        write_file("script_check_auto.py",
+                   "import engine\n"
+                   "speed = 5.0\n"       // float field
+                   "count = 3\n"         // int field
+                   "flag = True\n"       // bool field
+                   "_hidden = 1.0\n"     // underscore -> NOT a field
+                   "def on_update(e, dt):\n"
+                   "    engine.set_position(e, speed, count, 0.0)\n");   // uses the globals directly
+        auto ad = editor::scan_script_params("script_check_auto.py");
+        bool has_speed = false, has_count = false, has_flag = false, has_hidden = false;
+        for (const auto& d : ad) {
+            if (d.name == "speed" && d.type == "float") has_speed = true;
+            if (d.name == "count" && d.type == "int")   has_count = true;
+            if (d.name == "flag"  && d.type == "bool")  has_flag  = true;
+            if (d.name == "_hidden") has_hidden = true;
+        }
+        const bool scan_ok = ad.size() == 3 && has_speed && has_count && has_flag && !has_hidden;
+
+        auto aobj = scn->CreateEntity("AutoObj");
+        auto asc  = aobj->AddComponent<scene::ScriptComponent>(std::string("script_check_auto.py"));
+        asc->SetParam("speed", "20");   // stand-in for Inspector edits
+        asc->SetParam("count", "7");
+        editor::ScriptSystem asys;
+        asys.register_host(".py", editor::make_python_host());
+        for (int i = 0; i < 2; ++i) asys.update(scn, true, 0.016f, api);
+        const glm::vec3 ap = aobj->GetTransform()->GetWorldPosition();
+        const bool inject_ok = std::fabs(ap.x - 20.0f) < 1e-3f && std::fabs(ap.y - 7.0f) < 1e-3f;
+        asys.update(scn, false, 0.016f, api);
+        fields_ok = scan_ok && inject_ok;
+        std::printf("  fields: auto-discover %s | global injection %s (x=%.1f y=%.1f, expected 20,7)\n",
+                    scan_ok ? "OK" : "FAIL", inject_ok ? "OK" : "FAIL", ap.x, ap.y);
+        std::remove("script_check_auto.py");
+    }
+
+    // ---- expanded API: world flags + spatial verbs ----
+    bool api2_ok = false;
+    {
+        write_file("script_check_api2.py",
+                   "import engine\n"
+                   "def on_update(e, dt):\n"
+                   "    engine.set_flag('score', 42)\n"
+                   "    engine.set_position(e, float(engine.get_flag('score')), 0.0, 0.0)\n");
+        auto o = scn->CreateEntity("Api2");
+        o->AddComponent<scene::ScriptComponent>(std::string("script_check_api2.py"));
+        editor::ScriptSystem s2;
+        s2.register_host(".py", editor::make_python_host());
+        for (int i = 0; i < 2; ++i) s2.update(scn, true, 0.016f, api);
+        const glm::vec3 fp = o->GetTransform()->GetWorldPosition();
+        api2_ok = std::fabs(fp.x - 42.0f) < 1e-3f;
+        s2.update(scn, false, 0.016f, api);
+        std::printf("  api2: set_flag/get_flag round-trip via script %s (x=%.1f, expected 42)\n",
+                    api2_ok ? "OK" : "FAIL", fp.x);
+        std::remove("script_check_api2.py");
+    }
+
     std::remove("script_check_tmp.py");
     std::remove("script_check_bad.py");
     const bool ok = moved && spawned && running && reloaded && errored && torn_down &&
-                    cpp_ok && cs_ok && params_ok;
+                    cpp_ok && cs_ok && params_ok && fields_ok && api2_ok;
     std::printf("script_check: %s\n", ok ? "ALL OK" : "FAIL");
     return ok ? 0 : 1;
 }

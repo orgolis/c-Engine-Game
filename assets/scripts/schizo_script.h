@@ -89,6 +89,14 @@ typedef struct SchizoScriptApi {
     bool  (*get_param_bool)(void* ctx, unsigned e, const char* name, int def);
     int   (*get_param_string)(void* ctx, unsigned e, const char* name,
                               char* out, int out_size, const char* def);
+    /* world flags + events (shared with the scene logic graph) */
+    int   (*get_flag)(void* ctx, const char* key);
+    void  (*set_flag)(void* ctx, const char* key, int value);
+    void  (*emit_event)(void* ctx, const char* name);
+    /* spatial helpers */
+    float (*distance)(void* ctx, unsigned a, unsigned b);
+    void  (*translate)(void* ctx, unsigned e, const float delta[3]);
+    bool  (*get_forward)(void* ctx, unsigned e, float out[3]);
 } SchizoScriptApi;
 
 }  // extern "C"
