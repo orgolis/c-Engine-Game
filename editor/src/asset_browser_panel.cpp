@@ -304,9 +304,16 @@ void AssetBrowserPanel::list_current() {
              !ec && it != end; it.increment(ec)) {
             push(*it, false);
         }
+        const int mode = sort_mode_;
         std::sort(entries_.begin(), entries_.end(),
-                  [](const AssetEntry& a, const AssetEntry& b) {
-                      if (a.is_dir != b.is_dir) return a.is_dir;   // folders first
+                  [mode](const AssetEntry& a, const AssetEntry& b) {
+                      if (a.is_dir != b.is_dir) return a.is_dir;   // folders always first
+                      if (mode == 1) {                             // by type, then name
+                          const int t = std::strcmp(a.type, b.type);
+                          if (t != 0) return t < 0;
+                      } else if (mode == 2 && !a.is_dir && !b.is_dir) {  // by size (largest first)
+                          if (a.size != b.size) return a.size > b.size;
+                      }
                       return lower(a.name) < lower(b.name);
                   });
     }
@@ -356,7 +363,12 @@ void AssetBrowserPanel::Render(const std::shared_ptr<schizo::scene::Scene>& /*sc
         ImGui::Separator();
         if (selected_ >= 0 && selected_ < static_cast<int>(entries_.size())) {
             const AssetEntry& s = entries_[selected_];
-            ImGui::Text("%zu items  |  %s", entries_.size(), s.rel_path.c_str());
+            if (s.is_dir) {
+                ImGui::Text("%zu items  |  %s", entries_.size(), s.rel_path.c_str());
+            } else {
+                ImGui::Text("%zu items  |  %s  (%s, %s)", entries_.size(), s.rel_path.c_str(),
+                            s.type, human_size(s.size).c_str());
+            }
             ImGui::SameLine();
             if (ImGui::SmallButton("Copy Path"))
                 ImGui::SetClipboardText(s.rel_path.c_str());
@@ -433,6 +445,23 @@ void AssetBrowserPanel::render_toolbar() {
     static const char* kFilters[] = {"All", "Meshes", "Textures", "Audio",
                                      "Scripts", "Scenes", "Other"};
     ImGui::Combo("##ab_filter", &type_filter_, kFilters, IM_ARRAYSIZE(kFilters));
+
+    // Sort mode (folders always stay first).
+    ImGui::SameLine();
+    ImGui::TextDisabled("Sort");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(90);
+    static const char* kSorts[] = {"Name", "Type", "Size"};
+    if (ImGui::Combo("##ab_sort", &sort_mode_, kSorts, IM_ARRAYSIZE(kSorts))) dirty_ = true;
+
+    // Tile zoom (grid view only) — Unreal-style content-browser scaling.
+    if (grid_view_) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Zoom");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90);
+        ImGui::SliderFloat("##ab_zoom", &tile_scale_, 0.6f, 2.0f, "%.1fx");
+    }
 }
 
 void AssetBrowserPanel::render_breadcrumbs() {
@@ -535,8 +564,8 @@ void AssetBrowserPanel::render_entries() {
 
     // ---- Tiles (thumbnail grid) view — the Unreal-style content browser look ----
     if (grid_view_) {
-        const float tile_w = 92.0f;
-        const float icon   = 46.0f;
+        const float tile_w = 92.0f * tile_scale_;
+        const float icon   = 46.0f * tile_scale_;
         const float label_h = ImGui::GetTextLineHeight() * 2.0f + 4.0f;
         const float cell_h = 6.0f + icon + 8.0f + label_h;
         const float avail = ImGui::GetContentRegionAvail().x;

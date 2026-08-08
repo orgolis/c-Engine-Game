@@ -146,7 +146,7 @@ VulkanEnvironmentMap::create_from_hdr(VulkanDevice* device,
 
 VulkanEnvironmentMap::~VulkanEnvironmentMap() { destroy(); }
 
-void VulkanEnvironmentMap::destroy() {
+void VulkanEnvironmentMap::destroy_ibl() {
     if (device_ == nullptr) return;
     VkDevice vk = device_->get_device();
     if (brdf_lut_sampler_ != VK_NULL_HANDLE) { vkDestroySampler  (vk, brdf_lut_sampler_, nullptr); brdf_lut_sampler_ = VK_NULL_HANDLE; }
@@ -159,11 +159,51 @@ void VulkanEnvironmentMap::destroy() {
     if (irradiance_view_    != VK_NULL_HANDLE) { vkDestroyImageView(vk, irradiance_view_,    nullptr); irradiance_view_    = VK_NULL_HANDLE; }
     if (irradiance_image_   != VK_NULL_HANDLE) { vkDestroyImage    (vk, irradiance_image_,   nullptr); irradiance_image_   = VK_NULL_HANDLE; }
     if (irradiance_memory_  != VK_NULL_HANDLE) { vkFreeMemory      (vk, irradiance_memory_,  nullptr); irradiance_memory_  = VK_NULL_HANDLE; }
+    ibl_baked_      = false;
+    prefilter_mips_ = 0;
+}
+
+void VulkanEnvironmentMap::destroy() {
+    if (device_ == nullptr) return;
+    VkDevice vk = device_->get_device();
+    destroy_ibl();
     if (sampler_       != VK_NULL_HANDLE) { vkDestroySampler  (vk, sampler_,       nullptr); sampler_       = VK_NULL_HANDLE; }
     if (cubemap_view_  != VK_NULL_HANDLE) { vkDestroyImageView(vk, cubemap_view_,  nullptr); cubemap_view_  = VK_NULL_HANDLE; }
     if (cubemap_image_ != VK_NULL_HANDLE) { vkDestroyImage    (vk, cubemap_image_, nullptr); cubemap_image_ = VK_NULL_HANDLE; }
     if (cubemap_memory_!= VK_NULL_HANDLE) { vkFreeMemory      (vk, cubemap_memory_,nullptr); cubemap_memory_= VK_NULL_HANDLE; }
     device_ = nullptr;
+}
+
+bool VulkanEnvironmentMap::reload(const std::string& hdr_path) {
+    if (device_ == nullptr || cubemap_image_ == VK_NULL_HANDLE) return false;
+    // No frame may be sampling the cubemap / IBL while we refill + rebuild them.
+    device_->wait_idle();
+
+    // Refill the BASE cubemap in place (same image/view handles → SSR/DDGI/water
+    // descriptors stay valid). All the fill paths transition from UNDEFINED, so
+    // re-running them over existing contents is legal (prior contents discarded).
+    bool from_hdr = false;
+    if (!hdr_path.empty()) {
+        int w = 0, h = 0, n = 0;
+        float* data = stbi_loadf(hdr_path.c_str(), &w, &h, &n, 4);
+        if (data != nullptr && w > 0 && h > 0) {
+            from_hdr = build_from_equirect_buffer(data, w, h);
+        } else {
+            spdlog::warn("VulkanEnvironmentMap::reload: failed to load {}, using procedural", hdr_path);
+        }
+        if (data != nullptr) stbi_image_free(data);
+    }
+    if (!from_hdr) {
+        upload_procedural_faces();
+    }
+
+    // The IBL textures depend on the base cubemap, so rebuild them. Their view
+    // handles change — the caller must re-push them to lighting/transparent.
+    destroy_ibl();
+    const bool ibl_ok = bake_ibl();
+    spdlog::info("VulkanEnvironmentMap::reload: {} sky, IBL {}",
+                 from_hdr ? "HDR" : "procedural", ibl_ok ? "rebaked" : "FAILED");
+    return true;
 }
 
 // ---- Image / view / sampler creation --------------------------------------

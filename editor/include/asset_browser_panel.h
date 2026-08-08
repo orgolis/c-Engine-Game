@@ -84,8 +84,10 @@ private:
     char  search_buf_[128] = {};
     bool  search_recursive_ = false;
     int   type_filter_ = 0;                  // 0 = All
+    int   sort_mode_ = 0;                    // 0 = Name, 1 = Type, 2 = Size
     bool  show_tree_ = true;
     bool  grid_view_ = true;                 // tiles (Unreal-style) vs list
+    float tile_scale_ = 1.0f;                // grid tile zoom (0.6..2.0)
     bool  dirty_ = true;                     // re-list on next frame
 
     // Pending modal state

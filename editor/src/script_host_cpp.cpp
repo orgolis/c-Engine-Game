@@ -58,6 +58,9 @@ static_assert(offsetof(SchizoScriptApi, drive) ==
 static_assert(offsetof(SchizoScriptApi, toggle_flashlight) ==
               offsetof(schizo::editor::ScriptApi, toggle_flashlight),
               "schizo_script.h drifted from script_api.h (toggle_flashlight)");
+static_assert(offsetof(SchizoScriptApi, get_param_string) ==
+              offsetof(schizo::editor::ScriptApi, get_param_string),
+              "schizo_script.h drifted from script_api.h (get_param_string)");
 
 namespace schizo::editor {
 

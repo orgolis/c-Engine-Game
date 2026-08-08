@@ -81,6 +81,11 @@ namespace Schizo
         public delegate* unmanaged[Cdecl]<void*, uint, byte> reload_weapon;
         public delegate* unmanaged[Cdecl]<void*, uint, float, float, int, int, void> drive;
         public delegate* unmanaged[Cdecl]<void*, uint, byte> toggle_flashlight;
+        // Script public parameters (Stage 12 script fields).
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, float, float> get_param_float;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, int, int> get_param_int;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, int, byte> get_param_bool;
+        public delegate* unmanaged[Cdecl]<void*, uint, byte*, byte*, int, byte*, int> get_param_string;
     }
 
     /// Friendly wrapper handed to your OnStart/OnUpdate.
@@ -204,6 +209,23 @@ namespace Schizo
         public void Drive(uint e, float throttle, float steer, bool brake = false, bool boost = false)
             => p->drive(p->ctx, e, throttle, steer, brake ? 1 : 0, boost ? 1 : 0);
         public bool ToggleFlashlight(uint e) => p->toggle_flashlight(p->ctx, e) != 0;
+
+        // ---- script public parameters (Stage 12 script fields) ----
+        public float GetParamFloat(uint e, string name, float def)
+        { var b = Utf8(name); fixed (byte* bp = b) return p->get_param_float(p->ctx, e, bp, def); }
+        public int GetParamInt(uint e, string name, int def)
+        { var b = Utf8(name); fixed (byte* bp = b) return p->get_param_int(p->ctx, e, bp, def); }
+        public bool GetParamBool(uint e, string name, bool def)
+        { var b = Utf8(name); fixed (byte* bp = b) return p->get_param_bool(p->ctx, e, bp, def ? 1 : 0) != 0; }
+        public string GetParamString(uint e, string name, string def)
+        {
+            var nb = Utf8(name); var db = Utf8(def);
+            byte* outbuf = stackalloc byte[256];
+            int n;
+            fixed (byte* np = nb) fixed (byte* dp = db)
+                n = p->get_param_string(p->ctx, e, np, outbuf, 256, dp);
+            return Encoding.UTF8.GetString(outbuf, n);
+        }
 
         // GLFW key codes.
         public const int KeySpace = 32;

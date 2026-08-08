@@ -298,6 +298,8 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
             if (auto sc = entity->GetComponent<schizo::scene::ScriptComponent>()) {
                 file << "SCRIPT_PATH="    << sc->GetScriptPath() << "\n";
                 file << "SCRIPT_ENABLED=" << (sc->IsEnabled() ? "1" : "0") << "\n";
+                for (const auto& [k, v] : sc->Params())
+                    file << "SCRIPT_PARAM=" << k << "=" << v << "\n";
             }
 
             // Water component (terrain expansion).
@@ -435,6 +437,7 @@ struct ParsedEntity {
     bool        has_script     = false;
     std::string script_path;
     bool        script_enabled = true;
+    std::vector<std::pair<std::string, std::string>> script_params;  // name -> value
 
     bool      has_water       = false;
     bool      water_physical  = true;
@@ -627,6 +630,11 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
         return;
     }
 
+    if (starts_with(line, "SCRIPT_PARAM", v)) {   // name=value (before SCRIPT_PATH so the prefix wins)
+        auto eq = v.find('=');
+        if (eq != std::string::npos) p.script_params.emplace_back(v.substr(0, eq), v.substr(eq + 1));
+        return;
+    }
     if (starts_with(line, "SCRIPT_PATH", v))          { p.has_script = true; p.script_path = v; return; }
     if (starts_with(line, "SCRIPT_ENABLED", v))       { p.script_enabled = (v == "1"); return; }
 
@@ -827,8 +835,10 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
     }
 
     if (p.has_script) {
-        if (auto sc = e->AddComponent<ScriptComponent>(p.script_path))
+        if (auto sc = e->AddComponent<ScriptComponent>(p.script_path)) {
             sc->SetEnabled(p.script_enabled);
+            for (const auto& [k, val] : p.script_params) sc->SetParam(k, val);
+        }
     }
 
     if (p.has_water) {

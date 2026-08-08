@@ -91,6 +91,7 @@
 #include "script_system.h"       // Stage 12: custom scripts (Python/C++/C#)
 #include "script_api_editor.h"
 #include "script_component.h"
+#include "script_params.h"       // Stage 12: script public-field declarations
 #include "water_component.h"     // terrain expansion: water surfaces
 #include "terminal_panel.h"
 #include "console_panel.h"
@@ -1266,8 +1267,9 @@ void ShowInspector(EditorState& editor_state) {
                     scene->SetSkyIntensity(intensity); editor_state.editor_scene->MarkModified();
                 }
                 ImGui::Dummy(ImVec2(0, 4));
-                ImGui::TextWrapped("Save the scene, then reopen the project to apply a new sky "
-                                   "(live sky hot-swap is a follow-up).");
+                ImGui::TextWrapped("The sky updates live as you change this. Save the scene to "
+                                   "keep it. Sky Intensity is authored here but not yet applied "
+                                   "to rendering.");
             }
             ImGui::End();
             return;
@@ -1932,6 +1934,52 @@ void ShowInspector(EditorState& editor_state) {
                                        "%s", st.c_str());
                 } else {
                     ImGui::TextDisabled("(runs in Play mode; edits hot-reload live)");
+                }
+
+                // ── Public parameters ──────────────────────────────────────
+                // Declared in the script via `@param <name> <type> <default>`
+                // comments; edited here, read at runtime via engine.get_param_*.
+                // All widgets commit on change (value re-seeded from the stored
+                // override each frame — same pattern as the Sky HDR field).
+                auto params = schizo::editor::scan_script_params(script_comp->GetScriptPath());
+                if (!params.empty()) {
+                    ImGui::SeparatorText("Parameters");
+                    for (const auto& pr : params) {
+                        const std::string* ov = script_comp->FindParam(pr.name);
+                        const std::string cur = ov ? *ov : pr.def;
+                        const std::string label =
+                            (pr.label.empty() ? pr.name : pr.label) + "##param_" + pr.name;
+                        if (pr.type == "float") {
+                            float v = std::strtof(cur.c_str(), nullptr);
+                            if (ImGui::DragFloat(label.c_str(), &v, 0.1f)) {
+                                char b[64]; std::snprintf(b, sizeof b, "%g", v);
+                                script_comp->SetParam(pr.name, b);
+                                editor_state.editor_scene->MarkModified();
+                            }
+                        } else if (pr.type == "int") {
+                            int v = std::atoi(cur.c_str());
+                            if (ImGui::DragInt(label.c_str(), &v)) {
+                                script_comp->SetParam(pr.name, std::to_string(v));
+                                editor_state.editor_scene->MarkModified();
+                            }
+                        } else if (pr.type == "bool") {
+                            bool v = (cur == "1" || cur == "true" || cur == "True");
+                            if (ImGui::Checkbox(label.c_str(), &v)) {
+                                script_comp->SetParam(pr.name, v ? "1" : "0");
+                                editor_state.editor_scene->MarkModified();
+                            }
+                        } else {  // string
+                            char b[256]; std::snprintf(b, sizeof b, "%s", cur.c_str());
+                            if (ImGui::InputText(label.c_str(), b, sizeof b)) {
+                                script_comp->SetParam(pr.name, b);
+                                editor_state.editor_scene->MarkModified();
+                            }
+                        }
+                    }
+                    if (ImGui::SmallButton("Reset to defaults##scriptparams")) {
+                        script_comp->ClearParams();
+                        editor_state.editor_scene->MarkModified();
+                    }
                 }
                 ImGui::TreePop();
             }
@@ -4190,6 +4238,10 @@ int main(int argc, char** argv) {
         // when no asset is present. Same data path either way — the sky
         // pass and (future) IBL precompute sample this cubemap.
         std::unique_ptr<VulkanEnvironmentMap> env_map;
+        // Scene-relative sky path currently baked into env_map. The frame loop
+        // compares this to the active scene's GetSkyHdr() and live-reloads on a
+        // change (covers both editing the field AND switching scenes).
+        std::string applied_sky_hdr;
         {
             namespace fs = std::filesystem;
             std::error_code ec;
@@ -4217,6 +4269,7 @@ int main(int argc, char** argv) {
                 }
                 if (!scene_path.empty()) {
                     std::string sky = peek_scene_sky(scene_path);
+                    applied_sky_hdr = sky;   // seed so frame 1 doesn't redundantly reload
                     if (!sky.empty()) {
                         fs::path p(sky);
                         if (p.is_relative() && !startup_project.empty())
@@ -4444,6 +4497,51 @@ int main(int argc, char** argv) {
                     env_map->get_prefilter_mips());
             }
         }
+
+        // ---- Live sky hot-swap ----------------------------------------------
+        // Rebuilds env_map's contents in place from a scene-relative HDR path
+        // (empty = procedural) and re-binds the passes that sample IBL. The base
+        // cubemap view handle is preserved by reload(), so SSR/DDGI/water — which
+        // captured it at create() and have no setter — pick up the new sky with
+        // no rebind. Called from the frame loop when the scene's sky changes.
+        auto apply_sky = [&](const std::string& scene_rel) {
+            if (!env_map) return;
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            // Resolve the scene-relative path: CWD is the project root (project
+            // sandbox chdir), so a project-relative path resolves directly; fall
+            // back to <project-dir>/rel, else procedural.
+            std::string resolved;
+            if (!scene_rel.empty()) {
+                fs::path p(scene_rel);
+                if (fs::exists(p, ec)) {
+                    resolved = p.string();
+                } else if (!startup_project.empty()) {
+                    fs::path pp = fs::path(startup_project).parent_path() / scene_rel;
+                    if (fs::exists(pp, ec)) resolved = pp.string();
+                }
+                if (resolved.empty())
+                    spdlog::warn("[sky] '{}' not found on disk — using procedural sky", scene_rel);
+            }
+            env_map->reload(resolved);   // waits for device idle internally
+            // Re-push env cubemap + IBL to the passes that use setters.
+            lighting->set_env_cubemap(env_map->get_view(), env_map->get_sampler());
+            if (env_map->ibl_ready()) {
+                lighting->set_ibl_textures(
+                    env_map->get_irradiance_view(),  env_map->get_sampler(),
+                    env_map->get_prefiltered_view(), env_map->get_sampler(),
+                    env_map->get_brdf_lut_view(),    env_map->get_brdf_lut_sampler(),
+                    env_map->get_prefilter_mips());
+                if (transparent)
+                    transparent->set_ibl_textures(
+                        env_map->get_irradiance_view(),  env_map->get_sampler(),
+                        env_map->get_prefiltered_view(), env_map->get_sampler(),
+                        env_map->get_brdf_lut_view(),    env_map->get_brdf_lut_sampler(),
+                        env_map->get_prefilter_mips());
+            }
+            applied_sky_hdr = scene_rel;
+            spdlog::info("[sky] live-reloaded: '{}'", scene_rel.empty() ? "(procedural)" : scene_rel);
+        };
 
         if (!g_buffer || !lighting || !shadow_map || !post_processing || !transparent) {
             spdlog::error("Deferred pipeline component construction failed");
@@ -5115,6 +5213,17 @@ int main(int argc, char** argv) {
                 asset_cache.rewrite_all_materials();
                 terrain_gpu_cache.rewrite_all_materials();   // terrain layer textures too
                 textures_reloaded = false;
+            }
+
+            // Live sky hot-swap: rebuild the environment map in place when the
+            // active scene's sky HDR changes (Inspector edit OR scene switch).
+            // Compared against the scene's stored string, so a missing file that
+            // falls back to procedural isn't retried every frame.
+            if (editor_state.editor_scene) {
+                if (auto sky_scene = editor_state.editor_scene->GetScene()) {
+                    if (sky_scene->GetSkyHdr() != applied_sky_hdr)
+                        apply_sky(sky_scene->GetSkyHdr());
+                }
             }
 
             // Match the swapchain to the window before doing any per-frame work.
@@ -6231,10 +6340,12 @@ int main(int argc, char** argv) {
                 if (!logic_playing && logic_was_playing) ecs_bridge.stop_logic();
                 logic_was_playing = logic_playing;
                 if (logic_playing) {
+                    ecs_bridge.logic_tick(delta_time);   // On Tick / On Flag
                     static bool logic_prev_key[128] = {false};
                     for (int k = 32; k < 97; ++k) {   // space..'`' (letters/digits/common)
                         const bool down = glfwGetKey(glfw_window, k) == GLFW_PRESS;
-                        if (down && !logic_prev_key[k]) ecs_bridge.logic_on_key(k);
+                        if (down && !logic_prev_key[k]) ecs_bridge.logic_on_key(k);      // On Key
+                        if (!down && logic_prev_key[k]) ecs_bridge.logic_on_key_up(k);   // On Key Up
                         logic_prev_key[k] = down;
                     }
                 }

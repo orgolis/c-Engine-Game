@@ -24,25 +24,47 @@ int    g_link_from = 0;   // output-pin node id awaiting an input pin (0 = none)
 
 const char* kind_label(ecs::LogicNodeKind k) {
     switch (k) {
-        case ecs::LogicNodeKind::OnStart:   return "On Start";
-        case ecs::LogicNodeKind::OnEvent:   return "On Event";
-        case ecs::LogicNodeKind::OnKey:     return "On Key";
-        case ecs::LogicNodeKind::EmitEvent: return "Emit Event";
-        case ecs::LogicNodeKind::SetFlag:   return "Set Flag";
-        case ecs::LogicNodeKind::Log:       return "Log";
+        case ecs::LogicNodeKind::OnStart:    return "On Start";
+        case ecs::LogicNodeKind::OnEvent:    return "On Event";
+        case ecs::LogicNodeKind::OnKey:      return "On Key";
+        case ecs::LogicNodeKind::OnKeyUp:    return "On Key Up";
+        case ecs::LogicNodeKind::OnTick:     return "On Tick";
+        case ecs::LogicNodeKind::OnFlag:     return "On Flag";
+        case ecs::LogicNodeKind::EmitEvent:  return "Emit Event";
+        case ecs::LogicNodeKind::SetFlag:    return "Set Flag";
+        case ecs::LogicNodeKind::Log:        return "Log";
+        case ecs::LogicNodeKind::ClearFlag:  return "Clear Flag";
+        case ecs::LogicNodeKind::ToggleFlag: return "Toggle Flag";
+        case ecs::LogicNodeKind::Branch:     return "Branch (if)";
     }
     return "Node";
 }
+// Hint for the primary (param) text field.
 const char* param_hint(ecs::LogicNodeKind k) {
     switch (k) {
-        case ecs::LogicNodeKind::OnStart:   return "";
-        case ecs::LogicNodeKind::OnEvent:   return "event name";
-        case ecs::LogicNodeKind::OnKey:     return "GLFW key code";
-        case ecs::LogicNodeKind::EmitEvent: return "event name";
-        case ecs::LogicNodeKind::SetFlag:   return "flag key";
-        case ecs::LogicNodeKind::Log:       return "message";
+        case ecs::LogicNodeKind::OnStart:    return "";
+        case ecs::LogicNodeKind::OnEvent:    return "event name";
+        case ecs::LogicNodeKind::OnKey:      return "GLFW key code";
+        case ecs::LogicNodeKind::OnKeyUp:    return "GLFW key code";
+        case ecs::LogicNodeKind::OnTick:     return "interval (s)";
+        case ecs::LogicNodeKind::OnFlag:     return "flag key";
+        case ecs::LogicNodeKind::EmitEvent:  return "event name";
+        case ecs::LogicNodeKind::SetFlag:    return "flag key";
+        case ecs::LogicNodeKind::Log:        return "message";
+        case ecs::LogicNodeKind::ClearFlag:  return "flag key";
+        case ecs::LogicNodeKind::ToggleFlag: return "flag key";
+        case ecs::LogicNodeKind::Branch:     return "flag key";
     }
     return "";
+}
+// Hint for the secondary (param2) field, or "" if the node has none.
+const char* param2_hint(ecs::LogicNodeKind k) {
+    switch (k) {
+        case ecs::LogicNodeKind::SetFlag: return "value (int)";
+        case ecs::LogicNodeKind::OnFlag:  return "cond e.g. ==1";
+        case ecs::LogicNodeKind::Branch:  return "cond e.g. >=1";
+        default: return "";
+    }
 }
 float dist(const ImVec2& a, const ImVec2& b) { const float dx = a.x - b.x, dy = a.y - b.y; return std::sqrt(dx * dx + dy * dy); }
 
@@ -52,8 +74,9 @@ void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open) {
     if (!ImGui::Begin("Logic Graph", open)) { ImGui::End(); return; }
     ecs::LogicGraph& g = bridge.logic_graph();
 
-    ImGui::TextDisabled("Scene logic: EVENTS (blue) -> ACTIONS (purple). Right-click canvas to add. "
-                        "Click an output pin then an input pin to wire. Right-click a node to delete.");
+    ImGui::TextDisabled("Scene logic: EVENTS (blue) -> ACTIONS (purple) / BRANCH (teal, if-condition). "
+                        "Nodes chain: On Event -> Branch -> Set Flag -> Log. Right-click canvas to add; "
+                        "click an output pin then an input pin to wire; right-click a node to delete.");
     ImGui::SameLine();
     if (ImGui::SmallButton("Clear")) { g = ecs::LogicGraph{}; g_link_from = 0; }
 
@@ -103,9 +126,17 @@ void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open) {
     for (auto& n : g.nodes) {
         const ImVec2 tl(origin.x + n.x, origin.y + n.y);
         const ImVec2 br(tl.x + kNodeW, tl.y + kNodeH);
-        const bool ev = ecs::logic_is_event(n.kind);
-        dl->AddRectFilled(tl, br, ev ? IM_COL32(46, 74, 112, 255) : IM_COL32(86, 58, 92, 255), 5.0f);
-        dl->AddRectFilled(tl, ImVec2(br.x, tl.y + 20), ev ? IM_COL32(60, 96, 150, 255) : IM_COL32(116, 78, 124, 255), 5.0f);
+        const bool ev  = ecs::logic_is_event(n.kind);
+        const bool brn = ecs::logic_is_branch(n.kind);
+        // Blue = event, teal = flow/branch, purple = action.
+        const ImU32 body  = ev  ? IM_COL32(46, 74, 112, 255)
+                          : brn ? IM_COL32(44, 92, 84, 255)
+                                : IM_COL32(86, 58, 92, 255);
+        const ImU32 title = ev  ? IM_COL32(60, 96, 150, 255)
+                          : brn ? IM_COL32(60, 124, 112, 255)
+                                : IM_COL32(116, 78, 124, 255);
+        dl->AddRectFilled(tl, br, body, 5.0f);
+        dl->AddRectFilled(tl, ImVec2(br.x, tl.y + 20), title, 5.0f);
         dl->AddRect(tl, br, IM_COL32(180, 180, 200, 255), 5.0f);
         dl->AddText(ImVec2(tl.x + 8, tl.y + 4), IM_COL32_WHITE, kind_label(n.kind));
 
@@ -117,11 +148,11 @@ void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open) {
             char buf[96]; std::snprintf(buf, sizeof buf, "%s", n.param.c_str());
             if (ImGui::InputTextWithHint("##p", param_hint(n.kind), buf, sizeof buf)) n.param = buf;
         }
-        if (n.kind == ecs::LogicNodeKind::SetFlag) {
+        if (param2_hint(n.kind)[0]) {
             ImGui::SetCursorScreenPos(ImVec2(tl.x + 8, tl.y + 26 + 22));
             ImGui::SetNextItemWidth(kNodeW - 16);
-            char v[24]; std::snprintf(v, sizeof v, "%s", n.param2.c_str());
-            if (ImGui::InputTextWithHint("##v", "value (int)", v, sizeof v)) n.param2 = v;
+            char v[32]; std::snprintf(v, sizeof v, "%s", n.param2.c_str());
+            if (ImGui::InputTextWithHint("##v", param2_hint(n.kind), v, sizeof v)) n.param2 = v;
         }
         ImGui::PopID();
 
@@ -136,18 +167,21 @@ void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open) {
             ImGui::EndPopup();
         }
 
-        // pins (click-to-connect)
-        if (ev) {
-            const ImVec2 op = out_pin(n);
-            dl->AddCircleFilled(op, 5.0f, g_link_from == n.id ? IM_COL32(255, 240, 120, 255) : IM_COL32(230, 210, 130, 255));
-            if (!consumed_click && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && dist(io.MousePos, op) < 9.0f) { g_link_from = n.id; consumed_click = true; }
-        } else {
+        // pins: click an OUTPUT pin (right), then an INPUT pin (left), to wire.
+        // Events have no input (runtime-fired); every node has an output so
+        // actions and branches chain (On Event -> Branch -> Set Flag -> Log).
+        if (ecs::logic_has_input(n.kind)) {
             const ImVec2 ip = in_pin(n);
             dl->AddCircleFilled(ip, 5.0f, IM_COL32(150, 230, 150, 255));
             if (!consumed_click && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && dist(io.MousePos, ip) < 9.0f) {
-                if (g_link_from != 0) { g.link(g_link_from, n.id); g_link_from = 0; }
+                if (g_link_from != 0 && g_link_from != n.id) { g.link(g_link_from, n.id); g_link_from = 0; }
                 consumed_click = true;
             }
+        }
+        {
+            const ImVec2 op = out_pin(n);
+            dl->AddCircleFilled(op, 5.0f, g_link_from == n.id ? IM_COL32(255, 240, 120, 255) : IM_COL32(230, 210, 130, 255));
+            if (!consumed_click && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && dist(io.MousePos, op) < 9.0f) { g_link_from = n.id; consumed_click = true; }
         }
     }
     if (delete_node) g.remove_node(delete_node);
@@ -162,14 +196,22 @@ void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open) {
     if (ImGui::BeginPopup("##logic_add")) {
         const float ax = io.MousePos.x - origin.x, ay = io.MousePos.y - origin.y;
         ImGui::TextDisabled("Events");
-        if (ImGui::MenuItem("On Start"))   g.add_node(ecs::LogicNodeKind::OnStart, ax, ay);
-        if (ImGui::MenuItem("On Event"))   g.add_node(ecs::LogicNodeKind::OnEvent, ax, ay);
-        if (ImGui::MenuItem("On Key"))     g.add_node(ecs::LogicNodeKind::OnKey, ax, ay);
+        if (ImGui::MenuItem("On Start"))    g.add_node(ecs::LogicNodeKind::OnStart, ax, ay);
+        if (ImGui::MenuItem("On Event"))    g.add_node(ecs::LogicNodeKind::OnEvent, ax, ay);
+        if (ImGui::MenuItem("On Key"))      g.add_node(ecs::LogicNodeKind::OnKey, ax, ay);
+        if (ImGui::MenuItem("On Key Up"))   g.add_node(ecs::LogicNodeKind::OnKeyUp, ax, ay);
+        if (ImGui::MenuItem("On Tick"))     g.add_node(ecs::LogicNodeKind::OnTick, ax, ay);
+        if (ImGui::MenuItem("On Flag"))     g.add_node(ecs::LogicNodeKind::OnFlag, ax, ay);
         ImGui::Separator();
         ImGui::TextDisabled("Actions");
-        if (ImGui::MenuItem("Emit Event")) g.add_node(ecs::LogicNodeKind::EmitEvent, ax, ay);
-        if (ImGui::MenuItem("Set Flag"))   g.add_node(ecs::LogicNodeKind::SetFlag, ax, ay);
-        if (ImGui::MenuItem("Log"))        g.add_node(ecs::LogicNodeKind::Log, ax, ay);
+        if (ImGui::MenuItem("Emit Event"))  g.add_node(ecs::LogicNodeKind::EmitEvent, ax, ay);
+        if (ImGui::MenuItem("Set Flag"))    g.add_node(ecs::LogicNodeKind::SetFlag, ax, ay);
+        if (ImGui::MenuItem("Clear Flag"))  g.add_node(ecs::LogicNodeKind::ClearFlag, ax, ay);
+        if (ImGui::MenuItem("Toggle Flag")) g.add_node(ecs::LogicNodeKind::ToggleFlag, ax, ay);
+        if (ImGui::MenuItem("Log"))         g.add_node(ecs::LogicNodeKind::Log, ax, ay);
+        ImGui::Separator();
+        ImGui::TextDisabled("Flow");
+        if (ImGui::MenuItem("Branch (if)")) g.add_node(ecs::LogicNodeKind::Branch, ax, ay);
         ImGui::EndPopup();
     }
 

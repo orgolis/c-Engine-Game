@@ -94,6 +94,17 @@ struct ScriptApi {
     void  (*drive)(void* ctx, uint32_t e, float throttle, float steer, int brake, int boost) = nullptr;
     // G15: toggle entity `e`'s Flashlight; returns the new on-state.
     bool  (*toggle_flashlight)(void* ctx, uint32_t e) = nullptr;
+
+    // ---- script public parameters (Stage 12 script fields) ----
+    // Read the value the Inspector authored for entity `e`'s ScriptComponent
+    // parameter `name` (declared in the script via `@param`). Returns `def` when
+    // the entity has no override / no ScriptComponent. get_param_string fills
+    // `out` (NUL-terminated, capped at out_size) and returns the length written.
+    float (*get_param_float)(void* ctx, uint32_t e, const char* name, float def) = nullptr;
+    int   (*get_param_int)(void* ctx, uint32_t e, const char* name, int def) = nullptr;
+    bool  (*get_param_bool)(void* ctx, uint32_t e, const char* name, int def) = nullptr;
+    int   (*get_param_string)(void* ctx, uint32_t e, const char* name,
+                              char* out, int out_size, const char* def) = nullptr;
 };
 
 }  // namespace schizo::editor

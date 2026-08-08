@@ -148,7 +148,9 @@ void EcsSceneBridge::start_logic() {
     impl_->logic_runtime.start(impl_->logic_graph, impl_->world, impl_->event_bus, impl_->world_flags_entity);
 }
 void EcsSceneBridge::stop_logic()          { impl_->logic_runtime.stop(); }
+void EcsSceneBridge::logic_tick(float dt)  { if (impl_->logic_runtime.running()) impl_->logic_runtime.tick(dt); }
 void EcsSceneBridge::logic_on_key(int key) { if (impl_->logic_runtime.running()) impl_->logic_runtime.on_key(key); }
+void EcsSceneBridge::logic_on_key_up(int key) { if (impl_->logic_runtime.running()) impl_->logic_runtime.on_key_up(key); }
 
 bool EcsSceneBridge::save_logic(const std::string& path) {
     if (impl_->logic_graph.empty()) { std::error_code ec; std::filesystem::remove(path, ec); return true; }

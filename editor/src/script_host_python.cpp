@@ -15,6 +15,7 @@
 #include "script_system.h"
 
 #include <spdlog/spdlog.h>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 
@@ -330,6 +331,40 @@ void build_engine_module(pkpy::VM* vm) {
     vm->bind(mod, "toggle_flashlight(e: int) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
         bool r = g_api && g_api->toggle_flashlight && g_api->toggle_flashlight(g_api->ctx, earg(vm, args[0]));
         return VAR(r);
+    });
+
+    // ---- script public parameters (Stage 12 script fields) ----
+    vm->bind(mod, "get_param_float(e: int, name: str, default: float) -> float",
+             [](pkpy::VM* vm, pkpy::ArgsView args) {
+        float def = farg(vm, args[2]);
+        float r = (g_api && g_api->get_param_float)
+                  ? g_api->get_param_float(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(), def) : def;
+        return VAR(static_cast<pkpy::f64>(r));
+    });
+    vm->bind(mod, "get_param_int(e: int, name: str, default: int) -> int",
+             [](pkpy::VM* vm, pkpy::ArgsView args) {
+        int def = static_cast<int>(CAST(pkpy::i64, args[2]));
+        int r = (g_api && g_api->get_param_int)
+                ? g_api->get_param_int(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(), def) : def;
+        return VAR(static_cast<pkpy::i64>(r));
+    });
+    vm->bind(mod, "get_param_bool(e: int, name: str, default: bool) -> bool",
+             [](pkpy::VM* vm, pkpy::ArgsView args) {
+        int def = CAST(bool, args[2]) ? 1 : 0;
+        bool r = (g_api && g_api->get_param_bool)
+                 ? g_api->get_param_bool(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(), def) : (def != 0);
+        return VAR(r);
+    });
+    vm->bind(mod, "get_param_str(e: int, name: str, default: str) -> str",
+             [](pkpy::VM* vm, pkpy::ArgsView args) {
+        std::string def = sarg(vm, args[2]);
+        char buf[256];
+        if (g_api && g_api->get_param_string)
+            g_api->get_param_string(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(),
+                                    buf, static_cast<int>(sizeof buf), def.c_str());
+        else
+            std::snprintf(buf, sizeof buf, "%s", def.c_str());
+        return VAR(pkpy::Str(buf));
     });
 
     // Common key / button constants (GLFW codes) so scripts don't hardcode.

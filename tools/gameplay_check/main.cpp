@@ -1582,6 +1582,79 @@ int main() {
               ecs::world_flag(w.get<ecs::WorldFlags>(world_ent), "keyed") == 1);
         rt.stop();
 
+        // ---- depth: action chaining, Branch, Clear/Toggle Flag, On Tick, On Flag ----
+        {
+            ecs::World w2; ecs::GameplayEventBus bus2;
+            const ecs::Entity fe = w2.create();
+            w2.add<ecs::WorldFlags>(fe, ecs::WorldFlags{});
+            auto flag = [&](const char* k) { return ecs::world_flag(w2.get<ecs::WorldFlags>(fe), k); };
+
+            ecs::LogicGraph cg;
+            // On Start -> Set Flag "a"=2 -> Toggle Flag "b"  (an action chains from an action)
+            const int s  = cg.add_node(ecs::LogicNodeKind::OnStart, 0, 0);
+            const int sa = cg.add_node(ecs::LogicNodeKind::SetFlag, 0, 0);    cg.find(sa)->param = "a"; cg.find(sa)->param2 = "2";
+            const int tb = cg.add_node(ecs::LogicNodeKind::ToggleFlag, 0, 0); cg.find(tb)->param = "b";
+            cg.link(s, sa); cg.link(sa, tb);
+            // On Event "go" -> Branch(a>=2 TRUE) -> Set Flag "passed"=1
+            const int og = cg.add_node(ecs::LogicNodeKind::OnEvent, 0, 0);    cg.find(og)->param = "go";
+            const int br = cg.add_node(ecs::LogicNodeKind::Branch, 0, 0);     cg.find(br)->param = "a"; cg.find(br)->param2 = ">=2";
+            const int sp = cg.add_node(ecs::LogicNodeKind::SetFlag, 0, 0);    cg.find(sp)->param = "passed"; cg.find(sp)->param2 = "1";
+            cg.link(og, br); cg.link(br, sp);
+            // On Event "no" -> Branch(a>=99 FALSE) -> Set Flag "nope"=1
+            const int on2 = cg.add_node(ecs::LogicNodeKind::OnEvent, 0, 0);   cg.find(on2)->param = "no";
+            const int br2 = cg.add_node(ecs::LogicNodeKind::Branch, 0, 0);    cg.find(br2)->param = "a"; cg.find(br2)->param2 = ">=99";
+            const int sn = cg.add_node(ecs::LogicNodeKind::SetFlag, 0, 0);    cg.find(sn)->param = "nope"; cg.find(sn)->param2 = "1";
+            cg.link(on2, br2); cg.link(br2, sn);
+
+            ecs::LogicRuntime rt2;
+            rt2.start(cg, w2, bus2, fe);
+            check("action chains from an action (Set Flag -> Toggle Flag)", flag("a") == 2 && flag("b") == 1);
+            { ecs::GameplayEvent e; e.name = "go"; bus2.publish(e); } bus2.flush();
+            check("Branch propagates when its condition is TRUE",  flag("passed") == 1);
+            { ecs::GameplayEvent e; e.name = "no"; bus2.publish(e); } bus2.flush();
+            check("Branch blocks when its condition is FALSE",     flag("nope") == 0);
+
+            // Clear Flag zeroes a flag.
+            ecs::LogicGraph cg2;
+            const int s2 = cg2.add_node(ecs::LogicNodeKind::OnStart, 0, 0);
+            const int cf = cg2.add_node(ecs::LogicNodeKind::ClearFlag, 0, 0); cg2.find(cf)->param = "a";
+            cg2.link(s2, cf);
+            rt2.stop(); rt2.start(cg2, w2, bus2, fe);
+            check("Clear Flag zeroes a flag", flag("a") == 0);
+            rt2.stop();
+
+            // On Tick fires only after its interval elapses.
+            ecs::World w3; ecs::GameplayEventBus bus3;
+            const ecs::Entity fe3 = w3.create(); w3.add<ecs::WorldFlags>(fe3, ecs::WorldFlags{});
+            ecs::LogicGraph tg;
+            const int ot = tg.add_node(ecs::LogicNodeKind::OnTick, 0, 0);     tg.find(ot)->param = "0.1";
+            const int ti = tg.add_node(ecs::LogicNodeKind::ToggleFlag, 0, 0); tg.find(ti)->param = "tick";
+            tg.link(ot, ti);
+            ecs::LogicRuntime rt3; rt3.start(tg, w3, bus3, fe3);
+            rt3.tick(0.05f);
+            const bool tick_not_yet = ecs::world_flag(w3.get<ecs::WorldFlags>(fe3), "tick") == 0;
+            rt3.tick(0.06f);   // cumulative 0.11 >= 0.1 -> fires once
+            const bool tick_fired  = ecs::world_flag(w3.get<ecs::WorldFlags>(fe3), "tick") == 1;
+            check("On Tick fires only after its interval elapses", tick_not_yet && tick_fired);
+            rt3.stop();
+
+            // On Flag fires on the RISING edge of its condition (no spurious fire at start).
+            ecs::World w4; ecs::GameplayEventBus bus4;
+            const ecs::Entity fe4 = w4.create(); w4.add<ecs::WorldFlags>(fe4, ecs::WorldFlags{});
+            ecs::LogicGraph fg;
+            const int of = fg.add_node(ecs::LogicNodeKind::OnFlag, 0, 0);  fg.find(of)->param = "hp"; fg.find(of)->param2 = "<=0";
+            const int fx = fg.add_node(ecs::LogicNodeKind::SetFlag, 0, 0); fg.find(fx)->param = "dead"; fg.find(fx)->param2 = "1";
+            fg.link(of, fx);
+            ecs::LogicRuntime rt4; rt4.start(fg, w4, bus4, fe4);   // hp=0 at start: <=0 already true (baseline, not an edge)
+            rt4.tick(0.016f);
+            const bool no_spurious = ecs::world_flag(w4.get<ecs::WorldFlags>(fe4), "dead") == 0;
+            ecs::set_world_flag(w4.get<ecs::WorldFlags>(fe4), "hp", 5); rt4.tick(0.016f);  // condition false
+            ecs::set_world_flag(w4.get<ecs::WorldFlags>(fe4), "hp", 0); rt4.tick(0.016f);  // true again -> edge
+            const bool edge_fired = ecs::world_flag(w4.get<ecs::WorldFlags>(fe4), "dead") == 1;
+            check("On Flag fires on the rising edge of its condition", no_spurious && edge_fired);
+            rt4.stop();
+        }
+
         // text round-trip (scene .logic sidecar)
         const std::string text = ecs::logic_to_text(g);
         ecs::LogicGraph g2 = ecs::logic_from_text(text);

@@ -90,7 +90,8 @@ add_executable(script_check script_check/main.cpp
     ${CMAKE_SOURCE_DIR}/editor/src/script_system.cpp
     ${CMAKE_SOURCE_DIR}/editor/src/script_host_python.cpp
     ${CMAKE_SOURCE_DIR}/editor/src/script_host_cpp.cpp
-    ${CMAKE_SOURCE_DIR}/editor/src/script_host_cs.cpp)
+    ${CMAKE_SOURCE_DIR}/editor/src/script_host_cs.cpp
+    ${CMAKE_SOURCE_DIR}/editor/src/script_params.cpp)
 target_include_directories(script_check PRIVATE
     ${CMAKE_SOURCE_DIR}/editor/include
     ${CMAKE_SOURCE_DIR}/third_party/pocketpy)

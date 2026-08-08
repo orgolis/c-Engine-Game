@@ -12,6 +12,7 @@
 
 #include "script_system.h"
 #include "script_api.h"
+#include "script_params.h"
 
 #include "scene.h"
 #include "entity.h"
@@ -21,6 +22,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -63,6 +65,21 @@ uint32_t mini_spawn(void* c, int, const float pos[3], float size, const float rg
     ent->GetTransform()->SetWorldPosition(glm::vec3(pos[0], pos[1], pos[2]));
     return ent->GetId();
 }
+const std::string* mini_param(void* c, uint32_t e, const char* name) {
+    auto* m = static_cast<MiniCtx*>(c);
+    auto ent = name ? m->scn->GetEntityById(e) : nullptr;
+    auto sc  = ent ? ent->GetComponent<scene::ScriptComponent>() : nullptr;
+    return sc ? sc->FindParam(name) : nullptr;
+}
+float mini_get_param_float(void* c, uint32_t e, const char* name, float def) {
+    const std::string* v = mini_param(c, e, name);
+    return v ? std::strtof(v->c_str(), nullptr) : def;
+}
+bool mini_get_param_bool(void* c, uint32_t e, const char* name, int def) {
+    const std::string* v = mini_param(c, e, name);
+    if (!v) return def != 0;
+    return (*v == "1" || *v == "true" || *v == "True");
+}
 }  // namespace
 
 static void write_file(const char* path, const char* text) {
@@ -104,6 +121,8 @@ int main() {
     api.get_position    = &mini_get_pos;
     api.set_position    = &mini_set_pos;
     api.spawn_primitive = &mini_spawn;
+    api.get_param_float = &mini_get_param_float;
+    api.get_param_bool  = &mini_get_param_bool;
 
     for (int i = 0; i < 3; ++i) { api.dt = 0.016f; sys.update(scn, true, 0.016f, api); }
 
@@ -246,10 +265,43 @@ int main() {
         std::printf("  cs: backend unavailable on this platform — skipped\n");
     }
 
+    // ============== script public parameters (Stage 12 script fields) ==============
+    // (a) the @param scanner reads declarations straight from source (no execution);
+    // (b) get_param_* returns the entity's Inspector-authored override at runtime.
+    bool params_ok = false;
+    {
+        write_file("script_check_params.py",
+                   "# @param speed float 90.0 Spin Speed\n"
+                   "# @param glow bool true\n"
+                   "import engine\n"
+                   "def on_update(e, dt):\n"
+                   "    s = engine.get_param_float(e, 'speed', 90.0)\n"
+                   "    engine.set_position(e, s, 0.0, 0.0)\n");
+        auto decls = editor::scan_script_params("script_check_params.py");
+        const bool scan_ok = decls.size() == 2 &&
+                             decls[0].name == "speed" && decls[0].type == "float" &&
+                             decls[0].def == "90.0" && decls[0].label == "Spin Speed" &&
+                             decls[1].name == "glow" && decls[1].type == "bool";
+
+        auto pobj = scn->CreateEntity("ParamObj");
+        auto psc  = pobj->AddComponent<scene::ScriptComponent>(std::string("script_check_params.py"));
+        psc->SetParam("speed", "250");          // stand-in for an Inspector edit
+        editor::ScriptSystem psys;
+        psys.register_host(".py", editor::make_python_host());
+        for (int i = 0; i < 2; ++i) psys.update(scn, true, 0.016f, api);
+        const glm::vec3 pp = pobj->GetTransform()->GetWorldPosition();
+        const bool runtime_ok = std::fabs(pp.x - 250.0f) < 1e-3f;   // override, not the 90 default
+        psys.update(scn, false, 0.016f, api);
+        params_ok = scan_ok && runtime_ok;
+        std::printf("  params: scan %s | runtime override %s (x=%.1f, expected 250)\n",
+                    scan_ok ? "OK" : "FAIL", runtime_ok ? "OK" : "FAIL", pp.x);
+        std::remove("script_check_params.py");
+    }
+
     std::remove("script_check_tmp.py");
     std::remove("script_check_bad.py");
     const bool ok = moved && spawned && running && reloaded && errored && torn_down &&
-                    cpp_ok && cs_ok;
+                    cpp_ok && cs_ok && params_ok;
     std::printf("script_check: %s\n", ok ? "ALL OK" : "FAIL");
     return ok ? 0 : 1;
 }

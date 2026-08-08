@@ -13,6 +13,7 @@
 #include "mesh_renderer_component.h"
 #include "collider_component.h"
 #include "audio_components.h"
+#include "script_component.h"       // Stage 12 script params (get_param_*)
 #include "physics/jolt_physics.h"   // Stage 4 — Jolt-backed PhysicsWorld
 
 // Gameplay ECS (G0–G4) — scripts drive these via the ECS bridge.
@@ -35,7 +36,10 @@
 #include <GLFW/glfw3.h>
 #include <glm/gtc/quaternion.hpp>
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 
 namespace schizo::editor {
@@ -367,6 +371,40 @@ bool api_toggle_flashlight(void* ctx, uint32_t e) {
     return ecs::toggle_flashlight(*w, ent);
 }
 
+// ---- script public parameters (Stage 12 script fields) ----
+// Resolve entity `e`'s ScriptComponent authored override for `name` (nullptr if
+// absent). Values are string-typed and parsed by the caller.
+const std::string* param_of(void* ctx, uint32_t e, const char* name) {
+    if (!name) return nullptr;
+    auto ent = ent_of(ctx, e);
+    if (!ent) return nullptr;
+    auto sc = ent->GetComponent<schizo::scene::ScriptComponent>();
+    return sc ? sc->FindParam(name) : nullptr;
+}
+float api_get_param_float(void* ctx, uint32_t e, const char* name, float def) {
+    const std::string* v = param_of(ctx, e, name);
+    return v ? static_cast<float>(std::atof(v->c_str())) : def;
+}
+int api_get_param_int(void* ctx, uint32_t e, const char* name, int def) {
+    const std::string* v = param_of(ctx, e, name);
+    return v ? std::atoi(v->c_str()) : def;
+}
+bool api_get_param_bool(void* ctx, uint32_t e, const char* name, int def) {
+    const std::string* v = param_of(ctx, e, name);
+    if (!v) return def != 0;
+    return (*v == "1" || *v == "true" || *v == "True");
+}
+int api_get_param_string(void* ctx, uint32_t e, const char* name,
+                         char* out, int out_size, const char* def) {
+    if (!out || out_size <= 0) return 0;
+    const std::string* v = param_of(ctx, e, name);
+    const std::string s  = v ? *v : (def ? std::string(def) : std::string());
+    const int n = std::min(static_cast<int>(s.size()), out_size - 1);
+    std::memcpy(out, s.data(), static_cast<size_t>(n));
+    out[n] = '\0';
+    return n;
+}
+
 }  // namespace
 
 void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
@@ -416,6 +454,10 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.reload_weapon      = &api_reload_weapon;
     api.drive              = &api_drive;
     api.toggle_flashlight  = &api_toggle_flashlight;
+    api.get_param_float    = &api_get_param_float;
+    api.get_param_int      = &api_get_param_int;
+    api.get_param_bool     = &api_get_param_bool;
+    api.get_param_string   = &api_get_param_string;
 }
 
 }  // namespace schizo::editor

@@ -69,7 +69,9 @@ public:
     schizo::ecs::LogicGraph& logic_graph();     // the scene's graph (edited by the node panel)
     void start_logic();                          // begin executing the graph (on Play)
     void stop_logic();                           // stop executing (on Stop)
+    void logic_tick(float dt);                   // drive On Tick / On Flag time-based events
     void logic_on_key(int glfw_key);             // feed a key press to On Key nodes
+    void logic_on_key_up(int glfw_key);          // feed a key release to On Key Up nodes
     bool save_logic(const std::string& path);    // write the graph to a .logic sidecar
     bool load_logic(const std::string& path);    // read a .logic sidecar (empties if missing)
 

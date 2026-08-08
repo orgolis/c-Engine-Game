@@ -59,6 +59,17 @@ public:
                   uint32_t prefilter_mips    = 5,
                   uint32_t brdf_lut_size     = 256);
 
+    /// Live-swap the sky WITHOUT recreating the object: refills the base
+    /// cubemap in place (so the same `get_view()`/`get_sampler()` handles stay
+    /// valid — passes that bound them at create time, e.g. SSR/DDGI/water,
+    /// need no rebind) and re-bakes the IBL textures. `hdr_path` empty (or a
+    /// load failure) falls back to the procedural gradient. The IBL view
+    /// handles DO change, so callers must re-push them to any pass that
+    /// samples IBL (lighting/transparent) via their set_ibl_textures().
+    /// Waits for device idle internally. Returns false only if the object was
+    /// never constructed.
+    bool reload(const std::string& hdr_path);
+
     bool        ibl_ready() const     { return ibl_baked_; }
     VkImageView get_irradiance_view() const  { return irradiance_view_; }
     VkImageView get_prefiltered_view() const { return prefiltered_view_; }
@@ -77,6 +88,7 @@ private:
     bool bake_prefiltered(uint32_t size, uint32_t mips);
     bool bake_brdf_lut(uint32_t size);
     void destroy();
+    void destroy_ibl();   // tears down just the IBL images/views (for reload re-bake)
 
     VulkanDevice* device_   = nullptr;
     uint32_t      face_size_ = 0;

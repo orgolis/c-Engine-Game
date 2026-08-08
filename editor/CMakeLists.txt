@@ -64,6 +64,7 @@ target_sources(editor
         src/script_host_cpp.cpp
         src/script_host_cs.cpp
         src/script_api_editor.cpp
+        src/script_params.cpp
         src/scene_playback_manager.cpp
         src/terminal_panel.cpp
         src/console_panel.cpp

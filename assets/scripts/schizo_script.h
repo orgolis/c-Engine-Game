@@ -82,6 +82,13 @@ typedef struct SchizoScriptApi {
     bool  (*reload_weapon)(void* ctx, unsigned e); /* G12: reload the entity's Weapon */
     void  (*drive)(void* ctx, unsigned e, float throttle, float steer, int brake, int boost); /* G13 */
     bool  (*toggle_flashlight)(void* ctx, unsigned e);   /* G15: toggle the entity's Flashlight */
+    /* Script public parameters (Stage 12 script fields) — read a value the
+       Inspector authored for this entity's @param, else the given default. */
+    float (*get_param_float)(void* ctx, unsigned e, const char* name, float def);
+    int   (*get_param_int)(void* ctx, unsigned e, const char* name, int def);
+    bool  (*get_param_bool)(void* ctx, unsigned e, const char* name, int def);
+    int   (*get_param_string)(void* ctx, unsigned e, const char* name,
+                              char* out, int out_size, const char* def);
 } SchizoScriptApi;
 
 }  // extern "C"
