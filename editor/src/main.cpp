@@ -4553,8 +4553,14 @@ int main(int argc, char** argv) {
                     spdlog::warn("[sky] '{}' not found on disk — using procedural sky", scene_rel);
             }
             env_map->reload(resolved);   // waits for device idle internally
-            // Re-push env cubemap + IBL to the passes that use setters.
-            lighting->set_env_cubemap(env_map->get_view(), env_map->get_sampler());
+            // ORDER MATTERS: reload() DESTROYED + recreated the IBL images, so the
+            // lighting pass still holds the OLD (freed) IBL view handles. Every
+            // setter below re-runs update_descriptor_set(), which rewrites the
+            // WHOLE descriptor set (env + IBL) — so the IBL views must be refreshed
+            // to the new handles FIRST. Otherwise the very first setter records a
+            // freed VkImageView via vkUpdateDescriptorSets and the driver faults
+            // (this was the scene-switch crash). The base cubemap view handle is
+            // PRESERVED by reload(), so it stays valid the whole time.
             if (env_map->ibl_ready()) {
                 lighting->set_ibl_textures(
                     env_map->get_irradiance_view(),  env_map->get_sampler(),
@@ -4568,6 +4574,7 @@ int main(int argc, char** argv) {
                         env_map->get_brdf_lut_view(),    env_map->get_brdf_lut_sampler(),
                         env_map->get_prefilter_mips());
             }
+            lighting->set_env_cubemap(env_map->get_view(), env_map->get_sampler());
             applied_sky_hdr = scene_rel;
             spdlog::info("[sky] live-reloaded: '{}'", scene_rel.empty() ? "(procedural)" : scene_rel);
         };
