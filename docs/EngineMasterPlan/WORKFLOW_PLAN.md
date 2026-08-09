@@ -38,7 +38,7 @@ Nothing else should start first. Every item is hours of work and each one is cos
 
 | # | Item | Repo | Why now |
 |---|---|---|---|
-| 0.1 | **Declare the four missing submodules** in `.gitmodules` (`JoltPhysics`, `enet`, `tinyusdz`, `ufbx`) | engine | CI has **never** passed; clean clones cannot build; every release so far was uploaded by hand |
+| ~~0.1~~ | ✅ **DONE 2026-08-09** — declare the four missing submodules, **plus three further clean-clone blockers found by testing**: ufbx build glue living inside the submodule, the tinyusdz flag patch existing only in a working tree, and zstd's whole source tree hidden by an unanchored `lib/` ignore rule (issue #2, commits `c1ac242` + `6e2266d`) | engine | Verified by a fresh `--recurse-submodules` clone: 10/10 submodules populate, configure exits 0, `zstd` + `ufbx` + `tinyusdz_static` all build |
 | 0.2 | **Resolve the default branch** — merge the working branch into `main` or change the default; handle `main`'s 16 divergent commits | engine | GitHub currently serves an engine 117 commits out of date |
 | 0.3 | Run the `*_check` suite on pull requests | engine | 20 binaries already exist; this is CI configuration, not new tests |
 | 0.4 | Publish unstripped binaries per release (symbol server) | engine | Crash reports only symbolize against the same-version unstripped build — without this the crash system is half-useless |
