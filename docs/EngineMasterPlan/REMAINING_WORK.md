@@ -48,7 +48,7 @@ Found 2026-08-09. None of this affects the shipped product; all of it affects co
 |---|---|---|
 | **R1** | ✅ **FIXED 2026-08-09** (commits `c1ac242`, `6e2266d` — issue #2) | Testing a real clean clone found **four** independently fatal problems, all the same class — *a file or reference that existed only on the author's machine*: (1) `JoltPhysics`, `enet`, `tinyusdz`, `ufbx` were gitlinks with **no `.gitmodules` entry**; (2) `third_party/ufbx/CMakeLists.txt` was **authored by us but placed inside the submodule**, so it was untracked and absent from every clone → moved to `third_party/ufbx.cmake`; (3) the tinyusdz `"-Wa, -mbig-obj"` fix was an **uncommitted hand edit** in the submodule working tree → now applied idempotently at configure time; (4) **zstd's entire source tree was gitignored** by an unanchored `lib/` rule → 103 files never committed, clean clone died at `add_library(zstd ...)`. Also narrowed a blanket `*.cmake` rule that hid hand-written CMake modules. **Verified:** fresh `--recurse-submodules` clone populates all 10 submodules, configure exits 0, and `zstd` + `ufbx` + `tinyusdz_static` all build from it. ⚠️ The CI *badge* stays red until the next `v*` tag, because `release-engine.yml` only triggers on tags — see R5. |
 | **R5** | 🟡 CI health is unobservable without cutting a release | `release-engine.yml` triggers only on `v*` tags, so nothing validates the tree on an ordinary push. This is why R1 went unnoticed for 20 releases. Fixed by issue #4 (run the `*_check` suite on pull requests), which adds a non-tag trigger. |
-| **R2** | 🔴 **The default branch is not the engine** | GitHub serves `main`, but all work is on `Rework-with-Vulkan-without-Project-Hard-Reset`, **117 commits ahead**. The two have diverged — `main` carries 16 commits the working branch does not. A visitor sees an engine that predates nearly everything above. |
+| **R2** | ✅ **FIXED 2026-08-09** (issue #3) — *and the original diagnosis was wrong twice* | **(a)** The branches had **no common ancestor**: different root commits, `git merge-base` empty. Old `main` was the abandoned OpenGL-era project (last commit 2026-04-12), not a stale copy of this one — "117 commits behind" was the wrong model, and a merge was never possible. **(b)** GitHub's default was **already** the working branch; the "GitHub serves main" claim came from a stale local `refs/remotes/origin/HEAD` symref, not from the repository. The genuine problem was narrower: a branch *named* `main` held an unrelated abandoned project, so `/tree/main` and **every `blob/main/...` link** — including the samples README's links into these docs — resolved to April's engine. **Resolution:** old `main` → `legacy-opengl-2026-04` (history preserved, GitHub redirects the old URLs), working branch → `main`, default re-pointed to `main`. **Verified:** a bare `git clone` lands on `main` at `c075b9c`; `blob/main/docs/EngineMasterPlan/WORKFLOW_PLAN.md` returns HTTP 200 (was 404). |
 | **R3** | 🟡 **~7,000 lines compile but nothing calls them** | Pre-ECS libraries still in the build, superseded by G0/G1/G3: `engine/core/ability` (1,814), `engine/core/character` (2,041), `engine/core/gameplay` (1,952). Separately `engine/core/containers` and `engine/core/file_io` have **zero includes outside their own directories** — written, never adopted. Clearest cleanup target in the tree. **Salvage** the character library's input-buffer + locomotion work into G1 rather than deleting it. |
 | **R4** | 🟡 No baseline regression gating in CI | Stage 14's last item. Now also covers the **inner-loop budgets** in [`DEVELOPER_EXPERIENCE.md`](DEVELOPER_EXPERIENCE.md) §1.1. |
 
@@ -154,10 +154,15 @@ Rewritten 2026-08-09 to span all three tracks: **runtime** (this file), **tool**
 ([`PRODUCT_AND_ECOSYSTEM.md`](PRODUCT_AND_ECOSYSTEM.md)).
 
 **Tier 0 — hygiene, hours not weeks (do first, unblocks everything else)**
-- **R1 · Declare the four missing submodules** in `.gitmodules` — turns CI green, makes clean clones build, ends
-  manual release uploads. Smallest fix with the largest reach in the whole repo.
-- **R2 · Point the repo at the branch that has the engine on it** — merge into `main` or change the default branch,
-  then resolve `main`'s 16 divergent commits.
+- ✅ ~~**R1 · Declare the four missing submodules**~~ — **done 2026-08-09**, and it was four bugs rather than one;
+  clean clones now build. See R1 above.
+- ✅ ~~**R2 · Point the repo at the branch that has the engine on it**~~ — **done 2026-08-09**; old `main` archived as
+  `legacy-opengl-2026-04`, working branch promoted to `main`. See R2 above.
+- **Run the `*_check` suite on pull requests** (issue #4) — now the highest-value item left in Tier 0, because CI
+  only triggers on `v*` tags, so nothing validates the tree between releases. That blind spot is what let R1 survive
+  twenty releases.
+- **Publish unstripped binaries per release** (issue #5) — without a symbol server the crash reporter cannot resolve
+  a released build to source.
 - **The engine CLI** (cook · test · build · run-headless · screenshot) — unlocks CI, automation and agent workflows
   at once; nearly every later item assumes it exists.
 
