@@ -299,6 +299,16 @@ int cmd_docs(int argc, char** argv) {
     }
     std::string cmd = "\"" + gen.string() + "\"";
     if (out) { cmd += " --out \""; cmd += out; cmd += "\""; }
+
+    // The script API reference comes from parsing the shared C table's header —
+    // it carries no runtime metadata, so it cannot be walked like the component
+    // registry. Same single-source-of-truth guarantee, different mechanism.
+    if (const char* sh = opt_value(argc, argv, "--script-api")) {
+        cmd += " --script-api \""; cmd += sh; cmd += "\"";
+        if (const char* so = opt_value(argc, argv, "--script-out")) {
+            cmd += " --script-out \""; cmd += so; cmd += "\"";
+        }
+    }
     std::string output;
     const int rc = run_capture(cmd, output);
     std::printf("%s", output.c_str());

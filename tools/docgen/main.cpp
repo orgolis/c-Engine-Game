@@ -56,10 +56,96 @@ std::string field_type_name(gws::reflect::TypeId id, size_t size) {
 
 } // namespace
 
+// ---------------------------------------------------------------- script API
+//
+// The ScriptApi is a plain C struct of function pointers, so unlike components
+// it carries no runtime metadata and cannot be walked. It is still a SINGLE
+// source of truth though — so the reference is parsed straight from the header
+// rather than maintained separately. Same guarantee, different mechanism: add a
+// verb to the table and it appears here; it cannot be documented and absent, or
+// present and undocumented.
+std::string generate_script_api(const std::string& header_path) {
+    std::ifstream f(header_path);
+    if (!f) return {};
+
+    std::ostringstream md;
+    md << "# Script API reference\n\n"
+       << "**Generated** by `gws docs` from `" << header_path << "` — do not edit by hand.\n\n"
+       << "One shared C table is exposed identically to all three scripting backends (Python, C++ and C#),\n"
+       << "so every verb below is callable from any of them. The table is the contract: its layout is\n"
+       << "static_asserted, and adding a verb once exposes it everywhere.\n\n";
+
+    std::string line, pending_comment;
+    int line_no = 0, pending_line = -99;   // a stand-alone comment only documents
+                                           // the line DIRECTLY beneath it
+    std::vector<std::pair<std::string, std::string>> verbs;  // signature, comment
+    while (std::getline(f, line)) {
+        ++line_no;
+        // Trailing `// ...` on the previous line documents the next entry.
+        const size_t slashes = line.find("//");
+        std::string code = (slashes == std::string::npos) ? line : line.substr(0, slashes);
+        std::string comment = (slashes == std::string::npos) ? "" : line.substr(slashes + 2);
+
+        // A function-pointer member looks like:  ret (*name)(args);
+        const size_t open = code.find("(*");
+        if (open != std::string::npos && code.find(')') != std::string::npos) {
+            std::string sig = code;
+            // trim
+            while (!sig.empty() && (sig.front() == ' ' || sig.front() == '\t')) sig.erase(sig.begin());
+            while (!sig.empty() && (sig.back() == ' ' || sig.back() == '\t' || sig.back() == '\r')) sig.pop_back();
+            if (!sig.empty()) {
+                while (!comment.empty() && comment.front() == ' ') comment.erase(comment.begin());
+                const bool adjacent = (pending_line == line_no - 1);
+                verbs.emplace_back(sig, !comment.empty() ? comment
+                                                         : (adjacent ? pending_comment : std::string()));
+                pending_comment.clear();
+            }
+        } else if (!comment.empty() && code.find_first_not_of(" \t\r") == std::string::npos) {
+            // A comment on its own line documents whatever follows.
+            while (!comment.empty() && comment.front() == ' ') comment.erase(comment.begin());
+            pending_comment = comment;
+            pending_line = line_no;
+        }
+    }
+
+    md << "**" << verbs.size() << " verbs** exposed.\n\n"
+       << "| signature | notes |\n|---|---|\n";
+    for (const auto& v : verbs) {
+        std::string sig = v.first;
+        if (!sig.empty() && sig.back() == ';') sig.pop_back();
+        md << "| `" << sig << "` | " << v.second << " |\n";
+    }
+    md << "\n";
+    return md.str();
+}
+
 int main(int argc, char** argv) {
     std::string out_path;
     for (int i = 1; i + 1 < argc; ++i)
         if (std::strcmp(argv[i], "--out") == 0) out_path = argv[i + 1];
+
+    // --script-api <header> [--script-out <file>] emits the scripting reference.
+    std::string script_header, script_out;
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::strcmp(argv[i], "--script-api") == 0) script_header = argv[i + 1];
+        if (std::strcmp(argv[i], "--script-out") == 0) script_out    = argv[i + 1];
+    }
+    if (!script_header.empty()) {
+        const std::string text = generate_script_api(script_header);
+        if (text.empty()) {
+            std::fprintf(stderr, "docgen: cannot read %s\n", script_header.c_str());
+            return 1;
+        }
+        if (script_out.empty()) {
+            std::fwrite(text.data(), 1, text.size(), stdout);
+        } else {
+            std::ofstream sf(script_out, std::ios::binary);
+            if (!sf) { std::fprintf(stderr, "docgen: cannot write %s\n", script_out.c_str()); return 1; }
+            sf << text;
+            std::fprintf(stderr, "docgen: wrote %s\n", script_out.c_str());
+        }
+        if (out_path.empty()) return 0;   // script-only run
+    }
 
     // Populating the registry is the whole job — one call, shared with the
     // editor and the checks, so this cannot document a different set than the
