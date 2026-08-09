@@ -65,7 +65,7 @@ regression beyond a tolerance; (4) publish the numbers in the README as a produc
 |---|---|---|
 | Hot reload: Python / C++ (fresh-DLL swap) / C# | ✅ | Genuinely better than Unity's default. **The strongest workflow card we hold.** |
 | Hot reload everything else — shaders, textures, meshes, scenes, component definitions | 🔴 | Principle: **nothing requires a restart; treat every restart as a bug.** Live sky hot-swap (v0.1.17) is the pattern to copy. |
-| **Keep changes made while playing** | 🔴 | Unity discards play-mode edits and it is one of the most reliably infuriating things in game development. Gameplay components are ECS data with reflection-driven serialization → diff the play world against the authored world and offer to keep the changes. **Unity structurally cannot do this; we can.** |
+| **Keep changes made while playing** | ✅ | **Done `31eb938`.** On Stop, a diff of what play changed with a per-row keep choice. Built around the existing restore rather than replacing it (Capture → Diff → restore → Apply ticked rows), so *discard all* is byte-for-byte the old behaviour and writing to the authored scene is opt-in. Generic over the authorable registry — new gameplay components are diffable for free, with field-level summaries from reflection. Spawned/destroyed entities are out of scope and **reported as counts**, never silently dropped. `playchanges_check`: 26 assertions, headless. |
 | Never block the editor thread | 🟡 | Import, cook, shader compile and navmesh bake belong on `gws_jobs` with progress + cancel. |
 | Undo covering *everything* | 🟡 | Scene edits ✅. Must also cover gameplay components, terrain sculpt, logic-graph edits, and script/agent changes — one stack, no exceptions. Partial undo is worse than none: it teaches people not to rely on it. |
 
@@ -104,34 +104,43 @@ writing C++.
 Average frame rate is the least interesting performance number. What players notice is the stutter; what
 developers notice is the ceiling they hit before the game is finished.
 
-## 2.1 Shader / pipeline compilation stutter 🔴 — the modern performance problem
+## 2.1 Shader / pipeline compilation stutter ✅ — measured, and this engine does not have it
 
-**The** visible performance failure of this console generation. A PSO compiled the first time it is encountered
-stalls the render thread and produces a freeze. Epic built automatic PSO precaching specifically to attack it,
-and as of recent versions it still does not cover global shaders.
+**The industry problem is real.** A PSO compiled the first time it is encountered stalls the render thread and
+produces a freeze; Epic built automatic PSO precaching specifically to attack it. That is why this section was
+written.
 
-**Where this bites us — corrected 2026-08-10 after actually reading the call sites.** The shader pipeline is
-split: some passes compile GLSL from **inline strings at runtime**, others load precompiled SPIR-V headers.
-There are **17 runtime compilation sites** across 5 files (`vulkan_g_buffer`, `vulkan_lighting_pass`,
-`vulkan_post_processing`, `vulkan_shadow_map`, `vulkan_transparent_pass`).
+**This engine does not have it. Measured 2026-08-10, and this is the third correction to this section — the
+first two were also wrong.**
 
-**All 17 run at pass-creation time**, inside `initialize()`/`create()` — *not* lazily on first draw. So this is
-a **startup and re-init cost**, not the mid-gameplay hitch described above. An earlier version of this document
-called it "a stutter source waiting for a large scene"; that was overstated and is corrected here.
+| claim made here | what measurement showed |
+|---|---|
+| "a stutter source waiting for a large scene" | all 17 sites run at **pass-creation**, never on first draw |
+| "a startup and re-init cost" | **1.2 ms of a ~830 ms cold start — 0.1%** |
+| "move all 17 sites to precompiled SPIR-V" | **already the case.** `GWS_HAS_GLSLANG` is defined nowhere, so every site already falls through to `create_from_spirv` |
 
-What it actually costs:
-- **editor cold start** — one of the budgeted inner-loop rows (§1.1), and currently unmeasured
-- **re-initialisation** — each pass owns its *own* `VulkanShaderRegistry`, so the compile cache does **not**
-  survive a pass being re-created; any path that rebuilds a pass pays the full cost again
-- a runtime dependency on glslang that a shipped game does not need
+The engine has shipped on precompiled SPIR-V the whole time. The `#ifdef` scaffolding is deliberate and stays —
+a future glslang-enabled build should still work — but nothing in a normal build ever compiles GLSL.
 
-Whether this engine *also* has the classic PSO hitch — pipeline state objects compiled on first **use** during
-gameplay — is a **separate, unestablished question**. Do not conflate the two: fixing the 17 sites improves
-startup, and says nothing about frame-time hitches.
+**The one real defect here was a reporting defect.** Every startup logged **14 lines of
+`[error] Failed to compile shader ...`** describing completely normal behaviour. Fixed in `2db10a7`: the
+unavailable branch returns empty instead of throwing, and the condition is announced **once** at info level.
+14 false errors → 1 accurate line, and the cost drops to 0.0 ms because nothing is thrown at all.
 
-**Steps:** (1) inventory every runtime `compile_glsl` call site; (2) move all of them to precompiled SPIR-V;
-(3) add a pipeline cache warmed at load; (4) add a "PSO compiled during gameplay" counter to the profiler
-overlay that should read zero in a shipped build.
+An error channel that always fires is one nobody reads. That is the same failure that let CI sit red for six
+commits — the value of this investigation was the log hygiene, not the milliseconds.
+
+**Why this section was wrong three times.** Every claim came from importing Unreal's well-documented problem
+into this engine's plan without reading this engine's code. The measurement that settled it took about twenty
+minutes — less time than was spent writing the wrong claim into three documents. Worth remembering the next
+time a section cites an industry-wide problem as though it were an observation about this project.
+
+**What would reopen it:** a frame-time capture during real gameplay showing hitches attributable to pipeline
+creation. That is a legitimate future investigation; it is simply not established today.
+
+**What stayed:** `editor --startup-probe` initialises, reports `startup_ms` / `runtime_glsl_ms`, and exits
+before the main loop — so *editor cold start* is now a number anyone can re-check rather than an unmeasured
+budget row.
 
 ## 2.2 The rest
 
@@ -197,7 +206,7 @@ every game made with it to look the same — the most common complaint about eng
 1. **Precompile + cache every shader pipeline** (§2.1) — removes the defining performance failure of the era before any project is large enough to expose it.
 2. **Move culling / LOD / animation onto `gws_jobs`** (§2.2) — the ceiling is built and unused.
 3. **Material graph** (§1.3) — unlocks art direction and NPR in one move.
-4. **Keep play-mode changes** (§1.2) — a fix our architecture allows and Unity's does not.
+4. ~~**Keep play-mode changes**~~ (§1.2) — ✅ done `31eb938`; the reflection-driven component registry is what made it a day's work rather than a rewrite.
 5. **Inner-loop budgets in CI** (§1.1) — prevents the slow decay that made Unity's reload times what they are.
 6. **Command palette + universal search** (§1.4) — days of work, disproportionate effect.
 

@@ -77,10 +77,10 @@ Protect it before the project is large enough to make it slow.
 | # | Item | Repo | Notes |
 |---|---|---|---|
 | 2.1 | **`innerloop_check` + published budgets + CI gate** | engine | Edit→play < 1 s, script reload < 500 ms, asset→viewport < 2 s. Fail the build on regression |
-| 2.2 | **Precompile every shader pipeline**, warm the cache at load | engine | Removes the defining stutter of this console generation. Inventory every runtime `compile_glsl` site first |
-| 2.3 | "PSO compiled during gameplay" counter in the overlay | engine | Should read zero in a shipped build |
+| 2.2 | ~~Precompile every shader pipeline~~ | engine | ✅ **Already true — this item was written in error.** `GWS_HAS_GLSLANG` is defined nowhere, so every one of the 17 `compile_glsl` sites already falls back to precompiled SPIR-V, and all of them run at pass-creation, not first draw. Measured: **1.2 ms of a ~830 ms cold start (0.1%)**. The item imported Unreal's documented PSO problem without checking whether it applies here — it does not. The one real defect found was **14 false `[error]` lines per startup**; fixed in `2db10a7`, now one accurate info line and 0.0 ms |
+| 2.3 | ~~"PSO compiled during gameplay" counter~~ | engine | ✅ **Dropped with 2.2** — a counter that is structurally always zero is noise. Reopen only if a frame capture shows real pipeline-creation hitches |
 | 2.4 | **Hot reload everything else** — shaders, textures, meshes, scenes, component definitions | engine | Principle: treat every required restart as a bug |
-| 2.5 | **Keep changes made while playing** | engine | Diff the play world against the authored world. Unity structurally cannot do this; we can |
+| 2.5 | ~~**Keep changes made while playing**~~ | engine | ✅ **Done** (`31eb938`). Diff on Stop + per-row keep. Built so `ScenePlaybackManager` is untouched — Capture → Diff (before Stop) → existing restore → Apply only ticked rows, so "discard all" is byte-for-byte the old behaviour and writing to the authored scene is opt-in. Generic over the authorable registry, so new components are diffable for free. Spawned/destroyed entities are out of scope and **reported as counts** rather than hidden. `playchanges_check`: 26 assertions, headless |
 | 2.6 | Never block the editor thread — import/cook/bake on `gws_jobs` with progress + cancel | engine | |
 | 2.7 | Undo covering gameplay components, terrain, logic graph, script/agent edits | engine | Partial undo teaches people not to rely on it |
 
