@@ -19,6 +19,21 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# playchanges_check: play mode must not eat a tuning pass — and must never write
+# to the authored scene unless a change was explicitly ticked. Compiles the
+# editor's play_mode_changes.cpp + ecs_bridge.cpp directly; both are GPU-free, so
+# this whole feature is verifiable headless.
+add_executable(playchanges_check
+    playchanges_check/main.cpp
+    ../editor/src/play_mode_changes.cpp
+    ../editor/src/ecs_bridge.cpp)
+target_include_directories(playchanges_check PRIVATE ../editor/include)
+target_link_libraries(playchanges_check PRIVATE gws_ecs gws_reflection gws_jobs scene)
+target_compile_features(playchanges_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(playchanges_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # gameplay_check: F1/F2 ECS gameplay-authoring data path (authorable registry +
 # reflection-driven read/write that the editor inspector uses).
 add_executable(gameplay_check gameplay_check/main.cpp)

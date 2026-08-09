@@ -83,6 +83,7 @@
 #include "undo_redo_manager.h"
 #include "asset_manager.h"
 #include "scene_playback_manager.h"
+#include "play_mode_changes.h"
 #include "primitive_meshes.h"
 #include "scene_render_bridge.h"
 #include "character_controller_panel.h"
@@ -295,7 +296,41 @@ struct EditorState {
     // Path B: a requested rigged-model import (path set by the File menu,
     // consumed in the loop where the device + material pool are in scope).
     std::string pending_skinned_import;
+
+    // Play-mode change tracking. Play still discards by default; this keeps the
+    // diff so the developer can choose what survives instead of losing a tuning
+    // pass on Stop. See play_mode_changes.h.
+    schizo::editor::PlayModeChanges  play_changes;
+    schizo::editor::PlayChangeReport pending_play_changes;
+    bool show_play_changes_popup = false;
 };
+
+// ============================================================================
+// Play mode entry/exit — one place, so the F5 menu item and the toolbar button
+// cannot drift apart (they already had duplicated bodies).
+// ============================================================================
+static void BeginPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::Scene>& scene) {
+    if (!st.scene_playback_manager || !scene) return;
+    st.play_changes.Capture(scene, st.ecs_bridge);        // baseline BEFORE play mutates anything
+    if (!st.scene_playback_manager->StartPlayback(scene)) {
+        spdlog::warn("Failed to start scene playback (no entity named 'Player'?)");
+        st.play_changes.Clear();
+    }
+}
+
+static void EndPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::Scene>& scene) {
+    if (!st.scene_playback_manager) return;
+    // Diff BEFORE stopping: StopPlayback restores the authored transforms, so
+    // after it runs the play-end values are gone.
+    if (st.play_changes.has_baseline() && scene)
+        st.pending_play_changes = st.play_changes.Diff(scene, st.ecs_bridge);
+    else
+        st.pending_play_changes = {};
+
+    st.scene_playback_manager->StopPlayback();
+    st.play_changes.Clear();
+    st.show_play_changes_popup = !st.pending_play_changes.empty();
+}
 
 // ============================================================================
 // Global State for GLFW Callbacks
@@ -395,6 +430,93 @@ static uint64_t AudioGuidFromPath(const std::string& p) {
     uint64_t h = 1469598103934665603ull;
     for (unsigned char c : p) { h ^= c; h *= 1099511628211ull; }
     return h | 1ull;
+}
+
+// ============================================================================
+// "Keep changes from play?" — shown on Stop when play changed something.
+//
+// Nothing has been kept at the point this opens: StopPlayback already restored
+// the authored scene. Every row is an opt-in re-application, so closing the
+// window with Escape or Discard leaves exactly the pre-play state.
+// ============================================================================
+void ShowPlayChangesDialog(EditorState& editor_state) {
+    if (!editor_state.show_play_changes_popup) return;
+
+    auto& report = editor_state.pending_play_changes;
+    ImGui::SetNextWindowSize(ImVec2(620, 420), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Changes from play mode", &editor_state.show_play_changes_popup)) {
+        ImGui::End();
+        return;
+    }
+
+    ImGui::TextWrapped(
+        "Play mode changed %d value(s). They have already been reverted — tick the ones "
+        "to re-apply to the scene.", static_cast<int>(report.changes.size()));
+
+    if (report.entities_spawned || report.entities_destroyed) {
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.35f, 1.0f),
+            "Not tracked: %d entity(s) spawned and %d destroyed during play. "
+            "Only value changes on entities that existed before play can be kept.",
+            static_cast<int>(report.entities_spawned),
+            static_cast<int>(report.entities_destroyed));
+    }
+
+    ImGui::Spacing();
+    if (ImGui::SmallButton("Select all")) for (auto& c : report.changes) c.keep = true;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Select none")) for (auto& c : report.changes) c.keep = false;
+    ImGui::Separator();
+
+    const float footer = ImGui::GetFrameHeightWithSpacing() + 8.0f;
+    if (ImGui::BeginChild("##play_change_rows", ImVec2(0, -footer))) {
+        if (ImGui::BeginTable("##changes", 3,
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+                ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Keep", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+            ImGui::TableSetupColumn("Entity", ImGuiTableColumnFlags_WidthFixed, 160.0f);
+            ImGui::TableSetupColumn("What changed");
+            ImGui::TableHeadersRow();
+
+            for (size_t i = 0; i < report.changes.size(); ++i) {
+                auto& c = report.changes[i];
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::Checkbox("##keep", &c.keep);
+                ImGui::PopID();
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(c.entity_name.c_str());
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%s — %s", c.component.c_str(), c.summary.c_str());
+            }
+            ImGui::EndTable();
+        }
+    }
+    ImGui::EndChild();
+
+    int selected = 0;
+    for (const auto& c : report.changes) if (c.keep) ++selected;
+
+    ImGui::BeginDisabled(selected == 0);
+    if (ImGui::Button(selected ? "Keep selected" : "Keep selected (none)")) {
+        auto scene = editor_state.editor_scene ? editor_state.editor_scene->GetScene() : nullptr;
+        const size_t n = schizo::editor::PlayModeChanges::Apply(
+            report.changes, scene, editor_state.ecs_bridge);
+        spdlog::info("Kept {} change(s) from play mode", n);
+        report = {};
+        editor_state.show_play_changes_popup = false;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Discard all")) {
+        report = {};
+        editor_state.show_play_changes_popup = false;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%d of %d selected", selected, static_cast<int>(report.changes.size()));
+
+    ImGui::End();
 }
 
 void ShowSaveDialog(EditorState& editor_state) {
@@ -699,15 +821,9 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
                                      editor_state.scene_playback_manager->IsPlaying();
             const char* play_label = playing_now ? "Stop (F5)" : "Play (F5)";
             if (ImGui::MenuItem(play_label)) {
-                if (editor_state.scene_playback_manager) {
-                    if (playing_now) {
-                        editor_state.scene_playback_manager->StopPlayback();
-                    } else if (auto scene = editor_state.editor_scene->GetScene()) {
-                        if (!editor_state.scene_playback_manager->StartPlayback(scene)) {
-                            spdlog::warn("Failed to start scene playback (no entity named 'Player'?)");
-                        }
-                    }
-                }
+                auto play_scene = editor_state.editor_scene->GetScene();
+                if (playing_now) EndPlayMode(editor_state, play_scene);
+                else             BeginPlayMode(editor_state, play_scene);
             }
 
             // F5: item-definition data files (.items) in assets/gameplay/.
@@ -2813,15 +2929,8 @@ void ShowViewport(EditorState& editor_state) {
         ImGui::SameLine();
 
         if (ImGui::Button(viewport_playing ? "Stop (F5)" : "Play (F5)")) {
-            if (editor_state.scene_playback_manager) {
-                if (viewport_playing) {
-                    editor_state.scene_playback_manager->StopPlayback();
-                } else if (scene) {
-                    if (!editor_state.scene_playback_manager->StartPlayback(scene)) {
-                        spdlog::warn("Failed to start scene playback (no entity named 'Player'?)");
-                    }
-                }
-            }
+            if (viewport_playing) EndPlayMode(editor_state, scene);
+            else                  BeginPlayMode(editor_state, scene);
         }
         ImGui::SameLine();
         
@@ -3547,11 +3656,7 @@ void ShowPlaybackControls(EditorState& editor_state) {
         // Play button
         ImGui::BeginDisabled(!can_play);
         if (ImGui::Button("Play (F5)##playback", ImVec2(80, 0))) {
-            if (editor_state.scene_playback_manager->StartPlayback(scene)) {
-                spdlog::info("Scene playback started");
-            } else {
-                spdlog::warn("Failed to start scene playback");
-            }
+            BeginPlayMode(editor_state, scene);
         }
         ImGui::EndDisabled();
         
@@ -3571,8 +3676,7 @@ void ShowPlaybackControls(EditorState& editor_state) {
         // Stop button
         ImGui::BeginDisabled(!editor_state.scene_playback_manager->IsPlaying());
         if (ImGui::Button("Stop##playback", ImVec2(80, 0))) {
-            editor_state.scene_playback_manager->StopPlayback();
-            spdlog::info("Scene playback stopped");
+            EndPlayMode(editor_state, scene);
         }
         ImGui::EndDisabled();
         
@@ -5431,7 +5535,7 @@ int main(int argc, char** argv) {
                         if (editor_state.scene_playback_manager->IsCursorCaptured()) {
                             editor_state.scene_playback_manager->SetCursorCaptured(false);
                         } else {
-                            editor_state.scene_playback_manager->StopPlayback();
+                            EndPlayMode(editor_state, editor_state.editor_scene->GetScene());
                         }
                     } else {
                         spdlog::info("ESC — exiting editor");
@@ -5783,6 +5887,7 @@ int main(int argc, char** argv) {
             ShowSaveDialog(editor_state);
             ShowOpenDialog(editor_state);
             ShowRenameDialog(editor_state);
+            ShowPlayChangesDialog(editor_state);
             if (editor_state.show_demo_window)
                 ImGui::ShowDemoWindow(&editor_state.show_demo_window);
             ShowViewport(editor_state);
