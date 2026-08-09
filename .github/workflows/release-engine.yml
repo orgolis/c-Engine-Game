@@ -45,6 +45,7 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
+            zip
 
       - name: Install the Vulkan SDK
         # Any maintained Vulkan-SDK installer action works; pin a version that
@@ -57,9 +58,16 @@ jobs:
           cache: true
 
       - name: Configure
+        # -g is appended to the Release flags (CMAKE_CXX_FLAGS is prepended to
+        # CMAKE_CXX_FLAGS_RELEASE), so the build tree carries DWARF while the
+        # optimisation level stays exactly -O3 -DNDEBUG. The SHIPPED binary is
+        # unaffected: CPACK_STRIP_FILES strips the packaged copy, so users still
+        # download the same ~15 MB editor.exe. The unstripped build-tree copy is
+        # uploaded separately as the symbols asset below.
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS=-g -DCMAKE_CXX_FLAGS=-g \
             -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
             -DBUILD_TESTS=OFF
 
@@ -69,14 +77,44 @@ jobs:
       - name: Package the engine (CPack ZIP)
         run: cd build && cpack -G ZIP
 
-      - name: Rename asset to include the version
+      - name: Collect debug symbols
+        # gws_diagnostics writes crash stacks as module + RVA, which can only be
+        # resolved against the SAME-VERSION UNSTRIPPED build. Without this asset a
+        # crash report from a release is unsymbolizable — the crash reporter is
+        # only half-useful. Keep these for as long as the release is supported.
+        run: |
+          mkdir -p symbols
+          cp build/bin/*.exe symbols/ 2>/dev/null || true
+          cp build/bin/*.dll symbols/ 2>/dev/null || true
+          {
+            echo "GameWorldshaper engine symbols"
+            echo "tag:        ${GITHUB_REF_NAME}"
+            echo "commit:     ${GITHUB_SHA}"
+            echo "built:      $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "toolchain:  $(g++ --version | head -1)"
+            echo ""
+            echo "These binaries are UNSTRIPPED and match the stripped ones in the"
+            echo "engine package for this exact tag. To resolve a crash report:"
+            echo ""
+            echo "  addr2line -f -C -e <module-from-report> <RVA-from-report>"
+            echo ""
+            echo "The module name and RVA are printed in the crash report written to"
+            echo "%LOCALAPPDATA%/GameWorldshaper/diagnostics/."
+          } > symbols/BUILDINFO.txt
+          ls -la symbols
+
+      - name: Rename assets to include the version
         run: |
           mkdir -p dist
           cp build/GameWorldshaper-Engine-*.zip "dist/engine-${GITHUB_REF_NAME}-win64.zip"
+          # 7z/zip via msys2; -y to overwrite, quiet output
+          (cd symbols && zip -qr "../dist/engine-${GITHUB_REF_NAME}-win64-symbols.zip" .)
           ls -la dist
 
       - name: Upload to the GitHub Release
         uses: softprops/action-gh-release@v2   # NOTE: no `shell:` — it's invalid on a `uses:` step
         with:
-          files: dist/engine-*-win64.zip
+          files: |
+            dist/engine-*-win64.zip
+            dist/engine-*-win64-symbols.zip
           fail_on_unmatched_files: true
