@@ -55,11 +55,11 @@ in this document.
 
 | # | Item | Repo | Notes |
 |---|---|---|---|
-| 1.1 | **Engine CLI** — `cook`, `test`, `build`, `run --headless`, `screenshot`, `validate` | engine | Unlocks CI, automation and agent workflows in one move |
-| 1.2 | Machine-readable project protocol — query/modify entities and components, run checks, read logs | engine | Makes the engine agent-drivable; edits arrive as diffs through undo + VCS |
-| 1.3 | **Generated documentation** from the authorable registry + script API table | engine | Docs that cannot drift from code. Uniquely cheap here |
+| ~~1.1~~ | ✅ **DONE** — `gws` (#7): version · test · cook · validate · docs · project · run · build. CI now drives the suite through it | engine | `screenshot` remains (#64) — it needs a Vulkan device |
+| ~~1.2~~ | ✅ **DONE** — `gws project` (#8): list/add/remove/set over gameplay state, addressed by stable SaveId | engine | Operates on files, so every edit is a diff in version control. `set` is limited to reflected components |
+| ~~1.3~~ | ✅ **DONE** — 42 components + 53 script verbs (#9, #10) in `docs/reference/` | engine | Components walked from the registry; script verbs parsed from the header, which has no runtime metadata |
 | 1.4 | Crash report → GitHub issue, grouped by stack signature | engine | Closes the loop from player crash to tracked bug |
-| 1.5 | **Repo scaffolding on project creation** — `.gitattributes`, `.gitignore`, LFS tracking correct from commit one | hub | The single mistake that ruins game repos, made impossible |
+| ~~1.5~~ | ✅ **DONE** — Hub #2: LFS configured before the first commit, engine text formats kept as text | hub | Never fatal without git; 15 assertions incl. "LFS rules are in the first commit" |
 
 **Exit criteria:** CI runs the full check suite through the CLI; a new project from the Hub is a correctly
 configured Git repo; API docs regenerate from source.
