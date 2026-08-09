@@ -89,6 +89,21 @@ jobs:
         # the first failure.
         run: |
           set +e
+
+          # texture_check, model_check and skinning_check carry a LOAD-TIME import
+          # on vulkan-1.dll: static linking pulls in the renderer objects that
+          # reference Vulkan, even though the checks themselves are CPU-side.
+          # (anim_check and skinned_import_check link the same lib but reference
+          # no Vulkan symbols, which is why only three of five were affected.)
+          # Without the loader on PATH they die at process start with exit 127.
+          if [ -n "${VULKAN_SDK}" ]; then
+            export PATH="${PATH}:$(cygpath -u "${VULKAN_SDK}")/Bin"
+          fi
+          # script_check's C# backend shells out to `dotnet`, which is installed
+          # on the runner but not on the MSYS2 shell's PATH.
+          export PATH="${PATH}:/c/Program Files/dotnet"
+          echo "vulkan-1.dll: $(command -v vulkan-1.dll || find "$(cygpath -u "${VULKAN_SDK}")/Bin" -maxdepth 1 -iname 'vulkan-1.dll' 2>/dev/null | head -1 || echo 'NOT FOUND')"
+          echo "dotnet:       $(command -v dotnet || echo 'NOT FOUND')"
           checks="gameplay_check physics_check net_check repl_check server_check \
                   mp_check prediction_check audio_check profiler_check texture_check \
                   model_check anim_check skinning_check skinned_import_check \
