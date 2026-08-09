@@ -116,9 +116,15 @@ jobs:
             tail -n 1 check-output.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          grep '^FAIL' check-output.txt | while read -r _ name rest; do
-            echo "::error title=${name}::${rest}"
-          done
+          # `|| true` is load-bearing: grep exits 1 when it finds NOTHING, which
+          # is the SUCCESS case here. Under the msys2 shell's `set -e` that
+          # aborted the step, so CI failed precisely when every check passed —
+          # an inverted signal that went unnoticed for six commits.
+          if grep -q '^FAIL' check-output.txt; then
+            grep '^FAIL' check-output.txt | while read -r _ name rest; do
+              echo "::error title=${name}::${rest}"
+            done
+          fi
           exit $rc
 
       - name: Upload crash-report artifacts on failure
