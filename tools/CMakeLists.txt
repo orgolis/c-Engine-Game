@@ -280,3 +280,13 @@ endif()
 # CPACK_STRIP_FILES strips these in the package, so the download cost is small.
 install(TARGETS gws headless projectctl docgen assetcook
         RUNTIME DESTINATION "${GWS_ENGINE_DEST}" COMPONENT engine)
+
+# innerloop_check: measure the inner loop so it can be defended (issue #13).
+# Named *_check so `gws test` discovers it automatically. Report-only unless
+# --enforce: timing on a shared runner is noisy, and a gate that cries wolf
+# gets ignored — which is the failure this phase exists to prevent.
+add_executable(innerloop_check innerloop_check/main.cpp)
+target_compile_features(innerloop_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(innerloop_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
