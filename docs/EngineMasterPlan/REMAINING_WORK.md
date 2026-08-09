@@ -20,7 +20,7 @@
 
 ## Audit snapshot — 2026-08-09
 
-**Engine v0.2.0** (21 releases, first cut from a green CI run) · **Hub 0.1.7** (5 releases) · ~141k lines C++
+**Engine v0.3.0** (22 releases) · **Hub 0.1.7** (5 releases) · ~141k lines C++
 (engine 107k · editor 24k · tools 6k · tests 4k) · Hub 2.4k lines · 158 mapped subsystems.
 
 **All 21 headless check binaries pass locally**, 500+ assertions (18 of them also on CI; 3 need a GPU — see R5):
@@ -37,6 +37,33 @@
 | "GPU-driven: indirect draw incomplete" | `vulkan/indirect_dispatcher.cpp` issues real `vkCmdDrawIndirectCount` / `vkCmdDrawIndirect` and `hzb_culler.h` references it — but `gpu_driven_enabled` defaults to `false` and **nothing sets it true**, so the path is dead code. Mesh shaders (`vkCmdDrawMeshTasks`) genuinely absent. |
 | "Stage 10 remaining: loot/itemization, vehicles, quests" | All three shipped as **G4**, **G13** and **G6**. See the [feature catalog](ENGINE_FEATURE_CATALOG.md) — **G0–G16 all landed** (2026-08-06 → 08-07). |
 | Feature catalog: "gameplay frameworks … nearly all 🔴" | Superseded. All 17 G-modules exist in `engine/core/ecs/gameplay_*.h`. |
+
+---
+
+## Progress — Phases 0 and 1 (2026-08-09)
+
+**Phase 0 complete.** Clean clones build, CI runs on every push and PR, releases carry symbols, the branch
+layout is fixed, and the Hub has a plan of record. Every failure found was the same class: *something that
+only worked on the author's machine*.
+
+**Phase 1: 9 of 10.** The engine gained a command line, shipped in **v0.3.0**:
+
+| Item | Result |
+|---|---|
+| `gws` CLI (#7) | version · test · cook · validate · docs · project · run · crash · build; `--json` throughout |
+| Agent protocol (#8) | `gws project` — list/add/remove/set by stable SaveId, file-based so edits are diffs |
+| Headless run (#64 pt.1) | deterministic; ticks the **same shared gameplay frame** as the editor |
+| Generated docs (#9, #10) | 42 components + 53 script verbs in `docs/reference/` |
+| Crash triage (#11) | grouped by top-5 non-system frames; engine never files at crash time |
+| Repo scaffolding (Hub #2) | LFS configured **before** the first commit |
+| Samples CI (Samples #1) | installs the published release and resolves the asset the way the Hub does |
+
+**Remaining:** #63 and #64 — both need a Vulkan device that CI runners lack.
+
+**Two duplications removed on the way**, each of which would have silently diverged: the component
+registration list (editor vs `gameplay_check` — a docs generator would have been a third copy) and the
+gameplay tick order (editor vs the headless runner — a headless test ticking fewer systems than play mode
+reports green while covering less). Both now have a single home in `engine/core/ecs/`.
 
 ---
 

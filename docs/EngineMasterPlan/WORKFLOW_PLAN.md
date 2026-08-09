@@ -58,11 +58,14 @@ in this document.
 | ~~1.1~~ | ✅ **DONE** — `gws` (#7): version · test · cook · validate · docs · project · run · build. CI now drives the suite through it | engine | `screenshot` remains (#64) — it needs a Vulkan device |
 | ~~1.2~~ | ✅ **DONE** — `gws project` (#8): list/add/remove/set over gameplay state, addressed by stable SaveId | engine | Operates on files, so every edit is a diff in version control. `set` is limited to reflected components |
 | ~~1.3~~ | ✅ **DONE** — 42 components + 53 script verbs (#9, #10) in `docs/reference/` | engine | Components walked from the registry; script verbs parsed from the header, which has no runtime metadata |
-| 1.4 | Crash report → GitHub issue, grouped by stack signature | engine | Closes the loop from player crash to tracked bug |
+| ~~1.4~~ | ✅ **DONE** — `gws crash` (#11) | engine | Signature = top 5 **non-system** frames, module+RVA not absolute addresses (ASLR). Engine never files at crash time: no credentials in a shipped game |
 | ~~1.5~~ | ✅ **DONE** — Hub #2: LFS configured before the first commit, engine text formats kept as text | hub | Never fatal without git; 15 assertions incl. "LFS rules are in the first commit" |
 
-**Exit criteria:** CI runs the full check suite through the CLI; a new project from the Hub is a correctly
-configured Git repo; API docs regenerate from source.
+**Exit criteria:** CI runs the full check suite through the CLI ✅ · a new project from the Hub is a correctly
+configured Git repo ✅ · API docs regenerate from source ✅ — **all met (2026-08-09)**.
+
+**Phase 1 status: 9 of 10 done.** Remaining: `gws screenshot` (#64) and the three GPU-requiring checks
+(#63) — both blocked on a Vulkan device, which standard CI runners do not have. Shipped in **v0.3.0**.
 
 ---
 
