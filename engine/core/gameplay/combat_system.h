@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include "../physics/rigidbody_physics.h"
 #include <glm/glm.hpp>
 #include <glm/common.hpp>

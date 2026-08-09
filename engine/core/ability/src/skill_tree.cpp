@@ -1,3 +1,4 @@
+#include <cstdint>
 #include "skill_tree.h"
 #include <algorithm>
 #include <spdlog/spdlog.h>

@@ -1,3 +1,4 @@
+#include <cstdint>
 #include "character_stats.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>

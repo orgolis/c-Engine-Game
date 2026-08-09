@@ -75,13 +75,18 @@ jobs:
             -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
 
       - name: Build the check suite
+        # `editor` is built too, even though CI cannot run it. Without it CI
+        # covers only what the checks link, and the legacy pre-ECS libraries
+        # (engine/core/{gameplay,ability,character}) are linked by NOTHING else —
+        # so a compile break there sailed past a green CI run and only failed at
+        # release time. Building the editor closes that hole.
         run: |
           cmake --build build -j $(nproc) --target \
             gameplay_check physics_check net_check repl_check server_check \
             mp_check prediction_check audio_check profiler_check texture_check \
             model_check anim_check skinning_check skinned_import_check \
             ai_check ui_check world_check combat_check vfx_check crash_check \
-            script_check assetcook dedicated_server
+            script_check assetcook dedicated_server editor
 
       - name: Run the check suite
         # Runs every check, records pass/fail, and fails at the end with a

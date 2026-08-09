@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include "character_stats.h"
 #include "../input/input_action.h"
 #include <glm/glm.hpp>

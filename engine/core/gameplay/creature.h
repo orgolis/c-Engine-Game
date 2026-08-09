@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include "character_stats.h"
 #include "ability_system.h"
 #include "combat_system.h"
