@@ -40,8 +40,8 @@ Nothing else should start first. Every item is hours of work and each one is cos
 |---|---|---|---|
 | ~~0.1~~ | ✅ **DONE 2026-08-09** — declare the four missing submodules, **plus three further clean-clone blockers found by testing**: ufbx build glue living inside the submodule, the tinyusdz flag patch existing only in a working tree, and zstd's whole source tree hidden by an unanchored `lib/` ignore rule (issue #2, commits `c1ac242` + `6e2266d`) | engine | Verified by a fresh `--recurse-submodules` clone: 10/10 submodules populate, configure exits 0, `zstd` + `ufbx` + `tinyusdz_static` all build |
 | ~~0.2~~ | ✅ **DONE 2026-08-09** — old `main` (the abandoned OpenGL lineage, **unrelated history**, no merge base) archived as `legacy-opengl-2026-04`; working branch promoted to `main`; default re-pointed (issue #3) | engine | A bare `git clone` now lands on the real engine, and `blob/main/...` doc links resolve (were 404) |
-| 0.3 | Run the `*_check` suite on pull requests | engine | 20 binaries already exist; this is CI configuration, not new tests |
-| 0.4 | Publish unstripped binaries per release (symbol server) | engine | Crash reports only symbolize against the same-version unstripped build — without this the crash system is half-useless |
+| ~~0.3~~ | ✅ **DONE 2026-08-09** — CI on every PR and push to `main` (issue #4). First green run: **18 passed, 0 failed, 3 skipped**; found a latent GCC 14+ `<cstdint>` bug in tinyusdz on the way | engine | The 3 skipped need a GPU — compiled but not run, tracked by #63 |
+| ~~0.4~~ | ✅ **DONE 2026-08-09** — releases carry `engine-<tag>-win64-symbols.zip` with a BUILDINFO (issue #5); first exercised by **v0.2.0** | engine | Shipped package size is unchanged: `-g` goes to the build tree while CPack still strips the packaged copy |
 
 **Exit criteria:** a fresh `git clone --recurse-submodules` configures and builds; CI is green; a crash report
 from a released build can be symbolized.
