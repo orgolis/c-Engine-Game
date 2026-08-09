@@ -221,3 +221,14 @@ target_compile_features(combat_check PRIVATE cxx_std_20)
 add_executable(crash_check crash_check/main.cpp)
 target_link_libraries(crash_check PRIVATE gws_diagnostics)
 target_compile_features(crash_check PRIVATE cxx_std_20)
+
+# gws: the engine command line (Phase 1, issue #7). One entry point to
+# everything the engine does without a GUI — the check suite, cooking,
+# validation, builds — with --json on every command so CI, scripts and external
+# agents are first-class callers. Links nothing: it drives the sibling tools.
+add_executable(gws gws/main.cpp)
+target_compile_features(gws PRIVATE cxx_std_20)
+target_compile_definitions(gws PRIVATE GWS_ENGINE_VERSION="${PROJECT_VERSION}")
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(gws PRIVATE -static -static-libgcc -static-libstdc++)
+endif()

@@ -86,94 +86,36 @@ jobs:
             mp_check prediction_check audio_check profiler_check texture_check \
             model_check anim_check skinning_check skinned_import_check \
             ai_check ui_check world_check combat_check vfx_check crash_check \
-            script_check assetcook dedicated_server editor
+            script_check assetcook dedicated_server editor gws
 
       - name: Run the check suite
-        # Runs every check, records pass/fail, and fails at the end with a
-        # summary — so one CI run reports ALL breakage rather than stopping at
-        # the first failure.
+        # Driven through `gws test` rather than a shell loop. The tool owns
+        # which checks exist (it discovers them), which need a GPU, and what a
+        # result means - so CI, a developer's terminal and an AI agent all get
+        # identical behaviour instead of three copies of the same list drifting
+        # apart. This is the Phase 1 exit criterion: CI runs the suite through
+        # the CLI. See issue #7.
         run: |
-          set +e
-
-          # Put the Vulkan loader on PATH. Three checks carry a load-time import
-          # on vulkan-1.dll (static linking pulls in the renderer objects that
-          # reference Vulkan); anim_check and skinned_import_check link the same
-          # library but reference no Vulkan symbols, which is why only three of
-          # the five renderer-linked checks depend on it.
-          # NOTE: on GitHub runners the loader is already in System32, so this is
-          # belt-and-braces. It is NOT what makes those three fail — see the
-          # gpu_checks note below for the actual reason.
-          if [ -n "${VULKAN_SDK}" ]; then
-            export PATH="${PATH}:$(cygpath -u "${VULKAN_SDK}")/Bin"
-          fi
-          # script_check's C# backend shells out to `dotnet`, which is installed
-          # on the runner but not on the MSYS2 shell's PATH.
+          set -o pipefail
+          # script_check's C# backend shells out to `dotnet`, present on the
+          # runner but not on the MSYS2 shell's PATH.
           export PATH="${PATH}:/c/Program Files/dotnet"
-          echo "vulkan-1.dll: $(command -v vulkan-1.dll || find "$(cygpath -u "${VULKAN_SDK}")/Bin" -maxdepth 1 -iname 'vulkan-1.dll' 2>/dev/null | head -1 || echo 'NOT FOUND')"
-          echo "dotnet:       $(command -v dotnet || echo 'NOT FOUND')"
-          # GPU-requiring checks. These create a Vulkan instance and enumerate
-          # physical devices; GitHub runners have no GPU and no Vulkan ICD, so
-          # they fail with "vkEnumeratePhysicalDevices: Invalid instance" no
-          # matter what is on PATH. They are reported as SKIPPED rather than
-          # silently dropped, so the coverage gap stays visible.
-          # Tracked by #63 — make them degrade to a skip when no device exists
-          # (or add a software ICD), then move them back into `checks`.
-          gpu_checks="texture_check model_check skinning_check"
-
-          checks="gameplay_check physics_check net_check repl_check server_check \
-                  mp_check prediction_check audio_check profiler_check \
-                  anim_check skinned_import_check \
-                  ai_check ui_check world_check combat_check vfx_check crash_check \
-                  script_check"
-          pass=0; fail=0; failed=""
-          for c in $checks; do
-            exe="build/bin/${c}.exe"
-            if [ ! -f "$exe" ]; then
-              echo "::error title=${c}::binary not built at ${exe}"
-              fail=$((fail+1)); failed="${failed} ${c}(missing)"; continue
-            fi
-            echo "::group::${c}"
-            timeout 600 "./${exe}"
-            rc=$?
-            echo "::endgroup::"
-            if [ $rc -eq 0 ]; then
-              echo "PASS  ${c}"; pass=$((pass+1))
-            else
-              echo "::error title=${c}::exited ${rc}"
-              echo "FAIL  ${c} (exit ${rc})"; fail=$((fail+1)); failed="${failed} ${c}(${rc})"
-            fi
-          done
-          # Report the GPU-requiring checks explicitly. They still had to COMPILE
-          # in the build step above, so a code break in them is caught; only
-          # their runtime coverage is missing here.
-          skipped=0
-          for c in $gpu_checks; do
-            if [ -f "build/bin/${c}.exe" ]; then
-              echo "SKIP  ${c} (needs a Vulkan device; none on CI runners)"
-              skipped=$((skipped+1))
-            else
-              echo "::error title=${c}::binary not built at build/bin/${c}.exe"
-              fail=$((fail+1)); failed="${failed} ${c}(missing)"
-            fi
-          done
-
-          echo ""
-          echo "========= check suite: ${pass} passed, ${fail} failed, ${skipped} skipped ========="
+          # No --gpu: texture/model/skinning_check need a Vulkan device and
+          # runners have no GPU or ICD, so `gws test` skips them and says so.
+          # Tracked by #63.
+          ./build/bin/gws.exe test | tee check-output.txt
+          rc=$?
           {
             echo "### Check suite"
             echo ""
-            echo "| result | count |"
-            echo "|---|---|"
-            echo "| passed | ${pass} |"
-            echo "| failed | ${fail} |"
-            echo "| skipped (needs a GPU) | ${skipped} |"
+            echo '```'
+            tail -n 1 check-output.txt
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ $fail -gt 0 ]; then
-            echo "failed:${failed}"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Failed:${failed}" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          grep '^FAIL' check-output.txt | while read -r _ name rest; do
+            echo "::error title=${name}::${rest}"
+          done
+          exit $rc
 
       - name: Upload crash-report artifacts on failure
         if: failure()
