@@ -71,8 +71,13 @@ jobs:
             -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
             -DBUILD_TESTS=OFF
 
-      - name: Build editor
-        run: cmake --build build --target editor -j
+      - name: Build the editor and the shipped command line
+        # Must build everything the package installs. Building only `editor`
+        # made CPack fail with "file INSTALL cannot find" once the CLI was
+        # added to the engine component — the binaries simply did not exist.
+        # A local `cpack` did not catch it because a dev tree already has
+        # them built; only a from-scratch build exposes the gap.
+        run: cmake --build build -j --target editor gws headless projectctl docgen assetcook
 
       - name: Package the engine (CPack ZIP)
         run: cd build && cpack -G ZIP
