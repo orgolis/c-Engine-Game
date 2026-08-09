@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(GameWorldshaper
-    VERSION 0.1.20
+    VERSION 0.2.0
     DESCRIPTION "A custom 3D game engine for an open-world multiplayer action RPG"
     LANGUAGES C CXX)
 
@@ -172,7 +172,24 @@ if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     unset(_tinyusdz_cml)
 endif()
 
+# tinyusdz relies on <cstdint> arriving transitively through other headers.
+# GCC 13 tightened that and GCC 14+ removed it, so on a newer compiler its
+# value-types.hh fails with "'uint32_t' does not name a type" (hundreds of
+# them). Local builds on g++ 13.2 happen to survive; CI runners do not.
+#
+# Force-including the header is the standard remedy and leaves the vendored
+# source untouched. Scoped to this add_subdirectory only: the directory's
+# COMPILE_OPTIONS are inherited by the subdirectory, then restored.
+get_directory_property(_gws_prev_copts COMPILE_OPTIONS)
+if(NOT MSVC)
+    # CXX only — tinyusdz also compiles bundled C (its vendored lz4), and
+    # <cstdint> is a C++ header, so an unguarded flag fails those with
+    # "fatal error: cstdint: No such file or directory".
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-include;cstdint>")
+endif()
 add_subdirectory(third_party/tinyusdz)
+set_directory_properties(PROPERTIES COMPILE_OPTIONS "${_gws_prev_copts}")
+unset(_gws_prev_copts)
 
 # Jolt Physics (Stage 4 — rigid-body dynamics). Minimal: the `Jolt` static lib
 # only. CROSS_PLATFORM_DETERMINISTIC=ON because networking (Stage 7) re-sims
