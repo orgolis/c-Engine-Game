@@ -86,7 +86,7 @@ jobs:
             mp_check prediction_check audio_check profiler_check texture_check \
             model_check anim_check skinning_check skinned_import_check \
             ai_check ui_check world_check combat_check vfx_check crash_check \
-            script_check assetcook dedicated_server editor gws headless docgen
+            script_check assetcook dedicated_server editor gws headless docgen projectctl
 
       - name: Run the check suite
         # Driven through `gws test` rather than a shell loop. The tool owns

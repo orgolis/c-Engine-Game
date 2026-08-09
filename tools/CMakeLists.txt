@@ -254,3 +254,14 @@ target_compile_features(headless PRIVATE cxx_std_20)
 if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(headless PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
+
+# projectctl: read/modify a project's gameplay state from outside the editor
+# (issue #8). The agent-facing half of the CLI — operates on files so every
+# change is a diff. Driven by `gws project`.
+add_executable(projectctl projectctl/main.cpp)
+target_link_libraries(projectctl PRIVATE gws_ecs gws_reflection gws_serialization)
+target_include_directories(projectctl PRIVATE ${CMAKE_SOURCE_DIR})
+target_compile_features(projectctl PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(projectctl PRIVATE -static -static-libgcc -static-libstdc++)
+endif()

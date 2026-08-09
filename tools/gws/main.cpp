@@ -305,6 +305,28 @@ int cmd_docs(int argc, char** argv) {
     return rc == 0 ? 0 : 1;
 }
 
+// ------------------------------------------------------------------- project
+
+// Read/modify gameplay state from outside the editor — the agent-facing
+// surface. Separate binary because it links the ECS.
+int cmd_project(int argc, char** argv) {
+    const fs::path exe = g_exe_dir / "projectctl.exe";
+    if (!fs::exists(exe)) {
+        std::fprintf(stderr, "gws project: projectctl not found next to gws (build it first)\n");
+        return 1;
+    }
+    std::string cmd = "\"" + exe.string() + "\"";
+    for (int i = 2; i < argc; ++i) {
+        cmd += " ";
+        const std::string a = argv[i];
+        cmd += (a.find(' ') != std::string::npos) ? ("\"" + a + "\"") : a;
+    }
+    std::string output;
+    const int rc = run_capture(cmd, output);
+    std::printf("%s", output.c_str());
+    return rc == 0 ? 0 : 1;
+}
+
 // ----------------------------------------------------------------------- run
 
 // Headless simulation. Separate binary because it must LINK the ECS; gws itself
@@ -370,6 +392,11 @@ int usage() {
         "  validate [dir]       check a project manifest and the files it references\n"
         "  docs                 generate the component reference from the registry\n"
         "     --out <file>        write markdown to a file instead of stdout\n"
+        "  project <sub>        read/modify gameplay state outside the editor\n"
+        "     list    --load <f> [--json]\n"
+        "     add|remove --load <f> --save <f> --entity <save-id> --component <name>\n"
+        "     set     ... --field <name> --value <number>\n"
+        "     (no --save means nothing is written: queries are read-only)\n"
         "  run [--headless]     run the gameplay simulation with no window\n"
         "     --frames <n>        frames to simulate (default 60)\n"
         "     --rate <hz>         fixed timestep rate (default 60)\n"
@@ -402,6 +429,7 @@ int main(int argc, char** argv) {
     if (cmd == "cook")       return cmd_cook(argc, argv);
     if (cmd == "validate")   return cmd_validate(argc, argv);
     if (cmd == "docs")       return cmd_docs(argc, argv);
+    if (cmd == "project")    return cmd_project(argc, argv);
     if (cmd == "build")      return cmd_build(argc, argv);
     if (cmd == "run")        return cmd_run(argc, argv);
     if (cmd == "screenshot") return not_implemented("screenshot", "issue #64");

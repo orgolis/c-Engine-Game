@@ -88,6 +88,9 @@ int main(int argc, char** argv) {
         ecs::Regeneration regen;
         regen.entries.push_back(ecs::RegenEntry{"Health", 10.0f});  // +10 health / second
         world.add<ecs::Regeneration>(e, regen);
+        // SaveId makes the entity capturable by the save format, and is how
+        // external tools address it (gws project).
+        world.add<ecs::SaveId>(e, ecs::SaveId{1001});
 
         timers.every(0.25f, [&bus]() { bus.publish(ecs::GameplayEvent{"demo.tick"}); });
         loaded_from = "(demo world)";
@@ -128,6 +131,13 @@ int main(int argc, char** argv) {
     if (flag(argc, argv, "--demo"))
         for (auto e : world.view<ecs::AttributeSet>())
             demo_health = world.get<ecs::AttributeSet>(e).get("Health");
+    // --save-to writes the final world, so a run can produce a fixture for
+    // other tools (and for regression tests) rather than only reporting.
+    if (const char* sp = opt(argc, argv, "--save-to")) {
+        if (!ecs::save_game_file(world, sp))
+            std::fprintf(stderr, "headless: failed to write %s\n", sp);
+    }
+
     const float sim_seconds = static_cast<float>(frames) * dt;
 
     if (json) {
