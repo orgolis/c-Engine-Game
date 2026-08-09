@@ -110,9 +110,24 @@ developers notice is the ceiling they hit before the game is finished.
 stalls the render thread and produces a freeze. Epic built automatic PSO precaching specifically to attack it,
 and as of recent versions it still does not cover global shaders.
 
-**Where this bites us:** the shader pipeline is split — some passes compile GLSL from **inline strings at
-runtime**, others load precompiled SPIR-V headers (see [`reference_shader_pipeline`] practice in-tree). The
-runtime-compiled path is a stutter source waiting for a large scene.
+**Where this bites us — corrected 2026-08-10 after actually reading the call sites.** The shader pipeline is
+split: some passes compile GLSL from **inline strings at runtime**, others load precompiled SPIR-V headers.
+There are **17 runtime compilation sites** across 5 files (`vulkan_g_buffer`, `vulkan_lighting_pass`,
+`vulkan_post_processing`, `vulkan_shadow_map`, `vulkan_transparent_pass`).
+
+**All 17 run at pass-creation time**, inside `initialize()`/`create()` — *not* lazily on first draw. So this is
+a **startup and re-init cost**, not the mid-gameplay hitch described above. An earlier version of this document
+called it "a stutter source waiting for a large scene"; that was overstated and is corrected here.
+
+What it actually costs:
+- **editor cold start** — one of the budgeted inner-loop rows (§1.1), and currently unmeasured
+- **re-initialisation** — each pass owns its *own* `VulkanShaderRegistry`, so the compile cache does **not**
+  survive a pass being re-created; any path that rebuilds a pass pays the full cost again
+- a runtime dependency on glslang that a shipped game does not need
+
+Whether this engine *also* has the classic PSO hitch — pipeline state objects compiled on first **use** during
+gameplay — is a **separate, unestablished question**. Do not conflate the two: fixing the 17 sites improves
+startup, and says nothing about frame-time hitches.
 
 **Steps:** (1) inventory every runtime `compile_glsl` call site; (2) move all of them to precompiled SPIR-V;
 (3) add a pipeline cache warmed at load; (4) add a "PSO compiled during gameplay" counter to the profiler
