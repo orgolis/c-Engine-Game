@@ -482,12 +482,27 @@ genre-specific ones.
 
 ## Snapshot: where we stand
 
+*Updated 2026-08-09.*
+
 - **Core (C1–C5):** ✅ solid, with known integration debt (ECS-authoritative, reflection/serialization adoption, all-hot-systems-on-jobs).
-- **Simulation / Presentation / World / Connectivity / Scripting cores:** ✅ built + verified as libraries; several need **integration** (AI, world streaming) or **wiring onto entities** (combat, animation player, VFX GPU draw).
-- **Gameplay frameworks (G0–G11):** the biggest greenfield area — this is where "engine" becomes "action-RPG."
-  Nearly all 🔴. **Build order:** G0 (framework core) → G1/G2 (player + combat, ride Animation/Physics) →
-  G3/G4 (stats + items) → the rest layer on fast. G8 (NPCs) needs AI (M10) wired first.
-- **Advanced-rendering reach + platform:** the fidelity/scale tier.
+- **Simulation / Presentation / World / Connectivity / Scripting cores:** ✅ built + verified as libraries; several need **integration** (world streaming — no `editor/` file references it; AI bake-from-real-geometry) or **wiring onto entities** (animation player via a missing `SkinnedMeshComponent`, VFX GPU draw).
+- **Gameplay frameworks:** ✅ **G0–G16 have all landed** (2026-08-06 → 08-07), verified by `gameplay_check` (238 assertions). The earlier "nearly all 🔴, biggest greenfield area" framing is **superseded** — this section's per-module tables above are current. The work is now **depth over breadth**: four engine-side integrations (AI, animation→player, VFX GPU draw, Jolt vehicle constraints) gate five modules (G8, G16, G1, G12, G13).
+- **Advanced-rendering reach + platform:** the fidelity/scale tier, largely untouched (Stage 15).
+
+### Two module categories this catalog does not yet cover
+
+The catalog lists what the engine can **simulate**. Two further tracks decide whether a developer can actually
+build and ship with it, and are planned in their own docs:
+
+- **Tool modules** — [`DEVELOPER_EXPERIENCE.md`](DEVELOPER_EXPERIENCE.md): material graph, VFX graph, timeline,
+  curve/gradient editors, level-design toolkit, command palette, editor extensibility, **2D mode**, camera library,
+  NPR, web/XR/split-screen. *(The material graph in particular is an art-direction unlock: without it every game
+  made with this engine looks the same.)*
+- **Product modules** — [`PRODUCT_AND_ECOSYSTEM.md`](PRODUCT_AND_ECOSYSTEM.md): version control, package registry,
+  Ship/Steam pipeline, localisation, accessibility, telemetry, deterministic replay, the agent CLI, and the Hub.
+
+Both should eventually feed this catalog's toggle hierarchy — e.g. "2D", "Localisation" and "Replay" are exactly
+the kind of per-project modules the open questions below describe.
 
 ## Readiness: what the core must provide before gameplay (G-series)
 

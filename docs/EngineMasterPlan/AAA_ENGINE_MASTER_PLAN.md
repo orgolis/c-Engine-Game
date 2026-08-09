@@ -42,11 +42,18 @@ subsystem gets:
 ## 1. Current-state snapshot (the honest baseline)
 
 > ⚠️ **The pillar table further below is the 2026-06-12 planning baseline and is SUPERSEDED.** The
-> authoritative current status is the table immediately below (verified 2026-07-30) and
+> authoritative current status is the table immediately below (verified 2026-08-09) and
 > [`REMAINING_WORK.md`](REMAINING_WORK.md). The old table is kept only as the baseline the stages
 > were planned against.
 
-### Verified stage status — 2026-07-30
+> 📐 **These 16 stages are necessary but NOT sufficient.** They describe what the engine can *simulate*.
+> Two further tracks decide whether anyone ships a game with it, and are planned separately:
+> [`DEVELOPER_EXPERIENCE.md`](DEVELOPER_EXPERIENCE.md) — the engine as a **tool** (inner-loop speed, authoring
+> surfaces, performance ceilings, genre reach incl. 2D) — and
+> [`PRODUCT_AND_ECOSYSTEM.md`](PRODUCT_AND_ECOSYSTEM.md) — everything **around** the engine (source control,
+> packaging, shipping, telemetry, replay, the agent CLI, the Hub).
+
+### Verified stage status — 2026-08-09
 
 Legend: 🟢 done / acceptance met · 🟡 core built, integration or breadth remains · 🔴 not started.
 "Verified" = a headless `tools/*_check` (or live editor session) confirms it.
@@ -61,16 +68,21 @@ Legend: 🟢 done / acceptance met · 🟡 core built, integration or breadth re
 | 5 | Animation | 🟢 core done+verified | anim_check, skinning_check, skinned_import_check | motion matching + anim streaming (later-tier); graph editor = St11; player wiring = St10 |
 | 6 | Audio | 🟢 core acceptance met | audio_check | bus graph, reverb, DSP, streaming, procedural |
 | 7 | Networking | 🟢 **feature-complete** — live MP + headless server (physics+AOI+delta+interp) | net/repl/prediction/mp/**server_check (35)** + 2-process | depth: component-delta, rotation slerp, bandwidth-budget, zone handoff |
-| 8 | World | 🟡 core lib verified, **not integrated** | world_check (21/21) | wire to editor camera + async job load; HLOD; material/anim LOD; procedural gen |
-| 9 | AI | 🟡 nav + BT done ("start") | ai_check (21/21) | utility AI, GOAP, crowds; integration (bake-from-scene, path-follow, perception) |
-| 10 | Gameplay integration | 🟡 partial | combat_check, vfx_check; live | loot/itemization, vehicles, quests/progression; server-authoritative wiring |
-| 11 | Editor & tooling | 🟢 strong | live editor | + terrain editor + project **Hub** (now its own repo); anim-graph editor, visual scripting, richer debug viz |
+| 8 | World | 🟡 core lib verified, **not integrated** (no `editor/` file references it) | world_check (21/21) | wire to editor camera + async job load; HLOD; material/anim LOD; procedural gen |
+| 9 | AI | 🟡 nav + **builder** + **path-follow** + BT; live editor demo | ai_check (28) | bake from **real scene geometry** (demo uses a synthetic grid); perception; NPC BTs; combat AI; utility AI, GOAP, crowds, RVO |
+| 10 | Gameplay integration | 🟢 **G0–G16 all landed** | **gameplay_check (238)**; live | depth over breadth: per-bone hitboxes, dialogue/cutscenes, cameras, save slots; server-authoritative wiring; 4 engine-side integrations gate 5 modules |
+| 11 | Editor & tooling | 🟢 strong | live editor | + terrain editor + scene sky + **logic graph** + **gws_diagnostics** + project **Hub** (own repo); anim-graph editor, richer debug viz, and all of [`DEVELOPER_EXPERIENCE.md`](DEVELOPER_EXPERIENCE.md) |
 | 12 | Scripting | 🟢 done (exceeds plan) | script_check | Python + C++ + C# all built (plan asked only for Lua) |
 | 13 | Platform | 🔴 Windows-only | — | Linux (+ headless server), consoles, mobile |
 | 14 | Performance infra | 🟢 all 5 pillars built | profiler_check + overlay | captured-baseline regression gating |
 | 15 | Modern AAA | 🔴 mostly not started | — | Nanite-like geometry, Lumen-grade GI (DDGI is a step), crowd sim, world sim, destruction |
 
 **Core (Stages 0–3) ≈ 80–85% done** — the substrate is built and verified; the remainder is *adoption/integration* (editor + gameplay onto the new core, ECS as single source of truth) and *rendering breadth*, not greenfield.
+
+**Repo health (2026-08-09):** ⚠️ engine CI has **never passed** and clean clones cannot build — four vendored
+dependencies (`JoltPhysics`, `enet`, `tinyusdz`, `ufbx`) are committed as submodule gitlinks with **no
+`.gitmodules` entry**; the default branch `main` is **117 commits behind** the working branch. Full detail and the
+fix in [`REMAINING_WORK.md`](REMAINING_WORK.md) §Repo & release health.
 
 
 | Pillar            | State                                      | What exists in tree                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |

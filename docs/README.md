@@ -16,10 +16,19 @@ is the single, dependency-ordered roadmap. It maps the 15-pillar AAA engine plan
 When any other doc disagrees with reality, this one wins — and it verifies claims against
 `*.cpp`, not against status docs.
 
-It has two **companion** plans (still current, narrower scope):
+> **The 16 stages are necessary but not sufficient.** They describe what the engine can *simulate*. Two
+> further tracks — how the engine feels to **use**, and everything **around** it — are planned in
+> `DEVELOPER_EXPERIENCE.md` and `PRODUCT_AND_ECOSYSTEM.md` below. Finishing all 16 stages does not by
+> itself produce something a developer can ship a game with.
+
+It has these **companion** plans (all current):
 
 | Companion | Scope |
 |-----------|-------|
+| [`EngineMasterPlan/REMAINING_WORK.md`](EngineMasterPlan/REMAINING_WORK.md) | Verified done/remaining per stage, repo & release health, prioritized work |
+| [`EngineMasterPlan/ENGINE_FEATURE_CATALOG.md`](EngineMasterPlan/ENGINE_FEATURE_CATALOG.md) | The full module catalog (Core · M-series · G-series) + genre coverage matrix |
+| [`EngineMasterPlan/DEVELOPER_EXPERIENCE.md`](EngineMasterPlan/DEVELOPER_EXPERIENCE.md) | **Tool · Power · Variety** — inner-loop budgets, authoring surfaces (material/VFX/timeline graphs), performance ceilings (PSO stutter, upscaling), genre reach (2D, cameras, NPR, web, XR) |
+| [`EngineMasterPlan/PRODUCT_AND_ECOSYSTEM.md`](EngineMasterPlan/PRODUCT_AND_ECOSYSTEM.md) | Everything around the engine — version control, packaging, shipping, telemetry, deterministic replay, the agent CLI, GitHub integration, and the **Hub** |
 | [`EngineTechnicalRework/EXECUTION_CHECKLIST.md`](EngineTechnicalRework/EXECUTION_CHECKLIST.md) | Renderer rework, the OpenGL→Vulkan migration (Phases 0–7) |
 | [`phase-6-planning/IMPLEMENTATION-ROADMAP.md`](phase-6-planning/IMPLEMENTATION-ROADMAP.md) | Gameplay systems (character controller, abilities, networking) |
 
@@ -33,6 +42,10 @@ It has two **companion** plans (still current, narrower scope):
 
 ### `EngineMasterPlan/` — current roadmap
 - `AAA_ENGINE_MASTER_PLAN.md` — **the 16-stage living roadmap (read this first)**
+- `REMAINING_WORK.md` — verified done/remaining + repo health + prioritized work
+- `ENGINE_FEATURE_CATALOG.md` — full module catalog (Core / M-series / G-series) + genre matrix
+- `DEVELOPER_EXPERIENCE.md` — the engine as a **tool**: iteration speed, authoring surfaces, ceilings, genre reach
+- `PRODUCT_AND_ECOSYSTEM.md` — everything **around** the engine, including the Hub
 
 ### `EngineTechnicalRework/` — renderer rework planning (Phases 0–7)
 - `EXECUTION_CHECKLIST.md` — phase/week checklist for the Vulkan migration
