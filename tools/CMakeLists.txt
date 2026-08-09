@@ -265,3 +265,18 @@ target_compile_features(projectctl PRIVATE cxx_std_20)
 if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(projectctl PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
+
+# ---------------------------------------------------------------------------
+# Ship the command line with the engine.
+#
+# Without this the CLI exists only in a dev tree: anyone installing through the
+# Hub gets editor.exe and nothing else, so `gws` is unavailable to user
+# automation, to the samples repo's CI, and to the Hub's upgrade preflight —
+# which is specified to run the engine's own tooling against a candidate
+# version. The sibling tools are included because gws drives them: `cook` needs
+# assetcook, `run` needs headless, `project` needs projectctl, `docs` needs
+# docgen.
+#
+# CPACK_STRIP_FILES strips these in the package, so the download cost is small.
+install(TARGETS gws headless projectctl docgen assetcook
+        RUNTIME DESTINATION "${GWS_ENGINE_DEST}" COMPONENT engine)
