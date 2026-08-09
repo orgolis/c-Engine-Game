@@ -86,7 +86,7 @@ jobs:
             mp_check prediction_check audio_check profiler_check texture_check \
             model_check anim_check skinning_check skinned_import_check \
             ai_check ui_check world_check combat_check vfx_check crash_check \
-            script_check assetcook dedicated_server editor gws
+            script_check assetcook dedicated_server editor gws headless docgen
 
       - name: Run the check suite
         # Driven through `gws test` rather than a shell loop. The tool owns
@@ -105,6 +105,10 @@ jobs:
           # Tracked by #63.
           ./build/bin/gws.exe test | tee check-output.txt
           rc=$?
+          # Smoke-test the headless runner too: it must simulate and report,
+          # not merely link. --demo seeds a world so a green result means the
+          # gameplay systems actually ran.
+          ./build/bin/gws.exe run --demo --frames 120 --json || rc=1
           {
             echo "### Check suite"
             echo ""

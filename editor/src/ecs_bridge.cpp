@@ -1,5 +1,6 @@
 #include "ecs_bridge.h"
 #include "ecs/register_all.h"
+#include "ecs/gameplay_tick.h"
 
 #include "ecs/world.h"
 #include "ecs/components.h"
@@ -110,29 +111,10 @@ const glm::mat4* EcsSceneBridge::world_matrix(
 ecs::World& EcsSceneBridge::world() { return impl_->world; }
 
 void EcsSceneBridge::tick_gameplay(float dt) {
-    ecs::tick_effects(impl_->world, dt);                          // active effects: periodic ticks + expiry
-    ecs::tick_abilities(impl_->world, dt);                        // ability cooldowns
-    ecs::tick_regen(impl_->world, dt);                            // G3: resource regeneration
-    ecs::tick_state_machines(impl_->world, &impl_->event_bus, dt); // G1: FSM start/age/timeout -> events
-    // G2: frame-data combat runs at a FIXED 60 Hz (deterministic startup/active
-    // frames), regardless of render frame rate.
-    impl_->combat_accum += dt;
-    const float kCombatStep = 1.0f / 60.0f;
-    for (int guard = 0; impl_->combat_accum >= kCombatStep && guard < 8; ++guard) {
-        ecs::tick_combat(impl_->world, impl_->event_bus);
-        impl_->combat_accum -= kCombatStep;
-    }
-    ecs::tick_triggers(impl_->world, impl_->event_bus);           // enter/exit -> events
-    ecs::tick_harvest(impl_->world, dt);                          // G5: harvest-node respawn cooldowns
-    ecs::tick_spawners(impl_->world, dt, &impl_->event_bus);      // G8: encounter spawner requests
-    ecs::tick_weapons(impl_->world, dt);                          // G12: weapon cooldown / reload
-    ecs::tick_projectiles(impl_->world, dt, &impl_->event_bus);   // G12: projectile travel + hits
-    ecs::tick_race(impl_->world, dt, &impl_->event_bus);          // G13: race clocks / checkpoints / laps
-    ecs::tick_factory(impl_->world, dt, &impl_->event_bus);       // G14: extractors / machines / conveyors / power
-    ecs::tick_survival(impl_->world, dt, &impl_->event_bus);      // G15: needs / sanity / flashlight / fear
-    ecs::tick_stealth(impl_->world, dt, &impl_->event_bus);       // G16: vision cones / awareness
-    impl_->timer_mgr.tick(dt);                                   // one-shot / repeating timers
-    impl_->event_bus.flush();                                    // dispatch everything queued this frame
+    // Delegates to the shared frame so the headless runner (gws run) ticks
+    // exactly what play mode ticks. See engine/core/ecs/gameplay_tick.h.
+    ecs::tick_all_gameplay(impl_->world, impl_->event_bus, impl_->timer_mgr,
+                           impl_->combat_accum, dt);
 }
 
 ecs::GameplayEventBus& EcsSceneBridge::events() { return impl_->event_bus; }

@@ -243,3 +243,14 @@ target_compile_features(docgen PRIVATE cxx_std_20)
 if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(docgen PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
+
+# headless: run a project's gameplay simulation with no window or renderer
+# (issue #64). Driven by `gws run --headless`. Ticks through the SAME shared
+# gameplay frame the editor uses, so headless and play mode cannot diverge.
+add_executable(headless headless/main.cpp)
+target_link_libraries(headless PRIVATE gws_ecs gws_reflection gws_serialization)
+target_include_directories(headless PRIVATE ${CMAKE_SOURCE_DIR})
+target_compile_features(headless PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(headless PRIVATE -static -static-libgcc -static-libstdc++)
+endif()

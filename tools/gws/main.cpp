@@ -305,6 +305,31 @@ int cmd_docs(int argc, char** argv) {
     return rc == 0 ? 0 : 1;
 }
 
+// ----------------------------------------------------------------------- run
+
+// Headless simulation. Separate binary because it must LINK the ECS; gws itself
+// deliberately links nothing and drives sibling tools.
+int cmd_run(int argc, char** argv) {
+    const fs::path exe = g_exe_dir / "headless.exe";
+    if (!fs::exists(exe)) {
+        std::fprintf(stderr, "gws run: headless not found next to gws (build it first)\n");
+        return 1;
+    }
+    std::string cmd = "\"" + exe.string() + "\"";
+    // Forward everything after `run` except --headless, which is the default
+    // and only mode: there is no windowed mode to select here.
+    for (int i = 2; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--headless") == 0) continue;
+        cmd += " ";
+        const std::string a = argv[i];
+        cmd += (a.find(' ') != std::string::npos) ? ("\"" + a + "\"") : a;
+    }
+    std::string output;
+    const int rc = run_capture(cmd, output);
+    std::printf("%s", output.c_str());
+    return rc == 0 ? 0 : 1;
+}
+
 // --------------------------------------------------------------------- build
 
 int cmd_build(int argc, char** argv) {
@@ -343,11 +368,18 @@ int usage() {
         "     --gpu               also run checks that need a Vulkan device\n"
         "  cook [src] [out]     run the asset pipeline (default assets/models -> cooked)\n"
         "  validate [dir]       check a project manifest and the files it references\n"
+        "  docs                 generate the component reference from the registry\n"
+        "     --out <file>        write markdown to a file instead of stdout\n"
+        "  run [--headless]     run the gameplay simulation with no window\n"
+        "     --frames <n>        frames to simulate (default 60)\n"
+        "     --rate <hz>         fixed timestep rate (default 60)\n"
+        "     --load <file>       load a .gameplay / save file\n"
+        "     --project <dir>     load <dir>/scenes/main.gameplay if present\n"
+        "     --demo              seed a small world, as a self-check\n"
         "  build                build via a CMake preset\n"
         "     --preset <name>     default: windows-debug\n"
         "     --target <name>     default: all\n"
-        "  run --headless       NOT IMPLEMENTED (see --help output)\n"
-        "  screenshot           NOT IMPLEMENTED\n"
+        "  screenshot           NOT IMPLEMENTED — needs a Vulkan device (issue #64)\n"
         "\n"
         "every command accepts --json. exit code is the contract: 0 = success.\n",
         GWS_ENGINE_VERSION);
@@ -371,7 +403,7 @@ int main(int argc, char** argv) {
     if (cmd == "validate")   return cmd_validate(argc, argv);
     if (cmd == "docs")       return cmd_docs(argc, argv);
     if (cmd == "build")      return cmd_build(argc, argv);
-    if (cmd == "run")        return not_implemented("run", "issue #64");
+    if (cmd == "run")        return cmd_run(argc, argv);
     if (cmd == "screenshot") return not_implemented("screenshot", "issue #64");
 
     std::fprintf(stderr, "gws: unknown command '%s' (try --help)\n", cmd.c_str());
