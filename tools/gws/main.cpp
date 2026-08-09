@@ -22,6 +22,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -315,6 +317,191 @@ int cmd_docs(int argc, char** argv) {
     return rc == 0 ? 0 : 1;
 }
 
+// --------------------------------------------------------------------- crash
+
+// Crash reports -> a grouped, filable bug (issue #11).
+//
+// Deliberately NOT filed by the engine at crash time. Two reasons: a shipped
+// game must not carry credentials, and the moment of a crash is the worst
+// possible time to depend on the network. Instead the reports sit on disk and a
+// developer (or CI) files them with `gh`, which is already authenticated.
+//
+// Grouping is by SIGNATURE — a hash of the crashing frames — so one bug is one
+// issue no matter how many times it fires. Without that, an auto-filer is just
+// a way to create a hundred duplicate issues.
+
+// Frames from the OS, the driver and the validation layer are where a crash
+// SURFACES, not where it comes from. Including them in the signature would make
+// every unrelated crash inside ntdll look like the same bug.
+bool is_system_module(const std::string& m) {
+    static const char* sys[] = { "ntdll", "kernel32", "kernelbase", "user32", "gdi32",
+                                 "nvoglv", "amdvlk", "igdrcl", "vklayer", "vulkan-1",
+                                 "msvcrt", "ucrtbase", "combase", "win32u" };
+    std::string lower;
+    for (char c : m) lower += static_cast<char>(std::tolower(c));
+    for (const char* s : sys)
+        if (lower.find(s) != std::string::npos) return true;
+    return false;
+}
+
+struct CrashReport {
+    std::string path, time, app, reason, signature, top_frame;
+};
+
+// FNV-1a over the first few non-system "module+RVA" pairs. RVA rather than the
+// absolute address, because ASLR makes absolute addresses differ every run —
+// hashing those would give every crash a unique signature and group nothing.
+std::string crash_signature(const std::vector<std::pair<std::string, std::string>>& frames) {
+    uint64_t h = 1469598103934665603ULL;
+    int used = 0;
+    for (const auto& f : frames) {
+        if (is_system_module(f.first)) continue;
+        for (char c : f.first + "+" + f.second) {
+            h ^= static_cast<unsigned char>(c);
+            h *= 1099511628211ULL;
+        }
+        if (++used == 5) break;   // the top few frames identify the bug
+    }
+    if (used == 0) return "unknown";
+    char buf[24];
+    std::snprintf(buf, sizeof buf, "%08x", static_cast<unsigned>(h & 0xffffffffu));
+    return buf;
+}
+
+bool parse_crash_report(const fs::path& p, CrashReport& out) {
+    std::ifstream f(p);
+    if (!f) return false;
+    out.path = p.string();
+    std::string line;
+    std::vector<std::pair<std::string, std::string>> frames;
+    while (std::getline(f, line)) {
+        auto field = [&](const char* key, std::string& dst) {
+            const std::string k = std::string(key) + ":";
+            if (line.rfind(k, 0) == 0) {
+                std::string v = line.substr(k.size());
+                while (!v.empty() && (v.front() == ' ' || v.front() == '\t')) v.erase(v.begin());
+                while (!v.empty() && (v.back() == '\r' || v.back() == ' ')) v.pop_back();
+                dst = v;
+            }
+        };
+        field("time", out.time);
+        field("app", out.app);
+        field("reason", out.reason);
+
+        // "#00  editor.exe  +0x00298541  symbol  [0x...]"
+        if (line.size() > 3 && line[0] == '#') {
+            std::istringstream is(line);
+            std::string idx, mod, rva;
+            is >> idx >> mod >> rva;
+            if (!mod.empty() && rva.rfind("+0x", 0) == 0) {
+                frames.emplace_back(mod, rva);
+                if (out.top_frame.empty() && !is_system_module(mod))
+                    out.top_frame = mod + " " + rva;
+            }
+        }
+    }
+    out.signature = crash_signature(frames);
+    return !out.time.empty() || !frames.empty();
+}
+
+fs::path crash_dir(int argc, char** argv) {
+    if (const char* d = opt_value(argc, argv, "--dir")) return d;
+    if (const char* la = std::getenv("LOCALAPPDATA"))
+        return fs::path(la) / "GameWorldshaper" / "diagnostics";
+    return fs::path(".");
+}
+
+int cmd_crash(int argc, char** argv) {
+    const std::string sub  = argc > 2 && argv[2][0] != '-' ? argv[2] : "list";
+    const bool        json = has_flag(argc, argv, "--json");
+    const fs::path    dir  = crash_dir(argc, argv);
+
+    std::error_code ec;
+    std::vector<CrashReport> reports;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        if (!e.is_regular_file(ec)) continue;
+        const std::string name = e.path().filename().string();
+        if (name.rfind("crash_report_", 0) != 0) continue;
+        CrashReport r;
+        if (parse_crash_report(e.path(), r)) reports.push_back(std::move(r));
+    }
+    std::sort(reports.begin(), reports.end(),
+              [](const CrashReport& a, const CrashReport& b) { return a.time > b.time; });
+
+    if (sub == "list") {
+        if (json) {
+            std::printf("{\"dir\":\"%s\",\"reports\":[", json_escape(dir.string()).c_str());
+            for (size_t i = 0; i < reports.size(); ++i) {
+                const auto& r = reports[i];
+                std::printf("%s{\"signature\":\"%s\",\"time\":\"%s\",\"app\":\"%s\","
+                            "\"reason\":\"%s\",\"top_frame\":\"%s\",\"path\":\"%s\"}",
+                            i ? "," : "", r.signature.c_str(), json_escape(r.time).c_str(),
+                            json_escape(r.app).c_str(), json_escape(r.reason).c_str(),
+                            json_escape(r.top_frame).c_str(), json_escape(r.path).c_str());
+            }
+            std::printf("]}\n");
+        } else if (reports.empty()) {
+            std::printf("no crash reports in %s\n", dir.string().c_str());
+        } else {
+            std::printf("%zu crash report(s) in %s\n\n", reports.size(), dir.string().c_str());
+            for (const auto& r : reports)
+                std::printf("  [%s]  %s  %-22s  %s\n", r.signature.c_str(), r.time.c_str(),
+                            r.reason.c_str(), r.top_frame.c_str());
+            std::printf("\ngrouped by signature: identical signatures are the same bug.\n");
+        }
+        return 0;
+    }
+
+    if (sub == "file") {
+        const char* repo = opt_value(argc, argv, "--repo");
+        if (!repo) repo = "orgolis/c-Engine-Game";
+        if (reports.empty()) { std::printf("nothing to file\n"); return 0; }
+
+        // One issue per signature, not per crash.
+        std::vector<std::string> seen;
+        int filed = 0, skipped = 0;
+        for (const auto& r : reports) {
+            if (std::find(seen.begin(), seen.end(), r.signature) != seen.end()) { ++skipped; continue; }
+            seen.push_back(r.signature);
+
+            std::string q;
+            const int rc = run_capture("gh issue list --repo " + std::string(repo) +
+                                       " --search \"crash-sig:" + r.signature +
+                                       "\" --state all --json number --jq \".[0].number\"", q);
+            const bool exists = (rc == 0 && !last_line(q).empty() && last_line(q) != "null");
+            if (exists) {
+                std::printf("  [%s] already filed as #%s\n", r.signature.c_str(), last_line(q).c_str());
+                ++skipped;
+                continue;
+            }
+            if (has_flag(argc, argv, "--dry-run")) {
+                std::printf("  [%s] would file: %s in %s\n", r.signature.c_str(),
+                            r.reason.c_str(), r.top_frame.c_str());
+                ++filed;
+                continue;
+            }
+            std::string body = "Auto-filed from a local crash report.\n\ncrash-sig:" + r.signature +
+                               "\n\n| | |\n|---|---|\n| time | " + r.time + " |\n| app | " + r.app +
+                               " |\n| reason | " + r.reason + " |\n| top frame | `" + r.top_frame +
+                               "` |\n\nSymbolize against the matching release's symbols asset.\n";
+            std::string bodyfile = (fs::temp_directory_path() / ("gws_crash_" + r.signature + ".md")).string();
+            { std::ofstream bf(bodyfile); bf << body; }
+            std::string out2;
+            const int rc2 = run_capture("gh issue create --repo " + std::string(repo) +
+                                        " --title \"Crash: " + r.reason + " [" + r.signature + "]\"" +
+                                        " --body-file \"" + bodyfile + "\" --label bug", out2);
+            std::printf("  [%s] %s\n", r.signature.c_str(),
+                        rc2 == 0 ? last_line(out2).c_str() : "FAILED to file");
+            if (rc2 == 0) ++filed;
+        }
+        std::printf("\n%d filed, %d skipped (already known or duplicate signature)\n", filed, skipped);
+        return 0;
+    }
+
+    std::fprintf(stderr, "gws crash: unknown subcommand '%s' (expected list or file)\n", sub.c_str());
+    return 2;
+}
+
 // ------------------------------------------------------------------- project
 
 // Read/modify gameplay state from outside the editor — the agent-facing
@@ -440,6 +627,7 @@ int main(int argc, char** argv) {
     if (cmd == "validate")   return cmd_validate(argc, argv);
     if (cmd == "docs")       return cmd_docs(argc, argv);
     if (cmd == "project")    return cmd_project(argc, argv);
+    if (cmd == "crash")      return cmd_crash(argc, argv);
     if (cmd == "build")      return cmd_build(argc, argv);
     if (cmd == "run")        return cmd_run(argc, argv);
     if (cmd == "screenshot") return not_implemented("screenshot", "issue #64");
