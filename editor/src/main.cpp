@@ -8,6 +8,7 @@
 
 // gws Vulkan renderer
 #include "vulkan/vulkan_device.h"
+#include "vulkan/vulkan_shader_registry.h"   // --startup-probe cost attribution
 #include "vulkan/vulkan_swapchain.h"
 #include "vulkan/vulkan_g_buffer.h"
 #include "vulkan/vulkan_lighting_pass.h"
@@ -125,6 +126,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cfloat>
 #include <cmath>
@@ -4064,6 +4066,7 @@ int main(int argc, char** argv) {
     uint16_t    startup_join_port = 0;
     uint16_t    startup_host_port = 0;
     bool        game_window_mode  = false;
+    bool        startup_probe     = false;   // --startup-probe: time init, then exit
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--net-host" && i + 1 < argc) {
@@ -4081,8 +4084,16 @@ int main(int argc, char** argv) {
             startup_project = argv[++i];
         } else if (a == "--net-game") {
             game_window_mode = true;
+        } else if (a == "--startup-probe") {
+            // Initialise everything, report how long it took, then exit without
+            // entering the main loop. This is what makes "editor cold start" —
+            // a budgeted inner-loop row — measurable at all; without it the
+            // number can only be eyeballed with a stopwatch.
+            startup_probe = true;
         }
     }
+
+    const auto gws_startup_t0 = std::chrono::steady_clock::now();
 
     try {
         spdlog::set_level(spdlog::level::info);
@@ -5252,6 +5263,25 @@ int main(int argc, char** argv) {
         // shared cookie slot — multiple cookie-spots use the last one bound.
         std::unique_ptr<gws::renderer::gpu::Texture> cookie_tex;
         std::string cookie_path_loaded;
+
+        // --startup-probe: everything above is initialisation. Report the cost
+        // and leave without rendering a frame, so cold start is a number rather
+        // than an impression. See innerloop_check / DEVELOPER_EXPERIENCE.md §1.1.
+        if (startup_probe) {
+            const double ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - gws_startup_t0).count();
+            // Attribute the cost: how much of cold start is runtime GLSL
+            // compilation? This is the number that decides whether converting
+            // the 17 compile_glsl sites to precompiled SPIR-V is worth doing
+            // (issue #16) — rather than assuming it from another engine's
+            // documented problem, which is how that claim got overstated.
+            const double gms = gws::renderer::gpu::gws_runtime_glsl_ms();
+            std::printf("{\"startup_ms\":%.1f,\"runtime_glsl_ms\":%.1f,\"runtime_glsl_count\":%d,\"glsl_share_pct\":%.1f}\n",
+                        ms, gms, gws::renderer::gpu::gws_runtime_glsl_count(),
+                        ms > 0.0 ? (gms / ms * 100.0) : 0.0);
+            spdlog::info("[startup-probe] initialised in {:.1f} ms; exiting without entering the main loop", ms);
+            return 0;
+        }
 
         while (!glfwWindowShouldClose(glfw_window)) {
             glfwPollEvents();

@@ -3,6 +3,7 @@
  * @brief Shader registry implementation
  */
 
+#include <chrono>
 #include "vulkan_shader_registry.h"
 #include "vulkan_device.h"
 #include <spdlog/spdlog.h>
@@ -30,6 +31,17 @@ bool VulkanShaderRegistry::initialize(VulkanDevice* device) {
     return true;
 }
 
+// Runtime-GLSL cost accounting. 17 call sites compile GLSL at pass-creation
+// time; this measures what that actually costs so the decision to convert them
+// to precompiled SPIR-V is evidence-led rather than inherited from another
+// engine's problem. Read by the editor's --startup-probe.
+namespace {
+    double g_glsl_compile_ms = 0.0;
+    int    g_glsl_compiles   = 0;
+}
+double gws_runtime_glsl_ms()     { return g_glsl_compile_ms; }
+int    gws_runtime_glsl_count()  { return g_glsl_compiles; }
+
 std::shared_ptr<ShaderModule> VulkanShaderRegistry::compile_glsl(const std::string& source,
                                                                  ShaderStage stage,
                                                                  const std::string& name) {
@@ -38,11 +50,36 @@ std::shared_ptr<ShaderModule> VulkanShaderRegistry::compile_glsl(const std::stri
     if (cached) {
         return cached;
     }
+    const auto gws_t0 = std::chrono::steady_clock::now();
+    struct Acc {
+        std::chrono::steady_clock::time_point t;
+        ~Acc() {
+            g_glsl_compile_ms += std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - t).count();
+            ++g_glsl_compiles;
+        }
+    } gws_acc{gws_t0};
     
     try {
         // Compile GLSL to SPIR-V
         auto spirv = compile_glsl_to_spirv(source, stage, name);
-        
+
+        // Empty means "runtime GLSL compilation is not available in this build"
+        // — an expected condition, not a failure. The caller falls back to
+        // precompiled SPIR-V. Reported ONCE at info level: previously each of
+        // the 17 call sites logged `[error] Failed to compile shader ...` on
+        // every startup, 14 lines of noise describing normal behaviour. An
+        // error channel that always fires is an error channel nobody reads.
+        if (spirv.empty()) {
+            static bool announced = false;
+            if (!announced) {
+                announced = true;
+                spdlog::info("[shaders] runtime GLSL compilation unavailable in this build; "
+                             "using precompiled SPIR-V (this is the normal path)");
+            }
+            return nullptr;
+        }
+
         // Create shader module
         VkShaderModuleCreateInfo create_info{};
         create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -330,8 +367,14 @@ std::vector<uint32_t> VulkanShaderRegistry::compile_glsl_to_spirv(const std::str
     return spirv;
 
 #else
-    (void)source; (void)stage;
-    throw std::runtime_error("GLSL->SPIR-V compilation unavailable (built with GCC). Shader: " + name);
+    // Not an error, and not exceptional. This toolchain builds without glslang,
+    // so runtime GLSL compilation is simply unavailable and every call site
+    // falls back to precompiled SPIR-V — which is the path the engine actually
+    // ships on. Returning empty (rather than throwing) says "unavailable" once,
+    // instead of raising 14 exceptions per startup that are all caught and all
+    // logged as errors. See the note in compile_glsl().
+    (void)source; (void)stage; (void)name;
+    return {};
 #endif
 }
 

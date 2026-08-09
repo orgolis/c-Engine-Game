@@ -146,4 +146,10 @@ private:
     void cleanup_cache();
 };
 
+// Runtime-GLSL cost accounting (see the .cpp). Exposed so the editor's
+// --startup-probe can attribute cold start, which is what decides whether the
+// 17 compile_glsl call sites are worth converting to precompiled SPIR-V (#16).
+double gws_runtime_glsl_ms();
+int    gws_runtime_glsl_count();
+
 } // namespace gws::renderer::gpu
