@@ -36,9 +36,12 @@ Makefile
 !third_party/*.cmake
 !cmake/*.cmake
 
-# Build artifacts
-bin/
-lib/
+# Build artifacts. Anchored to the repo root with a leading slash: an
+# unanchored `lib/` also matched third_party/zstd/lib/, which is zstd's SOURCE
+# tree, so 103 vendored source files were silently never committed and clean
+# clones failed at `add_library(zstd ...)` with "No SOURCES given to target".
+/bin/
+/lib/
 *.o
 *.a
 *.so
@@ -69,3 +72,7 @@ final_build.txt
 .vscode/settings.json
 .vscode/launch.json
 .vscode/tasks.json
+
+# Editor/runtime artifacts
+editor.ini
+script_cache/
