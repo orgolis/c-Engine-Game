@@ -1,0 +1,134 @@
+# ============================================================================
+# Continuous integration — build the tree and run the headless check suite.
+#
+# WHY THIS EXISTS: `release-engine.yml` only triggers on `v*` tags, so nothing
+# validated the tree between releases. That blind spot let a broken clean clone
+# survive twenty consecutive releases (see issue #2). This workflow runs on
+# every pull request and every push to main, so breakage surfaces immediately
+# instead of at release time.
+#
+# It builds with the project's canonical toolchain (MinGW-UCRT g++ + Ninja +
+# Vulkan SDK) rather than the pinned absolute paths in CMakePresets.json, which
+# point at a local Strawberry install that does not exist on a runner.
+#
+# NOTE for editors of this file: never put `shell:` on a `uses:` step. That is
+# invalid and fails the run in 0s — it has bitten this repo twice before.
+# ============================================================================
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# A newer push to the same branch/PR supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-check:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: msys2 {0}   # g++/ninja/cmake live in the MSYS2 environment
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive   # JoltPhysics, enet, tinyusdz, ufbx, ...
+
+      - name: Set up MinGW toolchain (g++, ninja, cmake)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64        # matches the local toolchain's UCRT runtime
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+
+      - name: Install the Vulkan SDK
+        # Required even for the headless checks: the root CMakeLists calls
+        # find_package(Vulkan REQUIRED), so configure fails without it.
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.4.341.1
+          install_runtime: true
+          cache: true
+
+      - name: Report toolchain versions
+        run: |
+          g++ --version | head -1
+          cmake --version | head -1
+          ninja --version
+          echo "VULKAN_SDK=${VULKAN_SDK}"
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+
+      - name: Build the check suite
+        run: |
+          cmake --build build -j $(nproc) --target \
+            gameplay_check physics_check net_check repl_check server_check \
+            mp_check prediction_check audio_check profiler_check texture_check \
+            model_check anim_check skinning_check skinned_import_check \
+            ai_check ui_check world_check combat_check vfx_check crash_check \
+            script_check assetcook dedicated_server
+
+      - name: Run the check suite
+        # Runs every check, records pass/fail, and fails at the end with a
+        # summary — so one CI run reports ALL breakage rather than stopping at
+        # the first failure.
+        run: |
+          set +e
+          checks="gameplay_check physics_check net_check repl_check server_check \
+                  mp_check prediction_check audio_check profiler_check texture_check \
+                  model_check anim_check skinning_check skinned_import_check \
+                  ai_check ui_check world_check combat_check vfx_check crash_check \
+                  script_check"
+          pass=0; fail=0; failed=""
+          for c in $checks; do
+            exe="build/bin/${c}.exe"
+            if [ ! -f "$exe" ]; then
+              echo "::error title=${c}::binary not built at ${exe}"
+              fail=$((fail+1)); failed="${failed} ${c}(missing)"; continue
+            fi
+            echo "::group::${c}"
+            timeout 600 "./${exe}"
+            rc=$?
+            echo "::endgroup::"
+            if [ $rc -eq 0 ]; then
+              echo "PASS  ${c}"; pass=$((pass+1))
+            else
+              echo "::error title=${c}::exited ${rc}"
+              echo "FAIL  ${c} (exit ${rc})"; fail=$((fail+1)); failed="${failed} ${c}(${rc})"
+            fi
+          done
+          echo ""
+          echo "================ check suite: ${pass} passed, ${fail} failed ================"
+          if [ $fail -gt 0 ]; then
+            echo "failed:${failed}"
+            echo "### Check suite: ${pass} passed, ${fail} failed" >> "$GITHUB_STEP_SUMMARY"
+            echo "Failed:${failed}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "### Check suite: all ${pass} passed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload crash-report artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics
+          path: |
+            build/bin/*.log
+            ${{ env.LOCALAPPDATA }}/GameWorldshaper/diagnostics/**
+          if-no-files-found: ignore
+          retention-days: 7
