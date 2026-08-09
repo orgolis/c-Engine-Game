@@ -27,7 +27,14 @@ CMakeUserPresets.json
 CMakeLists.txt.user
 cmake_install.cmake
 Makefile
+# Generated CMake fragments. Build directories are already ignored above, so
+# this only catches strays from an in-source configure.
 *.cmake
+# ...but hand-written CMake modules are SOURCE and must be tracked. Without
+# these negations a real module is silently invisible to git — the same class
+# of bug that left third_party/ufbx's build glue out of every clone.
+!third_party/*.cmake
+!cmake/*.cmake
 
 # Build artifacts
 bin/

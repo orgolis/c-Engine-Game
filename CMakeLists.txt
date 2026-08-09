@@ -116,8 +116,10 @@ add_subdirectory(third_party/glad)
 # tinygltf (glTF 2.0 loader)
 add_subdirectory(third_party/tinygltf)
 
-# ufbx (single-file FBX loader — feeds the asset cooker's FBX importer)
-add_subdirectory(third_party/ufbx)
+# ufbx (single-file FBX loader — feeds the asset cooker's FBX importer).
+# Upstream ships no CMakeLists.txt, so our build glue lives beside the submodule
+# rather than inside it — see third_party/ufbx.cmake for why.
+include(third_party/ufbx.cmake)
 
 # ENet (reliable-UDP transport — Stage 7 networking)
 add_subdirectory(third_party/enet)
@@ -145,6 +147,31 @@ set(TINYUSDZ_WITH_TOOL_USDA_PARSER OFF CACHE BOOL "" FORCE)
 set(TINYUSDZ_WITH_TOOL_USDC_PARSER OFF CACHE BOOL "" FORCE)
 set(TINYUSDZ_NO_WERROR            ON  CACHE BOOL "" FORCE)
 set(TINYUSDZ_CXX_EXCEPTIONS       ON  CACHE BOOL "" FORCE)
+
+# Vendor fix-up (idempotent, applied at configure time).
+#
+# Upstream passes "-Wa, -mbig-obj" to MinGW GCC. The space makes gcc treat
+# "-mbig-obj" as a separate argument, which the assembler then reads as a
+# filename and the build dies. It must be "-Wa,-mbig-obj".
+#
+# This used to be an UNCOMMITTED hand edit inside the submodule working tree,
+# which meant it existed only on this machine — a fresh clone got the broken
+# flag and could not build. Doing it here makes the fix travel with the repo.
+if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+    set(_tinyusdz_cml "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinyusdz/CMakeLists.txt")
+    if(EXISTS "${_tinyusdz_cml}")
+        file(READ "${_tinyusdz_cml}" _tinyusdz_src)
+        string(FIND "${_tinyusdz_src}" "\"-Wa, -mbig-obj\"" _tinyusdz_bad)
+        if(NOT _tinyusdz_bad EQUAL -1)
+            string(REPLACE "\"-Wa, -mbig-obj\"" "\"-Wa,-mbig-obj\"" _tinyusdz_src "${_tinyusdz_src}")
+            file(WRITE "${_tinyusdz_cml}" "${_tinyusdz_src}")
+            message(STATUS "tinyusdz: patched '-Wa, -mbig-obj' -> '-Wa,-mbig-obj' (MinGW assembler)")
+        endif()
+        unset(_tinyusdz_src)
+    endif()
+    unset(_tinyusdz_cml)
+endif()
+
 add_subdirectory(third_party/tinyusdz)
 
 # Jolt Physics (Stage 4 — rigid-body dynamics). Minimal: the `Jolt` static lib
