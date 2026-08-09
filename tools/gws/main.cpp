@@ -65,8 +65,16 @@ std::string json_escape(const std::string& s) {
 // Output is captured rather than inherited so that --json stays parseable.
 int run_capture(const std::string& cmd, std::string& out) {
     out.clear();
+    // `cmd` must arrive with its own internal quoting already correct.
     // 2>&1 so a tool that reports failures on stderr is not silently lost.
-    const std::string full = "\"" + cmd + "\" 2>&1";
+    std::string full = cmd + " 2>&1";
+#ifdef _WIN32
+    // cmd.exe strips the OUTERMOST pair of quotes from the command line. With a
+    // quoted program path and a quoted argument, that strip lands on the wrong
+    // pair and a path containing a space ("ProjectSchizo - Copy") breaks apart.
+    // Wrapping the whole line in one more pair is the documented remedy.
+    full = "\"" + full + "\"";
+#endif
 #ifdef _WIN32
     FILE* p = _popen(full.c_str(), "r");
 #else
@@ -171,7 +179,7 @@ int cmd_test(int argc, char** argv) {
         } else {
             const fs::path exe = g_exe_dir / (name + ".exe");
             std::string out;
-            r.rc = run_capture(exe.string(), out);
+            r.rc = run_capture("\"" + exe.string() + "\"", out);
             r.summary = last_line(out);
             if (r.rc == 0) ++pass; else ++fail;
             if (!json) {
@@ -214,7 +222,7 @@ int cmd_cook(int argc, char** argv) {
         return 1;
     }
     std::string output;
-    const int rc = run_capture(cooker.string() + "\" \"" + src + "\" \"" + out, output);
+    const int rc = run_capture("\"" + cooker.string() + "\" \"" + src + "\" \"" + out + "\"", output);
     if (json) {
         std::printf("{\"ok\":%s,\"exit\":%d,\"src\":\"%s\",\"out\":\"%s\",\"summary\":\"%s\"}\n",
                     rc == 0 ? "true" : "false", rc,
@@ -275,6 +283,26 @@ int cmd_validate(int argc, char** argv) {
         for (const auto& p : problems) std::printf("problem: %s\n", p.c_str());
     }
     return problems.empty() ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------- docs
+
+// Generated from the authorable component registry — see tools/docgen. Kept as
+// a separate binary because it must LINK the ECS to read the registry, while
+// gws itself deliberately links nothing and only drives sibling tools.
+int cmd_docs(int argc, char** argv) {
+    const char* out = opt_value(argc, argv, "--out");
+    const fs::path gen = g_exe_dir / "docgen.exe";
+    if (!fs::exists(gen)) {
+        std::fprintf(stderr, "gws docs: docgen not found next to gws (build it first)\n");
+        return 1;
+    }
+    std::string cmd = "\"" + gen.string() + "\"";
+    if (out) { cmd += " --out \""; cmd += out; cmd += "\""; }
+    std::string output;
+    const int rc = run_capture(cmd, output);
+    std::printf("%s", output.c_str());
+    return rc == 0 ? 0 : 1;
 }
 
 // --------------------------------------------------------------------- build
@@ -341,6 +369,7 @@ int main(int argc, char** argv) {
     if (cmd == "test")       return cmd_test(argc, argv);
     if (cmd == "cook")       return cmd_cook(argc, argv);
     if (cmd == "validate")   return cmd_validate(argc, argv);
+    if (cmd == "docs")       return cmd_docs(argc, argv);
     if (cmd == "build")      return cmd_build(argc, argv);
     if (cmd == "run")        return not_implemented("run", "issue #64");
     if (cmd == "screenshot") return not_implemented("screenshot", "issue #64");

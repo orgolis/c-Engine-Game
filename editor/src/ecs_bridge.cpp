@@ -1,4 +1,5 @@
 #include "ecs_bridge.h"
+#include "ecs/register_all.h"
 
 #include "ecs/world.h"
 #include "ecs/components.h"
@@ -448,25 +449,11 @@ size_t EcsSceneBridge::draw_benchmark(size_t n, double& out_ms) {
 }
 
 EcsSceneBridge::EcsSceneBridge() : impl_(std::make_unique<Impl>()) {
-    ecs::register_core_components();
-    ecs::register_attribute_component();   // G0: AttributeSet is authorable
-    ecs::register_tags_component();        // G0: GameplayTags is authorable
-    ecs::register_trigger_components();    // G0: Trigger Volume + Trigger Actor authorable
-    ecs::register_state_machine_component(); // G1: State Machine authorable
-    ecs::register_combat_component();       // G2: Combat Actor authorable
-    ecs::register_progression_components(); // G3: Derived Stats / Regeneration / Progression
-    ecs::register_skill_components();       // G3: Skill Tree / Unlocked Skills
-    ecs::register_inventory_components();    // G4: Inventory / Equipment
-    ecs::register_economy_components();       // G5: Vendor / Harvest Node
-    ecs::register_interaction_components();    // G7: Interactable / Pickup
-    ecs::register_quest_component();          // G6: Quest Log
-    ecs::register_npc_components();            // G8: Faction / Aggro / Spawner
-    ecs::register_persistence_components();    // G9: Save Id / World Flags
-    ecs::register_weapon_components();          // G12: Weapon
-    ecs::register_vehicle_components();          // G13: Vehicle / Race Progress
-    ecs::register_building_components();          // G14: Building / Extractor / Machine / Generator / Conveyor
-    ecs::register_survival_components();          // G15: Needs / Sanity / Flashlight / Light Source / Fear Source
-    ecs::register_stealth_components();           // G16: Vision Cone / Awareness / Stealth / Hearing
+    // ONE registration entry point, shared with tools/gameplay_check and the
+    // generated component reference (tools/docgen). The list used to be
+    // duplicated here and in gameplay_check, so a new module could silently
+    // be missing from one of them. See engine/core/ecs/register_all.h.
+    ecs::register_all_components();
 
     // G6: route every gameplay event into quest progress (deferred flush = safe).
     impl_->event_bus.subscribe("*", [impl = impl_.get()](const ecs::GameplayEvent& ev) {

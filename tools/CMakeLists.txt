@@ -232,3 +232,14 @@ target_compile_definitions(gws PRIVATE GWS_ENGINE_VERSION="${PROJECT_VERSION}")
 if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(gws PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
+
+# docgen: the component reference, generated from the authorable registry
+# (issue #10). Documentation that cannot drift — it reads the same registration
+# the inspector, the save sidecar and replication read. Driven by `gws docs`.
+add_executable(docgen docgen/main.cpp)
+target_link_libraries(docgen PRIVATE gws_ecs gws_reflection)
+target_include_directories(docgen PRIVATE ${CMAKE_SOURCE_DIR})
+target_compile_features(docgen PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(docgen PRIVATE -static -static-libgcc -static-libstdc++)
+endif()

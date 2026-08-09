@@ -21,6 +21,7 @@
 #include "component_serialize.h"   // serialize_component/deserialize_component (dispatch)
 #include "reflection/reflection.h"
 
+#include <string_view>
 #include <vector>
 
 namespace schizo::ecs {
@@ -36,6 +37,13 @@ struct AuthorableComponent {
     // with a dynamic list). null -> the generic reflection path over `type` is used.
     void (*serialize)  (const void*, std::vector<uint8_t>&) = nullptr;
     void (*deserialize)(void*, const uint8_t*, size_t)      = nullptr;
+    // The underlying C++ type, recorded even when `type` is null. Data-driven
+    // components hold dynamic contents (vectors, strings) that the POD
+    // reflection path cannot describe, so they have no TypeInfo — but the
+    // generated reference (tools/docgen) can still name and size them, which
+    // beats documenting them as an anonymous blob.
+    std::string_view cpp_type{};
+    size_t           cpp_size = 0;
 };
 
 // Build an entry from a POD component type. Captureless lambdas decay to function
@@ -49,6 +57,8 @@ inline AuthorableComponent make_authorable(const char* name) {
         [](World& w, Entity e) { w.add<T>(e, T{}); },
         [](World& w, Entity e) { if (w.has<T>(e)) w.remove<T>(e); },
         [](World& w, Entity e) -> void* { return static_cast<void*>(w.try_get<T>(e)); },
+        nullptr, nullptr,
+        gws::reflect::type_name<T>(), sizeof(T),
     };
 }
 
@@ -67,6 +77,7 @@ inline AuthorableComponent make_authorable_custom(
         [](World& w, Entity e) { if (w.has<T>(e)) w.remove<T>(e); },
         [](World& w, Entity e) -> void* { return static_cast<void*>(w.try_get<T>(e)); },
         ser, deser,
+        gws::reflect::type_name<T>(), sizeof(T),
     };
 }
 
