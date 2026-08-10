@@ -113,7 +113,7 @@ Every item here finishes something already built and verified. Highest value per
 
 | # | Item | Repo | Notes |
 |---|---|---|---|
-| 3.1 | **Adopt `parallel_for`** in culling, LOD and animation sampling | engine | Verified job system, currently idle while these run single-threaded |
+| 3.1 | ~~**Adopt `parallel_for`** in culling, LOD and animation sampling~~ | engine | ✅ **Done — and the item was two-thirds wrong** (`258031e`). **Culling** was genuinely serial and is now parallel above 2048 items (the test fans out; the compaction stays serial because draw order must remain stable). **LOD** is not applicable: `select_lod` runs *inside* the command-buffer recording loop, which is serial by construction, and is a few comparisons over a usually-one-element list. **Animation sampling does not run at all** — no `Animator` is ever instantiated and `SkinnedMeshComponent` does not exist, so this is blocked on 3.8, not on threading. Draw collection and AABB computation, which the item did not mention, were already parallel. Threshold measured by `cullbench_check`, which also asserts both paths agree on what is visible |
 | 3.2 | **Enable the GPU-driven path** — `gpu_driven_enabled` is false and nothing sets it true | engine | The indirect draw code already exists and is referenced by the HZB culler |
 | 3.3 | **World-streaming integration** — camera feed, async load on jobs, origin rebase on the live scene | engine | 21 verified assertions, zero editor references |
 | 3.4 | **AI: bake from real geometry** — feed terrain chunks + static colliders to `NavMeshBuilder` | engine | Builder and follower already work; the demo bakes a synthetic grid |

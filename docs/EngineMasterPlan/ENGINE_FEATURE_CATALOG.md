@@ -103,7 +103,7 @@ The base renderer every project draws through.
 | Docking layout, embedded terminal (ConPTY), log output | ✅ | |
 | Play-in-editor | ✅ | |
 | **Project system**: modular feature selection + **Hub** (versioned installs, updates) | ✅ | Hub is its own repo/product |
-| Performance overlay + frame capture | ✅ | baseline regression gating 🔴 |
+| Performance overlay + frame capture | ✅ | baseline regression gating ✅ — `innerloop_check` publishes 7 measured rows on every CI build and gates at 4× budget |
 
 ---
 
