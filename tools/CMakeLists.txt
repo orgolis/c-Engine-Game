@@ -19,6 +19,17 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# undo_check: undo must act on the entity you acted on. Pins the scene-level
+# invariants the editor commands depend on — id-based lookup (names are not
+# unique) and identity preserved across remove/re-add, which is what makes
+# delete-undo correct.
+add_executable(undo_check undo_check/main.cpp)
+target_link_libraries(undo_check PRIVATE scene)
+target_compile_features(undo_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(undo_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # taskrunner_check: background work must not freeze the editor, and its
 # completion callbacks must land on the editor thread. Both are the kind of
 # property that seems fine until a driver crash appears days later in code that

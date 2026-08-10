@@ -453,6 +453,71 @@ static uint64_t AudioGuidFromPath(const std::string& p) {
 // that is always on screen showing "0 tasks" is furniture; one that appears
 // exactly when the editor is busy is information.
 // ============================================================================
+// ============================================================================
+// Undo support for entity creation.
+//
+// Every "Create X" command used to undo itself with
+// `scene->GetEntityByName("Cube")`. Names are NOT unique -- CreateEntity does
+// not enforce it and GetEntityByName returns the FIRST match -- so creating two
+// cubes and pressing undo removed the WRONG one, and renaming the new entity
+// first made undo silently do nothing.
+//
+// Undo that deletes the wrong object is worse than no undo, because the user
+// trusts it. So creation records the id it actually produced and undo removes
+// exactly that entity. Redo re-runs creation and overwrites the id, which is
+// why the cell is shared rather than captured by value.
+// ============================================================================
+static std::shared_ptr<schizo::scene::Entity> FindEntityById(
+        const std::shared_ptr<schizo::scene::Scene>& scene, uint32_t id) {
+    if (!scene || !id) return nullptr;
+    for (const auto& e : scene->GetEntities())
+        if (e && e->GetId() == id) return e;
+    return nullptr;
+}
+
+// ============================================================================
+// Undo support for entity deletion — the case people actually need.
+//
+// Deleting was NOT undoable at all: all three paths (hierarchy context menu,
+// the inspector button, the Delete key) called scene->RemoveEntity directly.
+// Undo covering "Create Cube" but not "delete the thing I spent an hour on" is
+// the wrong way round.
+//
+// This is cheap because RemoveEntity only UNREGISTERS: entities are held by
+// shared_ptr, so the object survives as long as something references it. The
+// command holds that reference, which keeps the deleted entity alive on the
+// undo stack, and AddEntity is its exact inverse. Redo re-removes the same
+// object, so identity — and therefore the ECS mapping keyed on its Transform —
+// is preserved across any number of undo/redo cycles.
+//
+// Deliberately symmetric with existing behaviour: RemoveEntity does not touch
+// children, so neither does this. Restoring more than was removed would be its
+// own kind of surprise.
+// ============================================================================
+static void PushDeleteEntityCommand(EditorState& editor_state,
+                                    const std::shared_ptr<schizo::scene::Scene>& scene,
+                                    const std::shared_ptr<schizo::scene::Entity>& entity) {
+    if (!scene || !entity) return;
+    const std::string name = entity->GetName();
+    const uint32_t    id   = entity->GetId();
+
+    auto cmd = std::make_unique<schizo::editor::FunctionCommand>(
+        [scene, entity, id, name, &editor_state]() {
+            scene->RemoveEntity(entity);
+            if (editor_state.selected_entity_id == id)
+                editor_state.selected_entity_id = 0;
+            editor_state.editor_scene->MarkModified();
+            spdlog::info("Deleted entity: {}", name);
+        },
+        [scene, entity, &editor_state]() {
+            scene->AddEntity(entity);
+            editor_state.editor_scene->MarkModified();
+            spdlog::info("Restored entity: {}", entity->GetName());
+        },
+        "Delete " + name);
+    editor_state.undo_redo_manager.ExecuteCommand(std::move(cmd));
+}
+
 void ShowTaskPanel(EditorState& editor_state) {
     if (!editor_state.show_task_panel) return;
     const auto tasks = editor_state.tasks.snapshot();
@@ -950,14 +1015,16 @@ void ShowSceneHierarchy(EditorState& editor_state) {
         if (ImGui::BeginPopup("AddEntityPopup")) {
             // Primitive entities
             if (ImGui::MenuItem("Cube")) {
+                auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, &editor_state]() {
+                    [scene, &editor_state, created_id]() {
                         auto ent = schizo::scene::EntityFactory::CreateCube(scene);
+                        *created_id = ent ? ent->GetId() : 0;
                         editor_state.editor_scene->MarkModified();
                         spdlog::info("Created Cube entity");
                     },
-                    [scene, &editor_state]() {
-                        auto ent = scene->GetEntityByName("Cube");
+                    [scene, &editor_state, created_id]() {
+                        auto ent = FindEntityById(scene, *created_id);
                         if (ent) {
                             scene->RemoveEntity(ent);
                             spdlog::info("Removed Cube entity");
@@ -1010,9 +1077,11 @@ void ShowSceneHierarchy(EditorState& editor_state) {
 
             if (editor_state.feature_on(schizo::project::Feature::Terrain) &&
                 ImGui::MenuItem("Water")) {
+                auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, &editor_state]() {
+                    [scene, &editor_state, created_id]() {
                         auto ent = scene->CreateEntity("Water");
+                        *created_id = ent ? ent->GetId() : 0;
                         if (ent) {
                             ent->AddComponent<schizo::scene::WaterComponent>();
                             ent->GetTransform()->SetLocalPosition(glm::vec3(0.0f, 0.5f, 0.0f));
@@ -1020,8 +1089,8 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                         editor_state.editor_scene->MarkModified();
                         spdlog::info("Created Water entity");
                     },
-                    [scene, &editor_state]() {
-                        auto ent = scene->GetEntityByName("Water");
+                    [scene, &editor_state, created_id]() {
+                        auto ent = FindEntityById(scene, *created_id);
                         if (ent) scene->RemoveEntity(ent);
                     },
                     "Create Water"
@@ -1032,15 +1101,17 @@ void ShowSceneHierarchy(EditorState& editor_state) {
 
             if (editor_state.feature_on(schizo::project::Feature::Terrain) &&
                 ImGui::MenuItem("Terrain")) {
+                auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, &editor_state]() {
+                    [scene, &editor_state, created_id]() {
                         auto ent = scene->CreateEntity("Terrain");
+                        *created_id = ent ? ent->GetId() : 0;
                         if (ent) ent->AddComponent<schizo::scene::TerrainComponent>();
                         editor_state.editor_scene->MarkModified();
                         spdlog::info("Created Terrain entity");
                     },
-                    [scene, &editor_state]() {
-                        auto ent = scene->GetEntityByName("Terrain");
+                    [scene, &editor_state, created_id]() {
+                        auto ent = FindEntityById(scene, *created_id);
                         if (ent) { scene->RemoveEntity(ent); spdlog::info("Removed Terrain entity"); }
                     },
                     "Create Terrain"
@@ -1050,14 +1121,16 @@ void ShowSceneHierarchy(EditorState& editor_state) {
             }
 
             if (ImGui::MenuItem("Sphere")) {
+                auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, &editor_state]() {
+                    [scene, &editor_state, created_id]() {
                         auto ent = schizo::scene::EntityFactory::CreateSphere(scene);
+                        *created_id = ent ? ent->GetId() : 0;
                         editor_state.editor_scene->MarkModified();
                         spdlog::info("Created Sphere entity");
                     },
-                    [scene, &editor_state]() {
-                        auto ent = scene->GetEntityByName("Sphere");
+                    [scene, &editor_state, created_id]() {
+                        auto ent = FindEntityById(scene, *created_id);
                         if (ent) {
                             scene->RemoveEntity(ent);
                             spdlog::info("Removed Sphere entity");
@@ -1070,14 +1143,16 @@ void ShowSceneHierarchy(EditorState& editor_state) {
             }
             
             if (ImGui::MenuItem("Capsule")) {
+                auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, &editor_state]() {
+                    [scene, &editor_state, created_id]() {
                         auto ent = schizo::scene::EntityFactory::CreateCapsule(scene);
+                        *created_id = ent ? ent->GetId() : 0;
                         editor_state.editor_scene->MarkModified();
                         spdlog::info("Created Capsule entity");
                     },
-                    [scene, &editor_state]() {
-                        auto ent = scene->GetEntityByName("Capsule");
+                    [scene, &editor_state, created_id]() {
+                        auto ent = FindEntityById(scene, *created_id);
                         if (ent) {
                             scene->RemoveEntity(ent);
                             spdlog::info("Removed Capsule entity");
@@ -1090,14 +1165,16 @@ void ShowSceneHierarchy(EditorState& editor_state) {
             }
             
             if (ImGui::MenuItem("Cylinder")) {
+                auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, &editor_state]() {
+                    [scene, &editor_state, created_id]() {
                         auto ent = schizo::scene::EntityFactory::CreateCylinder(scene);
+                        *created_id = ent ? ent->GetId() : 0;
                         editor_state.editor_scene->MarkModified();
                         spdlog::info("Created Cylinder entity");
                     },
-                    [scene, &editor_state]() {
-                        auto ent = scene->GetEntityByName("Cylinder");
+                    [scene, &editor_state, created_id]() {
+                        auto ent = FindEntityById(scene, *created_id);
                         if (ent) {
                             scene->RemoveEntity(ent);
                             spdlog::info("Removed Cylinder entity");
@@ -1110,14 +1187,16 @@ void ShowSceneHierarchy(EditorState& editor_state) {
             }
             
             if (ImGui::MenuItem("Plane")) {
+                auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, &editor_state]() {
+                    [scene, &editor_state, created_id]() {
                         auto ent = schizo::scene::EntityFactory::CreatePlane(scene);
+                        *created_id = ent ? ent->GetId() : 0;
                         editor_state.editor_scene->MarkModified();
                         spdlog::info("Created Plane entity");
                     },
-                    [scene, &editor_state]() {
-                        auto ent = scene->GetEntityByName("Plane");
+                    [scene, &editor_state, created_id]() {
+                        auto ent = FindEntityById(scene, *created_id);
                         if (ent) {
                             scene->RemoveEntity(ent);
                             spdlog::info("Removed Plane entity");
@@ -1133,14 +1212,16 @@ void ShowSceneHierarchy(EditorState& editor_state) {
             
             // Special entities
             if (ImGui::MenuItem("Player")) {
+                auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, &editor_state]() {
+                    [scene, &editor_state, created_id]() {
                         auto ent = schizo::scene::EntityFactory::CreatePlayer(scene);
+                        *created_id = ent ? ent->GetId() : 0;
                         editor_state.editor_scene->MarkModified();
                         spdlog::info("Created Player entity");
                     },
-                    [scene, &editor_state]() {
-                        auto ent = scene->GetEntityByName("Player");
+                    [scene, &editor_state, created_id]() {
+                        auto ent = FindEntityById(scene, *created_id);
                         if (ent) {
                             scene->RemoveEntity(ent);
                             spdlog::info("Removed Player entity");
@@ -1153,14 +1234,16 @@ void ShowSceneHierarchy(EditorState& editor_state) {
             }
             
             if (ImGui::MenuItem("Camera")) {
+                auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, &editor_state]() {
+                    [scene, &editor_state, created_id]() {
                         auto ent = schizo::scene::EntityFactory::CreateCamera(scene);
+                        *created_id = ent ? ent->GetId() : 0;
                         editor_state.editor_scene->MarkModified();
                         spdlog::info("Created Camera entity");
                     },
-                    [scene, &editor_state]() {
-                        auto ent = scene->GetEntityByName("Camera");
+                    [scene, &editor_state, created_id]() {
+                        auto ent = FindEntityById(scene, *created_id);
                         if (ent) {
                             scene->RemoveEntity(ent);
                             spdlog::info("Removed Camera entity");
@@ -1176,14 +1259,16 @@ void ShowSceneHierarchy(EditorState& editor_state) {
             
             // Light sources
             if (ImGui::MenuItem("Directional Light")) {
+                auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, &editor_state]() {
+                    [scene, &editor_state, created_id]() {
                         auto ent = schizo::scene::EntityFactory::CreateDirectionalLight(scene);
+                        *created_id = ent ? ent->GetId() : 0;
                         editor_state.editor_scene->MarkModified();
                         spdlog::info("Created DirectionalLight entity");
                     },
-                    [scene, &editor_state]() {
-                        auto ent = scene->GetEntityByName("DirectionalLight");
+                    [scene, &editor_state, created_id]() {
+                        auto ent = FindEntityById(scene, *created_id);
                         if (ent) {
                             scene->RemoveEntity(ent);
                             spdlog::info("Removed DirectionalLight entity");
@@ -1196,14 +1281,16 @@ void ShowSceneHierarchy(EditorState& editor_state) {
             }
             
             if (ImGui::MenuItem("Global Light")) {
+                auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, &editor_state]() {
+                    [scene, &editor_state, created_id]() {
                         auto ent = schizo::scene::EntityFactory::CreateGlobalLight(scene);
+                        *created_id = ent ? ent->GetId() : 0;
                         editor_state.editor_scene->MarkModified();
                         spdlog::info("Created GlobalLight entity");
                     },
-                    [scene, &editor_state]() {
-                        auto ent = scene->GetEntityByName("GlobalLight");
+                    [scene, &editor_state, created_id]() {
+                        auto ent = FindEntityById(scene, *created_id);
                         if (ent) {
                             scene->RemoveEntity(ent);
                             spdlog::info("Removed GlobalLight entity");
@@ -1221,15 +1308,18 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 auto entity_name = "Entity_" + std::to_string(scene->GetEntityCount());
                 
                 // Create undo/redo command for entity creation
+                auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, entity_name, &editor_state]() {
+                    [scene, entity_name, &editor_state, created_id]() {
                         auto ent = scene->CreateEntity(entity_name);
+                        *created_id = ent ? ent->GetId() : 0;
                         editor_state.editor_scene->MarkModified();
                         spdlog::info("Created entity: {}", entity_name);
                     },
-                    [scene, entity_name, &editor_state]() {
-                        // Find and remove entity by name
-                        auto ent = scene->GetEntityByName(entity_name);
+                    [scene, entity_name, &editor_state, created_id]() {
+                        // By id, not by name: entity names are not unique, and
+                        // a rename would otherwise make undo silently no-op.
+                        auto ent = FindEntityById(scene, *created_id);
                         if (ent) {
                             scene->RemoveEntity(ent);
                             spdlog::info("Removed entity: {}", entity_name);
@@ -1376,13 +1466,7 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                     ImGui::Separator();
                     
                     if (ImGui::MenuItem("Delete", "Delete", false)) {
-                        uint32_t deleted_id = entity->GetId();
-                        scene->RemoveEntity(entity);
-                        if (editor_state.selected_entity_id == deleted_id) {
-                            editor_state.selected_entity_id = 0;
-                        }
-                        spdlog::info("Deleted entity: {}", entity->GetName());
-                        editor_state.editor_scene->MarkModified();
+                        PushDeleteEntityCommand(editor_state, scene, entity);
                     }
                     
                     ImGui::EndPopup();
@@ -2940,10 +3024,7 @@ void ShowInspector(EditorState& editor_state) {
         ImGui::Separator();
         
         if (ImGui::Button("Delete Entity", ImVec2(-1, 0))) {
-            spdlog::info("Deleted entity: {}", selected_entity->GetName());
-            scene->RemoveEntity(selected_entity);
-            editor_state.selected_entity_id = 0;
-            editor_state.editor_scene->MarkModified();
+            PushDeleteEntityCommand(editor_state, scene, selected_entity);
         }
         
         ImGui::End();
@@ -5674,10 +5755,7 @@ int main(int argc, char** argv) {
                     auto ent = sc ? sc->GetEntityById(editor_state.selected_entity_id)
                                   : nullptr;
                     if (ent) {
-                        spdlog::info("Deleted entity (Delete key): {}", ent->GetName());
-                        sc->RemoveEntity(ent);
-                        editor_state.selected_entity_id = 0;
-                        editor_state.editor_scene->MarkModified();
+                        PushDeleteEntityCommand(editor_state, sc, ent);
                     }
                 }
                 prev_delete = cur_delete;
