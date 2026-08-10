@@ -19,6 +19,17 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# shadersource_check: the GLSL a human edits must still compile to the SPIR-V
+# that ships. shaders/lighting_pass.frag had been sitting broken in the tree
+# because nothing ever fed it to a compiler. Compares the instruction stream
+# minus debug info, so a toolchain upgrade does not read as drift.
+add_executable(shadersource_check shadersource_check/main.cpp)
+target_include_directories(shadersource_check PRIVATE ../engine/renderer/gpu/vulkan)
+target_compile_features(shadersource_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(shadersource_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # undo_check: undo must act on the entity you acted on. Pins the scene-level
 # invariants the editor commands depend on — id-based lookup (names are not
 # unique) and identity preserved across remove/re-add, which is what makes
