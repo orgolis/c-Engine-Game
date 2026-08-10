@@ -1,0 +1,156 @@
+// ============================================================================
+// sceneio_check — a scene file gives back the scene that was saved.
+//
+// The scene format had no round-trip test, which is how particle emitters and
+// NPC agents came to be missing from it entirely. Both components were added
+// this phase, both were reflected specifically so they could be serialized, and
+// neither was ever written: configure an emitter, save, reopen, and every
+// setting was silently back at its default.
+//
+// reflectio_check covers the reflection layer. This covers the thing that was
+// actually broken -- the WIRING. A library that round-trips perfectly and a
+// serializer that never calls it look identical from the library's side.
+//
+// Every value here is deliberately non-default. Against defaults, a serializer
+// that writes nothing and one that writes correctly give the same answer.
+// ============================================================================
+#include "scene_serializer.h"
+
+#include "entity.h"
+#include "npc_agent_component.h"
+#include "particle_emitter_component.h"
+#include "scene.h"
+#include "skinned_mesh_component.h"
+#include "transform.h"
+
+#include <cmath>
+#include <cstdio>
+#include <filesystem>
+#include <memory>
+#include <string>
+
+using namespace schizo;
+
+namespace {
+
+int g_pass = 0, g_fail = 0;
+
+void check(bool ok, const std::string& what) {
+    if (ok) { ++g_pass; std::printf("  OK   %s\n", what.c_str()); }
+    else    { ++g_fail; std::printf("  FAIL %s\n", what.c_str()); }
+}
+
+}  // namespace
+
+int main() {
+    std::printf("=== sceneio_check ===\n\n");
+
+    const std::string path =
+        (std::filesystem::temp_directory_path() / "gws_sceneio_check.scene").string();
+
+    // ---- build a scene worth saving -----------------------------------------
+    {
+        auto scn = std::make_shared<scene::Scene>("roundtrip");
+
+        auto fire = scn->CreateEntity("Campfire");
+        fire->GetTransform()->SetLocalPosition({3.0f, 1.0f, -2.0f});
+        auto* pec = fire->GetParticleEmitterComponent();
+        pec->enabled       = true;
+        pec->emitting      = true;
+        pec->spawn_rate    = 37.5f;
+        pec->max_particles = 2048;
+        pec->color_start   = glm::vec4(1.0f, 0.6f, 0.1f, 0.9f);
+        pec->color_end     = glm::vec4(0.2f, 0.05f, 0.0f, 0.0f);
+
+        auto guard = scn->CreateEntity("Guard");
+        guard->GetTransform()->SetLocalPosition({-8.0f, 0.0f, 5.0f});
+        auto* nac = guard->GetNpcAgentComponent();
+        nac->enabled       = true;
+        nac->target_name   = "Hero";      // NOT the default "Player"
+        nac->sight_range   = 42.0f;
+        nac->sight_fov_deg = 77.0f;
+        nac->move_speed    = 6.5f;
+        nac->patrol_radius = 12.0f;
+        nac->attack_range  = 3.5f;
+        nac->ability_index = 2;
+
+        check(editor::SceneSerializer::SaveScene(path, scn), "the scene saves");
+    }
+
+    // ---- load it back into a fresh scene ------------------------------------
+    auto loaded = editor::SceneSerializer::LoadScene(path);
+    check(loaded != nullptr, "and loads again");
+    if (!loaded) {
+        std::printf("\n%d passed, %d failed\nFAIL sceneio_check\n", g_pass, g_fail + 1);
+        return 1;
+    }
+
+    auto fire  = loaded->GetEntityByName("Campfire");
+    auto guard = loaded->GetEntityByName("Guard");
+    check(fire && guard, "with both entities present");
+    if (!fire || !guard) {
+        std::printf("\n%d passed, %d failed\nFAIL sceneio_check\n", g_pass, g_fail + 1);
+        return 1;
+    }
+
+    // ---- the emitter came back ----------------------------------------------
+    {
+        const auto* pec = fire->GetParticleEmitterComponent();
+        check(pec && pec->enabled, "the emitter survived the round trip at all");
+        check(pec && std::abs(pec->spawn_rate - 37.5f) < 1e-3f,
+              "with its spawn rate, not the default");
+        check(pec && pec->max_particles == 2048u, "and its particle budget");
+        check(pec && std::abs(pec->color_start.r - 1.0f) < 1e-3f &&
+              std::abs(pec->color_end.a - 0.0f) < 1e-3f,
+              "and both colours, including a zero alpha");
+    }
+
+    // ---- the agent came back -------------------------------------------------
+    {
+        const auto* nac = guard->GetNpcAgentComponent();
+        check(nac && nac->enabled, "the NPC agent survived");
+        check(nac && nac->target_name == "Hero",
+              "including its target name — a std::string, which reflection "
+              "cannot carry and the serializer writes itself");
+        check(nac && std::abs(nac->sight_range - 42.0f) < 1e-3f &&
+              std::abs(nac->attack_range - 3.5f) < 1e-3f,
+              "and its perception and combat ranges");
+        check(nac && nac->ability_index == 2, "and which ability it swings");
+    }
+
+    // ---- transforms still work ----------------------------------------------
+    // Proof that adding these did not disturb what already worked.
+    {
+        check(glm::length(fire->GetTransform()->GetLocalPosition() -
+                          glm::vec3(3.0f, 1.0f, -2.0f)) < 1e-3f,
+              "and the transforms that already round-tripped still do");
+    }
+
+    // ---- a scene with neither is unchanged ----------------------------------
+    // Both are written only when enabled, so existing scene files must not
+    // start growing lines the moment this shipped.
+    {
+        auto plain = std::make_shared<scene::Scene>("plain");
+        plain->CreateEntity("Box")->GetTransform()->SetLocalPosition({1.0f, 2.0f, 3.0f});
+        const std::string p2 =
+            (std::filesystem::temp_directory_path() / "gws_sceneio_plain.scene").string();
+        editor::SceneSerializer::SaveScene(p2, plain);
+
+        std::FILE* f = std::fopen(p2.c_str(), "rb");
+        std::string text;
+        if (f) {
+            char buf[4096]; size_t n;
+            while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+            std::fclose(f);
+        }
+        check(text.find("EMITTER.") == std::string::npos &&
+              text.find("NPCAGENT.") == std::string::npos,
+              "a scene using neither writes neither — existing files do not churn");
+        std::filesystem::remove(p2);
+    }
+
+    std::filesystem::remove(path);
+    std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
+    if (g_fail) std::printf("FAIL sceneio_check\n");
+    return g_fail ? 1 : 0;
+}

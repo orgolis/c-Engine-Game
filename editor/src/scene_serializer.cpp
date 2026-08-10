@@ -11,6 +11,10 @@
 #include "terrain_component.h"
 #include "script_component.h"
 #include "water_component.h"
+#include "particle_emitter_component.h"
+#include "npc_agent_component.h"
+#include "scene_component_reflect.h"   // registers the reflected scene components
+#include "reflected_text_io.h"         // KEY=value driven by reflection
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cstdio>
@@ -107,6 +111,30 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
                     file << "SKINNED_PLAY="  << (smc->playing ? "1" : "0") << "\n";
                     file << "SKINNED_SPEED=" << smc->speed      << "\n";
                 }
+            }
+
+            // Particle emitters (3.9) and NPC agents (3.5), written through
+            // reflection. Neither was saved AT ALL before this: configure an
+            // emitter or an agent, save, reopen, and the settings were silently
+            // gone. That is exactly the failure the reflection work was meant to
+            // prevent, and it happened because the reflection was never
+            // connected to the serializer.
+            //
+            // Written only when enabled, so a scene that uses neither
+            // round-trips byte-identical and existing files do not churn.
+            if (auto* pec = entity->GetParticleEmitterComponent(); pec && pec->enabled) {
+                schizo::scene::write_reflected(
+                    file, "EMITTER", pec,
+                    *gws::reflect::reflect<schizo::scene::ParticleEmitterComponent>());
+            }
+            if (auto* nac = entity->GetNpcAgentComponent(); nac && nac->enabled) {
+                schizo::scene::write_reflected(
+                    file, "NPCAGENT", nac,
+                    *gws::reflect::reflect<schizo::scene::NpcAgentComponent>());
+                // target_name is a std::string, so offset reflection cannot
+                // carry it -- an agent that forgot who it was hunting would
+                // simply stand still, with nothing to explain why.
+                file << "NPCAGENT_TARGET=" << nac->target_name << "\n";
             }
 
             // TransformComponent (separate Component-derived wrapper users can
@@ -358,6 +386,15 @@ struct ParsedEntity {
     glm::vec3 local_scale{1.0f};
 
     std::string mesh_path;
+    // Whole components rather than a field-per-field mirror: that mirror was
+    // one of the four places a new field had to be added by hand, and it is the
+    // one where forgetting produced no symptom at all.
+    schizo::scene::ParticleEmitterComponent emitter;
+    schizo::scene::NpcAgentComponent        npc;
+    std::string                             npc_target;
+    bool                                    has_emitter = false;
+    bool                                    has_npc     = false;
+
     std::string skinned_path;
     int         skinned_clip  = 0;
     bool        skinned_play  = true;
@@ -498,6 +535,21 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
         std::sscanf(v.c_str(), "%f,%f,%f", &x, &y, &z);
         p.local_scale = {x, y, z};
         return;
+    }
+
+    // Reflected components first: they own any line starting with their
+    // prefix, and fall through when they do not recognise the key, so every
+    // legacy parser below still gets its turn and old scenes keep loading.
+    if (starts_with(line, "NPCAGENT_TARGET", v)) { p.npc_target = v; p.has_npc = true; return; }
+    if (schizo::scene::apply_reflected_line(
+            "EMITTER", line, &p.emitter,
+            *gws::reflect::reflect<schizo::scene::ParticleEmitterComponent>())) {
+        p.has_emitter = true; return;
+    }
+    if (schizo::scene::apply_reflected_line(
+            "NPCAGENT", line, &p.npc,
+            *gws::reflect::reflect<schizo::scene::NpcAgentComponent>())) {
+        p.has_npc = true; return;
     }
 
     if (starts_with(line, "SKINNED_PATH", v))  { p.skinned_path = v; return; }
@@ -685,6 +737,14 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
         mc->mesh_path       = p.mesh_path;
         mc->use_asset_mesh  = p.mesh_use_asset;
     }
+
+    if (p.has_emitter)
+        if (auto* pec = e->GetParticleEmitterComponent()) *pec = p.emitter;
+    if (p.has_npc)
+        if (auto* nac = e->GetNpcAgentComponent()) {
+            *nac = p.npc;
+            if (!p.npc_target.empty()) nac->target_name = p.npc_target;
+        }
 
     if (auto smc = e->GetSkinnedMeshComponent(); !p.skinned_path.empty() && smc) {
         smc->gltf_path  = p.skinned_path;

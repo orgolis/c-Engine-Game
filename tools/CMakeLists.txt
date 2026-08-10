@@ -48,6 +48,32 @@ endif()
 # Adding one field used to mean four hand edits with a silent failure mode -- a
 # component that saves but does not load. The load-bearing assertion is that an
 # UNREGISTERED field is caught, since that is the mistake this prevents.
+# reflectio_check: reflected components survive save and load. Particle emitters
+# and NPC agents were never written to the scene file at all -- configure one,
+# save, reopen, and every setting was silently back at its default. The
+# assertion that earns its keep is that a field NO serializer code names still
+# round-trips, because the text is generated from the reflection.
+# sceneio_check: the scene FILE gives back the scene that was saved. The format
+# had no round-trip test, which is how emitters and NPC agents came to be
+# missing from it entirely. reflectio_check covers the reflection layer; this
+# covers the wiring -- a library that round-trips perfectly and a serializer
+# that never calls it look identical from the library's side.
+add_executable(sceneio_check sceneio_check/main.cpp ../editor/src/scene_serializer.cpp)
+target_include_directories(sceneio_check PRIVATE ../editor/include ../engine/scene/include)
+target_link_libraries(sceneio_check PRIVATE scene gws_reflection gws_ecs gws_logging glm)
+target_compile_features(sceneio_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(sceneio_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
+add_executable(reflectio_check reflectio_check/main.cpp)
+target_include_directories(reflectio_check PRIVATE ../engine/scene/include)
+target_link_libraries(reflectio_check PRIVATE gws_reflection gws_ecs glm)
+target_compile_features(reflectio_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(reflectio_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 add_executable(scenereflect_check scenereflect_check/main.cpp)
 target_include_directories(scenereflect_check PRIVATE ../engine/scene/include)
 target_link_libraries(scenereflect_check PRIVATE gws_reflection gws_ecs glm)
