@@ -16,6 +16,7 @@
 #include "terrain_component.h"
 #include "ecs_bridge.h"   // authoritative ECS world matrices (Stage 1.4 step 2)
 #include "assets/asset_watcher.h"   // shared hot-reload file watching
+#include "jobs/task_runner.h"       // background OBJ parsing
 
 #include <chrono>
 #include <functional>
@@ -391,6 +392,60 @@ public:
         std::transform(ext.begin(), ext.end(), ext.begin(),
                        [](unsigned char c){ return std::tolower(c); });
 
+        // ---- OBJ: parse on a worker, upload here -------------------------
+        // parse_obj_file is pure CPU and is the expensive half for a large
+        // model; Mesh::create / Material::create touch the device and must stay
+        // on this thread. Splitting them is the whole reason the editor no
+        // longer stalls on a big drop. glTF and .pak stay synchronous: the glTF
+        // loader interleaves parsing with device calls, and .pak is already the
+        // mmap zero-parse fast path.
+        if (ext == ".obj" && device && tasks_) {
+            if (loading_.count(path)) return nullptr;   // already in flight
+            loading_.insert(path);
+
+            const std::string key = path;
+            auto parsed = std::make_shared<ParsedObj>();
+
+            tasks_->submit("Load " + std::filesystem::path(utf8_path(disk_path)).filename().string(),
+                [disk_path, parsed](gws::tasks::TaskContext& ctx) {
+                    ctx.set_progress(-1.0f, "parsing");
+                    parsed->ok = parse_obj_file(disk_path, parsed->verts, parsed->idx);
+                    if (ctx.cancelled()) parsed->ok = false;
+                },
+                [this, key, disk_path, parsed, device, mat_layout, mat_pool](const gws::tasks::TaskInfo& info) {
+                    using namespace gws::renderer::gpu;
+                    loading_.erase(key);
+                    if (info.state != gws::tasks::TaskState::Succeeded || !parsed->ok ||
+                        parsed->verts.empty() || parsed->idx.empty()) {
+                        // Cache the failure so a broken file is not re-parsed
+                        // every frame — the same reason the sync path does it.
+                        entries_[key] = nullptr;
+                        // Same diagnosis the synchronous path gives: "NOT FOUND"
+                        // means a path problem, "present" means parse/upload.
+                        // An error that does not say which is a bug report
+                        // nobody can act on.
+                        std::error_code ec2;
+                        const bool on_disk = std::filesystem::exists(utf8_path(disk_path), ec2);
+                        spdlog::error("[AssetMeshCache] Failed to load '{}' (resolved '{}', file {})"
+                                      " — the object keeps its primitive shape",
+                                      key, disk_path,
+                                      on_disk ? "present but parse failed" : "NOT FOUND on disk");
+                        return;
+                    }
+                    auto built = build_obj_scene(std::move(parsed->verts), std::move(parsed->idx),
+                                                 device, mat_layout, mat_pool);
+                    if (!built) { entries_[key] = nullptr; return; }
+                    spdlog::info("[AssetMeshCache] Loaded {} (async): {} draw items, {} meshes",
+                                 key, built->draw_items.size(), built->meshes.size());
+                    entries_[key] = std::move(built);
+                });
+
+            // Null this frame: the caller already falls back to the entity's
+            // primitive shape, so the model pops in when it is ready instead of
+            // the editor freezing until it is.
+            return nullptr;
+        }
+
         std::unique_ptr<gws::renderer::gpu::Scene> scene;
         if (ext == ".gltf" || ext == ".glb") {
             if (device) {
@@ -501,6 +556,14 @@ public:
     /// indicator rather than a UI that looks like it missed the edit.
     size_t reloads_pending() const { return watcher_.pending_count(); }
 
+    /// Opt in to background OBJ parsing. Without this the cache is fully
+    /// synchronous — which is what headless tools want, and keeps the async
+    /// path from being a hidden dependency of merely constructing the cache.
+    void set_task_runner(gws::tasks::TaskRunner* runner) { tasks_ = runner; }
+
+    /// Meshes currently being parsed on a worker.
+    size_t loads_in_flight() const { return loading_.size(); }
+
     /// Re-write descriptor sets of every cached scene's materials. Call after a
     /// texture one of them references was hot-reloaded in place (its
     /// VkImageView changed). The caller must ensure the GPU is idle.
@@ -518,14 +581,27 @@ public:
         watcher_.clear();
         watched_.clear();
         dirty_.clear();
+        loading_.clear();
     }
 
 private:
+    // Background parsing. Optional: without a runner the cache stays fully
+    // synchronous, which is what the headless tools want.
+    gws::tasks::TaskRunner*         tasks_ = nullptr;
+    std::unordered_set<std::string> loading_;   // in flight, do not resubmit
+
     // Hot reload: one shared watcher, same settling behaviour as every other
     // reloadable asset type.
     gws::assets::AssetWatcher watcher_;
     std::unordered_set<std::string> watched_;   // paths already registered
     std::vector<std::string>        dirty_;     // cache keys to drop next poll
+
+    // CPU-side result of an OBJ parse, handed from a worker to the editor thread.
+    struct ParsedObj {
+        std::vector<gws::renderer::gpu::SceneVertex> verts;
+        std::vector<uint32_t>                        idx;
+        bool ok = false;
+    };
 
     static std::unique_ptr<gws::renderer::gpu::Scene> load_obj_scene(
         const std::string& path,
@@ -537,6 +613,21 @@ private:
         std::vector<SceneVertex> verts;
         std::vector<uint32_t>   idx;
         if (!parse_obj_file(path, verts, idx)) return nullptr;
+        return build_obj_scene(std::move(verts), std::move(idx), device, mat_layout, mat_pool);
+    }
+
+    // Everything after the parse. Device-touching, so it runs on the editor
+    // thread in both the sync and async paths — one implementation, so an
+    // async-loaded mesh is byte-identical to a synchronously loaded one.
+    static std::unique_ptr<gws::renderer::gpu::Scene> build_obj_scene(
+        std::vector<gws::renderer::gpu::SceneVertex>&& verts,
+        std::vector<uint32_t>&& idx,
+        gws::renderer::gpu::VulkanDevice* device,
+        VkDescriptorSetLayout mat_layout,
+        VkDescriptorPool mat_pool)
+    {
+        using namespace gws::renderer::gpu;
+        if (verts.empty() || idx.empty()) return nullptr;
 
         Submesh sm{}; sm.material_index = 0;
         sm.lods.push_back({0, (uint32_t)idx.size(), 0.0f});

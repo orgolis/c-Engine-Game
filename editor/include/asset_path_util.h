@@ -42,6 +42,33 @@ inline std::string resolve_asset_path(const std::string& path) {
             return candidate;
         }
     }
+
+    // The OTHER direction, which the loop above cannot reach: a path SAVED with
+    // leading "../" because the editor once ran from a deeper directory (the old
+    // build-editor/bin layout), now being loaded from somewhere shallower.
+    // Prefixing more "../" walks further from the file, so those paths never
+    // resolved — the default scene's cube3d.obj silently fell back to a
+    // primitive, which is invisible precisely because the asset IS a cube.
+    std::string stripped = path;
+    while (stripped.rfind("../", 0) == 0) {
+        stripped = stripped.substr(3);
+        if (fs::exists(utf8_path(stripped), ec)) {
+            spdlog::info("[assets] resolved '{}' -> '{}' (dropped stale leading ../)",
+                         path, stripped);
+            return stripped;
+        }
+        // The two fixes compose: a stale prefix AND a deeper cwd at once.
+        std::string p2;
+        for (int up = 1; up <= 8; ++up) {
+            p2 += "../";
+            const std::string candidate = p2 + stripped;
+            if (fs::exists(utf8_path(candidate), ec)) {
+                spdlog::info("[assets] resolved '{}' -> '{}' (stale ../ + cwd-independent)",
+                             path, candidate);
+                return candidate;
+            }
+        }
+    }
     return path;   // let the caller report the failure with the original path
 }
 

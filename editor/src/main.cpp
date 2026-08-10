@@ -4314,6 +4314,7 @@ int main(int argc, char** argv) {
     uint16_t    startup_host_port = 0;
     bool        game_window_mode  = false;
     bool        startup_probe     = false;   // --startup-probe: time init, then exit
+    int         frame_limit       = 0;       // --frames N: render N frames, then exit
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--net-host" && i + 1 < argc) {
@@ -4331,6 +4332,14 @@ int main(int argc, char** argv) {
             startup_project = argv[++i];
         } else if (a == "--net-game") {
             game_window_mode = true;
+        } else if (a == "--frames" && i + 1 < argc) {
+            // Render N frames and exit. Unlike --startup-probe this actually
+            // DRAWS, so it exercises the paths that only run once something is
+            // on screen — asset loading, the async OBJ path, the draw
+            // collector. That makes it the smoke test a GPU-equipped machine
+            // can run non-interactively, instead of "it opened and looked
+            // fine".
+            frame_limit = std::atoi(argv[++i]);
         } else if (a == "--startup-probe") {
             // Initialise everything, report how long it took, then exit without
             // entering the main loop. This is what makes "editor cold start" —
@@ -5455,6 +5464,10 @@ int main(int argc, char** argv) {
         // Background workers for import/copy/cook. Started here so they exist
         // for the whole loop and are joined in the shutdown block below.
         editor_state.tasks.start();
+        // Parse OBJ meshes on a worker; the GPU upload still happens on this
+        // thread when the parse completes. Opt-in, so the cache stays fully
+        // synchronous for headless tools that have no runner.
+        asset_cache.set_task_runner(&editor_state.tasks);
         spdlog::info("Entering editor loop...");
         int frame_count = 0;
 
@@ -7296,6 +7309,10 @@ int main(int argc, char** argv) {
             swapchain->present_image(image_index, render_sems[current_frame]);
             current_frame = (current_frame + 1) % kMaxFrames;
             ++frame_count;
+            if (frame_limit > 0 && frame_count >= frame_limit) {
+                spdlog::info("[frames] rendered {} frame(s); exiting as requested", frame_count);
+                break;
+            }
 
             // Collect this frame's CPU zones and report a breakdown
             // periodically (the full flame-graph UI is Stage 14).

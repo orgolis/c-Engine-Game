@@ -18,6 +18,7 @@
 // ever catch it.
 // ============================================================================
 #include "asset_pipeline/obj_import.h"
+#include "asset_path_util.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -105,6 +106,57 @@ int main() {
         const bool ok = schizo::assets::import_obj(
             u8str(dir / fs::path(std::u8string(u8"нет_такого.obj"))), scene);
         check(!ok, "a genuinely missing non-ASCII path still fails");
+    }
+
+
+    // ---- resolve_asset_path: BOTH directions --------------------------------
+    // Scenes store relative asset paths, and the directory the editor runs from
+    // has changed over the project's life (build-editor/bin, then
+    // build/windows-debug/bin). The resolver handled "path is relative to the
+    // repo root but the cwd is deeper" by prepending "../". It did NOT handle
+    // the reverse: a path SAVED with leading "../" from a deeper cwd. Prefixing
+    // more "../" walks further away, so those never resolved -- the default
+    // scene's cube3d.obj silently fell back to a primitive shape, which is
+    // invisible precisely because the asset in question IS a cube.
+    {
+        const fs::path root = dir / "resolve_root";
+        fs::create_directories(root / "assets" / "models", ec);
+        write_utf8(root / "assets" / "models" / "thing.obj", kTriangleObj);
+
+        const fs::path prev = fs::current_path(ec);
+        fs::current_path(root, ec);
+
+        check(schizo::editor::resolve_asset_path("assets/models/thing.obj")
+                  == "assets/models/thing.obj",
+              "a path that already resolves is returned untouched");
+
+        // The bug: a stale prefix from an older working directory.
+        const std::string stale = "../../assets/models/thing.obj";
+        const std::string fixed = schizo::editor::resolve_asset_path(stale);
+        check(fs::exists(fs::path(fixed), ec),
+              "a path with a stale leading ../ now resolves to a real file");
+        check(fixed != stale, "and it is actually rewritten, not returned unchanged");
+
+        // Deeper cwd, the direction that already worked -- kept so a fix to one
+        // direction cannot silently break the other.
+        fs::create_directories(root / "build" / "bin", ec);
+        fs::current_path(root / "build" / "bin", ec);
+        const std::string from_deep = schizo::editor::resolve_asset_path("assets/models/thing.obj");
+        check(fs::exists(fs::path(from_deep), ec),
+              "a repo-root-relative path still resolves from a deeper cwd");
+
+        // Both problems at once.
+        const std::string both = schizo::editor::resolve_asset_path(stale);
+        check(fs::exists(fs::path(both), ec),
+              "a stale ../ prefix AND a deeper cwd resolve together");
+
+        // A genuinely missing file must still fail, or the resolver would be
+        // reporting success for paths that lead nowhere.
+        const std::string missing = schizo::editor::resolve_asset_path("assets/models/nope.obj");
+        check(!fs::exists(fs::path(missing), ec),
+              "a genuinely missing asset does not resolve to something");
+
+        fs::current_path(prev, ec);
     }
 
     fs::remove_all(dir, ec);

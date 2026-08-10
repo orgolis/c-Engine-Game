@@ -46,7 +46,8 @@ endif()
 # are read in the ANSI codepage on Windows. No ASCII-named test asset can catch
 # this, which is exactly why it needs a check of its own.
 add_executable(assetpath_check assetpath_check/main.cpp)
-target_link_libraries(assetpath_check PRIVATE gws_asset_pipeline)
+target_link_libraries(assetpath_check PRIVATE gws_asset_pipeline gws_logging)
+target_include_directories(assetpath_check PRIVATE ../editor/include)
 target_compile_features(assetpath_check PRIVATE cxx_std_20)
 if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetpath_check PRIVATE -static -static-libgcc -static-libstdc++)
