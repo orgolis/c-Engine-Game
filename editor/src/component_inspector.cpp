@@ -875,6 +875,13 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
     return changed;
 }
 
+bool draw_reflected_fields(void* obj, const gws::reflect::TypeInfo& ti) {
+    bool changed = false;
+    for (const gws::reflect::FieldInfo& f : ti.fields)
+        changed |= draw_field(f, static_cast<char*>(obj) + f.offset);
+    return changed;
+}
+
 void draw_inventory_ui(EcsSceneBridge& bridge) {
     ecs::World& w = bridge.world();
     w.each<ecs::Inventory>([&](ecs::Entity e, ecs::Inventory& inv) {

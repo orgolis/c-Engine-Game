@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "reflection/reflection.h"
+
 namespace schizo::scene { class Transform; }
 
 namespace schizo::editor {
@@ -41,6 +43,16 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
 // toggles via add_tag/remove_tag). Reuses the G4 inventory ops (use/equip/drop/
 // unequip). Call once per frame. This is how a script "opens the inventory GUI":
 // scripts can't draw ImGui, so the script sets the intent and the engine renders.
+/// Draw every reflected field of `obj` with a type-appropriate widget.
+/// Returns true if anything was edited.
+///
+/// The same drawer the ECS inspector uses, exposed so the OOP scene components
+/// can share it. That matters more than saving code: it means a field added to
+/// a reflected component appears in the inspector AND in the save file with no
+/// UI or serializer edit, so the two cannot drift apart -- a component you can
+/// configure but not save is worse than one you cannot configure.
+bool draw_reflected_fields(void* obj, const gws::reflect::TypeInfo& ti);
+
 void draw_inventory_ui(EcsSceneBridge& bridge);
 
 // G11 · gameplay UI. Draws, for entities tagged with the matching "ui.*" intent

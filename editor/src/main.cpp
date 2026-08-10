@@ -59,6 +59,9 @@
 #include "vulkan/gpu_profiler.h"    // N2: per-pass GPU timing
 #include "ecs/components.h"
 #include "ecs_bridge.h"        // shadow ECS mirror of the scene (Stage 1.4 step 1)
+#include "particle_emitter_component.h"
+#include "npc_agent_component.h"
+#include "scene_component_reflect.h"
 #include "component_inspector.h"  // generic reflection-driven ECS component authoring (F2)
 
 // ImGui headers
@@ -2057,6 +2060,53 @@ void ShowInspector(EditorState& editor_state) {
         } else {
             ImGui::TextDisabled("Model: [default cube]");
         }
+        // Particle emitter (3.9) and NPC agent (3.5). Neither had ANY inspector
+        // UI: both components existed, both were read every frame by their
+        // runtime systems, and neither could be configured from the editor at
+        // all -- only from a script. Drawn from reflection, so a field added to
+        // either shows up here AND in the save file with no edit in either
+        // place. A component you can configure but not save is worse than one
+        // you cannot configure, and keeping both off one source is what stops
+        // them drifting apart.
+        //
+        // Unlike the skinned-mesh section these are shown whether or not they
+        // are enabled, because the enable toggle IS the first field -- hiding
+        // the section until enabled would leave no way to enable it.
+        if (auto* pec = selected_entity->GetParticleEmitterComponent()) {
+            if (ImGui::CollapsingHeader("Particle Emitter")) {
+                if (schizo::editor::draw_reflected_fields(
+                        pec, *gws::reflect::reflect<schizo::scene::ParticleEmitterComponent>()))
+                    editor_state.editor_scene->MarkModified();
+                if (ImGui::SmallButton("Reset##emitter")) {
+                    *pec = schizo::scene::ParticleEmitterComponent{};
+                    editor_state.editor_scene->MarkModified();
+                }
+            }
+            ImGui::Separator();
+        }
+        if (auto* nac = selected_entity->GetNpcAgentComponent()) {
+            if (ImGui::CollapsingHeader("NPC Agent")) {
+                // target_name is a std::string, which offset reflection cannot
+                // carry, so it needs its own widget -- and it is the field that
+                // decides who the agent hunts, so leaving it out would make the
+                // rest of the section useless.
+                char buf[64];
+                std::snprintf(buf, sizeof buf, "%s", nac->target_name.c_str());
+                if (ImGui::InputText("target_name", buf, sizeof buf)) {
+                    nac->target_name = buf;
+                    editor_state.editor_scene->MarkModified();
+                }
+                if (schizo::editor::draw_reflected_fields(
+                        nac, *gws::reflect::reflect<schizo::scene::NpcAgentComponent>()))
+                    editor_state.editor_scene->MarkModified();
+                if (ImGui::SmallButton("Reset##npcagent")) {
+                    *nac = schizo::scene::NpcAgentComponent{};
+                    editor_state.editor_scene->MarkModified();
+                }
+            }
+            ImGui::Separator();
+        }
+
         // Rigged character (SkinnedMeshComponent, 3.8). Shown only when the
         // entity is one — an empty section on every rock and crate is noise.
         if (auto* smc = selected_entity->GetSkinnedMeshComponent(); smc && smc->active()) {
