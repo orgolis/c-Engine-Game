@@ -97,6 +97,15 @@ public:
                         const std::shared_ptr<schizo::scene::Scene>& scene,
                         EcsSceneBridge* bridge);
 
+    // Read the CURRENT value of each given row, marked keep, so applying the
+    // result restores exactly what those rows are about to overwrite. That is
+    // what makes "Keep selected" undoable: the inverse of an apply is another
+    // apply, so no second code path can disagree with the first.
+    static std::vector<PlayChange> SnapshotCurrent(
+        const std::vector<PlayChange>& rows,
+        const std::shared_ptr<schizo::scene::Scene>& scene,
+        EcsSceneBridge* bridge);
+
     void Clear() { baseline_.clear(); has_baseline_ = false; }
     bool has_baseline() const { return has_baseline_; }
 

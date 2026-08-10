@@ -333,6 +333,10 @@ struct EditorState {
     // Coalesces inspector field edits so one drag is one undo entry rather than
     // one per frame. See edit_coalescer.h.
     schizo::editor::EditCoalescer field_edits;
+    // Separate coalescer: the logic graph is scene-scoped, and sharing one with
+    // the inspector would make editing a node mid-drag look like "switched
+    // target" and commit the wrong thing.
+    schizo::editor::EditCoalescer logic_edits;
 
     // Play-mode change tracking. Play still discards by default; this keeps the
     // diff so the developer can choose what survives instead of losing a tuning
@@ -565,6 +569,32 @@ static std::shared_ptr<schizo::scene::Entity> FindEntityById(
     for (const auto& e : scene->GetEntities())
         if (e && e->GetId() == id) return e;
     return nullptr;
+}
+
+// ============================================================================
+// Undo for a logic-graph edit.
+//
+// The graph round-trips through text (logic_to_text / logic_from_text), so an
+// entry stores the whole graph before and after. That is fine here and would
+// NOT be fine for terrain: a graph is a handful of nodes, a heightmap is
+// megabytes. Same problem, different right answer.
+// ============================================================================
+static void PushLogicGraphCommand(EditorState& editor_state,
+                                  schizo::editor::EcsSceneBridge* bridge,
+                                  const schizo::editor::CoalescedEdit& edit) {
+    if (!bridge) return;
+    const std::string before(edit.before.begin(), edit.before.end());
+    const std::string after (edit.after.begin(),  edit.after.end());
+
+    auto apply = [bridge](const std::string& text) {
+        schizo::editor::apply_logic_graph_text(*bridge, text);
+    };
+
+    auto cmd = std::make_unique<schizo::editor::FunctionCommand>(
+        [apply, after, &editor_state]()  { apply(after);  editor_state.editor_scene->MarkModified(); },
+        [apply, before, &editor_state]() { apply(before); editor_state.editor_scene->MarkModified(); },
+        "Edit logic graph");
+    editor_state.undo_redo_manager.PushExecuted(std::move(cmd));   // the panel already applied it
 }
 
 // ============================================================================
@@ -978,9 +1008,33 @@ void ShowPlayChangesDialog(EditorState& editor_state) {
     ImGui::BeginDisabled(selected == 0);
     if (ImGui::Button(selected ? "Keep selected" : "Keep selected (none)")) {
         auto scene = editor_state.editor_scene ? editor_state.editor_scene->GetScene() : nullptr;
+        // Capture what these rows are about to overwrite, BEFORE applying --
+        // afterwards the authored values are gone. The inverse of an apply is
+        // another apply, so undo cannot disagree with redo.
+        auto undo_rows = schizo::editor::PlayModeChanges::SnapshotCurrent(
+            report.changes, scene, editor_state.ecs_bridge);
+        auto redo_rows = report.changes;
+
         const size_t n = schizo::editor::PlayModeChanges::Apply(
             report.changes, scene, editor_state.ecs_bridge);
         spdlog::info("Kept {} change(s) from play mode", n);
+
+        if (n > 0 && scene) {
+            auto* bridge = editor_state.ecs_bridge;
+            auto cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                [scene, bridge, redo_rows, &editor_state]() {
+                    schizo::editor::PlayModeChanges::Apply(redo_rows, scene, bridge);
+                    editor_state.editor_scene->MarkModified();
+                },
+                [scene, bridge, undo_rows, &editor_state]() {
+                    schizo::editor::PlayModeChanges::Apply(undo_rows, scene, bridge);
+                    editor_state.editor_scene->MarkModified();
+                },
+                "Keep " + std::to_string(n) + " play-mode change(s)");
+            editor_state.undo_redo_manager.PushExecuted(std::move(cmd));   // already applied
+            editor_state.editor_scene->MarkModified();
+        }
+
         report = {};
         editor_state.show_play_changes_popup = false;
     }
@@ -7291,7 +7345,12 @@ int main(int argc, char** argv) {
             // so they set the intent tags and the engine renders it here.
             schizo::editor::draw_gameplay_ui(ecs_bridge);
             if (editor_state.show_logic_graph)
-                schizo::editor::draw_logic_graph_panel(ecs_bridge, &editor_state.show_logic_graph);
+                schizo::editor::draw_logic_graph_panel(
+                    ecs_bridge, &editor_state.show_logic_graph,
+                    &editor_state.logic_edits,
+                    [&editor_state, &ecs_bridge](const schizo::editor::CoalescedEdit& e) {
+                        PushLogicGraphCommand(editor_state, &ecs_bridge, e);
+                    });
 
             { GWS_PROFILE_ZONE("build_draw_items");
               schizo::editor::build_draw_items(

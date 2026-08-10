@@ -229,6 +229,49 @@ PlayChangeReport PlayModeChanges::Diff(
     return report;
 }
 
+std::vector<PlayChange> PlayModeChanges::SnapshotCurrent(
+        const std::vector<PlayChange>& rows,
+        const std::shared_ptr<schizo::scene::Scene>& scene,
+        EcsSceneBridge* bridge) {
+    std::vector<PlayChange> out;
+    if (!scene) return out;
+
+    std::unordered_map<uint32_t, schizo::scene::Entity*> by_id;
+    for (const auto& ent : scene->GetEntities())
+        if (ent) by_id[ent->GetId()] = ent.get();
+
+    for (const auto& r : rows) {
+        if (!r.keep) continue;                 // only rows actually being applied
+        auto it = by_id.find(r.entity_id);
+        if (it == by_id.end()) continue;
+        auto* t = it->second->GetTransform();
+        if (!t) continue;
+
+        PlayChange cur = r;                    // same target, current value
+        cur.keep = true;
+        if (r.is_transform) {
+            cur.position = t->GetLocalPosition();
+            cur.rotation = t->GetLocalRotation();
+            cur.scale    = t->GetLocalScale();
+        } else if (bridge) {
+            const auto* ct = schizo::ecs::find_authorable(r.component.c_str());
+            if (!ct) continue;
+            const uint32_t eid = bridge->ecs_entity_id(t);
+            if (eid == kNoEcsEntity) continue;
+            auto& world = bridge->world();
+            const auto e = static_cast<schizo::ecs::Entity>(eid);
+            // Absent now -> an empty payload, which Apply reads as "remove".
+            // That is what correctly undoes a row that ADDS a component.
+            cur.bytes.clear();
+            if (ct->has(world, e))
+                if (const void* comp = ct->get(world, e))
+                    cur.bytes = schizo::ecs::serialize_authorable(*ct, comp);
+        }
+        out.push_back(std::move(cur));
+    }
+    return out;
+}
+
 size_t PlayModeChanges::Apply(const std::vector<PlayChange>& changes,
                               const std::shared_ptr<schizo::scene::Scene>& scene,
                               EcsSceneBridge* bridge) {

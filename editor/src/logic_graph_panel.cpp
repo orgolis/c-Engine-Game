@@ -74,9 +74,24 @@ float dist(const ImVec2& a, const ImVec2& b) { const float dx = a.x - b.x, dy = 
 
 }  // namespace
 
-void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open) {
+void apply_logic_graph_text(EcsSceneBridge& bridge, const std::string& text) {
+    bridge.logic_graph() = ecs::logic_from_text(text);
+}
+
+void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open,
+                            EditCoalescer* coalescer,
+                            const std::function<void(const CoalescedEdit&)>& on_edit) {
     if (!ImGui::Begin("Logic Graph", open)) { ImGui::End(); return; }
     ecs::LogicGraph& g = bridge.logic_graph();
+
+    // Snapshot before the widgets run: they edit the graph in place, so this is
+    // the only moment the pre-edit state exists.
+    std::vector<uint8_t> graph_before;
+    if (coalescer) {
+        const std::string t = ecs::logic_to_text(g);
+        graph_before.assign(t.begin(), t.end());
+        coalescer->observe(graph_before);
+    }
 
     ImGui::TextDisabled("Scene logic: EVENTS (blue) -> ACTIONS (purple) / BRANCH (teal, if-condition). "
                         "Nodes chain: On Event -> Branch -> Set Flag -> Log. Right-click canvas to add; "
@@ -219,6 +234,19 @@ void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open) {
         if (ImGui::MenuItem("Do Once"))     g.add_node(ecs::LogicNodeKind::DoOnce, ax, ay);
         if (ImGui::MenuItem("Delay"))       g.add_node(ecs::LogicNodeKind::Delay, ax, ay);
         ImGui::EndPopup();
+    }
+
+    // Commit a completed gesture. Node drags move the graph every frame while
+    // the mouse is held, so this is coalesced exactly like an inspector field:
+    // one entry per gesture, and none at all if the graph ended up unchanged.
+    if (coalescer && on_edit) {
+        const std::string after_text = ecs::logic_to_text(g);
+        std::vector<uint8_t> after(after_text.begin(), after_text.end());
+        const bool changed = (after != graph_before);
+        // Entity id 0: the logic graph is scene-scoped, not per-entity.
+        if (auto edit = coalescer->update(0, "Logic Graph", after,
+                                          changed, ImGui::IsAnyItemActive()))
+            on_edit(*edit);
     }
 
     ImGui::End();
