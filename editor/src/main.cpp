@@ -311,6 +311,15 @@ struct EditorState {
     gws::tasks::TaskRunner tasks;
     bool show_task_panel = true;
 
+    // Scene-file hot reload. Watches the CURRENT scene file so a change made
+    // outside the editor (a git pull, a teammate, an agent) is noticed. It is
+    // deliberately NOT a blind reload -- see ShowSceneReloadPrompt.
+    gws::assets::AssetWatcher scene_watcher;
+    std::string  watched_scene_path;      // what scene_watcher is currently on
+    bool         watched_scene_dirty = false;   // last known unsaved-changes state
+    bool         scene_changed_on_disk = false; // set by the watcher callback
+    bool         show_scene_reload_prompt = false;
+
     // Coalesces inspector field edits so one drag is one undo entry rather than
     // one per frame. See edit_coalescer.h.
     schizo::editor::EditCoalescer field_edits;
@@ -457,6 +466,68 @@ static uint64_t AudioGuidFromPath(const std::string& p) {
 // the authored scene. Every row is an opt-in re-application, so closing the
 // window with Escape or Discard leaves exactly the pre-play state.
 // ============================================================================
+// ============================================================================
+// "This scene changed on disk" — the half of hot reload that must not be automatic.
+//
+// Every other asset type reloads silently, because the worst case is a texture
+// popping. A scene is different: reloading throws away everything unsaved in the
+// editor, and the change on disk may be a git pull, a teammate, or an agent.
+// Silently reloading would be the single most destructive thing hot reload
+// could do, which is why 2.4 left scenes for last rather than treating them
+// like meshes.
+//
+// So the rule is: reload automatically ONLY when there is nothing to lose.
+// With unsaved changes, stop and ask — and make "keep mine" the safe default by
+// requiring an explicit click to discard.
+// ============================================================================
+void ShowSceneReloadPrompt(EditorState& editor_state) {
+    if (!editor_state.show_scene_reload_prompt) return;
+
+    ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_Always);
+    if (!ImGui::Begin("Scene changed on disk", &editor_state.show_scene_reload_prompt,
+                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse)) {
+        ImGui::End();
+        return;
+    }
+
+    ImGui::TextWrapped("%s was modified outside the editor.",
+                       editor_state.editor_scene->GetSceneFilepath().c_str());
+    ImGui::Spacing();
+    ImGui::TextColored(ImVec4(0.92f, 0.72f, 0.35f, 1.0f),
+                       "You have unsaved changes. Reloading discards them.");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (ImGui::Button("Keep my version", ImVec2(150, 0))) {
+        // Deliberately does nothing to the file. The next save overwrites the
+        // on-disk version, which is what "keep mine" has to mean.
+        editor_state.show_scene_reload_prompt = false;
+        editor_state.scene_changed_on_disk = false;
+        editor_state.set_status("Kept the in-editor scene; disk version ignored");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Save mine over it", ImVec2(150, 0))) {
+        const std::string path = editor_state.editor_scene->GetSceneFilepath();
+        if (!path.empty() && editor_state.editor_scene->SaveScene(path))
+            editor_state.set_status("Saved over the on-disk scene");
+        editor_state.show_scene_reload_prompt = false;
+        editor_state.scene_changed_on_disk = false;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Discard mine, reload", ImVec2(160, 0))) {
+        const std::string path = editor_state.editor_scene->GetSceneFilepath();
+        if (!path.empty() && editor_state.editor_scene->LoadScene(path)) {
+            editor_state.selected_entity_id = 0;
+            editor_state.set_status("Reloaded scene from disk");
+        }
+        editor_state.show_scene_reload_prompt = false;
+        editor_state.scene_changed_on_disk = false;
+    }
+
+    ImGui::End();
+}
+
 // ============================================================================
 // Background work — visible, and interruptible.
 //
@@ -5783,6 +5854,50 @@ int main(int argc, char** argv) {
             // the scene and the GPU is legal.
             editor_state.tasks.poll();
 
+            // Scene-file watch. Re-seeded whenever the open file changes OR the
+            // scene was just saved -- without the second case the editor's own
+            // save would look like an external edit and prompt about itself.
+            {
+                const std::string& spath = editor_state.editor_scene->GetSceneFilepath();
+                const bool dirty_now = editor_state.editor_scene->HasUnsavedChanges();
+                const bool just_saved = editor_state.watched_scene_dirty && !dirty_now;
+                if (spath != editor_state.watched_scene_path || just_saved) {
+                    editor_state.scene_watcher.clear();
+                    editor_state.watched_scene_path = spath;
+                    editor_state.scene_changed_on_disk = false;
+                    if (!spath.empty()) {
+                        editor_state.scene_watcher.watch(spath, [&editor_state](const std::string&) {
+                            editor_state.scene_changed_on_disk = true;
+                        });
+                    }
+                }
+                editor_state.watched_scene_dirty = dirty_now;
+
+                using namespace std::chrono;
+                editor_state.scene_watcher.poll(
+                    duration<double>(steady_clock::now().time_since_epoch()).count());
+
+                if (editor_state.scene_changed_on_disk) {
+                    if (!editor_state.editor_scene->HasUnsavedChanges()) {
+                        // Nothing to lose -- reload silently, which is what you
+                        // want after a git pull.
+                        const std::string path = editor_state.editor_scene->GetSceneFilepath();
+                        if (!path.empty() && editor_state.editor_scene->LoadScene(path)) {
+                            editor_state.selected_entity_id = 0;
+                            editor_state.set_status("Scene changed on disk — reloaded");
+                            spdlog::info("[scene] '{}' changed on disk; reloaded (no unsaved changes)", path);
+                        }
+                        editor_state.scene_changed_on_disk = false;
+                        editor_state.watched_scene_path.clear();   // force a re-seed
+                    } else if (!editor_state.show_scene_reload_prompt) {
+                        // There IS something to lose. Ask.
+                        editor_state.show_scene_reload_prompt = true;
+                        spdlog::warn("[scene] '{}' changed on disk and there are unsaved changes",
+                                     editor_state.editor_scene->GetSceneFilepath());
+                    }
+                }
+            }
+
             // Mesh hot reload: drop cache entries whose source file changed;
             // the next draw rebuilds them through the ordinary load path. Save
             // from Blender over a model the scene uses and the viewport follows.
@@ -6311,6 +6426,7 @@ int main(int argc, char** argv) {
             ShowRenameDialog(editor_state);
             ShowPlayChangesDialog(editor_state);
             ShowTaskPanel(editor_state);
+            ShowSceneReloadPrompt(editor_state);
             if (editor_state.show_demo_window)
                 ImGui::ShowDemoWindow(&editor_state.show_demo_window);
             ShowViewport(editor_state);
