@@ -52,7 +52,7 @@ frame-time regression.
 | Script edit → running in game | < 500 ms | ✅ three hot-reload backends already exist |
 | Press Play → controllable | < 1 s | ✅ no domain-reload equivalent to pay — *protect this* |
 | Save asset → visible in viewport | < 2 s | 🟡 **textures and meshes reload now** on the shared watcher (`d0af2a0`); the row itself still needs a driven editor to time |
-| Shader edit → on screen | < 2 s | 🔴 blocked: SPIR-V is baked into the binary as generated headers, so there is no file to watch. Needs a prefer-`.spv`-on-disk path first |
+| Shader edit → on screen | < 2 s | 🟡 **~1.2 s measured** (`4602a03`) — was **17.7 s**. The renderer now prefers `<exe_dir>/shaders/<name>.spv` over the baked array and `gws shaders` compiles into it, so the loop is `gws shaders && editor`. **Covers 2 shaders, not all of them**: most passes keep their GLSL inline in the renderer `.cpp` files (#67). Still a restart, not live reload |
 | Editor cold start → project open | < 5 s | ✅ **798 ms**, measured by `editor --startup-probe` via `innerloop_check` (`cc4e2f7`) |
 | Full clean build | tracked, not capped | 🔴 the number nobody optimises until it is 40 minutes |
 
