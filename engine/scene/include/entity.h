@@ -2,6 +2,7 @@
 
 #include "transform.h"
 #include "mesh_component.h"
+#include "skinned_mesh_component.h"
 #include <memory>
 #include <vector>
 #include <string>
@@ -132,6 +133,13 @@ public:
      */
     MeshComponent* GetMeshComponent() { return &mesh_component_; }
     const MeshComponent* GetMeshComponent() const { return &mesh_component_; }
+
+    /// Rigged-character data. Empty gltf_path = not a skinned character, which
+    /// is what the render path tests. Data only — the GPU-side actor is owned
+    /// editor-side and keyed by entity id, so a scene stays loadable without a
+    /// device. See skinned_mesh_component.h.
+    SkinnedMeshComponent* GetSkinnedMeshComponent() { return &skinned_mesh_component_; }
+    const SkinnedMeshComponent* GetSkinnedMeshComponent() const { return &skinned_mesh_component_; }
     
     /**
      * @brief Set mesh on entity
@@ -312,6 +320,7 @@ protected:
     
     // Mesh component
     MeshComponent mesh_component_;
+    SkinnedMeshComponent skinned_mesh_component_;
     
     // Components
     std::vector<std::shared_ptr<Component>> components_;

@@ -35,6 +35,7 @@
 #include "vulkan/vulkan_texture_manager.h"  // runtime texture handling (Stage 2)
 #include "skinned_demo.h"                    // Stage 5 skinned-animation test rig
 #include "imported_skinned_actor.h"          // rigged-glTF import → GPU skin (Path B)
+#include "skinned_actor_cache.h"             // per-entity skinned actors (3.8)
 #include "game_ui_demo.h"                     // runtime game-UI HUD demo (Game-UI pillar)
 #include "vulkan/imgui_vulkan.h"
 
@@ -1970,6 +1971,27 @@ void ShowInspector(EditorState& editor_state) {
         } else {
             ImGui::TextDisabled("Model: [default cube]");
         }
+        // Rigged character (SkinnedMeshComponent, 3.8). Shown only when the
+        // entity is one — an empty section on every rock and crate is noise.
+        if (auto* smc = selected_entity->GetSkinnedMeshComponent(); smc && smc->active()) {
+            if (ImGui::CollapsingHeader("Skinned Character", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextDisabled("%s", smc->gltf_path.c_str());
+                if (ImGui::Checkbox("Playing##skinned", &smc->playing))
+                    editor_state.editor_scene->MarkModified();
+                if (ImGui::DragFloat("Speed##skinned", &smc->speed, 0.05f, -4.0f, 4.0f))
+                    editor_state.editor_scene->MarkModified();
+                if (ImGui::DragInt("Clip##skinned", &smc->clip_index, 0.2f, 0, 64))
+                    editor_state.editor_scene->MarkModified();
+                if (ImGui::SmallButton("Clear rig")) {
+                    *smc = schizo::scene::SkinnedMeshComponent{};
+                    editor_state.editor_scene->MarkModified();
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(drop a rigged .gltf/.glb on the viewport to assign)");
+            }
+            ImGui::Separator();
+        }
+
         ImGui::Separator();
         
         // Entity name editing
@@ -5418,6 +5440,10 @@ int main(int argc, char** argv) {
         // entity MeshComponent::mesh_path (set by drag-drop in the inspector).
         schizo::editor::AssetMeshCache asset_cache;
 
+        // Per-entity skinned characters (SkinnedMeshComponent). Keyed by entity
+        // so two characters animate independently; see skinned_actor_cache.h.
+        schizo::editor::SkinnedActorCache skinned_actors;
+
         // Per-terrain-entity GPU mesh cache. Rebuilds a terrain's grid mesh
         // only when its heightmap version changes (each sculpt edit).
         schizo::editor::TerrainMeshCache terrain_cache;
@@ -6053,6 +6079,7 @@ int main(int argc, char** argv) {
             {
                 const std::string mesh = "assets/test_cooked/cube3d.obj";
                 asset_cache.clear();
+        skinned_actors.clear();      // skinned meshes + materials
                 asset_cache.set_task_runner(&editor_state.tasks);
                 const auto t0 = clock::now();
                 const gws::renderer::gpu::Scene* loaded = nullptr;
@@ -6208,21 +6235,67 @@ int main(int argc, char** argv) {
 
             // Consume a requested rigged-model import (device + pools in scope).
             if (!editor_state.pending_skinned_import.empty()) {
-                device.wait_idle();
-                std::string perr;
-                auto act = schizo::editor::ImportedSkinnedActor::create(
-                    &device, mat_layout, mat_pool, &texture_manager,
-                    editor_state.pending_skinned_import, glm::vec3(0.0f, 0.0f, 0.0f), &perr);
-                if (act) {
-                    imported_actor = std::move(act);
-                    spdlog::info("[skinned] imported '{}' ({} clip(s))",
-                                 imported_actor->name(), imported_actor->clip_count());
-                } else {
-                    spdlog::error("[skinned] import failed: {}", perr);
-                }
+                // Import onto an ENTITY rather than into a global. Before 3.8
+                // this replaced a single unique_ptr, so the editor could show
+                // exactly one character and you could not place it with the
+                // gizmo. Now it becomes a SkinnedMeshComponent, which means it
+                // has a Transform, saves with the scene, and can coexist with
+                // other characters.
+                const std::string rig = editor_state.pending_skinned_import;
                 editor_state.pending_skinned_import.clear();
+
+                if (auto sc = editor_state.editor_scene->GetScene()) {
+                    // Assign to the selection when there is one; otherwise make
+                    // an entity for it, so the import is never silently lost.
+                    auto target = FindEntityById(sc, editor_state.selected_entity_id);
+                    if (!target) {
+                        target = sc->CreateEntity(
+                            std::filesystem::path(schizo::editor::utf8_path(rig)).stem().string());
+                        editor_state.selected_entity_id = target ? target->GetId() : 0;
+                    }
+                    if (target) {
+                        auto* smc = target->GetSkinnedMeshComponent();
+                        smc->gltf_path  = rig;
+                        smc->clip_index = 0;
+                        smc->playing    = true;
+                        smc->speed      = 1.0f;
+                        editor_state.editor_scene->MarkModified();
+                        editor_state.set_status("Rigged character on '" + target->GetName() + "'");
+                        spdlog::info("[skinned] '{}' assigned to entity '{}'", rig, target->GetName());
+                    }
+                }
             }
             if (imported_actor) imported_actor->advance(delta_time);
+
+            // Per-entity skinned characters: build on demand, pose, and place
+            // from the entity's Transform. Done before the command buffer opens
+            // so record_skin below has an up-to-date pose.
+            if (auto sk_scene = editor_state.editor_scene->GetScene()) {
+                for (const auto& ent : sk_scene->GetEntities()) {
+                    if (!ent) continue;
+                    auto* smc = ent->GetSkinnedMeshComponent();
+                    if (!smc || !smc->active()) continue;
+                    auto* actor = skinned_actors.get_or_create(
+                        ent->GetId(), smc->gltf_path, &device,
+                        mat_layout, mat_pool, &texture_manager);
+                    if (!actor) continue;
+                    if (static_cast<size_t>(smc->clip_index) != actor->clip_index())
+                        actor->set_clip(static_cast<size_t>(smc->clip_index));
+                    if (smc->playing) actor->advance(delta_time * smc->speed);
+                    else              actor->refresh_pose();   // hold the pose, not bind pose
+                    if (auto* tf = ent->GetTransform())
+                        actor->set_model(tf->GetWorldMatrix());
+                }
+                // Release actors whose entity is gone or no longer skinned.
+                skinned_actors.prune([&sk_scene](uint32_t id) {
+                    for (const auto& e : sk_scene->GetEntities())
+                        if (e && e->GetId() == id) {
+                            auto* c = e->GetSkinnedMeshComponent();
+                            return c && c->active();
+                        }
+                    return false;
+                });
+            }
 
             // Feed dt to the post-processing chain so auto-exposure can
             // do frame-rate-independent smoothing.
@@ -7055,6 +7128,19 @@ int main(int argc, char** argv) {
             // geometry pass all read it this frame.
             if (anim_demo && anim_demo->enabled()) anim_demo->record_skin(cmd);
             if (imported_actor) imported_actor->record_skin(cmd);
+            // Skinning dispatch for every per-entity character, before the
+            // shadow/geometry passes read the skinned vertex buffers.
+            if (auto sk_scene2 = editor_state.editor_scene->GetScene()) {
+                for (const auto& ent : sk_scene2->GetEntities()) {
+                    if (!ent) continue;
+                    auto* smc = ent->GetSkinnedMeshComponent();
+                    if (!smc || !smc->active()) continue;
+                    if (auto* a = skinned_actors.get_or_create(
+                            ent->GetId(), smc->gltf_path, &device,
+                            mat_layout, mat_pool, &texture_manager))
+                        a->record_skin(cmd);
+                }
+            }
 
             // Camera from viewport — use the actual panel aspect ratio
             CameraData cam{};
@@ -7365,6 +7451,19 @@ int main(int argc, char** argv) {
                 opaque_draws.push_back(anim_demo->draw_item());
             if (imported_actor)
                 opaque_draws.push_back(imported_actor->draw_item());
+            // Per-entity skinned characters join the opaque list like any other
+            // draw, so they get culling, shadows and the G-buffer for free.
+            if (auto sk_scene3 = editor_state.editor_scene->GetScene()) {
+                for (const auto& ent : sk_scene3->GetEntities()) {
+                    if (!ent) continue;
+                    auto* smc = ent->GetSkinnedMeshComponent();
+                    if (!smc || !smc->active()) continue;
+                    if (auto* a = skinned_actors.get_or_create(
+                            ent->GetId(), smc->gltf_path, &device,
+                            mat_layout, mat_pool, &texture_manager))
+                        opaque_draws.push_back(a->draw_item());
+                }
+            }
 
             // DDGI grid auto-fit: enclose the scene's world AABB (from the
             // opaque draw list) with the fixed probe grid so probes actually

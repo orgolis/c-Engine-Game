@@ -98,6 +98,17 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
                 }
             }
 
+            // Rigged character (3.8). Written only when set, like MESH_PATH, so
+            // a scene without one round-trips byte-identical.
+            if (auto smc = entity->GetSkinnedMeshComponent()) {
+                if (smc->active()) {
+                    file << "SKINNED_PATH="  << smc->gltf_path  << "\n";
+                    file << "SKINNED_CLIP="  << smc->clip_index << "\n";
+                    file << "SKINNED_PLAY="  << (smc->playing ? "1" : "0") << "\n";
+                    file << "SKINNED_SPEED=" << smc->speed      << "\n";
+                }
+            }
+
             // TransformComponent (separate Component-derived wrapper users can
             // explicitly Add; presence-only marker, no extra data).
             if (entity->GetComponent<schizo::scene::TransformComponent>()) {
@@ -347,6 +358,10 @@ struct ParsedEntity {
     glm::vec3 local_scale{1.0f};
 
     std::string mesh_path;
+    std::string skinned_path;
+    int         skinned_clip  = 0;
+    bool        skinned_play  = true;
+    float       skinned_speed = 1.0f;
     bool mesh_use_asset = false;
 
     bool has_transform_comp = false;
@@ -485,6 +500,10 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
         return;
     }
 
+    if (starts_with(line, "SKINNED_PATH", v))  { p.skinned_path = v; return; }
+    if (starts_with(line, "SKINNED_CLIP", v))  { p.skinned_clip = std::atoi(v.c_str()); return; }
+    if (starts_with(line, "SKINNED_PLAY", v))  { p.skinned_play = (v == "1"); return; }
+    if (starts_with(line, "SKINNED_SPEED", v)) { p.skinned_speed = static_cast<float>(std::atof(v.c_str())); return; }
     if (starts_with(line, "MESH_PATH", v))      { p.mesh_path = v; return; }
     if (starts_with(line, "MESH_USE_ASSET", v)) { p.mesh_use_asset = (v == "1"); return; }
 
@@ -665,6 +684,13 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
     if (auto mc = e->GetMeshComponent(); !p.mesh_path.empty() && mc) {
         mc->mesh_path       = p.mesh_path;
         mc->use_asset_mesh  = p.mesh_use_asset;
+    }
+
+    if (auto smc = e->GetSkinnedMeshComponent(); !p.skinned_path.empty() && smc) {
+        smc->gltf_path  = p.skinned_path;
+        smc->clip_index = p.skinned_clip;
+        smc->playing    = p.skinned_play;
+        smc->speed      = p.skinned_speed;
     }
 
     if (p.has_transform_comp) {

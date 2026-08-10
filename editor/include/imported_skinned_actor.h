@@ -47,6 +47,20 @@ public:
         skeleton_->UpdateWorldTransforms();
     }
 
+    /// Pose the skeleton WITHOUT advancing time. A paused actor still has to be
+    /// posed on the first frame, or it renders in bind pose until you press
+    /// play -- which reads as "the model is broken", not "it is paused".
+    void refresh_pose() {
+        if (!skeleton_ || clips_.empty()) return;
+        clips_[clip_index_]->Sample(*skeleton_, time_, /*loop=*/true);
+        skeleton_->UpdateWorldTransforms();
+    }
+
+    /// Place the actor with a full transform, so an entity's Transform (with
+    /// rotation and non-uniform scale) drives it rather than the position+scale
+    /// pair this class used when there was only ever one actor.
+    void set_model(const glm::mat4& m) { model_ = m; use_model_ = true; }
+
     /// GPU: record the skinning dispatch from the current pose. Call right after
     /// the frame command buffer begins (before shadow/geometry read the vbo).
     void record_skin(VkCommandBuffer cmd) {
@@ -62,8 +76,10 @@ public:
         gws::renderer::gpu::DrawItem d{};
         d.mesh          = mesh_->output_mesh();
         d.material      = mat_.get();
-        d.model         = glm::translate(glm::mat4(1.0f), world_pos_) *
-                          glm::scale(glm::mat4(1.0f), glm::vec3(scale_));
+        d.model         = use_model_
+                            ? model_
+                            : glm::translate(glm::mat4(1.0f), world_pos_) *
+                              glm::scale(glm::mat4(1.0f), glm::vec3(scale_));
         d.submesh_index = 0;
         d.is_blend      = false;
         d.is_terrain    = false;
@@ -116,6 +132,8 @@ private:
     std::unique_ptr<gws::renderer::gpu::SkinnedMesh> mesh_;
     std::unique_ptr<gws::renderer::gpu::Material>    mat_;
 
+    glm::mat4 model_{1.0f};
+    bool      use_model_ = false;   // set once an entity Transform drives this
     glm::vec3 world_pos_{0.0f};
     float     scale_ = 1.0f;
     float     time_  = 0.0f;
