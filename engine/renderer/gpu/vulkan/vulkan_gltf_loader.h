@@ -21,6 +21,13 @@
 
 namespace gws::renderer::gpu {
 
+// A parsed glTF, kept OPAQUE on purpose. TINYGLTF_IMPLEMENTATION is defined
+// build-wide, so including tinygltf.h here would emit its implementation into
+// every translation unit that touches this header -- and the editor touches it
+// a lot. Construction and destruction happen in the .cpp where the type is
+// complete, which is all a shared_ptr needs.
+struct ParsedGltfModel;
+
 class VulkanDevice;
 class Mesh;
 class Material;
@@ -72,6 +79,24 @@ public:
      *                                without cross-scene dedup / cooked-`.ctex` / hot-reload.
      * @return                        Owned scene, or nullptr on parse / GPU upload failure.
      */
+    /**
+     * @brief Read a glTF/glb into a tinygltf::Model. CPU only -- no device, no
+     *        Vulkan calls -- so it is safe to run on a worker thread while the
+     *        editor keeps rendering. Pair with build() on the device's thread.
+     */
+    static std::shared_ptr<ParsedGltfModel> parse(const std::string& path);
+
+    /**
+     * @brief Turn a parsed model into GPU resources. Touches the device, so it
+     *        must run on the thread that owns it.
+     */
+    static std::unique_ptr<Scene> build(VulkanDevice* device,
+                                        VkDescriptorSetLayout material_layout,
+                                        VkDescriptorPool material_pool,
+                                        const std::string& path,
+                                        const std::shared_ptr<ParsedGltfModel>& parsed,
+                                        TextureManager* textures = nullptr);
+
     static std::unique_ptr<Scene> load(VulkanDevice* device,
                                        VkDescriptorSetLayout material_layout,
                                        VkDescriptorPool material_pool,

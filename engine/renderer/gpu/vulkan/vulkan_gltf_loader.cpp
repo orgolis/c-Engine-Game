@@ -126,21 +126,19 @@ void gltf_min_filter(int mode, VkFilter& out_filter, VkSamplerMipmapMode& out_mi
 
 } // namespace
 
-std::unique_ptr<Scene> GltfLoader::load(VulkanDevice* device,
-                                        VkDescriptorSetLayout material_layout,
-                                        VkDescriptorPool material_pool,
-                                        const std::string& path,
-                                        TextureManager* textures) {
-    if (!device) {
-        spdlog::error("GltfLoader::load: null device");
-        return nullptr;
-    }
-    if (!std::filesystem::exists(path)) {
-        spdlog::error("GltfLoader::load: file not found: {}", path);
-        return nullptr;
-    }
+// Parse only. No device, no Vulkan call, nothing thread-affine -- which is what
+// lets a big .glb be read on a worker while the editor keeps drawing. The split
+// point is exactly where the device first appears; everything above this line
+// was already device-free, it simply had no way to be called on its own.
+struct ParsedGltfModel { tinygltf::Model model; };
 
-    tinygltf::Model model;
+std::shared_ptr<ParsedGltfModel> GltfLoader::parse(const std::string& path) {
+    if (!std::filesystem::exists(path)) {
+        spdlog::error("GltfLoader::parse: file not found: {}", path);
+        return nullptr;
+    }
+    auto out = std::make_shared<ParsedGltfModel>();
+    tinygltf::Model& model = out->model;
     tinygltf::TinyGLTF loader;
     std::string err, warn;
     bool ok = false;
@@ -151,12 +149,38 @@ std::unique_ptr<Scene> GltfLoader::load(VulkanDevice* device,
         ok = loader.LoadASCIIFromFile(&model, &err, &warn, path);
     }
     if (!ok) {
-        spdlog::error("GltfLoader::load({}): {}", path, err);
+        spdlog::error("GltfLoader::parse({}): {}", path, err);
         return nullptr;
     }
-    if (!warn.empty()) {
-        spdlog::warn("GltfLoader::load({}): {}", path, warn);
+    if (!warn.empty()) spdlog::warn("GltfLoader::parse({}): {}", path, warn);
+    return out;
+}
+
+std::unique_ptr<Scene> GltfLoader::load(VulkanDevice* device,
+                                        VkDescriptorSetLayout material_layout,
+                                        VkDescriptorPool material_pool,
+                                        const std::string& path,
+                                        TextureManager* textures) {
+    auto parsed = parse(path);
+    if (!parsed) return nullptr;
+    return build(device, material_layout, material_pool, path, parsed, textures);
+}
+
+// Everything that touches the device. Must run on the thread that owns it --
+// which is why the async path hands the parsed model back and calls this from
+// the task completion callback, not from the worker.
+std::unique_ptr<Scene> GltfLoader::build(VulkanDevice* device,
+                                         VkDescriptorSetLayout material_layout,
+                                         VkDescriptorPool material_pool,
+                                         const std::string& path,
+                                         const std::shared_ptr<ParsedGltfModel>& parsed,
+                                         TextureManager* textures) {
+    if (!device) {
+        spdlog::error("GltfLoader::build: null device");
+        return nullptr;
     }
+    if (!parsed) return nullptr;
+    tinygltf::Model& model = parsed->model;
 
     const std::string gltf_dir = std::filesystem::path(path).parent_path().string();
 

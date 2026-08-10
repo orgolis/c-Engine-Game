@@ -5703,7 +5703,7 @@ int main(int argc, char** argv) {
                 return std::chrono::duration<double, std::milli>(clock::now() - t).count();
             };
 
-            double play_ms = -1.0, asset_ms = -1.0;
+            double play_ms = -1.0, asset_ms = -1.0, gltf_ms = -1.0;
 
             // ---- play-mode entry -------------------------------------------
             if (auto pscene = editor_state.editor_scene->GetScene()) {
@@ -5735,8 +5735,26 @@ int main(int argc, char** argv) {
                 else spdlog::warn("[probe] asset-to-viewport not measured: '{}' did not load", mesh);
             }
 
-            std::printf("{\"play_mode_entry_ms\":%.1f,\"asset_to_viewport_ms\":%.1f}\n",
-                        play_ms, asset_ms);
+            // Same again for glTF. Both formats parse on a worker now, and they
+            // take different code paths, so measuring only OBJ would leave the
+            // one most real assets use unverified.
+            {
+                const std::string gmesh = "assets/models/test_rig.gltf";
+                const auto t0 = clock::now();
+                const gws::renderer::gpu::Scene* loaded = nullptr;
+                for (int i = 0; i < 20000 && !loaded; ++i) {
+                    editor_state.tasks.poll();
+                    loaded = asset_cache.get_or_load(gmesh, &device, mat_layout,
+                                                     mat_pool, &texture_manager);
+                    if (!loaded) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                if (loaded && !loaded->draw_items.empty()) gltf_ms = ms_since(t0);
+                else spdlog::warn("[probe] gltf load not measured: '{}' did not load", gmesh);
+            }
+
+            std::printf("{\"play_mode_entry_ms\":%.1f,\"asset_to_viewport_ms\":%.1f,"
+                        "\"gltf_to_viewport_ms\":%.1f}\n",
+                        play_ms, asset_ms, gltf_ms);
             editor_state.tasks.stop();
             return 0;
         }

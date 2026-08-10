@@ -399,6 +399,43 @@ public:
         // longer stalls on a big drop. glTF and .pak stay synchronous: the glTF
         // loader interleaves parsing with device calls, and .pak is already the
         // mmap zero-parse fast path.
+        if ((ext == ".gltf" || ext == ".glb") && device && tasks_) {
+            if (loading_.count(path)) return nullptr;
+            loading_.insert(path);
+
+            const std::string key = path;
+            auto parsed = std::make_shared<std::shared_ptr<gws::renderer::gpu::ParsedGltfModel>>();
+
+            tasks_->submit("Load " + std::filesystem::path(utf8_path(disk_path)).filename().string(),
+                [disk_path, parsed](gws::tasks::TaskContext& ctx) {
+                    ctx.set_progress(-1.0f, "parsing glTF");
+                    auto m = gws::renderer::gpu::GltfLoader::parse(disk_path);
+                    if (!ctx.cancelled()) *parsed = std::move(m);
+                },
+                [this, key, disk_path, parsed, device, mat_layout, mat_pool, textures]
+                (const gws::tasks::TaskInfo& info) {
+                    loading_.erase(key);
+                    if (info.state != gws::tasks::TaskState::Succeeded || !*parsed) {
+                        entries_[key] = nullptr;
+                        std::error_code ec2;
+                        const bool on_disk = std::filesystem::exists(utf8_path(disk_path), ec2);
+                        spdlog::error("[AssetMeshCache] Failed to load '{}' (resolved '{}', file {})"
+                                      " — the object keeps its primitive shape",
+                                      key, disk_path,
+                                      on_disk ? "present but parse failed" : "NOT FOUND on disk");
+                        return;
+                    }
+                    // GPU work on the editor thread, per the TaskRunner contract.
+                    auto built = gws::renderer::gpu::GltfLoader::build(
+                        device, mat_layout, mat_pool, disk_path, *parsed, textures);
+                    if (!built || built->draw_items.empty()) { entries_[key] = nullptr; return; }
+                    spdlog::info("[AssetMeshCache] Loaded {} (async): {} draw items, {} meshes",
+                                 key, built->draw_items.size(), built->meshes.size());
+                    entries_[key] = std::move(built);
+                });
+            return nullptr;
+        }
+
         if (ext == ".obj" && device && tasks_) {
             if (loading_.count(path)) return nullptr;   // already in flight
             loading_.insert(path);
