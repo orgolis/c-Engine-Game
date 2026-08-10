@@ -4453,6 +4453,7 @@ int main(int argc, char** argv) {
     bool        game_window_mode  = false;
     bool        startup_probe     = false;   // --startup-probe: time init, then exit
     int         frame_limit       = 0;       // --frames N: render N frames, then exit
+    bool        probe_inner_loop  = false;   // --probe-inner-loop: time the budgeted rows
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--net-host" && i + 1 < argc) {
@@ -4478,6 +4479,13 @@ int main(int argc, char** argv) {
             // can run non-interactively, instead of "it opened and looked
             // fine".
             frame_limit = std::atoi(argv[++i]);
+        } else if (a == "--probe-inner-loop") {
+            // Measure the inner-loop rows that need a live editor: entering
+            // play, and an asset becoming drawable. These were listed as
+            // UNMEASURED for the whole of Phase 2 because nothing could drive
+            // the editor -- which made the phase's own exit criterion
+            // unverifiable. See DEVELOPER_EXPERIENCE.md §1.1.
+            probe_inner_loop = true;
         } else if (a == "--startup-probe") {
             // Initialise everything, report how long it took, then exit without
             // entering the main loop. This is what makes "editor cold start" —
@@ -5681,6 +5689,55 @@ int main(int argc, char** argv) {
                         ms, gms, gws::renderer::gpu::gws_runtime_glsl_count(),
                         ms > 0.0 ? (gms / ms * 100.0) : 0.0);
             spdlog::info("[startup-probe] initialised in {:.1f} ms; exiting without entering the main loop", ms);
+            return 0;
+        }
+
+        // --probe-inner-loop: drive the two budgeted rows that need a live
+        // editor, report them, and leave. Deliberately placed AFTER the task
+        // runner is started, so the asset row measures the path the editor
+        // really uses (parse on a worker, upload here) rather than a
+        // synchronous shortcut that would flatter the number.
+        if (probe_inner_loop) {
+            using clock = std::chrono::steady_clock;
+            auto ms_since = [](clock::time_point t) {
+                return std::chrono::duration<double, std::milli>(clock::now() - t).count();
+            };
+
+            double play_ms = -1.0, asset_ms = -1.0;
+
+            // ---- play-mode entry -------------------------------------------
+            if (auto pscene = editor_state.editor_scene->GetScene()) {
+                const auto t0 = clock::now();
+                if (editor_state.scene_playback_manager->StartPlayback(pscene)) {
+                    play_ms = ms_since(t0);          // StartPlayback returns once playable
+                    editor_state.scene_playback_manager->StopPlayback();
+                } else {
+                    spdlog::warn("[probe] play-mode entry not measured: playback would not start");
+                }
+            }
+
+            // ---- asset to viewport -----------------------------------------
+            // From "ask for this mesh" to "it has draw items", including the
+            // worker hop. Cache is cleared first or this would time a hit.
+            {
+                const std::string mesh = "assets/test_cooked/cube3d.obj";
+                asset_cache.clear();
+                asset_cache.set_task_runner(&editor_state.tasks);
+                const auto t0 = clock::now();
+                const gws::renderer::gpu::Scene* loaded = nullptr;
+                for (int i = 0; i < 20000 && !loaded; ++i) {
+                    editor_state.tasks.poll();
+                    loaded = asset_cache.get_or_load(mesh, &device, mat_layout,
+                                                     mat_pool, &texture_manager);
+                    if (!loaded) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                if (loaded && !loaded->draw_items.empty()) asset_ms = ms_since(t0);
+                else spdlog::warn("[probe] asset-to-viewport not measured: '{}' did not load", mesh);
+            }
+
+            std::printf("{\"play_mode_entry_ms\":%.1f,\"asset_to_viewport_ms\":%.1f}\n",
+                        play_ms, asset_ms);
+            editor_state.tasks.stop();
             return 0;
         }
 

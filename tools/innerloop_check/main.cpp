@@ -7,16 +7,22 @@
 // correctness OFF to win it back; one Unreal team measured ~45 s per iteration
 // from a single shader-cache miss. Nobody plans for that — it accretes.
 //
-// HONEST SCOPE. Three rows — play-mode entry, asset-to-viewport,
-// shader-to-screen — still need a driven editor, which this cannot do. They are
-// printed as "unmeasured" on every run rather than dropped, because an
-// unmeasured budget is exactly where a regression hides.
+// EVERY ROW IS MEASURED NOW. Four of them used to be listed as "needs a running
+// editor, cannot do it" — which meant Phase 2's own exit criterion ("the budget
+// table is measured, met and enforced") could not be checked, only asserted.
+// They are measured by making the editor drive itself:
 //
-// Editor cold start USED to be in that list. It is measured now, via
-// `editor --startup-probe`: the editor initialises, prints its timings and
-// exits before the main loop. So the row is real on any machine with a Vulkan
-// device and honestly unmeasured on a CI runner, which is better than being
-// unmeasured everywhere.
+//   --startup-probe      initialise, report, exit before the main loop
+//   --probe-inner-loop   enter play mode and load an asset, then report
+//
+// shader-to-screen is composed rather than invented: the real loop is compile
+// the shader, restart, look — so it is a glslang run plus a cold start, both of
+// which are separately measured here.
+//
+// A row still prints as "unmeasured" wherever the probe cannot run (a CI runner
+// has no Vulkan device). That is deliberate and stays: an unmeasured budget is
+// exactly where a regression hides, so the gap must be visible rather than
+// quietly dropped.
 //
 // Report-only by default; `--enforce` makes a violation a non-zero exit.
 // `--tolerance N` moves the failure line to budget * N — see opt_double below
@@ -183,11 +189,93 @@ int main(int argc, char** argv) {
         }
     }
 
-    // ---- rows this still cannot measure ------------------------------------
-    // Named explicitly so the gap is visible in every run.
-    metrics.push_back({"play_mode_entry",    -1.0, 1000.0, "UNMEASURED — needs a running editor"});
-    metrics.push_back({"asset_to_viewport",  -1.0, 2000.0, "UNMEASURED — needs a running editor"});
-    metrics.push_back({"shader_to_screen",   -1.0, 2000.0, "UNMEASURED — needs an editor + GPU"});
+    // ---- 5. rows that need a LIVE editor -----------------------------------
+    // These were UNMEASURED for the whole of Phase 2, which made that phase's
+    // own exit criterion unverifiable. `editor --probe-inner-loop` drives them:
+    // it enters play mode and loads an asset through the real path (parse on a
+    // worker, upload on the editor thread) rather than a synchronous shortcut
+    // that would flatter the number.
+    double editor_cold_ms = -1.0;
+    for (const auto& m : metrics)
+        if (m.name == "editor_cold_start") editor_cold_ms = m.ms;
+    {
+        const fs::path ed = g_exe_dir / "editor.exe";
+        double play_ms = -1.0, asset_ms = -1.0;
+        if (fs::exists(ed)) {
+            const fs::path out = fs::temp_directory_path() / "gws_innerloop_probe2.json";
+            std::error_code ec;
+            fs::remove(out, ec);
+#ifdef _WIN32
+            const std::string cmd = "\"\"" + ed.string() + "\" --probe-inner-loop > \"" +
+                                    out.string() + "\" 2>nul\"";
+#else
+            const std::string cmd = "\"" + ed.string() + "\" --probe-inner-loop > \"" +
+                                    out.string() + "\" 2>/dev/null";
+#endif
+            if (std::system(cmd.c_str()) == 0) {
+                std::ifstream f(out);
+                std::string j((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+                auto pick = [&j](const char* key) -> double {
+                    const auto k = j.find(key);
+                    if (k == std::string::npos) return -1.0;
+                    return std::atof(j.c_str() + k + std::strlen(key));
+                };
+                play_ms  = pick("\"play_mode_entry_ms\":");
+                asset_ms = pick("\"asset_to_viewport_ms\":");
+            }
+            fs::remove(out, ec);
+        }
+
+        if (play_ms >= 0.0)
+            metrics.push_back({"play_mode_entry", play_ms, 1000.0,
+                               "`editor --probe-inner-loop`, StartPlayback to playable"});
+        else
+            metrics.push_back({"play_mode_entry", -1.0, 1000.0,
+                               "UNMEASURED — probe failed (no Vulkan device?)"});
+
+        if (asset_ms >= 0.0)
+            metrics.push_back({"asset_to_viewport", asset_ms, 2000.0,
+                               "request a mesh -> it has draw items, through the async path"});
+        else
+            metrics.push_back({"asset_to_viewport", -1.0, 2000.0,
+                               "UNMEASURED — probe failed (no Vulkan device?)"});
+    }
+
+    // shader edit -> on screen. The real loop is: compile the shader, restart
+    // the editor, see it. So it is the compile plus a cold start -- not a
+    // separate mystery number, and honestly composed from two things already
+    // measured rather than guessed at.
+    {
+        double compile_ms = -1.0;
+        fs::path glslang;
+        if (const char* sdk = std::getenv("VULKAN_SDK")) {
+            std::error_code ec;
+            const fs::path c = fs::path(sdk) / "Bin" / "glslangValidator.exe";
+            if (fs::exists(c, ec)) glslang = c;
+        }
+        fs::path shader;
+        for (fs::path d = g_exe_dir; !d.empty(); d = d.parent_path()) {
+            const fs::path c = d / "engine" / "renderer" / "gpu" / "vulkan" / "shaders" / "lighting_pass.frag";
+            std::error_code ec;
+            if (fs::exists(c, ec)) { shader = c; break; }
+            if (d == d.parent_path()) break;
+        }
+        if (!glslang.empty() && !shader.empty()) {
+            const fs::path out = fs::temp_directory_path() / "gws_innerloop_shader.spv";
+            const auto t0 = clk::now();
+            const int rc = run_quiet("\"" + glslang.string() + "\" -V --target-env vulkan1.2 \"" +
+                                     shader.string() + "\" -o \"" + out.string() + "\"");
+            if (rc == 0) compile_ms = ms_since(t0);
+            std::error_code ec; fs::remove(out, ec);
+        }
+
+        if (compile_ms >= 0.0 && editor_cold_ms >= 0.0)
+            metrics.push_back({"shader_to_screen", compile_ms + editor_cold_ms, 2000.0,
+                               "glslangValidator on one shader + an editor cold start (the restart loop)"});
+        else
+            metrics.push_back({"shader_to_screen", -1.0, 2000.0,
+                               "UNMEASURED — needs glslangValidator, a shader source and a GPU"});
+    }
 
     int over = 0, measured = 0, unmeasured = 0, failing = 0;
     for (const auto& m : metrics) {
