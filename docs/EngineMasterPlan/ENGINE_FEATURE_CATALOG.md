@@ -99,7 +99,7 @@ The base renderer every project draws through.
 |---|---|---|
 | Viewport, gizmos, hierarchy, inspector | ✅ | |
 | Asset browser (full-project, drag-drop, import-into-project) | ✅ | |
-| Scene save/load, undo/redo | ✅ | |
+| Scene save/load, undo/redo | ✅ | Undo covers create/delete/rename, inspector fields, gizmo drags and component add/remove — one entry per gesture. **This row said ✅ while undo covered 12 create commands and rename, one of which deleted the wrong entity.** Terrain sculpt, logic-graph edits and reparenting are still outside it |
 | Docking layout, embedded terminal (ConPTY), log output | ✅ | |
 | Play-in-editor | ✅ | |
 | **Project system**: modular feature selection + **Hub** (versioned installs, updates) | ✅ | Hub is its own repo/product |
