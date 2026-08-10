@@ -19,6 +19,18 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# scenereflect_check: scene components describe themselves (3.7, tractable half).
+# Adding one field used to mean four hand edits with a silent failure mode -- a
+# component that saves but does not load. The load-bearing assertion is that an
+# UNREGISTERED field is caught, since that is the mistake this prevents.
+add_executable(scenereflect_check scenereflect_check/main.cpp)
+target_include_directories(scenereflect_check PRIVATE ../engine/scene/include)
+target_link_libraries(scenereflect_check PRIVATE gws_reflection gws_ecs glm)
+target_compile_features(scenereflect_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(scenereflect_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # locomotion_check: idle-vs-walk must not flicker. The rule looks trivial and
 # its failure mode is purely visual -- a standing character twitching between
 # clips every frame. Pure function of position deltas, so it is assertions
