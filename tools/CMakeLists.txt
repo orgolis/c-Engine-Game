@@ -30,6 +30,20 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(ecsauthority_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# vehiclemove_check: the authority flip seen from the outside. Driving a vehicle
+# integrates its ECS transform every frame and the editor exposes that to
+# scripts -- so before the flip, a script called drive(), the speed climbed, and
+# the car on screen did not move. Asserts the OUTCOME (the scene transform ends
+# where the drive model says) rather than the tag, since a tag-only assertion
+# would still pass with the sync running the wrong way.
+add_executable(vehiclemove_check vehiclemove_check/main.cpp ../editor/src/ecs_bridge.cpp)
+target_include_directories(vehiclemove_check PRIVATE ../editor/include)
+target_link_libraries(vehiclemove_check PRIVATE gws_ecs gws_reflection gws_jobs scene gws_logging)
+target_compile_features(vehiclemove_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(vehiclemove_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # scenereflect_check: scene components describe themselves (3.7, tractable half).
 # Adding one field used to mean four hand edits with a silent failure mode -- a
 # component that saves but does not load. The load-bearing assertion is that an

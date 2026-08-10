@@ -62,12 +62,21 @@ struct VehicleInput { float throttle = 0.0f; float steer = 0.0f; bool brake = fa
 inline glm::vec3 heading_forward(float h) { return glm::vec3(std::sin(h), 0.0f, std::cos(h)); }
 
 // Integrate the arcade drive model one step on the entity's Transform.
+//
+// Driving CLAIMS AUTHORITY over the transform. This system integrates position
+// and heading every frame, so it is the owner of both; without the claim the
+// editor's scene mirror overwrites the result the same frame and the vehicle
+// does not move -- silently, with nothing reporting an error. The rule is
+// general: a system that integrates a transform declares it owns it, so any
+// caller gets the right behaviour without remembering to say so.
 inline void drive_vehicle(World& w, Entity e, const VehicleInput& in, float dt) {
     Vehicle*   v = w.try_get<Vehicle>(e);
     Transform* t = w.try_get<Transform>(e);
     if (!v || !t) return;
     const VehicleDef* d = find_vehicle(v->vehicle_id);
     if (!d) return;
+
+    if (!w.has<EcsAuthoritative>(e)) w.tag<EcsAuthoritative>(e);
 
     const bool  boosting = in.boost && v->boost > 0.0f;
     const float accel = d->accel + (boosting ? d->boost_accel : 0.0f);
