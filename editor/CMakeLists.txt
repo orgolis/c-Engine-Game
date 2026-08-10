@@ -34,6 +34,7 @@ target_link_libraries(editor
         gws_physics        # Jolt-backed rigid bodies + character (Stage 4)
         gws_audio          # miniaudio device + spatial voice mixer (Stage 6)
         gws_ai             # navmesh + behavior trees (Stage 9)
+        gws_world          # streaming grid + floating origin (Phase 3.3)
         gws_ui             # runtime game-UI framework (HUD/menus) — Game-UI pillar
         gws_diagnostics    # crash handler + persistent/ring-buffer logging
 )

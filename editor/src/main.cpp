@@ -37,6 +37,7 @@
 #include "imported_skinned_actor.h"          // rigged-glTF import → GPU skin (Path B)
 #include "skinned_actor_cache.h"             // per-entity skinned actors (3.8)
 #include "nav_bake.h"                        // navmesh from real scene geometry (3.4)
+#include "world_streaming.h"                 // streaming + floating origin on the live scene (3.3)
 #include "game_ui_demo.h"                     // runtime game-UI HUD demo (Game-UI pillar)
 #include "vulkan/imgui_vulkan.h"
 
@@ -328,6 +329,11 @@ struct EditorState {
     // deliberately NOT a blind reload -- see ShowSceneReloadPrompt.
     // Navmesh baked from the real scene (3.4). Before this the only navmesh
     // in the editor was a synthetic grid generated inside the animation demo.
+    // World streaming + floating origin driven by the viewport camera (3.3).
+    // Off by default: streaming deactivates entities, and silently hiding parts
+    // of the scene you are editing would be a bug, not a feature.
+    schizo::editor::EditorWorldStreaming world_streaming;
+
     schizo::ai::NavMesh        scene_navmesh;
     schizo::editor::NavBakeStats nav_stats;
 
@@ -1360,6 +1366,33 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             // grid generated inside the animation demo, so the AI pathed around
             // an obstacle that existed nowhere and over ground that was not the
             // ground.
+            // World streaming (3.3). A toggle rather than always-on: streaming
+            // deactivates entities, and hiding parts of the scene someone is
+            // editing would be a bug.
+            {
+                bool streaming = editor_state.world_streaming.enabled();
+                if (ImGui::MenuItem("World Streaming", nullptr, &streaming)) {
+                    editor_state.world_streaming.set_enabled(streaming);
+                    if (!streaming) {
+                        // Switching off must put everything back, or the scene
+                        // keeps whatever was hidden at that moment hidden.
+                        editor_state.world_streaming.restore_all(
+                            editor_state.editor_scene->GetScene());
+                        editor_state.set_status("World streaming off — all entities restored");
+                    } else {
+                        editor_state.set_status("World streaming on — cells follow the camera");
+                    }
+                }
+                if (editor_state.world_streaming.enabled()) {
+                    const auto& ws = editor_state.world_streaming;
+                    ImGui::MenuItem(("  cells: " + std::to_string(ws.loaded_cells()) +
+                                     " loaded, " + std::to_string(ws.streamed_out()) +
+                                     " entities streamed out").c_str(), nullptr, false, false);
+                    ImGui::MenuItem(("  rebases: " + std::to_string(ws.rebase_count())).c_str(),
+                                    nullptr, false, false);
+                }
+            }
+
             if (editor_state.feature_on(schizo::project::Feature::AI) &&
                 ImGui::MenuItem("Bake Navmesh")) {
                 auto nav_scene = editor_state.editor_scene->GetScene();
@@ -6172,6 +6205,19 @@ int main(int argc, char** argv) {
             // Deliver finished background work on this thread, where touching
             // the scene and the GPU is legal.
             editor_state.tasks.poll();
+
+            // World streaming + floating origin, driven by the viewport camera
+            // (3.3). The rebase shift comes back out because this owns the
+            // camera: applying it to entities but not the camera would make the
+            // world appear to teleport.
+            if (editor_state.world_streaming.enabled()) {
+                const glm::vec3 shift = editor_state.world_streaming.update(
+                    editor_state.editor_scene->GetScene(),
+                    editor_state.viewport_camera.GetPosition());
+                if (shift != glm::vec3(0.0f))
+                    editor_state.viewport_camera.SetPosition(
+                        editor_state.viewport_camera.GetPosition() + shift);
+            }
 
             // Scene-file watch. Re-seeded whenever the open file changes OR the
             // scene was just saved -- without the second case the editor's own
