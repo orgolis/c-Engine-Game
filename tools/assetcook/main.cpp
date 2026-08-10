@@ -55,13 +55,18 @@ static constexpr uint32_t kCookerVersion = 6;
 // Per-asset compression codec for cooked bundles (LZ4 = fast runtime decode).
 static constexpr gws::compress::Codec kCookCodec = gws::compress::Codec::LZ4;
 
+// Paths here are UTF-8. Handing a narrow std::string to ifstream makes the
+// runtime interpret it in the ANSI codepage on Windows, so any asset whose name
+// is not pure ASCII fails to open — silently, and reported only as "FAIL read".
+// `u8p` comes from obj_import.h so there is one definition of this rule rather
+// than a copy per tool.
 static std::vector<uint8_t> read_file(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(u8p(path), std::ios::binary);
     return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)),
                                 std::istreambuf_iterator<char>());
 }
 static bool write_file(const std::string& path, const std::vector<uint8_t>& bytes) {
-    std::ofstream f(path, std::ios::binary);
+    std::ofstream f(u8p(path), std::ios::binary);
     if (!f) return false;
     if (!bytes.empty()) f.write(reinterpret_cast<const char*>(bytes.data()),
                                 static_cast<std::streamsize>(bytes.size()));

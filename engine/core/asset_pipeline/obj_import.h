@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -106,10 +107,18 @@ inline float ns_to_roughness(float ns) {
 // `newmtl` name -> its index in `out`. `base_dir` is the .obj's directory, used
 // to make `map_Kd` references .obj-relative so the cooker can resolve+cook the
 // texture and the runtime can recover its GUID via asset_id_from_path().
+// Paths are UTF-8. A narrow std::string handed to ifstream is interpreted in the
+// ANSI codepage on Windows, so any model whose name is not pure ASCII fails to
+// open — and the caller can only report "FAIL import", with no clue why.
+inline std::filesystem::path u8p(const std::string& s) {
+    return std::filesystem::path(
+        std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size()));
+}
+
 inline bool import_mtl(const std::string& mtl_path, const std::string& base_dir,
                        std::vector<CookedMaterial>& out,
                        std::unordered_map<std::string, int>& name_to_index) {
-    std::ifstream f(mtl_path);
+    std::ifstream f(u8p(mtl_path));
     if (!f) return false;
     int cur = -1;  // index into `out`, NOT a pointer (out reallocates on push)
     std::string line;
@@ -153,7 +162,7 @@ inline bool import_mtl(const std::string& mtl_path, const std::string& base_dir,
 }
 
 inline bool import_obj(const std::string& path, ImportedScene& out) {
-    std::ifstream f(path);
+    std::ifstream f(u8p(path));
     if (!f) return false;
 
     std::vector<std::array<float, 3>> positions;

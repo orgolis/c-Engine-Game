@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iterator>
@@ -48,7 +49,9 @@ bool import_usd(const std::string& path, ImportedScene& out) {
     // Read the file ourselves and load from memory — this dodges tinyusdz's
     // Win32 memory-mapped file path (which crashes in this MinGW build) while
     // still letting tinyusdz detect the format from the filename hint.
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(std::filesystem::path(std::u8string(
+        reinterpret_cast<const char8_t*>(path.data()), path.size())),
+                    std::ios::binary);   // UTF-8-safe: see obj_import.h u8p
     if (!f) return false;
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
                                std::istreambuf_iterator<char>());

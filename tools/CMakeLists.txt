@@ -19,6 +19,17 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# assetpath_check: a non-ASCII asset filename must still load. Caught a real
+# failure where a 64 MB model could not be opened at all — narrow ifstream paths
+# are read in the ANSI codepage on Windows. No ASCII-named test asset can catch
+# this, which is exactly why it needs a check of its own.
+add_executable(assetpath_check assetpath_check/main.cpp)
+target_link_libraries(assetpath_check PRIVATE gws_asset_pipeline)
+target_compile_features(assetpath_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(assetpath_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # assetwatch_check: the shared file watcher behind every hot reload. Mostly
 # negative behaviours — not firing on a half-written file is the property that
 # makes reload trustworthy. Time is injected, so the suite stays instant.
