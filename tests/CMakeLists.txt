@@ -14,7 +14,6 @@ add_executable(gws_tests
     test_ability_integration.cpp
     test_network_integration.cpp
     deferred_rendering_test.cpp
-    imgui_integration_test.cpp
     # test_physics_integration.cpp  # TODO: Fix circular dependency with scene module
     # test_animation_integration.cpp  # TODO: Fix circular dependency with renderer
 )
@@ -36,7 +35,7 @@ target_link_libraries(gws_tests PRIVATE
 # Include directories - expose all core headers.
 # - ${CMAKE_SOURCE_DIR}/engine  → resolves engine-relative includes like "core/math.h"
 # - ${CMAKE_SOURCE_DIR}         → resolves repo-root includes like
-#                                 <engine/renderer/gpu/vulkan/ui_manager.h>
+#                                 <engine/renderer/gpu/vulkan/vulkan_device.h>
 target_include_directories(gws_tests PRIVATE
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/engine

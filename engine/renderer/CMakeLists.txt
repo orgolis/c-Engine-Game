@@ -63,20 +63,8 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_gltf_loader.h
     gpu/vulkan/culling.h
     gpu/vulkan/imgui_vulkan.h
-    gpu/vulkan/ui_manager.h
-    gpu/vulkan/debug_panels.h
-    gpu/vulkan/scene_hierarchy_panel.h
     gpu/vulkan/reflection.h
-    gpu/vulkan/inspector_panel.h
-    gpu/vulkan/profiler.h
-    gpu/vulkan/profiler_panels.h
-    gpu/vulkan/debug_visualization.h
-    gpu/vulkan/hzb_culler.h
-    gpu/vulkan/indirect_dispatcher.h
-    gpu/vulkan/transform_gizmo.h
-    gpu/vulkan/query_pool.h
     gpu/vulkan/gpu_profiler.h
-    gpu/vulkan/gpu_profiler_panels.h
 )
 
 # Source files - Vulkan Implementation
@@ -127,19 +115,7 @@ target_sources(renderer PRIVATE
     gpu/vulkan/culling.cpp
     gpu/vulkan/imgui_vulkan.cpp
     # Phase 6 editor/debug components — excluded pending GCC compat fixes:
-    # gpu/vulkan/ui_manager.cpp
-    # gpu/vulkan/debug_panels.cpp
-    # gpu/vulkan/scene_hierarchy_panel.cpp
-    # gpu/vulkan/inspector_panel.cpp
-    # gpu/vulkan/profiler.cpp
-    # gpu/vulkan/profiler_panels.cpp
-    # gpu/vulkan/debug_visualization.cpp
-    # gpu/vulkan/hzb_culler.cpp
-    # gpu/vulkan/indirect_dispatcher.cpp
-    # gpu/vulkan/transform_gizmo.cpp
-    # gpu/vulkan/query_pool.cpp
     # gpu/vulkan/gpu_profiler.cpp  (re-enabled below — self-contained, GCC-clean)
-    # gpu/vulkan/gpu_profiler_panels.cpp
 )
 
 # Stage 14 (Pillar N2): GPU per-pass timing class. Pure C++ (std::map/mutex/
