@@ -64,6 +64,18 @@ public:
     void ExecuteCommand(std::unique_ptr<EditorCommand> command);
     
     /**
+     * Record a command whose effect has ALREADY happened.
+     *
+     * An inspector field edit is applied by the widget as the user drags it —
+     * by the time an undo entry exists, the new value is already in the
+     * component. Routing that through ExecuteCommand would re-apply it, which
+     * is harmless for an idempotent write but wrong in principle and wrong the
+     * moment a command is not idempotent. This records the history without
+     * re-running the action.
+     */
+    void PushExecuted(std::unique_ptr<EditorCommand> command);
+
+    /**
      * Undo last command
      */
     void Undo();

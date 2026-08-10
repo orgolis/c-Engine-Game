@@ -51,6 +51,7 @@ target_sources(editor
         src/ecs_bridge.cpp
         src/component_inspector.cpp
         src/play_mode_changes.cpp
+        src/edit_coalescer.cpp
         src/logic_graph_panel.cpp
         src/editor_scene.cpp
         src/scene_serializer.cpp

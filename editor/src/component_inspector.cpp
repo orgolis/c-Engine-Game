@@ -637,7 +637,24 @@ bool draw_stealth(void* comp) {
 
 }  // namespace
 
-bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf) {
+void apply_component_bytes(EcsSceneBridge& bridge, uint32_t entity_id,
+                           const std::string& component,
+                           const std::vector<uint8_t>& bytes) {
+    if (bytes.empty()) return;
+    const auto* ct = ecs::find_authorable(component.c_str());
+    if (!ct) return;
+    ecs::World& w = bridge.world();
+    const auto  e = static_cast<ecs::Entity>(entity_id);
+    // The component may have been removed since the undo entry was recorded --
+    // writing into an absent component would be a use-after-free.
+    if (!ct->has(w, e)) return;
+    if (void* comp = ct->get(w, e))
+        ecs::deserialize_authorable(*ct, comp, bytes.data(), bytes.size());
+}
+
+bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf,
+                                  EditCoalescer* coalescer,
+                                  const std::function<void(const CoalescedEdit&)>& on_edit) {
     if (!tf) return false;
     const uint32_t id = bridge.ecs_entity_id(tf);
     if (id == kNoEcsEntity) {
@@ -658,6 +675,10 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
         }
         if (ct_open) {
                 if (void* comp = ct.get(w, e)) {
+                    // Snapshot BEFORE the widgets run: ImGui edits in place, so
+                    // once `changed` is known the original value is gone.
+                    if (coalescer) coalescer->observe(ecs::serialize_authorable(ct, comp));
+                    const bool changed_before_this_component = changed;
                     if (ct.type) {   // POD component -> generic reflection fields
                         gws::reflect::for_each_field(
                             comp, *ct.type,
@@ -750,6 +771,21 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (ImGui::DragFloat("hearing radius", &h.radius, 0.2f)) changed = true;
                     } else {
                         ImGui::TextDisabled("(no inspector for this component)");
+                    }
+
+                    // One undo entry per gesture, not one per frame of a drag.
+                    // ImGui::IsAnyItemActive() is the "mouse is still down in a
+                    // widget" signal the coalescer needs to know a drag is
+                    // ongoing; see edit_coalescer.h for why this is a separate
+                    // testable rule rather than inline logic.
+                    if (coalescer && on_edit) {
+                        const bool this_component_changed = (changed != changed_before_this_component);
+                        if (auto edit = coalescer->update(id, ct.name,
+                                                          ecs::serialize_authorable(ct, comp),
+                                                          this_component_changed,
+                                                          ImGui::IsAnyItemActive())) {
+                            on_edit(*edit);
+                        }
                     }
                 }
             }

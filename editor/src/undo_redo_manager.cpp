@@ -2,6 +2,13 @@
 
 namespace schizo::editor {
 
+void UndoRedoManager::PushExecuted(std::unique_ptr<EditorCommand> command) {
+    if (!command) return;
+    // Deliberately does NOT call Execute() — see the header.
+    undo_stack_.push_back(std::move(command));
+    redo_stack_.clear();
+}
+
 void UndoRedoManager::ExecuteCommand(std::unique_ptr<EditorCommand> command) {
     if (!command) return;
     

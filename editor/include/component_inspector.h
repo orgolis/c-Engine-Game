@@ -3,6 +3,13 @@
 // Generic, reflection-driven inspector for an entity's authorable ECS components
 // (F2). Lives in its own translation unit so main.cpp needs no EnTT / ECS include.
 
+#include "edit_coalescer.h"
+
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <vector>
+
 namespace schizo::scene { class Transform; }
 
 namespace schizo::editor {
@@ -13,7 +20,21 @@ class EcsSceneBridge;
 // authorable gameplay components (Health, Ability State, …), edits each one's
 // fields generically via core reflection, and offers Add / Remove. Returns true
 // if anything changed this frame.
-bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf);
+// Write a serialized component blob back onto an entity's ECS component.
+// Lives here rather than in main.cpp because main.cpp deliberately includes no
+// EnTT/ECS headers -- that separation is why this translation unit exists. Used
+// by the undo/redo path for inspector field edits.
+void apply_component_bytes(EcsSceneBridge& bridge, uint32_t entity_id,
+                           const std::string& component,
+                           const std::vector<uint8_t>& bytes);
+
+// `coalescer` and `on_edit` are optional. When supplied, field edits are
+// coalesced into ONE undo entry per drag (see edit_coalescer.h) and reported
+// through on_edit. Passing null keeps the old behaviour, which is what the
+// headless checks want -- they have no undo stack.
+bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transform* tf,
+                                  EditCoalescer* coalescer = nullptr,
+                                  const std::function<void(const CoalescedEdit&)>& on_edit = {});
 
 // Draw a floating, interactable inventory window for every ECS entity that has an
 // Inventory AND the tag "ui.inventory_open" (a "UI intent" tag a gameplay script

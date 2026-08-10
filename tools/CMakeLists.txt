@@ -19,6 +19,17 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# editcoalesce_check: one drag must be one undo entry. The awkward cases are
+# gestures people make without thinking -- dragging back to the start, clicking
+# a checkbox, switching fields mid-drag -- and none can be checked by reading
+# code. Keeping the rule ImGui-free is what makes them assertions.
+add_executable(editcoalesce_check editcoalesce_check/main.cpp ../editor/src/edit_coalescer.cpp)
+target_include_directories(editcoalesce_check PRIVATE ../editor/include)
+target_compile_features(editcoalesce_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(editcoalesce_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # shadersource_check: the GLSL a human edits must still compile to the SPIR-V
 # that ships. shaders/lighting_pass.frag had been sitting broken in the tree
 # because nothing ever fed it to a compiler. Compares the instruction stream

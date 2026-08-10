@@ -304,6 +304,10 @@ struct EditorState {
     gws::tasks::TaskRunner tasks;
     bool show_task_panel = true;
 
+    // Coalesces inspector field edits so one drag is one undo entry rather than
+    // one per frame. See edit_coalescer.h.
+    schizo::editor::EditCoalescer field_edits;
+
     // Play-mode change tracking. Play still discards by default; this keeps the
     // diff so the developer can choose what survives instead of losing a tuning
     // pass on Stop. See play_mode_changes.h.
@@ -473,6 +477,45 @@ static std::shared_ptr<schizo::scene::Entity> FindEntityById(
     for (const auto& e : scene->GetEntities())
         if (e && e->GetId() == id) return e;
     return nullptr;
+}
+
+// ============================================================================
+// Undo for an inspector field edit.
+//
+// The value arrives already coalesced — one entry per drag, not one per frame
+// (edit_coalescer.h). Both directions are a deserialize of a stored blob, which
+// works for ANY authorable component with no per-component code, the same
+// property that made play-mode change keeping cheap.
+//
+// The entity is looked up by id at apply time rather than captured: it may have
+// been deleted and restored by an undo of its own since this entry was pushed,
+// and holding a stale pointer would write into a detached object.
+// ============================================================================
+static void PushFieldEditCommand(EditorState& editor_state,
+                                 const schizo::editor::CoalescedEdit& edit) {
+    if (!editor_state.ecs_bridge || !editor_state.editor_scene) return;
+
+    const std::string comp   = edit.component;
+    const uint32_t    ent_id = edit.entity_id;
+    auto              before = edit.before;
+    auto              after  = edit.after;
+    auto*             bridge = editor_state.ecs_bridge;
+
+    auto cmd = std::make_unique<schizo::editor::FunctionCommand>(
+        [bridge, comp, ent_id, after, &editor_state]() {
+            schizo::editor::apply_component_bytes(*bridge, ent_id, comp, after);
+            editor_state.editor_scene->MarkModified();
+        },
+        [bridge, comp, ent_id, before, &editor_state]() {
+            schizo::editor::apply_component_bytes(*bridge, ent_id, comp, before);
+            editor_state.editor_scene->MarkModified();
+        },
+        "Edit " + comp);
+    // Already applied by the widget as the user dragged it. Routing this
+    // through ExecuteCommand would re-apply it -- harmless for an idempotent
+    // write, wrong in principle, and wrong outright the moment a command is not
+    // idempotent.
+    editor_state.undo_redo_manager.PushExecuted(std::move(cmd));
 }
 
 // ============================================================================
@@ -2758,8 +2801,13 @@ void ShowInspector(EditorState& editor_state) {
         ImGui::Separator();
         if (ImGui::TreeNodeEx("Gameplay Components (ECS)", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (editor_state.ecs_bridge && selected_entity) {
+                auto* inspect_tf = selected_entity->GetTransform();
                 if (schizo::editor::draw_ecs_component_inspector(
-                        *editor_state.ecs_bridge, selected_entity->GetTransform()))
+                        *editor_state.ecs_bridge, inspect_tf,
+                        &editor_state.field_edits,
+                        [&editor_state](const schizo::editor::CoalescedEdit& edit) {
+                            PushFieldEditCommand(editor_state, edit);
+                        }))
                     editor_state.editor_scene->MarkModified();
 
                 // Save this entity's gameplay components as a reusable prefab (F4).
