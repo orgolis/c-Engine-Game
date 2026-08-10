@@ -51,13 +51,24 @@ frame-time regression.
 |---|---|---|
 | Script edit → running in game | < 500 ms | ✅ three hot-reload backends already exist |
 | Press Play → controllable | < 1 s | ✅ no domain-reload equivalent to pay — *protect this* |
-| Save asset → visible in viewport | < 2 s | 🟡 incremental cook exists; watch-and-reimport loop does not |
-| Shader edit → on screen | < 2 s | 🟡 split pipeline (inline GLSL vs precompiled SPIR-V headers) |
-| Editor cold start → project open | < 5 s | 🔴 unmeasured |
+| Save asset → visible in viewport | < 2 s | 🟡 **textures and meshes reload now** on the shared watcher (`d0af2a0`); the row itself still needs a driven editor to time |
+| Shader edit → on screen | < 2 s | 🔴 blocked: SPIR-V is baked into the binary as generated headers, so there is no file to watch. Needs a prefer-`.spv`-on-disk path first |
+| Editor cold start → project open | < 5 s | ✅ **798 ms**, measured by `editor --startup-probe` via `innerloop_check` (`cc4e2f7`) |
 | Full clean build | tracked, not capped | 🔴 the number nobody optimises until it is 40 minutes |
 
-**Steps:** (1) add an `innerloop_check` tool that measures each row; (2) record a baseline; (3) fail CI on
-regression beyond a tolerance; (4) publish the numbers in the README as a product claim.
+**Steps:** ~~(1) add an `innerloop_check` tool~~ ✅ · ~~(2) record a baseline~~ ✅ · ~~(3) fail CI on regression
+beyond a tolerance~~ ✅ `cc4e2f7` · (4) publish the numbers in the README as a product claim.
+
+**How the gate is set, and why not tighter.** CI publishes every metric to the run summary on each build and
+fails only above **4× budget**. A shared runner is virtualised, noisily co-tenanted and an order slower on I/O
+than a dev box, so a 1× wall-clock line would fail honest PRs — and a gate that cries wolf gets ignored, which
+is the precise failure this section exists to prevent. The division of labour is: **the gate catches
+order-of-magnitude regressions, the published trend catches drift.** The gate was verified to actually fire
+(`--tolerance 0.001` → exit 1) rather than assumed; a gate nobody has watched fail is not known to be a gate.
+
+Three rows still print as `UNMEASURED` on every run — play-mode entry, asset-to-viewport, shader-to-screen —
+because they need an editor driven with input. They are printed rather than dropped, since an unmeasured budget
+is exactly where a regression hides.
 
 ## 1.2 Iteration
 
