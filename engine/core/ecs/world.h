@@ -28,6 +28,12 @@ public:
     T& add(Entity e, Args&&... args) {
         return registry_.emplace_or_replace<T>(e, std::forward<Args>(args)...);
     }
+    /// Attach a TAG component — an empty struct carrying meaning by its
+    /// presence alone. add<T>() cannot express these: it returns T&, and EnTT's
+    /// emplace returns void for empty types, so the reference has nothing to
+    /// bind to.
+    template <typename T> void tag(Entity e) { registry_.emplace_or_replace<T>(e); }
+
     template <typename T> T&       get(Entity e)       { return registry_.get<T>(e); }
     template <typename T> const T& get(Entity e) const { return registry_.get<T>(e); }
     template <typename T> T*       try_get(Entity e)   { return registry_.try_get<T>(e); }

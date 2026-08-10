@@ -528,13 +528,32 @@ void EcsSceneBridge::sync_and_run(
             tf_to_entity.emplace(tf, e);
             ++created_;
         }
-        // (Re)write the mirrored local transform — this is also where an
-        // external owner's writes would land once the ECS is authoritative.
-        ecs::Transform t;
-        t.position = tf->GetLocalPosition();
-        t.rotation = tf->GetLocalRotation();
-        t.scale    = tf->GetLocalScale();
-        world.add<ecs::Transform>(e, t);  // emplace_or_replace
+        // Transform sync. Normally OOP -> ECS: the scene is authoritative and
+        // the ECS is a per-frame mirror.
+        //
+        // An entity tagged EcsAuthoritative syncs the OTHER WAY (Phase 3.6).
+        // Without that, an ECS system writing a Transform has its work
+        // overwritten here before anything can see it, which is precisely why
+        // gameplay cannot move anything without going through the OOP scene.
+        // Per-entity rather than a global switch: flipping everything at once
+        // would change the gizmo, physics, playback and serialization in one
+        // step, and a half-finished authority flip leaves the editor subtly
+        // wrong rather than obviously broken.
+        if (world.has<ecs::EcsAuthoritative>(e) && world.has<ecs::Transform>(e)) {
+            const auto& t = *world.try_get<ecs::Transform>(e);
+            // Write back only on a real difference. Unconditional writes would
+            // dirty the scene every frame and defeat the editor's
+            // unsaved-changes tracking.
+            if (t.position != tf->GetLocalPosition()) tf->SetLocalPosition(t.position);
+            if (t.rotation != tf->GetLocalRotation()) tf->SetLocalRotation(t.rotation);
+            if (t.scale    != tf->GetLocalScale())    tf->SetLocalScale(t.scale);
+        } else {
+            ecs::Transform t;
+            t.position = tf->GetLocalPosition();
+            t.rotation = tf->GetLocalRotation();
+            t.scale    = tf->GetLocalScale();
+            world.add<ecs::Transform>(e, t);  // emplace_or_replace
+        }
         shadow[i] = e;
 
         // Mirror the OOP entity's drawable info into an ECS MeshRenderer so the

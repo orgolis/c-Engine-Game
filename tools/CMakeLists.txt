@@ -19,6 +19,17 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# ecsauthority_check: an ECS write to a Transform must survive the frame. The
+# assertions are symmetric on purpose -- a flip that quietly changed behaviour
+# for UNtagged entities would be far worse than one that did nothing.
+add_executable(ecsauthority_check ecsauthority_check/main.cpp ../editor/src/ecs_bridge.cpp)
+target_include_directories(ecsauthority_check PRIVATE ../editor/include)
+target_link_libraries(ecsauthority_check PRIVATE gws_ecs gws_reflection gws_jobs scene gws_logging)
+target_compile_features(ecsauthority_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(ecsauthority_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # scenereflect_check: scene components describe themselves (3.7, tractable half).
 # Adding one field used to mean four hand edits with a silent failure mode -- a
 # component that saves but does not load. The load-bearing assertion is that an

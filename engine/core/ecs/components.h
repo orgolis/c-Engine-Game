@@ -265,4 +265,20 @@ inline void register_core_components() {
     gws::reflect::reflect<AbilityState>();
     gws::reflect::reflect<Health>();
 }
+/// Marks an entity whose ECS Transform is AUTHORITATIVE — the editor's OOP
+/// Transform becomes a mirror of it rather than its source.
+///
+/// This is the per-entity form of the ECS authority flip (Phase 3.6). The
+/// bridge normally copies OOP -> ECS every frame, which means an ECS system
+/// that writes a Transform has its work overwritten before anything sees it —
+/// so gameplay cannot move anything without going through the OOP scene. An
+/// entity carrying this tag syncs the other way.
+///
+/// Opt-in rather than a global switch, deliberately: flipping everything at
+/// once would change the behaviour of the gizmo, physics, playback and
+/// serialization in a single step, and a half-finished authority flip leaves
+/// the editor subtly wrong rather than obviously broken. The authoritative set
+/// can grow one system at a time until the OOP shadow has no readers left.
+struct EcsAuthoritative {};
+
 }  // namespace schizo::ecs
