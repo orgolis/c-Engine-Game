@@ -39,6 +39,7 @@
 #include "nav_bake.h"                        // navmesh from real scene geometry (3.4)
 #include "world_streaming.h"                 // streaming + floating origin on the live scene (3.3)
 #include "particle_emitter_cache.h"          // particle sim on real entities (3.9)
+#include "npc_agents.h"                      // perception -> BT -> navmesh movement (3.5)
 #include "game_ui_demo.h"                     // runtime game-UI HUD demo (Game-UI pillar)
 #include "vulkan/imgui_vulkan.h"
 
@@ -338,6 +339,11 @@ struct EditorState {
     // Particle simulation on emitter entities (3.9). The GPU draw of the
     // billboards it produces is not built yet — see particle_emitter_cache.h.
     schizo::editor::EditorParticleEmitters particles;
+
+    // NPC agents: perception -> behaviour tree -> movement along the baked
+    // navmesh (3.5). Only runs during play, so agents do not wander off while
+    // the scene is being edited.
+    schizo::editor::EditorNpcAgents npc_agents;
 
     schizo::ai::NavMesh        scene_navmesh;
     schizo::editor::NavBakeStats nav_stats;
@@ -1417,6 +1423,11 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
                     editor_state.set_status(
                         "Navmesh: nothing walkable found — add a terrain or a box collider");
                 }
+            }
+            if (editor_state.npc_agents.agent_count() > 0) {
+                ImGui::MenuItem(("  agents: " + std::to_string(editor_state.npc_agents.agent_count()) +
+                                 ", " + std::to_string(editor_state.npc_agents.chasing()) +
+                                 " chasing").c_str(), nullptr, false, false);
             }
             
             const bool playing_now = editor_state.scene_playback_manager &&
@@ -6352,6 +6363,15 @@ int main(int argc, char** argv) {
                 }
             }
             if (imported_actor) imported_actor->advance(delta_time);
+
+            // NPC agents (3.5) — the consumer that makes the baked navmesh and
+            // the rigged characters observable. Play-mode only: an agent that
+            // patrols while you are editing would move things under the gizmo.
+            if (editor_state.scene_playback_manager &&
+                editor_state.scene_playback_manager->IsPlaying()) {
+                editor_state.npc_agents.update(editor_state.editor_scene->GetScene(),
+                                               editor_state.scene_navmesh, delta_time);
+            }
 
             // Particle emitters (3.9). Fed the rebase shift because particles
             // hold WORLD-space positions: without it an emitter walks away from

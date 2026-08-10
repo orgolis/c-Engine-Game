@@ -19,6 +19,17 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# npcagent_check: perception, decision and movement, connected. Each part was
+# verified separately and driven by nothing. Asserts OBSERVABLE behaviour --
+# the failure mode is an agent that ticks happily and never moves.
+add_executable(npcagent_check npcagent_check/main.cpp)
+target_include_directories(npcagent_check PRIVATE ../editor/include)
+target_link_libraries(npcagent_check PRIVATE gws_ai gws_ecs scene gws_logging)
+target_compile_features(npcagent_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(npcagent_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # emitter_check: particles must actually simulate on real entities. The system
 # was verified and then referenced only by a feature-toggle enum. Pins the
 # connection -- especially the rebase contract, whose failure is silent.

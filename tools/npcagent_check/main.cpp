@@ -1,0 +1,180 @@
+// ============================================================================
+// npcagent_check — perception, decision and movement, connected.
+//
+// Behaviour trees, the blackboard, the path follower and the vision cone were
+// each built and verified separately, and driven by nothing. This covers the
+// join: does an agent actually see, decide, and walk on the baked navmesh.
+//
+// The assertions are about OBSERVABLE behaviour rather than internal state,
+// because the failure mode here is an agent that ticks happily and never moves
+// — every subsystem reporting success while nothing happens in the world.
+// ============================================================================
+#include "nav_bake.h"
+#include "npc_agents.h"
+
+#include <cmath>
+#include <cstdio>
+#include <memory>
+#include <string>
+
+using namespace schizo;
+
+namespace {
+
+int g_pass = 0, g_fail = 0;
+
+void check(bool ok, const std::string& what) {
+    if (ok) { ++g_pass; std::printf("  OK   %s\n", what.c_str()); }
+    else    { ++g_fail; std::printf("  FAIL %s\n", what.c_str()); }
+}
+
+// A scene with walkable ground, an agent, and a target it may or may not see.
+struct World {
+    std::shared_ptr<scene::Scene>  scene;
+    std::shared_ptr<scene::Entity> agent, target;
+    ai::NavMesh nav;
+};
+
+World make_world(glm::vec3 agent_pos, glm::vec3 target_pos, float fov = 100.0f) {
+    World w;
+    w.scene = std::make_shared<scene::Scene>("t");
+
+    auto ground = w.scene->CreateEntity("Ground");
+    auto tc = ground->AddComponent<scene::TerrainComponent>();
+    tc->Resize(16, 160.0f);
+
+    w.agent = w.scene->CreateEntity("Guard");
+    w.agent->GetTransform()->SetLocalPosition(agent_pos);
+    auto* ag = w.agent->GetNpcAgentComponent();
+    ag->enabled       = true;
+    ag->target_name   = "Player";
+    ag->sight_fov_deg = fov;
+    ag->sight_range   = 40.0f;
+    ag->move_speed    = 5.0f;
+
+    w.target = w.scene->CreateEntity("Player");
+    w.target->GetTransform()->SetLocalPosition(target_pos);
+
+    editor::bake_navmesh_from_scene(w.scene, w.nav);
+    return w;
+}
+
+void run(editor::EditorNpcAgents& a, World& w, int frames) {
+    for (int i = 0; i < frames; ++i) a.update(w.scene, w.nav, 1.0f / 60.0f);
+}
+
+float dist_xz(const glm::vec3& a, const glm::vec3& b) {
+    const float dx = a.x - b.x, dz = a.z - b.z;
+    return std::sqrt(dx * dx + dz * dz);
+}
+
+}  // namespace
+
+int main() {
+    std::printf("=== npcagent_check ===\n\n");
+
+    // ---- 1. an agent with a visible target closes on it --------------------
+    // The headline behaviour, and the one that proves all four subsystems are
+    // actually joined rather than merely present.
+    {
+        // Target directly ahead (+Z is the entity's forward).
+        World w = make_world({0, 0, 0}, {0, 0, 25});
+        editor::EditorNpcAgents agents;
+
+        const float before = dist_xz(w.agent->GetTransform()->GetWorldPosition(),
+                                     w.target->GetTransform()->GetWorldPosition());
+        run(agents, w, 120);
+        const float after = dist_xz(w.agent->GetTransform()->GetWorldPosition(),
+                                    w.target->GetTransform()->GetWorldPosition());
+
+        check(agents.agent_count() == 1, "the agent entity gets a behaviour tree");
+        check(agents.chasing() == 1, "it sees the target and chooses to chase");
+        check(after < before - 1.0f, "and actually CLOSES the distance");
+    }
+
+    // ---- 2. a target behind it is not seen ---------------------------------
+    // Without this, "chasing" could just mean "a target exists somewhere".
+    {
+        World w = make_world({0, 0, 0}, {0, 0, -25}, /*fov=*/60.0f);
+        editor::EditorNpcAgents agents;
+        run(agents, w, 30);
+        check(agents.chasing() == 0, "a target behind the agent is NOT seen");
+    }
+
+    // ---- 3. a target out of range is not seen ------------------------------
+    {
+        World w = make_world({0, 0, 0}, {0, 0, 25});
+        w.agent->GetNpcAgentComponent()->sight_range = 5.0f;
+        editor::EditorNpcAgents agents;
+        run(agents, w, 30);
+        check(agents.chasing() == 0, "a target beyond sight range is not seen");
+    }
+
+    // ---- 4. with nothing visible it patrols rather than standing still -----
+    // A stationary agent and a broken agent look identical.
+    {
+        World w = make_world({0, 0, 0}, {0, 0, -25}, /*fov=*/60.0f);
+        editor::EditorNpcAgents agents;
+        const glm::vec3 start = w.agent->GetTransform()->GetWorldPosition();
+        run(agents, w, 120);
+        const glm::vec3 end = w.agent->GetTransform()->GetWorldPosition();
+        check(dist_xz(start, end) > 1.0f, "an agent with nothing to chase still patrols");
+    }
+
+    // ---- 5. NO NAVMESH means it does not move ------------------------------
+    // The important negative: movement must come from the baked geometry. An
+    // agent that slides toward its target without a navmesh would look correct
+    // and prove nothing.
+    {
+        World w = make_world({0, 0, 0}, {0, 0, 25});
+        ai::NavMesh empty;
+        editor::EditorNpcAgents agents;
+        const glm::vec3 start = w.agent->GetTransform()->GetWorldPosition();
+        for (int i = 0; i < 60; ++i) agents.update(w.scene, empty, 1.0f / 60.0f);
+        const glm::vec3 end = w.agent->GetTransform()->GetWorldPosition();
+        check(dist_xz(start, end) < 0.001f,
+              "without a baked navmesh the agent does not move at all");
+    }
+
+    // ---- 6. movement stays on the navmesh ----------------------------------
+    // Following a path means the agent's positions are on walkable ground, not
+    // a straight line through wherever the target happens to be.
+    {
+        World w = make_world({-40, 0, -40}, {40, 0, 40});
+        editor::EditorNpcAgents agents;
+        bool stayed_on_ground = true;
+        for (int i = 0; i < 200; ++i) {
+            agents.update(w.scene, w.nav, 1.0f / 60.0f);
+            const glm::vec3 p = w.agent->GetTransform()->GetWorldPosition();
+            // The terrain spans ±80; leaving it means the follower ignored the path.
+            if (std::abs(p.x) > 80.0f || std::abs(p.z) > 80.0f) stayed_on_ground = false;
+        }
+        check(stayed_on_ground, "the agent stays within the walkable region while pathing");
+    }
+
+    // ---- 7. disabling releases the agent -----------------------------------
+    {
+        World w = make_world({0, 0, 0}, {0, 0, 25});
+        editor::EditorNpcAgents agents;
+        run(agents, w, 20);
+        check(agents.agent_count() == 1, "running while enabled");
+        w.agent->GetNpcAgentComponent()->enabled = false;
+        run(agents, w, 2);
+        check(agents.agent_count() == 0, "disabling releases its tree and path state");
+    }
+
+    // ---- 8. a missing target is survivable ---------------------------------
+    // Agents are authored before the thing they hunt exists.
+    {
+        World w = make_world({0, 0, 0}, {0, 0, 25});
+        w.agent->GetNpcAgentComponent()->target_name = "NobodyHere";
+        editor::EditorNpcAgents agents;
+        run(agents, w, 30);
+        check(agents.chasing() == 0, "an agent whose target does not exist chases nothing");
+        check(agents.agent_count() == 1, "and keeps running rather than dropping out");
+    }
+
+    std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
+    if (g_fail) std::printf("FAIL npcagent_check\n");
+    return g_fail ? 1 : 0;
+}

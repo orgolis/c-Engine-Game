@@ -4,6 +4,7 @@
 #include "mesh_component.h"
 #include "skinned_mesh_component.h"
 #include "particle_emitter_component.h"
+#include "npc_agent_component.h"
 #include <memory>
 #include <vector>
 #include <string>
@@ -139,6 +140,9 @@ public:
     /// is what the render path tests. Data only — the GPU-side actor is owned
     /// editor-side and keyed by entity id, so a scene stays loadable without a
     /// device. See skinned_mesh_component.h.
+    NpcAgentComponent* GetNpcAgentComponent() { return &npc_agent_component_; }
+    const NpcAgentComponent* GetNpcAgentComponent() const { return &npc_agent_component_; }
+
     ParticleEmitterComponent* GetParticleEmitterComponent() { return &particle_emitter_component_; }
     const ParticleEmitterComponent* GetParticleEmitterComponent() const { return &particle_emitter_component_; }
 
@@ -326,6 +330,7 @@ protected:
     MeshComponent mesh_component_;
     SkinnedMeshComponent skinned_mesh_component_;
     ParticleEmitterComponent particle_emitter_component_;
+    NpcAgentComponent npc_agent_component_;
     
     // Components
     std::vector<std::shared_ptr<Component>> components_;
