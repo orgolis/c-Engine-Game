@@ -485,7 +485,7 @@ genre-specific ones.
 *Updated 2026-08-09.*
 
 - **Core (C1–C5):** ✅ solid, with known integration debt (ECS-authoritative, reflection/serialization adoption, all-hot-systems-on-jobs).
-- **Simulation / Presentation / World / Connectivity / Scripting cores:** ✅ built + verified as libraries; several need **integration** (world streaming — no `editor/` file references it; AI bake-from-real-geometry) or **wiring onto entities** (VFX GPU draw; the animation player's `SkinnedMeshComponent` landed in `d5f0348`).
+- **Simulation / Presentation / World / Connectivity / Scripting cores:** ✅ built + verified as libraries; the Phase-3 integration pass connected the ones that were unreferenced: **world streaming** (`1c12b74`), **AI bake-from-real-geometry** (`252bd5d`) and the animation player's **`SkinnedMeshComponent`** (`d5f0348`). **VFX GPU draw** remains unwired.
 - **Gameplay frameworks:** ✅ **G0–G16 have all landed** (2026-08-06 → 08-07), verified by `gameplay_check` (238 assertions). The earlier "nearly all 🔴, biggest greenfield area" framing is **superseded** — this section's per-module tables above are current. The work is now **depth over breadth**: four engine-side integrations (AI, animation→player, VFX GPU draw, Jolt vehicle constraints) gate five modules (G8, G16, G1, G12, G13).
 - **Advanced-rendering reach + platform:** the fidelity/scale tier, largely untouched (Stage 15).
 
