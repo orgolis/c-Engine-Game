@@ -38,6 +38,7 @@
 #include "skinned_actor_cache.h"             // per-entity skinned actors (3.8)
 #include "nav_bake.h"                        // navmesh from real scene geometry (3.4)
 #include "world_streaming.h"                 // streaming + floating origin on the live scene (3.3)
+#include "particle_emitter_cache.h"          // particle sim on real entities (3.9)
 #include "game_ui_demo.h"                     // runtime game-UI HUD demo (Game-UI pillar)
 #include "vulkan/imgui_vulkan.h"
 
@@ -333,6 +334,10 @@ struct EditorState {
     // Off by default: streaming deactivates entities, and silently hiding parts
     // of the scene you are editing would be a bug, not a feature.
     schizo::editor::EditorWorldStreaming world_streaming;
+
+    // Particle simulation on emitter entities (3.9). The GPU draw of the
+    // billboards it produces is not built yet — see particle_emitter_cache.h.
+    schizo::editor::EditorParticleEmitters particles;
 
     schizo::ai::NavMesh        scene_navmesh;
     schizo::editor::NavBakeStats nav_stats;
@@ -6206,6 +6211,8 @@ int main(int argc, char** argv) {
             // the scene and the GPU is legal.
             editor_state.tasks.poll();
 
+            glm::vec3 origin_shift_this_frame(0.0f);
+
             // World streaming + floating origin, driven by the viewport camera
             // (3.3). The rebase shift comes back out because this owns the
             // camera: applying it to entities but not the camera would make the
@@ -6217,6 +6224,7 @@ int main(int argc, char** argv) {
                 if (shift != glm::vec3(0.0f))
                     editor_state.viewport_camera.SetPosition(
                         editor_state.viewport_camera.GetPosition() + shift);
+                origin_shift_this_frame = shift;
             }
 
             // Scene-file watch. Re-seeded whenever the open file changes OR the
@@ -6344,6 +6352,15 @@ int main(int argc, char** argv) {
                 }
             }
             if (imported_actor) imported_actor->advance(delta_time);
+
+            // Particle emitters (3.9). Fed the rebase shift because particles
+            // hold WORLD-space positions: without it an emitter walks away from
+            // its own smoke the first time the floating origin moves.
+            editor_state.particles.update(
+                editor_state.editor_scene->GetScene(), delta_time,
+                editor_state.viewport_camera.GetPosition(), glm::vec3(0.0f, 1.0f, 0.0f),
+                origin_shift_this_frame);
+            origin_shift_this_frame = glm::vec3(0.0f);
 
             // Per-entity skinned characters: build on demand, pose, and place
             // from the entity's Transform. Done before the command buffer opens

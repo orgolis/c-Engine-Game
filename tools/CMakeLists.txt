@@ -19,6 +19,17 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# emitter_check: particles must actually simulate on real entities. The system
+# was verified and then referenced only by a feature-toggle enum. Pins the
+# connection -- especially the rebase contract, whose failure is silent.
+add_executable(emitter_check emitter_check/main.cpp)
+target_include_directories(emitter_check PRIVATE ../editor/include)
+target_link_libraries(emitter_check PRIVATE gws_vfx scene gws_logging)
+target_compile_features(emitter_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(emitter_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # navbake_check: the navmesh must describe the scene that actually exists. The
 # builder was verified long ago; its INPUT never was -- the only thing feeding it
 # was a synthetic grid inside a demo. Asserts what the bake contains AND what it
