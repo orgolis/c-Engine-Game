@@ -12,6 +12,8 @@
 #include "nav_bake.h"
 #include "npc_agents.h"
 
+#include "ecs/gameplay_abilities.h"
+
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -173,6 +175,117 @@ int main() {
         check(agents.chasing() == 0, "an agent whose target does not exist chases nothing");
         check(agents.agent_count() == 1, "and keeps running rather than dropping out");
     }
+
+
+    // ---- 9. COMBAT: in range, the agent uses its ability -------------------
+    // The AI decides WHEN; the ability data decides WHAT. These assertions are
+    // about the decision, not about damage numbers.
+    {
+        World w = make_world({0, 0, 0}, {0, 0, 3});     // target already in range
+        w.agent->GetNpcAgentComponent()->attack_range = 6.0f;
+
+        editor::EcsSceneBridge bridge;
+        bridge.sync_and_run(w.scene);
+
+        // One free, instant ability, so activation is gated only by the AI's
+        // decision rather than by cost or cooldown.
+        const uint32_t cid = bridge.ecs_entity_id(w.agent->GetTransform());
+        ecs::AbilitySet set;
+        ecs::AbilitySlot slot;
+        slot.ability.name = "Strike";
+        set.abilities.push_back(slot);
+        bridge.world().add<ecs::AbilitySet>(static_cast<ecs::Entity>(cid), set);
+
+        editor::EditorNpcAgents agents;
+        size_t total = 0;
+        for (int i = 0; i < 30; ++i) {
+            agents.update(w.scene, w.nav, 1.0f / 60.0f, &bridge);
+            total += agents.attacks_this_frame();
+        }
+        check(total > 0, "an agent in range of a visible target uses its ability");
+        check(agents.chasing() == 0, "and stops chasing while attacking (attack outranks chase)");
+    }
+
+    // ---- 10. it does NOT attack out of range -------------------------------
+    // Without this, "attacks" could just mean "a target exists somewhere".
+    {
+        World w = make_world({0, 0, 0}, {0, 0, 30});
+        w.agent->GetNpcAgentComponent()->attack_range = 3.0f;
+
+        editor::EcsSceneBridge bridge;
+        bridge.sync_and_run(w.scene);
+        const uint32_t cid = bridge.ecs_entity_id(w.agent->GetTransform());
+        ecs::AbilitySet set; set.abilities.push_back(ecs::AbilitySlot{});
+        bridge.world().add<ecs::AbilitySet>(static_cast<ecs::Entity>(cid), set);
+
+        editor::EditorNpcAgents agents;
+        size_t total = 0;
+        for (int i = 0; i < 5; ++i) {   // too few frames to close the gap
+            agents.update(w.scene, w.nav, 1.0f / 60.0f, &bridge);
+            total += agents.attacks_this_frame();
+        }
+        check(total == 0, "a target beyond attack range is chased, not attacked");
+        check(agents.chasing() == 1, "and the agent closes instead");
+    }
+
+    // ---- 11. attack_range 0 means "not a combatant" ------------------------
+    // A patroller must not acquire combat behaviour by accident.
+    {
+        World w = make_world({0, 0, 0}, {0, 0, 2});
+        // attack_range left at its 0 default
+        editor::EcsSceneBridge bridge;
+        bridge.sync_and_run(w.scene);
+        const uint32_t cid = bridge.ecs_entity_id(w.agent->GetTransform());
+        ecs::AbilitySet set; set.abilities.push_back(ecs::AbilitySlot{});
+        bridge.world().add<ecs::AbilitySet>(static_cast<ecs::Entity>(cid), set);
+
+        editor::EditorNpcAgents agents;
+        size_t total = 0;
+        for (int i = 0; i < 20; ++i) {
+            agents.update(w.scene, w.nav, 1.0f / 60.0f, &bridge);
+            total += agents.attacks_this_frame();
+        }
+        check(total == 0, "attack_range 0 keeps a patroller out of combat entirely");
+    }
+
+    // ---- 12. cooldown gates the rate ---------------------------------------
+    // The ability system owns cost and cooldown. If the agent bypassed it, an
+    // ability would fire every frame -- 60 attacks a second, the classic
+    // symptom of AI calling activation directly instead of asking.
+    {
+        World w = make_world({0, 0, 0}, {0, 0, 3});
+        w.agent->GetNpcAgentComponent()->attack_range = 6.0f;
+
+        editor::EcsSceneBridge bridge;
+        bridge.sync_and_run(w.scene);
+        const uint32_t cid = bridge.ecs_entity_id(w.agent->GetTransform());
+        ecs::AbilitySet set;
+        ecs::AbilitySlot slot;
+        slot.ability.name     = "Slow Strike";
+        slot.ability.cooldown = 1.0f;              // one per second
+        set.abilities.push_back(slot);
+        bridge.world().add<ecs::AbilitySet>(static_cast<ecs::Entity>(cid), set);
+
+        editor::EditorNpcAgents agents;
+        size_t total = 0;
+        for (int i = 0; i < 30; ++i) {             // half a second of frames
+            agents.update(w.scene, w.nav, 1.0f / 60.0f, &bridge);
+            total += agents.attacks_this_frame();
+        }
+        check(total == 1, "a one-second cooldown fires once in half a second, not every frame");
+    }
+
+    // ---- 13. no bridge means no attacks, and no crash ----------------------
+    // Headless callers pass nullptr; the agent must degrade to movement only.
+    {
+        World w = make_world({0, 0, 0}, {0, 0, 3});
+        w.agent->GetNpcAgentComponent()->attack_range = 6.0f;
+        editor::EditorNpcAgents agents;
+        for (int i = 0; i < 10; ++i) agents.update(w.scene, w.nav, 1.0f / 60.0f, nullptr);
+        check(agents.attacks_this_frame() == 0, "without an ECS bridge the agent does not attack");
+        check(agents.agent_count() == 1, "and keeps running");
+    }
+
 
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) std::printf("FAIL npcagent_check\n");

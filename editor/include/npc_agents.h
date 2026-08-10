@@ -16,6 +16,7 @@
 // THE TREE, deliberately small:
 //
 //   Selector
+//     ├── Sequence [ can see target? → in attack range? → use ability ]
 //     ├── Sequence [ can see target? → chase it ]
 //     └── Patrol (walk a loop around the spawn point)
 //
@@ -32,7 +33,9 @@
 #include "ai/behavior_tree.h"
 #include "ai/navmesh.h"
 #include "ai/path_follow.h"
+#include "ecs/gameplay_abilities.h" // try_activate_ability: the AI picks WHEN, not WHAT
 #include "ecs/gameplay_stealth.h"   // can_see: one perception rule, not two
+#include "ecs_bridge.h"             // OOP entity -> ECS entity, for casting
 #include "entity.h"
 #include "scene.h"
 #include "transform.h"
@@ -51,9 +54,11 @@ public:
     /// teleport in straight lines, because that would hide a missing bake.
     void update(const std::shared_ptr<schizo::scene::Scene>& scene,
                 const schizo::ai::NavMesh& nav,
-                float dt) {
-        chasing_ = 0;
-        active_  = 0;
+                float dt,
+                EcsSceneBridge* bridge = nullptr) {
+        chasing_  = 0;
+        active_   = 0;
+        attacked_ = 0;
         if (!scene || nav.empty() || dt <= 0.0f) return;
 
         std::unordered_map<uint32_t, bool> seen;
@@ -87,14 +92,46 @@ public:
             const bool visible = has_target &&
                 schizo::ecs::can_see(pos, fwd, ag->sight_fov_deg, ag->sight_range, target_pos);
 
+            const float range_xz = [&]{
+                glm::vec3 d = target_pos - pos; d.y = 0.0f;
+                return glm::length(d);
+            }();
+            // Attacking is opt-in: attack_range 0 means "this agent has nothing
+            // to do on arrival", which keeps a plain patroller a patroller.
+            const bool in_range = visible && ag->attack_range > 0.0f &&
+                                  range_xz <= ag->attack_range;
+
             st.bb.set<bool>("can_see", visible);
+            st.bb.set<bool>("in_range", in_range);
             st.bb.set<glm::vec3>("target", target_pos);
             st.bb.set<glm::vec3>("self", pos);
 
             // --- decide ----------------------------------------------------
-            st.chase_requested = false;
+            st.chase_requested  = false;
+            st.attack_requested = false;
             st.tree->tick(st.bb, dt);
             if (st.chase_requested) ++chasing_;
+
+            // Fire the ability through the ECS. The AI decides WHEN; the
+            // ability data on the entity decides what happens -- cost, cooldown
+            // and effects are all the ability system's business, so combat
+            // design stays out of the agent.
+            if (st.attack_requested && bridge) {
+                const uint32_t caster_id = bridge->ecs_entity_id(tf);
+                uint32_t target_id = kNoEcsEntity;
+                if (auto tgt = scene->GetEntityByName(ag->target_name))
+                    if (auto* ttf = tgt->GetTransform())
+                        target_id = bridge->ecs_entity_id(ttf);
+                if (caster_id != kNoEcsEntity) {
+                    auto& w = bridge->world();
+                    const bool fired = schizo::ecs::try_activate_ability(
+                        w, static_cast<schizo::ecs::Entity>(caster_id),
+                        static_cast<size_t>(ag->ability_index),
+                        target_id == kNoEcsEntity ? schizo::ecs::null_entity
+                                                  : static_cast<schizo::ecs::Entity>(target_id));
+                    if (fired) ++attacked_;
+                }
+            }
 
             // --- move along the navmesh ------------------------------------
             const glm::vec3 goal = st.chase_requested ? target_pos : st.patrol_goal;
@@ -124,12 +161,14 @@ public:
 
     size_t agent_count()  const { return agents_.size(); }
     size_t chasing()      const { return chasing_; }
+    size_t attacks_this_frame() const { return attacked_; }
     size_t moving()       const { return active_; }
-    void   clear() { agents_.clear(); chasing_ = active_ = 0; }
+    void   clear() { agents_.clear(); chasing_ = active_ = attacked_ = 0; }
 
 private:
     struct Agent {
         schizo::ai::Blackboard              bb;
+        bool attack_requested = false;
         std::unique_ptr<schizo::ai::BtNode> tree;
         schizo::ai::PathFollower            follower;
         glm::vec3 spawn{0.0f};
@@ -148,6 +187,19 @@ private:
         Agent* raw = a.get();
         advance_patrol(*raw, 8.0f);
 
+        // Attack sits ABOVE chase: an agent already in range should swing
+        // rather than keep closing. When the ability is on cooldown the action
+        // returns Failure, so the Selector falls through to chase and the agent
+        // keeps position instead of freezing mid-fight.
+        auto attack = std::make_unique<schizo::ai::Sequence>();
+        attack->add(std::make_unique<schizo::ai::Condition>(
+            [](schizo::ai::Blackboard& bb) { return bb.get<bool>("in_range", false); }));
+        attack->add(std::make_unique<schizo::ai::Action>(
+            [raw](schizo::ai::Blackboard&, float) {
+                raw->attack_requested = true;
+                return schizo::ai::BtStatus::Running;
+            }));
+
         // Chase pre-empts patrol because it is first in the Selector.
         auto chase = std::make_unique<schizo::ai::Sequence>();
         chase->add(std::make_unique<schizo::ai::Condition>(
@@ -159,6 +211,7 @@ private:
             }));
 
         auto root = std::make_unique<schizo::ai::Selector>();
+        root->add(std::move(attack));
         root->add(std::move(chase));
         root->add(std::make_unique<schizo::ai::Action>(
             [](schizo::ai::Blackboard&, float) { return schizo::ai::BtStatus::Running; }));
@@ -178,7 +231,7 @@ private:
     }
 
     std::unordered_map<uint32_t, std::unique_ptr<Agent>> agents_;
-    size_t chasing_ = 0, active_ = 0;
+    size_t chasing_ = 0, active_ = 0, attacked_ = 0;
 };
 
 }  // namespace schizo::editor

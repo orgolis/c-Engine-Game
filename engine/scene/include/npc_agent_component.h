@@ -33,6 +33,17 @@ struct NpcAgentComponent {
     /// without needing something to chase.
     float patrol_radius = 8.0f;
 
+    // ---- combat -----------------------------------------------------------
+    /// Distance at which the agent stops closing and uses an ability. Zero
+    /// disables attacking entirely, so an agent is a patroller unless it is
+    /// explicitly given something to do on arrival.
+    float attack_range = 0.0f;
+
+    /// Which slot in the caster's ECS AbilitySet to use. The abilities
+    /// themselves are authored as data on the entity, so the AI chooses WHEN,
+    /// not WHAT -- which is what keeps combat design out of the agent code.
+    int   ability_index = 0;
+
     bool active() const { return enabled; }
 };
 

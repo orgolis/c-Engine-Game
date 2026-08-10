@@ -6375,7 +6375,8 @@ int main(int argc, char** argv) {
             if (editor_state.scene_playback_manager &&
                 editor_state.scene_playback_manager->IsPlaying()) {
                 editor_state.npc_agents.update(editor_state.editor_scene->GetScene(),
-                                               editor_state.scene_navmesh, delta_time);
+                                               editor_state.scene_navmesh, delta_time,
+                                               editor_state.ecs_bridge);
             }
 
             // Particle emitters (3.9). Fed the rebase shift because particles
