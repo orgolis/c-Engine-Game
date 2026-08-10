@@ -237,6 +237,13 @@ struct EditorState {
     
     // Gizmo dragging state
     bool gizmo_dragging = false;
+    // Transform captured when a gizmo drag begins, so the whole drag becomes ONE
+    // undo entry rather than one per mouse-move frame (same rule as inspector
+    // fields — see edit_coalescer.h).
+    uint32_t  gizmo_undo_entity = 0;
+    glm::vec3 gizmo_undo_position{0.0f};
+    glm::quat gizmo_undo_rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 gizmo_undo_scale{1.0f};
     char gizmo_axis = 0;  // 0=none, 'x', 'y', 'z'
     glm::vec2 gizmo_drag_start = glm::vec2(0.0f);
     glm::vec3 gizmo_drag_offset = glm::vec3(0.0f);
@@ -477,6 +484,67 @@ static std::shared_ptr<schizo::scene::Entity> FindEntityById(
     for (const auto& e : scene->GetEntities())
         if (e && e->GetId() == id) return e;
     return nullptr;
+}
+
+// ============================================================================
+// Undo for a gizmo drag.
+//
+// Moving something is the most common edit in any editor, and it was not
+// undoable. The gizmo already has explicit BeginDrag/EndDrag, so unlike
+// inspector fields there is no coalescing to infer — the gesture boundaries are
+// stated by the code. Capture on begin, push on release.
+//
+// Looks the entity up by id at apply time rather than capturing a pointer: it
+// may have been deleted and restored by an undo of its own since this entry was
+// recorded.
+// ============================================================================
+static void PushGizmoTransformCommand(EditorState& editor_state,
+                                      const std::shared_ptr<schizo::scene::Scene>& scene,
+                                      uint32_t entity_id,
+                                      const glm::vec3& before_pos,
+                                      const glm::quat& before_rot,
+                                      const glm::vec3& before_scale) {
+    if (!scene || !entity_id) return;
+    auto ent = FindEntityById(scene, entity_id);
+    if (!ent) return;
+    auto* t = ent->GetTransform();
+    if (!t) return;
+
+    const glm::vec3 after_pos   = t->GetLocalPosition();
+    const glm::quat after_rot   = t->GetLocalRotation();
+    const glm::vec3 after_scale = t->GetLocalScale();
+
+    // A click that selects without moving anything is not an edit. Recording it
+    // would put no-ops on the undo stack, which reads as Ctrl+Z being broken.
+    const float eps = 1e-5f;
+    const bool moved =
+        glm::length(after_pos   - before_pos)   > eps ||
+        glm::length(after_scale - before_scale) > eps ||
+        std::fabs(std::fabs(glm::dot(after_rot, before_rot)) - 1.0f) > eps;
+    if (!moved) return;
+
+    auto apply = [scene, entity_id](const glm::vec3& p, const glm::quat& r, const glm::vec3& sc) {
+        auto e = FindEntityById(scene, entity_id);
+        if (!e) return;
+        if (auto* tr = e->GetTransform()) {
+            tr->SetLocalPosition(p);
+            tr->SetLocalRotation(r);
+            tr->SetLocalScale(sc);
+        }
+    };
+
+    auto cmd = std::make_unique<schizo::editor::FunctionCommand>(
+        [apply, after_pos, after_rot, after_scale, &editor_state]() {
+            apply(after_pos, after_rot, after_scale);
+            editor_state.editor_scene->MarkModified();
+        },
+        [apply, before_pos, before_rot, before_scale, &editor_state]() {
+            apply(before_pos, before_rot, before_scale);
+            editor_state.editor_scene->MarkModified();
+        },
+        "Move " + ent->GetName());
+    // Already applied by the drag itself.
+    editor_state.undo_redo_manager.PushExecuted(std::move(cmd));
 }
 
 // ============================================================================
@@ -3563,6 +3631,18 @@ void ShowViewport(EditorState& editor_state) {
                                 editor_state.gizmo_dragging = true;
                                 editor_state.gizmo_drag_start = glm::vec2(mouse_pos.x, mouse_pos.y);
                                 editor_state.gizmo_drag_offset = glm::vec3(0.0f);
+                                // Remember where this drag started, for undo.
+                                editor_state.gizmo_undo_entity = 0;
+                                if (auto gsc = editor_state.editor_scene->GetScene()) {
+                                    if (auto ge = FindEntityById(gsc, editor_state.selected_entity_id)) {
+                                        if (auto* gt = ge->GetTransform()) {
+                                            editor_state.gizmo_undo_entity   = editor_state.selected_entity_id;
+                                            editor_state.gizmo_undo_position = gt->GetLocalPosition();
+                                            editor_state.gizmo_undo_rotation = gt->GetLocalRotation();
+                                            editor_state.gizmo_undo_scale    = gt->GetLocalScale();
+                                        }
+                                    }
+                                }
                                 
                                 // Select the closest axis
                                 if (x_dist == min_dist) {
@@ -3700,6 +3780,16 @@ void ShowViewport(EditorState& editor_state) {
                 // Mouse released, stop gizmo dragging
                 if (editor_state.gizmo_dragging) {
                     editor_state.transform_gizmo.EndDrag();
+                    // One undo entry for the whole drag.
+                    if (editor_state.gizmo_undo_entity) {
+                        PushGizmoTransformCommand(
+                            editor_state, editor_state.editor_scene->GetScene(),
+                            editor_state.gizmo_undo_entity,
+                            editor_state.gizmo_undo_position,
+                            editor_state.gizmo_undo_rotation,
+                            editor_state.gizmo_undo_scale);
+                        editor_state.gizmo_undo_entity = 0;
+                    }
                 }
                 editor_state.gizmo_dragging = false;
                 editor_state.gizmo_axis = 0;

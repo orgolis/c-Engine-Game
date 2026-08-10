@@ -640,14 +640,23 @@ bool draw_stealth(void* comp) {
 void apply_component_bytes(EcsSceneBridge& bridge, uint32_t entity_id,
                            const std::string& component,
                            const std::vector<uint8_t>& bytes) {
-    if (bytes.empty()) return;
     const auto* ct = ecs::find_authorable(component.c_str());
     if (!ct) return;
     ecs::World& w = bridge.world();
     const auto  e = static_cast<ecs::Entity>(entity_id);
-    // The component may have been removed since the undo entry was recorded --
-    // writing into an absent component would be a use-after-free.
-    if (!ct->has(w, e)) return;
+
+    // An EMPTY blob means "this component should not exist here". That is what
+    // lets one command shape cover all three cases -- edit (bytes -> bytes),
+    // add (empty -> bytes) and remove (bytes -> empty) -- instead of three
+    // command types that could disagree with each other.
+    if (bytes.empty()) {
+        if (ct->has(w, e)) ct->remove(w, e);
+        return;
+    }
+
+    // Add it back if it is missing. Undoing a removal has to RECREATE the
+    // component, not quietly do nothing.
+    if (!ct->has(w, e)) ct->add(w, e);
     if (void* comp = ct->get(w, e))
         ecs::deserialize_authorable(*ct, comp, bytes.data(), bytes.size());
 }
@@ -670,7 +679,21 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
         ImGui::PushID(ct.name);
         const bool ct_open = ImGui::CollapsingHeader(ct.name, ImGuiTreeNodeFlags_DefaultOpen);
         if (ImGui::BeginPopupContextItem("##comp_ctx")) {   // Unity-style per-component context menu
-            if (ImGui::MenuItem("Remove Component")) { ct.remove(w, e); changed = true; }
+            if (ImGui::MenuItem("Remove Component")) {
+                // Capture the component BEFORE destroying it -- this is the only
+                // moment its data still exists. Without this, removing a
+                // component silently discarded everything configured on it.
+                std::vector<uint8_t> removed;
+                if (const void* c = ct.get(w, e)) removed = ecs::serialize_authorable(ct, c);
+                ct.remove(w, e);
+                changed = true;
+                // Drop any gesture still open on this component. Committing it
+                // later would re-add a component the user just deleted, because
+                // a value edit's undo path recreates a missing component.
+                if (coalescer) coalescer->cancel();
+                if (on_edit && !removed.empty())
+                    on_edit(CoalescedEdit{id, ct.name, std::move(removed), {}});
+            }
             ImGui::EndPopup();
         }
         if (ct_open) {
@@ -808,7 +831,16 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
             std::string low;
             for (const char* p = ct.name; *p; ++p) low += static_cast<char>(std::tolower(static_cast<unsigned char>(*p)));
             if (!flt.empty() && low.find(flt) == std::string::npos) continue;
-            if (ImGui::Selectable(ct.name)) { ct.add(w, e); changed = true; ImGui::CloseCurrentPopup(); }
+            if (ImGui::Selectable(ct.name)) {
+                ct.add(w, e);
+                changed = true;
+                if (on_edit) {
+                    std::vector<uint8_t> added;
+                    if (const void* c = ct.get(w, e)) added = ecs::serialize_authorable(ct, c);
+                    on_edit(CoalescedEdit{id, ct.name, {}, std::move(added)});
+                }
+                ImGui::CloseCurrentPopup();
+            }
             ++shown;
         }
         if (shown == 0) ImGui::TextDisabled("(no matching components)");
