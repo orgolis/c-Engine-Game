@@ -51,6 +51,18 @@ public:
     void set_enabled(bool e) { enabled_ = e; }
     bool enabled() const { return enabled_; }
 
+    /// Follow a floating-origin rebase. The demo carries its own navmesh,
+    /// waypoints and follower, so none of it is reached by the scene-entity
+    /// rebase loop -- it would keep walking its old route while the level moved
+    /// out from under it.
+    void apply_origin_shift(const glm::vec3& d) {
+        if (d == glm::vec3(0.0f)) return;
+        world_pos_ += d;
+        for (glm::vec3& w : waypoints_) w += d;
+        nav_.translate(d);
+        follower_.translate(d);
+    }
+
     /// CPU tick: navmesh path-follow a patrol loop → feed speed to the state
     /// machine, face the movement direction, foot IK. Call once per frame.
     void advance(float dt) {

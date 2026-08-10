@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <vector>
 
 using namespace schizo;
 
@@ -153,10 +154,63 @@ int main() {
                 cli_proxies, host_proxies, r_pos ? "OK" : "FAIL",
                 r_ball ? "OK" : "FAIL", restart_ok ? "OK" : "FAIL");
 
+    // --- peers with DIFFERENT floating origins still agree ---
+    // Replicated positions are absolute, and every peer rebases on its own
+    // camera -- so once one client streams into a distant part of the map, the
+    // two are not in the same coordinate frame at all. Remote players then
+    // appear displaced by the difference between the origins, which grows over
+    // a session and is worst exactly when players are far apart and least able
+    // to work out what is wrong. The wire frame is the un-rebased one.
+    //
+    // The client rebases; the host does not. Each must still see the other
+    // where it actually is, expressed in its OWN frame.
+    const glm::vec3 kShift(-512.0f, 0.0f, 256.0f);
+    client.set_origin_offset(kShift);
+
+    const glm::vec3 hp3(-3.0f, 1.0f, 9.0f);            // host frame
+    const glm::vec3 cp3 = glm::vec3(7.0f, 1.0f, -2.0f) + kShift;   // client frame
+    for (int i = 0; i < 200; ++i) {
+        host.set_local_player(h_player->GetId(), hp3);
+        client.set_local_player(c_player->GetId(), cp3);
+        host.tick_frame(hs, 0.016f);
+        client.tick_frame(cs, 0.016f);
+    }
+
+    auto h_on_c = cs->GetEntityByName("[net] Player 0");   // host, seen by client
+    auto c_on_h = hs->GetEntityByName("[net] Player 1");   // client, seen by host
+
+    // The client is shifted, so it should see the host at hp3 + kShift.
+    const bool see_host = h_on_c &&
+        approx(h_on_c->GetTransform()->GetWorldPosition(), hp3 + kShift);
+    // The host is not shifted, so it should see the client at cp3 - kShift.
+    const bool see_client = c_on_h &&
+        approx(c_on_h->GetTransform()->GetWorldPosition(), cp3 - kShift);
+
+    // And the ghost bodies fed to Jolt must be in the LOCAL frame too, or
+    // remote players would collide with empty air half a kilometre away.
+    std::vector<glm::vec3> ghosts;
+    client.remote_player_positions(ghosts);
+    const bool ghost_ok = ghosts.size() == 1 && approx(ghosts[0], hp3 + kShift);
+
+    const bool origin_ok = see_host && see_client && ghost_ok;
+    if (h_on_c) {
+        const glm::vec3 g = h_on_c->GetTransform()->GetWorldPosition();
+        std::printf("  origins: client sees host at (%.1f,%.1f,%.1f) want (%.1f,%.1f,%.1f) -> %s",
+                    g.x, g.y, g.z, (hp3 + kShift).x, (hp3 + kShift).y, (hp3 + kShift).z,
+                    see_host ? "OK" : "FAIL");
+    }
+    std::printf(" | host sees client %s | jolt ghosts %s -> %s\n",
+                see_client ? "OK" : "FAIL", ghost_ok ? "OK" : "FAIL",
+                origin_ok ? "OK" : "FAIL");
+
+    client.set_origin_offset(glm::vec3(0.0f));
+
+
     host.shutdown();
     client.shutdown();
+
     const bool ok = ok_h && ok_c && no_self && clone_ok && prop_ok && player_safe &&
-                    assigned && restart_ok;
+                    assigned && restart_ok && origin_ok;
     std::printf("mp_check: %s\n", ok ? "ALL OK" : "FAIL");
     return ok ? 0 : 1;
 }

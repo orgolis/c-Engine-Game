@@ -91,6 +91,7 @@ public:
     size_t clip_index() const { return clip_index_; }
     void   set_clip(size_t i) { if (i < clips_.size()) { clip_index_ = i; time_ = 0.0f; } }
     void   set_world_pos(const glm::vec3& p) { world_pos_ = p; }
+    glm::vec3 world_pos() const { return world_pos_; }
     void   set_scale(float s) { scale_ = s; }
     float  scale() const { return scale_; }
 

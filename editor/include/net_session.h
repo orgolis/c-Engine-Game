@@ -73,6 +73,24 @@ public:
     // entity id lets replication skip the local player (it must never be
     // overwritten by the host's copy of the same scene entity). Call once per
     // frame before tick_frame.
+    /**
+     * This client's accumulated floating-origin shift.
+     *
+     * Replicated positions are absolute, and every peer rebases on its OWN
+     * camera -- so two clients streaming different parts of the map do not
+     * share a coordinate frame at all. Without a conversion, remote players
+     * appear displaced by the difference between the two origins, which grows
+     * as the session goes on and is worst exactly when players are far apart
+     * and least able to tell what is wrong.
+     *
+     * The wire frame is the un-rebased one, so outgoing positions have this
+     * subtracted and incoming positions have it added. Pass
+     * EditorWorldStreaming::total_shift() every frame; zero when streaming is
+     * off, which is what makes this free for anyone not using it.
+     */
+    void set_origin_offset(const glm::vec3& shift);
+    glm::vec3 origin_offset() const;
+
     void set_local_player(uint32_t scene_entity_id, const glm::vec3& pos);
 
     // World positions of every OTHER player's avatar (not our own). The host
@@ -92,6 +110,7 @@ public:
     void tick_frame(const std::shared_ptr<schizo::scene::Scene>& scene, float dt);
 
 private:
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
     NetSessionStatus status_;

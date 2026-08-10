@@ -33,8 +33,8 @@
 #include "vulkan/vulkan_scene_mesh.h"
 #include "vulkan/vulkan_scene_material.h"
 #include "vulkan/vulkan_texture_manager.h"  // runtime texture handling (Stage 2)
-#include "skinned_demo.h"                    // Stage 5 skinned-animation test rig
 #include "imported_skinned_actor.h"          // rigged-glTF import → GPU skin (Path B)
+#include "skinned_demo.h"                    // Stage 5 skinned-animation test rig
 #include "skinned_actor_cache.h"             // per-entity skinned actors (3.8)
 #include "nav_bake.h"                        // navmesh from real scene geometry (3.4)
 #include "world_streaming.h"                 // streaming + floating origin on the live scene (3.3)
@@ -6253,7 +6253,21 @@ int main(int argc, char** argv) {
                     editor_state.npc_agents.apply_origin_shift(shift);
                     if (editor_state.scene_playback_manager)
                         editor_state.scene_playback_manager->ApplyOriginShift(shift);
+                    // The imported preview actor is not a scene entity, so the
+                    // rebase loop never reaches it -- it would sit at the old
+                    // origin while the level moved out from under it.
+                    if (imported_actor)
+                        imported_actor->set_world_pos(imported_actor->world_pos() + shift);
+                    if (anim_demo) anim_demo->apply_origin_shift(shift);
                 }
+
+                // Replication is absolute and every peer rebases on its own
+                // camera, so two clients streaming different parts of the map
+                // do not share a coordinate frame. Set every frame rather than
+                // on change: joining mid-session has to pick up the offset that
+                // already accumulated.
+                editor_state.net_session.set_origin_offset(
+                    editor_state.world_streaming.total_shift());
             }
 
             // Scene-file watch. Re-seeded whenever the open file changes OR the

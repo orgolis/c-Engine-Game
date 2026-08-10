@@ -124,6 +124,11 @@ struct NetSession::Impl {
     std::unordered_map<uint64_t, std::vector<std::shared_ptr<schizo::scene::Entity>>> proxy;
     std::unordered_set<uint32_t> proxy_ids;                   // every proxy entity id
 
+    // Accumulated floating-origin shift of THIS peer. Replicated
+    // positions are absolute and every peer rebases on its own camera,
+    // so this is what converts between the wire frame and ours.
+    glm::vec3 origin_offset{0.0f};
+
     ecs::Entity ensure_avatar_entity(uint64_t netid, uint32_t owner, const glm::vec3& pos) {
         auto it = avatar_ent.find(netid);
         if (it != avatar_ent.end()) return it->second;
@@ -211,7 +216,7 @@ struct NetSession::Impl {
                 }
                 if (!pit->second.empty())
                     if (auto* tf = pit->second.front()->GetTransform())
-                        tf->SetWorldPosition(t.position);
+                        tf->SetWorldPosition(t.position + origin_offset);   // -> local frame
             });
         for (auto it = proxy.begin(); it != proxy.end();) {
             if (seen.count(it->first) == 0) {
@@ -314,7 +319,7 @@ struct NetSession::Impl {
                     e = it->second;
                 }
                 ecs::Transform t;
-                t.position = tf->GetWorldPosition();
+                t.position = tf->GetWorldPosition() - origin_offset;   // -> wire frame
                 t.rotation = tf->GetWorldRotation();
                 t.scale    = tf->GetWorldScale();
                 net_world.add<ecs::Transform>(e, t);
@@ -398,7 +403,7 @@ struct NetSession::Impl {
                     if (proxy_ids.count(ent->GetId())) return;
                     auto* tf = ent->GetTransform();
                     if (!tf) return;
-                    tf->SetWorldPosition(t.position);
+                    tf->SetWorldPosition(t.position + origin_offset);   // -> local frame
                     tf->SetWorldRotation(t.rotation);
                     tf->SetLocalScale(t.scale);
                     ++props;
@@ -496,9 +501,17 @@ void NetSession::shutdown() {
     status_ = NetSessionStatus{};
 }
 
+void NetSession::set_origin_offset(const glm::vec3& shift) {
+    impl_->origin_offset = shift;
+}
+
+glm::vec3 NetSession::origin_offset() const {
+    return impl_->origin_offset;
+}
+
 void NetSession::set_local_player(uint32_t scene_entity_id, const glm::vec3& pos) {
     impl_->local_player_id  = scene_entity_id;
-    impl_->local_player_pos = pos;
+    impl_->local_player_pos = pos - impl_->origin_offset;    // -> wire frame
 }
 
 void NetSession::remote_player_positions(std::vector<glm::vec3>& out) {
@@ -507,7 +520,7 @@ void NetSession::remote_player_positions(std::vector<glm::vec3>& out) {
         [&](ecs::Entity, ecs::NetId& nid, ecs::Transform& t) {
             if (nid.value < kAvatarNetIdBase) return;      // avatars only
             if (nid.value == impl_->my_avatar) return;     // not ourselves
-            out.push_back(t.position);
+            out.push_back(t.position + impl_->origin_offset);  // -> local frame (Jolt ghosts)
         });
 }
 
