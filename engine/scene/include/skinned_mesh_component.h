@@ -39,6 +39,22 @@ struct SkinnedMeshComponent {
     /// Playback rate. Negative plays backwards; the sampler wraps either way.
     float speed = 1.0f;
 
+    // ---- locomotion-driven clip selection ---------------------------------
+    // When enabled, the clip is chosen from how fast the entity is ACTUALLY
+    // moving, rather than being set by hand. That is what connects a walking
+    // NPC agent to a walking animation without either system knowing about the
+    // other: the agent moves the transform, and this reads the transform.
+    //
+    // Off by default, because it silently overrides clip_index and a component
+    // that ignores the value you typed into it is worse than one that does
+    // nothing.
+    bool  drive_from_motion = false;
+    int   idle_clip = 0;
+    int   move_clip = 1;
+    /// Metres/second above which `move_clip` is used. Not zero: floating-point
+    /// jitter in a transform would otherwise flicker between clips every frame.
+    float move_threshold = 0.15f;
+
     SkinnedMeshComponent() = default;
     explicit SkinnedMeshComponent(std::string path) : gltf_path(std::move(path)) {}
 

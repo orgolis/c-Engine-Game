@@ -40,6 +40,7 @@
 #include "world_streaming.h"                 // streaming + floating origin on the live scene (3.3)
 #include "particle_emitter_cache.h"          // particle sim on real entities (3.9)
 #include "npc_agents.h"                      // perception -> BT -> navmesh movement (3.5)
+#include "locomotion_clip.h"                 // idle/walk from actual motion (3.8)
 #include "game_ui_demo.h"                     // runtime game-UI HUD demo (Game-UI pillar)
 #include "vulkan/imgui_vulkan.h"
 
@@ -344,6 +345,10 @@ struct EditorState {
     // navmesh (3.5). Only runs during play, so agents do not wander off while
     // the scene is being edited.
     schizo::editor::EditorNpcAgents npc_agents;
+
+    // Per-entity locomotion state for motion-driven clip selection. Keyed by
+    // entity so a character that stops animating idle does not affect others.
+    std::unordered_map<uint32_t, schizo::editor::LocomotionState> locomotion;
 
     schizo::ai::NavMesh        scene_navmesh;
     schizo::editor::NavBakeStats nav_stats;
@@ -6380,7 +6385,10 @@ int main(int argc, char** argv) {
                 editor_state.editor_scene->GetScene(), delta_time,
                 editor_state.viewport_camera.GetPosition(), glm::vec3(0.0f, 1.0f, 0.0f),
                 origin_shift_this_frame);
-            origin_shift_this_frame = glm::vec3(0.0f);
+            // Deliberately NOT cleared here: the skinned-character tick below
+            // also needs it, and the declaration at the top of the loop body
+            // already resets it every frame. Clearing here made the rebase
+            // invisible to locomotion, which is the one place it matters most.
 
             // Per-entity skinned characters: build on demand, pose, and place
             // from the entity's Transform. Done before the command buffer opens
@@ -6394,12 +6402,29 @@ int main(int argc, char** argv) {
                         ent->GetId(), smc->gltf_path, &device,
                         mat_layout, mat_pool, &texture_manager);
                     if (!actor) continue;
-                    if (static_cast<size_t>(smc->clip_index) != actor->clip_index())
-                        actor->set_clip(static_cast<size_t>(smc->clip_index));
+                    auto* sk_tf = ent->GetTransform();
+                    if (!sk_tf) continue;
+                    // Choose the clip from how fast the entity is ACTUALLY
+                    // moving, when asked to. This is what makes an NPC agent
+                    // walking a navmesh path play its walk cycle without either
+                    // system knowing the other exists.
+                    int want_clip = smc->clip_index;
+                    if (smc->drive_from_motion) {
+                        auto& loco = editor_state.locomotion[ent->GetId()];
+                        // A rebase teleports the entity; without this it reads
+                        // as an enormous one-frame speed and snaps every
+                        // character into its run cycle.
+                        if (origin_shift_this_frame != glm::vec3(0.0f))
+                            schizo::editor::locomotion_apply_origin_shift(loco, origin_shift_this_frame);
+                        const bool mv = schizo::editor::locomotion_wants_move(
+                            loco, sk_tf->GetWorldPosition(), delta_time, smc->move_threshold);
+                        want_clip = mv ? smc->move_clip : smc->idle_clip;
+                    }
+                    if (static_cast<size_t>(want_clip) != actor->clip_index())
+                        actor->set_clip(static_cast<size_t>(want_clip));
                     if (smc->playing) actor->advance(delta_time * smc->speed);
                     else              actor->refresh_pose();   // hold the pose, not bind pose
-                    if (auto* tf = ent->GetTransform())
-                        actor->set_model(tf->GetWorldMatrix());
+                    actor->set_model(sk_tf->GetWorldMatrix());
                 }
                 // Release actors whose entity is gone or no longer skinned.
                 skinned_actors.prune([&sk_scene](uint32_t id) {

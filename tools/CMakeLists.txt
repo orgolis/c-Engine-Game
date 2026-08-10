@@ -19,6 +19,18 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# locomotion_check: idle-vs-walk must not flicker. The rule looks trivial and
+# its failure mode is purely visual -- a standing character twitching between
+# clips every frame. Pure function of position deltas, so it is assertions
+# rather than something a human notices later.
+add_executable(locomotion_check locomotion_check/main.cpp)
+target_include_directories(locomotion_check PRIVATE ../editor/include)
+target_link_libraries(locomotion_check PRIVATE glm)
+target_compile_features(locomotion_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(locomotion_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # npcagent_check: perception, decision and movement, connected. Each part was
 # verified separately and driven by nothing. Asserts OBSERVABLE behaviour --
 # the failure mode is an agent that ticks happily and never moves.
