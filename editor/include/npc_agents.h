@@ -165,6 +165,30 @@ public:
     size_t moving()       const { return active_; }
     void   clear() { agents_.clear(); chasing_ = active_ = attacked_ = 0; }
 
+    /// Re-express every agent's cached world-space state after a floating-origin
+    /// rebase.
+    ///
+    /// A rebase moves the entities but not the numbers agents remember about
+    /// them. Each of these is a separate way for an agent to go wrong, and none
+    /// of them reports an error:
+    ///   * spawn/patrol_goal -- the patrol route stays anchored to the old
+    ///     origin, so the agent walks back toward where it used to live;
+    ///   * last_goal -- compared against the new goal to decide whether to
+    ///     repath, so a stale value suppresses the repath that would have
+    ///     corrected everything else;
+    ///   * the follower's path -- waypoints steering toward the old world.
+    /// The caller must translate the NavMesh by the same shift.
+    void apply_origin_shift(const glm::vec3& d) {
+        if (d == glm::vec3(0.0f)) return;
+        for (auto& kv : agents_) {
+            Agent& a = *kv.second;
+            a.spawn       += d;
+            a.patrol_goal += d;
+            if (a.last_goal.x < 1e8f) a.last_goal += d;   // leave the "never pathed" sentinel alone
+            a.follower.translate(d);
+        }
+    }
+
 private:
     struct Agent {
         schizo::ai::Blackboard              bb;

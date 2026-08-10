@@ -92,6 +92,12 @@ bool NavMesh::build(const std::vector<glm::vec3>& tv, float weld_eps) {
     return true;
 }
 
+bool NavMesh::contains(const glm::vec3& p) const {
+    for (const Tri& t : tris_)
+        if (point_in_tri_xz(p, t.v[0], t.v[1], t.v[2])) return true;
+    return false;
+}
+
 int NavMesh::nearest_tri(const glm::vec3& p) const {
     if (tris_.empty()) return -1;
     // Prefer a triangle whose XZ footprint contains p.

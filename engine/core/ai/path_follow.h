@@ -32,6 +32,16 @@ public:
         arrived_ = path_.size() < 2;
     }
     void clear() { path_.clear(); index_ = 0; arrived_ = true; }
+
+    /// Move the cached path by `d`, for a floating-origin rebase. The waypoints
+    /// are world-space, so without this the follower steers the agent back
+    /// toward where the goal used to be -- and the further the world has
+    /// travelled, the further wrong it gets. Progress along the path (`index_`)
+    /// is untouched: the route is the same route, just re-expressed.
+    void translate(const glm::vec3& d) {
+        if (d == glm::vec3(0.0f)) return;
+        for (glm::vec3& p : path_) p += d;
+    }
     bool active() const { return !arrived_ && index_ < path_.size(); }
     bool arrived() const { return arrived_; }
     const std::vector<glm::vec3>& path() const { return path_; }

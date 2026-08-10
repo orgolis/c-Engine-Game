@@ -287,6 +287,45 @@ int main() {
     }
 
 
+    // ---- a floating-origin rebase is invisible to an agent -----------------
+    // Streaming and agents were built separately and each verified alone; this
+    // is the seam between them. A rebase moves every entity but not the
+    // navmesh, nor the world-space numbers an agent remembers -- its patrol
+    // goal, the last goal it pathed to, and the waypoints it is steering
+    // along. The agent has to come out of it still walking, rather than frozen
+    // off-mesh or heading for a place that no longer exists.
+    {
+        const glm::vec3 kShift(-512.0f, 0.0f, 256.0f);
+        World w = make_world({0.0f, 0.0f, 0.0f}, {200.0f, 0.0f, 200.0f});  // target far: patrols
+        editor::EditorNpcAgents agents;
+        run(agents, w, 90);
+
+        const glm::vec3 before = w.agent->GetTransform()->GetLocalPosition();
+        check(dist_xz(before, {0.0f, 0.0f, 0.0f}) > 0.5f,
+              "an agent is patrolling before the rebase");
+
+        // Rebase in the editor's order: entities, then mesh, then agent state.
+        for (const auto& e : w.scene->GetEntities())
+            if (e && !e->GetParent())
+                if (auto* tf = e->GetTransform())
+                    tf->SetLocalPosition(tf->GetLocalPosition() + kShift);
+        w.nav.translate(kShift);
+        agents.apply_origin_shift(kShift);
+
+        const glm::vec3 at_rebase = w.agent->GetTransform()->GetLocalPosition();
+        run(agents, w, 90);
+        const glm::vec3 after = w.agent->GetTransform()->GetLocalPosition();
+
+        check(dist_xz(after, at_rebase) > 0.5f,
+              "and is still walking 90 frames later -- not frozen off-mesh");
+        check(w.nav.contains(after),
+              "on the navmesh, where the world now is");
+        check(dist_xz(after, before) > 100.0f,
+              "in the new frame of reference, not dragged back toward the old origin");
+        check(agents.agent_count() == 1,
+              "with the agent still registered across the rebase");
+    }
+
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) std::printf("FAIL npcagent_check\n");
     return g_fail ? 1 : 0;

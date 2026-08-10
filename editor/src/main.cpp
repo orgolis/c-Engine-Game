@@ -6241,6 +6241,17 @@ int main(int argc, char** argv) {
                     editor_state.viewport_camera.SetPosition(
                         editor_state.viewport_camera.GetPosition() + shift);
                 origin_shift_this_frame = shift;
+
+                // The rebase moved the world; the baked navmesh and everything
+                // the agents remember about it are still in the old frame.
+                // Without this an agent survives a rebase by walking toward
+                // where its goal used to be, over geometry that is no longer
+                // under it -- and rebase shifts are far larger than the mesh,
+                // so it is off the navmesh entirely, not merely inaccurate.
+                if (shift != glm::vec3(0.0f)) {
+                    editor_state.scene_navmesh.translate(shift);
+                    editor_state.npc_agents.apply_origin_shift(shift);
+                }
             }
 
             // Scene-file watch. Re-seeded whenever the open file changes OR the
