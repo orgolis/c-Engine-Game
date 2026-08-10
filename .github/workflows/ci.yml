@@ -127,6 +127,41 @@ jobs:
           fi
           exit $rc
 
+      - name: Inner-loop budgets
+        # Phase 2 exit criterion (#14). Two jobs, deliberately separated:
+        #
+        #   PUBLISH — the numbers land in the run summary every time, so drift
+        #   is visible in the PR rather than discovered a year later when the
+        #   inner loop is already slow. This is the part that does the work.
+        #
+        #   GATE — --tolerance 4 fails only at 4x budget. A shared runner is
+        #   virtualised, noisily co-tenanted and an order slower on I/O than a
+        #   dev box; gating at 1x would fail honest PRs, and a gate that cries
+        #   wolf gets ignored. That is the exact failure this phase exists to
+        #   prevent, and CI has already been ignored once here — it sat red for
+        #   six commits because a grep inverted the result. So CI catches
+        #   order-of-magnitude regressions and the published trend catches the
+        #   rest.
+        #
+        # editor_cold_start reports "unmeasured" here: --startup-probe needs a
+        # Vulkan device and runners have none. It IS measured on a developer
+        # machine, and saying so beats pretending the row is covered.
+        run: |
+          set -o pipefail
+          ./build/bin/innerloop_check.exe --enforce --tolerance 4 | tee innerloop.txt
+          rc=$?
+          {
+            echo "### Inner-loop budgets"
+            echo ""
+            echo '```'
+            cat innerloop.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ $rc -ne 0 ]; then
+            echo "::error title=inner loop::a budget regressed by more than 4x — see the run summary"
+          fi
+          exit $rc
+
       - name: Upload crash-report artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
