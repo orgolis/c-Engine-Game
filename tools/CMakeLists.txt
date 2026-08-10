@@ -19,6 +19,17 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# taskrunner_check: background work must not freeze the editor, and its
+# completion callbacks must land on the editor thread. Both are the kind of
+# property that seems fine until a driver crash appears days later in code that
+# looks correct, so they are asserted directly.
+add_executable(taskrunner_check taskrunner_check/main.cpp)
+target_link_libraries(taskrunner_check PRIVATE gws_jobs)
+target_compile_features(taskrunner_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(taskrunner_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # assetpath_check: a non-ASCII asset filename must still load. Caught a real
 # failure where a 64 MB model could not be opened at all — narrow ifstream paths
 # are read in the ANSI codepage on Windows. No ASCII-named test asset can catch

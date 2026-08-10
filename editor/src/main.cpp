@@ -84,6 +84,7 @@
 #include "asset_manager.h"
 #include "scene_playback_manager.h"
 #include "play_mode_changes.h"
+#include "jobs/task_runner.h"
 #include "primitive_meshes.h"
 #include "scene_render_bridge.h"
 #include "character_controller_panel.h"
@@ -297,6 +298,12 @@ struct EditorState {
     // consumed in the loop where the device + material pool are in scope).
     std::string pending_skinned_import;
 
+    // Long work that must not freeze the UI. Completion callbacks are delivered
+    // on this thread by tasks.poll(), so a handler may touch the scene and the
+    // GPU safely. See jobs/task_runner.h.
+    gws::tasks::TaskRunner tasks;
+    bool show_task_panel = true;
+
     // Play-mode change tracking. Play still discards by default; this keeps the
     // diff so the developer can choose what survives instead of losing a tuning
     // pass on Stop. See play_mode_changes.h.
@@ -439,6 +446,61 @@ static uint64_t AudioGuidFromPath(const std::string& p) {
 // the authored scene. Every row is an opt-in re-application, so closing the
 // window with Escape or Discard leaves exactly the pre-play state.
 // ============================================================================
+// ============================================================================
+// Background work — visible, and interruptible.
+//
+// Shows only while something is running, or briefly after a failure. A panel
+// that is always on screen showing "0 tasks" is furniture; one that appears
+// exactly when the editor is busy is information.
+// ============================================================================
+void ShowTaskPanel(EditorState& editor_state) {
+    if (!editor_state.show_task_panel) return;
+    const auto tasks = editor_state.tasks.snapshot();
+    if (tasks.empty()) return;
+
+    bool anything_worth_showing = false;
+    for (const auto& t : tasks)
+        if (t.state == gws::tasks::TaskState::Pending ||
+            t.state == gws::tasks::TaskState::Running ||
+            t.state == gws::tasks::TaskState::Failed) { anything_worth_showing = true; break; }
+    if (!anything_worth_showing) return;
+
+    ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Background tasks", &editor_state.show_task_panel,
+                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing)) {
+        ImGui::End();
+        return;
+    }
+
+    for (const auto& t : tasks) {
+        using S = gws::tasks::TaskState;
+        if (t.state == S::Succeeded || t.state == S::Cancelled) continue;
+
+        ImGui::PushID(static_cast<int>(t.id));
+        if (t.state == S::Failed) {
+            ImGui::TextColored(ImVec4(0.92f, 0.45f, 0.42f, 1.0f), "%s — failed", t.label.c_str());
+            if (!t.error.empty()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(?)");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", t.error.c_str());
+            }
+        } else {
+            ImGui::TextUnformatted(t.label.c_str());
+            // A negative fraction means the task genuinely does not know how far
+            // along it is. An indeterminate bar says that; a bar parked at 0
+            // would look like nothing is happening.
+            if (t.progress < 0.0f) ImGui::ProgressBar(-1.0f * ImGui::GetTime(), ImVec2(-70, 0), "working");
+            else                   ImGui::ProgressBar(t.progress, ImVec2(-70, 0));
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Cancel")) editor_state.tasks.cancel(t.id);
+            if (!t.status.empty()) ImGui::TextDisabled("%s", t.status.c_str());
+        }
+        ImGui::PopID();
+    }
+
+    ImGui::End();
+}
+
 void ShowPlayChangesDialog(EditorState& editor_state) {
     if (!editor_state.show_play_changes_popup) return;
 
@@ -5309,6 +5371,9 @@ int main(int argc, char** argv) {
         // ----------------------------------------------------------------
         // Main loop
         // ----------------------------------------------------------------
+        // Background workers for import/copy/cook. Started here so they exist
+        // for the whole loop and are joined in the shutdown block below.
+        editor_state.tasks.start();
         spdlog::info("Entering editor loop...");
         int frame_count = 0;
 
@@ -5406,6 +5471,10 @@ int main(int argc, char** argv) {
                 terrain_gpu_cache.rewrite_all_materials();   // terrain layer textures too
                 textures_reloaded = false;
             }
+
+            // Deliver finished background work on this thread, where touching
+            // the scene and the GPU is legal.
+            editor_state.tasks.poll();
 
             // Mesh hot reload: drop cache entries whose source file changed;
             // the next draw rebuilds them through the ordinary load path. Save
@@ -5875,20 +5944,61 @@ int main(int argc, char** argv) {
                         continue;
                     }
                     fs::path dst = target_dir / src_path.filename();
-                    std::error_code copy_ec;
-                    fs::copy_file(src_path, dst,
-                                  fs::copy_options::overwrite_existing, copy_ec);
-                    if (copy_ec) {
-                        spdlog::error("[Drop] Failed to import {} -> {}: {}",
-                                      src, dst.string(), copy_ec.message());
-                    } else {
-                        spdlog::info("[Drop] Imported {} -> {}", src, dst.string());
-                        ++imported;
-                    }
+                    // Copy on a worker. A dropped asset can be hundreds of MB
+                    // and copying it inline froze the editor for the whole
+                    // transfer, with no progress and no way out.
+                    const std::string label = "Import " + src_path.filename().string();
+                    editor_state.tasks.submit(label,
+                        [src, dst](gws::tasks::TaskContext& ctx) {
+                            std::error_code ec;
+                            const auto total = fs::file_size(fs::path(src), ec);
+                            ctx.set_progress(total ? 0.0f : -1.0f, "copying");
+
+                            // Chunked rather than fs::copy_file so the task can
+                            // report progress and honour cancellation. A big
+                            // import that cannot be stopped is only half a fix.
+                            std::ifstream in(fs::path(src), std::ios::binary);
+                            std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+                            if (!in || !out) throw std::runtime_error("could not open source or destination");
+
+                            std::vector<char> buf(1 << 20);
+                            uintmax_t copied = 0;
+                            while (in) {
+                                if (ctx.cancelled()) {
+                                    out.close();
+                                    std::error_code rm;
+                                    fs::remove(dst, rm);   // never leave a partial asset behind
+                                    return;
+                                }
+                                in.read(buf.data(), static_cast<std::streamsize>(buf.size()));
+                                const auto got = in.gcount();
+                                if (got <= 0) break;
+                                out.write(buf.data(), got);
+                                if (!out) throw std::runtime_error("write failed (disk full?)");
+                                copied += static_cast<uintmax_t>(got);
+                                if (total) ctx.set_progress(static_cast<float>(copied) /
+                                                            static_cast<float>(total));
+                            }
+                        },
+                        [&editor_state, src, dst](const gws::tasks::TaskInfo& info) {
+                            // Runs on the editor thread, so touching the asset
+                            // browser here is legal.
+                            using S = gws::tasks::TaskState;
+                            if (info.state == S::Succeeded) {
+                                spdlog::info("[Drop] Imported {} -> {}", src, dst.string());
+                                if (editor_state.asset_browser)
+                                    editor_state.asset_browser->RefreshAssets();
+                            } else if (info.state == S::Cancelled) {
+                                spdlog::info("[Drop] Import cancelled: {}", src);
+                            } else {
+                                spdlog::error("[Drop] Failed to import {} -> {}: {}",
+                                              src, dst.string(), info.error);
+                            }
+                        });
+                    ++imported;
                 }
                 editor_state.dropped_files.clear();
-                if (imported > 0 && editor_state.asset_browser)
-                    editor_state.asset_browser->RefreshAssets();
+                (void)imported;
             }
 
             // (ShowMainMenuBar is emitted above, before the dockspace.)
@@ -5896,6 +6006,7 @@ int main(int argc, char** argv) {
             ShowOpenDialog(editor_state);
             ShowRenameDialog(editor_state);
             ShowPlayChangesDialog(editor_state);
+            ShowTaskPanel(editor_state);
             if (editor_state.show_demo_window)
                 ImGui::ShowDemoWindow(&editor_state.show_demo_window);
             ShowViewport(editor_state);
@@ -7162,6 +7273,11 @@ int main(int argc, char** argv) {
         // before the pool/layout below (and before the device).
         anim_demo.reset();
         imported_actor.reset();   // returns its Material's set to mat_pool before free
+
+        // Join background workers BEFORE tearing down anything they might
+        // touch. stop() cancels outstanding work and deliberately does not run
+        // completion callbacks — those expect a live scene and a live device.
+        editor_state.tasks.stop();
 
         // Scene geometry — caches must release their meshes + materials
         // before the descriptor pool / layout are destroyed.

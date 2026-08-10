@@ -2,6 +2,7 @@ add_library(gws_jobs STATIC)
 
 target_sources(gws_jobs PRIVATE
     job_system.cpp
+    task_runner.cpp
 )
 
 target_include_directories(gws_jobs PUBLIC
