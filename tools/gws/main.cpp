@@ -417,8 +417,10 @@ int cmd_shaders(int argc, char** argv) {
         // a full rebuild. Saying "11 compiled" without this reads as full
         // coverage, which would be the more expensive kind of wrong.
         std::printf("\nNote: only shaders that exist as FILES in engine/renderer/gpu/vulkan/shaders/\n"
-                    "are covered. Several passes keep their GLSL inline in the renderer .cpp files;\n"
-                    "those still need a rebuild. Tracked in issue #67.\n");
+                    "are covered. A few passes still keep their GLSL inline in the renderer .cpp\n"
+                    "files and cannot be reached from here — editing those still needs a rebuild.\n"
+                    "Tracked in issue #67. shadersource_check verifies that the files here still\n"
+                    "compile to the SPIR-V that actually ships.\n");
     }
     return failed ? 1 : 0;
 }
