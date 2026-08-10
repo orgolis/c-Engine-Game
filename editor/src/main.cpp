@@ -311,6 +311,16 @@ struct EditorState {
     gws::tasks::TaskRunner tasks;
     bool show_task_panel = true;
 
+    // Terrain sculpt undo. A stroke spans many frames, so the heightmap is
+    // snapshotted when the mouse goes DOWN and diffed when it comes up — one
+    // undo entry per stroke, not one per frame. The full snapshot is transient
+    // (one at a time, ~17 KB at the default 64-cell resolution); only the
+    // rectangle that actually changed is kept in the undo entry.
+    bool                 terrain_stroke_active = false;
+    uint32_t             terrain_stroke_entity = 0;
+    std::vector<float>   terrain_stroke_heights;   // heightmap at stroke start
+    std::vector<uint8_t> terrain_stroke_holes;     // hole mask at stroke start
+
     // Scene-file hot reload. Watches the CURRENT scene file so a change made
     // outside the editor (a git pull, a teammate, an agent) is noticed. It is
     // deliberately NOT a blind reload -- see ShowSceneReloadPrompt.
@@ -555,6 +565,164 @@ static std::shared_ptr<schizo::scene::Entity> FindEntityById(
     for (const auto& e : scene->GetEntities())
         if (e && e->GetId() == id) return e;
     return nullptr;
+}
+
+// ============================================================================
+// Undo for a terrain sculpt stroke.
+//
+// Two problems, and the second is the one that made this the last undo item.
+//
+// A stroke spans many frames while the mouse is held, so it must be coalesced
+// like a gizmo drag — mouse-down to mouse-up is one entry.
+//
+// And a heightmap is big. Storing a full copy per stroke is the obvious
+// implementation and the wrong one: at higher resolutions that is megabytes per
+// entry, so a session of sculpting would quietly consume hundreds of MB. But a
+// brush only touches a small disc. So the stroke keeps ONE transient full
+// snapshot (cheap, and only while the mouse is down) and the entry that
+// survives stores just the bounding rectangle of what actually changed.
+//
+// Returns false when nothing changed, so a click that sculpts nothing does not
+// push a no-op onto the stack.
+// ============================================================================
+static bool PushTerrainStrokeCommand(EditorState& editor_state,
+                                     const std::shared_ptr<schizo::scene::Scene>& scene,
+                                     uint32_t entity_id,
+                                     const std::vector<float>& before_heights,
+                                     const std::vector<uint8_t>& before_holes) {
+    if (!scene || !entity_id) return false;
+    auto ent = FindEntityById(scene, entity_id);
+    if (!ent) return false;
+    auto tc = ent->GetComponent<schizo::scene::TerrainComponent>();
+    if (!tc) return false;
+
+    const std::vector<float>& now_h = tc->Heights();
+    if (now_h.size() != before_heights.size()) return false;   // resized mid-stroke
+
+    const int n = tc->VertsPerSide();
+    int x0 = n, x1 = -1, z0 = n, z1 = -1;
+    for (int z = 0; z < n; ++z)
+        for (int x = 0; x < n; ++x) {
+            const size_t i = static_cast<size_t>(z) * n + x;
+            if (now_h[i] != before_heights[i]) {
+                if (x < x0) x0 = x;
+                if (x > x1) x1 = x;
+                if (z < z0) z0 = z;
+                if (z > z1) z1 = z;
+            }
+        }
+
+    // Holes are a separate, cell-resolution mask; a hole brush changes no
+    // heights at all, so it needs its own comparison or digging would be
+    // silently un-undoable.
+    const int res = tc->GetResolution();
+    std::vector<uint8_t> now_holes(static_cast<size_t>(res) * res, 0);
+    for (int z = 0; z < res; ++z)
+        for (int x = 0; x < res; ++x)
+            now_holes[static_cast<size_t>(z) * res + x] = tc->HasHole(x, z) ? 1u : 0u;
+    const bool holes_changed = (now_holes != before_holes) && before_holes.size() == now_holes.size();
+
+    if (x1 < x0 && !holes_changed) return false;   // the stroke did nothing
+
+    // Copy out only the changed rectangle.
+    struct Rect { int x0, z0, w, h; };
+    Rect r{0, 0, 0, 0};
+    std::vector<float> before_rect, after_rect;
+    if (x1 >= x0) {
+        r = Rect{x0, z0, x1 - x0 + 1, z1 - z0 + 1};
+        before_rect.reserve(static_cast<size_t>(r.w) * r.h);
+        after_rect.reserve(static_cast<size_t>(r.w) * r.h);
+        for (int z = r.z0; z < r.z0 + r.h; ++z)
+            for (int x = r.x0; x < r.x0 + r.w; ++x) {
+                const size_t i = static_cast<size_t>(z) * n + x;
+                before_rect.push_back(before_heights[i]);
+                after_rect.push_back(now_h[i]);
+            }
+    }
+
+    auto holes_before = holes_changed ? before_holes : std::vector<uint8_t>{};
+    auto holes_after  = holes_changed ? now_holes    : std::vector<uint8_t>{};
+
+    auto apply = [scene, entity_id, r, n, res](const std::vector<float>& rect,
+                                               const std::vector<uint8_t>& holes) {
+        auto e = FindEntityById(scene, entity_id);
+        if (!e) return;
+        auto t = e->GetComponent<schizo::scene::TerrainComponent>();
+        if (!t || t->VertsPerSide() != n) return;   // resized since; refuse rather than corrupt
+        if (!rect.empty()) {
+            auto& h = t->MutableHeights();
+            size_t k = 0;
+            for (int z = r.z0; z < r.z0 + r.h; ++z)
+                for (int x = r.x0; x < r.x0 + r.w; ++x)
+                    h[static_cast<size_t>(z) * n + x] = rect[k++];
+        }
+        if (!holes.empty() && t->GetResolution() == res) {
+            for (int z = 0; z < res; ++z)
+                for (int x = 0; x < res; ++x)
+                    t->SetHole(x, z, holes[static_cast<size_t>(z) * res + x] != 0);
+            t->MarkAllDirty();          // a hole mask is compared whole, so it is
+        } else if (!rect.empty()) {
+            // Dirty only the cells the rect touches, so undoing a small stroke
+            // rebuilds a few chunks instead of the entire terrain. The rect is
+            // in VERTEX coords; a vertex influences the cells on either side.
+            t->MarkDirtyRect(r.x0 - 1, r.z0 - 1, r.x0 + r.w, r.z0 + r.h);
+        } else {
+            t->MarkAllDirty();
+        }
+    };
+
+    auto cmd = std::make_unique<schizo::editor::FunctionCommand>(
+        [apply, after_rect, holes_after, &editor_state]() {
+            apply(after_rect, holes_after);
+            editor_state.editor_scene->MarkModified();
+        },
+        [apply, before_rect, holes_before, &editor_state]() {
+            apply(before_rect, holes_before);
+            editor_state.editor_scene->MarkModified();
+        },
+        "Sculpt terrain");
+    editor_state.undo_redo_manager.PushExecuted(std::move(cmd));   // the stroke already applied it
+    return true;
+}
+
+// ============================================================================
+// Undo for reparenting in the hierarchy.
+//
+// Dragging one entity onto another rewrites the scene graph, and it was the
+// easiest edit in the editor to do by accident -- a drag that lands one row off
+// silently restructures the scene. Recording the OLD parent makes that
+// recoverable.
+//
+// Entities are resolved by id at apply time, not captured, so an entity deleted
+// and restored by an undo of its own still resolves.
+// ============================================================================
+static void PushReparentCommand(EditorState& editor_state,
+                                const std::shared_ptr<schizo::scene::Scene>& scene,
+                                uint32_t child_id,
+                                uint32_t old_parent_id,
+                                uint32_t new_parent_id) {
+    if (!scene || !child_id || old_parent_id == new_parent_id) return;
+
+    auto set_parent = [scene](uint32_t cid, uint32_t pid) {
+        auto c = FindEntityById(scene, cid);
+        if (!c) return;
+        c->SetParent(pid ? FindEntityById(scene, pid) : nullptr);
+    };
+
+    auto child = FindEntityById(scene, child_id);
+    const std::string label = "Reparent " + (child ? child->GetName() : std::string("entity"));
+
+    auto cmd = std::make_unique<schizo::editor::FunctionCommand>(
+        [set_parent, child_id, new_parent_id, &editor_state]() {
+            set_parent(child_id, new_parent_id);
+            editor_state.editor_scene->MarkModified();
+        },
+        [set_parent, child_id, old_parent_id, &editor_state]() {
+            set_parent(child_id, old_parent_id);
+            editor_state.editor_scene->MarkModified();
+        },
+        label);
+    editor_state.undo_redo_manager.PushExecuted(std::move(cmd));   // the drop already applied it
 }
 
 // ============================================================================
@@ -1570,8 +1738,12 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                         // Find and reparent the dragged entity
                         auto dragged = scene->GetEntityById(dragged_entity_id);
                         if (dragged && dragged != entity) {  // Can't parent to self
+                            auto old_parent = dragged->GetParent();
+                            const uint32_t old_pid = old_parent ? old_parent->GetId() : 0;
                             dragged->SetParent(entity);
                             spdlog::info("Reparented {} to {}", dragged->GetName(), entity->GetName());
+                            PushReparentCommand(editor_state, scene, dragged_entity_id,
+                                                old_pid, entity->GetId());
                             editor_state.editor_scene->MarkModified();
                         }
                     }
@@ -3468,6 +3640,24 @@ void ShowViewport(EditorState& editor_state) {
             // Sculpt mode + selected terrain: ray-march the mouse ray onto the
             // heightmap, draw a brush ring, and (while LMB held) apply the brush.
             editor_state.terrain_brush_valid = false;
+            // End of a sculpt stroke: mouse released (or sculpt mode turned
+            // off mid-stroke, which must still commit -- the edit happened).
+            if (editor_state.terrain_stroke_active &&
+                (!ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+                 !editor_state.terrain_sculpt_active)) {
+                PushTerrainStrokeCommand(editor_state, scene,
+                                         editor_state.terrain_stroke_entity,
+                                         editor_state.terrain_stroke_heights,
+                                         editor_state.terrain_stroke_holes);
+                editor_state.terrain_stroke_active = false;
+                editor_state.terrain_stroke_entity = 0;
+                // Release the snapshot: it is the largest thing this state holds.
+                editor_state.terrain_stroke_heights.clear();
+                editor_state.terrain_stroke_heights.shrink_to_fit();
+                editor_state.terrain_stroke_holes.clear();
+                editor_state.terrain_stroke_holes.shrink_to_fit();
+            }
+
             if (editor_state.terrain_sculpt_active && scene && image_drawn &&
                 editor_state.selected_entity_id != 0) {
                 auto sel = scene->GetEntityById(editor_state.selected_entity_id);
@@ -3516,6 +3706,22 @@ void ShowViewport(EditorState& editor_state) {
                             }
 
                             if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                                // First frame of the stroke: remember the whole
+                                // heightmap. Transient and small; only the
+                                // changed rect is kept when the stroke ends.
+                                if (!editor_state.terrain_stroke_active) {
+                                    editor_state.terrain_stroke_active = true;
+                                    editor_state.terrain_stroke_entity = sel->GetId();
+                                    editor_state.terrain_stroke_heights = tc->Heights();
+                                    const int hres = tc->GetResolution();
+                                    editor_state.terrain_stroke_holes.assign(
+                                        static_cast<size_t>(hres) * hres, 0);
+                                    for (int hz = 0; hz < hres; ++hz)
+                                        for (int hx = 0; hx < hres; ++hx)
+                                            editor_state.terrain_stroke_holes[
+                                                static_cast<size_t>(hz) * hres + hx] =
+                                                    tc->HasHole(hx, hz) ? 1u : 0u;
+                                }
                                 const float lx = hitp.x - base.x;
                                 const float lz = hitp.z - base.z;
                                 const float R  = editor_state.terrain_brush_radius;
