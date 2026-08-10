@@ -19,6 +19,16 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# assetwatch_check: the shared file watcher behind every hot reload. Mostly
+# negative behaviours — not firing on a half-written file is the property that
+# makes reload trustworthy. Time is injected, so the suite stays instant.
+add_executable(assetwatch_check assetwatch_check/main.cpp)
+target_link_libraries(assetwatch_check PRIVATE gws_assets)
+target_compile_features(assetwatch_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(assetwatch_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # playchanges_check: play mode must not eat a tuning pass — and must never write
 # to the authored scene unless a change was explicitly ticked. Compiles the
 # editor's play_mode_changes.cpp + ecs_bridge.cpp directly; both are GPU-free, so

@@ -15,6 +15,11 @@
 #include "mesh_renderer_component.h"
 #include "terrain_component.h"
 #include "ecs_bridge.h"   // authoritative ECS world matrices (Stage 1.4 step 2)
+#include "assets/asset_watcher.h"   // shared hot-reload file watching
+
+#include <chrono>
+#include <functional>
+#include <unordered_set>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -436,10 +441,65 @@ public:
         
         spdlog::info("[AssetMeshCache] Loaded {}: {} draw items, {} meshes",
                      path, scene->draw_items.size(), scene->meshes.size());
+
+        // Watch the file this came from. Re-export the model from Blender and
+        // the viewport follows — the reason this cache existed without reload
+        // was that nothing invalidated it, not that reloading was hard.
+        // Keyed on the ORIGINAL path so cache identity stays stable, but the
+        // RESOLVED path is what gets watched, since that is the real file.
+        if (!watched_.count(path)) {
+            watched_.insert(path);
+            const std::string key = path;
+            watcher_.watch(disk_path, [this, key](const std::string&) {
+                dirty_.push_back(key);
+            });
+        }
+
         const auto* raw = scene.get();
         entries_[path] = std::move(scene);
         return raw;
     }
+
+    /// Drop cache entries whose source file changed on disk; the next
+    /// get_or_load rebuilds them through the ordinary load path. Reloading by
+    /// invalidation rather than in place means there is exactly ONE loader to
+    /// keep correct, and a hot-reloaded mesh is byte-identical to one loaded at
+    /// startup. Returns how many entries were dropped. Safe to call every frame.
+    ///
+    /// `idle_gpu` is called at most once, before the first entry is dropped:
+    /// destroying a Scene frees GPU buffers that in-flight frames may still
+    /// reference. Taken as a callback rather than a VulkanDevice* so this
+    /// header keeps needing only a forward declaration of the device.
+    size_t poll_reload(const std::function<void()>& idle_gpu) {
+        using namespace std::chrono;
+        watcher_.poll(duration<double>(steady_clock::now().time_since_epoch()).count());
+        if (dirty_.empty()) return 0;
+
+        std::vector<std::string> dirty;
+        dirty.swap(dirty_);
+        std::sort(dirty.begin(), dirty.end());
+        dirty.erase(std::unique(dirty.begin(), dirty.end()), dirty.end());
+
+        size_t dropped = 0;
+        bool idled = false;
+        for (const auto& key : dirty) {
+            auto it = entries_.find(key);
+            if (it == entries_.end()) continue;
+            if (!idled) {
+                if (!idle_gpu) return 0;    // cannot free GPU resources safely
+                idle_gpu();
+                idled = true;
+            }
+            entries_.erase(it);
+            ++dropped;
+            spdlog::info("[AssetMeshCache] '{}' changed on disk — reloading", key);
+        }
+        return dropped;
+    }
+
+    /// Files seen changing but not yet settled, for an honest "importing..."
+    /// indicator rather than a UI that looks like it missed the edit.
+    size_t reloads_pending() const { return watcher_.pending_count(); }
 
     /// Re-write descriptor sets of every cached scene's materials. Call after a
     /// texture one of them references was hot-reloaded in place (its
@@ -453,9 +513,20 @@ public:
         }
     }
 
-    void clear() { entries_.clear(); }
+    void clear() {
+        entries_.clear();
+        watcher_.clear();
+        watched_.clear();
+        dirty_.clear();
+    }
 
 private:
+    // Hot reload: one shared watcher, same settling behaviour as every other
+    // reloadable asset type.
+    gws::assets::AssetWatcher watcher_;
+    std::unordered_set<std::string> watched_;   // paths already registered
+    std::vector<std::string>        dirty_;     // cache keys to drop next poll
+
     static std::unique_ptr<gws::renderer::gpu::Scene> load_obj_scene(
         const std::string& path,
         gws::renderer::gpu::VulkanDevice* device,

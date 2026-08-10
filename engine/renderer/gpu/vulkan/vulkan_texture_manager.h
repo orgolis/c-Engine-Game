@@ -23,6 +23,8 @@
 
 #include <cstdint>
 #include <filesystem>
+
+#include "assets/asset_watcher.h"
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -92,7 +94,9 @@ public:
     SamplerCache& sampler_cache()                  { return sampler_cache_; }
 
     /// Poll watched source files; reload changed ones in place and notify
-    /// listeners. Call periodically (≈1 Hz) from the editor/main loop.
+    /// listeners. Safe to call every frame — the shared AssetWatcher throttles
+    /// its own filesystem scans, and debounces so a texture still being written
+    /// by an external tool is not decoded half-finished.
     void poll_hot_reload();
     void add_reload_listener(ReloadListener cb) { listeners_.push_back(std::move(cb)); }
 
@@ -106,7 +110,7 @@ private:
         std::string                     path;            // source (or .ctex) path
         TextureImportSettings           settings;
         bool                            hot_reloadable = false;  // source-image path
-        std::filesystem::file_time_type mtime{};
+        uint64_t                        watch_token = 0;         // AssetWatcher
     };
 
     // Decode a source image via stb and upload (mips + shared sampler).
@@ -120,6 +124,11 @@ private:
     std::shared_ptr<Texture>            default_normal_;
     std::shared_ptr<Texture>            default_black_;
     std::unordered_map<uint64_t, Entry> cache_;    // AssetId -> entry
+    // One shared watcher rather than a private mtime loop: settling behaviour,
+    // poll throttling and the "file appeared later" case then match every other
+    // hot-reloadable asset type instead of being reimplemented here.
+    gws::assets::AssetWatcher           watcher_;
+    std::vector<uint64_t>               dirty_;   // asset ids the watcher flagged
     std::vector<ReloadListener>         listeners_;
     std::string                         cooked_root_;
     mutable std::mutex                  mutex_;

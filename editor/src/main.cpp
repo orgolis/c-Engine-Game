@@ -5396,13 +5396,21 @@ int main(int argc, char** argv) {
             // re-write the descriptor sets of cached glTF-scene materials (their
             // texture views were rebuilt) — the GPU is already idle from the
             // reload's wait_idle, but wait again to be safe across frames.
-            { static int htick = 0; if (++htick >= 60) { htick = 0; texture_manager.poll_hot_reload(); } }
+            // Every frame now: the shared AssetWatcher throttles its own scans,
+            // so the old 60-frame gate only added up to a second of latency on
+            // top of the settle window.
+            texture_manager.poll_hot_reload();
             if (textures_reloaded) {
                 device.wait_idle();
                 asset_cache.rewrite_all_materials();
                 terrain_gpu_cache.rewrite_all_materials();   // terrain layer textures too
                 textures_reloaded = false;
             }
+
+            // Mesh hot reload: drop cache entries whose source file changed;
+            // the next draw rebuilds them through the ordinary load path. Save
+            // from Blender over a model the scene uses and the viewport follows.
+            asset_cache.poll_reload([&device]{ device.wait_idle(); });
 
             // Live sky hot-swap: rebuild the environment map in place when the
             // active scene's sky HDR changes (Inspector edit OR scene switch).

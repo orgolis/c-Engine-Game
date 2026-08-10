@@ -17,6 +17,8 @@
 #include <stb_image.h>   // declarations only; impl lives in vulkan_texture.cpp
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <chrono>
 #include <fstream>
 
 namespace gws::renderer::gpu {
@@ -182,10 +184,9 @@ std::shared_ptr<Texture> TextureManager::load(const std::string& path,
         tex = load_cooked(ctex, settings.sampler, settings.srgb);
         entry.path           = ctex;
         entry.hot_reloadable = false;   // BC blob: can't reload_from_pixels
-        std::error_code ec;
-        entry.mtime = fs::last_write_time(u8p(ctex), ec);
     } else if (fs::exists(u8p(disk), exist_ec)) {
-        tex = load_source_(disk, settings, entry.mtime);
+        fs::file_time_type ignored{};
+        tex = load_source_(disk, settings, ignored);
         entry.hot_reloadable = static_cast<bool>(tex);
     } else {
         spdlog::warn("TextureManager: texture not found '{}', using default white", path);
@@ -194,24 +195,50 @@ std::shared_ptr<Texture> TextureManager::load(const std::string& path,
 
     if (!tex) return default_white_;
 
+    // Register with the shared watcher. The callback only FLAGS the asset —
+    // decoding and the GPU upload happen in poll_hot_reload on the caller's
+    // thread, outside this mutex, because reload needs device_->wait_idle().
+    if (entry.hot_reloadable) {
+        const uint64_t asset_id = id;
+        entry.watch_token = watcher_.watch(entry.path, [this, asset_id](const std::string&) {
+            dirty_.push_back(asset_id);
+        });
+    }
+
     entry.tex = tex;
     cache_[id] = std::move(entry);
     return tex;
 }
 
 void TextureManager::poll_hot_reload() {
+    // The watcher decides WHICH files changed (and, importantly, that they have
+    // finished being written). It is not thread-safe and load() registers new
+    // watches from whatever thread requested a texture, so its list is guarded
+    // by the same mutex as the cache. The callbacks only append to dirty_ and
+    // never re-enter the manager, so this cannot deadlock.
+    std::vector<uint64_t> dirty;
+    {
+        using namespace std::chrono;
+        const double now_s =
+            duration<double>(steady_clock::now().time_since_epoch()).count();
+        std::lock_guard<std::mutex> lk(mutex_);
+        watcher_.poll(now_s);
+        if (dirty_.empty()) return;
+        dirty.swap(dirty_);
+    }
+    std::sort(dirty.begin(), dirty.end());
+    dirty.erase(std::unique(dirty.begin(), dirty.end()), dirty.end());
+
     std::vector<std::pair<uint64_t, Texture*>> reloaded;
     {
         std::lock_guard<std::mutex> lk(mutex_);
-        for (auto& [id, e] : cache_) {
+        for (const uint64_t id : dirty) {
+            auto it = cache_.find(id);
+            if (it == cache_.end()) continue;
+            Entry& e = it->second;
             if (!e.hot_reloadable) continue;
             auto sp = e.tex.lock();
             if (!sp) continue;
-
-            std::error_code ec;
-            const auto now = fs::last_write_time(u8p(e.path), ec);
-            if (ec || now == e.mtime) continue;
-            e.mtime = now;
 
             // Decode from bytes (UTF-8-safe; stbi_load's narrow fopen fails
             // for non-ASCII filenames on Windows).

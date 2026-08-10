@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # Asset management system
 add_library(gws_assets STATIC
     asset_manager.cpp
+    asset_watcher.cpp
 )
 
 target_include_directories(gws_assets PUBLIC
