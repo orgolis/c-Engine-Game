@@ -141,7 +141,7 @@ Jolt-backed. **Depends on:** —
 | Blend trees, state machine, transitions | ✅ |
 | Two-bone IK, foot IK | ✅ |
 | Rigged-glTF import → render | ✅ |
-| SkinnedMeshComponent scene authoring + drive the player | 🟡 | Component done (`d5f0348`): a rigged character is an entity, placed by its Transform, saved with the scene, and two can animate independently. **Driving the player character from it is not done**, nor is instancing — mesh data is duplicated per instance. |
+| SkinnedMeshComponent scene authoring + drive the player | ✅ | A rigged character is an entity, placed by its Transform and saved with the scene; two animate independently. Idle/walk is driven by actual motion (`72cf9c0`), so a walking NPC agent plays its walk cycle. Instancing is still to do — mesh data is duplicated per instance. |
 | Motion matching, animation streaming | 🔴 |
 | State-machine **graph editor** (Stage 11) | 🔴 |
 
