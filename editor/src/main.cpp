@@ -36,6 +36,7 @@
 #include "skinned_demo.h"                    // Stage 5 skinned-animation test rig
 #include "imported_skinned_actor.h"          // rigged-glTF import → GPU skin (Path B)
 #include "skinned_actor_cache.h"             // per-entity skinned actors (3.8)
+#include "nav_bake.h"                        // navmesh from real scene geometry (3.4)
 #include "game_ui_demo.h"                     // runtime game-UI HUD demo (Game-UI pillar)
 #include "vulkan/imgui_vulkan.h"
 
@@ -325,6 +326,11 @@ struct EditorState {
     // Scene-file hot reload. Watches the CURRENT scene file so a change made
     // outside the editor (a git pull, a teammate, an agent) is noticed. It is
     // deliberately NOT a blind reload -- see ShowSceneReloadPrompt.
+    // Navmesh baked from the real scene (3.4). Before this the only navmesh
+    // in the editor was a synthetic grid generated inside the animation demo.
+    schizo::ai::NavMesh        scene_navmesh;
+    schizo::editor::NavBakeStats nav_stats;
+
     gws::assets::AssetWatcher scene_watcher;
     std::string  watched_scene_path;      // what scene_watcher is currently on
     bool         watched_scene_dirty = false;   // last known unsaved-changes state
@@ -1347,6 +1353,32 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
         if (ImGui::BeginMenu("Tools")) {
             if (ImGui::MenuItem("Build Scene")) {
                 spdlog::info("Build Scene");
+            }
+
+            // Bake a navmesh from the geometry that is actually in the scene
+            // (3.4). Until now the only navmesh in the editor was a synthetic
+            // grid generated inside the animation demo, so the AI pathed around
+            // an obstacle that existed nowhere and over ground that was not the
+            // ground.
+            if (editor_state.feature_on(schizo::project::Feature::AI) &&
+                ImGui::MenuItem("Bake Navmesh")) {
+                auto nav_scene = editor_state.editor_scene->GetScene();
+                editor_state.nav_stats = schizo::editor::bake_navmesh_from_scene(
+                    nav_scene, editor_state.scene_navmesh);
+                const auto& ns = editor_state.nav_stats;
+                if (ns.ok) {
+                    editor_state.set_status(
+                        "Navmesh: " + std::to_string(ns.triangles) + " tris from " +
+                        std::to_string(ns.terrains) + " terrain(s), " +
+                        std::to_string(ns.boxes) + " box collider(s)" +
+                        (ns.skipped_shapes ? " — " + std::to_string(ns.skipped_shapes) +
+                                             " unsupported shape(s) skipped" : ""));
+                } else {
+                    // Say WHY rather than just failing: an empty navmesh and a
+                    // scene with no walkable geometry look identical to a user.
+                    editor_state.set_status(
+                        "Navmesh: nothing walkable found — add a terrain or a box collider");
+                }
             }
             
             const bool playing_now = editor_state.scene_playback_manager &&

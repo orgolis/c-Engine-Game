@@ -19,6 +19,18 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# navbake_check: the navmesh must describe the scene that actually exists. The
+# builder was verified long ago; its INPUT never was -- the only thing feeding it
+# was a synthetic grid inside a demo. Asserts what the bake contains AND what it
+# deliberately excludes, because both failures are silent.
+add_executable(navbake_check navbake_check/main.cpp)
+target_include_directories(navbake_check PRIVATE ../editor/include)
+target_link_libraries(navbake_check PRIVATE gws_ai scene gws_logging)
+target_compile_features(navbake_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(navbake_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # cullbench_check: parallel culling has to be FASTER, and agree with serial.
 # Establishes where the crossover is, so the threshold in culling.cpp is a
 # measurement rather than a guess.
