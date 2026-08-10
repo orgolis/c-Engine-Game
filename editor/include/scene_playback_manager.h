@@ -71,6 +71,23 @@ public:
      * simulation (which then replicates back to everyone). Call every frame
      * while playing; pass the CURRENT remote positions (count may change).
      */
+    /**
+     * Re-express everything play mode remembers in world space after a
+     * floating-origin rebase.
+     *
+     * A rebase moves the scene out from under a running simulation. Four
+     * separate caches go stale, and each fails differently:
+     *   - the Jolt bodies, which then write their pre-rebase positions back
+     *     over the entities -- the dynamic half of the level snaps to the old
+     *     origin while the static half moves, and the world tears in two;
+     *   - the restore snapshot, so pressing Stop teleports the scene back to
+     *     where it was before the rebase;
+     *   - the water volumes, so buoyancy and swimming trigger over dry ground;
+     *   - the follow camera, which lurches by the full shift in one frame.
+     * Only ROOT entities are shifted by a rebase, so only their snapshots are.
+     */
+    void ApplyOriginShift(const glm::vec3& shift);
+
     void SyncRemotePlayerBodies(const std::vector<glm::vec3>& positions, float dt);
 
     // ---- Script-system physics access (Stage 12) ----

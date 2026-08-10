@@ -480,6 +480,37 @@ void ScenePlaybackManager::DriveCharacterController(float delta_time) {
     }
 }
 
+void ScenePlaybackManager::ApplyOriginShift(const glm::vec3& shift) {
+    if (shift == glm::vec3(0.0f) || !is_playing_) return;
+
+    // 1) The simulation. Bodies AND the player character; the character is not
+    //    a rigid body, so it is not in the body list.
+    if (physics_world_) physics_world_->translate_world(shift);
+
+    // 2) The restore snapshot. Roots only -- a child's local position is
+    //    relative to its parent and the rebase never touched it. Shifting
+    //    children too would move them twice on Stop.
+    if (scene_) {
+        for (const auto& ent : scene_->GetEntities()) {
+            if (!ent || ent->GetParent()) continue;
+            auto it = entity_snapshots_.find(ent->GetId());
+            if (it != entity_snapshots_.end()) it->second.local_position += shift;
+        }
+    }
+
+    // 3) Physical water. Gathered once at play start, in world space.
+    for (WaterVolume& wv : water_volumes_) {
+        wv.center_xz += glm::vec2(shift.x, shift.z);
+        wv.level     += shift.y;
+    }
+
+    // 4) The follow camera. Smoothed toward its target, so leaving these
+    //    behind would not snap the camera -- it would sail across the level
+    //    over the next second, which reads as the world sliding away.
+    camera_position_        += shift;
+    camera_target_position_ += shift;
+}
+
 void ScenePlaybackManager::CaptureSceneSnapshot() {
     entity_snapshots_.clear();
     if (!scene_) return;

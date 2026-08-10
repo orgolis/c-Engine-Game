@@ -246,6 +246,22 @@ void PhysicsWorld::set_transform(BodyId id, const glm::vec3& pos, const glm::qua
         EActivation::Activate);
 }
 
+void PhysicsWorld::translate_world(const glm::vec3& d) {
+    if (d == glm::vec3(0.0f)) return;
+    const RVec3 off(d.x, d.y, d.z);
+
+    BodyIDVector ids;
+    impl_->system.GetBodies(ids);
+    BodyInterface& bi = impl_->system.GetBodyInterface();
+    for (const BodyID& id : ids)
+        bi.SetPosition(id, bi.GetPosition(id) + off, EActivation::DontActivate);
+
+    // CharacterVirtual is not a body and is not in that list -- the player
+    // would be the one thing left behind.
+    for (Ref<CharacterVirtual>& c : impl_->characters)
+        if (c) c->SetPosition(c->GetPosition() + off);
+}
+
 void PhysicsWorld::move_kinematic(BodyId id, const glm::vec3& pos, const glm::quat& rot, float dt) {
     if (id == kInvalidBody || dt <= 0.0f) return;
     impl_->system.GetBodyInterface().MoveKinematic(

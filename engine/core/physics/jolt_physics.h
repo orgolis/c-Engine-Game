@@ -120,6 +120,20 @@ public:
     glm::vec3   character_position(CharacterId id) const;
     bool        character_on_ground(CharacterId id) const;
 
+    /// Move every body and character by `d`, for a floating-origin rebase.
+    ///
+    /// The rebase moves the scene; the simulation does not follow, and the
+    /// write-back then teleports every dynamic entity to its pre-rebase
+    /// position -- the dynamic half of the world snaps back to the old origin
+    /// while the static half moves, which looks like the level tearing in two.
+    ///
+    /// Velocities are deliberately untouched: a rigid translation of the whole
+    /// world preserves them, and relative positions are unchanged, so no new
+    /// contacts appear. Bodies are moved WITHOUT activation for the same
+    /// reason -- waking every sleeping body on a rebase would cost more than
+    /// the rebase saves and would perturb a simulation that has not changed.
+    void translate_world(const glm::vec3& d);
+
     size_t body_count() const;
 
 private:

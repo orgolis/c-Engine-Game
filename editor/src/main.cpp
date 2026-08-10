@@ -6251,6 +6251,8 @@ int main(int argc, char** argv) {
                 if (shift != glm::vec3(0.0f)) {
                     editor_state.scene_navmesh.translate(shift);
                     editor_state.npc_agents.apply_origin_shift(shift);
+                    if (editor_state.scene_playback_manager)
+                        editor_state.scene_playback_manager->ApplyOriginShift(shift);
                 }
             }
 

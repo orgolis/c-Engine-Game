@@ -214,6 +214,18 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(gameplay_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# physrebase_check: a floating-origin rebase must be a change of coordinates and
+# nothing else. Without it the Jolt world stays at the old origin and writes
+# pre-rebase positions back over the entities -- the dynamic half of the level
+# snaps back while the static half moves. The player is a CharacterVirtual, not
+# a body, so it is not in the body list and gets left behind on its own.
+add_executable(physrebase_check physrebase_check/main.cpp)
+target_link_libraries(physrebase_check PRIVATE gws_physics)
+target_compile_features(physrebase_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(physrebase_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # physics_check: Stage 4 Jolt physics verification (drop / determinism / scale /
 # character / ECS bridge).
 add_executable(physics_check physics_check/main.cpp)
