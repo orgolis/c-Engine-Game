@@ -88,7 +88,12 @@ float PCF(sampler2DArray shadowSampler, vec3 coords, float bias) {
     vec2 texelSize = 1.0 / textureSize(shadowSampler, 0).xy;
     for(int x = -1; x <= 1; ++x) {
         for(int y = -1; y <= 1; ++y) {
-            float pcfDepth = texture(shadowSampler, coords + vec3(x * texelSize, y * texelSize, 0.0)).r;
+            // texelSize is a vec2, so `vec3(x * texelSize, y * texelSize, 0.0)`
+            // was a five-component constructor and never compiled. Offset the
+            // uv only — the third coordinate selects the array layer and must
+            // not move.
+            float pcfDepth = texture(shadowSampler,
+                                     coords + vec3(x * texelSize.x, y * texelSize.y, 0.0)).r;
             shadow += (coords.z - bias) > pcfDepth ? 0.0 : 1.0;
         }
     }

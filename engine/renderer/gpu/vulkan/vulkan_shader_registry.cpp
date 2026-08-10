@@ -7,8 +7,13 @@
 #include "vulkan_shader_registry.h"
 #include "vulkan_device.h"
 #include <spdlog/spdlog.h>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
+#ifdef _WIN32
+#include <windows.h>   // GetModuleFileNameW, for the shader-override directory
+#endif
 #ifdef _MSC_VER
 #include <glslang/Public/ShaderLang.h>
 #include <glslang/Public/ResourceLimits.h>
@@ -272,12 +277,105 @@ VkPipeline VulkanShaderRegistry::create_graphics_pipeline(const PipelineShaders&
     return pipeline;
 }
 
+namespace {
+
+// ---------------------------------------------------------------------------
+// Shader override: prefer a .spv sitting on disk over the array baked into the
+// binary.
+//
+// WHY. Editing a shader today costs a measured ~18 s: regenerate the header with
+// spv_to_header.py, then rebuild, because touching a generated header forces a
+// recompile of everything that includes it plus a relink of the editor. The
+// budget for shader-edit-to-screen is 2 s. Loading the .spv directly removes the
+// header regeneration AND the rebuild, leaving glslangValidator plus a restart.
+//
+// SHIPPING BEHAVIOUR IS UNCHANGED. A release install has no override directory,
+// so every shader comes from the baked array exactly as before. This adds a
+// development path; it does not move the shipping one.
+// ---------------------------------------------------------------------------
+std::filesystem::path shader_override_dir() {
+    static const std::filesystem::path dir = [] {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        // Explicit wins: an env var is how CI and a graphics programmer point
+        // this at a scratch directory without touching the install.
+        if (const char* e = std::getenv("GWS_SHADER_DIR")) {
+            const fs::path p(e);
+            if (fs::is_directory(p, ec)) return p;
+        }
+        // Then a `shaders/` folder next to the executable, which is where a
+        // developer would drop hand-compiled output.
+        fs::path exe_dir;
+#ifdef _WIN32
+        wchar_t buf[MAX_PATH]{};
+        if (GetModuleFileNameW(nullptr, buf, MAX_PATH))
+            exe_dir = fs::path(buf).parent_path();
+#endif
+        if (!exe_dir.empty()) {
+            const fs::path p = exe_dir / "shaders";
+            if (fs::is_directory(p, ec)) return p;
+        }
+        return fs::path{};
+    }();
+    return dir;
+}
+
+// Read <override_dir>/<name>.spv, or empty if there is nothing usable there.
+std::vector<uint32_t> load_spirv_override(const std::string& name) {
+    namespace fs = std::filesystem;
+    const fs::path dir = shader_override_dir();
+    if (dir.empty()) return {};
+
+    std::error_code ec;
+    const fs::path file = dir / (name + ".spv");
+    if (!fs::exists(file, ec)) return {};
+
+    const auto bytes = fs::file_size(file, ec);
+    // SPIR-V is a stream of 32-bit words and starts with the magic number
+    // 0x07230203. Checking both means a truncated or half-written file is
+    // rejected here rather than crashing the driver, which is the failure mode
+    // that would make people distrust the whole feature.
+    if (ec || bytes < 20 || (bytes % 4) != 0) {
+        spdlog::warn("[shaders] ignoring override '{}': not a whole number of SPIR-V words",
+                     file.string());
+        return {};
+    }
+
+    std::ifstream f(file, std::ios::binary);
+    if (!f) return {};
+    std::vector<uint32_t> code(static_cast<size_t>(bytes) / 4);
+    f.read(reinterpret_cast<char*>(code.data()), static_cast<std::streamsize>(bytes));
+    if (!f) {
+        spdlog::warn("[shaders] ignoring override '{}': short read", file.string());
+        return {};
+    }
+    if (code[0] != 0x07230203u) {
+        spdlog::warn("[shaders] ignoring override '{}': bad SPIR-V magic 0x{:08x}",
+                     file.string(), code[0]);
+        return {};
+    }
+    return code;
+}
+
+}  // namespace
+
 std::shared_ptr<ShaderModule> VulkanShaderRegistry::create_from_spirv(const uint32_t* data,
                                                                        uint32_t size_bytes,
                                                                        ShaderStage stage,
                                                                        const std::string& name) {
     auto cached = get_shader(name);
     if (cached) return cached;
+
+    // A .spv on disk beats the baked array. Anything wrong with the file falls
+    // back to the array rather than failing the pass, so a bad override degrades
+    // to "my edit did not apply" instead of a black screen.
+    const std::vector<uint32_t> override_code = load_spirv_override(name);
+    const bool overridden = !override_code.empty();
+    if (overridden) {
+        data       = override_code.data();
+        size_bytes = static_cast<uint32_t>(override_code.size() * sizeof(uint32_t));
+        spdlog::info("[shaders] '{}' loaded from disk override ({} bytes)", name, size_bytes);
+    }
 
     VkShaderModuleCreateInfo ci{};
     ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -297,7 +395,8 @@ std::shared_ptr<ShaderModule> VulkanShaderRegistry::create_from_spirv(const uint
     shader->spirv_code.assign(data, data + size_bytes / sizeof(uint32_t));
     shader_cache_[name] = shader;
 
-    spdlog::debug("Loaded pre-compiled SPIR-V: {} ({} bytes)", name, size_bytes);
+    if (!overridden)
+        spdlog::debug("Loaded pre-compiled SPIR-V: {} ({} bytes)", name, size_bytes);
     return shader;
 }
 

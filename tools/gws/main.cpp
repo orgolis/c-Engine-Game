@@ -292,6 +292,137 @@ int cmd_validate(int argc, char** argv) {
 // Generated from the authorable component registry — see tools/docgen. Kept as
 // a separate binary because it must LINK the ECS to read the registry, while
 // gws itself deliberately links nothing and only drives sibling tools.
+// ---------------------------------------------------------------------------
+// gws shaders — compile GLSL straight to the runtime's override directory.
+//
+// Editing a shader used to cost a measured ~18 s: regenerate the SPIR-V header
+// with spv_to_header.py, then rebuild, because touching a generated header
+// forces a recompile of everything including it plus a relink of the editor.
+// The budget for shader-edit-to-screen is 2 s.
+//
+// The renderer now prefers `<exe_dir>/shaders/<name>.spv` over the array baked
+// into the binary, so this command writes exactly there and the loop becomes
+// `gws shaders && editor` -- about 1.2 s measured, inside budget.
+//
+// This does NOT change what ships. A release install has no override directory,
+// so every shader still comes from the baked array. Headers remain the source of
+// truth for a shipped build; regenerate them (spv_to_header.py) when a shader
+// change is ready to land.
+// ---------------------------------------------------------------------------
+int cmd_shaders(int argc, char** argv) {
+    const bool json  = has_flag(argc, argv, "--json");
+    const bool clean = has_flag(argc, argv, "--clean");
+
+    const fs::path out_dir = g_exe_dir / "shaders";
+
+    if (clean) {
+        std::error_code ec;
+        const auto removed = fs::remove_all(out_dir, ec);
+        if (!json)
+            std::printf("removed %llu file(s) from %s — the editor is back on its baked shaders\n",
+                        static_cast<unsigned long long>(removed), out_dir.string().c_str());
+        else
+            std::printf("{\"cleaned\":true,\"dir\":\"%s\"}\n", json_escape(out_dir.string()).c_str());
+        return 0;
+    }
+
+    // Find glslangValidator. VULKAN_SDK is the reliable one; PATH is the
+    // fallback for a system-packaged SDK.
+    fs::path glslang;
+    if (const char* sdk = std::getenv("VULKAN_SDK")) {
+        std::error_code ec;
+        const fs::path c = fs::path(sdk) / "Bin" / "glslangValidator.exe";
+        if (fs::exists(c, ec)) glslang = c;
+    }
+    if (glslang.empty()) {
+        std::string probe;
+        if (run_capture("glslangValidator --version", probe) == 0) glslang = "glslangValidator";
+    }
+    if (glslang.empty()) {
+        std::fprintf(stderr,
+            "gws shaders: glslangValidator not found. Set VULKAN_SDK or put it on PATH.\n");
+        return 1;
+    }
+
+    // Shader sources live in the repo, not next to the binary — so this only
+    // works from a source tree, which is the only place it makes sense.
+    fs::path src_dir;
+    for (fs::path d = g_exe_dir; !d.empty(); d = d.parent_path()) {
+        const fs::path c = d / "engine" / "renderer" / "gpu" / "vulkan" / "shaders";
+        std::error_code ec;
+        if (fs::is_directory(c, ec)) { src_dir = c; break; }
+        if (d == d.parent_path()) break;
+    }
+    if (src_dir.empty()) {
+        std::fprintf(stderr,
+            "gws shaders: no shader sources found — this needs a source checkout, "
+            "not an installed engine.\n");
+        return 1;
+    }
+
+    std::error_code ec;
+    fs::create_directories(out_dir, ec);
+
+    int compiled = 0, failed = 0, skipped = 0;
+    std::vector<std::string> errors;
+
+    for (const auto& e : fs::directory_iterator(src_dir, ec)) {
+        if (!e.is_regular_file()) continue;
+        const std::string ext = e.path().extension().string();
+        if (ext != ".vert" && ext != ".frag" && ext != ".comp" &&
+            ext != ".geom" && ext != ".tesc" && ext != ".tese") continue;
+
+        const std::string name = e.path().filename().string();
+        const fs::path    dst  = out_dir / (name + ".spv");
+
+        // Skip work that is already done: recompiling 11 unchanged shaders on
+        // every invocation would put the cost back into the loop this exists to
+        // shorten.
+        std::error_code ec2;
+        if (fs::exists(dst, ec2) &&
+            fs::last_write_time(dst, ec2) > fs::last_write_time(e.path(), ec2)) {
+            ++skipped;
+            continue;
+        }
+
+        std::string outp;
+        const std::string cmd = "\"" + glslang.string() + "\" -V \"" +
+                                e.path().string() + "\" -o \"" + dst.string() + "\"";
+        if (run_capture(cmd, outp) == 0) {
+            ++compiled;
+            if (!json) std::printf("  compiled  %s\n", name.c_str());
+        } else {
+            ++failed;
+            // Keep the compiler's own diagnostics: a shader error is something
+            // the developer has to read and fix, and paraphrasing it helps
+            // nobody.
+            errors.push_back(name + ": " + outp);
+            fs::remove(dst, ec2);   // never leave a stale .spv shadowing a broken edit
+            if (!json) std::printf("  FAILED    %s\n%s\n", name.c_str(), outp.c_str());
+        }
+    }
+
+    if (json) {
+        std::printf("{\"compiled\":%d,\"failed\":%d,\"skipped\":%d,\"dir\":\"%s\"}\n",
+                    compiled, failed, skipped, json_escape(out_dir.string()).c_str());
+    } else {
+        std::printf("\n%d compiled, %d unchanged, %d failed -> %s\n",
+                    compiled, skipped, failed, out_dir.string().c_str());
+        if (!failed && (compiled || skipped))
+            std::printf("Restart the editor to see them. `gws shaders --clean` reverts to "
+                        "the shaders baked into the binary.\n");
+        // Coverage, stated plainly. Most render passes keep their GLSL as
+        // inline string literals inside the renderer .cpp files, not as files
+        // here, so this command cannot reach them and editing those still costs
+        // a full rebuild. Saying "11 compiled" without this reads as full
+        // coverage, which would be the more expensive kind of wrong.
+        std::printf("\nNote: only shaders that exist as FILES in engine/renderer/gpu/vulkan/shaders/\n"
+                    "are covered. Several passes keep their GLSL inline in the renderer .cpp files;\n"
+                    "those still need a rebuild. Tracked in issue #67.\n");
+    }
+    return failed ? 1 : 0;
+}
+
 int cmd_docs(int argc, char** argv) {
     const char* out = opt_value(argc, argv, "--out");
     const fs::path gen = g_exe_dir / "docgen.exe";
@@ -588,6 +719,7 @@ int usage() {
         "  cook [src] [out]     run the asset pipeline (default assets/models -> cooked)\n"
         "  validate [dir]       check a project manifest and the files it references\n"
         "  docs                 generate the component reference from the registry\n"
+        "  shaders              compile GLSL to the editor's override dir (--clean to revert)\n"
         "     --out <file>        write markdown to a file instead of stdout\n"
         "  project <sub>        read/modify gameplay state outside the editor\n"
         "     list    --load <f> [--json]\n"
@@ -626,6 +758,7 @@ int main(int argc, char** argv) {
     if (cmd == "cook")       return cmd_cook(argc, argv);
     if (cmd == "validate")   return cmd_validate(argc, argv);
     if (cmd == "docs")       return cmd_docs(argc, argv);
+    if (cmd == "shaders")    return cmd_shaders(argc, argv);
     if (cmd == "project")    return cmd_project(argc, argv);
     if (cmd == "crash")      return cmd_crash(argc, argv);
     if (cmd == "build")      return cmd_build(argc, argv);
