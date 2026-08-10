@@ -9,6 +9,7 @@
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include "jobs/job_system.h"
 
 namespace gws::renderer::gpu {
 
@@ -146,13 +147,39 @@ void cull_draw_items_frustum(std::vector<DrawItem>& items,
         return frustum.is_visible(local.transform(item.model));
     };
 
+    // The TEST is embarrassingly parallel; the COMPACTION is not, because the
+    // output order has to stay stable (draw order affects both batching and
+    // blended geometry). So: evaluate the mask across workers, then compact in
+    // one cheap serial pass over a byte array.
+    //
+    // Only above a threshold. Below it the job-system fan-out costs more than
+    // the work it distributes, and a "parallel" version that is slower on the
+    // scenes people actually have would be a regression dressed as an
+    // optimisation. kParallelCullMin was picked by measuring both paths (see
+    // tools/cullbench_check).
+    constexpr size_t kParallelCullMin = 2048;
+
     size_t out = 0;
-    for (size_t i = 0; i < items.size(); ++i) {
-        if (keep(items[i])) {
-            if (out != i) items[out] = items[i];
-            ++out;
-        } else {
-            stats->culled_frustum++;
+    if (items.size() >= kParallelCullMin) {
+        std::vector<uint8_t> visible(items.size(), 0);
+        gws::jobs::JobSystem::instance().parallel_for(
+            0, items.size(), [&](size_t i) { visible[i] = keep(items[i]) ? 1u : 0u; });
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (visible[i]) {
+                if (out != i) items[out] = items[i];
+                ++out;
+            } else {
+                stats->culled_frustum++;
+            }
+        }
+    } else {
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (keep(items[i])) {
+                if (out != i) items[out] = items[i];
+                ++out;
+            } else {
+                stats->culled_frustum++;
+            }
         }
     }
     items.resize(out);

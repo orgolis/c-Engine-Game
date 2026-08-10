@@ -19,6 +19,16 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# cullbench_check: parallel culling has to be FASTER, and agree with serial.
+# Establishes where the crossover is, so the threshold in culling.cpp is a
+# measurement rather than a guess.
+add_executable(cullbench_check cullbench_check/main.cpp)
+target_link_libraries(cullbench_check PRIVATE gws_jobs glm)
+target_compile_features(cullbench_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(cullbench_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # editcoalesce_check: one drag must be one undo entry. The awkward cases are
 # gestures people make without thinking -- dragging back to the start, clicking
 # a checkbox, switching fields mid-drag -- and none can be checked by reading

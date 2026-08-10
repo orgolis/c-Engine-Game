@@ -354,6 +354,7 @@ if(GWS_GRAPHICS_API STREQUAL "vulkan")
         glslang_wrapper
     )
     target_link_libraries(renderer PRIVATE
+        gws_jobs        # parallel frustum culling above a threshold
         tinygltf
         stb_image
         meshoptimizer
