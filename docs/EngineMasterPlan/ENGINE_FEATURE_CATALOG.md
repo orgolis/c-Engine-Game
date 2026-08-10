@@ -141,7 +141,7 @@ Jolt-backed. **Depends on:** —
 | Blend trees, state machine, transitions | ✅ |
 | Two-bone IK, foot IK | ✅ |
 | Rigged-glTF import → render | ✅ |
-| SkinnedMeshComponent scene authoring + drive the player | 🔴 |
+| SkinnedMeshComponent scene authoring + drive the player | 🟡 | Component done (`d5f0348`): a rigged character is an entity, placed by its Transform, saved with the scene, and two can animate independently. **Driving the player character from it is not done**, nor is instancing — mesh data is duplicated per instance. |
 | Motion matching, animation streaming | 🔴 |
 | State-machine **graph editor** (Stage 11) | 🔴 |
 
@@ -485,7 +485,7 @@ genre-specific ones.
 *Updated 2026-08-09.*
 
 - **Core (C1–C5):** ✅ solid, with known integration debt (ECS-authoritative, reflection/serialization adoption, all-hot-systems-on-jobs).
-- **Simulation / Presentation / World / Connectivity / Scripting cores:** ✅ built + verified as libraries; several need **integration** (world streaming — no `editor/` file references it; AI bake-from-real-geometry) or **wiring onto entities** (animation player via a missing `SkinnedMeshComponent`, VFX GPU draw).
+- **Simulation / Presentation / World / Connectivity / Scripting cores:** ✅ built + verified as libraries; several need **integration** (world streaming — no `editor/` file references it; AI bake-from-real-geometry) or **wiring onto entities** (VFX GPU draw; the animation player's `SkinnedMeshComponent` landed in `d5f0348`).
 - **Gameplay frameworks:** ✅ **G0–G16 have all landed** (2026-08-06 → 08-07), verified by `gameplay_check` (238 assertions). The earlier "nearly all 🔴, biggest greenfield area" framing is **superseded** — this section's per-module tables above are current. The work is now **depth over breadth**: four engine-side integrations (AI, animation→player, VFX GPU draw, Jolt vehicle constraints) gate five modules (G8, G16, G1, G12, G13).
 - **Advanced-rendering reach + platform:** the fidelity/scale tier, largely untouched (Stage 15).
 

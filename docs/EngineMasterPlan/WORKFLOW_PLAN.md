@@ -120,7 +120,7 @@ Every item here finishes something already built and verified. Highest value per
 | 3.5 | AI perception + NPC behaviour trees + combat AI (target → ability → execute) | engine | Unblocks G8 encounters and G16 stealth |
 | 3.6 | **ECS authority flip** — gizmo/inspector/save write ECS; retire the OOP shadow | engine | Simplifies save, network and gameplay at once |
 | 3.7 | Editor inspector + scene save onto core reflection/serialization | engine | The remaining Stage-0 integration debt |
-| 3.8 | **`SkinnedMeshComponent`** + drive the player character | engine | The gap between a working animation stack and a visible animated character |
+| 3.8 | ~~**`SkinnedMeshComponent`** + drive the player character~~ | engine | ✅ **Component done** (`d5f0348`). A rigged character is an entity now: data-only component (path, clip, playing, speed) + a `SkinnedActorCache` keyed by **entity id**, so two entities using the same character animate independently. Placed by the entity's world matrix, so rotation and non-uniform scale work — the old global actor had only position+scale. Saves with the scene. Verified with a two-character scene, which was structurally impossible before (the editor held exactly one actor in a global). **Left:** driving the *player* character from it, and real instancing — mesh data is currently duplicated per instance |
 | 3.9 | VFX GPU billboard draw | engine | Unblocks G12 gunfeel |
 | 3.10 | Remove or salvage ~7,000 lines of dead pre-ECS code | engine | Salvage the character library's input-buffer + locomotion into G1 |
 
