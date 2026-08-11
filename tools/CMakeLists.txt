@@ -116,6 +116,18 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(emitter_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# snap_check: the rounding rules are the part that can be subtly wrong. Snapping
+# negatives the wrong way, or drifting when a drag re-applies it every frame, is
+# invisible on one drag and obvious after twenty -- by which point the symptom is
+# "the walls don't meet" and the cause is three files away.
+add_executable(snap_check snap_check/main.cpp)
+target_include_directories(snap_check PRIVATE ../editor/include)
+target_link_libraries(snap_check PRIVATE glm)
+target_compile_features(snap_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(snap_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # curve_check: the half of 4.5 that can be wrong without LOOKING wrong. A
 # gradient that reads its last stop early, or a curve that steps where it should
 # ease, is invisible in a screenshot and obvious in motion -- where it reads as

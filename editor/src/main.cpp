@@ -62,6 +62,7 @@
 #include "particle_emitter_component.h"
 #include "npc_agent_component.h"
 #include "scene_component_reflect.h"
+#include "snapping.h"                         // grid / angle / scale snapping (4.7)
 #include "curve_editor.h"                     // curve + gradient widgets (4.5)
 #include "command_palette.h"                 // Ctrl+P: one entry point for every action (4.2)
 #include "component_inspector.h"  // generic reflection-driven ECS component authoring (F2)
@@ -201,6 +202,11 @@ struct EditorState {
 
     // Command palette (4.2). The registry is rebuilt once at startup; it
     // holds no scene state, so it does not need refreshing per frame.
+    // Gizmo snapping (4.7). Off by default; Ctrl enables it for the
+    // duration of a drag, which is the convention every DCC uses and
+    // avoids a mode the user can forget they are in.
+    schizo::editor::SnapSettings snap;
+
     schizo::editor::CommandRegistry commands;
     bool show_command_palette = false;
 
@@ -262,6 +268,10 @@ struct EditorState {
     glm::vec3 gizmo_undo_scale{1.0f};
     char gizmo_axis = 0;  // 0=none, 'x', 'y', 'z'
     glm::vec2 gizmo_drag_start = glm::vec2(0.0f);
+    // Where the selection stood when the drag began. Relative snapping
+    // measures from here, so a layout that was never on the grid keeps
+    // its position and only its SPACING becomes exact.
+    glm::vec3 gizmo_drag_origin = glm::vec3(0.0f);
     glm::vec3 gizmo_drag_offset = glm::vec3(0.0f);
     
     // Undo/Redo
@@ -1418,6 +1428,23 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
                                     nullptr, false, false);
                 }
             }
+
+            // Snapping (4.7). In the Tools menu AND on Ctrl, because a step
+            // size is a setting but "snap this one drag" is a reflex.
+            ImGui::Separator();
+            ImGui::MenuItem("Snapping", "hold Ctrl", &editor_state.snap.enabled);
+            if (editor_state.snap.enabled) {
+                ImGui::SetNextItemWidth(110);
+                ImGui::DragFloat("  grid",    &editor_state.snap.translate,  0.05f, 0.01f, 100.0f);
+                ImGui::SetNextItemWidth(110);
+                ImGui::DragFloat("  degrees", &editor_state.snap.rotate_deg, 1.0f,  1.0f,  90.0f);
+                ImGui::SetNextItemWidth(110);
+                ImGui::DragFloat("  scale",   &editor_state.snap.scale,      0.01f, 0.01f, 10.0f);
+                ImGui::MenuItem("  relative to drag start", nullptr, &editor_state.snap.relative);
+                if (editor_state.snap.relative)
+                    ImGui::MenuItem("  (keeps off-grid layouts put)", nullptr, false, false);
+            }
+            ImGui::Separator();
 
             if (editor_state.feature_on(schizo::project::Feature::AI) &&
                 ImGui::MenuItem("Bake Navmesh")) {
@@ -4264,6 +4291,8 @@ void ShowViewport(EditorState& editor_state) {
                     // Begin drag on first frame
                     if (!editor_state.transform_gizmo.IsDragging()) {
                         editor_state.transform_gizmo.BeginDrag(axis, editor_state.gizmo_drag_start);
+                        editor_state.gizmo_drag_origin =
+                            selected_transform->GetLocalPosition();
                     }
                     
                     // Get mode-specific updates
@@ -4271,6 +4300,19 @@ void ShowViewport(EditorState& editor_state) {
                     if (gmode == schizo::editor::GizmoMode::Translate) {
                         glm::vec3 current_pos = selected_transform->GetLocalPosition();
                         glm::vec3 new_pos = editor_state.transform_gizmo.UpdateDrag(current_mouse_glm, current_pos);
+
+                        // Snapping (4.7). Ctrl enables it for this drag even
+                        // when the toggle is off -- holding a key beats a mode
+                        // you can forget you are in.
+                        const bool snap_now =
+                            editor_state.snap.enabled || ImGui::GetIO().KeyCtrl;
+                        if (snap_now) {
+                            const float step = editor_state.snap.translate;
+                            new_pos = editor_state.snap.relative
+                                ? schizo::editor::snap_position_relative(
+                                      new_pos, editor_state.gizmo_drag_origin, step)
+                                : schizo::editor::snap_position(new_pos, step);
+                        }
                         selected_transform->SetLocalPosition(new_pos);
                     } else if (gmode == schizo::editor::GizmoMode::Rotate) {
                         // Mouse delta along its dominant axis drives a
@@ -4285,11 +4327,18 @@ void ShowViewport(EditorState& editor_state) {
                         if (editor_state.gizmo_axis == 'z') axis = glm::vec3(0, 0, 1);
                         if (axis != glm::vec3(0.0f) && std::abs(angle) > 1e-6f) {
                             glm::quat q = glm::angleAxis(angle, axis);
-                            selected_transform->SetLocalRotation(q * selected_transform->GetLocalRotation());
+                            glm::quat out = q * selected_transform->GetLocalRotation();
+                            if (editor_state.snap.enabled || ImGui::GetIO().KeyCtrl)
+                                out = schizo::editor::snap_rotation(
+                                    out, editor_state.snap.rotate_deg);
+                            selected_transform->SetLocalRotation(out);
                         }
                     } else if (gmode == schizo::editor::GizmoMode::Scale) {
                         glm::vec3 current_scale = selected_transform->GetLocalScale();
                         glm::vec3 new_scale = editor_state.transform_gizmo.UpdateDrag(current_mouse_glm, current_scale);
+                        if (editor_state.snap.enabled || ImGui::GetIO().KeyCtrl)
+                            new_scale = schizo::editor::snap_scale(
+                                new_scale, editor_state.snap.scale);
                         // Ensure scale doesn't go below minimum
                         new_scale = glm::max(new_scale, glm::vec3(0.01f));
                         selected_transform->SetLocalScale(new_scale);
@@ -6175,6 +6224,12 @@ int main(int argc, char** argv) {
             });
             cmds.add("Toggle World Streaming", "Tools", "", [&st] {
                 st.world_streaming.set_enabled(!st.world_streaming.enabled());
+            });
+            cmds.add("Toggle Snapping", "Tools", "hold Ctrl", [&st] {
+                st.snap.enabled = !st.snap.enabled;
+            });
+            cmds.add("Toggle Relative Snapping", "Tools", "", [&st] {
+                st.snap.relative = !st.snap.relative;
             });
 
             cmds.add("Toggle Scene Hierarchy", "Window", "", [&st] {
