@@ -116,6 +116,19 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(emitter_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# curve_check: the half of 4.5 that can be wrong without LOOKING wrong. A
+# gradient that reads its last stop early, or a curve that steps where it should
+# ease, is invisible in a screenshot and obvious in motion -- where it reads as
+# "the effect looks cheap" rather than as a bug with a location. Asserts the
+# SHAPE of the interpolation, not just its endpoints.
+add_executable(curve_check curve_check/main.cpp)
+target_include_directories(curve_check PRIVATE ../engine/core)
+target_link_libraries(curve_check PRIVATE glm)
+target_compile_features(curve_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(curve_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # palette_check: the command palette RANKS the way a person expects. A palette
 # that finds the right command but puts it fourth is one people stop using --
 # the whole value is that the first hit is the one you meant. These assert

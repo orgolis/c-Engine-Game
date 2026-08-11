@@ -62,6 +62,7 @@
 #include "particle_emitter_component.h"
 #include "npc_agent_component.h"
 #include "scene_component_reflect.h"
+#include "curve_editor.h"                     // curve + gradient widgets (4.5)
 #include "command_palette.h"                 // Ctrl+P: one entry point for every action (4.2)
 #include "component_inspector.h"  // generic reflection-driven ECS component authoring (F2)
 
@@ -2080,6 +2081,31 @@ void ShowInspector(EditorState& editor_state) {
         // the section until enabled would leave no way to enable it.
         if (auto* pec = selected_entity->GetParticleEmitterComponent()) {
             if (ImGui::CollapsingHeader("Particle Emitter")) {
+                // The colour ramp (4.5), the first consumer of the gradient
+                // widget. The component still stores a start and an end colour,
+                // which is exactly the limitation the item describes -- but
+                // showing them as two disconnected swatches hid what the effect
+                // actually does. Over a checkerboard, a fade to transparent is
+                // finally distinguishable from a fade to black, which the raw
+                // DragFloat4s below cannot show at all.
+                ImGui::TextDisabled("Colour over life");
+                gws::anim::Gradient ramp =
+                    gws::anim::Gradient::two_stop(pec->color_start, pec->color_end);
+                static int emitter_stop = 0;
+                if (schizo::editor::draw_gradient_editor("##emitramp", ramp, 22.0f,
+                                                         &emitter_stop)) {
+                    // Only the ends are storable today; a stop dragged into the
+                    // middle is shown but cannot be saved, so it is not silently
+                    // written back as if it were.
+                    pec->color_start = ramp.stops().front().color;
+                    pec->color_end   = ramp.stops().back().color;
+                    editor_state.editor_scene->MarkModified();
+                }
+                if (ramp.size() > 2)
+                    ImGui::TextDisabled("(middle stops are preview only — the "
+                                        "component stores two colours)");
+                ImGui::Separator();
+
                 if (schizo::editor::draw_reflected_fields(
                         pec, *gws::reflect::reflect<schizo::scene::ParticleEmitterComponent>()))
                     editor_state.editor_scene->MarkModified();
