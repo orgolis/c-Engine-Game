@@ -55,6 +55,7 @@ target_sources(editor
         src/play_mode_changes.cpp
         src/edit_coalescer.cpp
         src/logic_graph_panel.cpp
+    src/command_palette.cpp
         src/editor_scene.cpp
         src/scene_serializer.cpp
         src/mesh_generator.cpp

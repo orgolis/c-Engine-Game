@@ -62,6 +62,7 @@
 #include "particle_emitter_component.h"
 #include "npc_agent_component.h"
 #include "scene_component_reflect.h"
+#include "command_palette.h"                 // Ctrl+P: one entry point for every action (4.2)
 #include "component_inspector.h"  // generic reflection-driven ECS component authoring (F2)
 
 // ImGui headers
@@ -196,6 +197,11 @@ struct EditorState {
 
     // Scene/Entity data
     uint32_t selected_entity_id = 0;  // 0 = no selection
+
+    // Command palette (4.2). The registry is rebuilt once at startup; it
+    // holds no scene state, so it does not need refreshing per frame.
+    schizo::editor::CommandRegistry commands;
+    bool show_command_palette = false;
 
     // Viewport camera + input state
     schizo::editor::ViewportCamera viewport_camera;
@@ -6098,6 +6104,76 @@ int main(int argc, char** argv) {
         }
 
         // ----------------------------------------------------------------
+        // Command palette (4.2)
+        // ----------------------------------------------------------------
+        // Registered here rather than beside each menu item on purpose: the
+        // point of the palette is that there is ONE list of what the editor can
+        // do. A command that only exists inside a menu callback is invisible to
+        // it, and to anything else that wants to drive the editor by name.
+        {
+            auto& cmds = editor_state.commands;
+            auto& st   = editor_state;
+
+            cmds.add("New Scene", "File", "Ctrl+N", [&st] {
+                st.editor_scene->NewScene("Untitled");
+            });
+            cmds.add("Save Scene", "File", "Ctrl+S", [&st, glfw_window] {
+                auto fp = st.editor_scene->GetSceneFilepath();
+                if (fp.empty()) fp = SaveSceneDialogNative(glfw_window);
+                if (!fp.empty()) st.editor_scene->SaveScene(fp);
+            });
+            cmds.add("Open Scene", "File", "Ctrl+O", [&st, glfw_window] {
+                const std::string path = OpenSceneDialogNative(glfw_window);
+                if (!path.empty()) st.editor_scene->LoadScene(path);
+            });
+
+            cmds.add("Undo", "Edit", "Ctrl+Z", [&st] {
+                if (st.undo_redo_manager.CanUndo()) st.undo_redo_manager.Undo();
+            });
+            cmds.add("Redo", "Edit", "Ctrl+Y", [&st] {
+                if (st.undo_redo_manager.CanRedo()) st.undo_redo_manager.Redo();
+            });
+
+            cmds.add("Play", "Run", "", [&st] {
+                if (st.scene_playback_manager && !st.scene_playback_manager->IsPlaying())
+                    BeginPlayMode(st, st.editor_scene->GetScene());
+            });
+            cmds.add("Stop", "Run", "", [&st] {
+                if (st.scene_playback_manager && st.scene_playback_manager->IsPlaying())
+                    EndPlayMode(st, st.editor_scene->GetScene());
+            });
+
+            cmds.add("Bake Navmesh", "Tools", "", [&st] {
+                auto sc = st.editor_scene->GetScene();
+                st.nav_stats = schizo::editor::bake_navmesh_from_scene(sc, st.scene_navmesh);
+            });
+            cmds.add("Toggle World Streaming", "Tools", "", [&st] {
+                st.world_streaming.set_enabled(!st.world_streaming.enabled());
+            });
+
+            cmds.add("Toggle Scene Hierarchy", "Window", "", [&st] {
+                st.show_scene_hierarchy = !st.show_scene_hierarchy;
+            });
+            cmds.add("Toggle Inspector", "Window", "", [&st] {
+                st.show_inspector = !st.show_inspector;
+            });
+            cmds.add("Toggle Asset Browser", "Window", "", [&st] {
+                st.show_asset_browser = !st.show_asset_browser;
+            });
+            cmds.add("Toggle Logic Graph", "Window", "", [&st] {
+                st.show_logic_graph = !st.show_logic_graph;
+            });
+            cmds.add("Toggle Post-Processing", "Window", "", [&st] {
+                st.show_post_processing = !st.show_post_processing;
+            });
+            cmds.add("Preferences", "Window", "", [&st] {
+                st.show_preferences = !st.show_preferences;
+            });
+
+            spdlog::info("[palette] {} commands registered", cmds.size());
+        }
+
+        // ----------------------------------------------------------------
         // Main loop
         // ----------------------------------------------------------------
         // Background workers for import/copy/cook. Started here so they exist
@@ -7049,6 +7125,20 @@ int main(int argc, char** argv) {
                 editor_state.asset_import_dialog->IsOpen())
                 editor_state.asset_import_dialog->RenderDialog();
             ShowPreferences(editor_state);
+
+            // Command palette (4.2). Ctrl+P opens it. Drawn last among the
+            // panels so it sits above them, and checked with the Ctrl modifier
+            // rather than a raw key so it cannot fire while someone is typing
+            // a name into a text field.
+            if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_P, false))
+                schizo::editor::open_command_palette(editor_state.show_command_palette);
+            if (editor_state.show_command_palette) {
+                schizo::editor::draw_command_palette(
+                    editor_state.show_command_palette,
+                    editor_state.commands,
+                    editor_state.editor_scene->GetScene(),
+                    [&editor_state](uint32_t id) { editor_state.selected_entity_id = id; });
+            }
 
             // Post-processing controls — inline here because post_processing
             // lives in main()'s scope (the free Show* helpers only get

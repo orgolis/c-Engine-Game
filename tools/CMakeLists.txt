@@ -116,6 +116,18 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(emitter_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# palette_check: the command palette RANKS the way a person expects. A palette
+# that finds the right command but puts it fourth is one people stop using --
+# the whole value is that the first hit is the one you meant. These assert
+# order, not membership: "the list contains Save Scene" is true of a palette
+# that returns everything in registration order.
+add_executable(palette_check palette_check/main.cpp)
+target_include_directories(palette_check PRIVATE ../editor/include)
+target_compile_features(palette_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(palette_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # phase3exit_check: Phase 3's exit criterion, RUN rather than asserted. Every
 # clause of it has its own passing check; none of them covers the sentence as a
 # whole, and this phase's recurring lesson is that the bugs live between the
