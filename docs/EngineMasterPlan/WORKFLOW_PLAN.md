@@ -147,15 +147,15 @@ three of them did, in the rebase audit alone.
 
 ---
 
-## Phase 4 · Make it authorable — 🟠 High · 4–8 weeks
+## Phase 4 · Make it authorable — 🟠 In progress (4.2 done) · 4–8 weeks
 
 Until these exist, using the engine means writing C++. This is the phase that turns it into a tool other
 people can use.
 
 | # | Item | Repo | Notes |
 |---|---|---|---|
-| 4.1 | **Material / shader graph** | engine | **The most impactful missing editor.** Without it every game made here looks identical. Prerequisite for non-photoreal rendering |
-| 4.2 | **Command palette + universal search** | engine | Days of work, disproportionate effect — and one uniform entry point for agents |
+| 4.1 | **Material / shader graph** | engine | **The most impactful missing editor.** Without it every game made here looks identical. Prerequisite for non-photoreal rendering. **Scoped:** 4.6 says the logic-graph node canvas makes this cheaper — it does not. That canvas is 255 lines hard-wired to `LogicNodeKind`, not a reusable node editor, so 4.1 needs a general canvas **plus** the material graph **plus** shader codegen **plus** a preview. Larger than its line implies |
+| 4.2 | **Command palette + universal search** | engine | ✅ **Done** (`2746b8a`) — Ctrl+P, three letters, Enter. Commands are registered in **one place** rather than beside each menu item, which is the point: a command living only inside a menu callback is invisible to the palette *and* to anything else driving the editor by name — the uniform-entry-point argument only holds if the list **is** the list. Entities are searched with the **same** matcher, so a scene's `Guard` is reachable by typing `gu` exactly as a command is. **Ranking is the feature**: a palette that finds the right command and puts it fourth is one people stop using. Registry and matcher are ImGui-free so they are testable; `palette_check` (16) asserts **order**, not membership. 15 commands registered at startup |
 | 4.3 | VFX graph | engine | Effects become design work rather than code |
 | 4.4 | Timeline / sequencer | engine | Cutscenes, camera moves, ability choreography |
 | 4.5 | Curve + gradient editors | engine | Small, used constantly; their absence forces magic numbers into data files |
