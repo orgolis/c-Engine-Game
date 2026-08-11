@@ -116,6 +116,20 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(emitter_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# phase3exit_check: Phase 3's exit criterion, RUN rather than asserted. Every
+# clause of it has its own passing check; none of them covers the sentence as a
+# whole, and this phase's recurring lesson is that the bugs live between the
+# parts. One scene: terrain in, navmesh baked from it, an agent walking it,
+# locomotion driven by real motion, streaming forcing a rebase -- then all of it
+# has to keep working.
+add_executable(phase3exit_check phase3exit_check/main.cpp ../editor/src/ecs_bridge.cpp)
+target_include_directories(phase3exit_check PRIVATE ../editor/include)
+target_link_libraries(phase3exit_check PRIVATE gws_ai gws_world gws_ecs gws_reflection gws_jobs scene gws_logging)
+target_compile_features(phase3exit_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(phase3exit_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # navrebase_check: streaming and AI agents were verified separately; this is the
 # interaction, which is where the bug was. A floating-origin rebase moves every
 # entity but not the baked navmesh, nor the world-space goals and waypoints the
