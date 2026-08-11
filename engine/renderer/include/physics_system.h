@@ -3,6 +3,7 @@
 #include <memory>
 #include <vector>
 #include <glm/glm.hpp>
+#include <cstdint>
 
 // Forward declarations
 namespace schizo::physics {

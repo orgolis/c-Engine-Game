@@ -2,6 +2,7 @@
 #include "render_device.h"
 #include <spdlog/spdlog.h>
 #include <glm/gtc/type_ptr.hpp>
+#include <cstdint>
 
 namespace schizo::renderer {
 

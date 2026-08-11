@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 #include <cmath>
+#include <cstdint>
 
 namespace schizo::editor {
 

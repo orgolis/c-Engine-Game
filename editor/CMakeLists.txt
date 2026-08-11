@@ -116,3 +116,33 @@ install(DIRECTORY
             ${CMAKE_SOURCE_DIR}/assets/skies
             ${CMAKE_SOURCE_DIR}/assets/scripts
         DESTINATION "${GWS_ENGINE_DEST}/assets" COMPONENT engine OPTIONAL)
+
+# ---------------------------------------------------------------------------
+# Header self-containment. See cmake/HeaderSelfContain.cmake for why a full
+# build cannot catch this -- and v0.6.0, which it did not.
+#
+# Linked against the editor's own dependencies rather than the editor target,
+# because an executable cannot be linked against. The EXCLUDE list is existing
+# debt made visible: these headers need a companion include they do not name.
+# Every NEW header is covered from the moment it is added, which is what this
+# is for -- the bug that motivated it was in a brand-new header.
+# ---------------------------------------------------------------------------
+include("${CMAKE_SOURCE_DIR}/cmake/HeaderSelfContain.cmake")
+file(GLOB EDITOR_PUBLIC_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h")
+gws_add_header_selfcontain_check(editor_headers_selfcontain
+    TARGET  scene
+    HEADERS ${EDITOR_PUBLIC_HEADERS}
+    EXCLUDE cooked_mesh_loader.h
+            imported_skinned_actor.h
+            primitive_meshes.h
+            scene_render_bridge.h
+            simple_renderer_new.h
+            skinned_actor_cache.h
+            skinned_demo.h
+            viewport_renderer_3d.h)
+target_include_directories(editor_headers_selfcontain PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(editor_headers_selfcontain PRIVATE
+    engine scene window character ability network renderer
+    gws_jobs gws_profiler gws_ecs gws_serialization gws_ai gws_world
+    gws_physics gws_reflection gws_logging imgui glm)

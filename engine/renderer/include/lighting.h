@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <glm/glm.hpp>
+#include <cstdint>
 #include "light.h"
 
 namespace schizo::renderer {

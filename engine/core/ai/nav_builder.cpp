@@ -4,6 +4,7 @@
 
 #include "ai/nav_builder.h"
 #include <cmath>
+#include <cstdint>
 
 namespace schizo::ai {
 

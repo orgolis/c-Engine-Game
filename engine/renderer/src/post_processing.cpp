@@ -5,6 +5,7 @@
 #include "framebuffer.h"
 #include "mesh.h"
 #include <glm/glm.hpp>
+#include <cstdint>
 
 namespace schizo::renderer {
 

@@ -9,6 +9,7 @@
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
+#include <cstdint>
 
 // tinygltf would be included here in production
 // #include <tiny_gltf.h>

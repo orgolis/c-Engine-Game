@@ -32,6 +32,7 @@
 // EDITOR build instead.
 #include "../../assets/scripts/schizo_script.h"
 #include <cstddef>
+#include <cstdint>
 static_assert(sizeof(SchizoScriptApi) == sizeof(schizo::editor::ScriptApi),
               "schizo_script.h drifted from script_api.h (size)");
 static_assert(offsetof(SchizoScriptApi, time) ==

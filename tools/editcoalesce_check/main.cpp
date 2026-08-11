@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <cstdint>
 
 using namespace schizo::editor;
 

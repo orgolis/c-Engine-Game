@@ -1,6 +1,8 @@
 #include "vulkan_descriptor_set.h"
 #include "logging/logger.h"
 
+#include <cstdint>
+
 namespace gws::renderer::gpu {
 
 VulkanDescriptorSetAllocator::VulkanDescriptorSetAllocator(VkDevice device)

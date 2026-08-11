@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <cstdint>
 
 using namespace schizo::renderer;
 

@@ -24,6 +24,7 @@
 
 #include <spdlog/spdlog.h>
 #include <cstring>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

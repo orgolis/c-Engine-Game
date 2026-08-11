@@ -22,6 +22,7 @@
 #include <memory>
 #include <unordered_map>
 #include <vector>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

@@ -1,6 +1,7 @@
 #include "graphics_pipeline.h"
 #include "logging/logger.h"
 #include <cassert>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

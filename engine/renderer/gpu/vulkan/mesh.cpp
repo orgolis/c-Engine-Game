@@ -6,6 +6,7 @@
 #include "mesh.h"
 #include <spdlog/spdlog.h>
 #include <stdexcept>
+#include <cstdint>
 
 namespace vks {
 

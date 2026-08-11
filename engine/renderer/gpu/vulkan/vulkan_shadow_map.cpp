@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <array>
 #include <glm/gtc/matrix_transform.hpp>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

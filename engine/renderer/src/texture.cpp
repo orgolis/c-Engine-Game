@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 #include <stb_image.h>
 #include <glm/glm.hpp>
+#include <cstdint>
 
 namespace schizo::renderer {
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <cstdint>
 
 namespace gws::tasks {
 

@@ -6,6 +6,7 @@
 #include <string>
 #include <map>
 #include <memory>
+#include <cstdint>
 
 namespace schizo::renderer {
 

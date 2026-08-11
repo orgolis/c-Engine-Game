@@ -1,6 +1,7 @@
 #include "gpu_profiler.h"
 #include <algorithm>
 #include <numeric>
+#include <cstdint>
 
 namespace engine::vulkan {
 

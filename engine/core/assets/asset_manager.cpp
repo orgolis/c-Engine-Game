@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <tinygltf.hpp>
 #include <glm/glm.hpp>
+#include <cstdint>
 
 namespace schizo::assets {
 

@@ -1,6 +1,7 @@
 #include "mesh_generator.h"
 #include <glm/glm.hpp>
 #include <cmath>
+#include <cstdint>
 
 namespace schizo::editor {
 

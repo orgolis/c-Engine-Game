@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include <cstdint>
 
 #ifndef GWS_ENGINE_VERSION
 #define GWS_ENGINE_VERSION "unknown"

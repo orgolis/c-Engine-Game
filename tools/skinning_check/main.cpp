@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <cstdint>
 
 using namespace gws::renderer::gpu;
 

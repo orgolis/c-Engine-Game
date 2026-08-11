@@ -18,6 +18,7 @@
 #include <glslang/Public/ShaderLang.h>
 #include <glslang/Public/ResourceLimits.h>
 #include <glslang/SPIRV/GlslangToSpv.h>
+#include <cstdint>
 #define GWS_HAS_GLSLANG 1
 #endif
 

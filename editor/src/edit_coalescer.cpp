@@ -1,5 +1,7 @@
 #include "edit_coalescer.h"
 
+#include <cstdint>
+
 namespace schizo::editor {
 
 std::optional<CoalescedEdit> EditCoalescer::update(uint32_t entity_id,

@@ -13,6 +13,7 @@
 #include <array>
 #include <cstring>
 #include <stdexcept>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

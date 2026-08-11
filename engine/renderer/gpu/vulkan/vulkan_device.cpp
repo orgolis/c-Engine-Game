@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <set>
 #include <stdexcept>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

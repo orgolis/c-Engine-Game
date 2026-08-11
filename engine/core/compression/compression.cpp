@@ -6,6 +6,7 @@
 
 #include <climits>
 #include <cstring>
+#include <cstdint>
 
 namespace gws::compress {
 

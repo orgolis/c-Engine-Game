@@ -12,6 +12,7 @@
 #include <imgui_impl_vulkan.h>
 #include <imgui_impl_glfw.h>
 #include <spdlog/spdlog.h>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

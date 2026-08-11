@@ -27,6 +27,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <cstdint>
 
 using namespace gws::tasks;
 using namespace std::chrono_literals;

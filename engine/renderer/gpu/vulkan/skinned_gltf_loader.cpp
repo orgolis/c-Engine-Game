@@ -11,6 +11,7 @@
 #include <cstring>
 #include <map>
 #include <set>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 namespace {

@@ -2,6 +2,8 @@
 #include "../../core/physics/rigidbody_physics.h"
 #include "physics_component.h"
 
+#include <cstdint>
+
 namespace schizo::scene {
 
 PhysicsSystem::PhysicsSystem()

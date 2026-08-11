@@ -1,6 +1,7 @@
 #include "animation.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace schizo::renderer {
 

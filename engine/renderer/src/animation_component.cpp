@@ -4,6 +4,8 @@
 #include "animator.h"
 #include "animation.h"
 
+#include <cstdint>
+
 namespace schizo::renderer {
 
 AnimationComponent::AnimationComponent() = default;

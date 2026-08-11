@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 #include <array>
 #include <vector>
+#include <cstdint>
 
 namespace schizo::renderer {
 

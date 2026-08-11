@@ -7,6 +7,7 @@
 #include "shader_compiler.h"
 #include <spdlog/spdlog.h>
 #include <stdexcept>
+#include <cstdint>
 
 namespace vks {
 

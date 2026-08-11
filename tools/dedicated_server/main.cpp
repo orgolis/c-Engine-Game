@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <string>
 #include <thread>
+#include <cstdint>
 
 using namespace engine::network;
 

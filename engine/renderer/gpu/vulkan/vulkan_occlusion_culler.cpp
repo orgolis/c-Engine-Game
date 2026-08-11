@@ -8,6 +8,7 @@
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

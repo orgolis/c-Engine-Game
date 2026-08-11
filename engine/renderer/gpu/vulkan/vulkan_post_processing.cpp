@@ -13,6 +13,7 @@
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <array>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

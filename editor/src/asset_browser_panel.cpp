@@ -20,6 +20,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <commdlg.h>
+#include <cstdint>
 #endif
 
 namespace schizo::editor {

@@ -3,6 +3,8 @@
 #include "../../renderer/include/animator.h"
 #include "../../renderer/include/animation.h"
 
+#include <cstdint>
+
 namespace schizo::demo {
 
 using namespace schizo::renderer;

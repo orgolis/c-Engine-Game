@@ -12,6 +12,7 @@
 #include <array>
 #include <cstring>
 #include <vector>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

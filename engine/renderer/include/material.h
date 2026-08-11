@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 #include <glm/glm.hpp>
+#include <cstdint>
 #include "shader.h"
 #include "texture.h"
 

@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

@@ -6,6 +6,7 @@
 #include "buffer.h"
 #include <stdexcept>
 #include <spdlog/spdlog.h>
+#include <cstdint>
 
 namespace vks {
 

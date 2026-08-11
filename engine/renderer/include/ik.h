@@ -12,6 +12,7 @@
 #include "skeleton.h"
 #include <glm/glm.hpp>
 #include <functional>
+#include <cstdint>
 
 namespace schizo::renderer {
 

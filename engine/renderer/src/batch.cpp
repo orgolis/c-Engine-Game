@@ -3,6 +3,8 @@
 #include "mesh.h"
 #include "material.h"
 
+#include <cstdint>
+
 namespace schizo::renderer {
 
 // ============================================================================

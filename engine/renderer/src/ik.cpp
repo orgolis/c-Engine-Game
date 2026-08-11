@@ -9,6 +9,7 @@
 #include <glm/gtx/quaternion.hpp>   // glm::rotation(from,to) — GLM_ENABLE_EXPERIMENTAL
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace schizo::renderer {
 

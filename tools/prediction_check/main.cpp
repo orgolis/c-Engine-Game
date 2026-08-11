@@ -20,6 +20,7 @@
 #include <deque>
 #include <functional>
 #include <utility>
+#include <cstdint>
 
 using namespace engine::network;
 

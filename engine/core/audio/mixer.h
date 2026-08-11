@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <vector>
+#include <cstdint>
 
 namespace gws::audio {
 

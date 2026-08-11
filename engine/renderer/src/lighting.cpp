@@ -10,6 +10,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 #include <algorithm>
+#include <cstdint>
 
 namespace schizo::renderer {
 

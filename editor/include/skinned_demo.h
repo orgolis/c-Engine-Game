@@ -33,6 +33,7 @@
 #include <cmath>
 #include <memory>
 #include <vector>
+#include <cstdint>
 
 namespace schizo::editor {
 

@@ -31,6 +31,7 @@
 #pragma GCC diagnostic ignored "-Wsign-compare"
 #endif
 #include <pocketpy.h>
+#include <cstdint>
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif

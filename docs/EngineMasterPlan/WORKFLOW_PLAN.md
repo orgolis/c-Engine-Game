@@ -147,6 +147,22 @@ three of them did, in the rebase audit alone.
 
 ---
 
+
+> **Release-build hygiene (added after v0.6.0 failed to build).** `command_palette.h` used `uint32_t` with no
+> `<cstdint>`. It compiled here and failed on the CI runner, because include order is not a guarantee — a green
+> local build can be green by accident.
+>
+> The obvious guard, compiling every header alone, **does not catch it**, and that was measured rather than
+> assumed: on this toolchain `<memory>` pulls `<cstdint>` in transitively, so the header compiles standalone and
+> the missing include stays invisible. CI's libstdc++ does not. Anything that depends on *which* standard header
+> leaks *which* type can only reproduce the bug by luck.
+>
+> Two guards, doing different jobs:
+> - `includes_check` — a text scan: a file naming a fixed-width type must include `<cstdint>`. No toolchain
+>   dependence, so it is true everywhere. Found **191 files** relying on someone else's include; all fixed.
+> - `gws_add_header_selfcontain_check` (`cmake/HeaderSelfContain.cmake`) — compiles each public header alone,
+>   twice, which also proves the include guard works. 63 headers covered; 8 excluded as visible debt.
+
 ## Phase 4 · Make it authorable — 🟠 In progress (4.2 done) · 4–8 weeks
 
 Until these exist, using the engine means writing C++. This is the phase that turns it into a tool other

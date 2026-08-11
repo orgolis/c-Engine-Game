@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 #include <glm/glm.hpp>
+#include <cstdint>
 
 namespace schizo::physics {
 

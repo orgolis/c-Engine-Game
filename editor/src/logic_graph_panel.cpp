@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <cstdint>
 
 namespace schizo::editor {
 

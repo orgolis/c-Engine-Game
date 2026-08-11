@@ -25,6 +25,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

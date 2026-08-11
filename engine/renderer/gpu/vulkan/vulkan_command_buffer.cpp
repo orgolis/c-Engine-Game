@@ -1,6 +1,7 @@
 #include "vulkan_command_buffer.h"
 #include "logging/logger.h"
 #include <cassert>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

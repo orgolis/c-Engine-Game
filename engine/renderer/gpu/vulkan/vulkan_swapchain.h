@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 #include <vector>
 #include <memory>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

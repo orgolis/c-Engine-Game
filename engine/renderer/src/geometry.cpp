@@ -7,6 +7,7 @@
 #include <set>
 #include <limits>
 #include <cstring>
+#include <cstdint>
 
 namespace schizo::geometry {
 

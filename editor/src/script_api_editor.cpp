@@ -42,6 +42,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <cstdint>
 
 namespace schizo::editor {
 

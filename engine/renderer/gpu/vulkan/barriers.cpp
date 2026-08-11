@@ -1,6 +1,8 @@
 #include "barriers.h"
 #include "logging/logger.h"
 
+#include <cstdint>
+
 namespace gws::renderer::gpu {
 
 // ============================================================================

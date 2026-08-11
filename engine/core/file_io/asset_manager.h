@@ -5,6 +5,7 @@
 #include <typeindex>
 #include <type_traits>
 #include <memory>
+#include <cstdint>
 
 namespace gws::file_io {
 

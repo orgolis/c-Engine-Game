@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <vector>
+#include <cstdint>
 
 using namespace schizo::ai;
 

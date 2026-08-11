@@ -5,6 +5,7 @@
 #include <string>
 #include <unordered_map>
 #include <glm/glm.hpp>
+#include <cstdint>
 #include "texture.h"
 #include "framebuffer.h"
 #include "shader.h"

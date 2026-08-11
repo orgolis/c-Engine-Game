@@ -14,6 +14,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 
 namespace ecs = schizo::ecs;
 using namespace engine::network;

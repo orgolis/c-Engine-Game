@@ -19,6 +19,8 @@
 #include "ecs/world.h"
 #include "ecs/components.h"
 
+#include <cstdint>
+
 namespace schizo::physics {
 
 // RigidBody::flags bits (mirrors the ECS component doc).

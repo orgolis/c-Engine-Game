@@ -1,6 +1,7 @@
 #include "framebuffer.h"
 #include "render_device.h"
 #include <spdlog/spdlog.h>
+#include <cstdint>
 
 namespace schizo::renderer {
 

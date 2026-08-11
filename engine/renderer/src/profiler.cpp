@@ -3,6 +3,7 @@
 #include <iomanip>
 #include <algorithm>
 #include <numeric>
+#include <cstdint>
 
 namespace schizo::renderer {
 

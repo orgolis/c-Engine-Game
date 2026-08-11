@@ -68,3 +68,17 @@ endif()
 
 # Ensure scene is included in engine builds
 set_property(GLOBAL APPEND PROPERTY ENGINE_MODULES scene)
+
+# ---------------------------------------------------------------------------
+# Header self-containment (see cmake/HeaderSelfContain.cmake).
+#
+# A header that uses uint32_t without <cstdint> compiles fine in a full build
+# and fails in CI, because include order is not a guarantee. That is exactly
+# what broke the v0.6.0 release. Compiling each header ALONE is the only way to
+# catch it, and a full build never will.
+# ---------------------------------------------------------------------------
+include("${CMAKE_SOURCE_DIR}/cmake/HeaderSelfContain.cmake")
+file(GLOB SCENE_PUBLIC_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h")
+gws_add_header_selfcontain_check(scene_headers_selfcontain
+    TARGET  scene
+    HEADERS ${SCENE_PUBLIC_HEADERS})

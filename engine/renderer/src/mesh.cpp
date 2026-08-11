@@ -5,6 +5,7 @@
 #include <cmath>
 #include <iostream>
 #include <unordered_map>
+#include <cstdint>
 
 namespace schizo::renderer {
 

@@ -26,6 +26,7 @@
 #include <glm/glm.hpp>
 #include <memory>
 #include <vector>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

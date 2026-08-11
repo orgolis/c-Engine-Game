@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <glm/glm.hpp>
+#include <cstdint>
 #include "texture.h"
 
 namespace schizo::renderer {

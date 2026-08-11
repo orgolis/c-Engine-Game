@@ -3,6 +3,7 @@
 #include <vector>
 #include <memory>
 #include <glm/glm.hpp>
+#include <cstdint>
 #include "mesh.h"
 #include "material.h"
 

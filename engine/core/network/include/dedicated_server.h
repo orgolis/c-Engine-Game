@@ -50,6 +50,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <cstdint>
 
 namespace engine::network {
 

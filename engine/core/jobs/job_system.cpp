@@ -8,6 +8,7 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <cstdint>
 
 namespace gws::jobs {
 

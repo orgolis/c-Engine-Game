@@ -2,6 +2,7 @@
 
 #include <glm/glm.hpp>
 #include <vector>
+#include <cstdint>
 
 namespace schizo::editor {
 

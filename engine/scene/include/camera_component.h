@@ -2,6 +2,7 @@
 
 #include "entity.h"
 #include <glm/glm.hpp>
+#include <cstdint>
 
 namespace schizo::scene {
 

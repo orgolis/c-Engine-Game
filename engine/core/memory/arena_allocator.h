@@ -3,6 +3,8 @@
 #include "allocator_base.h"
 #include "memory_tags.h"
 
+#include <cstdint>
+
 namespace gws::memory {
 
 // ====================

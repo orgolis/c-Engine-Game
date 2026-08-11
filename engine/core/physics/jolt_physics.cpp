@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <thread>
 #include <vector>
+#include <cstdint>
 
 JPH_SUPPRESS_WARNINGS
 

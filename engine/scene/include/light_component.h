@@ -4,6 +4,7 @@
 #include <memory>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <cstdint>
 
 namespace schizo::scene {
 

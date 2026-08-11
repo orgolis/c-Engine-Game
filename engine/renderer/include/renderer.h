@@ -5,6 +5,7 @@
 #include <string>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <cstdint>
 #include "render_device.h"
 
 namespace schizo::renderer {

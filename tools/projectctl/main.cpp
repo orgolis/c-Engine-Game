@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include <cstdint>
 
 namespace fs = std::filesystem;
 using namespace schizo;

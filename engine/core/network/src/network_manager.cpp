@@ -1,5 +1,6 @@
 #include "network_manager.h"
 #include <spdlog/spdlog.h>
+#include <cstdint>
 
 namespace engine::network {
 

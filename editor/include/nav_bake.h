@@ -40,6 +40,7 @@
 #include "transform.h"
 
 #include <spdlog/spdlog.h>
+#include <cstdint>
 
 namespace schizo::editor {
 

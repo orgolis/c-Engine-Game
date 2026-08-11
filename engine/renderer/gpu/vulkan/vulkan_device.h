@@ -9,6 +9,7 @@
 #include <queue>
 #include <unordered_map>
 #include <vector>
+#include <cstdint>
 
 #include "../render_device.h"
 

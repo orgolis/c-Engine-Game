@@ -2,6 +2,7 @@
 
 #include "render_device.h"
 #include <string>
+#include <cstdint>
 
 namespace schizo::renderer {
 

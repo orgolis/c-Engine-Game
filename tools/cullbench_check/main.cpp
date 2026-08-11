@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <cstdint>
 
 using clk = std::chrono::steady_clock;
 

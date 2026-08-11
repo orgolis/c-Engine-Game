@@ -1,6 +1,7 @@
 #include "vulkan_swapchain.h"
 #include "logging/logger.h"
 #include <algorithm>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

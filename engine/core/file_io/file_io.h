@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <future>
+#include <cstdint>
 
 namespace gws::file_io {
 

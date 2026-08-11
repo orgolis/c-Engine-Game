@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <cstdint>
 
 using namespace schizo;
 

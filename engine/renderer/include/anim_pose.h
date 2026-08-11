@@ -18,6 +18,7 @@
 #include <cmath>
 #include <utility>
 #include <vector>
+#include <cstdint>
 
 namespace schizo::renderer {
 

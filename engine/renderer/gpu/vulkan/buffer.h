@@ -11,6 +11,7 @@
 #include <vulkan/vulkan.h>
 #include <cstring>
 #include <cstddef>
+#include <cstdint>
 
 namespace vks {
 

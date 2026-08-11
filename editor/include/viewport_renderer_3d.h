@@ -3,6 +3,7 @@
 #include <memory>
 #include <glm/glm.hpp>
 #include <glad/glad.h>
+#include <cstdint>
 
 // Forward declarations
 namespace schizo::renderer {

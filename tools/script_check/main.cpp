@@ -31,6 +31,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <cstdint>
 
 using namespace schizo;
 

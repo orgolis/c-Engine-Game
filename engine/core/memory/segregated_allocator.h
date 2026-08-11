@@ -2,6 +2,8 @@
 
 #include "allocator_base.h"
 
+#include <cstdint>
+
 namespace gws::memory {
 
 // ====================

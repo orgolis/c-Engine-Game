@@ -9,6 +9,7 @@
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <cstdint>
 #include "jobs/job_system.h"
 
 namespace gws::renderer::gpu {

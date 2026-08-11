@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

@@ -14,6 +14,7 @@
 #include <spdlog/spdlog.h>
 #include <GL/gl.h>
 #include <algorithm>
+#include <cstdint>
 
 namespace schizo::renderer {
 

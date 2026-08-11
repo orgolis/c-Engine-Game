@@ -2,6 +2,7 @@
 #include "scene.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <cstdint>
 
 namespace schizo::scene {
 

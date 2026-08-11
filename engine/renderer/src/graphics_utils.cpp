@@ -2,6 +2,7 @@
 #include <glm/gtc/constants.hpp>
 #include <cmath>
 #include <spdlog/spdlog.h>
+#include <cstdint>
 
 namespace schizo::graphics {
 

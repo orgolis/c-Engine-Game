@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

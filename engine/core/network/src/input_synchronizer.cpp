@@ -2,6 +2,7 @@
 #include "input_buffer.h"
 #include <algorithm>
 #include <spdlog/spdlog.h>
+#include <cstdint>
 
 namespace engine::network {
 

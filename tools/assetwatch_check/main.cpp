@@ -20,6 +20,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <cstdint>
 
 namespace fs = std::filesystem;
 using gws::assets::AssetWatcher;

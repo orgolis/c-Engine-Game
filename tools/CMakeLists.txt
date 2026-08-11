@@ -116,6 +116,18 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(emitter_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# includes_check: a file naming a fixed-width type must include <cstdint>. This
+# is the lint for the bug that broke the v0.6.0 release. Compiling headers alone
+# does NOT catch it -- verified, not assumed: on this toolchain <memory> pulls
+# <cstdint> in transitively so the header compiles fine, while CI's libstdc++
+# does not. Anything depending on which standard header leaks which type can
+# only reproduce it by luck; a text scan cannot.
+add_executable(includes_check includes_check/main.cpp)
+target_compile_features(includes_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(includes_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # snap_check: the rounding rules are the part that can be subtly wrong. Snapping
 # negatives the wrong way, or drifting when a drag re-applies it every frame, is
 # invisible on one drag and obvious after twenty -- by which point the symptom is

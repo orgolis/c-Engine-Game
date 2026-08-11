@@ -6,6 +6,7 @@
 #include <spdlog/spdlog.h>
 #include <glm/glm.hpp>
 #include <string>
+#include <cstdint>
 
 namespace schizo::renderer {
 

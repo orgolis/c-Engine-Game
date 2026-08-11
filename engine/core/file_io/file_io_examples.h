@@ -7,6 +7,7 @@
 #include "file_io.h"
 #include "asset_manager.h"
 #include <iostream>
+#include <cstdint>
 
 namespace gws::file_io::examples {
 

@@ -14,6 +14,7 @@
 #include <vulkan/vulkan.h>
 #include <memory>
 #include <glm/glm.hpp>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

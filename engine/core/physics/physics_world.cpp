@@ -5,6 +5,7 @@
 #include <cmath>
 #include <chrono>
 #include <unordered_map>
+#include <cstdint>
 
 namespace schizo::physics {
 

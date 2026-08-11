@@ -17,6 +17,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <vector>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 

@@ -6,6 +6,7 @@
 #include "../scene/include/entity.h"
 #include <glm/glm.hpp>
 #include <memory>
+#include <cstdint>
 
 namespace schizo::renderer {
 
