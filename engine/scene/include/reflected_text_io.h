@@ -29,6 +29,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <cstdlib>
+#include <cstdint>
 #include <ostream>
 #include <sstream>
 #include <string>
