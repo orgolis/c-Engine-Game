@@ -107,7 +107,7 @@ something this engine does not have.
 
 ---
 
-## Phase 3 · Collect the ceilings already paid for — 🟠 High · 2–4 weeks
+## Phase 3 · Collect the ceilings already paid for — ✅ Exit criterion met (2 items deferred)
 
 Every item here finishes something already built and verified. Highest value per hour in the whole plan.
 
@@ -126,6 +126,24 @@ Every item here finishes something already built and verified. Highest value per
 
 **Exit criteria:** no verified library is unreferenced by a running scene; the engine renders an animated
 character walking a streamed world with an AI agent pathing on baked geometry.
+
+**✅ MET — run, not inferred** (`c130ccb`). `phase3exit_check` drives one scene through the whole sentence at
+once: terrain in → navmesh baked from that actual geometry → an agent walking it → locomotion driven by the
+agent's real motion → streaming following a moving camera until it forces an origin rebase → and everything
+still working afterwards. Measured: **2048 navmesh triangles** from real terrain (0 shapes skipped), **32 live
+cells**, **1 rebase of (-896, -448)**, entities streamed out and back. Every clause already had its own passing
+check; none covered the sentence, and this phase's recurring lesson is that the bugs live *between* the parts —
+three of them did, in the rebase audit alone.
+
+**Two items are explicitly deferred rather than done**, and the phase closes with them named:
+- **3.2 GPU-driven indirect** — cannot be enabled because there is nothing to enable: **zero** `vkCmdDrawIndirect*`
+  calls exist. It needs a shared/pooled vertex+index buffer redesign first — a multi-week feature, not a ceiling
+  already paid for. **Recommend moving it out of this phase.**
+- **3.9 VFX GPU billboard pass** — the simulation half is done and wired; the draw pass needs human pixel
+  verification, because a render path can pass validation and draw nothing. This engine has a documented instance
+  of exactly that (the "skybox gray" bug that turned out to be SSR).
+- **3.6** landed its mechanism and its first real consumer; the remainder (moving each reader across, and the five
+  ECS component types that do not exist) is larger than its one line implied and is tracked in #26.
 
 ---
 
