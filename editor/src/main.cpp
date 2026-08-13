@@ -16,6 +16,7 @@
 #include "vulkan/vulkan_texture.h"  // Texture::create_from_file — spot cookies
 #include "vulkan/vulkan_shadow_map.h"
 #include "vulkan/vulkan_post_processing.h"
+#include "vulkan/vulkan_particle_pass.h"
 #include "vulkan/vulkan_transparent_pass.h"
 #include "vulkan/vulkan_environment_map.h"
 #include "vulkan/vulkan_water_pass.h"
@@ -5264,6 +5265,21 @@ int main(int argc, char** argv) {
             VK_FORMAT_D32_SFLOAT,
             kW, kH,
             mat_layout);
+
+        // Particle billboards (3.9). AFTER the transparent composite, never
+        // between Lighting and Transparent: the transparent pass is WBOIT and
+        // owns its own accumulation targets, and this engine has a recorded
+        // instance of a pass inserted there breaking it.
+        auto particles_pass = VulkanParticlePass::create(
+            &device,
+            lighting->get_output_view(),
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+            g_buffer->get_depth_view(),
+            VK_FORMAT_D32_SFLOAT,
+            kW, kH);
+        if (!particles_pass)
+            spdlog::warn("[Particles] GPU pass unavailable — emitters will simulate but not draw");
+
         // Environment cubemap. Looks for an HDR equirectangular file under
         // assets/skies/*.hdr; falls back to a procedural gradient cubemap
         // when no asset is present. Same data path either way — the sky
@@ -8353,6 +8369,22 @@ int main(int argc, char** argv) {
             graph->execute_stage(cmd, RenderGraphStage::Transparent,
                 [&](VkCommandBuffer rec_cmd) {
                     transparent->execute(rec_cmd, transparent_draws, graph->get_camera());
+
+                    // Particles last, so they blend over everything that
+                    // already resolved. The simulation half has existed for a
+                    // while; this is what finally puts it on screen.
+                    if (particles_pass) {
+                        const auto& bb = editor_state.particles.billboards();
+                        if (!bb.empty()) {
+                            // The graph's camera, not the viewport camera's
+                            // getters: this is the exact view the rest of the
+                            // frame was rendered with, so particles cannot end
+                            // up projected through a slightly different matrix
+                            // than the geometry they sit among.
+                            const auto& cam = graph->get_camera();
+                            particles_pass->execute(rec_cmd, bb, cam.proj * cam.view);
+                        }
+                    }
                 });
             graph->execute_stage(cmd, RenderGraphStage::PostProcess, {});
             graph->end_frame(cmd);

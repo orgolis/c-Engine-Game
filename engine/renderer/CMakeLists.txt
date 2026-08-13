@@ -87,6 +87,7 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_lighting_pass.cpp
     gpu/vulkan/vulkan_shadow_map.cpp
     gpu/vulkan/vulkan_post_processing.cpp
+    gpu/vulkan/vulkan_particle_pass.cpp
     gpu/vulkan/vulkan_transparent_pass.cpp
     gpu/vulkan/vulkan_occlusion_culler.cpp
     gpu/vulkan/vulkan_hzb_culler.cpp
