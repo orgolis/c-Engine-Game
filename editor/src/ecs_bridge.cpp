@@ -3,7 +3,18 @@
 #include "ecs/gameplay_tick.h"
 
 #include "ecs/world.h"
+#include "camera_component.h"
+#include "water_component.h"
+#include "terrain_component.h"
+#include "script_component.h"
+#include "audio_components.h"
+#include "light_component.h"
+#include "collider_component.h"
+#include "npc_agent_component.h"
+#include "particle_emitter_component.h"
+#include "skinned_mesh_component.h"
 #include "ecs/components.h"
+#include "ecs/scene_components.h"        // 3.6: the ECS half of the scene component set
 #include "ecs/authorable_components.h"   // authorable registry (gameplay persistence)
 #include "ecs/component_serialize.h"     // generic reflection-driven (de)serialization
 #include "ecs/gameplay_attributes.h"     // G0 data-driven attributes
@@ -61,6 +72,222 @@
 #include <cstdint>
 
 namespace schizo::editor {
+
+namespace {
+
+using ecs::flag_get;
+using ecs::flag_set;
+
+// Mirror every non-Transform component kind between the OOP entity and its ECS
+// entity.
+//
+// `ecs_authoritative` picks the direction, per entity, exactly as the Transform
+// sync does. Writing OOP -> ECS unconditionally is what made the ECS a shadow;
+// writing ECS -> OOP unconditionally would break the editor. One flag, both
+// behaviours, chosen per entity.
+//
+// Components are added only when the OOP entity HAS them, so an ECS query for
+// "everything with a light" returns the lights rather than every entity in the
+// scene carrying a default-constructed one.
+void sync_scene_components(ecs::World& world, ecs::Entity e,
+                           scene::Entity* oent, bool ecs_authoritative) {
+    if (!oent) return;
+
+    // ---- Light ----------------------------------------------------------
+    if (auto lc = oent->GetComponent<scene::LightComponent>()) {
+        if (ecs_authoritative) {
+            if (const auto* l = world.try_get<ecs::LightComponent>(e)) {
+                lc->SetIntensity(l->intensity);
+                lc->SetRange(l->range);
+                lc->SetColor(l->color);
+                lc->SetEnabled(flag_get(l->flags, 1));
+                lc->SetCastShadow(flag_get(l->flags, 0));
+            }
+        } else {
+            ecs::LightComponent l{};
+            l.type      = static_cast<uint32_t>(lc->GetType());
+            l.color     = lc->GetColor();
+            l.intensity = lc->GetIntensity();
+            l.range     = lc->GetRange();
+            l.flags     = flag_set(flag_set(0u, 0, lc->GetCastShadow()), 1, lc->IsEnabled());
+            world.add<ecs::LightComponent>(e, l);
+        }
+    }
+
+    // ---- Collider -------------------------------------------------------
+    if (auto cc = oent->GetComponent<scene::ColliderComponent>()) {
+        if (ecs_authoritative) {
+            if (const auto* c = world.try_get<ecs::Collider>(e)) {
+                cc->SetRadius(c->radius);
+                cc->SetHeight(c->height);
+            }
+        } else {
+            ecs::Collider c{};
+            c.shape  = static_cast<uint32_t>(cc->GetShape());
+            c.radius = cc->GetRadius();
+            c.height = cc->GetHeight();
+            c.layer  = static_cast<uint32_t>(cc->GetMask());
+            world.add<ecs::Collider>(e, c);
+        }
+    }
+
+    // ---- Camera ---------------------------------------------------------
+    if (auto cam = oent->GetComponent<scene::CameraComponent>()) {
+        if (ecs_authoritative) {
+            if (const auto* c = world.try_get<ecs::CameraComponent>(e)) {
+                cam->SetFOV(c->fov);
+                cam->SetNearPlane(c->near_plane);
+            }
+        } else {
+            ecs::CameraComponent c{};
+            c.projection = static_cast<uint32_t>(cam->GetProjection());
+            c.fov        = cam->GetFOV();
+            c.ortho_size = cam->GetOrthographicSize();
+            c.near_plane = cam->GetNearPlane();
+            world.add<ecs::CameraComponent>(e, c);
+        }
+    }
+
+    // ---- Water ----------------------------------------------------------
+    if (auto w = oent->GetComponent<scene::WaterComponent>()) {
+        if (ecs_authoritative) {
+            if (const auto* c = world.try_get<ecs::WaterComponent>(e)) {
+                w->SetWaveHeight(c->wave_height);
+                w->SetWaveSpeed(c->wave_speed);
+                w->SetClarity(c->clarity);
+            }
+        } else {
+            ecs::WaterComponent c{};
+            c.wave_height  = w->GetWaveHeight();
+            c.wave_speed   = w->GetWaveSpeed();
+            c.wave_scale   = w->GetWaveScale();
+            c.clarity      = w->GetClarity();
+            c.reflectivity = w->GetReflectivity();
+            c.flags        = flag_set(0u, 0, w->IsPhysical());
+            world.add<ecs::WaterComponent>(e, c);
+        }
+    }
+
+    // ---- Terrain --------------------------------------------------------
+    // One direction only, and deliberately: the heightfield is megabytes with
+    // its own editing tools, so an ECS write cannot meaningfully describe it.
+    // A half-supported reverse path would be worse than none.
+    if (auto t = oent->GetComponent<scene::TerrainComponent>()) {
+        ecs::TerrainComponent c{};
+        c.size         = t->GetSize();
+        c.height_scale = t->GetHeightScale();
+        c.water_level  = t->GetWaterLevel();
+        world.add<ecs::TerrainComponent>(e, c);
+    }
+
+    // ---- Script ---------------------------------------------------------
+    if (auto sc = oent->GetComponent<scene::ScriptComponent>()) {
+        ecs::ScriptComponent c{};
+        // The path is a string and reflected fields must be trivially
+        // copyable, so the ECS side carries a hash of it. Enough to ask "is
+        // this the same script"; not enough to load one, which stays the OOP
+        // side's job until the asset system hands out real ids.
+        const std::string& path = sc->GetScriptPath();
+        uint64_t h = 1469598103934665603ull;
+        for (char ch : path) { h ^= static_cast<uint8_t>(ch); h *= 1099511628211ull; }
+        c.script_asset = path.empty() ? 0ull : h;
+        c.flags        = flag_set(0u, 0, sc->IsEnabled());
+        world.add<ecs::ScriptComponent>(e, c);
+    }
+
+    // ---- Audio ----------------------------------------------------------
+    if (auto a = oent->GetComponent<scene::AudioSourceComponent>()) {
+        if (ecs_authoritative) {
+            if (const auto* c = world.try_get<ecs::AudioSource>(e)) {
+                a->SetVolume(c->volume);
+                a->SetPitch(c->pitch);
+            }
+        } else {
+            ecs::AudioSource c{};
+            c.volume = a->GetVolume();
+            c.pitch  = a->GetPitch();
+            c.radius = a->GetRadius();
+            c.flags  = flag_set(flag_set(flag_set(0u, 0, a->IsLooping()),
+                                         1, a->IsSpatial()),
+                                2, a->IsPlaying());
+            world.add<ecs::AudioSource>(e, c);
+        }
+    }
+
+    // ---- Particle emitter (POD on both sides) ---------------------------
+    if (auto* pe = oent->GetParticleEmitterComponent()) {
+        if (ecs_authoritative) {
+            if (const auto* c = world.try_get<ecs::ParticleEmitter>(e)) {
+                pe->spawn_rate    = c->spawn_rate;
+                pe->max_particles = c->max_particles;
+                pe->color_start   = c->color_start;
+                pe->color_end     = c->color_end;
+                pe->enabled       = flag_get(c->flags, 0);
+                pe->emitting      = flag_get(c->flags, 1);
+            }
+        } else if (pe->enabled) {
+            ecs::ParticleEmitter c{};
+            c.spawn_rate    = pe->spawn_rate;
+            c.max_particles = pe->max_particles;
+            c.color_start   = pe->color_start;
+            c.color_end     = pe->color_end;
+            c.flags         = flag_set(flag_set(0u, 0, pe->enabled), 1, pe->emitting);
+            world.add<ecs::ParticleEmitter>(e, c);
+        }
+    }
+
+    // ---- NPC agent ------------------------------------------------------
+    if (auto* na = oent->GetNpcAgentComponent()) {
+        if (ecs_authoritative) {
+            if (const auto* c = world.try_get<ecs::NpcAgent>(e)) {
+                na->sight_range   = c->sight_range;
+                na->sight_fov_deg = c->sight_fov_deg;
+                na->move_speed    = c->move_speed;
+                na->attack_range  = c->attack_range;
+                na->ability_index = c->ability_index;
+                na->enabled       = flag_get(c->flags, 0);
+            }
+        } else if (na->enabled) {
+            ecs::NpcAgent c{};
+            c.sight_range   = na->sight_range;
+            c.sight_fov_deg = na->sight_fov_deg;
+            c.move_speed    = na->move_speed;
+            c.patrol_radius = na->patrol_radius;
+            c.attack_range  = na->attack_range;
+            c.ability_index = na->ability_index;
+            c.flags         = flag_set(0u, 0, na->enabled);
+            world.add<ecs::NpcAgent>(e, c);
+        }
+    }
+
+    // ---- Skinned mesh ---------------------------------------------------
+    if (auto* sm = oent->GetSkinnedMeshComponent()) {
+        if (ecs_authoritative) {
+            if (const auto* c = world.try_get<ecs::SkinnedMesh>(e)) {
+                sm->clip_index        = c->clip_index;
+                sm->idle_clip         = c->idle_clip;
+                sm->move_clip         = c->move_clip;
+                sm->speed             = c->speed;
+                sm->move_threshold    = c->move_threshold;
+                sm->playing           = flag_get(c->flags, 0);
+                sm->drive_from_motion = flag_get(c->flags, 1);
+            }
+        } else if (sm->active()) {
+            ecs::SkinnedMesh c{};
+            c.clip_index     = sm->clip_index;
+            c.idle_clip      = sm->idle_clip;
+            c.move_clip      = sm->move_clip;
+            c.speed          = sm->speed;
+            c.move_threshold = sm->move_threshold;
+            c.flags          = flag_set(flag_set(0u, 0, sm->playing),
+                                        1, sm->drive_from_motion);
+            world.add<ecs::SkinnedMesh>(e, c);
+        }
+    }
+}
+
+}  // namespace
+
 
 // Shadow-only component: which shadow entity is this one's parent (or
 // null_entity for a root). Kept editor-local so it doesn't touch core
@@ -555,6 +782,19 @@ void EcsSceneBridge::sync_and_run(
             t.scale    = tf->GetLocalScale();
             world.add<ecs::Transform>(e, t);  // emplace_or_replace
         }
+        // ---- every OTHER component kind, both directions (3.6) ----------
+        //
+        // Four of thirteen kinds used to reach the ECS. A gameplay system could
+        // not see a light, could not tell whether an entity had a collider, and
+        // could not read a camera's FOV -- so gameplay had to be written
+        // against the editor's object model instead. This closes that.
+        //
+        // Same rule as Transform: tagged entities flow ECS -> OOP, everything
+        // else keeps the existing OOP -> ECS direction, so nothing that works
+        // today changes behaviour.
+        sync_scene_components(world, e, oop_ent[i],
+                              world.has<ecs::EcsAuthoritative>(e));
+
         shadow[i] = e;
 
         // Mirror the OOP entity's drawable info into an ECS MeshRenderer so the

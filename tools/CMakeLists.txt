@@ -19,6 +19,19 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetcook PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# componentsync_check: every scene component kind must reach the ECS (3.6). Four
+# of thirteen used to -- a gameplay system could not see a light, could not tell
+# whether an entity had a collider, and could not read a camera's FOV. Asserts
+# both halves: every kind ARRIVES with its values, and no kind appears on an
+# entity that does not have one (or a query for "every light" returns the scene).
+add_executable(componentsync_check componentsync_check/main.cpp ../editor/src/ecs_bridge.cpp)
+target_include_directories(componentsync_check PRIVATE ../editor/include)
+target_link_libraries(componentsync_check PRIVATE gws_ecs gws_reflection gws_jobs scene gws_logging)
+target_compile_features(componentsync_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(componentsync_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # ecsauthority_check: an ECS write to a Transform must survive the frame. The
 # assertions are symmetric on purpose -- a flip that quietly changed behaviour
 # for UNtagged entities would be far worse than one that did nothing.
