@@ -148,6 +148,16 @@ three of them did, in the rebase audit alone.
 ---
 
 
+> **v0.6.2 could not start on any GPU without hardware ray tracing.** Reported from an AMD RX 5700; fixed in
+> **v0.6.3** (`7208223`). The lighting fragment shader was *always* the SPIR-V declaring `OpCapability RayQueryKHR`
+> — invalid usage on a device without `VK_KHR_ray_query`, and drivers are not required to report it, so AMD's
+> crashed inside `vkCreateGraphicsPipelines`. **RDNA 1, GTX 10-series and essentially every integrated GPU** were
+> affected.
+>
+> It shipped because **every development GPU here supports ray query, so the non-RT path had never once executed** —
+> not under-tested, *never run*. `GWS_FORCE_NO_RT=1` now makes the device report no ray tracing, so both paths are
+> exercised locally. **Any capability-dependent branch needs a way to force it, or it is untested by construction.**
+
 > **Release-build hygiene (added after v0.6.0 failed to build).** `command_palette.h` used `uint32_t` with no
 > `<cstdint>`. It compiled here and failed on the CI runner, because include order is not a guarantee — a green
 > local build can be green by accident.
