@@ -1,5 +1,7 @@
 #version 460
+#ifdef GWS_RAY_QUERY
 #extension GL_EXT_ray_query : require
+#endif
 
 layout(location = 0) in vec2 inTexCoord;
 layout(location = 0) out vec4 outColor;
@@ -36,7 +38,9 @@ layout(set = 0, binding = 12) uniform sampler2D   ssaoTex;
 // Scene TLAS — populated by VulkanRtScene each frame. Only sampled when
 // pc.rt_shadow_enabled is non-zero; descriptor is allowed to be unbound
 // otherwise (controlled by C++ side via set_tlas).
+#ifdef GWS_RAY_QUERY
 layout(set = 0, binding = 13) uniform accelerationStructureEXT scene_tlas;
+#endif
 layout(set = 0, binding = 14) uniform sampler2D cloudShadow; // top-down sun transmittance
 layout(set = 0, binding = 15) uniform sampler2D ltc1Tex;     // LTC inverse-M (area lights)
 layout(set = 0, binding = 16) uniform sampler2D ltc2Tex;     // LTC GGX norm / fresnel / horizon
@@ -147,6 +151,7 @@ float PCF(sampler2DArray sm, vec2 uv, float layer, float expected_depth, float b
 // without hitting anything (lit), 0.0 if it hits geometry first (shadowed).
 // `worldPos` is offset by `+normal * 0.01` before tracing to avoid the
 // surface self-intersecting itself at t=0.
+#ifdef GWS_RAY_QUERY
 float rayQueryShadow(vec3 worldPos, vec3 normal, vec3 ray_dir, float t_max) {
     vec3 origin = worldPos + normal * 0.01;
     rayQueryEXT rq;
@@ -159,6 +164,11 @@ float rayQueryShadow(vec3 worldPos, vec3 normal, vec3 ray_dir, float t_max) {
     return (rayQueryGetIntersectionTypeEXT(rq, true) ==
             gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
 }
+#else
+// No ray query on this device: fully lit, so shadowing falls back to
+// the shadow map path the caller already blends with.
+float rayQueryShadow(vec3 worldPos, vec3 normal, vec3 ray_dir, float t_max) { return 1.0; }
+#endif
 
 // Cheap hash for per-pixel ray jitter (decorrelates the AO sample set so
 // the low ray count doesn't band).
@@ -173,6 +183,7 @@ float aoHash(vec2 p) {
 // fraction (1 = fully open to the environment, 0 = fully enclosed).
 // Unlike SSAO this sees real geometry beyond the screen, so a sealed
 // room reads as genuinely dark even when the occluders aren't on screen.
+#ifdef GWS_RAY_QUERY
 float rayQueryAO(vec3 worldPos, vec3 N, vec2 px) {
     const int   AO_SAMPLES = 12;
     // Long radius so a sealed room reads as *enclosed* (every ray hits a
@@ -211,6 +222,11 @@ float rayQueryAO(vec3 worldPos, vec3 N, vec2 px) {
     }
     return 1.0 - (occluded / float(AO_SAMPLES));
 }
+#else
+// No ray query: no ray-traced occlusion. 1.0 means unoccluded, so SSAO
+// remains the only AO term rather than everything going black.
+float rayQueryAO(vec3 worldPos, vec3 N, vec2 px) { return 1.0; }
+#endif
 
 // Screen-space contact shadows (Stage 3.4): a short world-space march toward
 // the light, projected back to screen and tested against the G-buffer position

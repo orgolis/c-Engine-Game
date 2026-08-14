@@ -9,6 +9,7 @@
 #include "vulkan_shader_registry.h"
 #include "vulkan_texture.h"        // RGBA32F LTC LUT textures (area lights)
 #include "lighting_pass_spirv.h"  // pre-compiled SPIR-V fallback for GCC builds
+#include "lighting_pass_nort_spirv.h"   // non-ray-traced variant (RDNA1/GTX10/Intel)
 #include "ltc_matrix.h"           // embedded LTC1/LTC2 area-light tables
 #include <spdlog/spdlog.h>
 #include <stdexcept>
@@ -125,8 +126,15 @@ void VulkanLightingPass::create_descriptor_sets() {
         bindings[i].descriptorCount = 1;
         bindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
     }
+    // Binding 13 is the TLAS. Declaring an ACCELERATION_STRUCTURE descriptor
+    // without VK_KHR_acceleration_structure enabled is invalid usage, so on a
+    // device without ray tracing it becomes an unused sampler slot instead --
+    // the non-RT shader does not declare binding 13 at all, and a layout may
+    // contain bindings no shader uses.
     bindings[13].binding         = 13;
-    bindings[13].descriptorType  = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    bindings[13].descriptorType  = device_->has_ray_tracing()
+                                 ? VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
+                                 : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[13].descriptorCount = 1;
     bindings[13].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[14].binding         = 14;
@@ -152,7 +160,9 @@ void VulkanLightingPass::create_descriptor_sets() {
     std::array<VkDescriptorPoolSize, 3> pool_sizes{};
     pool_sizes[0] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16};
     pool_sizes[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,          1};
-    pool_sizes[2] = {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1};
+    pool_sizes[2] = {device_->has_ray_tracing()
+                         ? VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
+                         : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
 
     VkDescriptorPoolCreateInfo pool_info{};
     pool_info.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -863,10 +873,26 @@ void VulkanLightingPass::create_pipeline() {
     // the embedded GLSL string would have to be kept in sync with the
     // disk .frag (now non-trivial with the RT additions). The SPIR-V
     // is the source of truth.
-    auto frag = shader_registry_->create_from_spirv(kLightingPassFragSpv,
-                                                    kLightingPassFragSpv_size,
-                                                    ShaderStage::Fragment,
-                                                    "lighting_pass.frag");
+    //
+    // TWO VARIANTS, chosen by what the device actually supports. This is not an
+    // optimisation: SPIR-V declaring the RayQueryKHR capability is INVALID on a
+    // device without VK_KHR_ray_query, and drivers are not required to tell you
+    // so. v0.6.2 shipped only the ray-query variant and crashed inside
+    // vkCreateGraphicsPipelines on an AMD RX 5700 -- no error, no validation
+    // message, just a dead process. RDNA 1, GTX 10-series and most integrated
+    // GPUs are all in that category, so this was not an exotic configuration.
+    const bool rt = device_->has_ray_tracing();
+    auto frag = rt
+        ? shader_registry_->create_from_spirv(kLightingPassFragSpv,
+                                              kLightingPassFragSpv_size,
+                                              ShaderStage::Fragment,
+                                              "lighting_pass.frag")
+        : shader_registry_->create_from_spirv(kLightingPassFragNoRtSpv,
+                                              kLightingPassFragNoRtSpv_size,
+                                              ShaderStage::Fragment,
+                                              "lighting_pass.frag[no-rt]");
+    spdlog::info("VulkanLightingPass: using the {} fragment shader",
+                 rt ? "ray-query" : "non-ray-traced");
     if (!vert || !frag) {
         throw std::runtime_error("Failed to compile lighting shaders");
     }
@@ -1263,6 +1289,12 @@ void VulkanLightingPass::set_point_shadow_map(VkImageView view, VkSampler sample
 }
 
 void VulkanLightingPass::set_tlas(VkAccelerationStructureKHR tlas) {
+    // Without ray tracing, binding 13 is a sampler slot rather than an
+    // acceleration structure -- writing an AS descriptor there would be a type
+    // mismatch. In practice no TLAS can exist on such a device, but relying on
+    // that is relying on a caller elsewhere never making a mistake.
+    if (!device_->has_ray_tracing()) return;
+
     // Skip the descriptor write when the handle hasn't actually changed —
     // main.cpp re-binds every frame for safety, but most frames the TLAS
     // handle is stable. vkUpdateDescriptorSets is not free.

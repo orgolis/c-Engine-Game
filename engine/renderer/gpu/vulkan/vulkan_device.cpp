@@ -18,6 +18,8 @@
 #include "vulkan_rt_functions.h"
 
 #include "vulkan_device.h"
+
+#include <cstdlib>
 #include "vulkan_swapchain.h"
 #include "logging/logger.h"
 #include <algorithm>
@@ -787,7 +789,21 @@ void VulkanDevice::create_logical_device() {
         rq_features.pNext = &as_features;
         as_features.pNext = &bda_features;
         vkGetPhysicalDeviceFeatures2(physical_device, &features2);
-        if (rq_features.rayQuery && as_features.accelerationStructure &&
+
+        // GWS_FORCE_NO_RT=1 pretends the GPU has no ray tracing.
+        //
+        // Added because v0.6.2 crashed on an AMD RX 5700 and could not be
+        // reproduced on any machine here: every dev GPU supports ray query, so
+        // the non-RT code path had never once executed. A capability-dependent
+        // path nobody can run locally is a path nobody tests, and this makes it
+        // one command instead of one shopping trip.
+        const char* force_no_rt = std::getenv("GWS_FORCE_NO_RT");
+        const bool  pretend_no_rt = force_no_rt && force_no_rt[0] == '1';
+        if (pretend_no_rt)
+            GWS_LOG_INFO("GWS_FORCE_NO_RT=1 — pretending this GPU has no ray tracing");
+
+        if (!pretend_no_rt &&
+            rq_features.rayQuery && as_features.accelerationStructure &&
             bda_features.bufferDeviceAddress) {
             extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
             extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);

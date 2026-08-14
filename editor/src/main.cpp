@@ -5192,7 +5192,13 @@ int main(int argc, char** argv) {
         // the still-live device). Textures loaded through it get generated mips,
         // anisotropic + per-asset samplers, and correct per-slot sRGB.
         // ----------------------------------------------------------------
-        TextureManager texture_manager(&device);
+        // Held by pointer so it can be released BEFORE device.shutdown().
+        // As a stack object it was destroyed after the device, and its sampler
+        // cache then called vkDestroySampler on a dead handle -- a warning on
+        // this driver, undefined behaviour in general. The reference keeps
+        // every existing use site unchanged.
+        auto texture_manager_holder = std::make_unique<TextureManager>(&device);
+        TextureManager& texture_manager = *texture_manager_holder;
         {
             const char* cdirs[] = { "cooked", "bin/cooked", "../cooked", "assets/cooked" };
             for (const char* d : cdirs) {
@@ -8594,6 +8600,13 @@ int main(int argc, char** argv) {
         ssao.reset();
         env_map.reset();
         transparent.reset();
+        // Both hold host-visible mappings. They must be released BEFORE
+        // device.shutdown(), or their destructors call vkUnmapMemory on a dead
+        // device -- which is what this explicit list exists to prevent, and
+        // what I broke by adding them and not adding them here.
+        texture_manager_holder.reset();
+        particles_pass.reset();
+        indirect_draws.reset();
         graph.reset();
         post_processing.reset();
         shadow_map.reset();
