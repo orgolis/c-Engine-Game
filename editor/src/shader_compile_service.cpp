@@ -28,27 +28,72 @@ namespace {
 // string means the codegen and the wrapper cannot disagree about what exists --
 // a mismatch would only show up as a compile error in generated code the user
 // never wrote.
+// The surface-shader contract, and it is NOT invented here -- it mirrors
+// gbuffer_scene.frag exactly.
+//
+// My first version of this declared its own inputs (gs_uv at location 0), its
+// own descriptors (set 0, bindings 0-7) and TWO colour outputs. It compiled
+// perfectly and could never have been used: the real G-Buffer takes five vertex
+// inputs, binds a MaterialUBO plus five texture maps at SET 1, and writes FOUR
+// attachments. A pipeline built from that module would have been rejected the
+// moment it met the real render pass and descriptor layout.
+//
+// That is the trap this whole feature invites -- a generated shader that
+// compiles is not a generated shader that can be bound. Keeping the interface
+// identical to the shader it replaces is what makes the graph's output a
+// drop-in.
+//
+// The graph writes the five surface values; everything else (world position,
+// normal mapping through the TBN basis, alpha cutout) stays exactly as the
+// stock shader does it, so a graph material behaves like a normal one in every
+// respect the graph does not explicitly change.
 constexpr const char* kPreamble = R"(#version 450
 
-layout(location = 0) in vec2 gs_uv;
-layout(location = 1) in vec4 gs_vertex_color;
+layout(location = 0) in vec3 inWorldPos;
+layout(location = 1) in vec3 inNormal;
+layout(location = 2) in vec2 inUV;
+layout(location = 3) in vec3 inTangent;
+layout(location = 4) in vec3 inBitangent;
 
-layout(set = 0, binding = 0) uniform sampler2D gs_tex0;
-layout(set = 0, binding = 1) uniform sampler2D gs_tex1;
-layout(set = 0, binding = 2) uniform sampler2D gs_tex2;
-layout(set = 0, binding = 3) uniform sampler2D gs_tex3;
-layout(set = 0, binding = 4) uniform sampler2D gs_tex4;
-layout(set = 0, binding = 5) uniform sampler2D gs_tex5;
-layout(set = 0, binding = 6) uniform sampler2D gs_tex6;
-layout(set = 0, binding = 7) uniform sampler2D gs_tex7;
+layout(set = 1, binding = 0) uniform MaterialUBO {
+    vec4  base_color_factor;
+    float metallic_factor;
+    float roughness_factor;
+    float occlusion_strength;
+    float normal_scale;
+    vec4  emissive_factor;
+} mat;
+layout(set = 1, binding = 1) uniform sampler2D albedoMap;
+layout(set = 1, binding = 2) uniform sampler2D normalMap;
+layout(set = 1, binding = 3) uniform sampler2D mrMap;
+layout(set = 1, binding = 4) uniform sampler2D aoMap;
+layout(set = 1, binding = 5) uniform sampler2D emissiveMap;
 
-layout(push_constant) uniform GsPush { float time; } gs_push;
+layout(location = 0) out vec4 outPosition;
+layout(location = 1) out vec4 outNormalRoughness;
+layout(location = 2) out vec4 outAlbedoMetallic;
+layout(location = 3) out vec4 outMaterial;
 
-layout(location = 0) out vec4 gs_frag_albedo;
-layout(location = 1) out vec4 gs_frag_material;
+// The graph's texture slots map onto the material's existing maps, so a
+// TextureSample node samples something real without new descriptors.
+#define gs_tex0 albedoMap
+#define gs_tex1 normalMap
+#define gs_tex2 mrMap
+#define gs_tex3 aoMap
+#define gs_tex4 emissiveMap
+#define gs_tex5 albedoMap
+#define gs_tex6 albedoMap
+#define gs_tex7 albedoMap
 
 void main() {
-    float gs_time = gs_push.time;
+    vec2 gs_uv           = inUV;
+    vec4 gs_vertex_color = vec4(1.0);
+    // No per-frame clock is plumbed into the G-Buffer's descriptor layout yet,
+    // and inventing one here would change the pipeline layout and break
+    // compatibility. Time nodes therefore read 0 until that is plumbed --
+    // stated plainly rather than left as a mystery for whoever wires one up.
+    float gs_time        = 0.0;
+
     vec3  gs_out_base_color;
     float gs_out_metallic;
     float gs_out_roughness;
@@ -57,8 +102,21 @@ void main() {
 )";
 
 constexpr const char* kEpilogue = R"(
-    gs_frag_albedo   = vec4(gs_out_base_color, gs_out_alpha);
-    gs_frag_material = vec4(gs_out_metallic, gs_out_roughness, 0.0, 1.0);
+    // Alpha cutout, matching the stock shader so graph materials clip the same.
+    float gs_cutoff = mat.emissive_factor.a;
+    if (gs_cutoff > 0.0 && gs_out_alpha < gs_cutoff) discard;
+
+    vec3 nmap = texture(normalMap, inUV).xyz * 2.0 - 1.0;
+    nmap.xy *= mat.normal_scale;
+    mat3 TBN = mat3(normalize(inTangent), normalize(inBitangent), normalize(inNormal));
+    vec3 N   = normalize(TBN * nmap);
+
+    float gs_ao = texture(aoMap, inUV).r * mat.occlusion_strength;
+
+    outPosition        = vec4(inWorldPos, 1.0);
+    outNormalRoughness = vec4(N, clamp(gs_out_roughness, 0.04, 1.0));
+    outAlbedoMetallic  = vec4(gs_out_base_color, clamp(gs_out_metallic, 0.0, 1.0));
+    outMaterial        = vec4(gs_out_emissive, gs_ao);
 }
 )";
 

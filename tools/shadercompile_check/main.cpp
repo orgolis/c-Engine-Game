@@ -16,7 +16,9 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <set>
 #include <string>
+#include <vector>
 
 using namespace gws::shadergraph;
 using namespace schizo::editor;
@@ -56,6 +58,50 @@ MaterialGraph realistic_graph() {
     g.connect(sat, comb, 0);
     g.connect(comb, g.output_node(), static_cast<uint32_t>(OutputSlot::Emissive));
     return g;
+}
+
+
+// ---- SPIR-V interface reader ------------------------------------------------
+// Walks OpDecorate instructions to recover the module's Location / DescriptorSet
+// / Binding numbers.
+//
+// This exists because "it compiled" and "it can be bound" are different claims,
+// and I learned the difference the expensive way: my first preamble declared its
+// own inputs, its own descriptors at set 0, and TWO colour outputs. It compiled
+// flawlessly and could never have been used, because the real G-Buffer takes
+// five vertex inputs, binds at SET 1, and writes FOUR attachments. Nothing in a
+// compile check would have caught it. This does.
+struct SpirvInterface {
+    std::set<uint32_t> locations;
+    std::set<uint32_t> sets;
+    std::set<uint32_t> bindings;
+};
+
+SpirvInterface read_interface(const std::vector<uint32_t>& spv) {
+    SpirvInterface out;
+    if (spv.size() < 5 || spv[0] != 0x07230203u) return out;
+
+    constexpr uint32_t kOpDecorate       = 71;
+    constexpr uint32_t kDecLocation      = 30;
+    constexpr uint32_t kDecBinding       = 33;
+    constexpr uint32_t kDecDescriptorSet = 34;
+
+    size_t i = 5;                                  // past the header
+    while (i < spv.size()) {
+        const uint32_t word  = spv[i];
+        const uint32_t op    = word & 0xFFFFu;
+        const uint32_t count = word >> 16;
+        if (count == 0) break;                     // malformed: stop rather than spin
+        if (op == kOpDecorate && count >= 4) {
+            const uint32_t dec = spv[i + 2];
+            const uint32_t val = spv[i + 3];
+            if (dec == kDecLocation)      out.locations.insert(val);
+            if (dec == kDecBinding)       out.bindings.insert(val);
+            if (dec == kDecDescriptorSet) out.sets.insert(val);
+        }
+        i += count;
+    }
+    return out;
 }
 
 }  // namespace
@@ -167,9 +213,44 @@ int main(int argc, char** argv) {
         bool all = true;
         for (const char* n : {"gs_uv", "gs_time", "gs_vertex_color", "gs_tex0",
                               "gs_out_base_color", "gs_out_metallic", "gs_out_roughness",
-                              "gs_out_emissive", "gs_out_alpha"})
+                              "gs_out_emissive", "gs_out_alpha",
+                              // and the real G-Buffer interface it must mirror
+                              "inWorldPos", "inTangent", "outAlbedoMetallic", "outMaterial",
+                              "MaterialUBO"})
             if (pre.find(n) == std::string::npos) all = false;
         check(all, "the wrapper declares every name the generator can emit");
+    }
+
+    // ---- 7. THE MODULE MUST BE BINDABLE, not merely compilable ---------------
+    // The numbers below are gbuffer_scene.frag's, and they are the whole reason
+    // this section exists: a generated shader with a different interface
+    // compiles perfectly and is rejected the moment it meets the real render
+    // pass and descriptor layout. That is exactly what my first preamble did --
+    // its own inputs, its own descriptors at set 0, and two colour outputs
+    // instead of four.
+    {
+        MaterialGraph g = realistic_graph();
+        const auto r = svc.compile_material(g.generate().glsl);
+        check(r.ok, "the graph module compiles");
+
+        const SpirvInterface iface = read_interface(r.spirv);
+
+        // Four G-Buffer attachments and five vertex inputs share the location
+        // space, so 0..4 must all be present.
+        bool outs = true;
+        for (uint32_t l = 0; l <= 3; ++l) if (!iface.locations.count(l)) outs = false;
+        check(outs, "it declares locations 0-3 -- four G-Buffer attachments, not two");
+
+        check(iface.locations.count(4) == 1,
+              "and location 4, which only the five-input vertex interface has");
+
+        check(iface.sets.count(1) == 1 && iface.sets.count(0) == 0,
+              "its descriptors live at SET 1 where the material set is bound, "
+              "not set 0 as my first version wrongly used");
+
+        bool binds = true;
+        for (uint32_t b = 0; b <= 5; ++b) if (!iface.bindings.count(b)) binds = false;
+        check(binds, "with bindings 0-5: the MaterialUBO plus five texture maps");
     }
 
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
