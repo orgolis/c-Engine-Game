@@ -4,6 +4,7 @@
 #include "material_graph.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <sstream>
 

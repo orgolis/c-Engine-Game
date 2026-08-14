@@ -14,6 +14,7 @@
 #include "material_graph.h"
 
 #include <cstdio>
+#include <cstdint>
 #include <string>
 
 using namespace gws::shadergraph;
