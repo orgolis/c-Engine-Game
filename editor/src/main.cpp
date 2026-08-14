@@ -16,6 +16,7 @@
 #include "vulkan/vulkan_texture.h"  // Texture::create_from_file — spot cookies
 #include "vulkan/vulkan_shadow_map.h"
 #include "vulkan/vulkan_post_processing.h"
+#include "vulkan/vulkan_indirect_draws.h"     // GPU-driven indirect draws (3.2)
 #include "vulkan/vulkan_particle_pass.h"
 #include "vulkan/vulkan_transparent_pass.h"
 #include "vulkan/vulkan_environment_map.h"
@@ -206,6 +207,12 @@ struct EditorState {
     // Gizmo snapping (4.7). Off by default; Ctrl enables it for the
     // duration of a drag, which is the convention every DCC uses and
     // avoids a mode the user can forget they are in.
+    // GPU-driven indirect draws (3.2). On by default -- a path nobody runs is
+    // the pattern this phase kept finding -- but toggleable, because the
+    // acceptance criterion is a COMPARISON against the direct path and that
+    // needs both available in the same build.
+    bool use_indirect_draws = true;
+
     schizo::editor::SnapSettings snap;
 
     schizo::editor::CommandRegistry commands;
@@ -5025,6 +5032,7 @@ int main(int argc, char** argv) {
     bool        startup_probe     = false;   // --startup-probe: time init, then exit
     int         frame_limit       = 0;       // --frames N: render N frames, then exit
     bool        probe_inner_loop  = false;   // --probe-inner-loop: time the budgeted rows
+    bool        probe_indirect    = false;   // --probe-indirect: compare indirect vs direct draws (3.2)
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--net-host" && i + 1 < argc) {
@@ -5057,6 +5065,8 @@ int main(int argc, char** argv) {
             // the editor -- which made the phase's own exit criterion
             // unverifiable. See DEVELOPER_EXPERIENCE.md §1.1.
             probe_inner_loop = true;
+        } else if (a == "--probe-indirect") {
+            probe_indirect = true;
         } else if (a == "--startup-probe") {
             // Initialise everything, report how long it took, then exit without
             // entering the main loop. This is what makes "editor cold start" —
@@ -5279,6 +5289,11 @@ int main(int argc, char** argv) {
             kW, kH);
         if (!particles_pass)
             spdlog::warn("[Particles] GPU pass unavailable — emitters will simulate but not draw");
+
+        // Indirect draw arguments (3.2).
+        auto indirect_draws = VulkanIndirectDrawBuffer::create(&device);
+        if (!indirect_draws)
+            spdlog::warn("[Indirect] buffer unavailable — falling back to direct draws");
 
         // Environment cubemap. Looks for an HDR equirectangular file under
         // assets/skies/*.hdr; falls back to a procedural gradient cubemap
@@ -8168,6 +8183,17 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // Indirect draws (3.2): reset the command list and hand it to the
+            // G-Buffer, or clear the hook so it takes the direct path. Set every
+            // frame so the toggle takes effect immediately rather than at the
+            // next restart -- comparing the two paths is the point.
+            if (indirect_draws && editor_state.use_indirect_draws) {
+                indirect_draws->begin_frame();
+                g_buffer->set_indirect_draws(indirect_draws.get());
+            } else {
+                g_buffer->set_indirect_draws(nullptr);
+            }
+
             graph->begin_frame(cmd);
 
             // RT scene update — build BLAS for any newly-seen meshes and
@@ -8423,6 +8449,51 @@ int main(int argc, char** argv) {
             swapchain->present_image(image_index, render_sems[current_frame]);
             current_frame = (current_frame + 1) % kMaxFrames;
             ++frame_count;
+
+            // ---- 3.2 acceptance: the SAME scene down both paths -------------
+            //
+            // Two halves of one run rather than two runs, so the scene, the
+            // camera and the visibility set are identical and the only variable
+            // is which path recorded the draws. Across separate runs any
+            // difference could just be a different camera position.
+            //
+            // The claim being tested is not "indirect draws are used" -- that is
+            // trivially true once the code exists -- but "the same triangles are
+            // drawn in fewer submissions". Triangles equal, calls lower.
+            if (probe_indirect) {
+                static uint32_t ind_calls = 0, ind_tris = 0;
+                static uint32_t dir_calls = 0, dir_tris = 0;
+                constexpr uint32_t kWarm = 20, kHalf = 60;
+
+                const auto& gs = graph->get_stats();
+                if (frame_count > kWarm && frame_count <= kWarm + kHalf) {
+                    ind_calls = gs.geometry_draw_calls;
+                    ind_tris  = gs.geometry_triangles;
+                } else if (frame_count == kWarm + kHalf + 1) {
+                    editor_state.use_indirect_draws = false;   // flip mid-run
+                } else if (frame_count > kWarm + kHalf + 1 &&
+                           frame_count <= kWarm + 2 * kHalf) {
+                    dir_calls = gs.geometry_draw_calls;
+                    dir_tris  = gs.geometry_triangles;
+                } else if (frame_count > kWarm + 2 * kHalf) {
+                    const bool same_tris = (ind_tris == dir_tris);
+                    const bool fewer     = (ind_calls < dir_calls);
+                    std::printf(
+                        "{\"indirect_draw_calls\":%u,\"direct_draw_calls\":%u,"
+                        "\"indirect_triangles\":%u,\"direct_triangles\":%u,"
+                        "\"same_triangles\":%s,\"fewer_calls\":%s,"
+                        "\"multi_draw\":%s}\n",
+                        ind_calls, dir_calls, ind_tris, dir_tris,
+                        same_tris ? "true" : "false",
+                        fewer ? "true" : "false",
+                        device.multi_draw_indirect_enabled() ? "true" : "false");
+                    std::fflush(stdout);
+                    spdlog::info("[indirect] {} calls / {} tris  vs  direct {} calls / {} tris",
+                                 ind_calls, ind_tris, dir_calls, dir_tris);
+                    break;
+                }
+            }
+
             if (frame_limit > 0 && frame_count >= frame_limit) {
                 spdlog::info("[frames] rendered {} frame(s); exiting as requested", frame_count);
                 break;

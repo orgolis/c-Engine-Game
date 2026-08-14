@@ -726,6 +726,26 @@ void VulkanDevice::create_logical_device() {
         }
     }
 
+    // Multi-draw indirect (3.2). Lets one vkCmdDrawIndexedIndirect issue many
+    // draws from a buffer, which is what turns the per-meshlet loop from N
+    // draw calls into one. Guarded the same way as anisotropy: requesting an
+    // unsupported feature is a device-creation failure, and drawCount > 1
+    // without it is undefined behaviour rather than an error -- so the renderer
+    // asks whether it was actually granted rather than assuming.
+    {
+        VkPhysicalDeviceFeatures supported{};
+        vkGetPhysicalDeviceFeatures(physical_device, &supported);
+        if (supported.multiDrawIndirect) {
+            device_features.multiDrawIndirect = VK_TRUE;
+            multi_draw_indirect_enabled_ = true;
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties(physical_device, &props);
+            max_draw_indirect_count_ = props.limits.maxDrawIndirectCount;
+        }
+        // drawIndirectFirstInstance is needed only if firstInstance != 0; the
+        // commands built here always use 0, so it is deliberately not required.
+    }
+
     // Device extensions — swapchain is required; the four KHR ray-tracing
     // extensions are added if the physical device advertises all of them.
     std::vector<const char*> extensions = {

@@ -80,6 +80,8 @@ struct GBufferConfig {
     VkDescriptorSetLayout material_set_layout = VK_NULL_HANDLE;
 };
 
+class VulkanIndirectDrawBuffer;
+
 /**
  * @class VulkanGBuffer
  * @brief Vulkan G-Buffer implementation for deferred rendering
@@ -88,6 +90,19 @@ struct GBufferConfig {
  */
 class VulkanGBuffer {
 public:
+    /// Route meshlet draws through an indirect buffer (3.2).
+    ///
+    /// Optional and off by default: passing nullptr keeps the direct path
+    /// exactly as it was, so the two can be compared on the same frame rather
+    /// than on two builds. Comparability is the whole acceptance criterion for
+    /// this item -- "it uses indirect draws" is not a result, "it draws the
+    /// same triangles in fewer submissions" is.
+    void set_indirect_draws(VulkanIndirectDrawBuffer* buf) { indirect_ = buf; }
+
+    /// GPU submissions issued for meshlets last frame. With multi-draw this is
+    /// one per submesh rather than one per meshlet.
+    uint32_t last_indirect_submissions() const { return last_indirect_submissions_; }
+
     VulkanGBuffer() = default;
     ~VulkanGBuffer();
     
@@ -293,6 +308,9 @@ private:
     void create_terrain_pipeline();
     void create_demo_vertex_buffer();
     void cleanup();
+
+    VulkanIndirectDrawBuffer* indirect_ = nullptr;   // not owned; nullptr = direct path
+    uint32_t last_indirect_submissions_ = 0;
 };
 
 } // namespace gws::renderer::gpu

@@ -4,6 +4,7 @@
  */
 
 #include "vulkan_g_buffer.h"
+#include "vulkan_indirect_draws.h"
 #include "vulkan_device.h"
 #include "vulkan_shader_registry.h"
 #include "vulkan_scene_mesh.h"
@@ -1000,6 +1001,7 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
                                const Frustum* meshlet_frustum) {
     if (out_draw_calls) *out_draw_calls = 0;
     if (out_triangles)  *out_triangles  = 0;
+    last_indirect_submissions_ = 0;
     if (scene_pipeline_back_ == VK_NULL_HANDLE || scene_pipeline_none_ == VK_NULL_HANDLE ||
         draws == nullptr || draw_count == 0) {
         return;
@@ -1097,13 +1099,53 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
                     glm::length(glm::vec3(d.model[1])),
                     glm::length(glm::vec3(d.model[2]))
                 });
-                for (const auto& ml : sm.lod0_meshlets) {
-                    const glm::vec3 wc = glm::vec3(d.model * glm::vec4(ml.center, 1.0f));
-                    const float wr = ml.radius * scale;
-                    if (!meshlet_frustum->is_sphere_visible(wc, wr)) continue;
-                    d.mesh->draw_meshlet(cmd, ml.first_index, ml.index_count);
-                    if (out_draw_calls) ++(*out_draw_calls);
-                    if (out_triangles) *out_triangles += ml.index_count / 3;
+                // Indirect path (3.2). The visible meshlets of one submesh
+                // all read the same bound vertex/index buffers and differ only
+                // in their index range -- which is precisely what one
+                // vkCmdDrawIndexedIndirect with drawCount = N expresses. A
+                // mesh with two hundred visible meshlets went from two hundred
+                // draw calls to one.
+                if (indirect_ != nullptr) {
+                    const uint32_t first = indirect_->command_count();
+                    uint32_t appended = 0;
+                    for (const auto& ml : sm.lod0_meshlets) {
+                        const glm::vec3 wc = glm::vec3(d.model * glm::vec4(ml.center, 1.0f));
+                        const float wr = ml.radius * scale;
+                        if (!meshlet_frustum->is_sphere_visible(wc, wr)) continue;
+                        indirect_->append(ml.index_count, ml.first_index);
+                        ++appended;
+                        if (out_triangles) *out_triangles += ml.index_count / 3;
+                    }
+                    if (appended > 0) {
+                        // Uploaded per submesh rather than once per frame: the
+                        // draw has to be recorded here, while this mesh's
+                        // buffers and descriptors are still bound.
+                        if (indirect_->upload()) {
+                            indirect_->draw(cmd, first, appended);
+                            last_indirect_submissions_ += indirect_->last_submission_count();
+                            if (out_draw_calls)
+                                *out_draw_calls += indirect_->last_submission_count();
+                        } else {
+                            // Growth failed. Fall back rather than issue a call
+                            // that would read stale commands -- garbage geometry
+                            // is worse than a slow frame.
+                            for (const auto& ml : sm.lod0_meshlets) {
+                                const glm::vec3 wc = glm::vec3(d.model * glm::vec4(ml.center, 1.0f));
+                                if (!meshlet_frustum->is_sphere_visible(wc, ml.radius * scale)) continue;
+                                d.mesh->draw_meshlet(cmd, ml.first_index, ml.index_count);
+                                if (out_draw_calls) ++(*out_draw_calls);
+                            }
+                        }
+                    }
+                } else {
+                    for (const auto& ml : sm.lod0_meshlets) {
+                        const glm::vec3 wc = glm::vec3(d.model * glm::vec4(ml.center, 1.0f));
+                        const float wr = ml.radius * scale;
+                        if (!meshlet_frustum->is_sphere_visible(wc, wr)) continue;
+                        d.mesh->draw_meshlet(cmd, ml.first_index, ml.index_count);
+                        if (out_draw_calls) ++(*out_draw_calls);
+                        if (out_triangles) *out_triangles += ml.index_count / 3;
+                    }
                 }
                 drew_meshlets = true;
             }

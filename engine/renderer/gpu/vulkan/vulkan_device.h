@@ -293,6 +293,13 @@ public:
     /// Sampler creation must gate `anisotropyEnable` on this.
     bool anisotropy_enabled() const { return anisotropy_enabled_; }
 
+    /// True when multiDrawIndirect was actually GRANTED at device creation.
+    /// Callers must ask: issuing drawCount > 1 without it is undefined
+    /// behaviour rather than a reported error, so it fails silently and
+    /// differently on every driver.
+    bool     multi_draw_indirect_enabled() const { return multi_draw_indirect_enabled_; }
+    uint32_t max_draw_indirect_count()     const { return max_draw_indirect_count_; }
+
     /// Device's `maxSamplerAnisotropy` limit (1.0 when anisotropy is disabled).
     /// Callers must clamp their requested anisotropy to this.
     float max_anisotropy() const { return max_anisotropy_; }
@@ -386,6 +393,8 @@ private:
     // enabled. `max_anisotropy_` mirrors the device's limit. See
     // `anisotropy_enabled()` / `max_anisotropy()`.
     bool  anisotropy_enabled_ = false;
+    bool  multi_draw_indirect_enabled_ = false;
+    uint32_t max_draw_indirect_count_ = 1;
     float max_anisotropy_     = 1.0f;
 
     // Resolved RT function pointers — populated after logical device
