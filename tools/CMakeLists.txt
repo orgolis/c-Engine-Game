@@ -153,6 +153,23 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(snap_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# shadercompile_check: a graph becomes REAL SPIR-V. shadergraph_check proves the
+# generated GLSL has the right shape; this proves it is actually GLSL, using the
+# same wrapper and the same compiler the editor uses. Skips itself when no
+# compiler is present -- glslangValidator ships beside the editor but is not in
+# a source checkout, and a check that goes red on a healthy machine teaches
+# people to ignore red.
+add_executable(shadercompile_check shadercompile_check/main.cpp
+                                   ../editor/src/shader_compile_service.cpp
+                                   ../engine/core/shadergraph/material_graph.cpp)
+target_include_directories(shadercompile_check PRIVATE
+                           ../editor/include ../engine/core/shadergraph)
+target_link_libraries(shadercompile_check PRIVATE gws_logging)
+target_compile_features(shadercompile_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(shadercompile_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # canvasview_check: the node canvas's coordinate maths. Everything that makes a
 # node editor feel broken lives here -- clicks landing beside the cursor, links
 # attaching to the wrong pin, the graph sliding away as you scroll. None of it

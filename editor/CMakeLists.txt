@@ -60,6 +60,7 @@ target_sources(editor
     src/curve_editor.cpp
     src/node_canvas.cpp
     src/material_graph_panel.cpp
+    src/shader_compile_service.cpp
     ../engine/core/shadergraph/material_graph.cpp
         src/editor_scene.cpp
         src/scene_serializer.cpp
@@ -114,6 +115,10 @@ endif()
 #     engine so CPack excludes third-party libs' own install() output. ---
 gws_bundle_runtime(editor "${GWS_ENGINE_DEST}")   # runtime DLLs (COMPONENT engine)
 install(TARGETS editor RUNTIME DESTINATION "${GWS_ENGINE_DEST}" COMPONENT engine)
+
+# Ship the shader compiler beside the editor so material graphs (4.1) can be
+# compiled on a machine without the Vulkan SDK.
+gws_bundle_shader_compiler(editor "${GWS_ENGINE_DEST}")
 # Minimal engine default content. The sky is procedural (no HDR needed) and the
 # heavy dev models in assets/models are NOT shipped — projects carry their own.
 install(DIRECTORY

@@ -65,6 +65,7 @@
 #include "npc_agent_component.h"
 #include "scene_component_reflect.h"
 #include "snapping.h"                         // grid / angle / scale snapping (4.7)
+#include "shader_compile_service.h"          // GLSL -> SPIR-V via the bundled compiler
 #include "material_graph_panel.h"           // node-based material editor (4.1)
 #include "node_canvas.h"                    // generic graph surface (4.1/4.3/4.4/4.6)
 #include "curve_editor.h"                     // curve + gradient widgets (4.5)
@@ -222,6 +223,8 @@ struct EditorState {
     std::string                     material_glsl;
     bool                            material_graph_dirty = false;
     bool                            show_material_graph = false;
+    schizo::editor::ShaderCompileService shader_compiler;
+    std::string                     material_compile_status;
 
     schizo::editor::SnapSettings snap;
 
@@ -6305,6 +6308,32 @@ int main(int argc, char** argv) {
             spdlog::info("[palette] {} commands registered", cmds.size());
         }
 
+        // Shader compiler for material graphs (4.1). Looked for beside the
+        // executable first -- that is the copy shipped with the editor -- so a
+        // user without the Vulkan SDK still gets working material graphs.
+        {
+            // The EXECUTABLE's directory, not the working directory. The two
+            // differ -- the editor changes its cwd during startup -- and using
+            // cwd found the Vulkan SDK's copy instead of the one shipped
+            // beside editor.exe. On a user's machine, where there is no SDK,
+            // that would have found nothing at all: material graphs would have
+            // silently degraded to uncompilable for exactly the people the
+            // bundling exists to serve.
+            std::string exe_dir;
+#ifdef _WIN32
+            {
+                char buf[MAX_PATH]{};
+                if (GetModuleFileNameA(nullptr, buf, MAX_PATH) != 0)
+                    exe_dir = std::filesystem::path(buf).parent_path().string();
+            }
+#endif
+            if (exe_dir.empty()) {
+                std::error_code ec;
+                exe_dir = std::filesystem::current_path(ec).string();
+            }
+            editor_state.shader_compiler.init(exe_dir);
+        }
+
         // ----------------------------------------------------------------
         // Main loop
         // ----------------------------------------------------------------
@@ -7266,6 +7295,28 @@ int main(int argc, char** argv) {
                     editor_state.material_canvas,
                     editor_state.material_glsl,
                     editor_state.material_graph_dirty);
+
+                // Compile only when the graph actually changed. The service
+                // also hashes the source, so a dirty flag raised by a node
+                // MOVE costs a hash rather than a process launch.
+                if (editor_state.material_graph_dirty &&
+                    !editor_state.material_glsl.empty()) {
+                    editor_state.material_graph_dirty = false;
+                    const auto res = editor_state.shader_compiler.compile_material(
+                        editor_state.material_glsl);
+                    if (res.ok) {
+                        editor_state.material_compile_status =
+                            "compiled: " + std::to_string(res.spirv.size() * 4) + " bytes of SPIR-V" +
+                            (res.from_cache ? " (cached)" : "");
+                        spdlog::info("[shadergraph] {}", editor_state.material_compile_status);
+                    } else if (res.compiler_missing) {
+                        editor_state.material_compile_status =
+                            "no shader compiler available — the graph is editable but cannot be compiled";
+                    } else {
+                        editor_state.material_compile_status = res.error;
+                        spdlog::warn("[shadergraph] compile failed: {}", res.error);
+                    }
+                }
             }
 
             // Command palette (4.2). Ctrl+P opens it. Drawn last among the

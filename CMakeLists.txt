@@ -68,6 +68,48 @@ function(gws_bundle_runtime tgt dest)
     endif()
 endfunction()
 
+# ---------------------------------------------------------------------------
+# glslangValidator, shipped beside the editor (4.1).
+#
+# The material graph produces a shader that does not exist until a user makes
+# one, and this engine cannot compile GLSL in-process: GWS_HAS_GLSLANG is never
+# defined because the glslang wrapper links only under MSVC and this is a MinGW
+# build. So the editor invokes the standalone compiler as a subprocess.
+#
+# It is COPIED IN rather than assumed present. Someone using the editor is not a
+# Vulkan developer and will not have the SDK; requiring it would mean material
+# graphs work for us and fail silently for them, which is the worst outcome
+# available. 4.6 MB against that is a trade worth making.
+#
+# Absence is not fatal: the service reports "compilation unavailable" and graphs
+# remain editable, so a source build without the SDK still runs.
+# ---------------------------------------------------------------------------
+function(gws_bundle_shader_compiler tgt dest)
+    set(_gv "")
+    if(DEFINED ENV{VULKAN_SDK})
+        if(WIN32)
+            set(_cand "$ENV{VULKAN_SDK}/Bin/glslangValidator.exe")
+        else()
+            set(_cand "$ENV{VULKAN_SDK}/bin/glslangValidator")
+        endif()
+        if(EXISTS "${_cand}")
+            set(_gv "${_cand}")
+        endif()
+    endif()
+
+    if(_gv STREQUAL "")
+        message(STATUS "glslangValidator not found — the editor will ship without it and "
+                       "material graphs will be editable but not compilable")
+        return()
+    endif()
+
+    message(STATUS "bundling shader compiler: ${_gv}")
+    add_custom_command(TARGET ${tgt} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_gv}" "$<TARGET_FILE_DIR:${tgt}>"
+        VERBATIM)
+    install(PROGRAMS "${_gv}" DESTINATION "${dest}" COMPONENT engine)
+endfunction()
+
 # The engine package is flat (editor.exe + DLLs + content at the root). CI
 # uploads it as a release asset; the Hub downloads it, finds editor.exe, and
 # installs it into %LOCALAPPDATA%/GameWorldshaper/Engines/<version>/.
