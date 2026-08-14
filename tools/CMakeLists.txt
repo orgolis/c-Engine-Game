@@ -153,6 +153,20 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(snap_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# shadergraph_check: codegen is where a shader graph fails SILENTLY. A graph
+# emitting statements in the wrong order, dropping a branch, or writing an
+# integer literal produces a shader that compiles cleanly and shades subtly
+# wrong -- and "this material looks a bit off" points nowhere near the cause.
+# Asserts declaration order, explicit conversion, cycle refusal, determinism
+# and dead-code exclusion.
+add_executable(shadergraph_check shadergraph_check/main.cpp
+                                 ../engine/core/shadergraph/material_graph.cpp)
+target_include_directories(shadergraph_check PRIVATE ../engine/core/shadergraph)
+target_compile_features(shadergraph_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(shadergraph_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # curve_check: the half of 4.5 that can be wrong without LOOKING wrong. A
 # gradient that reads its last stop early, or a curve that steps where it should
 # ease, is invisible in a screenshot and obvious in motion -- where it reads as
