@@ -153,6 +153,20 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(snap_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# canvasview_check: the node canvas's coordinate maths. Everything that makes a
+# node editor feel broken lives here -- clicks landing beside the cursor, links
+# attaching to the wrong pin, the graph sliding away as you scroll. None of it
+# shows in a screenshot and all of it is arithmetic. CanvasView is ImGui-free
+# precisely so it can be tested.
+add_executable(canvasview_check canvasview_check/main.cpp
+                                ../editor/src/node_canvas.cpp)
+target_include_directories(canvasview_check PRIVATE ../editor/include ../third_party/imgui)
+target_link_libraries(canvasview_check PRIVATE imgui)
+target_compile_features(canvasview_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(canvasview_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # shadergraph_check: codegen is where a shader graph fails SILENTLY. A graph
 # emitting statements in the wrong order, dropping a branch, or writing an
 # integer literal produces a shader that compiles cleanly and shades subtly

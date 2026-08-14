@@ -65,6 +65,8 @@
 #include "npc_agent_component.h"
 #include "scene_component_reflect.h"
 #include "snapping.h"                         // grid / angle / scale snapping (4.7)
+#include "material_graph_panel.h"           // node-based material editor (4.1)
+#include "node_canvas.h"                    // generic graph surface (4.1/4.3/4.4/4.6)
 #include "curve_editor.h"                     // curve + gradient widgets (4.5)
 #include "command_palette.h"                 // Ctrl+P: one entry point for every action (4.2)
 #include "component_inspector.h"  // generic reflection-driven ECS component authoring (F2)
@@ -212,6 +214,14 @@ struct EditorState {
     // acceptance criterion is a COMPARISON against the direct path and that
     // needs both available in the same build.
     bool use_indirect_draws = true;
+
+    // Material graph (4.1). One graph and one canvas for now; a project-wide
+    // material library is the next step, not this one.
+    gws::shadergraph::MaterialGraph material_graph;
+    schizo::editor::NodeCanvas      material_canvas;
+    std::string                     material_glsl;
+    bool                            material_graph_dirty = false;
+    bool                            show_material_graph = false;
 
     schizo::editor::SnapSettings snap;
 
@@ -1371,6 +1381,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             ImGui::MenuItem("Viewport", nullptr, &editor_state.show_viewport);
             ImGui::Separator();
             ImGui::MenuItem("Playback Controls", nullptr, &editor_state.show_playback_controls);
+            ImGui::MenuItem("Material Graph", nullptr, &editor_state.show_material_graph);
             ImGui::MenuItem("Performance (Stage 14)", nullptr, &editor_state.show_performance);
             ImGui::MenuItem("Debug Panels (Phase 6)", nullptr, &editor_state.show_debug_panels);
             ImGui::MenuItem("Post-Processing", nullptr, &editor_state.show_post_processing);
@@ -6281,6 +6292,9 @@ int main(int argc, char** argv) {
             cmds.add("Toggle Logic Graph", "Window", "", [&st] {
                 st.show_logic_graph = !st.show_logic_graph;
             });
+            cmds.add("Material Graph", "Window", "", [&st] {
+                st.show_material_graph = !st.show_material_graph;
+            });
             cmds.add("Toggle Post-Processing", "Window", "", [&st] {
                 st.show_post_processing = !st.show_post_processing;
             });
@@ -7243,6 +7257,16 @@ int main(int argc, char** argv) {
                 editor_state.asset_import_dialog->IsOpen())
                 editor_state.asset_import_dialog->RenderDialog();
             ShowPreferences(editor_state);
+
+            // Material graph (4.1).
+            if (editor_state.show_material_graph) {
+                schizo::editor::draw_material_graph_panel(
+                    editor_state.show_material_graph,
+                    editor_state.material_graph,
+                    editor_state.material_canvas,
+                    editor_state.material_glsl,
+                    editor_state.material_graph_dirty);
+            }
 
             // Command palette (4.2). Ctrl+P opens it. Drawn last among the
             // panels so it sits above them, and checked with the Ctrl modifier

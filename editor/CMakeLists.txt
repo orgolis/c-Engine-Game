@@ -14,6 +14,7 @@ target_include_directories(editor
         ${CMAKE_SOURCE_DIR}/third_party/imgui/backends
         ${CMAKE_SOURCE_DIR}/third_party/glfw/include
         ${CMAKE_SOURCE_DIR}/third_party/pocketpy   # Python script backend (Stage 12)
+        ${CMAKE_SOURCE_DIR}/engine/core/shadergraph  # material graph model (4.1)
 )
 
 # Link libraries
@@ -57,6 +58,9 @@ target_sources(editor
         src/logic_graph_panel.cpp
     src/command_palette.cpp
     src/curve_editor.cpp
+    src/node_canvas.cpp
+    src/material_graph_panel.cpp
+    ../engine/core/shadergraph/material_graph.cpp
         src/editor_scene.cpp
         src/scene_serializer.cpp
         src/mesh_generator.cpp
