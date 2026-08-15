@@ -375,6 +375,19 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetwatch_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# material_check: the .mat asset format. A material sits between a person editing
+# text and a descriptor set the GPU reads, and BOTH ends fail silently — a field
+# that round-trips wrong just renders last week's roughness. Asserts the round
+# trip field by field, that a missing file FAILS rather than parsing to a
+# plausible white default, and that the content hash reacts to everything the GPU
+# can see and to nothing it cannot (a rename must not churn descriptor sets).
+add_executable(material_check material_check/main.cpp)
+target_link_libraries(material_check PRIVATE gws_assets)
+target_compile_features(material_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(material_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # playchanges_check: play mode must not eat a tuning pass — and must never write
 # to the authored scene unless a change was explicitly ticked. Compiles the
 # editor's play_mode_changes.cpp + ecs_bridge.cpp directly; both are GPU-free, so
