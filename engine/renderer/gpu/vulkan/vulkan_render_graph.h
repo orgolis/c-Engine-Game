@@ -33,6 +33,7 @@ class VulkanOcclusionCuller;
 class VulkanHzbCuller;
 class Mesh;
 class Material;
+class TerrainMaterial;
 
 /**
  * @struct DrawItem
@@ -62,10 +63,21 @@ struct DrawItem {
     /// which is also the only way to see whether the graph is doing anything.
     bool            use_graph_material = false;
     /// True for terrain draws: the G-Buffer pass binds the terrain splat
-    /// pipeline (samples `material`'s 5 texture slots as splatmap + 4 tiling
-    /// layers and blends them) instead of the standard PBR scene pipeline.
-    /// The material/mesh/push-constant path is otherwise identical.
+    /// pipeline and `terrain_material` (14 bindings: splat map + albedo, normal
+    /// and metal/rough for each of 4 layers) instead of the standard PBR scene
+    /// pipeline. The mesh / push-constant path is otherwise identical.
     bool            is_terrain    = false;
+    /// The terrain surface description, required when `is_terrain` is set.
+    ///
+    /// A terrain draw carries BOTH this and an ordinary `material`, because the
+    /// other consumers of a draw cannot read a fourteen-binding set: the shadow
+    /// caster binds a material at set 0 to alpha-test, and the RT pass reads
+    /// `Material::params()` to shade hit points. Giving terrain a small ordinary
+    /// material for those two also fixes a latent bug — RT used to read a
+    /// terrain material's `base_color_factor`, which for terrain held four
+    /// per-layer TILING numbers, so terrain reflections were shaded with a
+    /// "colour" made of the numbers 16, 16, 16, 16.
+    const TerrainMaterial* terrain_material = nullptr;
 };
 
 /**

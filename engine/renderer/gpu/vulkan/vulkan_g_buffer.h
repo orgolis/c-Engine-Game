@@ -78,6 +78,14 @@ struct GBufferConfig {
     /// and keep the layout alive for the G-Buffer's lifetime. When null, only
     /// the demo pipeline is built — `draw_items` will be a no-op.
     VkDescriptorSetLayout material_set_layout = VK_NULL_HANDLE;
+
+    /// Optional terrain material layout (set=1 of the terrain pipeline only).
+    /// Pass `TerrainMaterial::create_descriptor_set_layout(...)`. Separate from
+    /// the layout above because terrain needs fourteen bindings and every other
+    /// pipeline needs six — sharing one would make every ordinary material carry
+    /// eight sampler descriptors it never uses. When null the terrain pipeline
+    /// is not built, and terrain draws fall back to the scene pipeline.
+    VkDescriptorSetLayout terrain_set_layout = VK_NULL_HANDLE;
 };
 
 class VulkanIndirectDrawBuffer;
@@ -304,12 +312,16 @@ private:
     VkPipeline       scene_pipeline_none_        = VK_NULL_HANDLE;
     VkPipelineLayout scene_pipeline_layout_      = VK_NULL_HANDLE;
 
-    /// Terrain splat pipeline. Shares `scene_pipeline_layout_` (same set=1
-    /// material layout + ScenePushConstants) but uses the terrain splat-blend
-    /// fragment shader. Cull-none (terrain is viewed from above but the brim
-    /// can be grazed from below). Selected for `DrawItem::is_terrain` draws.
-    /// VK_NULL_HANDLE when no material layout was supplied (draw_items skips).
+    /// Terrain splat pipeline, with its OWN pipeline layout: the terrain
+    /// fragment shader declares fourteen bindings at set=1 where the scene
+    /// shader declares six, so the two cannot share a layout. Push constants are
+    /// identical (ScenePushConstants), so the vertex stage is unaffected.
+    /// Cull-none (terrain is viewed from above but the brim can be grazed from
+    /// below). Selected for `DrawItem::is_terrain` draws. VK_NULL_HANDLE when no
+    /// terrain layout was supplied — such draws then take the scene pipeline,
+    /// which renders the terrain untextured rather than not at all.
     VkPipeline       terrain_pipeline_           = VK_NULL_HANDLE;
+    VkPipelineLayout terrain_pipeline_layout_    = VK_NULL_HANDLE;
 
     // Helper functions
     VkFormat format_to_vk(GBufferFormat fmt);

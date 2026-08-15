@@ -2722,30 +2722,89 @@ void ShowInspector(EditorState& editor_state) {
                 ImGui::SliderFloat("Paint Strength##terrain", &editor_state.terrain_paint_strength, 0.01f, 1.0f);
                 ImGui::SliderFloat("Paint Radius##terrain",   &editor_state.terrain_brush_radius,   0.5f, 50.0f);
 
-                // Per-layer texture path + tiling. Char buffers re-synced from
-                // the component when the inspected entity changes; the path is
-                // committed only when the field loses focus (avoids reloading a
-                // texture on every keystroke).
+                // Per-layer surface + tiling.
+                //
+                // Two ways to give a layer a surface, and the panel says which
+                // one is in effect rather than leaving it to be inferred:
+                //   - a MATERIAL (.mat) — albedo, normal and metal/rough maps
+                //     plus tint and PBR factors, shared with objects;
+                //   - a single TEXTURE — the fast blockout path, and what every
+                //     terrain painted before materials existed already uses.
+                // A material wins when both are set, exactly as it does on a
+                // MeshRendererComponent.
+                //
+                // Tiling stays on the terrain, not in the material: one rock has
+                // to repeat 8 times across a 100 m terrain and 300 across a 4 km
+                // one, so putting it in the .mat would make a shared rock
+                // unusable on two terrains of different sizes.
+                ImGui::TextDisabled("Drop a .mat for full PBR, or a texture for a quick blockout.");
                 static uint32_t terr_synced_id = 0xFFFFFFFFu;
                 static char     terr_layer_buf[schizo::scene::kTerrainLayers][260];
+                static char     terr_mat_buf[schizo::scene::kTerrainLayers][260];
                 const uint32_t  terr_eid = selected_entity->GetId();
                 if (terr_synced_id != terr_eid) {
-                    for (int i = 0; i < schizo::scene::kTerrainLayers; ++i)
+                    for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
                         std::snprintf(terr_layer_buf[i], sizeof terr_layer_buf[i],
                                       "%s", terrain_comp->GetLayerPath(i).c_str());
+                        std::snprintf(terr_mat_buf[i], sizeof terr_mat_buf[i],
+                                      "%s", terrain_comp->GetLayerMaterial(i).c_str());
+                    }
                     terr_synced_id = terr_eid;
                 }
                 for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
                     ImGui::PushID(i);
-                    char lbl[32]; std::snprintf(lbl, sizeof lbl, "Layer %d##path", i);
-                    ImGui::InputText(lbl, terr_layer_buf[i], sizeof terr_layer_buf[i]);
+                    ImGui::Separator();
+                    ImGui::Text("Layer %d%s", i,
+                                i == editor_state.terrain_paint_layer ? "  (painting)" : "");
+
+                    // Material slot.
+                    ImGui::SetNextItemWidth(-70.0f);
+                    ImGui::InputTextWithHint("##mat", "no material — using the texture below",
+                                             terr_mat_buf[i], sizeof terr_mat_buf[i]);
                     if (ImGui::IsItemDeactivatedAfterEdit()) {
+                        terrain_comp->SetLayerMaterial(i, terr_mat_buf[i]);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    if (ImGui::BeginDragDropTarget()) {
+                        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(
+                                schizo::editor::AssetBrowserPanel::kPayloadMaterial)) {
+                            const char* mp = static_cast<const char*>(pl->Data);
+                            if (mp && mp[0]) {
+                                terrain_comp->SetLayerMaterial(i, mp);
+                                std::snprintf(terr_mat_buf[i], sizeof terr_mat_buf[i], "%s", mp);
+                                editor_state.editor_scene->MarkModified();
+                            }
+                        }
+                        ImGui::EndDragDropTarget();
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("material");
+                    if (terrain_comp->HasLayerMaterial(i)) {
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("x##clearmat")) {
+                            // Detach only. The .mat stays on disk; other layers
+                            // and other objects may still be using it.
+                            terrain_comp->SetLayerMaterial(i, "");
+                            terr_mat_buf[i][0] = '\0';
+                            editor_state.editor_scene->MarkModified();
+                        }
+                    }
+
+                    // Legacy single-texture slot. Disabled while a material is
+                    // assigned, because it would not be doing anything — a field
+                    // that silently has no effect is worse than one that says so.
+                    const bool has_mat = terrain_comp->HasLayerMaterial(i);
+                    ImGui::BeginDisabled(has_mat);
+                    ImGui::SetNextItemWidth(-70.0f);
+                    ImGui::InputTextWithHint("##path", "albedo texture",
+                                             terr_layer_buf[i], sizeof terr_layer_buf[i]);
+                    if (!has_mat && ImGui::IsItemDeactivatedAfterEdit()) {
                         terrain_comp->SetLayerPath(i, terr_layer_buf[i]);
                         editor_state.editor_scene->MarkModified();
                     }
-                    // Drag a texture from the Asset Browser onto the layer.
-                    if (ImGui::BeginDragDropTarget()) {
-                        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
+                    if (!has_mat && ImGui::BeginDragDropTarget()) {
+                        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(
+                                schizo::editor::AssetBrowserPanel::kPayloadTexture)) {
                             const char* tp = static_cast<const char*>(pl->Data);
                             if (tp && tp[0]) {
                                 terrain_comp->SetLayerPath(i, tp);
@@ -2755,13 +2814,29 @@ void ShowInspector(EditorState& editor_state) {
                         }
                         ImGui::EndDragDropTarget();
                     }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("texture");
+                    ImGui::EndDisabled();
+                    if (has_mat && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                        ImGui::SetTooltip("The material above supplies this layer's surface.\n"
+                                          "Clear it to go back to a single texture.");
+
                     float t = terrain_comp->GetTiling(i);
-                    if (ImGui::SliderFloat("tiling", &t, 1.0f, 128.0f)) {
+                    ImGui::SetNextItemWidth(-70.0f);
+                    if (ImGui::SliderFloat("##tiling", &t, 1.0f, 512.0f, "%.0f",
+                                           ImGuiSliderFlags_Logarithmic)) {
                         terrain_comp->SetTiling(i, t);
                         editor_state.editor_scene->MarkModified();
                     }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("tiling");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("How many times this layer repeats across the whole\n"
+                                          "terrain. Lives here, not in the material, so one rock\n"
+                                          "can be reused on terrains of different sizes.");
                     ImGui::PopID();
                 }
+                ImGui::Separator();
                 if (ImGui::Button("Clear Painting##terrain")) {
                     terrain_comp->ResizeSplat(terrain_comp->SplatResolution());
                     editor_state.editor_scene->MarkModified();
@@ -5051,6 +5126,17 @@ int main(int argc, char** argv) {
         VkDescriptorPool mat_pool =
             Material::create_descriptor_pool(device.get_device(), 512);
 
+        // Terrain has its own layout and pool: fourteen bindings where the scene
+        // material has six. Sharing one layout would make every ordinary
+        // material carry eight sampler descriptors it never uses, and sharing
+        // one pool would make a single terrain cost as much budget as thirteen
+        // objects. 32 is generous — one terrain material per terrain ENTITY, and
+        // a scene with more than a handful of terrains has other problems.
+        VkDescriptorSetLayout terrain_mat_layout =
+            gws::renderer::gpu::TerrainMaterial::create_descriptor_set_layout(device.get_device());
+        VkDescriptorPool terrain_mat_pool =
+            gws::renderer::gpu::TerrainMaterial::create_descriptor_pool(device.get_device(), 32);
+
         // ----------------------------------------------------------------
         // Runtime texture handling (Master Plan Stage 2). Owns the shared
         // SamplerCache + engine-wide default textures, deduplicates textures by
@@ -5093,6 +5179,7 @@ int main(int argc, char** argv) {
         g_cfg.width              = kW;
         g_cfg.height             = kH;
         g_cfg.material_set_layout = mat_layout;
+        g_cfg.terrain_set_layout  = terrain_mat_layout;
         auto g_buffer = VulkanGBuffer::create(&device, g_cfg);
 
         LightingConfig l_cfg{};
@@ -7906,7 +7993,7 @@ int main(int argc, char** argv) {
                   editor_scene.GetScene(), prim_cache, mat_cache, asset_cache,
                   terrain_cache, terrain_gpu_cache, &device, mat_layout, mat_pool,
                   opaque_draws, transparent_draws, &texture_manager, &ecs_bridge,
-                  &material_assets); }
+                  &material_assets, terrain_mat_layout, terrain_mat_pool); }
 
             // Reclaim GPU materials nothing has referenced for a while. No
             // device idle: the grace period is an order of magnitude longer than
@@ -8628,6 +8715,8 @@ int main(int argc, char** argv) {
         prim_cache.cylinder.reset();
         prim_cache.capsule.reset();
         prim_cache.pyramid.reset();
+        vkDestroyDescriptorPool(device.get_device(), terrain_mat_pool, nullptr);
+        vkDestroyDescriptorSetLayout(device.get_device(), terrain_mat_layout, nullptr);
         vkDestroyDescriptorPool(device.get_device(), mat_pool, nullptr);
         vkDestroyDescriptorSetLayout(device.get_device(), mat_layout, nullptr);
 

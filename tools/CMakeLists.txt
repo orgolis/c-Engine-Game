@@ -404,6 +404,32 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(materialcache_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# terrainmat_check: the terrain material contract. Terrain moved from five
+# reinterpreted sampler slots to a dedicated 14-binding layout, and both joints
+# of that change fail SILENTLY. The binding indices C++ writes to are the ones
+# GLSL declares, with nothing cross-checking them — bind a normal map where the
+# shader reads albedo and the terrain renders, in the wrong colours, with an
+# empty log. So this PARSES gbuffer_terrain.frag and asserts every index and
+# sampler name against what vulkan_terrain_material.cpp writes, plus the std140
+# offsets of the uniform block that gets memcpy'd into it. Also covers the layer
+# resolution rule, whose inversion reads as "I assigned a material and nothing
+# happened". No GPU: the shader is read as text and the rule is plain data.
+add_executable(terrainmat_check terrainmat_check/main.cpp)
+target_include_directories(terrainmat_check PRIVATE
+    ../editor/include
+    ${CMAKE_SOURCE_DIR}/engine/renderer/gpu
+    ${CMAKE_SOURCE_DIR}/engine/scene/include
+    ${Vulkan_INCLUDE_DIRS})
+# Vulkan HEADERS only, deliberately not Vulkan::Vulkan: TerrainMaterialUniforms
+# lives beside the class that uploads it, so reading its layout needs the header
+# — but this check must never be able to touch a device, which is what keeps it
+# runnable on a CI box with no GPU.
+target_link_libraries(terrainmat_check PRIVATE gws_assets gws_logging scene)
+target_compile_features(terrainmat_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(terrainmat_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # playchanges_check: play mode must not eat a tuning pass — and must never write
 # to the authored scene unless a change was explicitly ticked. Compiles the
 # editor's play_mode_changes.cpp + ecs_bridge.cpp directly; both are GPU-free, so

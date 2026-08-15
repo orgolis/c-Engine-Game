@@ -9,6 +9,7 @@
 #include "vulkan_shader_registry.h"
 #include "vulkan_scene_mesh.h"
 #include "vulkan_scene_material.h"
+#include "vulkan_terrain_material.h"
 #include "vulkan_render_graph.h" // for DrawItem
 #include "gbuffer_demo_spirv.h"   // pre-compiled SPIR-V fallback for GCC builds
 #include "gbuffer_scene_spirv.h"  // pre-compiled SPIR-V fallback for GCC builds
@@ -875,6 +876,59 @@ VkPipeline VulkanGBuffer::create_material_graph_pipeline(const uint32_t* spirv, 
 void VulkanGBuffer::create_terrain_pipeline() {
     VkDevice vk_device = device_->get_device();
 
+    // Terrain needs its own PIPELINE LAYOUT, not just its own pipeline: its
+    // fragment shader declares fourteen bindings at set=1 (splat map + albedo,
+    // normal and metal/rough for each of four layers) where the scene shader
+    // declares six. Descriptor set layouts are only compatible when their
+    // bindings match exactly, so sharing scene_pipeline_layout_ — as this
+    // pipeline used to — is no longer possible.
+    //
+    // Without a terrain layout there is nothing to build. Returning leaves
+    // terrain_pipeline_ null, and draw_items then routes terrain draws through
+    // the scene pipeline: untextured terrain is a much better failure than
+    // invisible terrain.
+    if (config_.terrain_set_layout == VK_NULL_HANDLE) {
+        spdlog::warn("VulkanGBuffer: no terrain descriptor layout supplied; terrain "
+                     "will render through the standard scene pipeline (untextured)");
+        return;
+    }
+
+    {
+        VkPushConstantRange push_range{};
+        push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        push_range.offset     = 0;
+        push_range.size       = sizeof(ScenePushConstants);
+
+        // set=0 is empty, exactly as in the scene layout, so the vertex stage
+        // and push-constant block stay identical between the two pipelines.
+        VkDescriptorSetLayoutCreateInfo empty_info{};
+        empty_info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        empty_info.bindingCount = 0;
+        VkDescriptorSetLayout empty_layout = VK_NULL_HANDLE;
+        if (vkCreateDescriptorSetLayout(vk_device, &empty_info, nullptr, &empty_layout)
+            != VK_SUCCESS) {
+            spdlog::error("VulkanGBuffer: terrain empty set layout failed; terrain splat disabled");
+            return;
+        }
+        std::array<VkDescriptorSetLayout, 2> set_layouts = {
+            empty_layout, config_.terrain_set_layout };
+
+        VkPipelineLayoutCreateInfo layout_info{};
+        layout_info.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layout_info.setLayoutCount         = static_cast<uint32_t>(set_layouts.size());
+        layout_info.pSetLayouts            = set_layouts.data();
+        layout_info.pushConstantRangeCount = 1;
+        layout_info.pPushConstantRanges    = &push_range;
+        const VkResult r = vkCreatePipelineLayout(vk_device, &layout_info, nullptr,
+                                                  &terrain_pipeline_layout_);
+        vkDestroyDescriptorSetLayout(vk_device, empty_layout, nullptr);
+        if (r != VK_SUCCESS) {
+            spdlog::error("VulkanGBuffer: terrain pipeline layout failed; terrain splat disabled");
+            terrain_pipeline_layout_ = VK_NULL_HANDLE;
+            return;
+        }
+    }
+
     // GCC builds can't compile GLSL at runtime → always use the precompiled
     // SPIR-V. The terrain vertex stage is byte-identical to the scene vertex
     // stage but kept as its own module for a self-contained shader pair.
@@ -963,7 +1017,7 @@ void VulkanGBuffer::create_terrain_pipeline() {
     info.pDepthStencilState  = &ds;
     info.pColorBlendState    = &cb;
     info.pDynamicState       = &dyn;
-    info.layout              = scene_pipeline_layout_; // shared with scene pipeline
+    info.layout              = terrain_pipeline_layout_;
     info.renderPass          = render_pass_;
     info.subpass             = 0;
 
@@ -1074,6 +1128,9 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
     // typical scenes have at most a handful of cull-mode transitions).
     const Mesh*     last_mesh     = nullptr;
     const Material* last_material = nullptr;
+    // Tracked separately from `last_material`: the two bind into incompatible
+    // set=1 layouts, so one cannot stand in for the other in the redundancy check.
+    const TerrainMaterial* last_terrain_material = nullptr;
     VkPipeline      last_pipeline = VK_NULL_HANDLE;
 
     for (size_t i = 0; i < draw_count; ++i) {
@@ -1096,23 +1153,40 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
         // A graph pipeline wins when the draw asks for one AND one exists.
         // Falling back to stock shading when it does not is deliberate: a
         // material that fails to compile should look wrong, not vanish.
+        // A terrain draw takes the terrain pipeline only when it has BOTH the
+        // pipeline and a terrain material. With either missing it falls through
+        // to the scene pipeline and renders untextured — visibly wrong, but
+        // present and diagnosable, rather than silently absent.
+        const bool use_terrain = d.is_terrain &&
+                                 terrain_pipeline_ != VK_NULL_HANDLE &&
+                                 d.terrain_material != nullptr;
+
         VkPipeline pipeline =
             (d.use_graph_material && graph_pipeline_ != VK_NULL_HANDLE) ? graph_pipeline_
-            : (d.is_terrain && terrain_pipeline_ != VK_NULL_HANDLE)     ? terrain_pipeline_
+            : use_terrain                                               ? terrain_pipeline_
             : d.mesh->is_double_sided()                                 ? scene_pipeline_none_
                                                                         : scene_pipeline_back_;
         if (pipeline != last_pipeline) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             last_pipeline = pipeline;
-            // Rebind material on next draw — pipeline change invalidates
-            // descriptor set bindings even though both pipelines share a
-            // layout (Vulkan spec: bindings persist if layouts are
-            // compatible, which they are here, but it's cheap insurance).
-            last_material = nullptr;
+            // Rebind the material on the next draw. This is no longer cheap
+            // insurance: the terrain pipeline has an INCOMPATIBLE set=1 layout
+            // (fourteen bindings vs six), so a set bound under one layout is
+            // genuinely invalidated by switching to the other.
+            last_material         = nullptr;
+            last_terrain_material = nullptr;
         }
 
-        if (d.material != last_material) {
-            d.material->bind(cmd, scene_pipeline_layout_, /*set=*/1);
+        const VkPipelineLayout active_layout =
+            use_terrain ? terrain_pipeline_layout_ : scene_pipeline_layout_;
+
+        if (use_terrain) {
+            if (d.terrain_material != last_terrain_material) {
+                d.terrain_material->bind(cmd, active_layout, /*set=*/1);
+                last_terrain_material = d.terrain_material;
+            }
+        } else if (d.material != last_material) {
+            d.material->bind(cmd, active_layout, /*set=*/1);
             last_material = d.material;
         }
         if (d.mesh != last_mesh) {
@@ -1123,7 +1197,7 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
         ScenePushConstants pc{};
         pc.mvp   = view_proj * d.model;
         pc.model = d.model;
-        vkCmdPushConstants(cmd, scene_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT,
+        vkCmdPushConstants(cmd, active_layout, VK_SHADER_STAGE_VERTEX_BIT,
                            0, sizeof(pc), &pc);
 
         // Distance from camera to draw origin (model translation column).
@@ -1266,6 +1340,10 @@ void VulkanGBuffer::cleanup() {
     if (scene_pipeline_none_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(vk_device, scene_pipeline_none_, nullptr);
         scene_pipeline_none_ = VK_NULL_HANDLE;
+    }
+    if (terrain_pipeline_layout_ != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(vk_device, terrain_pipeline_layout_, nullptr);
+        terrain_pipeline_layout_ = VK_NULL_HANDLE;
     }
     if (terrain_pipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(vk_device, terrain_pipeline_, nullptr);

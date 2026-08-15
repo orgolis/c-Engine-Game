@@ -189,6 +189,27 @@ public:
     // ---- Layers ----
     const std::string& GetLayerPath(int i) const { return layer_paths_[clamp_layer(i)]; }
     void SetLayerPath(int i, const std::string& p) { layer_paths_[clamp_layer(i)] = p; ++splat_version_; }
+
+    /// A layer's material asset (.mat). When set it supplies the layer's albedo,
+    /// normal and metal/rough maps plus its tint and PBR factors, and the plain
+    /// albedo path above is ignored — the same "an asset wins entirely" rule
+    /// MeshRendererComponent follows, so a material behaves identically whether
+    /// it is painted on terrain or assigned to an object.
+    ///
+    /// The legacy albedo path is kept rather than removed: every terrain painted
+    /// before materials existed is stored that way, and dropping a single
+    /// texture onto a layer is still the fastest way to block something out.
+    const std::string& GetLayerMaterial(int i) const { return layer_materials_[clamp_layer(i)]; }
+    void SetLayerMaterial(int i, const std::string& p) { layer_materials_[clamp_layer(i)] = p; ++splat_version_; }
+    bool HasLayerMaterial(int i) const { return !layer_materials_[clamp_layer(i)].empty(); }
+
+    /// How many times this layer repeats across the terrain.
+    ///
+    /// Deliberately NOT part of the material asset. The same rock has to tile
+    /// perhaps 8 times across a 100 m terrain and 300 times across a 4 km one,
+    /// so tiling is a property of this terrain's use of the material, not of the
+    /// material — putting it in the .mat would make a shared rock unusable on
+    /// two terrains of different sizes.
     float GetTiling(int i) const { return tiling_[clamp_layer(i)]; }
     void  SetTiling(int i, float t) { tiling_[clamp_layer(i)] = std::max(0.01f, t); ++splat_version_; }
 
@@ -279,7 +300,8 @@ private:
     float     water_clarity_      = 4.0f;
     float     water_reflectivity_ = 0.8f;
 
-    std::array<std::string, kTerrainLayers> layer_paths_{};
+    std::array<std::string, kTerrainLayers> layer_paths_{};       // legacy albedo-only
+    std::array<std::string, kTerrainLayers> layer_materials_{};   // .mat, wins over the above
     std::array<float, kTerrainLayers>       tiling_{ 16.0f, 16.0f, 16.0f, 16.0f };
     int                  splat_res_     = 256;
     std::vector<uint8_t> splat_;            // RGBA8, res*res*4

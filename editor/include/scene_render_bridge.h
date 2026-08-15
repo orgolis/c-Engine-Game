@@ -3,6 +3,7 @@
 #include "primitive_meshes.h"
 #include "material_cache.h"       // .mat assets -> MaterialDesc -> gpu::Material
 #include "vulkan/vulkan_scene_material.h"
+#include "vulkan/vulkan_terrain_material.h"
 #include "vulkan/vulkan_render_graph.h"
 #include "vulkan/vulkan_gltf_loader.h"
 #include "vulkan/vulkan_texture.h"
@@ -15,6 +16,7 @@
 #include "mesh_component.h"
 #include "mesh_renderer_component.h"
 #include "terrain_component.h"
+#include "terrain_layer_material.h"   // one place decides a layer's surface
 #include "ecs_bridge.h"   // authoritative ECS world matrices (Stage 1.4 step 2)
 #include "assets/asset_watcher.h"   // shared hot-reload file watching
 #include "jobs/task_runner.h"       // background OBJ parsing
@@ -708,90 +710,195 @@ private:
     std::unordered_map<uint32_t, Entry> entries_;
 };
 
-/// Per-terrain-entity splat material cache (Phase C). Builds a Material whose
-/// 5 texture slots are reinterpreted by the terrain G-buffer shader as
-/// [splatmap, layer0, layer1, layer2, layer3], plus per-layer tiling packed in
-/// the material's base_color_factor. Rebuilds when the splatmap, layer paths,
-/// or tiling change (TerrainComponent::SplatVersion bumps on each).
+/// Per-terrain-entity GPU cache: the splat texture, the per-layer materials and
+/// the TerrainMaterial descriptor set built from them.
+///
+/// WHAT CHANGED. This used to build an ordinary 6-binding `Material` whose five
+/// sampler slots the terrain shader reinterpreted as [splatmap, layer0..3
+/// albedo]. A terrain layer was therefore one colour texture and a tiling
+/// number, and terrain roughness was hardcoded at 0.95 for every square metre of
+/// every terrain in the engine. Layers now reference `.mat` assets and get
+/// albedo, normal and metal/rough maps plus their own tint and PBR factors,
+/// through a terrain-specific 14-binding layout.
+///
+/// TWO MATERIALS PER TERRAIN, on purpose. `terrain` is what the G-Buffer binds.
+/// `proxy` is an ordinary 6-binding material that the SHADOW pass binds (it
+/// alpha-tests at set 0) and the RT pass reads (`Material::params()`), neither
+/// of which can consume a 14-binding set. The proxy is opaque white so the
+/// shadow alpha test always passes — terrain is never cut out — and carries a
+/// representative roughness so ray-traced reflections of terrain are plausible
+/// rather than nonsense. It is an approximation, and a stated one: a single
+/// proxy cannot represent four spatially varying layers.
 class TerrainGpuCache {
 public:
-    /// Returns a terrain Material ready to bind, or nullptr if the splat
-    /// texture couldn't be built. Layer slots with no/failed texture fall back
-    /// to a shared 1×1 white (so unpainted layers read white, not the PBR
-    /// fallbacks Material::create would otherwise inject into those slots).
-    gws::renderer::gpu::Material* get_or_build(
+    /// What the G-Buffer binds, plus the proxy the shadow and RT passes need.
+    /// Either pointer may be null if the build failed, in which case the caller
+    /// falls back to rendering the terrain untextured.
+    struct Built {
+        gws::renderer::gpu::TerrainMaterial* terrain = nullptr;
+        gws::renderer::gpu::Material*        proxy   = nullptr;
+    };
+
+    Built get_or_build(
         uint32_t entity_id,
         const schizo::scene::TerrainComponent* tc,
         gws::renderer::gpu::VulkanDevice* device,
+        VkDescriptorSetLayout terrain_layout,
+        VkDescriptorPool terrain_pool,
         VkDescriptorSetLayout mat_layout,
         VkDescriptorPool mat_pool,
-        gws::renderer::gpu::TextureManager* textures = nullptr)
+        gws::renderer::gpu::TextureManager* textures,
+        MaterialAssetCache* material_assets)
     {
         using namespace gws::renderer::gpu;
-        // Earthy base for unset layers (UNORM so the bytes are sampled as
-        // linear directly): 0.42,0.48,0.34 — the same green the pre-splat
-        // terrain material used, so a freshly-added terrain still looks like
-        // ground rather than stark white.
+        if (terrain_layout == VK_NULL_HANDLE || terrain_pool == VK_NULL_HANDLE)
+            return {};
+
+        // Earthy base for layers with no albedo (UNORM so the bytes are sampled
+        // as linear directly): the same green the pre-splat terrain material
+        // used, so a freshly-added terrain still looks like ground rather than
+        // stark white.
         if (!base_tex_) {
             const uint8_t earth[4] = { 107, 122, 87, 255 };
             base_tex_ = Texture::create_from_pixels(device, earth, 1, 1, /*srgb=*/false);
         }
 
         Entry& e = entries_[entity_id];
-        bool paths_changed = false;
+
+        // Resolve every layer to a description FIRST, so what gets rebuilt is
+        // decided against resolved content rather than against paths. A .mat
+        // edited on disk changes no path at all — keying the rebuild on paths is
+        // exactly how "I changed the material and nothing happened" happens.
+        std::array<gws::assets::MaterialDesc, schizo::scene::kTerrainLayers> descs;
         for (int i = 0; i < schizo::scene::kTerrainLayers; ++i)
-            if (e.layer_paths[i] != tc->GetLayerPath(i)) { paths_changed = true; break; }
+            descs[i] = resolve_terrain_layer_material(*tc, i, material_assets);
 
-        if (e.material && e.splat_version == tc->SplatVersion() && !paths_changed)
-            return e.material.get();
-
-        // Rebuild. Free the old material first to return its descriptor set to
-        // the pool before allocating the new one (keeps peak set count low).
-        e.material.reset();
-
-        e.splat_tex = Texture::create_from_pixels(
-            device, tc->Splat().data(),
-            static_cast<uint32_t>(tc->SplatResolution()),
-            static_cast<uint32_t>(tc->SplatResolution()), /*srgb=*/false);
-        if (!e.splat_tex) return nullptr;
-
-        const Texture* layer_ptrs[schizo::scene::kTerrainLayers];
-        for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
-            e.layer_paths[i] = tc->GetLayerPath(i);
-            e.layer_tex[i].reset();
-            if (!e.layer_paths[i].empty()) {
-                if (textures) {
-                    // Managed path: deduplicated across terrains/meshes, GPU
-                    // mip chain, sRGB, anisotropic tiling sampler, cooked
-                    // `.ctex` when present, hot-reloadable. The manager falls
-                    // back to its shared white on failure — map that back to
-                    // "no texture" so the earthy base is used instead.
-                    TextureImportSettings st;
-                    st.srgb = true; st.gen_mips = true;
-                    auto sp = textures->load(e.layer_paths[i], st);
-                    if (sp && sp.get() != textures->white()) e.layer_tex[i] = std::move(sp);
-                } else {
-                    e.layer_tex[i] = Texture::create_from_file(device, e.layer_paths[i], /*srgb=*/true);
-                }
-            }
-            layer_ptrs[i] = e.layer_tex[i] ? e.layer_tex[i].get() : base_tex_.get();
+        // The descriptor set depends only on the TEXTURES; the factors live in
+        // the UBO. Splitting the two is what makes dragging a layer's roughness
+        // slider a 144-byte memcpy instead of a descriptor-set rebuild.
+        uint64_t tex_key = 1469598103934665603ull;
+        auto mix = [&tex_key](const std::string& str) {
+            for (unsigned char c : str) tex_key = (tex_key ^ c) * 1099511628211ull;
+            tex_key = (tex_key ^ 0xFFu) * 1099511628211ull;
+        };
+        for (const auto& d : descs) {
+            mix(d.albedo_map); mix(d.normal_map); mix(d.metallic_roughness_map);
         }
 
-        MaterialUniforms params{};
-        params.base_color_factor = glm::vec4(tc->GetTiling(0), tc->GetTiling(1),
-                                             tc->GetTiling(2), tc->GetTiling(3));
-        params.metallic_factor   = 0.0f;
-        params.roughness_factor  = 0.95f;
-        params.occlusion_strength = 1.0f;
-        params.normal_scale      = 1.0f;
-        params.emissive_factor   = glm::vec4(0.0f);
-        // Slot order matches the terrain shader: binding1=splat, 2..5=layers.
-        e.material = Material::create(device, mat_layout, mat_pool, params,
-                                      e.splat_tex.get(),
-                                      layer_ptrs[0], layer_ptrs[1],
-                                      layer_ptrs[2], layer_ptrs[3]);
+        TerrainMaterialUniforms params{};
+        params.tiling = glm::vec4(tc->GetTiling(0), tc->GetTiling(1),
+                                  tc->GetTiling(2), tc->GetTiling(3));
+        for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
+            params.tint[i] = descs[i].base_color;
+            params.mrno[i] = glm::vec4(descs[i].metallic, descs[i].roughness,
+                                       descs[i].normal_scale, descs[i].occlusion);
+        }
+
+        const bool splat_changed = (e.splat_version != tc->SplatVersion());
+        const bool tex_changed   = (e.texture_key != tex_key);
+        if (e.terrain && !tex_changed && !splat_changed) {
+            // Cheap path: factors only, no descriptor work.
+            const uint64_t pk = params_hash(params);
+            if (e.params_key != pk) {
+                e.terrain->update_uniforms(params);
+                e.params_key = pk;
+            }
+            return { e.terrain.get(), e.proxy.get() };
+        }
+
+        // Free the old descriptor set before allocating the new one, so peak set
+        // count stays at one per terrain rather than two.
+        e.terrain.reset();
+
+        if (splat_changed || !e.splat_tex) {
+            e.splat_tex = Texture::create_from_pixels(
+                device, tc->Splat().data(),
+                static_cast<uint32_t>(tc->SplatResolution()),
+                static_cast<uint32_t>(tc->SplatResolution()), /*srgb=*/false);
+        }
+        if (!e.splat_tex) return {};
+
+        // Load each layer's three maps with the colour space its DATA needs.
+        // A normal map decoded as sRGB still renders — with every normal bent
+        // toward the surface, which reads as "the terrain lighting is subtly
+        // wrong everywhere" and is near-impossible to attribute afterwards.
+        auto load = [&](const std::string& path, bool srgb)
+            -> std::shared_ptr<Texture> {
+            if (path.empty()) return nullptr;
+            if (!textures)
+                return Texture::create_from_file(device, path, srgb);
+            TextureImportSettings st;
+            st.srgb = srgb; st.gen_mips = true;
+            auto sp = textures->load(path, st);
+            // The manager substitutes shared white on failure, which as an
+            // albedo map is indistinguishable from success. Map it back to
+            // "no texture" so the earthy base shows instead of a white terrain.
+            if (sp && sp.get() == textures->white()) return nullptr;
+            return sp;
+        };
+
+        std::array<TerrainLayerTextures, schizo::scene::kTerrainLayers> layer_tex{};
+        for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
+            e.layer_albedo[i] = load(descs[i].albedo_map,             /*srgb=*/true);
+            e.layer_normal[i] = load(descs[i].normal_map,             /*srgb=*/false);
+            e.layer_mr[i]     = load(descs[i].metallic_roughness_map, /*srgb=*/false);
+            layer_tex[i].albedo = e.layer_albedo[i] ? e.layer_albedo[i].get()
+                                                    : base_tex_.get();
+            layer_tex[i].normal = e.layer_normal[i] ? e.layer_normal[i].get() : nullptr;
+            layer_tex[i].metallic_roughness = e.layer_mr[i] ? e.layer_mr[i].get() : nullptr;
+        }
+
+        e.terrain = TerrainMaterial::create(
+            device, terrain_layout, terrain_pool, params,
+            e.splat_tex.get(), layer_tex,
+            textures ? textures->white()  : nullptr,
+            textures ? textures->normal() : nullptr);
+        if (!e.terrain) return {};
+
+        // The shadow / RT proxy. Built once and reused for the terrain's life:
+        // it carries no per-layer detail, so nothing about a layer edit can
+        // change it.
+        if (!e.proxy) {
+            MaterialUniforms p{};
+            p.base_color_factor = glm::vec4(1.0f);   // opaque: shadow alpha test passes
+            p.metallic_factor   = 0.0f;
+            p.roughness_factor  = 0.95f;             // representative ground
+            p.emissive_factor   = glm::vec4(0.0f);   // .a = 0 -> no discard
+            e.proxy = Material::create(device, mat_layout, mat_pool, p,
+                                       nullptr, nullptr, nullptr, nullptr, nullptr,
+                                       textures ? textures->white()  : nullptr,
+                                       textures ? textures->normal() : nullptr,
+                                       textures ? textures->black()  : nullptr);
+        }
+
+        e.texture_key   = tex_key;
+        e.params_key    = params_hash(params);
         e.splat_version = tc->SplatVersion();
-        return e.material.get();
+
+        // Say what each layer actually resolved to, once per rebuild rather than
+        // per frame. Without this the terrain path is completely silent: whether
+        // a layer picked up its material, fell back to a texture, or found
+        // neither is invisible, and "my terrain material did nothing" has no
+        // evidence to work from. This is also the line that would have shown a
+        // terrain silently rendering through the fallback scene pipeline.
+        {
+            std::string summary;
+            for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
+                if (i) summary += ", ";
+                summary += std::to_string(i) + "=";
+                if (tc->HasLayerMaterial(i)) {
+                    summary += "mat:" + tc->GetLayerMaterial(i);
+                    if (descs[i].albedo_map.empty() && descs[i].normal_map.empty())
+                        summary += "(no maps)";
+                } else if (!descs[i].albedo_map.empty()) {
+                    summary += "tex:" + descs[i].albedo_map;
+                } else {
+                    summary += "base";
+                }
+            }
+            spdlog::info("[Terrain {}] material rebuilt — layers: {}", entity_id, summary);
+        }
+        return { e.terrain.get(), e.proxy.get() };
     }
 
     /// Re-write descriptor sets of every terrain material. Call after a layer
@@ -800,7 +907,8 @@ public:
     void rewrite_all_materials() {
         for (auto& [id, e] : entries_) {
             (void)id;
-            if (e.material) e.material->rewrite_textures();
+            if (e.terrain) e.terrain->rewrite_textures();
+            if (e.proxy)   e.proxy->rewrite_textures();
         }
     }
 
@@ -814,21 +922,33 @@ public:
             }
         entries_ = std::move(kept);
     }
-    void clear() { entries_.clear(); }
+    void clear() { entries_.clear(); base_tex_.reset(); }
 
 private:
+    /// Hash of the uniform block, so a frame that needs no descriptor work can
+    /// still tell whether the 144 bytes actually changed.
+    static uint64_t params_hash(const gws::renderer::gpu::TerrainMaterialUniforms& p) {
+        uint64_t h = 1469598103934665603ull;
+        const auto* b = reinterpret_cast<const unsigned char*>(&p);
+        for (size_t i = 0; i < sizeof(p); ++i) h = (h ^ b[i]) * 1099511628211ull;
+        return h;
+    }
+
     struct Entry {
         std::unique_ptr<gws::renderer::gpu::Texture> splat_tex;
-        // shared_ptr: layer textures may be owned by the TextureManager (and
-        // shared with other terrains/materials); the legacy no-manager path's
-        // unique_ptr converts into it.
-        std::array<std::shared_ptr<gws::renderer::gpu::Texture>, schizo::scene::kTerrainLayers> layer_tex;
-        std::array<std::string, schizo::scene::kTerrainLayers> layer_paths;
-        std::unique_ptr<gws::renderer::gpu::Material> material;
+        // shared_ptr: layer textures may be owned by the TextureManager and
+        // shared with other terrains and meshes.
+        std::array<std::shared_ptr<gws::renderer::gpu::Texture>, schizo::scene::kTerrainLayers> layer_albedo;
+        std::array<std::shared_ptr<gws::renderer::gpu::Texture>, schizo::scene::kTerrainLayers> layer_normal;
+        std::array<std::shared_ptr<gws::renderer::gpu::Texture>, schizo::scene::kTerrainLayers> layer_mr;
+        std::unique_ptr<gws::renderer::gpu::TerrainMaterial> terrain;
+        std::unique_ptr<gws::renderer::gpu::Material>        proxy;
+        uint64_t texture_key   = 0;
+        uint64_t params_key    = 0;
         uint64_t splat_version = 0;
     };
     std::unordered_map<uint32_t, Entry> entries_;
-    std::unique_ptr<gws::renderer::gpu::Texture> base_tex_; // shared earthy fallback for empty layers
+    std::unique_ptr<gws::renderer::gpu::Texture> base_tex_;  // earthy fallback albedo
 };
 
 /// Walk the scene's entities and build a draw list from those with renderable
@@ -853,7 +973,9 @@ inline void build_draw_items(
     std::vector<gws::renderer::gpu::DrawItem>& out_transparent,
     gws::renderer::gpu::TextureManager* textures = nullptr,
     const schizo::editor::EcsSceneBridge* ecs = nullptr,
-    MaterialAssetCache* material_assets = nullptr)
+    MaterialAssetCache* material_assets = nullptr,
+    VkDescriptorSetLayout terrain_layout = VK_NULL_HANDLE,
+    VkDescriptorPool terrain_pool = VK_NULL_HANDLE)
 {
     out_opaque.clear();
     out_transparent.clear();
@@ -876,30 +998,40 @@ inline void build_draw_items(
             const auto& chunk_meshes =
                 terrain_cache.get_or_build(ent->GetId(), tc.get(), device);
             if (!chunk_meshes.empty()) {
-                // Splat material (splatmap + 4 tiling layers) → terrain
-                // pipeline. Falls back to a plain green material if the splat
-                // texture couldn't be built (terrain still renders, untextured).
-                gws::renderer::gpu::Material* tmat = terrain_gpu_cache.get_or_build(
-                    ent->GetId(), tc.get(), device, mat_layout, mat_pool, textures);
-                bool is_terrain = tmat != nullptr;
-                if (!tmat) {
+                // The terrain material drives the splat pipeline; the proxy is
+                // what the shadow caster binds and the RT pass reads, neither of
+                // which can consume a 14-binding set.
+                const TerrainGpuCache::Built built = terrain_gpu_cache.get_or_build(
+                    ent->GetId(), tc.get(), device,
+                    terrain_layout, terrain_pool, mat_layout, mat_pool,
+                    textures, material_assets);
+
+                // Without a terrain material — no terrain layout on this device,
+                // or the splat texture failed to build — fall back to a plain
+                // green surface on the ordinary scene pipeline. The terrain is
+                // then untextured but present, castable and walkable, which is a
+                // far better failure than terrain that vanishes.
+                gws::renderer::gpu::Material* proxy = built.proxy;
+                const bool is_terrain = (built.terrain != nullptr && proxy != nullptr);
+                if (!proxy) {
                     gws::assets::MaterialDesc fallback;
                     fallback.name       = "Terrain (fallback)";
                     fallback.base_color = glm::vec4(0.42f, 0.48f, 0.34f, 1.0f);
                     fallback.roughness  = 0.95f;
-                    tmat = mat_cache.get_or_create(fallback, device, mat_layout,
-                                                   mat_pool, textures);
+                    proxy = mat_cache.get_or_create(fallback, device, mat_layout,
+                                                    mat_pool, textures);
                 }
-                if (tmat) {
+                if (proxy) {
                     for (const auto& cm : chunk_meshes) {
                         if (!cm) continue;   // fully carved chunk
                         gws::renderer::gpu::DrawItem di;
-                        di.mesh          = cm.get();
-                        di.material      = tmat;
-                        di.model         = model;
-                        di.submesh_index = 0;
-                        di.is_blend      = false;
-                        di.is_terrain    = is_terrain;
+                        di.mesh             = cm.get();
+                        di.material         = proxy;
+                        di.terrain_material = is_terrain ? built.terrain : nullptr;
+                        di.model            = model;
+                        di.submesh_index    = 0;
+                        di.is_blend         = false;
+                        di.is_terrain       = is_terrain;
                         out_opaque.push_back(di);
                     }
                 }

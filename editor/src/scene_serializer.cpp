@@ -305,6 +305,13 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
                 for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
                     file << "TERRAIN_LAYER" << i << "=" << tc->GetLayerPath(i) << "\n";
                     file << "TERRAIN_TILING" << i << "=" << tc->GetTiling(i) << "\n";
+                    // A layer's .mat, when it has one. The legacy albedo path
+                    // above is still written: it is what the layer falls back to
+                    // if the material is later deleted, and losing a terrain's
+                    // whole look because one file went missing would be much
+                    // worse than showing a stale texture.
+                    if (tc->HasLayerMaterial(i))
+                        file << "TERRAIN_LAYERMAT" << i << "=" << tc->GetLayerMaterial(i) << "\n";
                 }
                 const std::string sf = "terrain_" + std::to_string(entity->GetId()) + ".splat";
                 std::ofstream sb(scene_dir + sf, std::ios::binary);
@@ -488,6 +495,7 @@ struct ParsedEntity {
     float       terrain_height_scale = 1.0f;
     std::string terrain_heights_file;
     std::string terrain_layer[schizo::scene::kTerrainLayers];
+    std::string terrain_layer_mat[schizo::scene::kTerrainLayers];
     float       terrain_tiling[schizo::scene::kTerrainLayers] = {16.0f, 16.0f, 16.0f, 16.0f};
     std::string terrain_splat_file;
     std::string terrain_holes_file;
@@ -701,8 +709,15 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
     if (starts_with(line, "TERRAIN_HEIGHT_SCALE", v)) { p.terrain_height_scale = std::stof(v); return; }
     if (starts_with(line, "TERRAIN_HEIGHTS", v))      { p.terrain_heights_file = v; return; }
     for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
-        const std::string lk = "TERRAIN_LAYER"  + std::to_string(i);
-        const std::string tk = "TERRAIN_TILING" + std::to_string(i);
+        const std::string lk = "TERRAIN_LAYER"    + std::to_string(i);
+        const std::string mk = "TERRAIN_LAYERMAT" + std::to_string(i);
+        const std::string tk = "TERRAIN_TILING"   + std::to_string(i);
+        // LAYERMAT is tested BEFORE LAYER. starts_with is a prefix test and
+        // "TERRAIN_LAYER" is a prefix of "TERRAIN_LAYERMAT", so the shorter key
+        // would otherwise swallow the longer one and store "MAT0=path" as an
+        // albedo texture path — a scene that loads without error and renders
+        // the wrong thing.
+        if (starts_with(line, mk.c_str(), v)) { p.terrain_layer_mat[i] = v; return; }
         if (starts_with(line, lk.c_str(), v)) { p.terrain_layer[i]  = v; return; }
         if (starts_with(line, tk.c_str(), v)) { p.terrain_tiling[i] = std::stof(v); return; }
     }
@@ -897,6 +912,7 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
             // Splat layers + tiling + the painted splatmap.
             for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
                 tc->SetLayerPath(i, p.terrain_layer[i]);
+                tc->SetLayerMaterial(i, p.terrain_layer_mat[i]);
                 tc->SetTiling(i, p.terrain_tiling[i]);
             }
             // Holes (caves).
