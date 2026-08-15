@@ -162,6 +162,10 @@ The cross-cutting integration debt specifically:
   **scene-bound sky**, **Blueprint-style logic graph** (`gameplay_logic.h` + `.logic` sidecar + node canvas — now with **typed data pins + graph variables**: Literal/Get·Set Var/math/compare/logic nodes feeding action & Branch value pins, v0.6.8),
   **Unreal-style asset browser** (tiles/grid + categorized New), **Unity-style inspector** (component cards +
   Add-Component search), **`gws_diagnostics`** crash reporting, + the project **Hub** (own repo, `WorldShaper-Hub`).
+  **Material assets** (`.mat`, v0.6.9) — one surface description shared by objects, imported meshes and terrain
+  layers, replacing four disconnected half-materials of which only one reached the screen; all five G-buffer map
+  slots are reachable for the first time, imported OBJs get their `.mtl` textures, and terrain layers get per-layer
+  albedo/normal/metal-rough on terrain's own 14-binding pipeline.
   **Remaining:** animation state-machine graph editor, richer debug visualization (navmesh/AI/froxels), and the whole
   of [`DEVELOPER_EXPERIENCE.md`](DEVELOPER_EXPERIENCE.md) — material graph, VFX graph, timeline, curve editors,
   level-design toolkit, command palette, editor extensibility.

@@ -93,6 +93,8 @@ The base renderer every project draws through.
 | Sky + image-based lighting | ✅ | |
 | Tonemap (ACES) + auto-exposure, FXAA | ✅ | |
 | Draw-list / Mesh / Material / Texture management, glTF bridge | ✅ | |
+| Material assets (`.mat`) | ✅ **v0.6.9.** One surface description shared by objects, imported meshes and terrain layers, replacing four disconnected half-materials (only one of which reached the screen; the material panel's Apply button was a TODO). All five G-buffer map slots are now reachable — before this a surface could name exactly **one** texture, so normal/metal-rough/AO/emissive were permanently bound to engine defaults. GPU materials are keyed by content, so entities sharing a material share one descriptor set. Live edit: sliders update the viewport per frame, the file on release. **Known limit:** no per-object UV tiling — it needs `MaterialUniforms` to grow past 48 bytes, which forces a SPIR-V regen of every shader mirroring that block, including the shadergraph preamble that must mirror `gbuffer_scene.frag` exactly |
+| Textures on imported meshes | ✅ **v0.6.9.** Three separate gaps: the draw builder ignored entity material for *every* imported mesh; the editor's OBJ loader ignored `mtllib`/`usemtl` and built one grey material with all five slots null (while a complete OBJ+MTL importer already existed for the cooker, unused); and tangents were a constant `(1,0,0,1)`, fine until something sampled a normal map. Editor and cooker now share one OBJ parser, tangents are generated from the UV layout, and an **opt-in** override replaces an imported model's own materials — opt-in because always overriding would discard authored glTF materials the moment someone tinted an entity |
 
 ### C5 · Editor & Tooling ✅
 | Part | Status | Notes |
@@ -191,6 +193,7 @@ Optional high-fidelity passes on top of the core renderer.
 | Sub-feature | Status |
 |---|---|
 | Sculpt, splat paint, chunked LOD, Jolt collision | ✅ |
+| Per-layer PBR materials | ✅ **v0.6.9.** A layer references a `.mat` and gets albedo + normal + metal/rough plus its own tint and PBR factors, on terrain's **own 14-binding** descriptor layout and pipeline. Before this a layer was one albedo texture and a tiling number, with roughness hardcoded at 0.95 for every square metre of every terrain — the splat shader reinterpreted the standard 6-binding material layout as `[splat, 4× albedo]`, and five samplers cannot hold four layers × three maps. A layer with no material still falls back to its single texture at roughness 0.95, so upgrading does not restyle an existing project's ground. Tiling stays on the component: one rock repeats 8× across a 100 m terrain and 300× across a 4 km one |
 | Holes / caves (per-cell mask carves mesh + collision) | ✅ |
 | Integrated water (waves, fresnel, buoyancy, swimming, physical vs visual) | ✅ |
 | Water W3: refraction, underwater fog, foam, air pockets | 🔴 |
