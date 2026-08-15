@@ -64,7 +64,8 @@
 #include "particle_emitter_component.h"
 #include "npc_agent_component.h"
 #include "scene_component_reflect.h"
-#include "snapping.h"                         // grid / angle / scale snapping (4.7)
+#include "snapping.h"
+#include "level_tools_panel.h"                // arrays / scatter / splines / greybox (4.7)                         // grid / angle / scale snapping (4.7)
 #include "shader_compile_service.h"          // GLSL -> SPIR-V via the bundled compiler
 #include "material_graph_panel.h"           // node-based material editor (4.1)
 #include "node_canvas.h"                    // generic graph surface (4.1/4.3/4.4/4.6)
@@ -233,6 +234,11 @@ struct EditorState {
     bool                            material_preview  = false;
 
     schizo::editor::SnapSettings snap;
+    // Level tools (4.7). The spline lives here rather than in the panel so it
+    // survives the window being closed -- losing a hand-placed path because a
+    // panel was toggled would be its own small betrayal.
+    schizo::editor::Spline level_spline;
+    bool show_level_tools = false;
 
     schizo::editor::CommandRegistry commands;
     bool show_command_palette = false;
@@ -1391,6 +1397,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             ImGui::Separator();
             ImGui::MenuItem("Playback Controls", nullptr, &editor_state.show_playback_controls);
             ImGui::MenuItem("Material Graph", nullptr, &editor_state.show_material_graph);
+            ImGui::MenuItem("Level Tools", nullptr, &editor_state.show_level_tools);
             ImGui::MenuItem("Performance (Stage 14)", nullptr, &editor_state.show_performance);
             ImGui::MenuItem("Debug Panels (Phase 6)", nullptr, &editor_state.show_debug_panels);
             ImGui::MenuItem("Post-Processing", nullptr, &editor_state.show_post_processing);
@@ -6307,6 +6314,9 @@ int main(int argc, char** argv) {
             cmds.add("Material Graph", "Window", "", [&st] {
                 st.show_material_graph = !st.show_material_graph;
             });
+            cmds.add("Level Tools", "Window", "", [&st] {
+                st.show_level_tools = !st.show_level_tools;
+            });
             cmds.add("Toggle Post-Processing", "Window", "", [&st] {
                 st.show_post_processing = !st.show_post_processing;
             });
@@ -7321,6 +7331,19 @@ int main(int argc, char** argv) {
                 editor_state.asset_import_dialog->IsOpen())
                 editor_state.asset_import_dialog->RenderDialog();
             ShowPreferences(editor_state);
+
+            // Level tools (4.7).
+            if (editor_state.show_level_tools) {
+                bool made = false;
+                schizo::editor::draw_level_tools_panel(
+                    editor_state.show_level_tools,
+                    editor_state.editor_scene->GetScene(),
+                    editor_state.selected_entity_id,
+                    editor_state.snap,
+                    editor_state.level_spline,
+                    made);
+                if (made) editor_state.editor_scene->MarkModified();
+            }
 
             // Material graph (4.1).
             if (editor_state.show_material_graph) {

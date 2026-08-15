@@ -141,6 +141,19 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(includes_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# leveltools_check: arrays, scatter and splines place MANY objects, so an error
+# is multiplied rather than isolated -- spacing that drifts down a long fence, a
+# scatter that clumps toward its centre, a spline that misses its own control
+# points. None looks broken in a screenshot; all of it is arithmetic. Also pins
+# scatter REPRODUCIBILITY, without which nobody can build a level on it.
+add_executable(leveltools_check leveltools_check/main.cpp ../editor/src/level_tools.cpp)
+target_include_directories(leveltools_check PRIVATE ../editor/include)
+target_link_libraries(leveltools_check PRIVATE glm)
+target_compile_features(leveltools_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(leveltools_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # snap_check: the rounding rules are the part that can be subtly wrong. Snapping
 # negatives the wrong way, or drifting when a drag re-applies it every frame, is
 # invisible on one drag and obvious after twenty -- by which point the symptom is
