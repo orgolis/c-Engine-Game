@@ -87,10 +87,17 @@ endfunction()
 function(gws_bundle_shader_compiler tgt dest)
     set(_gv "")
     if(DEFINED ENV{VULKAN_SDK})
+        # TO_CMAKE_PATH first. VULKAN_SDK comes back with BACKSLASHES on
+        # Windows, and a backslash path written into the generated
+        # cmake_install.cmake is parsed as an escape sequence -- "C:\VulkanSDK"
+        # becomes a syntax error at package time. This broke the v0.6.4 release
+        # and never appeared locally, because an ordinary build does not run
+        # install() or CPack.
+        file(TO_CMAKE_PATH "$ENV{VULKAN_SDK}" _sdk)
         if(WIN32)
-            set(_cand "$ENV{VULKAN_SDK}/Bin/glslangValidator.exe")
+            set(_cand "${_sdk}/Bin/glslangValidator.exe")
         else()
-            set(_cand "$ENV{VULKAN_SDK}/bin/glslangValidator")
+            set(_cand "${_sdk}/bin/glslangValidator")
         endif()
         if(EXISTS "${_cand}")
             set(_gv "${_cand}")
