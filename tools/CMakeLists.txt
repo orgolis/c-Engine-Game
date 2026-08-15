@@ -141,6 +141,19 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(includes_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# sequence_check: the property a sequencer lives or dies on -- scrubbing to t
+# must give exactly what playing to t gave. If it does not, the preview
+# disagrees with the result and neither can be trusted, and the disagreement is
+# invisible until someone compares frame by frame. Evaluation is therefore a
+# pure function of time, and these tests keep it that way.
+add_executable(sequence_check sequence_check/main.cpp ../editor/src/sequence.cpp)
+target_include_directories(sequence_check PRIVATE ../editor/include ../engine/core)
+target_link_libraries(sequence_check PRIVATE glm)
+target_compile_features(sequence_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(sequence_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # leveltools_check: arrays, scatter and splines place MANY objects, so an error
 # is multiplied rather than isolated -- spacing that drifts down a long fence, a
 # scatter that clumps toward its centre, a spline that misses its own control

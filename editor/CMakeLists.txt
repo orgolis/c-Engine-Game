@@ -59,6 +59,8 @@ target_sources(editor
     src/command_palette.cpp
     src/curve_editor.cpp
     src/node_canvas.cpp
+    src/sequence.cpp
+    src/timeline_panel.cpp
     src/level_tools.cpp
     src/level_tools_panel.cpp
     src/material_graph_panel.cpp

@@ -65,6 +65,8 @@
 #include "npc_agent_component.h"
 #include "scene_component_reflect.h"
 #include "snapping.h"
+#include "sequence.h"                        // the timeline model (4.4)
+#include "timeline_panel.h"                   // keyframed sequencer (4.4)
 #include "level_tools_panel.h"                // arrays / scatter / splines / greybox (4.7)                         // grid / angle / scale snapping (4.7)
 #include "shader_compile_service.h"          // GLSL -> SPIR-V via the bundled compiler
 #include "material_graph_panel.h"           // node-based material editor (4.1)
@@ -239,6 +241,12 @@ struct EditorState {
     // panel was toggled would be its own small betrayal.
     schizo::editor::Spline level_spline;
     bool show_level_tools = false;
+
+    // Timeline (4.4). The sequence and transport live here so closing the panel
+    // does not discard an authored cutscene.
+    schizo::editor::Sequence      sequence;
+    schizo::editor::TimelineState timeline;
+    bool show_timeline = false;
 
     schizo::editor::CommandRegistry commands;
     bool show_command_palette = false;
@@ -1398,6 +1406,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             ImGui::MenuItem("Playback Controls", nullptr, &editor_state.show_playback_controls);
             ImGui::MenuItem("Material Graph", nullptr, &editor_state.show_material_graph);
             ImGui::MenuItem("Level Tools", nullptr, &editor_state.show_level_tools);
+            ImGui::MenuItem("Timeline", nullptr, &editor_state.show_timeline);
             ImGui::MenuItem("Performance (Stage 14)", nullptr, &editor_state.show_performance);
             ImGui::MenuItem("Debug Panels (Phase 6)", nullptr, &editor_state.show_debug_panels);
             ImGui::MenuItem("Post-Processing", nullptr, &editor_state.show_post_processing);
@@ -6317,6 +6326,9 @@ int main(int argc, char** argv) {
             cmds.add("Level Tools", "Window", "", [&st] {
                 st.show_level_tools = !st.show_level_tools;
             });
+            cmds.add("Timeline", "Window", "", [&st] {
+                st.show_timeline = !st.show_timeline;
+            });
             cmds.add("Toggle Post-Processing", "Window", "", [&st] {
                 st.show_post_processing = !st.show_post_processing;
             });
@@ -7331,6 +7343,17 @@ int main(int argc, char** argv) {
                 editor_state.asset_import_dialog->IsOpen())
                 editor_state.asset_import_dialog->RenderDialog();
             ShowPreferences(editor_state);
+
+            // Timeline (4.4).
+            if (editor_state.show_timeline) {
+                schizo::editor::draw_timeline_panel(
+                    editor_state.show_timeline,
+                    editor_state.sequence,
+                    editor_state.timeline,
+                    editor_state.editor_scene->GetScene(),
+                    editor_state.selected_entity_id,
+                    delta_time);
+            }
 
             // Level tools (4.7).
             if (editor_state.show_level_tools) {
