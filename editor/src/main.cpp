@@ -302,6 +302,11 @@ struct EditorState {
 
     // Material Editor
     std::unique_ptr<schizo::editor::MaterialEditorPanel> material_editor;
+
+    // .mat assets, owned by main() (it also drives the per-frame reload poll and
+    // the GPU cache built from these). Borrowed here so the inspector can edit a
+    // material without main() having to thread it through every panel call.
+    schizo::editor::MaterialAssetCache* material_assets = nullptr;
     
     // Asset Import Dialog
     std::unique_ptr<schizo::editor::AssetImportDialog> asset_import_dialog;
@@ -3383,210 +3388,19 @@ void ShowInspector(EditorState& editor_state) {
             }
         }
 
-        // Material Editor Section
+        // Material Editor Section. One UI: the panel edits what the renderer
+        // reads. There used to be a second "Mesh Renderer (live)" block right
+        // here, because the panel above it was decorative and its Apply button
+        // was a TODO — two material UIs, one of which lied about doing anything.
         ImGui::Separator();
-        if (ImGui::TreeNode("Mesh##inspector")) {
-            ImGui::Text("Mesh Component");
-            ImGui::Separator();
-            
-            // Mesh selector with drag-drop support
-            ImGui::Text("Assign Mesh:");
-            ImGui::InputText("Current Mesh##mesh_selector", const_cast<char*>("(drag asset here)"), 256, ImGuiInputTextFlags_ReadOnly);
-            
-            // Drag-drop target for mesh assignment — import into project + assign.
-            if (ImGui::BeginDragDropTarget()) {
-                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
-                    const char* dropped = static_cast<const char*>(payload->Data);
-                    if (dropped && dropped[0] && mesh_comp) {
-                        const std::string proj = schizo::editor::import_asset_into_project(dropped, "models");
-                        if (!proj.empty()) {
-                            mesh_comp->SetMesh(proj);
-                            editor_state.editor_scene->MarkModified();
-                            editor_state.set_status("Applied mesh: " + proj);
-                        } else {
-                            editor_state.set_status(std::string("Mesh not found on disk: ") + dropped);
-                        }
-                    }
-                }
-                ImGui::EndDragDropTarget();
-            }
-            
-            // Show current mesh info
-            if (mesh_comp && !mesh_comp->mesh_path.empty()) {
-                ImGui::Separator();
-                ImGui::Text("Current Mesh: %s", mesh_comp->mesh_path.c_str());
-                ImGui::Text("Vertices: %u (if loaded)", mesh_comp->GetMeshAsset() ? 0 : 0);
-                
-                if (ImGui::Button("Clear Mesh##mesh", ImVec2(-1, 0))) {
-                    mesh_comp->SetMesh("");
-                    editor_state.editor_scene->MarkModified();
-                    spdlog::info("[Inspector] Cleared mesh assignment");
-                }
-            } else {
-                ImGui::TextDisabled("No mesh assigned");
-            }
-
-            ImGui::TreePop();
-        }
-
-        // ---- Gameplay Components (authoritative ECS, reflection-driven) ----
-        // Every authorable ECS component (Health, Ability State, …) renders here
-        // generically — no per-component UI code. This is the ECS-authoritative
-        // path for gameplay state (F1/F2).
-        ImGui::Separator();
-        if (ImGui::TreeNodeEx("Gameplay Components (ECS)", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (editor_state.ecs_bridge && selected_entity) {
-                auto* inspect_tf = selected_entity->GetTransform();
-                if (schizo::editor::draw_ecs_component_inspector(
-                        *editor_state.ecs_bridge, inspect_tf,
-                        &editor_state.field_edits,
-                        [&editor_state](const schizo::editor::CoalescedEdit& edit) {
-                            PushFieldEditCommand(editor_state, edit);
-                        }))
-                    editor_state.editor_scene->MarkModified();
-
-                // Save this entity's gameplay components as a reusable prefab (F4).
-                ImGui::Dummy(ImVec2(0, 4));
-                if (ImGui::Button("Save as Prefab")) {
-                    std::error_code ec; std::filesystem::create_directories("prefabs", ec);
-                    const std::string path = "prefabs/" + selected_entity->GetName() + ".prefab";
-                    if (editor_state.ecs_bridge->save_entity_prefab(selected_entity->GetTransform(), path))
-                        editor_state.set_status("Saved prefab: " + path);
-                    else
-                        editor_state.set_status("Nothing to save — add a gameplay component first.");
-                }
-            } else {
-                ImGui::TextDisabled("ECS bridge unavailable.");
-            }
-            ImGui::TreePop();
-        }
-        
-        // Material Editor Section
-        ImGui::Separator();
-        if (ImGui::TreeNode("Material##inspector")) {
+        if (ImGui::TreeNodeEx("Material##inspector", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (editor_state.material_editor) {
-                editor_state.material_editor->Render(selected_entity);
+                if (editor_state.material_editor->Render(
+                        selected_entity, editor_state.material_assets,
+                        editor_state.editor_scene->GetScene()))
+                    editor_state.editor_scene->MarkModified();
             } else {
-                ImGui::Text("Material editor not initialized");
-            }
-
-            // Base colour + cutout transparency. These edit the
-            // MeshRendererComponent (which is what the renderer actually
-            // reads), not the decorative state the Material Editor above
-            // uses. The "Material" section above is currently visual only
-            // and doesn't write back to the entity.
-            if (auto mr = selected_entity->GetComponent<schizo::scene::MeshRendererComponent>()) {
-                ImGui::Separator();
-                ImGui::Text("Mesh Renderer (live)");
-
-                glm::vec4 col = mr->GetColor();
-                if (ImGui::ColorEdit4("Color (RGBA)##mr", &col.r,
-                                      ImGuiColorEditFlags_AlphaBar |
-                                      ImGuiColorEditFlags_AlphaPreview)) {
-                    mr->SetColor(col);
-                    editor_state.editor_scene->MarkModified();
-                }
-
-                // Albedo (base-colour) texture. Type a path or drag a texture
-                // from the Asset Browser. Loaded through the TextureManager
-                // (mipped, sRGB, deduplicated, hot-reloadable); `Color` above
-                // multiplies the sampled texel. Empty = flat colour only.
-                {
-                    static char mr_albedo_buf[260] = {0};
-                    static uint32_t mr_albedo_synced_id = 0xFFFFFFFFu;
-                    if (mr_albedo_synced_id != selected_entity->GetId()) {
-                        std::snprintf(mr_albedo_buf, sizeof mr_albedo_buf, "%s",
-                                      mr->GetAlbedoTexturePath().c_str());
-                        mr_albedo_synced_id = selected_entity->GetId();
-                    }
-                    ImGui::Text("Albedo Texture:");
-                    ImGui::InputText("##mr_albedo", mr_albedo_buf, sizeof mr_albedo_buf);
-                    if (ImGui::IsItemDeactivatedAfterEdit()) {
-                        mr->SetAlbedoTexturePath(mr_albedo_buf);
-                        editor_state.editor_scene->MarkModified();
-                    }
-                    if (ImGui::BeginDragDropTarget()) {
-                        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
-                            const char* tp = static_cast<const char*>(pl->Data);
-                            if (tp && tp[0]) {
-                                mr->SetAlbedoTexturePath(tp);
-                                std::snprintf(mr_albedo_buf, sizeof mr_albedo_buf, "%s", tp);
-                                editor_state.editor_scene->MarkModified();
-                            }
-                        }
-                        ImGui::EndDragDropTarget();
-                    }
-                    if (mr->HasAlbedoTexture()) {
-                        ImGui::SameLine();
-                        if (ImGui::SmallButton("Clear##mr_albedo")) {
-                            mr->SetAlbedoTexturePath("");
-                            mr_albedo_buf[0] = '\0';
-                            editor_state.editor_scene->MarkModified();
-                        }
-                    }
-                }
-
-                float metallic = mr->GetMetallic();
-                if (ImGui::SliderFloat("Metallic##mr", &metallic, 0.0f, 1.0f)) {
-                    mr->SetMetallic(metallic);
-                    editor_state.editor_scene->MarkModified();
-                }
-
-                float roughness = mr->GetRoughness();
-                if (ImGui::SliderFloat("Roughness##mr", &roughness, 0.04f, 1.0f)) {
-                    mr->SetRoughness(roughness);
-                    editor_state.editor_scene->MarkModified();
-                }
-
-                float occlusion = mr->GetOcclusion();
-                if (ImGui::SliderFloat("Occlusion##mr", &occlusion, 0.0f, 1.0f)) {
-                    mr->SetOcclusion(occlusion);
-                    editor_state.editor_scene->MarkModified();
-                }
-
-                glm::vec3 emissive = mr->GetEmissive();
-                if (ImGui::ColorEdit3("Emissive##mr", &emissive.r,
-                                      ImGuiColorEditFlags_HDR |
-                                      ImGuiColorEditFlags_Float)) {
-                    mr->SetEmissive(emissive);
-                    editor_state.editor_scene->MarkModified();
-                }
-                // Emissive intensity — HDR multiplier. Bloom threshold is
-                // ~1.0, so push this above ~1.5 to make the surface glow.
-                float emissive_intensity = mr->GetEmissiveIntensity();
-                if (ImGui::SliderFloat("Emissive glow##mr", &emissive_intensity,
-                                       0.0f, 10.0f)) {
-                    mr->SetEmissiveIntensity(emissive_intensity);
-                    editor_state.editor_scene->MarkModified();
-                }
-
-                // Alpha mode — radio buttons (rather than a Combo) so all
-                // three choices are always visible, can't be clipped by a
-                // collapsed dropdown, and the current value is obvious at a
-                // glance.
-                ImGui::Text("Alpha Mode:");
-                int am = static_cast<int>(mr->GetAlphaMode());
-                bool changed = false;
-                ImGui::SameLine();
-                changed |= ImGui::RadioButton("Opaque##mr_am", &am, 0);
-                ImGui::SameLine();
-                changed |= ImGui::RadioButton("Cutout##mr_am", &am, 1);
-                ImGui::SameLine();
-                changed |= ImGui::RadioButton("Blend##mr_am",  &am, 2);
-                if (changed) {
-                    mr->SetAlphaMode(static_cast<schizo::scene::AlphaMode>(am));
-                    editor_state.editor_scene->MarkModified();
-                }
-                ImGui::TextDisabled(
-                    "Opaque: no transparency.   Cutout: hard discard below cutoff.   "
-                    "Blend: real translucency.");
-                if (mr->GetAlphaMode() == schizo::scene::AlphaMode::Cutout) {
-                    float cutoff = mr->GetAlphaCutoff();
-                    if (ImGui::SliderFloat("Alpha Cutoff##mat", &cutoff, 0.0f, 1.0f)) {
-                        mr->SetAlphaCutoff(cutoff);
-                        editor_state.editor_scene->MarkModified();
-                    }
-                }
+                ImGui::TextDisabled("Material editor not initialized");
             }
             ImGui::TreePop();
         }
@@ -5228,8 +5042,14 @@ int main(int argc, char** argv) {
         // ----------------------------------------------------------------
         VkDescriptorSetLayout mat_layout =
             Material::create_descriptor_set_layout(device.get_device());
+        // 64 sets was enough only because every entity shared one material by
+        // accident; a scene with per-material imported models, .mat assets and
+        // terrain runs it dry, and exhaustion shows up as objects rendering
+        // untextured with a single line in the log. Content-keyed caching keeps
+        // the real count well under this — the headroom is so the failure mode
+        // stays impossible rather than merely unlikely.
         VkDescriptorPool mat_pool =
-            Material::create_descriptor_pool(device.get_device(), 64);
+            Material::create_descriptor_pool(device.get_device(), 512);
 
         // ----------------------------------------------------------------
         // Runtime texture handling (Master Plan Stage 2). Owns the shared
@@ -5734,9 +5554,15 @@ int main(int argc, char** argv) {
         prim_cache.initialize(&device);
         spdlog::info("Primitive meshes initialized (cube/plane/sphere/cylinder/capsule/pyramid)");
 
-        // Per-entity Material cache. Materials are rebuilt only when the
-        // entity's color factors actually change.
-        schizo::editor::EntityMaterialCache mat_cache;
+        // Material assets (.mat) — path → MaterialDesc, hot-reloaded when the
+        // file changes on disk (edited here, in a text editor, or by another
+        // copy of the editor).
+        schizo::editor::MaterialAssetCache material_assets;
+
+        // GPU materials, keyed by CONTENT rather than by entity. Fifty crates
+        // sharing one material used to burn fifty descriptor sets holding
+        // identical data against a pool of 64; now they share one set.
+        schizo::editor::MaterialGpuCache mat_cache;
 
         // glTF asset cache. Lazily loads .gltf/.glb files referenced via
         // entity MeshComponent::mesh_path (set by drag-drop in the inspector).
@@ -5919,6 +5745,11 @@ int main(int argc, char** argv) {
             if (saved != kEditorDockLayoutVersion)
                 editor_state.request_reset_layout = true;
         }
+
+        // The inspector's material panel edits .mat assets through this cache;
+        // main() owns it (it also drives the reload poll and the GPU cache built
+        // from it), so the panel borrows rather than owns.
+        editor_state.material_assets = &material_assets;
 
         editor_state.asset_browser  = std::make_unique<schizo::editor::AssetBrowserPanel>();
         // Double-clicking a .scene in the browser loads it.
@@ -6576,6 +6407,7 @@ int main(int argc, char** argv) {
                 device.wait_idle();
                 asset_cache.rewrite_all_materials();
                 terrain_gpu_cache.rewrite_all_materials();   // terrain layer textures too
+                mat_cache.rewrite_all_materials();           // .mat + inline entity materials
                 textures_reloaded = false;
             }
 
@@ -8012,9 +7844,14 @@ int main(int argc, char** argv) {
             // Build per-frame draw list from the editor scene's entities.
             // Entities with a MeshRendererComponent become DrawItems; others
             // (lights, empty parents) are skipped.
-            mat_cache.prune(editor_scene.GetScene());
             terrain_cache.prune(editor_scene.GetScene());
             terrain_gpu_cache.prune(editor_scene.GetScene());
+
+            // Materials edited on disk. A save that rewrites identical bytes
+            // reports 0 and rebuilds nothing; a real edit invalidates the GPU
+            // materials built from the old content, which the frame sweep below
+            // then reclaims.
+            material_assets.poll_reload();
 
             // CRITICAL FIX #5: Validate render graph before setting draw items
             if (!graph) {
@@ -8068,7 +7905,13 @@ int main(int argc, char** argv) {
               schizo::editor::build_draw_items(
                   editor_scene.GetScene(), prim_cache, mat_cache, asset_cache,
                   terrain_cache, terrain_gpu_cache, &device, mat_layout, mat_pool,
-                  opaque_draws, transparent_draws, &texture_manager, &ecs_bridge); }
+                  opaque_draws, transparent_draws, &texture_manager, &ecs_bridge,
+                  &material_assets); }
+
+            // Reclaim GPU materials nothing has referenced for a while. No
+            // device idle: the grace period is an order of magnitude longer than
+            // frames-in-flight, which is the same guarantee at none of the cost.
+            mat_cache.end_frame();
 
             // Material-graph preview (4.1). Terrain is excluded: it has its own
             // splat pipeline and a graph shader has nothing to say about it.
@@ -8775,6 +8618,7 @@ int main(int argc, char** argv) {
         // Scene geometry — caches must release their meshes + materials
         // before the descriptor pool / layout are destroyed.
         mat_cache.clear();
+        material_assets.clear();
         asset_cache.clear();
         terrain_cache.clear();        // terrain chunk meshes (GPU buffers)
         terrain_gpu_cache.clear();    // splat materials + textures

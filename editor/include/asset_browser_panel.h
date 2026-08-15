@@ -47,6 +47,7 @@ public:
     static constexpr const char* kPayloadAudio   = "AUDIO_ASSET";
     static constexpr const char* kPayloadScript  = "SCRIPT_ASSET";
     static constexpr const char* kPayloadScene   = "SCENE_ASSET";
+    static constexpr const char* kPayloadMaterial = "MATERIAL_ASSET";
     static constexpr const char* kPayloadOther   = "ASSET_ITEM";
 
     AssetBrowserPanel();

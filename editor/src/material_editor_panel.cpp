@@ -1,242 +1,498 @@
 #include "material_editor_panel.h"
+#include "material_asset_cache.h"
+#include "asset_browser_panel.h"   // drag-drop payload names
 #include "entity.h"
+#include "scene.h"
+#include "mesh_renderer_component.h"
+
 #include <imgui.h>
 #include <spdlog/spdlog.h>
+
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
 
 namespace schizo::editor {
 
 using namespace schizo::scene;
-using namespace schizo::renderer;
+using gws::assets::MaterialAlphaMode;
+using gws::assets::MaterialDesc;
 
-// PBR Preset definitions
-static const struct {
+namespace {
+
+// Presets are starting points, not products: they set base colour, metallic and
+// roughness and leave textures alone, because a preset that cleared the maps
+// would silently discard work every time someone browsed the list.
+struct Preset {
     const char* name;
-    glm::vec3 albedo;
-    float metallic;
-    float roughness;
-} PBR_PRESETS[] = {
-    {"Gold",        glm::vec3(1.0f, 0.84f, 0.0f),   1.0f, 0.2f},
-    {"Copper",      glm::vec3(0.97f, 0.68f, 0.19f), 1.0f, 0.3f},
-    {"Steel",       glm::vec3(0.77f, 0.78f, 0.78f), 1.0f, 0.1f},
-    {"Aluminum",    glm::vec3(0.91f, 0.92f, 0.92f), 1.0f, 0.2f},
-    {"Plastic",     glm::vec3(0.2f, 0.8f, 0.9f),    0.0f, 0.6f},
-    {"Rubber",      glm::vec3(0.1f, 0.1f, 0.1f),    0.0f, 0.9f},
-    {"Wood",        glm::vec3(0.55f, 0.37f, 0.09f), 0.0f, 0.8f},
-    {"Ceramic",     glm::vec3(0.3f, 0.3f, 0.3f),    0.0f, 0.4f},
-    {"Fabric",      glm::vec3(0.4f, 0.4f, 0.4f),    0.0f, 0.95f},
+    glm::vec3   albedo;
+    float       metallic;
+    float       roughness;
+};
+constexpr Preset kPresets[] = {
+    {"Gold",     {1.00f, 0.84f, 0.00f}, 1.0f, 0.20f},
+    {"Copper",   {0.97f, 0.68f, 0.19f}, 1.0f, 0.30f},
+    {"Steel",    {0.77f, 0.78f, 0.78f}, 1.0f, 0.10f},
+    {"Aluminum", {0.91f, 0.92f, 0.92f}, 1.0f, 0.20f},
+    {"Plastic",  {0.20f, 0.80f, 0.90f}, 0.0f, 0.60f},
+    {"Rubber",   {0.10f, 0.10f, 0.10f}, 0.0f, 0.90f},
+    {"Wood",     {0.55f, 0.37f, 0.09f}, 0.0f, 0.80f},
+    {"Ceramic",  {0.30f, 0.30f, 0.30f}, 0.0f, 0.40f},
+    {"Fabric",   {0.40f, 0.40f, 0.40f}, 0.0f, 0.95f},
 };
 
-static constexpr size_t PRESET_COUNT = sizeof(PBR_PRESETS) / sizeof(PBR_PRESETS[0]);
+/// One texture slot: path, a TEXTURE_ASSET drop target, and a clear button.
+/// `hint` says what the slot is FOR, because "MR" and "AO" mean nothing to
+/// someone who has not read a glTF spec, and a mislabelled map is a bug that
+/// renders rather than errors.
+bool texture_slot(const char* label, const char* hint, std::string& path) {
+    bool changed = false;
+    ImGui::PushID(label);
 
-MaterialEditorPanel::MaterialEditorPanel() = default;
+    char buf[260];
+    std::snprintf(buf, sizeof buf, "%s", path.c_str());
+    ImGui::SetNextItemWidth(-90.0f);
+    if (ImGui::InputText("##path", buf, sizeof buf)) { /* committed below */ }
+    if (ImGui::IsItemDeactivatedAfterEdit() && path != buf) {
+        path = buf;
+        changed = true;
+    }
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* pl =
+                ImGui::AcceptDragDropPayload(AssetBrowserPanel::kPayloadTexture)) {
+            const char* p = static_cast<const char*>(pl->Data);
+            if (p && p[0]) { path = p; changed = true; }
+        }
+        ImGui::EndDragDropTarget();
+    }
+    ImGui::SameLine();
+    if (path.empty()) {
+        ImGui::TextDisabled("%s", label);
+    } else {
+        ImGui::Text("%s", label);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) { path.clear(); changed = true; }
+    }
+    if (ImGui::IsItemHovered() || ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", hint);
+    ImGui::PopID();
+    return changed;
+}
 
+/// A disabled texture slot, with the reason. Used in inline mode, where the
+/// component can only carry a base-colour path.
+void texture_slot_disabled(const char* label, const char* why) {
+    ImGui::BeginDisabled();
+    char empty[2] = {0};
+    ImGui::PushID(label);
+    ImGui::SetNextItemWidth(-90.0f);
+    ImGui::InputText("##path", empty, sizeof empty, ImGuiInputTextFlags_ReadOnly);
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", label);
+    ImGui::PopID();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", why);
+}
+
+/// Edit the PBR factors shared by both modes. `live` is set while a control is
+/// being dragged (viewport should update); `commit` when the gesture ended (the
+/// file should be written). Separating them is what keeps a slider drag from
+/// writing the file hundreds of times.
+void pbr_controls(MaterialDesc& m, bool& live, bool& commit) {
+    auto note = [&]() {
+        if (ImGui::IsItemActive() || ImGui::IsItemEdited()) live = true;
+        if (ImGui::IsItemDeactivatedAfterEdit())            commit = true;
+    };
+
+    if (ImGui::ColorEdit4("Base Color", &m.base_color.r,
+                          ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreview))
+        live = true;
+    note();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Multiplies the base-colour texture. White = the texture unchanged.");
+
+    if (ImGui::SliderFloat("Metallic", &m.metallic, 0.0f, 1.0f)) live = true;
+    note();
+    if (ImGui::SliderFloat("Roughness", &m.roughness, 0.04f, 1.0f)) live = true;
+    note();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("0.04 is a mirror, 1.0 is fully diffuse. It cannot reach 0:\n"
+                          "the BRDF divides by roughness.");
+    if (ImGui::SliderFloat("Occlusion", &m.occlusion, 0.0f, 1.0f)) live = true;
+    note();
+    if (ImGui::SliderFloat("Normal Scale", &m.normal_scale, 0.0f, 4.0f)) live = true;
+    note();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Strength of the normal map. No effect without one bound.");
+
+    if (ImGui::ColorEdit3("Emissive", &m.emissive.r,
+                          ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float))
+        live = true;
+    note();
+    if (ImGui::SliderFloat("Emissive Glow", &m.emissive_intensity, 0.0f, 10.0f)) live = true;
+    note();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("HDR multiplier on the emissive colour. Bloom kicks in around 1.0,\n"
+                          "so push past ~1.5 for a surface that reads as a light source.");
+}
+
+}  // namespace
+
+MaterialEditorPanel::MaterialEditorPanel()  = default;
 MaterialEditorPanel::~MaterialEditorPanel() = default;
 
-void MaterialEditorPanel::Render(const std::shared_ptr<Entity>& entity) {
+bool MaterialEditorPanel::Render(const std::shared_ptr<Entity>& entity,
+                                 MaterialAssetCache* materials,
+                                 const std::shared_ptr<Scene>& scene) {
     if (!entity) {
-        ImGui::TextDisabled("No entity selected");
-        return;
+        ImGui::TextDisabled("No entity selected.");
+        return false;
     }
-    
-    ImGui::Text("Material Editor - %s", entity->GetName().c_str());
-    ImGui::Separator();
-    
-    // Tabs for different sections
-    static int tab = 0;
-    if (ImGui::BeginTabBar("MaterialTabs", ImGuiTabBarFlags_None)) {
-        if (ImGui::BeginTabItem("PBR##mat")) {
-            RenderPBRParameters();
-            ImGui::EndTabItem();
-        }
-        
-        if (ImGui::BeginTabItem("Textures##mat")) {
-            RenderTextureSlots();
-            ImGui::EndTabItem();
-        }
-        
-        if (ImGui::BeginTabItem("Presets##mat")) {
-            RenderPresets();
-            ImGui::EndTabItem();
-        }
-        
-        if (ImGui::BeginTabItem("Preview##mat")) {
-            RenderPreview();
-            ImGui::EndTabItem();
-        }
-        
-        ImGui::EndTabBar();
+    auto mr = entity->GetComponent<MeshRendererComponent>();
+    if (!mr) {
+        ImGui::TextDisabled("This entity has no Mesh Renderer, so it has no surface\n"
+                            "to give a material to. Add one from the Components list.");
+        return false;
     }
-    
-    ImGui::Separator();
-    
-    if (ImGui::Button("Apply Material##mat", ImVec2(-1, 0))) {
-        ApplyMaterialToEntity(entity);
-        spdlog::info("[MaterialEditor] Applied material to entity '{}'", entity->GetName());
+    if (!materials) {
+        ImGui::TextDisabled("Material cache unavailable.");
+        return false;
     }
-}
 
-void MaterialEditorPanel::RenderPBRParameters() {
     bool changed = false;
-    
-    ImGui::CollapsingHeader("Albedo (Base Color)", ImGuiTreeNodeFlags_DefaultOpen);
-    if (ImGui::ColorEdit3("##albedo", &state_.albedo.r)) {
-        changed = true;
-    }
-    
-    ImGui::CollapsingHeader("Metallic", ImGuiTreeNodeFlags_DefaultOpen);
-    if (ImGui::SliderFloat("##metallic", &state_.metallic, 0.0f, 1.0f)) {
-        changed = true;
-    }
-    ImGui::SameLine();
-    ImGui::ProgressBar(state_.metallic, ImVec2(0, 0));
-    
-    ImGui::CollapsingHeader("Roughness", ImGuiTreeNodeFlags_DefaultOpen);
-    if (ImGui::SliderFloat("##roughness", &state_.roughness, 0.0f, 1.0f)) {
-        changed = true;
-    }
-    ImGui::SameLine();
-    ImGui::ProgressBar(state_.roughness, ImVec2(0, 0));
-    
-    ImGui::CollapsingHeader("Ambient Occlusion", ImGuiTreeNodeFlags_DefaultOpen);
-    if (ImGui::SliderFloat("##ao", &state_.ambient_occlusion, 0.0f, 1.0f)) {
-        changed = true;
-    }
-    ImGui::SameLine();
-    ImGui::ProgressBar(state_.ambient_occlusion, ImVec2(0, 0));
-    
-    ImGui::CollapsingHeader("Emissive", ImGuiTreeNodeFlags_DefaultOpen);
-    if (ImGui::ColorEdit3("##emissive", &state_.emissive.r)) {
-        changed = true;
-    }
-    
-    if (changed) {
-        spdlog::debug("[MaterialEditor] PBR parameters changed");
-    }
-}
 
-void MaterialEditorPanel::RenderTextureSlots() {
-    ImGui::TextWrapped("Drag texture files from the Asset Browser onto a slot");
-    ImGui::Separator();
+    // ---- The material slot -------------------------------------------------
+    ImGui::TextUnformatted("Material Asset");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(drag a .mat here)");
 
-    // One slot: read-only display of the assigned path + TEXTURE_ASSET drop
-    // target (payload = runtime-relative path string) + a clear button.
-    auto slot = [](const char* label, std::string& path) {
+    {
         char buf[260];
-        std::snprintf(buf, sizeof buf, "%s", path.empty() ? "(none)" : path.c_str());
-        ImGui::InputText(label, buf, sizeof buf, ImGuiInputTextFlags_ReadOnly);
+        std::snprintf(buf, sizeof buf, "%s",
+                      mr->HasMaterial() ? mr->GetMaterialPath().c_str() : "");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##mat_slot", "none — using this object's inline material",
+                                 buf, sizeof buf);
+        if (ImGui::IsItemDeactivatedAfterEdit() && mr->GetMaterialPath() != buf) {
+            mr->SetMaterialPath(buf);
+            edit_path_.clear();          // force a re-sync of the working copy
+            changed = true;
+        }
         if (ImGui::BeginDragDropTarget()) {
-            if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("TEXTURE_ASSET")) {
+            if (const ImGuiPayload* pl =
+                    ImGui::AcceptDragDropPayload(AssetBrowserPanel::kPayloadMaterial)) {
                 const char* p = static_cast<const char*>(pl->Data);
                 if (p && p[0]) {
-                    path = p;
-                    spdlog::info("[MaterialEditor] {} = {}", label, p);
+                    mr->SetMaterialPath(p);
+                    edit_path_.clear();
+                    changed = true;
                 }
             }
             ImGui::EndDragDropTarget();
         }
-        if (!path.empty()) {
-            ImGui::SameLine();
-            ImGui::PushID(label);
-            if (ImGui::SmallButton("x")) path.clear();
-            ImGui::PopID();
-        }
-    };
+    }
 
-    slot("Albedo##tex",    state_.albedo_texture);
-    slot("Normal##tex",    state_.normal_texture);
-    slot("Metallic##tex",  state_.metallic_texture);
-    slot("Roughness##tex", state_.roughness_texture);
-    slot("AO##tex",        state_.ao_texture);
-    slot("Emissive##tex",  state_.emissive_texture);
+    if (mr->HasMaterial()) {
+        if (ImGui::SmallButton("Detach##mat")) {
+            // Detach, not delete. The .mat stays on disk — an entity dropping
+            // its reference must never be able to destroy an asset other
+            // entities may still be using.
+            mr->SetMaterialPath("");
+            edit_path_.clear();
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Stop using this material asset and fall back to this\n"
+                              "object's inline settings. The .mat file is not deleted.");
+    }
+
+    ImGui::Separator();
+
+    const bool asset_mode = mr->HasMaterial();
+    if (asset_mode) changed |= render_asset_mode(entity, materials, scene);
+    else            changed |= render_inline_mode(entity, materials);
+
+    // ---- Alpha mode: always the component's, in both modes ------------------
+    // Which pass an object is drawn in is a property of the PLACEMENT, not of
+    // the material: the same glass can legitimately be cutout foliage on one
+    // object and blended on another. Keeping it here rather than in the .mat is
+    // what makes a shared material safe to attach to anything.
+    ImGui::Separator();
+    ImGui::TextUnformatted("Alpha Mode");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(per object, not part of the material)");
+    int am = static_cast<int>(mr->GetAlphaMode());
+    bool am_changed = false;
+    am_changed |= ImGui::RadioButton("Opaque##mr_am", &am, 0); ImGui::SameLine();
+    am_changed |= ImGui::RadioButton("Cutout##mr_am", &am, 1); ImGui::SameLine();
+    am_changed |= ImGui::RadioButton("Blend##mr_am",  &am, 2);
+    if (am_changed) {
+        mr->SetAlphaMode(static_cast<AlphaMode>(am));
+        changed = true;
+    }
+    ImGui::TextDisabled("Opaque: no transparency.  Cutout: hard discard below cutoff.\n"
+                        "Blend: real translucency (forward pass, after lighting).");
+    if (mr->GetAlphaMode() == AlphaMode::Cutout) {
+        float cutoff = mr->GetAlphaCutoff();
+        if (ImGui::SliderFloat("Alpha Cutoff##mr", &cutoff, 0.0f, 1.0f)) {
+            mr->SetAlphaCutoff(cutoff);
+            changed = true;
+        }
+    }
+
+    // ---- Imported-model override -------------------------------------------
+    // Only meaningful when the entity draws an imported model; a primitive has
+    // no asset material to override, so showing the checkbox there would be
+    // offering a control that cannot do anything.
+    const auto* mc = entity->GetMeshComponent();
+    if (mc && !mc->mesh_path.empty()) {
+        ImGui::Separator();
+        bool ov = mr->GetOverrideAssetMaterial();
+        if (ImGui::Checkbox("Override the model's own materials", &ov)) {
+            mr->SetOverrideAssetMaterial(ov);
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Off: the model keeps the materials it was imported with\n"
+                "(glTF ships its own; OBJ uses its .mtl).\n"
+                "On: the material above replaces them on EVERY submesh —\n"
+                "which is what you want for a model that arrived untextured.");
+        if (ov)
+            ImGui::TextDisabled("Every submesh of this model uses the material above.");
+    }
+
+    return changed;
 }
 
-void MaterialEditorPanel::RenderPresets() {
-    ImGui::Text("Select a preset to apply:");
-    ImGui::Separator();
-    
-    static int selected_preset = 0;
-    
-    for (size_t i = 0; i < PRESET_COUNT; ++i) {
-        if (ImGui::Selectable(PBR_PRESETS[i].name, selected_preset == static_cast<int>(i))) {
-            selected_preset = i;
-            
-            // Apply preset
-            state_.albedo = PBR_PRESETS[i].albedo;
-            state_.metallic = PBR_PRESETS[i].metallic;
-            state_.roughness = PBR_PRESETS[i].roughness;
-            
-            spdlog::info("[MaterialEditor] Applied preset: {}", PBR_PRESETS[i].name);
+bool MaterialEditorPanel::render_asset_mode(const std::shared_ptr<Entity>& entity,
+                                            MaterialAssetCache* materials,
+                                            const std::shared_ptr<Scene>& scene) {
+    auto mr = entity->GetComponent<MeshRendererComponent>();
+    const std::string& path = mr->GetMaterialPath();
+
+    const MaterialDesc* loaded = materials->get(path);
+    if (!loaded) {
+        // Say what is wrong and what is happening instead. A panel that just
+        // shows empty fields here would leave the user editing values that drive
+        // nothing while the object renders from its inline settings.
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.40f, 1.0f),
+                           "This material could not be loaded.");
+        ImGui::TextWrapped("The object is rendering from its inline settings. Check the "
+                           "path above, or detach the material to edit those settings here.");
+        if (ImGui::Button("Retry##mat_reload")) materials->invalidate(path);
+        return false;
+    }
+
+    // Re-sync the working copy when the selection or the file changed under us.
+    if (edit_path_ != path || (!dirty_ && edit_.content_hash() != loaded->content_hash())) {
+        edit_      = *loaded;
+        edit_path_ = path;
+        dirty_     = false;
+    }
+
+    // How many OTHER entities share this material. Editing a shared asset while
+    // believing it is per-object is the one mistake this UI invites, so it is
+    // answered before the first slider rather than discovered afterwards.
+    int sharers = 0;
+    if (scene) {
+        for (const auto& e : scene->GetEntities()) {
+            if (!e || e == entity) continue;
+            if (auto other = e->GetComponent<MeshRendererComponent>())
+                if (other->GetMaterialPath() == path) ++sharers;
         }
-        
-        // Show preview for preset
-        ImVec2 color_size(200, 20);
+    }
+    if (sharers > 0)
+        ImGui::TextColored(ImVec4(1.0f, 0.80f, 0.35f, 1.0f),
+                           "Shared: %d other object%s use%s this material.",
+                           sharers, sharers == 1 ? "" : "s", sharers == 1 ? "s" : "");
+
+    ImGui::Text("%s%s", edit_.name.empty() ? "(unnamed)" : edit_.name.c_str(),
+                dirty_ ? "  *unsaved*" : "");
+
+    bool live = false, commit = false;
+
+    if (ImGui::BeginTabBar("##mat_tabs")) {
+        if (ImGui::BeginTabItem("Surface")) {
+            pbr_controls(edit_, live, commit);
+            bool ds = edit_.double_sided;
+            if (ImGui::Checkbox("Double sided", &ds)) {
+                edit_.double_sided = ds;
+                live = commit = true;
+            }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Textures")) {
+            ImGui::TextDisabled("Drag textures from the Asset Browser onto a slot.");
+            bool t = false;
+            t |= texture_slot("Base Color", "Albedo / diffuse. Read as sRGB.",
+                              edit_.albedo_map);
+            t |= texture_slot("Normal", "Tangent-space normal map. Linear data —\n"
+                                        "loaded without sRGB decoding.",
+                              edit_.normal_map);
+            t |= texture_slot("Metal/Rough",
+                              "glTF packing: GREEN = roughness, BLUE = metallic.\n"
+                              "Linear data.", edit_.metallic_roughness_map);
+            t |= texture_slot("Occlusion", "Ambient occlusion, RED channel. Linear data.",
+                              edit_.occlusion_map);
+            t |= texture_slot("Emissive", "Self-illumination. Read as sRGB, then scaled\n"
+                                          "by Emissive Glow.", edit_.emissive_map);
+            if (t) { live = true; commit = true; }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Presets")) {
+            if (render_presets(edit_)) { live = true; commit = true; }
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
+    // In memory while dragging (the viewport follows the mouse), on disk when
+    // the gesture ends.
+    if (live) {
+        materials->set(path, edit_);
+        dirty_ = true;
+    }
+    if (commit) {
+        if (materials->save(path, edit_)) dirty_ = false;
+    }
+
+    ImGui::Separator();
+    if (dirty_) {
+        if (ImGui::Button("Save##mat", ImVec2(-1, 0)))
+            if (materials->save(path, edit_)) dirty_ = false;
+    } else {
+        ImGui::TextDisabled("Saved to %s", path.c_str());
+    }
+
+    // A material edit changes the ASSET, not the scene — the scene file has no
+    // copy of these values, only the path. Reporting the scene as modified here
+    // would prompt to save a file nothing changed in.
+    return false;
+}
+
+bool MaterialEditorPanel::render_inline_mode(const std::shared_ptr<Entity>& entity,
+                                             MaterialAssetCache* materials) {
+    auto mr = entity->GetComponent<MeshRendererComponent>();
+    bool changed = false;
+
+    ImGui::TextDisabled("Inline material — these settings belong to this object alone.");
+
+    // Read the component into a desc, edit it, write back what a component can
+    // actually hold. Going through MaterialDesc keeps one set of controls for
+    // both modes rather than two that drift apart.
+    MaterialDesc m;
+    m.base_color         = mr->GetColor();
+    m.metallic           = mr->GetMetallic();
+    m.roughness          = mr->GetRoughness();
+    m.occlusion          = mr->GetOcclusion();
+    m.emissive           = mr->GetEmissive();
+    m.emissive_intensity = mr->GetEmissiveIntensity();
+    m.albedo_map         = mr->GetAlbedoTexturePath();
+    m.name               = entity->GetName();
+
+    bool live = false, commit = false;
+
+    if (ImGui::BeginTabBar("##inline_tabs")) {
+        if (ImGui::BeginTabItem("Surface")) {
+            // Normal Scale is drawn but inert without a normal map, and inline
+            // materials cannot have one; the tooltip on the slot below says so.
+            pbr_controls(m, live, commit);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Textures")) {
+            if (texture_slot("Base Color", "Albedo / diffuse. Read as sRGB.", m.albedo_map))
+                live = true;
+            texture_slot_disabled("Normal",
+                "An object's inline settings can only carry a base-colour texture.\n"
+                "Create a material asset below to use normal, metal/rough,\n"
+                "occlusion and emissive maps.");
+            texture_slot_disabled("Metal/Rough",  "Create a material asset to use this slot.");
+            texture_slot_disabled("Occlusion",    "Create a material asset to use this slot.");
+            texture_slot_disabled("Emissive",     "Create a material asset to use this slot.");
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Presets")) {
+            if (render_presets(m)) live = true;
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
+    if (live || commit) {
+        mr->SetColor(m.base_color);
+        mr->SetMetallic(m.metallic);
+        mr->SetRoughness(m.roughness);
+        mr->SetOcclusion(m.occlusion);
+        mr->SetEmissive(m.emissive);
+        mr->SetEmissiveIntensity(m.emissive_intensity);
+        mr->SetAlbedoTexturePath(m.albedo_map);
+        changed = true;
+    }
+
+    // ---- Promote to an asset ------------------------------------------------
+    ImGui::Separator();
+    ImGui::TextUnformatted("Create a material asset from these settings");
+    if (new_path_buf_[0] == '\0')
+        std::snprintf(new_path_buf_, sizeof new_path_buf_, "assets/materials/%s.mat",
+                      entity->GetName().c_str());
+    ImGui::SetNextItemWidth(-90.0f);
+    ImGui::InputText("##new_mat_path", new_path_buf_, sizeof new_path_buf_);
+    ImGui::SameLine();
+    if (ImGui::Button("Create")) {
+        std::string path = new_path_buf_;
+        if (path.empty()) {
+            spdlog::warn("[MaterialEditor] give the new material a path first");
+        } else {
+            if (!gws::assets::is_material_path(path)) path += gws::assets::kMaterialExtension;
+            MaterialDesc created = m;
+            created.name = std::filesystem::path(path).stem().string();
+            if (materials->save(path, created)) {
+                // Assign it, so "Create" means the object is now using it —
+                // creating a file the object ignores would be a confusing
+                // half-action.
+                mr->SetMaterialPath(path);
+                edit_path_.clear();
+                changed = true;
+                spdlog::info("[MaterialEditor] created '{}' and assigned it to '{}'",
+                             path, entity->GetName());
+            }
+        }
+    }
+    ImGui::TextDisabled("The object switches to the new asset, and other objects\n"
+                        "can then be pointed at the same file.");
+
+    return changed;
+}
+
+bool MaterialEditorPanel::render_presets(MaterialDesc& target) {
+    ImGui::TextDisabled("Sets base colour, metallic and roughness. Textures are left alone.");
+    ImGui::Separator();
+
+    bool applied = false;
+    for (const auto& p : kPresets) {
+        ImGui::PushID(p.name);
+
+        // Swatch first, so the list is scannable by colour rather than by
+        // reading nine words.
+        const ImVec2 pos = ImGui::GetCursorScreenPos();
+        const float  h   = ImGui::GetTextLineHeight();
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            pos, ImVec2(pos.x + h * 1.6f, pos.y + h),
+            ImGui::GetColorU32(ImVec4(p.albedo.r, p.albedo.g, p.albedo.b, 1.0f)), 2.0f);
+        ImGui::Dummy(ImVec2(h * 1.6f, h));
         ImGui::SameLine();
-        ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        ImVec2 pos = ImGui::GetCursorScreenPos();
-        
-        ImU32 col = ImGui::GetColorU32(
-            ImVec4(PBR_PRESETS[i].albedo.r, PBR_PRESETS[i].albedo.g, 
-                   PBR_PRESETS[i].albedo.b, 1.0f)
-        );
-        draw_list->AddRectFilled(pos, ImVec2(pos.x + color_size.x, pos.y + color_size.y), col);
+
+        if (ImGui::Selectable(p.name)) {
+            target.base_color = glm::vec4(p.albedo, target.base_color.a);
+            target.metallic   = p.metallic;
+            target.roughness  = p.roughness;
+            applied = true;
+        }
+        ImGui::PopID();
     }
+    return applied;
 }
 
-void MaterialEditorPanel::RenderPreview() {
-    ImGui::Text("Material Preview");
-    ImGui::Separator();
-    
-    // Show material color preview
-    ImVec2 preview_size(200, 200);
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    
-    // Draw base color
-    ImU32 col = ImGui::GetColorU32(
-        ImVec4(state_.albedo.r, state_.albedo.g, state_.albedo.b, 1.0f)
-    );
-    draw_list->AddRectFilled(pos, ImVec2(pos.x + preview_size.x, pos.y + preview_size.y), col, 4.0f);
-    
-    // Add grid to show material properties
-    ImColor grid_color(100, 100, 100);
-    for (int i = 0; i <= 10; ++i) {
-        float x = pos.x + (preview_size.x / 10) * i;
-        float y_start = pos.y;
-        float y_end = pos.y + preview_size.y;
-        draw_list->AddLine(ImVec2(x, y_start), ImVec2(x, y_end), grid_color, 0.5f);
-        
-        float y = pos.y + (preview_size.y / 10) * i;
-        float x_start = pos.x;
-        float x_end = pos.x + preview_size.x;
-        draw_list->AddLine(ImVec2(x_start, y), ImVec2(x_end, y), grid_color, 0.5f);
-    }
-    
-    // Draw border
-    ImColor border_color(200, 200, 200);
-    draw_list->AddRect(pos, ImVec2(pos.x + preview_size.x, pos.y + preview_size.y), border_color, 4.0f);
-    
-    ImGui::Dummy(preview_size);
-    
-    // Material stats
-    ImGui::Separator();
-    ImGui::Text("Albedo: (%.2f, %.2f, %.2f)", state_.albedo.r, state_.albedo.g, state_.albedo.b);
-    ImGui::Text("Metallic: %.2f", state_.metallic);
-    ImGui::Text("Roughness: %.2f", state_.roughness);
-    ImGui::Text("AO: %.2f", state_.ambient_occlusion);
-    ImGui::Text("Emissive: (%.2f, %.2f, %.2f)", state_.emissive.r, state_.emissive.g, state_.emissive.b);
-}
-
-void MaterialEditorPanel::ApplyMaterialToEntity(const std::shared_ptr<Entity>& entity) {
-    if (!entity) return;
-    
-    // TODO: Implement actual material assignment to entity
-    // This would integrate with the material system and entity components
-    spdlog::info("[MaterialEditor] Applying material with albedo ({:.2f}, {:.2f}, {:.2f})",
-                 state_.albedo.r, state_.albedo.g, state_.albedo.b);
-}
-
-void MaterialEditorPanel::SetMaterialState(const MaterialEditorState& state) {
-    state_ = state;
-}
-
-} // namespace schizo::editor
+}  // namespace schizo::editor

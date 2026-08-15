@@ -1,84 +1,88 @@
 #pragma once
 
+// ============================================================================
+// MaterialEditorPanel — the inspector's surface editor.
+//
+// WHAT THIS REPLACES. The previous version of this panel had a full six-slot
+// texture tab, PBR sliders and a preset list, and an Apply button whose whole
+// implementation was:
+//
+//     // TODO: Implement actual material assignment to entity
+//     spdlog::info("[MaterialEditor] Applying material with albedo ...");
+//
+// Nothing it did reached the renderer. The inspector consequently grew a SECOND
+// block underneath it — "Mesh Renderer (live)" — carrying a comment explaining
+// that the panel above was visual only. Two material UIs, one of which lied.
+//
+// So this panel now edits the things the renderer actually reads, and there is
+// only one of them. It has two modes, and which one is active is stated on
+// screen rather than inferred:
+//
+//   MATERIAL ASSET  — the entity references a .mat. Edits go to the shared
+//                     asset, so every entity using it changes at once. That is
+//                     the point of an asset and also its sharp edge, so the
+//                     panel says how many other entities are affected.
+//
+//   INLINE          — no .mat assigned. Edits go to this entity's
+//                     MeshRendererComponent: a colour, PBR scalars and a base
+//                     texture, which is the whole of what a component can carry.
+//                     The other four map slots are disabled with the reason
+//                     given, because a texture field that silently does nothing
+//                     is worse than no field at all.
+//
+// LIVE EDITING AND THE DISK. Slider drags write to the material cache in memory
+// (so the viewport updates on the frame you drag) and to the file only when the
+// gesture ends. Writing on every frame would issue hundreds of writes per drag
+// and continuously retrigger the file watcher's settle window.
+// ============================================================================
+
+#include "assets/material_desc.h"
+
 #include <glm/glm.hpp>
 #include <memory>
 #include <string>
 
-// Forward declarations
 namespace schizo::scene {
-    class Entity;
-}
-
-namespace schizo::renderer {
-    class Material;
-    class PBRMaterial;
+class Entity;
+class Scene;
 }
 
 namespace schizo::editor {
 
-/**
- * @struct MaterialEditorState
- * @brief State for material editing
- */
-struct MaterialEditorState {
-    // PBR Parameters
-    glm::vec3 albedo = glm::vec3(0.8f);
-    float metallic = 0.0f;
-    float roughness = 0.5f;
-    float ambient_occlusion = 1.0f;
-    glm::vec3 emissive = glm::vec3(0.0f);
-    
-    // Texture slots
-    std::string albedo_texture;
-    std::string normal_texture;
-    std::string metallic_texture;
-    std::string roughness_texture;
-    std::string ao_texture;
-    std::string emissive_texture;
-    
-    // Material preset
-    int preset_index = 0;  // Index into preset list
-    std::string preset_name;
-};
+class MaterialAssetCache;
 
-/**
- * @class MaterialEditorPanel
- * @brief Material editor for the inspector
- * 
- * Features:
- * - PBR parameter editing
- * - Texture slot assignment
- * - Material presets
- * - Live preview
- */
 class MaterialEditorPanel {
 public:
     MaterialEditorPanel();
     ~MaterialEditorPanel();
-    
-    /**
-     * @brief Render material editor for entity
-     */
-    void Render(const std::shared_ptr<schizo::scene::Entity>& entity);
-    
-    /**
-     * @brief Set the edited material state
-     */
-    void SetMaterialState(const MaterialEditorState& state);
-    
-    /**
-     * @brief Get current material state
-     */
-    const MaterialEditorState& GetMaterialState() const { return state_; }
-    
+
+    /// Draw the panel for `entity`. Returns true when something changed that
+    /// should mark the scene modified.
+    ///
+    /// `scene` is optional and used only to report how many OTHER entities share
+    /// the material being edited — editing a shared asset while believing it is
+    /// per-object is the one mistake this UI can invite, so it is answered up
+    /// front rather than discovered later.
+    bool Render(const std::shared_ptr<schizo::scene::Entity>& entity,
+                MaterialAssetCache* materials,
+                const std::shared_ptr<schizo::scene::Scene>& scene = nullptr);
+
 private:
-    MaterialEditorState state_;
-    
-    void RenderPBRParameters();
-    void RenderTextureSlots();
-    void RenderPresets();
-    void RenderPreview();
-    void ApplyMaterialToEntity(const std::shared_ptr<schizo::scene::Entity>& entity);
+    /// Working copy of the asset being edited, so a drag can update the cache
+    /// each frame and the file only on release.
+    gws::assets::MaterialDesc edit_;
+    std::string               edit_path_;    // which .mat edit_ mirrors
+    bool                      dirty_ = false; // edited in memory, not yet saved
+
+    /// Path text for the "save as / create" field, kept across frames.
+    char new_path_buf_[260] = {0};
+
+    bool render_asset_mode(const std::shared_ptr<schizo::scene::Entity>& entity,
+                           MaterialAssetCache* materials,
+                           const std::shared_ptr<schizo::scene::Scene>& scene);
+    bool render_inline_mode(const std::shared_ptr<schizo::scene::Entity>& entity,
+                            MaterialAssetCache* materials);
+    bool render_presets(gws::assets::MaterialDesc& target);
 };
 
-} // namespace schizo::editor
+}  // namespace schizo::editor

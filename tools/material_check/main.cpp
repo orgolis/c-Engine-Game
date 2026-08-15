@@ -28,6 +28,7 @@
 // ============================================================================
 #include "assets/material_desc.h"
 
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>

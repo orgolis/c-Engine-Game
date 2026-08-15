@@ -388,6 +388,22 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(material_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# materialcache_check: the cache the editor puts in front of the .mat format.
+# Every interesting behaviour here is a failure or reload behaviour — the kind a
+# person experiences as "the editor is being weird" rather than as an error. A
+# path that will not load must keep reporting nullptr (never a substituted white
+# default) yet still be watched so creating the file later fixes the scene; a
+# no-op save must report nothing changed; and set() must update memory WITHOUT
+# writing, which is what makes dragging a slider affordable. Time is injected, so
+# the settle window is exercised exactly rather than flakily.
+add_executable(materialcache_check materialcache_check/main.cpp)
+target_include_directories(materialcache_check PRIVATE ../editor/include)
+target_link_libraries(materialcache_check PRIVATE gws_assets gws_logging)
+target_compile_features(materialcache_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(materialcache_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # playchanges_check: play mode must not eat a tuning pass — and must never write
 # to the authored scene unless a change was explicitly ticked. Compiles the
 # editor's play_mode_changes.cpp + ecs_bridge.cpp directly; both are GPU-free, so

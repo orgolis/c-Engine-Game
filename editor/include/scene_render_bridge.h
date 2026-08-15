@@ -1,6 +1,7 @@
 #pragma once
 
 #include "primitive_meshes.h"
+#include "material_cache.h"       // .mat assets -> MaterialDesc -> gpu::Material
 #include "vulkan/vulkan_scene_material.h"
 #include "vulkan/vulkan_render_graph.h"
 #include "vulkan/vulkan_gltf_loader.h"
@@ -17,6 +18,7 @@
 #include "ecs_bridge.h"   // authoritative ECS world matrices (Stage 1.4 step 2)
 #include "assets/asset_watcher.h"   // shared hot-reload file watching
 #include "jobs/task_runner.h"       // background OBJ parsing
+#include "asset_pipeline/obj_import.h"   // OBJ + .mtl (shared with the cooker)
 
 #include <chrono>
 #include <functional>
@@ -37,327 +39,42 @@
 
 namespace schizo::editor {
 
-/// Per-entity Material cache. Materials are rebuilt when the entity's color
-/// changes (cheap-enough comparison; editor-only path so cost is negligible).
-class EntityMaterialCache {
-public:
-    void clear() { entries_.clear(); }
+/// Build the surface description for an entity's MeshRendererComponent.
+///
+/// One resolution rule, in one place: an assigned `.mat` supplies EVERYTHING,
+/// and the component's inline fields are used only when there is no material
+/// asset (or it failed to load). Two half-materials competing for the same
+/// surface — some fields from the asset, some from the component — is precisely
+/// the confusion this replaces, so there is no blending between them.
+///
+/// Alpha mode always comes from the COMPONENT even when an asset is assigned:
+/// it decides which render pass the entity is drawn in, which is a property of
+/// this placement rather than of the material. The same glass material can be
+/// legitimately cutout on one entity and blended on another.
+inline gws::assets::MaterialDesc resolve_entity_material(
+    const schizo::scene::MeshRendererComponent* mr,
+    MaterialAssetCache* materials)
+{
+    gws::assets::MaterialDesc d;
+    if (!mr) return d;
 
-    gws::renderer::gpu::Material* get_or_create(
-        uint32_t entity_id,
-        const glm::vec4& color,
-        float metallic, float roughness,
-        float occlusion,
-        const glm::vec3& emissive,
-        float alpha_cutoff,                                    // 0 → opaque (no discard)
-        const std::string& albedo_path,                        // "" → flat colour only
-        gws::renderer::gpu::VulkanDevice* device,
-        VkDescriptorSetLayout layout,
-        VkDescriptorPool pool,
-        gws::renderer::gpu::TextureManager* textures = nullptr)
-    {
-        auto it = entries_.find(entity_id);
-        if (it != entries_.end()) {
-            const Entry& e = it->second;
-            if (color_eq(e.color, color) &&
-                std::abs(e.metallic - metallic) < 1e-4f &&
-                std::abs(e.roughness - roughness) < 1e-4f &&
-                std::abs(e.occlusion - occlusion) < 1e-4f &&
-                std::abs(e.emissive.r - emissive.r) < 1e-4f &&
-                std::abs(e.emissive.g - emissive.g) < 1e-4f &&
-                std::abs(e.emissive.b - emissive.b) < 1e-4f &&
-                std::abs(e.alpha_cutoff - alpha_cutoff) < 1e-4f &&
-                e.albedo_path == albedo_path) {
-                return e.material.get();
-            }
-        }
-        gws::renderer::gpu::MaterialUniforms params{};
-        params.base_color_factor = color;
-        params.metallic_factor   = metallic;
-        params.roughness_factor  = roughness;
-        params.occlusion_strength = occlusion;
-        // emissive_factor.a doubles as alpha_cutoff for the G-Buffer
-        // shader's discard test (see MaterialUniforms comment).
-        params.emissive_factor   = glm::vec4(emissive, alpha_cutoff);
-        // Optional base-colour texture, loaded through the manager (mipped,
-        // sRGB, deduplicated, hot-reloadable). Held on the Entry so it outlives
-        // the material's descriptor set. `color` still multiplies the texel.
-        std::shared_ptr<gws::renderer::gpu::Texture> albedo;
-        const gws::renderer::gpu::Texture* base = nullptr;
-        if (textures && !albedo_path.empty()) {
-            gws::renderer::gpu::TextureImportSettings st;
-            st.srgb = true; st.gen_mips = true;
-            albedo = textures->load(albedo_path, st);
-            base = albedo ? albedo.get() : nullptr;
-        }
-
-        // Route unbound slots to the manager's shared engine-wide defaults so
-        // every primitive material doesn't mint its own 1×1 white/normal/black.
-        const gws::renderer::gpu::Texture* dw = textures ? textures->white()  : nullptr;
-        const gws::renderer::gpu::Texture* dn = textures ? textures->normal() : nullptr;
-        const gws::renderer::gpu::Texture* db = textures ? textures->black()  : nullptr;
-        auto mat = gws::renderer::gpu::Material::create(
-            device, layout, pool, params,
-            base, nullptr, nullptr, nullptr, nullptr,
-            dw, dn, db);
-        Entry e{ color, metallic, roughness, occlusion, emissive, alpha_cutoff,
-                 albedo_path, std::move(albedo), std::move(mat) };
-        gws::renderer::gpu::Material* raw = e.material.get();
-        entries_[entity_id] = std::move(e);
-        return raw;
+    const gws::assets::MaterialDesc* asset =
+        (materials && mr->HasMaterial()) ? materials->get(mr->GetMaterialPath()) : nullptr;
+    if (asset) {
+        d = *asset;
+    } else {
+        d.base_color         = mr->GetColor();
+        d.metallic           = mr->GetMetallic();
+        d.roughness          = mr->GetRoughness();
+        d.occlusion          = mr->GetOcclusion();
+        d.emissive           = mr->GetEmissive();
+        d.emissive_intensity = mr->GetEmissiveIntensity();
+        d.albedo_map         = mr->GetAlbedoTexturePath();
     }
 
-    /// Drop entries for entities no longer in the scene to avoid leaking
-    /// descriptor sets when the user deletes entities.
-    void prune(const std::shared_ptr<schizo::scene::Scene>& scene) {
-        if (!scene) { entries_.clear(); return; }
-        // Make a defensive copy to avoid iterator invalidation if scene is modified
-        std::vector<uint32_t> active_ids;
-        try {
-            for (const auto& ent : scene->GetEntities()) {
-                if (ent) active_ids.push_back(ent->GetId());
-            }
-        } catch (...) {
-            // Scene was modified during iteration; clear cache to be safe
-            entries_.clear();
-            return;
-        }
-        std::unordered_map<uint32_t, Entry> kept;
-        for (uint32_t id : active_ids) {
-            auto it = entries_.find(id);
-            if (it != entries_.end())
-                kept.emplace(it->first, std::move(it->second));
-        }
-        entries_ = std::move(kept);
-    }
-
-private:
-    struct Entry {
-        glm::vec4 color{1.0f};
-        float     metallic     = 0.0f;
-        float     roughness    = 0.8f;
-        float     occlusion    = 1.0f;
-        glm::vec3 emissive{0.0f};
-        float     alpha_cutoff = 0.0f;
-        std::string albedo_path;
-        std::shared_ptr<gws::renderer::gpu::Texture> albedo_tex;  // keeps texture alive
-        std::unique_ptr<gws::renderer::gpu::Material> material;
-    };
-    std::unordered_map<uint32_t, Entry> entries_;
-
-    static bool color_eq(const glm::vec4& a, const glm::vec4& b) {
-        const float eps = 1e-4f;
-        return std::abs(a.r - b.r) < eps &&
-               std::abs(a.g - b.g) < eps &&
-               std::abs(a.b - b.b) < eps &&
-               std::abs(a.a - b.a) < eps;
-    }
-};
-
-/// Minimal Wavefront .obj parser — produces SceneVertex/index buffers and
-/// computes flat normals when the file omits them. Triangulates polygons
-/// with fan triangulation. Only the geometry section is consumed; materials
-/// (mtllib / usemtl) are ignored — a default white material is used.
-inline bool parse_obj_file(const std::string& path,
-                           std::vector<gws::renderer::gpu::SceneVertex>& out_verts,
-                           std::vector<uint32_t>& out_idx) {
-    // utf8_path: non-ASCII filenames (Cyrillic etc.) fail with a narrow ifstream.
-    std::ifstream file(utf8_path(path));
-    if (!file.is_open()) return false;
-
-    std::vector<glm::vec3> positions;
-    std::vector<glm::vec3> normals;
-    std::vector<glm::vec2> uvs;
-    std::string line;
-
-    while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        std::istringstream ls(line);
-        std::string tag; ls >> tag;
-        if (tag == "v") {
-            glm::vec3 p; ls >> p.x >> p.y >> p.z;
-            positions.push_back(p);
-        } else if (tag == "vn") {
-            glm::vec3 n; ls >> n.x >> n.y >> n.z;
-            normals.push_back(n);
-        } else if (tag == "vt") {
-            glm::vec2 t; ls >> t.x >> t.y;
-            uvs.push_back(t);
-        } else if (tag == "f") {
-            // Collect all vertex specs on this line.
-            std::vector<std::tuple<int,int,int>> face;
-            std::string spec;
-            while (ls >> spec) {
-                int vi = 0, ti = 0, ni = 0;
-                size_t a = spec.find('/');
-                if (a == std::string::npos) {
-                    vi = std::atoi(spec.c_str());
-                } else {
-                    vi = std::atoi(spec.substr(0, a).c_str());
-                    size_t b = spec.find('/', a + 1);
-                    if (b == std::string::npos) {
-                        if (a + 1 < spec.size())
-                            ti = std::atoi(spec.substr(a + 1).c_str());
-                    } else {
-                        if (b > a + 1)
-                            ti = std::atoi(spec.substr(a + 1, b - a - 1).c_str());
-                        if (b + 1 < spec.size())
-                            ni = std::atoi(spec.substr(b + 1).c_str());
-                    }
-                }
-                // OBJ indices are 1-based; negative means relative to end.
-                auto resolve = [](int idx, int count) -> int {
-                    if (idx > 0)  return idx - 1;
-                    if (idx < 0)  return count + idx;
-                    return -1;
-                };
-                face.emplace_back(
-                    resolve(vi, (int)positions.size()),
-                    resolve(ti, (int)uvs.size()),
-                    resolve(ni, (int)normals.size())
-                );
-            }
-            if (face.size() < 3) continue;
-
-            // Fan-triangulate.
-            for (size_t i = 1; i + 1 < face.size(); ++i) {
-                std::tuple<int,int,int> tri[3] = { face[0], face[i], face[i + 1] };
-
-                // Compute the geometric normal of this triangle. We need it
-                // for two reasons: (1) to supply per-vertex normals when the
-                // OBJ doesn't ship any, and (2) to detect CW-vs-CCW winding
-                // when it does. Some legacy exporters (older 3ds Max,
-                // certain tools) write CW-wound OBJs; with back-face culling
-                // on, those would disappear unless we fix the winding at
-                // load time.
-                glm::vec3 flat_n(0,1,0);
-                glm::vec3 geom_n_raw(0,1,0);
-                {
-                    int ai = std::get<0>(tri[0]);
-                    int bi = std::get<0>(tri[1]);
-                    int ci = std::get<0>(tri[2]);
-                    if (ai >= 0 && bi >= 0 && ci >= 0 &&
-                        ai < (int)positions.size() &&
-                        bi < (int)positions.size() &&
-                        ci < (int)positions.size()) {
-                        glm::vec3 e1 = positions[bi] - positions[ai];
-                        glm::vec3 e2 = positions[ci] - positions[ai];
-                        geom_n_raw = glm::cross(e1, e2);
-                        float len = glm::length(geom_n_raw);
-                        if (len > 1e-8f) flat_n = geom_n_raw / len;
-                    }
-                }
-
-                bool have_n = std::get<2>(tri[0]) >= 0 &&
-                              std::get<2>(tri[1]) >= 0 &&
-                              std::get<2>(tri[2]) >= 0;
-
-                // Winding check: if the file supplied normals and the
-                // geometric normal of this triangle is anti-aligned with the
-                // supplied normal, swap vertices 1 and 2 to flip winding.
-                // Match what back-face culling expects (CCW from outside =
-                // positive dot product with declared normal).
-                if (have_n) {
-                    int n0_idx = std::get<2>(tri[0]);
-                    if (n0_idx >= 0 && n0_idx < (int)normals.size()) {
-                        const glm::vec3& supplied = normals[n0_idx];
-                        if (glm::dot(geom_n_raw, supplied) < 0.0f) {
-                            std::swap(tri[1], tri[2]);
-                        }
-                    }
-                }
-
-                for (int k = 0; k < 3; ++k) {
-                    int vi = std::get<0>(tri[k]);
-                    int ti = std::get<1>(tri[k]);
-                    int ni = std::get<2>(tri[k]);
-                    if (vi < 0 || vi >= (int)positions.size()) continue;
-
-                    gws::renderer::gpu::SceneVertex v{};
-                    v.position = positions[vi];
-                    v.normal   = (ni >= 0 && ni < (int)normals.size())
-                               ? normals[ni] : flat_n;
-                    v.uv       = (ti >= 0 && ti < (int)uvs.size())
-                               ? uvs[ti] : glm::vec2(0.0f);
-                    v.tangent  = glm::vec4(1, 0, 0, 1);
-                    out_verts.push_back(v);
-                    out_idx.push_back((uint32_t)out_verts.size() - 1);
-                }
-            }
-        }
-    }
-
-    // Global winding-orientation check. The per-triangle pass above already
-    // flips individual triangles whose geometric normal points opposite to
-    // their file-supplied normal — that's correct per-triangle but can leave
-    // a mesh that's globally still CW-wound if the supplied normals are
-    // also globally inverted (rare, but it happens with some legacy assets).
-    //
-    // Strategy: pick a single criterion based on what data the OBJ actually
-    // ships, and apply ONE global flip if needed.
-    //   - Has `vn` normals → vote each triangle by dot(geom_n, supplied_avg).
-    //     Trustworthy because the file is telling us which way the surface
-    //     should face.
-    //   - No `vn` lines → fall back to a centroid heuristic (does the face
-    //     point away from the mesh centroid?). Works for closed-convex
-    //     shapes; doesn't help much for skin-thin meshes or open shells.
-    //
-    // Crucially, we DO NOT run the centroid heuristic when normals are
-    // available — that can produce false flips on non-convex meshes (e.g.
-    // city scenes where streets at low Y vote "inward" against the mesh
-    // centroid even though they're correctly wound).
-    if (!out_verts.empty() && !out_idx.empty() && !normals.empty()) {
-        // Path 1: voting by supplied normal agreement.
-        size_t agree = 0, disagree = 0;
-        for (size_t i = 0; i + 2 < out_idx.size(); i += 3) {
-            const auto& v0 = out_verts[out_idx[i  ]];
-            const auto& v1 = out_verts[out_idx[i+1]];
-            const auto& v2 = out_verts[out_idx[i+2]];
-            const glm::vec3 geom_n = glm::cross(v1.position - v0.position,
-                                                v2.position - v0.position);
-            // Average the three vertex normals — more robust than just v0's
-            // (which can disagree at sharp edges due to smoothing groups).
-            const glm::vec3 supplied_avg = v0.normal + v1.normal + v2.normal;
-            const float d = glm::dot(geom_n, supplied_avg);
-            if (d > 0.0f) ++agree; else if (d < 0.0f) ++disagree;
-        }
-        if (disagree > agree) {
-            spdlog::info("OBJ global winding: {} disagree vs {} agree with supplied normals — flipping all triangles",
-                         disagree, agree);
-            for (size_t i = 0; i + 2 < out_idx.size(); i += 3) {
-                std::swap(out_idx[i+1], out_idx[i+2]);
-            }
-        } else {
-            spdlog::info("OBJ global winding: {} agree vs {} disagree — keeping as-is",
-                         agree, disagree);
-        }
-    } else if (!out_verts.empty() && !out_idx.empty()) {
-        // Path 2: no supplied normals — centroid heuristic.
-        glm::vec3 centroid(0.0f);
-        for (const auto& v : out_verts) centroid += v.position;
-        centroid /= static_cast<float>(out_verts.size());
-
-        size_t outward = 0, inward = 0;
-        for (size_t i = 0; i + 2 < out_idx.size(); i += 3) {
-            const glm::vec3& p0 = out_verts[out_idx[i  ]].position;
-            const glm::vec3& p1 = out_verts[out_idx[i+1]].position;
-            const glm::vec3& p2 = out_verts[out_idx[i+2]].position;
-            const glm::vec3 face_center = (p0 + p1 + p2) / 3.0f;
-            const glm::vec3 geom_n = glm::cross(p1 - p0, p2 - p0);
-            const glm::vec3 from_centroid = face_center - centroid;
-            const float d = glm::dot(geom_n, from_centroid);
-            if (d > 0.0f) ++outward; else if (d < 0.0f) ++inward;
-        }
-        if (inward > outward) {
-            spdlog::info("OBJ centroid winding: {} inward vs {} outward (no vn lines) — flipping",
-                         inward, outward);
-            for (size_t i = 0; i + 2 < out_idx.size(); i += 3) {
-                std::swap(out_idx[i+1], out_idx[i+2]);
-            }
-        }
-    }
-
-    return !out_verts.empty() && !out_idx.empty();
+    d.alpha_mode   = static_cast<gws::assets::MaterialAlphaMode>(mr->GetAlphaMode());
+    d.alpha_cutoff = mr->GetAlphaCutoff();
+    return d;
 }
 
 /// Lazily-loaded cache of mesh assets, keyed by file path. Dispatches on
@@ -447,14 +164,14 @@ public:
             tasks_->submit("Load " + std::filesystem::path(utf8_path(disk_path)).filename().string(),
                 [disk_path, parsed](gws::tasks::TaskContext& ctx) {
                     ctx.set_progress(-1.0f, "parsing");
-                    parsed->ok = parse_obj_file(disk_path, parsed->verts, parsed->idx);
+                    parsed->ok = schizo::assets::import_obj(disk_path, parsed->scene);
                     if (ctx.cancelled()) parsed->ok = false;
                 },
-                [this, key, disk_path, parsed, device, mat_layout, mat_pool](const gws::tasks::TaskInfo& info) {
+                [this, key, disk_path, parsed, device, mat_layout, mat_pool, textures](const gws::tasks::TaskInfo& info) {
                     using namespace gws::renderer::gpu;
                     loading_.erase(key);
                     if (info.state != gws::tasks::TaskState::Succeeded || !parsed->ok ||
-                        parsed->verts.empty() || parsed->idx.empty()) {
+                        parsed->scene.meshes.empty()) {
                         // Cache the failure so a broken file is not re-parsed
                         // every frame — the same reason the sync path does it.
                         entries_[key] = nullptr;
@@ -470,8 +187,8 @@ public:
                                       on_disk ? "present but parse failed" : "NOT FOUND on disk");
                         return;
                     }
-                    auto built = build_obj_scene(std::move(parsed->verts), std::move(parsed->idx),
-                                                 device, mat_layout, mat_pool);
+                    auto built = build_obj_scene(parsed->scene, disk_path,
+                                                 device, mat_layout, mat_pool, textures);
                     if (!built) { entries_[key] = nullptr; return; }
                     spdlog::info("[AssetMeshCache] Loaded {} (async): {} draw items, {} meshes",
                                  key, built->draw_items.size(), built->meshes.size());
@@ -497,7 +214,7 @@ public:
             }
         } else if (ext == ".obj") {
             if (device) {
-                scene = load_obj_scene(disk_path, device, mat_layout, mat_pool);
+                scene = load_obj_scene(disk_path, device, mat_layout, mat_pool, textures);
             } else {
                 spdlog::error("[AssetMeshCache] Device is null for {}", path);
             }
@@ -636,8 +353,7 @@ private:
 
     // CPU-side result of an OBJ parse, handed from a worker to the editor thread.
     struct ParsedObj {
-        std::vector<gws::renderer::gpu::SceneVertex> verts;
-        std::vector<uint32_t>                        idx;
+        schizo::assets::ImportedScene scene;
         bool ok = false;
     };
 
@@ -645,54 +361,219 @@ private:
         const std::string& path,
         gws::renderer::gpu::VulkanDevice* device,
         VkDescriptorSetLayout mat_layout,
-        VkDescriptorPool mat_pool)
+        VkDescriptorPool mat_pool,
+        gws::renderer::gpu::TextureManager* textures)
     {
-        using namespace gws::renderer::gpu;
-        std::vector<SceneVertex> verts;
-        std::vector<uint32_t>   idx;
-        if (!parse_obj_file(path, verts, idx)) return nullptr;
-        return build_obj_scene(std::move(verts), std::move(idx), device, mat_layout, mat_pool);
+        schizo::assets::ImportedScene imp;
+        if (!schizo::assets::import_obj(path, imp)) return nullptr;
+        return build_obj_scene(imp, path, device, mat_layout, mat_pool, textures);
     }
 
     // Everything after the parse. Device-touching, so it runs on the editor
     // thread in both the sync and async paths — one implementation, so an
     // async-loaded mesh is byte-identical to a synchronously loaded one.
+    //
+    // This consumes the asset-pipeline importer's ImportedScene rather than the
+    // editor's old geometry-only parser. That parser ignored `mtllib`/`usemtl`
+    // outright and built ONE grey material with all five texture slots null, so
+    // no OBJ could ever show a texture from any direction — while a complete
+    // OBJ+MTL importer (map_Kd, per-material submeshes, Ns→roughness, welded
+    // indices) already existed for the cook pipeline. Sharing it means an OBJ
+    // looks the same in the viewport as it will after cooking, and there is one
+    // OBJ parser to keep correct instead of two that disagree.
     static std::unique_ptr<gws::renderer::gpu::Scene> build_obj_scene(
-        std::vector<gws::renderer::gpu::SceneVertex>&& verts,
-        std::vector<uint32_t>&& idx,
+        const schizo::assets::ImportedScene& imp,
+        const std::string& source_path,
         gws::renderer::gpu::VulkanDevice* device,
         VkDescriptorSetLayout mat_layout,
-        VkDescriptorPool mat_pool)
+        VkDescriptorPool mat_pool,
+        gws::renderer::gpu::TextureManager* textures)
     {
         using namespace gws::renderer::gpu;
+        if (imp.meshes.empty()) return nullptr;
+
+        // The importer emits one ImportedMeshData per material bucket, each
+        // carrying a COPY of the shared vertex pool (the offline cook drops the
+        // unused vertices per mesh; nothing does that here). Uploading N copies
+        // of the same pool would multiply a large model's VRAM by its material
+        // count, so identical pools are detected and shared, and only genuinely
+        // different ones are appended. Detected rather than assumed: if the
+        // importer ever stops sharing, this still produces correct geometry.
+        const auto& first = imp.meshes[0];
+        const uint32_t stride = first.vertex_stride;
+        if (stride != sizeof(schizo::assets::ImportedVertex) || first.vertices.empty()) {
+            spdlog::error("[AssetMeshCache] '{}': unexpected vertex stride {} — expected {}",
+                          source_path, stride, sizeof(schizo::assets::ImportedVertex));
+            return nullptr;
+        }
+        bool pools_identical = true;
+        for (size_t i = 1; i < imp.meshes.size() && pools_identical; ++i)
+            pools_identical = imp.meshes[i].vertices.size() == first.vertices.size() &&
+                              0 == std::memcmp(imp.meshes[i].vertices.data(),
+                                               first.vertices.data(), first.vertices.size());
+
+        std::vector<SceneVertex> verts;
+        std::vector<uint32_t>    idx;
+        // Submesh i corresponds to imp.meshes[i]; the DrawItem for a node picks
+        // its submesh by the node's mesh index, so materials stay attached to
+        // the geometry the .mtl assigned them to.
+        std::vector<Submesh>     submeshes;
+
+        auto append_pool = [&](const schizo::assets::ImportedMeshData& m) -> uint32_t {
+            const uint32_t base = static_cast<uint32_t>(verts.size());
+            const auto* src = reinterpret_cast<const schizo::assets::ImportedVertex*>(m.vertices.data());
+            const size_t count = m.vertices.size() / sizeof(schizo::assets::ImportedVertex);
+            verts.reserve(verts.size() + count);
+            for (size_t i = 0; i < count; ++i) {
+                SceneVertex v{};
+                v.position = glm::vec3(src[i].px, src[i].py, src[i].pz);
+                v.normal   = glm::vec3(src[i].nx, src[i].ny, src[i].nz);
+                v.uv       = glm::vec2(src[i].u, src[i].v);
+                v.tangent  = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);  // filled in below
+                verts.push_back(v);
+            }
+            return base;
+        };
+
+        if (pools_identical) append_pool(first);
+        for (size_t mi = 0; mi < imp.meshes.size(); ++mi) {
+            const auto& m = imp.meshes[mi];
+            const uint32_t base = pools_identical ? 0u : append_pool(m);
+            Submesh sm{};
+            sm.material_index = static_cast<uint32_t>(mi);   // rewritten from nodes below
+            const uint32_t first_index = static_cast<uint32_t>(idx.size());
+            idx.reserve(idx.size() + m.indices.size());
+            for (uint32_t i : m.indices) idx.push_back(i + base);
+            sm.lods.push_back({first_index, static_cast<uint32_t>(m.indices.size()), 0.0f});
+            submeshes.push_back(std::move(sm));
+        }
         if (verts.empty() || idx.empty()) return nullptr;
 
-        Submesh sm{}; sm.material_index = 0;
-        sm.lods.push_back({0, (uint32_t)idx.size(), 0.0f});
-        auto mesh = Mesh::create(device, verts, idx, {sm});
+        // Tangents. OBJ carries none, and the old loader wrote a constant
+        // (1,0,0,1) into every vertex — which is fine while nothing samples a
+        // normal map and silently wrong the moment something does, because the
+        // TBN basis then bears no relation to the UV layout. Now that a material
+        // can name a normal map, they have to be real.
+        generate_tangents(verts, idx);
+
+        auto mesh = Mesh::create(device, verts, idx, submeshes);
         if (!mesh) return nullptr;
         // OBJ files have no standardised winding convention — flag the mesh
         // double-sided so the G-Buffer renderer uses the cull-none pipeline.
         mesh->set_double_sided(true);
 
-        MaterialUniforms params{};
-        params.base_color_factor = glm::vec4(0.85f, 0.85f, 0.85f, 1.0f);
-        params.metallic_factor   = 0.0f;
-        params.roughness_factor  = 0.7f;
-        auto mat = Material::create(device, mat_layout, mat_pool, params,
-                                    nullptr, nullptr, nullptr, nullptr, nullptr);
-        if (!mat) return nullptr;
-
         auto out = std::make_unique<Scene>();
         out->meshes.push_back(std::move(mesh));
-        out->materials.push_back(std::move(mat));
-        DrawItem di;
-        di.mesh          = out->meshes[0].get();
-        di.material      = out->materials[0].get();
-        di.model         = glm::mat4(1.0f);
-        di.submesh_index = 0;
-        out->draw_items.push_back(di);
+
+        // One gpu::Material per CookedMaterial, including its map_Kd texture.
+        // Texture paths from a .mtl are relative to the .obj, which the importer
+        // has already resolved; they still go through the TextureManager so they
+        // are mipped, sRGB-correct, deduplicated and hot-reloadable like every
+        // other texture in the editor.
+        const Texture* dw = textures ? textures->white()  : nullptr;
+        const Texture* dn = textures ? textures->normal() : nullptr;
+        const Texture* db = textures ? textures->black()  : nullptr;
+        std::vector<std::shared_ptr<Texture>> kept_textures;
+        for (const auto& cm : imp.materials) {
+            MaterialUniforms params{};
+            params.base_color_factor = glm::vec4(cm.base_color[0], cm.base_color[1],
+                                                 cm.base_color[2], cm.base_color[3]);
+            params.metallic_factor   = cm.metallic;
+            params.roughness_factor  = std::clamp(cm.roughness, 0.04f, 1.0f);
+
+            std::shared_ptr<Texture> albedo;
+            if (textures && cm.albedo_tex[0]) {
+                TextureImportSettings st;
+                st.srgb = true; st.gen_mips = true;
+                albedo = textures->load(cm.albedo_tex, st);
+                if (albedo && albedo.get() == textures->white()) {
+                    // The manager substitutes shared white on failure, which as
+                    // an albedo map is indistinguishable from success. Say so:
+                    // a .mtl pointing at a texture that did not ship with the
+                    // model is the single most common OBJ import complaint.
+                    spdlog::warn("[AssetMeshCache] '{}': material '{}' references "
+                                 "texture '{}' which failed to load",
+                                 source_path, cm.name, cm.albedo_tex);
+                    albedo.reset();
+                }
+            }
+            auto mat = Material::create(device, mat_layout, mat_pool, params,
+                                        albedo.get(), nullptr, nullptr, nullptr, nullptr,
+                                        dw, dn, db);
+            if (!mat) {
+                spdlog::error("[AssetMeshCache] '{}': could not create material '{}'",
+                              source_path, cm.name);
+                return nullptr;
+            }
+            if (albedo) kept_textures.push_back(std::move(albedo));
+            out->materials.push_back(std::move(mat));
+        }
+        if (out->materials.empty()) return nullptr;
+        out->textures = std::move(kept_textures);
+
+        // One DrawItem per node: node.mesh selects the submesh, node.material
+        // selects the material the .mtl assigned to it.
+        for (const auto& node : imp.nodes) {
+            if (node.mesh < 0 || node.mesh >= static_cast<int>(submeshes.size())) continue;
+            const int mi = (node.material >= 0 &&
+                            node.material < static_cast<int>(out->materials.size()))
+                         ? node.material : 0;
+            DrawItem di;
+            di.mesh          = out->meshes[0].get();
+            di.material      = out->materials[mi].get();
+            di.model         = glm::mat4(1.0f);
+            di.submesh_index = static_cast<uint32_t>(node.mesh);
+            out->draw_items.push_back(di);
+        }
+        if (out->draw_items.empty()) return nullptr;
+        spdlog::info("[AssetMeshCache] '{}': {} submesh(es), {} material(s), {} textured",
+                     source_path, submeshes.size(), out->materials.size(),
+                     out->textures.size());
         return out;
+    }
+
+    /// Per-vertex tangents from the UV layout (Lengyel's method): accumulate each
+    /// triangle's tangent onto its three vertices, then Gram-Schmidt against the
+    /// normal. Degenerate UVs (a face whose texture coordinates are collinear)
+    /// contribute nothing rather than a NaN — one such face would otherwise
+    /// poison an entire smoothing group with black shading.
+    static void generate_tangents(std::vector<gws::renderer::gpu::SceneVertex>& verts,
+                                  const std::vector<uint32_t>& idx) {
+        std::vector<glm::vec3> tan(verts.size(), glm::vec3(0.0f));
+        std::vector<glm::vec3> bitan(verts.size(), glm::vec3(0.0f));
+        for (size_t i = 0; i + 2 < idx.size(); i += 3) {
+            const uint32_t i0 = idx[i], i1 = idx[i + 1], i2 = idx[i + 2];
+            if (i0 >= verts.size() || i1 >= verts.size() || i2 >= verts.size()) continue;
+            const glm::vec3 e1 = verts[i1].position - verts[i0].position;
+            const glm::vec3 e2 = verts[i2].position - verts[i0].position;
+            const glm::vec2 d1 = verts[i1].uv - verts[i0].uv;
+            const glm::vec2 d2 = verts[i2].uv - verts[i0].uv;
+            const float det = d1.x * d2.y - d2.x * d1.y;
+            if (std::abs(det) < 1e-12f) continue;      // degenerate UVs
+            const float r = 1.0f / det;
+            const glm::vec3 t = (e1 * d2.y - e2 * d1.y) * r;
+            const glm::vec3 b = (e2 * d1.x - e1 * d2.x) * r;
+            tan[i0] += t; tan[i1] += t; tan[i2] += t;
+            bitan[i0] += b; bitan[i1] += b; bitan[i2] += b;
+        }
+        for (size_t v = 0; v < verts.size(); ++v) {
+            const glm::vec3 n = verts[v].normal;
+            glm::vec3 t = tan[v] - n * glm::dot(n, tan[v]);      // Gram-Schmidt
+            if (glm::dot(t, t) < 1e-12f) {
+                // No usable UV gradient here (unwrapped seam, untextured face).
+                // Any tangent perpendicular to the normal is as good as another;
+                // pick one deterministically so the mesh is reproducible.
+                const glm::vec3 axis = std::abs(n.x) < 0.9f ? glm::vec3(1, 0, 0)
+                                                            : glm::vec3(0, 1, 0);
+                t = glm::normalize(glm::cross(axis, n));
+            } else {
+                t = glm::normalize(t);
+            }
+            // Handedness: which way the bitangent runs, so mirrored UV islands
+            // light correctly instead of inverting.
+            const float w = (glm::dot(glm::cross(n, t), bitan[v]) < 0.0f) ? -1.0f : 1.0f;
+            verts[v].tangent = glm::vec4(t, w);
+        }
     }
 
     std::unordered_map<std::string, std::unique_ptr<gws::renderer::gpu::Scene>> entries_;
@@ -961,7 +842,7 @@ private:
 inline void build_draw_items(
     const std::shared_ptr<schizo::scene::Scene>& scene,
     const PrimitiveMeshCache& meshes,
-    EntityMaterialCache& mat_cache,
+    MaterialGpuCache& mat_cache,
     AssetMeshCache& asset_cache,
     TerrainMeshCache& terrain_cache,
     TerrainGpuCache& terrain_gpu_cache,
@@ -971,7 +852,8 @@ inline void build_draw_items(
     std::vector<gws::renderer::gpu::DrawItem>& out_opaque,
     std::vector<gws::renderer::gpu::DrawItem>& out_transparent,
     gws::renderer::gpu::TextureManager* textures = nullptr,
-    const schizo::editor::EcsSceneBridge* ecs = nullptr)
+    const schizo::editor::EcsSceneBridge* ecs = nullptr,
+    MaterialAssetCache* material_assets = nullptr)
 {
     out_opaque.clear();
     out_transparent.clear();
@@ -1001,11 +883,12 @@ inline void build_draw_items(
                     ent->GetId(), tc.get(), device, mat_layout, mat_pool, textures);
                 bool is_terrain = tmat != nullptr;
                 if (!tmat) {
-                    tmat = mat_cache.get_or_create(
-                        ent->GetId(), glm::vec4(0.42f, 0.48f, 0.34f, 1.0f),
-                        0.0f, 0.95f, 1.0f, glm::vec3(0.0f), 0.0f,
-                        /*albedo_path=*/std::string(),
-                        device, mat_layout, mat_pool, textures);
+                    gws::assets::MaterialDesc fallback;
+                    fallback.name       = "Terrain (fallback)";
+                    fallback.base_color = glm::vec4(0.42f, 0.48f, 0.34f, 1.0f);
+                    fallback.roughness  = 0.95f;
+                    tmat = mat_cache.get_or_create(fallback, device, mat_layout,
+                                                   mat_pool, textures);
                 }
                 if (tmat) {
                     for (const auto& cm : chunk_meshes) {
@@ -1027,16 +910,29 @@ inline void build_draw_items(
         // Resolve the entity's alpha mode for the primitive path. For the
         // asset path we route per-DrawItem based on the loaded glTF's
         // per-material alphaMode (see below).
-        schizo::scene::AlphaMode am = schizo::scene::AlphaMode::Opaque;
-        if (auto mr = ent->GetComponent<schizo::scene::MeshRendererComponent>()) {
-            am = mr->GetAlphaMode();
-        }
+        auto mr = ent->GetComponent<schizo::scene::MeshRendererComponent>();
+        schizo::scene::AlphaMode am = mr ? mr->GetAlphaMode()
+                                         : schizo::scene::AlphaMode::Opaque;
 
         const auto* mc = ent->GetMeshComponent();
         if (mc && !mc->mesh_path.empty()) {
             const auto* loaded = asset_cache.get_or_load(
                 mc->mesh_path, device, mat_layout, mat_pool, textures);
             if (loaded && !loaded->draw_items.empty()) {
+                // Entity material override. An imported model ships its own
+                // materials and they are usually why it looks right, so this is
+                // OPT-IN: without it, tinting an entity would silently discard
+                // whatever the artist authored in the source file. With it, one
+                // material replaces every submesh's — which is what "put this
+                // texture on that object" means for a model that arrived with
+                // no usable material at all (every OBJ, before the .mtl path).
+                gws::renderer::gpu::Material* override_mat = nullptr;
+                if (mr && mr->GetOverrideAssetMaterial()) {
+                    override_mat = mat_cache.get_or_create(
+                        resolve_entity_material(mr.get(), material_assets),
+                        device, mat_layout, mat_pool, textures);
+                }
+
                 // If the entity has an explicit MeshRendererComponent with
                 // AlphaMode::Blend, treat every sub-draw as blend (manual
                 // override). Otherwise honour the per-material flag the
@@ -1046,6 +942,7 @@ inline void build_draw_items(
                 for (const auto& src : loaded->draw_items) {
                     gws::renderer::gpu::DrawItem di = src;
                     di.model = model * src.model;
+                    if (override_mat) di.material = override_mat;
                     const bool blend = entity_force_blend || src.is_blend;
                     auto& target = blend ? out_transparent : out_opaque;
                     di.is_blend = blend;
@@ -1062,28 +959,17 @@ inline void build_draw_items(
                            : out_opaque;
 
         // Primitive-driven mesh (hierarchy "+ Add Entity").
-        auto mr = ent->GetComponent<schizo::scene::MeshRendererComponent>();
         if (!mr) continue;
 
         gws::renderer::gpu::Mesh* mesh = meshes.get(mr->GetMeshType());
         if (!mesh) continue;
 
-        const glm::vec4& col = mr->GetColor();
-        // alpha_cutoff serves two pipelines:
-        //  - G-Buffer (opaque/cutout): discards fragments below cutoff.
-        //  - Shadow caster: same — but Blend objects also pass through the
-        //    shadow alpha-test pipeline, so they need a non-zero cutoff
-        //    (0.5) to cast binarised shadows. Blend skips the G-Buffer
-        //    entirely, so the cutoff there is irrelevant.
-        float alpha_cutoff =
-            (am == schizo::scene::AlphaMode::Cutout) ? mr->GetAlphaCutoff()
-          : (am == schizo::scene::AlphaMode::Blend)  ? 0.5f
-          : 0.0f;
+        // One resolution rule for both paths: an assigned .mat wins, otherwise
+        // the component's inline fields. The alpha cutoff the G-Buffer and the
+        // shadow caster need is derived inside the cache from the alpha mode,
+        // so it cannot drift between the two call sites the way it used to.
         gws::renderer::gpu::Material* mat = mat_cache.get_or_create(
-            ent->GetId(), col,
-            mr->GetMetallic(), mr->GetRoughness(),
-            mr->GetOcclusion(), mr->GetEmissiveLinear(),
-            alpha_cutoff, mr->GetAlbedoTexturePath(),
+            resolve_entity_material(mr.get(), material_assets),
             device, mat_layout, mat_pool, textures);
         if (!mat) continue;
 

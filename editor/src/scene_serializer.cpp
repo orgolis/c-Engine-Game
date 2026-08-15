@@ -163,6 +163,16 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
                 file << "MESH_RENDERER_EMISSIVE="    << e.r << "," << e.g << "," << e.b << "\n";
                 if (mr->HasAlbedoTexture())
                     file << "MESH_RENDERER_ALBEDO_TEX=" << mr->GetAlbedoTexturePath() << "\n";
+                // A .mat reference. The inline fields above are still written
+                // even when one is assigned: they cost a line each, and they are
+                // what the entity falls back to if the material asset is later
+                // deleted or moved — losing the object's look entirely because a
+                // file went missing would be a much worse outcome than keeping a
+                // stale colour.
+                if (mr->HasMaterial())
+                    file << "MESH_RENDERER_MATERIAL=" << mr->GetMaterialPath() << "\n";
+                if (mr->GetOverrideAssetMaterial())
+                    file << "MESH_RENDERER_MATERIAL_OVERRIDE=1\n";
             }
 
             // LightComponent — full property emission (previous version emitted
@@ -416,6 +426,8 @@ struct ParsedEntity {
     float mesh_renderer_occlusion  = 1.0f;
     glm::vec3 mesh_renderer_emissive{0.0f};
     std::string mesh_renderer_albedo_tex;
+    std::string mesh_renderer_material;              // .mat asset; wins over the inline fields
+    bool mesh_renderer_override_asset_mat = false;
 
     bool has_light = false;
     int  light_type = 0;
@@ -583,6 +595,11 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
         return;
     }
     if (starts_with(line, "MESH_RENDERER_ALBEDO_TEX", v)) { p.mesh_renderer_albedo_tex = v; return; }
+    // Checked before MESH_RENDERER_MATERIAL so the longer key wins the prefix
+    // match — starts_with is a prefix test, and "MESH_RENDERER_MATERIAL" is a
+    // prefix of "MESH_RENDERER_MATERIAL_OVERRIDE".
+    if (starts_with(line, "MESH_RENDERER_MATERIAL_OVERRIDE", v)) { p.mesh_renderer_override_asset_mat = (v == "1"); return; }
+    if (starts_with(line, "MESH_RENDERER_MATERIAL", v)) { p.mesh_renderer_material = v; return; }
 
     if (starts_with(line, "LIGHT_TYPE", v))        { p.has_light = true; p.light_type = std::stoi(v); return; }
     if (starts_with(line, "LIGHT_COLOR", v)) {
@@ -778,6 +795,8 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
             mr->SetOcclusion(p.mesh_renderer_occlusion);
             mr->SetEmissive(p.mesh_renderer_emissive);
             mr->SetAlbedoTexturePath(p.mesh_renderer_albedo_tex);
+            mr->SetMaterialPath(p.mesh_renderer_material);
+            mr->SetOverrideAssetMaterial(p.mesh_renderer_override_asset_mat);
         }
     }
 

@@ -46,6 +46,7 @@ ImVec4 type_color(const char* type) {
     if (!std::strcmp(type, "Audio"))   return {1.00f, 0.65f, 0.30f, 1.0f};
     if (!std::strcmp(type, "Script"))  return {0.80f, 0.60f, 1.00f, 1.0f};
     if (!std::strcmp(type, "Scene"))   return {0.45f, 0.70f, 1.00f, 1.0f};
+    if (!std::strcmp(type, "Material")) return {1.00f, 0.55f, 0.75f, 1.0f};
     if (!std::strcmp(type, "Shader"))  return {0.95f, 0.80f, 0.50f, 1.0f};
     if (!std::strcmp(type, "Cooked"))  return {0.70f, 0.72f, 0.78f, 1.0f};
     return {0.85f, 0.85f, 0.85f, 1.0f};
@@ -57,6 +58,7 @@ const char* payload_for(const char* type) {
     if (!std::strcmp(type, "Audio"))   return AssetBrowserPanel::kPayloadAudio;
     if (!std::strcmp(type, "Script"))  return AssetBrowserPanel::kPayloadScript;
     if (!std::strcmp(type, "Scene"))   return AssetBrowserPanel::kPayloadScene;
+    if (!std::strcmp(type, "Material")) return AssetBrowserPanel::kPayloadMaterial;
     return AssetBrowserPanel::kPayloadOther;
 }
 
@@ -152,6 +154,7 @@ const char* AssetBrowserPanel::classify(const std::string& e) {
     if (e == ".wav" || e == ".mp3" || e == ".ogg" || e == ".flac")   return "Audio";
     if (e == ".py" || e == ".cpp" || e == ".cc" || e == ".cs")       return "Script";
     if (e == ".scene")                                               return "Scene";
+    if (e == ".mat")                                                 return "Material";
     if (e == ".pak" || e == ".vt" || e == ".r32" || e == ".splat")   return "Cooked";
     if (e == ".frag" || e == ".vert" || e == ".comp" || e == ".spv" ||
         e == ".glsl")                                                return "Shader";
@@ -444,7 +447,7 @@ void AssetBrowserPanel::render_toolbar() {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(110);
     static const char* kFilters[] = {"All", "Meshes", "Textures", "Audio",
-                                     "Scripts", "Scenes", "Other"};
+                                     "Scripts", "Scenes", "Materials", "Other"};
     ImGui::Combo("##ab_filter", &type_filter_, kFilters, IM_ARRAYSIZE(kFilters));
 
     // Sort mode (folders always stay first).
@@ -547,10 +550,11 @@ void AssetBrowserPanel::render_entries() {
             case 3: return 0 == std::strcmp(e.type, "Audio");
             case 4: return 0 == std::strcmp(e.type, "Script");
             case 5: return 0 == std::strcmp(e.type, "Scene");
+            case 6: return 0 == std::strcmp(e.type, "Material");
             default:
                 return std::strcmp(e.type, "Mesh") && std::strcmp(e.type, "Texture") &&
                        std::strcmp(e.type, "Audio") && std::strcmp(e.type, "Script") &&
-                       std::strcmp(e.type, "Scene");
+                       std::strcmp(e.type, "Scene") && std::strcmp(e.type, "Material");
         }
     };
 

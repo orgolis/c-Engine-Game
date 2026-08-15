@@ -138,6 +138,35 @@ public:
     void SetAlbedoTexturePath(const std::string& p) { albedo_texture_path_ = p; }
     bool HasAlbedoTexture() const { return !albedo_texture_path_.empty(); }
 
+    // ---- Material asset (.mat) ----------------------------------------
+    // A project-relative path to a material asset. When set, the ASSET supplies
+    // every surface property and the inline fields above are ignored — one
+    // surface description, not two competing ones. When empty, the inline fields
+    // are used, which is both the back-compatible path for every scene saved
+    // before materials existed and the quick path for "just tint this cube".
+    //
+    // Only the path lives here. Resolving it to a MaterialDesc belongs to
+    // whoever owns the cache, because engine/scene must not depend on the asset
+    // layer, and because a component that loaded files would load them on the
+    // render thread at an arbitrary moment.
+    //
+    // The inline fields are deliberately NOT extended with the other four
+    // texture slots. Two places to describe a surface is what produced the four
+    // half-material systems this replaces; anything past a colour and a base
+    // texture is what a .mat is for.
+    const std::string& GetMaterialPath() const { return material_path_; }
+    void SetMaterialPath(const std::string& p) { material_path_ = p; }
+    bool HasMaterial() const { return !material_path_.empty(); }
+
+    /// Whether this entity's material should override the materials that came
+    /// with an imported model (glTF ships its own, and they are usually the
+    /// reason the model looks right). Ignored for primitives, which have no
+    /// asset material to override. Opt-in because silently discarding an
+    /// authored glTF material the moment someone tints an entity would trade one
+    /// missing feature for a worse one.
+    bool GetOverrideAssetMaterial() const { return override_asset_material_; }
+    void SetOverrideAssetMaterial(bool o) { override_asset_material_ = o; }
+
 protected:
     MeshType  mesh_type_      = MeshType::Cube;
     glm::vec4 color_          = glm::vec4(1.0f);  // White by default
@@ -155,6 +184,8 @@ protected:
     glm::vec3 emissive_       = glm::vec3(0.0f);
     float     emissive_intensity_ = 1.0f;
     std::string albedo_texture_path_;   // optional base-colour texture
+    std::string material_path_;         // optional .mat asset; wins over the above
+    bool        override_asset_material_ = false;
 };
 
 } // namespace schizo::scene
