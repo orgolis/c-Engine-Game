@@ -159,7 +159,7 @@ The cross-cutting integration debt specifically:
   Four engine-side integrations gate five modules: AI (G8/G16), animation→player (G1), VFX GPU draw (G12),
   Jolt vehicle constraints (G13).
 - **Stage 11 — Editor & tooling** 🟢 strong — panels/gizmo/inspector/undo/asset-browser/terminal + **terrain editor** +
-  **scene-bound sky**, **Blueprint-style logic graph** (`gameplay_logic.h` + `.logic` sidecar + node canvas),
+  **scene-bound sky**, **Blueprint-style logic graph** (`gameplay_logic.h` + `.logic` sidecar + node canvas — now with **typed data pins + graph variables**: Literal/Get·Set Var/math/compare/logic nodes feeding action & Branch value pins, v0.6.8),
   **Unreal-style asset browser** (tiles/grid + categorized New), **Unity-style inspector** (component cards +
   Add-Component search), **`gws_diagnostics`** crash reporting, + the project **Hub** (own repo, `WorldShaper-Hub`).
   **Remaining:** animation state-machine graph editor, richer debug visualization (navmesh/AI/froxels), and the whole

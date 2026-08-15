@@ -240,7 +240,7 @@ Optional high-fidelity passes on top of the core renderer.
 |---|---|
 | Python (pocketpy), C++ (hot-DLL), C# (.NET) backends | ✅ |
 | Shared C `ScriptApi`, hot reload | ✅ |
-| Visual scripting (Stage 11) | 🔴 |
+| Visual scripting — logic graph (Stage 11) | 🟡 **Blueprint-style, v0.6.8.** Exec flow (events → actions → flow: Branch/Do Once/Delay/timers) **plus typed data pins**: graph variables (Bool/Int/Float/String), Literal / Get·Set Variable / Add·Sub·Mul·Div / Compare / And·Or·Not nodes, values flowing into action pins (a Set Flag value, a Branch condition, …). Pull-based eval, `.logic` sidecar. Bridges to text scripting via shared WorldFlags + event bus. Follow-up for full parity: entity/component data pins, reusable function/macro nodes, Branch true/false exec split. |
 
 # GAMEPLAY FRAMEWORKS (the action-RPG layer)
 
