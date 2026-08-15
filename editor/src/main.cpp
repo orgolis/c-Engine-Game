@@ -65,6 +65,8 @@
 #include "npc_agent_component.h"
 #include "scene_component_reflect.h"
 #include "snapping.h"
+#include "anim_graph.h"                       // state machine document (4.6)
+#include "anim_graph_panel.h"                 // and its editor
 #include "sequence.h"                        // the timeline model (4.4)
 #include "timeline_panel.h"                   // keyframed sequencer (4.4)
 #include "level_tools_panel.h"                // arrays / scatter / splines / greybox (4.7)                         // grid / angle / scale snapping (4.7)
@@ -247,6 +249,12 @@ struct EditorState {
     schizo::editor::Sequence      sequence;
     schizo::editor::TimelineState timeline;
     bool show_timeline = false;
+
+    // Animation state machine (4.6). Its own canvas so panning the state graph
+    // does not move the material graph.
+    schizo::editor::AnimGraph   anim_graph;
+    schizo::editor::NodeCanvas  anim_canvas;
+    bool show_anim_graph = false;
 
     schizo::editor::CommandRegistry commands;
     bool show_command_palette = false;
@@ -1407,6 +1415,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             ImGui::MenuItem("Material Graph", nullptr, &editor_state.show_material_graph);
             ImGui::MenuItem("Level Tools", nullptr, &editor_state.show_level_tools);
             ImGui::MenuItem("Timeline", nullptr, &editor_state.show_timeline);
+            ImGui::MenuItem("Animation State Machine", nullptr, &editor_state.show_anim_graph);
             ImGui::MenuItem("Performance (Stage 14)", nullptr, &editor_state.show_performance);
             ImGui::MenuItem("Debug Panels (Phase 6)", nullptr, &editor_state.show_debug_panels);
             ImGui::MenuItem("Post-Processing", nullptr, &editor_state.show_post_processing);
@@ -6329,6 +6338,9 @@ int main(int argc, char** argv) {
             cmds.add("Timeline", "Window", "", [&st] {
                 st.show_timeline = !st.show_timeline;
             });
+            cmds.add("Animation State Machine", "Window", "", [&st] {
+                st.show_anim_graph = !st.show_anim_graph;
+            });
             cmds.add("Toggle Post-Processing", "Window", "", [&st] {
                 st.show_post_processing = !st.show_post_processing;
             });
@@ -7343,6 +7355,14 @@ int main(int argc, char** argv) {
                 editor_state.asset_import_dialog->IsOpen())
                 editor_state.asset_import_dialog->RenderDialog();
             ShowPreferences(editor_state);
+
+            // Animation state machine (4.6).
+            if (editor_state.show_anim_graph) {
+                bool changed = false;
+                schizo::editor::draw_anim_graph_panel(
+                    editor_state.show_anim_graph, editor_state.anim_graph,
+                    editor_state.anim_canvas, changed);
+            }
 
             // Timeline (4.4).
             if (editor_state.show_timeline) {

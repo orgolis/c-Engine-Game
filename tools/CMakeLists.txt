@@ -141,6 +141,18 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(includes_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# animgraph_check: a state machine fails QUIETLY. A transition left pointing at
+# a deleted state never fires; an unreachable state is authored work that never
+# plays; a transition with no conditions fires the instant it is entered. None
+# throws, none logs, and the symptom is always "the character does not do the
+# thing" -- which points at the animation rather than the graph.
+add_executable(animgraph_check animgraph_check/main.cpp ../editor/src/anim_graph.cpp)
+target_include_directories(animgraph_check PRIVATE ../editor/include)
+target_compile_features(animgraph_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(animgraph_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # sequence_check: the property a sequencer lives or dies on -- scrubbing to t
 # must give exactly what playing to t gave. If it does not, the preview
 # disagrees with the result and neither can be trusted, and the disagreement is
