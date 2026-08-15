@@ -97,6 +97,18 @@ public:
     /// than on two builds. Comparability is the whole acceptance criterion for
     /// this item -- "it uses indirect draws" is not a result, "it draws the
     /// same triangles in fewer submissions" is.
+    /// Build a G-Buffer pipeline whose FRAGMENT stage is the given SPIR-V,
+    /// sharing every other piece of state with the stock scene pipeline (4.1).
+    /// VK_NULL_HANDLE on failure, so callers keep the stock pipeline rather
+    /// than drawing nothing. The caller owns the result and must destroy it
+    /// before the device.
+    VkPipeline create_material_graph_pipeline(const uint32_t* spirv, size_t bytes);
+
+    /// When set, draws marked with DrawItem::use_graph_material use this
+    /// pipeline instead of the stock one. Null restores stock shading.
+    void set_graph_pipeline(VkPipeline p) { graph_pipeline_ = p; }
+    VkPipeline graph_pipeline() const { return graph_pipeline_; }
+
     void set_indirect_draws(VulkanIndirectDrawBuffer* buf) { indirect_ = buf; }
 
     /// GPU submissions issued for meshlets last frame. With multi-draw this is
@@ -310,6 +322,15 @@ private:
     void cleanup();
 
     VulkanIndirectDrawBuffer* indirect_ = nullptr;   // not owned; nullptr = direct path
+    VkPipeline     graph_pipeline_    = VK_NULL_HANDLE;   // not owned
+    VkShaderModule scene_vert_module_ = VK_NULL_HANDLE;   // shared vertex stage
+    // Holds the registry's ShaderModule alive so the handle above stays valid.
+    // Typed as void because ShaderModule lives in vulkan_shader_registry.h,
+    // which this header deliberately does not include.
+    std::shared_ptr<void> scene_vert_keepalive_;
+    VkPipeline build_scene_variant(VkShaderModule vert, VkShaderModule frag,
+                                   VkCullModeFlags cull);
+
     uint32_t last_indirect_submissions_ = 0;
 };
 

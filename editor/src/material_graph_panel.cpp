@@ -96,7 +96,8 @@ const MenuEntry kChannels[] = {
 }  // namespace
 
 void draw_material_graph_panel(bool& open, MaterialGraph& graph, NodeCanvas& canvas,
-                               std::string& out_glsl, bool& out_dirty) {
+                               std::string& out_glsl, bool& out_dirty,
+                               bool& preview, const std::string& compile_status) {
     if (!open) return;
 
     ImGui::SetNextWindowSize(ImVec2(980.0f, 620.0f), ImGuiCond_FirstUseEver);
@@ -117,6 +118,12 @@ void draw_material_graph_panel(bool& open, MaterialGraph& graph, NodeCanvas& can
     ImGui::SameLine();
     static bool show_source = false;
     ImGui::Checkbox("Show source", &show_source);
+    ImGui::SameLine();
+    // Scene-wide, and labelled as a preview because that is what it is: per
+    // material assignment needs draw-item plumbing that does not exist yet.
+    ImGui::Checkbox("Preview on scene", &preview);
+
+    if (!compile_status.empty()) ImGui::TextDisabled("%s", compile_status.c_str());
 
     if (show_source && gen.ok) {
         ImGui::BeginChild("##src", ImVec2(0.0f, 150.0f), true,

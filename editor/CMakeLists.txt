@@ -150,7 +150,11 @@ gws_add_header_selfcontain_check(editor_headers_selfcontain
             skinned_demo.h
             viewport_renderer_3d.h)
 target_include_directories(editor_headers_selfcontain PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    # The material-graph panel header includes the graph model. Adding the path
+    # rather than excluding the header: the header IS self-contained, this
+    # target simply could not see one of its dependencies.
+    ${CMAKE_SOURCE_DIR}/engine/core/shadergraph)
 target_link_libraries(editor_headers_selfcontain PRIVATE
     engine scene window character ability network renderer
     gws_jobs gws_profiler gws_ecs gws_serialization gws_ai gws_world

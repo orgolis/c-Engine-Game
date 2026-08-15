@@ -56,6 +56,11 @@ struct DrawItem {
     /// (the G-Buffer fragment shader's `discard` handles them via the
     /// alpha_cutoff packed into `MaterialUniforms::emissive_factor.a`).
     bool            is_blend      = false;
+    /// True when this draw should shade through the material graph's compiled
+    /// pipeline (4.1) instead of the stock one. Per draw rather than global so
+    /// a graph can be previewed on ONE object beside normally-shaded ones --
+    /// which is also the only way to see whether the graph is doing anything.
+    bool            use_graph_material = false;
     /// True for terrain draws: the G-Buffer pass binds the terrain splat
     /// pipeline (samples `material`'s 5 texture slots as splatmap + 4 tiling
     /// layers and blends them) instead of the standard PBR scene pipeline.

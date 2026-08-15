@@ -225,6 +225,12 @@ struct EditorState {
     bool                            show_material_graph = false;
     schizo::editor::ShaderCompileService shader_compiler;
     std::string                     material_compile_status;
+    // The compiled graph pipeline, and whether the scene is being previewed
+    // with it. Scene-wide for now: build_draw_items does not report entity ids,
+    // so per-material assignment needs plumbing that is its own piece of work.
+    // A preview toggle is honest about being a preview.
+    VkPipeline                      material_pipeline = VK_NULL_HANDLE;
+    bool                            material_preview  = false;
 
     schizo::editor::SnapSettings snap;
 
@@ -5047,6 +5053,7 @@ int main(int argc, char** argv) {
     int         frame_limit       = 0;       // --frames N: render N frames, then exit
     bool        probe_inner_loop  = false;   // --probe-inner-loop: time the budgeted rows
     bool        probe_indirect    = false;   // --probe-indirect: compare indirect vs direct draws (3.2)
+    bool        probe_shadergraph = false;   // --probe-shadergraph: compile + build a graph pipeline (4.1)
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--net-host" && i + 1 < argc) {
@@ -5081,6 +5088,8 @@ int main(int argc, char** argv) {
             probe_inner_loop = true;
         } else if (a == "--probe-indirect") {
             probe_indirect = true;
+        } else if (a == "--probe-shadergraph") {
+            probe_shadergraph = true;
         } else if (a == "--startup-probe") {
             // Initialise everything, report how long it took, then exit without
             // entering the main loop. This is what makes "editor cold start" —
@@ -6332,6 +6341,32 @@ int main(int argc, char** argv) {
                 exe_dir = std::filesystem::current_path(ec).string();
             }
             editor_state.shader_compiler.init(exe_dir);
+
+            // --probe-shadergraph: take the default graph all the way to a
+            // VkPipeline and report as JSON. The whole chain -- generate,
+            // compile, module, pipeline -- in one run, because each link
+            // working proves nothing about the next one.
+            if (probe_shadergraph) {
+                const auto gen = editor_state.material_graph.generate();
+                const auto res = gen.ok
+                    ? editor_state.shader_compiler.compile_material(gen.glsl)
+                    : schizo::editor::ShaderCompileResult{};
+                VkPipeline p = VK_NULL_HANDLE;
+                if (res.ok && g_buffer)
+                    p = g_buffer->create_material_graph_pipeline(
+                        res.spirv.data(), res.spirv.size() * sizeof(uint32_t));
+
+                std::printf("{\"generated\":%s,\"compiled\":%s,\"spirv_bytes\":%zu,"
+                            "\"pipeline\":%s,\"compiler\":\"%s\"}\n",
+                            gen.ok ? "true" : "false",
+                            res.ok ? "true" : "false",
+                            res.spirv.size() * sizeof(uint32_t),
+                            p != VK_NULL_HANDLE ? "true" : "false",
+                            editor_state.shader_compiler.available() ? "found" : "missing");
+                std::fflush(stdout);
+                if (p != VK_NULL_HANDLE)
+                    vkDestroyPipeline(device.get_device(), p, nullptr);
+            }
         }
 
         // ----------------------------------------------------------------
@@ -7294,7 +7329,9 @@ int main(int argc, char** argv) {
                     editor_state.material_graph,
                     editor_state.material_canvas,
                     editor_state.material_glsl,
-                    editor_state.material_graph_dirty);
+                    editor_state.material_graph_dirty,
+                    editor_state.material_preview,
+                    editor_state.material_compile_status);
 
                 // Compile only when the graph actually changed. The service
                 // also hashes the source, so a dirty flag raised by a node
@@ -7309,6 +7346,28 @@ int main(int argc, char** argv) {
                             "compiled: " + std::to_string(res.spirv.size() * 4) + " bytes of SPIR-V" +
                             (res.from_cache ? " (cached)" : "");
                         spdlog::info("[shadergraph] {}", editor_state.material_compile_status);
+
+                        // Rebuild the pipeline. vkDeviceWaitIdle first: the old
+                        // pipeline may still be referenced by frames in flight,
+                        // and destroying one that is in use is undefined
+                        // behaviour rather than an error. This happens on save,
+                        // not per frame, so the stall costs nothing anyone
+                        // notices.
+                        if (g_buffer) {
+                            vkDeviceWaitIdle(device.get_device());
+                            if (editor_state.material_pipeline != VK_NULL_HANDLE) {
+                                vkDestroyPipeline(device.get_device(),
+                                                  editor_state.material_pipeline, nullptr);
+                                editor_state.material_pipeline = VK_NULL_HANDLE;
+                            }
+                            editor_state.material_pipeline =
+                                g_buffer->create_material_graph_pipeline(
+                                    res.spirv.data(), res.spirv.size() * sizeof(uint32_t));
+                            g_buffer->set_graph_pipeline(editor_state.material_pipeline);
+                            if (editor_state.material_pipeline == VK_NULL_HANDLE)
+                                editor_state.material_compile_status +=
+                                    " — but the pipeline could not be built";
+                        }
                     } else if (res.compiler_missing) {
                         editor_state.material_compile_status =
                             "no shader compiler available — the graph is editable but cannot be compiled";
@@ -7944,6 +8003,13 @@ int main(int argc, char** argv) {
                   editor_scene.GetScene(), prim_cache, mat_cache, asset_cache,
                   terrain_cache, terrain_gpu_cache, &device, mat_layout, mat_pool,
                   opaque_draws, transparent_draws, &texture_manager, &ecs_bridge); }
+
+            // Material-graph preview (4.1). Terrain is excluded: it has its own
+            // splat pipeline and a graph shader has nothing to say about it.
+            if (editor_state.material_preview &&
+                editor_state.material_pipeline != VK_NULL_HANDLE)
+                for (auto& d : opaque_draws)
+                    if (!d.is_terrain) d.use_graph_material = true;
 
             // Add the skinned test rig to the opaque list (drawn + shadowed).
             // Its vertex buffer was already skinned above; the bind-pose bounds
@@ -8679,6 +8745,10 @@ int main(int argc, char** argv) {
         // device.shutdown(), or their destructors call vkUnmapMemory on a dead
         // device -- which is what this explicit list exists to prevent, and
         // what I broke by adding them and not adding them here.
+        if (editor_state.material_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device.get_device(), editor_state.material_pipeline, nullptr);
+            editor_state.material_pipeline = VK_NULL_HANDLE;
+        }
         texture_manager_holder.reset();
         particles_pass.reset();
         indirect_draws.reset();

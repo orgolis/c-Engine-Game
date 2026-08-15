@@ -726,14 +726,40 @@ void VulkanGBuffer::create_scene_pipeline() {
     // Empty layout is no longer needed once the pipeline layout is built.
     vkDestroyDescriptorSetLayout(vk_device, empty_layout, nullptr);
 
+    scene_pipeline_back_ = build_scene_variant(vert->handle, frag->handle,
+                                               VK_CULL_MODE_BACK_BIT);
+    if (scene_pipeline_back_ == VK_NULL_HANDLE)
+        throw std::runtime_error("Failed to create scene pipeline (back-cull)");
+
+    scene_pipeline_none_ = build_scene_variant(vert->handle, frag->handle,
+                                               VK_CULL_MODE_NONE);
+    if (scene_pipeline_none_ == VK_NULL_HANDLE)
+        throw std::runtime_error("Failed to create scene pipeline (no-cull)");
+
+    // Kept so a material-graph variant reuses the EXACT vertex stage. A graph
+    // only ever replaces the fragment shader; a different vertex stage would
+    // change the interface the fragment stage expects.
+    scene_vert_module_    = vert->handle;
+    scene_vert_keepalive_ = std::static_pointer_cast<void>(vert);
+}
+
+// The stock pipelines and any material-graph variant are built from the SAME
+// state. Extracted rather than copied: a graph pipeline differing from the
+// stock one in depth compare, blend state or vertex layout would render
+// subtly differently for a reason nobody would think to look for, and a copy
+// drifts the first time either side is touched.
+VkPipeline VulkanGBuffer::build_scene_variant(VkShaderModule vert, VkShaderModule frag,
+                                              VkCullModeFlags cull) {
+    VkDevice vk_device = device_->get_device();
+
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vert->handle;
+    stages[0].module = vert;
     stages[0].pName  = "main";
     stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = frag->handle;
+    stages[1].module = frag;
     stages[1].pName  = "main";
 
     auto binding = Mesh::vertex_binding();
@@ -806,21 +832,44 @@ void VulkanGBuffer::create_scene_pipeline() {
     info.renderPass          = render_pass_;
     info.subpass             = 0;
 
-    // Variant 1: back-face cull, used for primitives + glTF where winding
-    // is trustworthy CCW.
-    rs.cullMode = VK_CULL_MODE_BACK_BIT;
-    if (vkCreateGraphicsPipelines(vk_device, VK_NULL_HANDLE, 1, &info, nullptr,
-                                  &scene_pipeline_back_) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create scene pipeline (back-cull)");
+    rs.cullMode = cull;
+
+    VkPipeline out = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(vk_device, VK_NULL_HANDLE, 1, &info, nullptr, &out)
+            != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+    return out;
+}
+
+
+VkPipeline VulkanGBuffer::create_material_graph_pipeline(const uint32_t* spirv, size_t bytes) {
+    if (!spirv || bytes < 4 || scene_vert_module_ == VK_NULL_HANDLE) return VK_NULL_HANDLE;
+
+    VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    mi.codeSize = bytes;
+    mi.pCode    = spirv;
+
+    VkShaderModule frag = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(device_->get_device(), &mi, nullptr, &frag) != VK_SUCCESS) {
+        spdlog::error("[shadergraph] the generated SPIR-V was rejected as a shader module");
+        return VK_NULL_HANDLE;
     }
 
-    // Variant 2: no culling, used for OBJ-loaded meshes where the winding
-    // can't be trusted.
-    rs.cullMode = VK_CULL_MODE_NONE;
-    if (vkCreateGraphicsPipelines(vk_device, VK_NULL_HANDLE, 1, &info, nullptr,
-                                  &scene_pipeline_none_) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create scene pipeline (no-cull)");
+    // Back-face culling, matching the stock primitive/glTF variant. Quietly
+    // disabling culling here would make graph materials look different from
+    // normal ones for a reason unrelated to the graph.
+    VkPipeline p = build_scene_variant(scene_vert_module_, frag, VK_CULL_MODE_BACK_BIT);
+
+    // The module can go as soon as the pipeline exists -- Vulkan copies what it
+    // needs at creation time.
+    vkDestroyShaderModule(device_->get_device(), frag, nullptr);
+
+    if (p == VK_NULL_HANDLE) {
+        spdlog::error("[shadergraph] pipeline creation failed for the generated shader");
+        return VK_NULL_HANDLE;
     }
+    spdlog::info("[shadergraph] material pipeline built from a graph");
+    return p;
 }
 
 void VulkanGBuffer::create_terrain_pipeline() {
@@ -1044,10 +1093,14 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
         // Pick pipeline: terrain splat for terrain draws (when available),
         // else cull-back for trustworthy CCW meshes, cull-none for untrusted
         // (OBJ-loaded) meshes. Rebind only when changing.
+        // A graph pipeline wins when the draw asks for one AND one exists.
+        // Falling back to stock shading when it does not is deliberate: a
+        // material that fails to compile should look wrong, not vanish.
         VkPipeline pipeline =
-            (d.is_terrain && terrain_pipeline_ != VK_NULL_HANDLE) ? terrain_pipeline_
-            : d.mesh->is_double_sided()                           ? scene_pipeline_none_
-                                                                  : scene_pipeline_back_;
+            (d.use_graph_material && graph_pipeline_ != VK_NULL_HANDLE) ? graph_pipeline_
+            : (d.is_terrain && terrain_pipeline_ != VK_NULL_HANDLE)     ? terrain_pipeline_
+            : d.mesh->is_double_sided()                                 ? scene_pipeline_none_
+                                                                        : scene_pipeline_back_;
         if (pipeline != last_pipeline) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             last_pipeline = pipeline;

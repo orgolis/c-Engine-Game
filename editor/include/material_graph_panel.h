@@ -24,6 +24,8 @@ void draw_material_graph_panel(bool& open,
                                gws::shadergraph::MaterialGraph& graph,
                                NodeCanvas& canvas,
                                std::string& out_glsl,
-                               bool& out_dirty);
+                               bool& out_dirty,
+                               bool& preview,
+                               const std::string& compile_status);
 
 }  // namespace schizo::editor
