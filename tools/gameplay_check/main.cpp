@@ -1685,6 +1685,115 @@ int main() {
             const bool delay_fired   = ecs::world_flag(w6.get<ecs::WorldFlags>(fe6), "delayed") == 1;
             check("Delay defers downstream until its timer elapses", delay_pending && delay_notyet && delay_fired);
             rt6.stop();
+
+            // ---- data pins + variables (Blueprint-style value flow) ----
+            ecs::World wd; ecs::GameplayEventBus busd;
+            const ecs::Entity fed = wd.create(); wd.add<ecs::WorldFlags>(fed, ecs::WorldFlags{});
+            auto dflag = [&](const char* k) { return ecs::world_flag(wd.get<ecs::WorldFlags>(fed), k); };
+
+            // A literal wired into an action's value pin overrides its authored param.
+            {
+                ecs::LogicGraph pg;
+                const int ps  = pg.add_node(ecs::LogicNodeKind::OnStart, 0, 0);
+                const int psf = pg.add_node(ecs::LogicNodeKind::SetFlag, 0, 0); pg.find(psf)->param = "score"; pg.find(psf)->param2 = "1";
+                const int lit = pg.add_node(ecs::LogicNodeKind::LiteralInt, 0, 0); pg.find(lit)->param = "42";
+                pg.link(ps, psf);
+                pg.link_data(lit, 0, psf, 1);                 // literal 42 -> SetFlag value pin (not the "1" param)
+                ecs::LogicRuntime rtp; rtp.start(pg, wd, busd, fed);
+                check("data pin overrides authored param (SetFlag value = literal 42)", dflag("score") == 42);
+                rtp.stop();
+            }
+
+            // GetVar + Add compute a value into a data pin.
+            ecs::LogicGraph ag;
+            {
+                ag.variables.push_back({"gold", ecs::LogicValue::make_int(100)});
+                const int as  = ag.add_node(ecs::LogicNodeKind::OnStart, 0, 0);
+                const int asf = ag.add_node(ecs::LogicNodeKind::SetFlag, 0, 0); ag.find(asf)->param = "total";
+                const int gv  = ag.add_node(ecs::LogicNodeKind::GetVar, 0, 0);  ag.find(gv)->param = "gold";
+                const int l5  = ag.add_node(ecs::LogicNodeKind::LiteralInt, 0, 0); ag.find(l5)->param = "5";
+                const int add = ag.add_node(ecs::LogicNodeKind::Add, 0, 0);
+                ag.link(as, asf);
+                ag.link_data(gv, 0, add, 1);
+                ag.link_data(l5, 0, add, 2);
+                ag.link_data(add, 0, asf, 1);                 // (gold + 5) -> SetFlag value
+                ecs::LogicRuntime rta; rta.start(ag, wd, busd, fed);
+                check("GetVar + Add compute into a data pin (100 + 5 = 105)", dflag("total") == 105);
+                rta.stop();
+            }
+
+            // A single data source feeding two inputs (diamond) — exercises the
+            // by-value cycle guard: g+g must be 100, not 50 (2nd input zeroed).
+            {
+                ecs::LogicGraph dg;
+                dg.variables.push_back({"g", ecs::LogicValue::make_int(50)});
+                const int s   = dg.add_node(ecs::LogicNodeKind::OnStart, 0, 0);
+                const int sf  = dg.add_node(ecs::LogicNodeKind::SetFlag, 0, 0); dg.find(sf)->param = "dbl";
+                const int gv  = dg.add_node(ecs::LogicNodeKind::GetVar, 0, 0);  dg.find(gv)->param = "g";
+                const int add = dg.add_node(ecs::LogicNodeKind::Add, 0, 0);
+                dg.link(s, sf);
+                dg.link_data(gv, 0, add, 1);
+                dg.link_data(gv, 0, add, 2);                  // SAME source into both inputs
+                dg.link_data(add, 0, sf, 1);
+                ecs::LogicRuntime rtd; rtd.start(dg, wd, busd, fed);
+                check("shared data source feeds two inputs (diamond g+g = 100)", dflag("dbl") == 100);
+                rtd.stop();
+            }
+
+            // SetVar writes a runtime variable; a later GetVar in the chain reads it.
+            {
+                ecs::LogicGraph sg;
+                sg.variables.push_back({"counter", ecs::LogicValue::make_int(0)});
+                const int s    = sg.add_node(ecs::LogicNodeKind::OnStart, 0, 0);
+                const int setv = sg.add_node(ecs::LogicNodeKind::SetVar, 0, 0);  sg.find(setv)->param = "counter";
+                const int l7   = sg.add_node(ecs::LogicNodeKind::LiteralInt, 0, 0); sg.find(l7)->param = "7";
+                const int ssf  = sg.add_node(ecs::LogicNodeKind::SetFlag, 0, 0); sg.find(ssf)->param = "out";
+                const int gv2  = sg.add_node(ecs::LogicNodeKind::GetVar, 0, 0);  sg.find(gv2)->param = "counter";
+                sg.link(s, setv); sg.link(setv, ssf);         // exec: SetVar THEN SetFlag
+                sg.link_data(l7, 0, setv, 1);                 // SetVar counter = 7
+                sg.link_data(gv2, 0, ssf, 1);                 // SetFlag out = counter (7 after SetVar)
+                ecs::LogicRuntime rts; rts.start(sg, wd, busd, fed);
+                check("SetVar writes a variable; downstream GetVar reads it (out = 7)", dflag("out") == 7);
+                check("runtime exposes the live variable value", rts.variable("counter") && rts.variable("counter")->as_int() == 7);
+                rts.stop();
+            }
+
+            // Compare -> Branch: a data-driven boolean condition (Blueprint style).
+            {
+                ecs::LogicGraph cg3;
+                cg3.variables.push_back({"hp", ecs::LogicValue::make_int(10)});
+                const int s    = cg3.add_node(ecs::LogicNodeKind::OnStart, 0, 0);
+                const int br   = cg3.add_node(ecs::LogicNodeKind::Branch, 0, 0);
+                const int pass = cg3.add_node(ecs::LogicNodeKind::SetFlag, 0, 0); cg3.find(pass)->param = "alive"; cg3.find(pass)->param2 = "1";
+                const int gv   = cg3.add_node(ecs::LogicNodeKind::GetVar, 0, 0);  cg3.find(gv)->param = "hp";
+                const int zero = cg3.add_node(ecs::LogicNodeKind::LiteralInt, 0, 0); cg3.find(zero)->param = "0";
+                const int cmp  = cg3.add_node(ecs::LogicNodeKind::Compare, 0, 0); cg3.find(cmp)->param2 = ">";
+                cg3.link(s, br); cg3.link(br, pass);
+                cg3.link_data(gv, 0, cmp, 1);
+                cg3.link_data(zero, 0, cmp, 2);
+                cg3.link_data(cmp, 0, br, 1);                 // Branch condition = (hp > 0)
+                ecs::LogicRuntime rtc; rtc.start(cg3, wd, busd, fed);
+                const bool true_prop = dflag("alive") == 1;
+                rtc.stop();
+                cg3.find_var("hp")->value = ecs::LogicValue::make_int(0);   // now hp==0 -> hp>0 false
+                ecs::set_world_flag(wd.get<ecs::WorldFlags>(fed), "alive", 0);
+                ecs::LogicRuntime rtc2; rtc2.start(cg3, wd, busd, fed);
+                const bool false_block = dflag("alive") == 0;
+                rtc2.stop();
+                check("Compare feeds Branch condition (hp>0 TRUE propagates, FALSE blocks)", true_prop && false_block);
+            }
+
+            // Serialize round-trip carrying variables + data links (pin fields).
+            {
+                const std::string dtext = ecs::logic_to_text(ag);
+                ecs::LogicGraph ag2 = ecs::logic_from_text(dtext);
+                bool has_data_link = false;
+                for (const auto& l : ag2.links) if (ecs::logic_link_is_data(l)) has_data_link = true;
+                check("data-pin graph serialize round-trips (variables + data links)",
+                      ag2.variables.size() == 1 && ag2.variables[0].name == "gold" &&
+                      ag2.variables[0].value.as_int() == 100 &&
+                      ag2.links.size() == ag.links.size() && has_data_link);
+            }
         }
 
         // text round-trip (scene .logic sidecar)
