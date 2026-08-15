@@ -2662,26 +2662,82 @@ void ShowInspector(EditorState& editor_state) {
         auto terrain_comp = selected_entity->GetComponent<schizo::scene::TerrainComponent>();
         if (terrain_comp) {
             if (ImGui::TreeNodeEx("Terrain", ImGuiTreeNodeFlags_DefaultOpen)) {
-                int   res  = terrain_comp->GetResolution();
-                float size = terrain_comp->GetSize();
-                ImGui::Text("Grid: %d x %d cells over %.0f m", res, res, size);
-                if (ImGui::SliderInt("Resolution##terrain", &res, 8, 1024)) {
-                    terrain_comp->Resize(res, terrain_comp->GetSize());
+                // These three sliders APPLY ON RELEASE, not on every tick.
+                //
+                // Each of them dirties the whole terrain, and a full rebuild
+                // re-meshes every chunk: regenerating LODs and meshlets and
+                // allocating two GPU buffers per chunk. Measured on an RTX 3060,
+                // one full rebuild costs roughly 0.1 s at resolution 128, 0.6 s
+                // at 320, 1.5 s at 512 and 5.7 s at 1024.
+                //
+                // Applying per tick meant a drag paid that on EVERY FRAME of the
+                // gesture, so past about resolution 300 the editor stopped
+                // responding for as long as the mouse was down — reported as
+                // "terrain above resolution 300 generates extreme lag". Now a
+                // drag costs exactly one rebuild, on release.
+                //
+                // Resolution and Size are also DESTRUCTIVE (Resize flattens the
+                // heightmap), so per-tick application wiped the user's sculpt
+                // once per frame while dragging. Deferring fixes that too: the
+                // heightmap is cleared once, when the value is actually chosen.
+                static uint32_t terr_dim_synced_id = 0xFFFFFFFFu;
+                static int      terr_pending_res   = 64;
+                static float    terr_pending_size  = 100.0f;
+                static float    terr_pending_hs    = 1.0f;
+                const uint32_t  terr_dim_eid = selected_entity->GetId();
+                if (terr_dim_synced_id != terr_dim_eid) {
+                    terr_pending_res  = terrain_comp->GetResolution();
+                    terr_pending_size = terrain_comp->GetSize();
+                    terr_pending_hs   = terrain_comp->GetHeightScale();
+                    terr_dim_synced_id = terr_dim_eid;
+                }
+
+                ImGui::Text("Grid: %d x %d cells over %.0f m",
+                            terrain_comp->GetResolution(), terrain_comp->GetResolution(),
+                            terrain_comp->GetSize());
+
+                ImGui::SliderInt("Resolution##terrain", &terr_pending_res, 8, 1024);
+                const bool res_commit = ImGui::IsItemDeactivatedAfterEdit();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Applied when you release the slider — a full re-mesh of a\n"
+                                      "large terrain takes seconds, so it must not run every frame\n"
+                                      "of a drag.\n\n"
+                                      "Changing resolution or size RESETS the heightmap to flat.\n"
+                                      "Sculpting only rebuilds the chunks the brush touches.");
+
+                ImGui::SliderFloat("Size (m)##terrain", &terr_pending_size, 4.0f, 8000.0f,
+                                   "%.0f", ImGuiSliderFlags_Logarithmic);
+                const bool size_commit = ImGui::IsItemDeactivatedAfterEdit();
+
+                if (res_commit || size_commit) {
+                    // Resize is destructive and expensive; skip it entirely when
+                    // the released value matches what the terrain already has
+                    // (clicking a slider without moving it should not flatten a
+                    // sculpted terrain).
+                    if (terr_pending_res != terrain_comp->GetResolution() ||
+                        std::abs(terr_pending_size - terrain_comp->GetSize()) > 1e-3f) {
+                        terrain_comp->Resize(terr_pending_res, terr_pending_size);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                }
+
+                ImGui::SliderFloat("Height Scale##terrain", &terr_pending_hs, 0.1f, 10.0f);
+                if (ImGui::IsItemDeactivatedAfterEdit() &&
+                    std::abs(terr_pending_hs - terrain_comp->GetHeightScale()) > 1e-4f) {
+                    terrain_comp->SetHeightScale(terr_pending_hs);
                     editor_state.editor_scene->MarkModified();
                 }
                 if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Changing resolution or size resets the heightmap to flat.\n"
-                                      "Large terrains are meshed in 64-cell chunks — sculpting\n"
-                                      "only rebuilds the chunks the brush touches.");
-                if (ImGui::SliderFloat("Size (m)##terrain", &size, 4.0f, 8000.0f,
-                                       "%.0f", ImGuiSliderFlags_Logarithmic)) {
-                    terrain_comp->Resize(terrain_comp->GetResolution(), size);
-                    editor_state.editor_scene->MarkModified();
-                }
-                float hs = terrain_comp->GetHeightScale();
-                if (ImGui::SliderFloat("Height Scale##terrain", &hs, 0.1f, 10.0f)) {
-                    terrain_comp->SetHeightScale(hs);
-                    editor_state.editor_scene->MarkModified();
+                    ImGui::SetTooltip("Applied on release. Height scale is baked into the mesh\n"
+                                      "vertices, so changing it re-meshes the whole terrain.");
+
+                // Say so when a pending value differs from what is on screen, so
+                // "I moved the slider and nothing happened" has an answer.
+                if (terr_pending_res != terrain_comp->GetResolution() ||
+                    std::abs(terr_pending_size - terrain_comp->GetSize()) > 1e-3f ||
+                    std::abs(terr_pending_hs - terrain_comp->GetHeightScale()) > 1e-4f) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.80f, 0.35f, 1.0f),
+                                       "Pending — release the slider to apply.");
                 }
                 if (ImGui::Button("Flatten##terrain")) {
                     terrain_comp->Flatten(0.0f);
@@ -4968,6 +5024,13 @@ int main(int argc, char** argv) {
     bool        probe_inner_loop  = false;   // --probe-inner-loop: time the budgeted rows
     bool        probe_indirect    = false;   // --probe-indirect: compare indirect vs direct draws (3.2)
     bool        probe_shadergraph = false;   // --probe-shadergraph: compile + build a graph pipeline (4.1)
+    // --log-debug: raise the log level so the per-frame profiler breakdown is
+    // actually readable. The profiler has always emitted it at debug level and
+    // the level was hardcoded to info, so the one built-in answer to "what is
+    // making this frame slow" could not be obtained without editing and
+    // rebuilding the editor. That is exactly the shape of a measurement that
+    // never gets taken.
+    bool        log_debug         = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--net-host" && i + 1 < argc) {
@@ -5004,6 +5067,8 @@ int main(int argc, char** argv) {
             probe_indirect = true;
         } else if (a == "--probe-shadergraph") {
             probe_shadergraph = true;
+        } else if (a == "--log-debug") {
+            log_debug = true;
         } else if (a == "--startup-probe") {
             // Initialise everything, report how long it took, then exit without
             // entering the main loop. This is what makes "editor cold start" —
@@ -5016,7 +5081,7 @@ int main(int argc, char** argv) {
     const auto gws_startup_t0 = std::chrono::steady_clock::now();
 
     try {
-        spdlog::set_level(spdlog::level::info);
+        spdlog::set_level(log_debug ? spdlog::level::debug : spdlog::level::info);
         // Flush every info+ line immediately so logs survive a hard kill / crash
         // and show up live when stdout is redirected to a file (otherwise the C
         // runtime fully-buffers a redirected stream and the tail is lost).
@@ -8646,7 +8711,7 @@ int main(int argc, char** argv) {
             // periodically (the full flame-graph UI is Stage 14).
             GWS_PROFILE_FRAME_END();
 #if GWS_PROFILE_ENABLED
-            if (frame_count % 240 == 0)
+            if (frame_count % (log_debug ? 60 : 240) == 0)
                 // debug level: per-frame profiler breakdown stays out of the
                 // default console + Output panel (the Performance overlay shows
                 // live timings); raise the log level to see it here.

@@ -207,7 +207,26 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1200));
         REQUIRE(write_tga(red_tga, 16, 16, solid_pixels(16, 16, 0, 0, 255)),
                 "source TGA rewritten (16x16 blue)");
-        mgr.poll_hot_reload();
+
+        // Poll ACROSS the settle window rather than once.
+        //
+        // This assertion used to be a single poll immediately after the write,
+        // which cannot pass: the shared AssetWatcher requires a change to hold
+        // steady (mtime and size) across a poll before firing, so that a file
+        // still being written is never read half-finished. One poll right after
+        // a write can only mark it pending. The expectation dated from before
+        // the watcher gained settling (WORKFLOW_PLAN 2.4, which replaced three
+        // ad-hoc mtime loops — texture reload among them), and the test has been
+        // failing since.
+        //
+        // Polling repeatedly also makes the "exactly once" half meaningful: a
+        // long write must fire ONE event at the end, not one per poll while it
+        // is in progress. The watcher's own poll interval is 0.25 s and its
+        // settle time 0.2 s, so several polls 300 ms apart cover both.
+        for (int i = 0; i < 4; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            mgr.poll_hot_reload();
+        }
         REQUIRE(reload_events == 1, "reload listener fired exactly once");
         REQUIRE(t1.get() == before, "reload kept the same Texture object");
         REQUIRE(t1->generation() == gen_before + 1, "generation bumped");
