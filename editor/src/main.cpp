@@ -266,6 +266,9 @@ struct EditorState {
 
     // Actual viewport panel size (updated each frame by ShowViewport)
     glm::vec2 viewport_panel_size = glm::vec2(1920.0f, 1080.0f);
+    // Screen-space top-left of the rendered viewport image, so synthetic input
+    // (--stress-viewport-click) can aim at it.
+    glm::vec2 viewport_image_min  = glm::vec2(0.0f);
 
     // Viewport display options
     bool show_grid = true;
@@ -3906,6 +3909,7 @@ void ShowViewport(EditorState& editor_state) {
                 image_min = ImGui::GetItemRectMin();
                 image_max = ImGui::GetItemRectMax();
                 image_drawn = true;
+                editor_state.viewport_image_min = glm::vec2(image_min.x, image_min.y);
             } else {
                 ImGui::TextDisabled("Vulkan viewport initializing...");
                 ImGui::Text("Scene: %zu entities", scene ? scene->GetEntityCount() : 0);
@@ -5167,6 +5171,16 @@ int main(int argc, char** argv) {
     // a white window could not be told apart from a report of a hang, and both
     // were guessed at instead of looked at.
     std::string screenshot_path;
+    // --select <entity-id>: select an entity at startup. The Inspector only
+    // does its real work when something IS selected, so without this the
+    // expensive case cannot be measured headlessly at all.
+    uint32_t    startup_select = 0;
+    // --stress-viewport-click: drive the mouse onto the viewport and click, from
+    // a headless run. The viewport's interaction paths (hover, brush preview,
+    // picking) only execute when ImGui reports the mouse over the image, so
+    // without synthetic input the whole "it lags when I click in the viewport"
+    // case is unreachable to measurement.
+    bool        stress_click = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--net-host" && i + 1 < argc) {
@@ -5211,6 +5225,10 @@ int main(int argc, char** argv) {
             stress_edit = true;
         } else if (a == "--screenshot" && i + 1 < argc) {
             screenshot_path = argv[++i];
+        } else if (a == "--select" && i + 1 < argc) {
+            startup_select = static_cast<uint32_t>(std::atoi(argv[++i]));
+        } else if (a == "--stress-viewport-click") {
+            stress_click = true;
         } else if (a == "--startup-probe") {
             // Initialise everything, report how long it took, then exit without
             // entering the main loop. This is what makes "editor cold start" —
@@ -6475,7 +6493,12 @@ int main(int argc, char** argv) {
                 st.show_preferences = !st.show_preferences;
             });
 
-            spdlog::info("[palette] {} commands registered", cmds.size());
+            if (startup_select != 0) {
+            editor_state.selected_entity_id = startup_select;
+            spdlog::info("[select] entity {} selected at startup", startup_select);
+        }
+
+        spdlog::info("[palette] {} commands registered", cmds.size());
         }
 
         // Shader compiler for material graphs (4.1). Looked for beside the
@@ -7226,6 +7249,19 @@ int main(int argc, char** argv) {
             // ------------------------------------------------------------
             imgui->begin_frame();
 
+            if (stress_click) {
+                // Park the cursor in the middle of the viewport image and press
+                // the left button every 20th frame, holding it for one frame.
+                ImGuiIO& sio = ImGui::GetIO();
+                const ImVec2 c(editor_state.viewport_image_min.x + editor_state.viewport_panel_size.x * 0.5f,
+                               editor_state.viewport_image_min.y + editor_state.viewport_panel_size.y * 0.5f);
+                if (editor_state.viewport_panel_size.x > 1.0f) {
+                    sio.MousePos = c;
+                    const bool down = (frame_count % 20) == 0;
+                    sio.MouseDown[0] = down;
+                }
+            }
+
             // Runtime game-UI HUD (gws_ui) — drawn to ImGui's foreground list
             // so it overlays the viewport. No-op unless enabled in the panel.
             game_ui.update_and_render(delta_time);
@@ -7414,12 +7450,16 @@ int main(int argc, char** argv) {
             ShowSceneReloadPrompt(editor_state);
             if (editor_state.show_demo_window)
                 ImGui::ShowDemoWindow(&editor_state.show_demo_window);
-            ShowViewport(editor_state);
-            ShowSceneHierarchy(editor_state);
-            ShowInspector(editor_state);
-            ShowAssetBrowser(editor_state);
-            ShowPlaybackControls(editor_state);
-            ShowPerformanceOverlay(editor_state);
+            // Per-panel zones. Without these the editor's own UI is a blind
+            // spot in its profiler: a panel that costs 30 ms shows up only as
+            // frame time nobody can attribute, which is exactly the position
+            // "it lags when I click an object" left us in.
+            { GWS_PROFILE_ZONE("ui_viewport");    ShowViewport(editor_state); }
+            { GWS_PROFILE_ZONE("ui_hierarchy");   ShowSceneHierarchy(editor_state); }
+            { GWS_PROFILE_ZONE("ui_inspector");   ShowInspector(editor_state); }
+            { GWS_PROFILE_ZONE("ui_assetbrowser"); ShowAssetBrowser(editor_state); }
+            { GWS_PROFILE_ZONE("ui_playback");    ShowPlaybackControls(editor_state); }
+            { GWS_PROFILE_ZONE("ui_performance"); ShowPerformanceOverlay(editor_state); }
 
             // Transient status toast (mesh apply/import result, etc.), top-center.
             if (!editor_state.status_message.empty()) {
