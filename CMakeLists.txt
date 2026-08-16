@@ -260,6 +260,22 @@ add_subdirectory(third_party/stb)
 # meshoptimizer (LOD simplification + cache optimization)
 add_subdirectory(third_party/meshoptimizer)
 
+# Build meshoptimizer OPTIMISED even in Debug.
+#
+# It is pure compute with no engine state to step through, and unoptimised it
+# dominates every mesh build. Measured on a terrain sculpt at resolution 512:
+# rebuilding the 4 chunks under the brush took 60 ms, of which 46 ms was meshlet
+# baking — per frame, for as long as the mouse was held. Nobody debugs into
+# meshoptimizer; paying 46 ms a frame to keep the option is a bad trade.
+#
+# Debug info is kept (-g), so a crash inside it still symbolises; only the
+# optimisation level changes.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(meshoptimizer PRIVATE $<$<CONFIG:Debug>:-O2>)
+elseif(MSVC)
+    target_compile_options(meshoptimizer PRIVATE $<$<CONFIG:Debug>:/O2>)
+endif()
+
 # --- Vendored codecs (Stage 2: compression + texture block compression) ---
 # LZ4 (BSD-2): fast block compression for cooked mesh/anim.
 add_library(lz4 STATIC

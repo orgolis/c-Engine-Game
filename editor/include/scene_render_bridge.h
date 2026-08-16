@@ -648,7 +648,12 @@ inline std::unique_ptr<gws::renderer::gpu::Mesh> build_terrain_chunk_mesh(
     // batch matters here more than anywhere else in the engine: a full terrain
     // rebuild creates up to 256 of these, and one queue wait each would be far
     // worse than the bandwidth problem device-local memory was fixing.
-    return Mesh::create(device, verts, idx, {sm}, /*extra_vbo_usage=*/0, batch);
+    // No meshlet baking: a chunk under a sculpt brush is rebuilt every frame the
+    // mouse is held, and baking was the single largest cost in that loop. Terrain
+    // already culls per chunk, and a flat 64-cell chunk gains little from
+    // per-cluster culling inside it.
+    return Mesh::create(device, verts, idx, {sm}, /*extra_vbo_usage=*/0, batch,
+                        /*bake_meshlets=*/false);
 }
 
 /// Per-terrain-entity CHUNKED GPU mesh cache. On version change, rebuilds
@@ -662,12 +667,22 @@ public:
         schizo::scene::TerrainComponent* tc,
         gws::renderer::gpu::VulkanDevice* device)
     {
+        ++frame_;
+        collect_retired();
+
         Entry& e = entries_[entity_id];
         const int res = tc->GetResolution();
         const int chunks = (res + kTerrainChunkCells - 1) / kTerrainChunkCells;
 
         const bool layout_changed = (e.chunks != chunks);
         if (layout_changed) {
+            // Retire, do NOT clear. A resolution change replaces the entire grid
+            // — up to hundreds of meshes — and destroying them here freed
+            // buffers that in-flight frames were still drawing from. That is the
+            // most likely cause of the crash reported when raising resolution to
+            // 800 on a terrain that was fine at 650: more chunks in flight, more
+            // chance the free lands under a frame that is still reading them.
+            for (auto& m : e.meshes) retire(m);
             e.meshes.clear();
             e.meshes.resize(static_cast<size_t>(chunks) * chunks);
             e.chunks = chunks;
@@ -687,14 +702,29 @@ public:
             // submit. The batch flushes when it leaves this scope, so the
             // meshes are fully uploaded before get_or_build returns them.
             {
+                const auto t_begin = std::chrono::steady_clock::now();
+                int rebuilt = 0;
                 gws::renderer::gpu::MeshUploadBatch batch(device);
                 for (int cz = c_z0; cz <= c_z1; ++cz)
-                    for (int cx = c_x0; cx <= c_x1; ++cx)
-                        e.meshes[static_cast<size_t>(cz) * chunks + cx] =
-                            build_terrain_chunk_mesh(tc, device,
-                                                     cx * kTerrainChunkCells,
-                                                     cz * kTerrainChunkCells,
-                                                     kTerrainChunkCells, &batch);
+                    for (int cx = c_x0; cx <= c_x1; ++cx) {
+                        auto& slot = e.meshes[static_cast<size_t>(cz) * chunks + cx];
+                        // Retire the outgoing chunk rather than letting the
+                        // assignment destroy it: during a sculpt stroke this
+                        // path runs every frame, on geometry the GPU is still
+                        // reading from the frames already submitted.
+                        retire(slot);
+                        slot = build_terrain_chunk_mesh(tc, device,
+                                                       cx * kTerrainChunkCells,
+                                                       cz * kTerrainChunkCells,
+                                                       kTerrainChunkCells, &batch);
+                        ++rebuilt;
+                    }
+                const double build_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - t_begin).count();
+                spdlog::debug("[Terrain {}] rebuilt {} of {} chunks in {:.2f} ms "
+                              "(chunk rect {},{}..{},{}{})",
+                              entity_id, rebuilt, chunks * chunks, build_ms,
+                              c_x0, c_z0, c_x1, c_z1, full ? ", FULL" : "");
             }
             e.version = tc->Version();
         }
@@ -711,7 +741,9 @@ public:
             }
         entries_ = std::move(kept);
     }
-    void clear() { entries_.clear(); }
+    /// Drop everything, including anything still retired. Only safe when the
+    /// caller has already idled the device (editor shutdown does).
+    void clear() { entries_.clear(); retiring_.clear(); }
 
 private:
     struct Entry {
@@ -720,6 +752,42 @@ private:
         uint64_t version = 0;
     };
     std::unordered_map<uint32_t, Entry> entries_;
+
+    /// Chunk meshes waiting to be destroyed, with the frame they were replaced.
+    ///
+    /// A rebuilt chunk used to be destroyed the instant its replacement was
+    /// assigned — freeing GPU buffers that in-flight command buffers were still
+    /// reading. That is undefined behaviour, and it happened on EVERY frame of a
+    /// sculpt stroke and on every resolution change (where the whole grid is
+    /// replaced at once). It usually survived, which is the worst property a bug
+    /// of this kind can have.
+    ///
+    /// Retiring instead of destroying costs a few frames of extra VRAM and makes
+    /// the hazard impossible.
+    struct Retired {
+        std::unique_ptr<gws::renderer::gpu::Mesh> mesh;
+        uint64_t frame = 0;
+    };
+    std::vector<Retired> retiring_;
+    uint64_t             frame_ = 0;
+
+    /// Frames a replaced mesh is kept before being freed. Comfortably above the
+    /// two or three frames this renderer keeps in flight.
+    static constexpr uint64_t kRetireFrames = 8;
+
+    /// Move `slot`'s current mesh onto the retirement list instead of destroying
+    /// it, then hand back the empty slot for the new mesh.
+    void retire(std::unique_ptr<gws::renderer::gpu::Mesh>& slot) {
+        if (slot) retiring_.push_back(Retired{std::move(slot), frame_});
+    }
+
+    void collect_retired() {
+        if (retiring_.empty()) return;
+        const uint64_t cutoff = (frame_ > kRetireFrames) ? frame_ - kRetireFrames : 0;
+        retiring_.erase(std::remove_if(retiring_.begin(), retiring_.end(),
+                                       [cutoff](const Retired& r) { return r.frame <= cutoff; }),
+                        retiring_.end());
+    }
 };
 
 /// Per-terrain-entity GPU cache: the splat texture, the per-layer materials and

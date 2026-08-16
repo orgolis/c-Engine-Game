@@ -152,12 +152,20 @@ public:
     /// A mesh built through a batch is NOT usable until that batch is flushed:
     /// its buffers exist but hold nothing. The batch flushes in its destructor,
     /// so the common scoped use is safe by construction.
+    ///
+    /// `bake_meshlets` controls per-cluster culling data. It is worth it for a
+    /// mesh built once and drawn for the rest of the session. It is NOT worth it
+    /// for geometry rebuilt continuously — a terrain chunk under a sculpt brush
+    /// is rebuilt every frame the mouse is held, and baking dominated that cost.
+    /// Terrain also already culls at chunk granularity, so meshlets inside one
+    /// flat 64-cell chunk buy little.
     static std::unique_ptr<Mesh> create(VulkanDevice* device,
                                         const std::vector<SceneVertex>& vertices,
                                         const std::vector<uint32_t>& indices,
                                         std::vector<Submesh> submeshes,
                                         VkBufferUsageFlags extra_vbo_usage = 0,
-                                        class MeshUploadBatch* batch = nullptr);
+                                        class MeshUploadBatch* batch = nullptr,
+                                        bool bake_meshlets = true);
 
     /// Bind vertex+index buffers on the supplied command buffer.
     void bind(VkCommandBuffer cmd) const;

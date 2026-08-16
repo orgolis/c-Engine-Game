@@ -280,7 +280,8 @@ std::unique_ptr<Mesh> Mesh::create(VulkanDevice* device,
                                    const std::vector<uint32_t>& indices,
                                    std::vector<Submesh> submeshes,
                                    VkBufferUsageFlags extra_vbo_usage,
-                                   MeshUploadBatch* batch) {
+                                   MeshUploadBatch* batch,
+                                   bool bake_meshlets) {
     if (!device || vertices.empty() || indices.empty()) {
         spdlog::error("Mesh::create: invalid args (vertices={}, indices={})",
                       vertices.size(), indices.size());
@@ -351,6 +352,7 @@ std::unique_ptr<Mesh> Mesh::create(VulkanDevice* device,
     constexpr size_t MIN_TRIS_TO_BAKE      = 256; // below this, brute draw is faster
 
     for (auto& sm : out->submeshes_) {
+        if (!bake_meshlets) break;   // caller rebuilds this mesh too often to pay for it
         if (sm.lods.empty()) continue;
         auto& lod0 = sm.lods[0];
         if (lod0.index_count < MIN_TRIS_TO_BAKE * 3) continue;

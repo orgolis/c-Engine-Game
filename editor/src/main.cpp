@@ -5039,6 +5039,12 @@ int main(int argc, char** argv) {
     // frame, which is both reproducible and the honest worst case: what the
     // user sees when actually looking at their terrain.
     bool        stress_draw_all   = false;
+    // --stress-terrain-edit: sculpt the selected terrain a little EVERY frame,
+    // reproducing what a held mouse button does. Editing is a completely
+    // different cost profile from idling — it rebuilds chunk meshes inside the
+    // frame — and it was the half no headless measurement could reach, which is
+    // how "editing drops 120 fps to 28" stayed invisible to the harness.
+    bool        stress_edit       = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--net-host" && i + 1 < argc) {
@@ -5079,6 +5085,8 @@ int main(int argc, char** argv) {
             log_debug = true;
         } else if (a == "--stress-draw-all") {
             stress_draw_all = true;
+        } else if (a == "--stress-terrain-edit") {
+            stress_edit = true;
         } else if (a == "--startup-probe") {
             // Initialise everything, report how long it took, then exit without
             // entering the main loop. This is what makes "editor cold start" —
@@ -8077,6 +8085,31 @@ int main(int argc, char** argv) {
                     [&editor_state, &ecs_bridge](const schizo::editor::CoalescedEdit& e) {
                         PushLogicGraphCommand(editor_state, &ecs_bridge, e);
                     });
+
+            // Synthetic sculpt for --stress-terrain-edit. Mirrors what the real
+            // brush does: touch a small patch of heights, then report the rect
+            // so only those chunks rebuild. Deliberately placed right before
+            // build_draw_items, exactly where a real stroke lands.
+            if (stress_edit) {
+                GWS_PROFILE_ZONE("stress_terrain_edit");
+                if (auto sc = editor_scene.GetScene()) {
+                    for (const auto& ent : sc->GetEntities()) {
+                        if (!ent) continue;
+                        auto tc = ent->GetComponent<schizo::scene::TerrainComponent>();
+                        if (!tc) continue;
+                        const int n  = tc->VertsPerSide();
+                        const int cx = n / 2, cz = n / 2, rc = 6;
+                        auto& H = tc->MutableHeights();
+                        const float amp = 0.01f * static_cast<float>((frame_count % 20) + 1);
+                        for (int iz = cz - rc; iz <= cz + rc; ++iz)
+                            for (int ix = cx - rc; ix <= cx + rc; ++ix)
+                                if (ix >= 0 && iz >= 0 && ix < n && iz < n)
+                                    H[static_cast<size_t>(iz) * n + ix] = amp;
+                        tc->MarkDirtyRect(cx - rc, cz - rc, cx + rc, cz + rc);
+                        break;
+                    }
+                }
+            }
 
             { GWS_PROFILE_ZONE("build_draw_items");
               schizo::editor::build_draw_items(
