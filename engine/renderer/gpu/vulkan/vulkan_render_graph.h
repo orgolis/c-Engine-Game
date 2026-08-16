@@ -319,6 +319,17 @@ private:
     // device). Disabled (pool == NULL_HANDLE) when the GPU/queue doesn't
     // support timestamps.
     VkQueryPool timestamp_pool_ = VK_NULL_HANDLE;
+    /// Which ring of timestamp slots the frame being recorded writes into.
+    /// Slots are ringed over frames in flight so the CPU can read a frame's
+    /// results before a later frame resets them.
+    uint32_t    write_ring_ = 0;
+    /// Last good per-stage times, carried forward when a frame has no fresh
+    /// result — an overlay that flickers to zero reads as "the pass vanished".
+    double last_shadow_us_       = 0.0;
+    double last_geometry_us_     = 0.0;
+    double last_lighting_us_     = 0.0;
+    double last_transparent_us_  = 0.0;
+    double last_post_process_us_ = 0.0;
     double timestamp_period_ns_ = 0.0;
     bool timestamps_supported_ = false;
 };

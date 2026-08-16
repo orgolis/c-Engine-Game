@@ -33,14 +33,31 @@ constexpr uint32_t to_index(RenderGraphStage stage) {
 
 constexpr uint32_t kStageCount = static_cast<uint32_t>(RenderGraphStage::StageCount);
 constexpr uint32_t kTimestampSlotsPerStage = 2; // begin + end
-constexpr uint32_t kTimestampPoolSize = kStageCount * kTimestampSlotsPerStage;
 
-constexpr uint32_t timestamp_begin_slot(RenderGraphStage stage) {
-    return to_index(stage) * kTimestampSlotsPerStage;
+/// Timestamp slots are RINGED over frames in flight.
+///
+/// There used to be exactly one set of slots, reset at the top of every frame.
+/// With two or three frames in flight that is a race the CPU loses: it waits on
+/// frame N's fence and then reads slots that frame N+1 has already reset, so the
+/// queries are unavailable. Combined with VK_QUERY_RESULT_WAIT_BIT, waiting on a
+/// query that will never become available returns VK_ERROR_DEVICE_LOST on
+/// NVIDIA — which is what filled the log with five warnings PER FRAME and made
+/// the editor look like it had hung on load. (It had not; it was drowning in its
+/// own logging, and warnings are flushed to disk immediately.)
+///
+/// Four rings is comfortably more than any frames-in-flight this renderer uses,
+/// so a frame's results survive until the CPU reads them.
+constexpr uint32_t kTimestampRings   = 4;
+constexpr uint32_t kSlotsPerRing     = kStageCount * kTimestampSlotsPerStage;
+constexpr uint32_t kTimestampPoolSize = kSlotsPerRing * kTimestampRings;
+
+/// First slot of `stage` within ring `ring`.
+constexpr uint32_t timestamp_begin_slot(RenderGraphStage stage, uint32_t ring) {
+    return ring * kSlotsPerRing + to_index(stage) * kTimestampSlotsPerStage;
 }
 
-constexpr uint32_t timestamp_end_slot(RenderGraphStage stage) {
-    return to_index(stage) * kTimestampSlotsPerStage + 1;
+constexpr uint32_t timestamp_end_slot(RenderGraphStage stage, uint32_t ring) {
+    return timestamp_begin_slot(stage, ring) + 1;
 }
 
 } // namespace
@@ -207,7 +224,11 @@ void VulkanRenderGraph::begin_frame(VkCommandBuffer cmd) {
     frame_in_flight_ = true;
 
     if (timestamps_supported_ && timestamp_pool_ != VK_NULL_HANDLE && cmd != VK_NULL_HANDLE) {
-        vkCmdResetQueryPool(cmd, timestamp_pool_, 0, kTimestampPoolSize);
+        // Reset only this frame's ring. Resetting the whole pool is what
+        // destroyed the results the CPU had not read yet.
+        write_ring_ = static_cast<uint32_t>(stats_.frame_index % kTimestampRings);
+        vkCmdResetQueryPool(cmd, timestamp_pool_,
+                            write_ring_ * kSlotsPerRing, kSlotsPerRing);
     }
 }
 
@@ -224,46 +245,62 @@ bool VulkanRenderGraph::resolve_timings() {
         return false;
     }
 
-    // Query each stage's pair individually with WAIT_BIT so we get definite
-    // results for the stages that actually ran, and skip stages that were
-    // never written (querying their slots would return VK_NOT_READY for the
-    // whole batch and mask the valid data).
-    auto compute_us = [&](RenderGraphStage stage) -> double {
+    // Read the ring the frame we just waited on wrote into.
+    const uint32_t read_ring =
+        static_cast<uint32_t>(stats_.frame_index % kTimestampRings);
+
+    // NO WAIT_BIT. Profiling must never block the CPU on the GPU: if a result
+    // is not ready this frame, the honest answer is "no number this frame", not
+    // a stall. WAIT_BIT here also turned an unavailable query into
+    // VK_ERROR_DEVICE_LOST rather than a benign VK_NOT_READY.
+    //
+    // A stage that did not run leaves its pair unwritten, which reads back as
+    // VK_NOT_READY — expected, and silent.
+    auto compute_us = [&](RenderGraphStage stage, double previous) -> double {
         std::array<uint64_t, kTimestampSlotsPerStage> pair{};
         const VkResult vr = vkGetQueryPoolResults(
             config_.device->get_device(),
             timestamp_pool_,
-            timestamp_begin_slot(stage),
+            timestamp_begin_slot(stage, read_ring),
             kTimestampSlotsPerStage,
             sizeof(pair),
             pair.data(),
             sizeof(uint64_t),
-            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+            VK_QUERY_RESULT_64_BIT);
+        if (vr == VK_NOT_READY) return previous;   // normal; keep the last good value
         if (vr != VK_SUCCESS) {
-            spdlog::warn("VulkanRenderGraph::resolve_timings: stage {} vk={}",
-                         stage_name(stage), static_cast<int>(vr));
-            return 0.0;
+            // Log ONCE. A per-frame warning at over a hundred frames a second
+            // is not a diagnostic, it is a denial of service against the log —
+            // warnings are flushed to disk on write, so this alone made the
+            // editor appear frozen on load.
+            static bool reported = false;
+            if (!reported) {
+                reported = true;
+                spdlog::warn("VulkanRenderGraph::resolve_timings: vkGetQueryPoolResults "
+                             "returned {} for stage {} — GPU stage timings are "
+                             "unavailable this session (reported once)",
+                             static_cast<int>(vr), stage_name(stage));
+            }
+            return previous;
         }
-        if (pair[1] <= pair[0]) return 0.0;
+        if (pair[1] <= pair[0]) return previous;
         const double ns = static_cast<double>(pair[1] - pair[0]) * timestamp_period_ns_;
         return ns / 1000.0; // ns → µs
     };
 
-    if (stats_.shadow_passes_run > 0) {
-        stats_.shadow_us = compute_us(RenderGraphStage::Shadow);
-    }
-    if (stats_.geometry_passes_run > 0) {
-        stats_.geometry_us = compute_us(RenderGraphStage::Geometry);
-    }
-    if (stats_.lighting_passes_run > 0) {
-        stats_.lighting_us = compute_us(RenderGraphStage::Lighting);
-    }
-    if (stats_.transparent_passes_run > 0) {
-        stats_.transparent_us = compute_us(RenderGraphStage::Transparent);
-    }
-    if (stats_.post_process_passes_run > 0) {
-        stats_.post_process_us = compute_us(RenderGraphStage::PostProcess);
-    }
+    // Carry the previous value forward when a stage has no fresh result, so the
+    // overlay shows the last real measurement instead of flickering to zero.
+    stats_.shadow_us      = compute_us(RenderGraphStage::Shadow,      last_shadow_us_);
+    stats_.geometry_us    = compute_us(RenderGraphStage::Geometry,    last_geometry_us_);
+    stats_.lighting_us    = compute_us(RenderGraphStage::Lighting,    last_lighting_us_);
+    stats_.transparent_us = compute_us(RenderGraphStage::Transparent, last_transparent_us_);
+    stats_.post_process_us = compute_us(RenderGraphStage::PostProcess, last_post_process_us_);
+
+    last_shadow_us_       = stats_.shadow_us;
+    last_geometry_us_     = stats_.geometry_us;
+    last_lighting_us_     = stats_.lighting_us;
+    last_transparent_us_  = stats_.transparent_us;
+    last_post_process_us_ = stats_.post_process_us;
     return true;
 }
 
@@ -308,7 +345,7 @@ void VulkanRenderGraph::execute_stage(VkCommandBuffer cmd,
         // pulls this command off the queue", which is the right reference
         // point for the start of the stage.
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                            timestamp_pool_, timestamp_begin_slot(stage));
+                            timestamp_pool_, timestamp_begin_slot(stage, write_ring_));
     }
 
     switch (stage) {
@@ -340,7 +377,7 @@ void VulkanRenderGraph::execute_stage(VkCommandBuffer cmd,
         // BOTTOM_OF_PIPE for the end marker waits until all preceding
         // commands in the stage have finished executing on the GPU.
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                            timestamp_pool_, timestamp_end_slot(stage));
+                            timestamp_pool_, timestamp_end_slot(stage, write_ring_));
     }
 
     last_executed_ = stage;
