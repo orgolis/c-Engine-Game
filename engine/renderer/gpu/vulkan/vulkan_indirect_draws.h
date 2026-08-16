@@ -52,7 +52,15 @@ public:
 
     /// Drop everything recorded last frame. Call once per frame before the
     /// first append.
-    void begin_frame() { commands_.clear(); uploaded_ = 0; }
+    ///
+    /// Also the ONLY safe place to grow. Growth replaces the buffer, and a
+    /// draw already recorded in this frame's command buffer still points at
+    /// the old one -- so growing mid-frame invalidated commands that had
+    /// already been recorded (VUID-vkDestroyBuffer-buffer-00922, reproduced
+    /// with GWS_STRESS_INDIRECT_GROW=1). Growing here instead, to last
+    /// frame's high-water mark plus headroom, means the common case never
+    /// resizes while recording.
+    void begin_frame();
 
     /// Record one draw. Returns the command's index, which is what a later
     /// compute pass would use to address it.
@@ -97,6 +105,21 @@ private:
     void*          mapped_ = nullptr;
     uint32_t       capacity_ = 0;
     bool           multi_draw_ = false;
+
+    /// Buffers replaced by grow(). They cannot be destroyed on the spot: the
+    /// frames still in flight reference them. Freed once `frame_` has advanced
+    /// past the retirement grace, which is comfortably more than the number of
+    /// frames in flight.
+    struct Retired {
+        VkBuffer       buffer;
+        VkDeviceMemory memory;
+        uint64_t       frame;
+    };
+    std::vector<Retired> retired_;
+    uint64_t             frame_ = 0;
+    /// Most commands any single frame has needed so far -- what begin_frame
+    /// sizes against, so growth stops happening mid-recording.
+    uint32_t             high_water_ = 0;
 
     std::vector<VkDrawIndexedIndirectCommand> commands_;
     /// How many commands are already in the GPU buffer. Reset by begin_frame,

@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 
 namespace gws::renderer::gpu {
 
@@ -24,6 +25,46 @@ VulkanIndirectDrawBuffer::~VulkanIndirectDrawBuffer() {
     if (mapped_) { vkUnmapMemory(vk_, memory_); mapped_ = nullptr; }
     if (buffer_) vkDestroyBuffer(vk_, buffer_, nullptr);
     if (memory_) vkFreeMemory(vk_, memory_, nullptr);
+    // The device is idle by the time the renderer tears its buffers down, so
+    // anything still on the retirement list can go now.
+    for (const Retired& r : retired_) {
+        if (r.buffer) vkDestroyBuffer(vk_, r.buffer, nullptr);
+        if (r.memory) vkFreeMemory(vk_, r.memory, nullptr);
+    }
+    retired_.clear();
+}
+
+// Grace in frames before a replaced buffer is freed. Frames in flight is 2-3;
+// 8 leaves room without keeping meaningful memory alive -- each retired buffer
+// is one allocation of a few hundred KB at most, and growth is rare.
+static constexpr uint64_t kIndirectRetireFrames = 8;
+
+void VulkanIndirectDrawBuffer::begin_frame() {
+    ++frame_;
+
+    // Free buffers retired long enough ago that no in-flight frame can still
+    // be reading them.
+    for (size_t i = 0; i < retired_.size();) {
+        if (frame_ - retired_[i].frame >= kIndirectRetireFrames) {
+            if (retired_[i].buffer) vkDestroyBuffer(vk_, retired_[i].buffer, nullptr);
+            if (retired_[i].memory) vkFreeMemory(vk_, retired_[i].memory, nullptr);
+            retired_[i] = retired_.back();
+            retired_.pop_back();
+        } else {
+            ++i;
+        }
+    }
+
+    // Size for what last frame actually needed, before anything is recorded.
+    // A frame that reveals more geometry than any before it can still grow
+    // mid-recording -- grow() retires safely now -- but it no longer happens
+    // every time a big mesh comes into view.
+    if (high_water_ > capacity_) {
+        grow(high_water_ * 3 / 2 + 256);
+    }
+
+    commands_.clear();
+    uploaded_ = 0;
 }
 
 bool VulkanIndirectDrawBuffer::init(VulkanDevice* device, uint32_t initial_commands) {
@@ -43,8 +84,17 @@ bool VulkanIndirectDrawBuffer::grow(uint32_t commands) {
     const VkDeviceSize bytes = VkDeviceSize(commands) * sizeof(VkDrawIndexedIndirectCommand);
 
     if (mapped_) { vkUnmapMemory(vk_, memory_); mapped_ = nullptr; }
-    if (buffer_) { vkDestroyBuffer(vk_, buffer_, nullptr); buffer_ = VK_NULL_HANDLE; }
-    if (memory_) { vkFreeMemory(vk_, memory_, nullptr); memory_ = VK_NULL_HANDLE; }
+    // Retire, never destroy here. Draws recorded earlier in THIS frame's
+    // command buffer -- and draws still executing from previous frames --
+    // reference the outgoing buffer by handle. Destroying it on the spot is a
+    // use-after-free that validation catches as
+    // VUID-vkDestroyBuffer-buffer-00922 and that a driver reports, much later
+    // and much less helpfully, as a device loss.
+    if (buffer_ || memory_) {
+        retired_.push_back(Retired{buffer_, memory_, frame_});
+        buffer_ = VK_NULL_HANDLE;
+        memory_ = VK_NULL_HANDLE;
+    }
 
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bi.size  = bytes;
@@ -106,11 +156,27 @@ uint32_t VulkanIndirectDrawBuffer::append(uint32_t index_count, uint32_t first_i
     c.firstInstance = 0;
 
     commands_.push_back(c);
+    if (commands_.size() > high_water_)
+        high_water_ = static_cast<uint32_t>(commands_.size());
     return static_cast<uint32_t>(commands_.size() - 1);
 }
 
 bool VulkanIndirectDrawBuffer::upload() {
     if (commands_.empty()) return true;
+
+    // GWS_STRESS_INDIRECT_GROW=1 forces a reallocation on every upload, so the
+    // growth path runs at a LATER submesh -- after earlier draws were already
+    // recorded against the outgoing buffer. Kept because it is the regression
+    // test for exactly that bug: natural growth almost always lands on the
+    // first submesh of the first frame, before any draw exists, so merely
+    // shrinking the initial capacity proved nothing. Run the editor with this
+    // set and validation on; it must report no
+    // VUID-vkDestroyBuffer-buffer-00922.
+    static const bool force_grow = std::getenv("GWS_STRESS_INDIRECT_GROW") != nullptr;
+    if (force_grow) {
+        if (!grow(capacity_ + 1)) return false;
+        uploaded_ = 0;
+    }
 
     if (commands_.size() > capacity_) {
         const uint32_t want = static_cast<uint32_t>(commands_.size() * 3 / 2 + 256);
