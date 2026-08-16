@@ -621,6 +621,45 @@ inline constexpr int kTerrainChunkCells = 64;
 /// terrain entity (same space as the old full-terrain mesh). Cells flagged as
 /// HOLES are skipped (carved out of the surface — caves go through here).
 /// Returns nullptr when every cell in the chunk is a hole.
+/// How far a chunk must be, in multiples of its own world size, before the next
+/// coarser LOD tier is used. 2.0 means a 40 m chunk drops to half density at
+/// 80 m, quarter at 160 m, and so on. Conservative enough that the switch is not
+/// visible at normal camera heights, and the skirts hide what is.
+inline constexpr float kTerrainLodDistanceFactor = 2.0f;
+
+/// Most LOD tiers a chunk may have, counting full density as tier 0. Four tiers
+/// takes a 64-cell chunk down to 8 cells a side, which is already 64x fewer
+/// triangles; past that the saving is rounding error and the popping is not.
+inline constexpr int kTerrainMaxLods = 4;
+
+/// Build ONE chunk of a terrain heightmap as a GPU mesh, with LOD tiers.
+///
+/// WHY TIERS COST ALMOST NOTHING HERE. A `MeshLod` is an index RANGE into the
+/// mesh's shared buffers, and a terrain chunk is a regular grid — so a
+/// half-density tier is just an index list that visits every second vertex of
+/// the SAME vertex buffer. No decimation, no meshoptimizer, no extra vertices:
+/// coarser tiers add index data only. That is why terrain LOD is cheap here and
+/// would not be for an arbitrary mesh.
+///
+/// Terrain previously had exactly one tier, so a chunk four kilometres away drew
+/// all 8192 of its triangles. `Mesh::select_lod` and the shadow pass's
+/// `base_lod + 1` were both already implemented and simply had nothing to pick
+/// from.
+///
+/// CRACKS, AND WHY SKIRTS. Neighbouring chunks at different tiers disagree along
+/// their shared edge, leaving pinholes you can see the sky through. The two
+/// standard fixes are stitching the coarse edge (index gymnastics at every
+/// boundary, times four neighbours, times every tier combination) and skirts —
+/// a vertical apron hanging under the chunk rim, which covers any gap without
+/// knowing anything about the neighbour. Skirts win here on simplicity alone:
+/// the apron is hidden by the terrain itself from every angle that matters.
+///
+/// The apron drops by the chunk's own height range, so it cannot be shorter than
+/// the worst disagreement possible within the chunk.
+///
+/// Cells flagged as HOLES are skipped; at a coarse tier a merged quad is skipped
+/// if ANY cell it covers is a hole, so caves never seal over with distance.
+/// Returns nullptr when every cell in the chunk is a hole.
 inline std::unique_ptr<gws::renderer::gpu::Mesh> build_terrain_chunk_mesh(
     const schizo::scene::TerrainComponent* tc,
     gws::renderer::gpu::VulkanDevice* device,
@@ -635,10 +674,15 @@ inline std::unique_ptr<gws::renderer::gpu::Mesh> build_terrain_chunk_mesh(
     const float scale = tc->GetHeightScale();
     const int   cx1   = std::min(cx0 + cells, res);   // exclusive cell bounds
     const int   cz1   = std::min(cz0 + cells, res);
-    const int   nx    = cx1 - cx0 + 1;                // verts per side (x)
-    const int   nz    = cz1 - cz0 + 1;
+    const int   ncx   = cx1 - cx0;                    // cells in this chunk (x)
+    const int   ncz   = cz1 - cz0;
+    const int   nx    = ncx + 1;                      // verts per side (x)
+    const int   nz    = ncz + 1;
+    if (ncx <= 0 || ncz <= 0) return nullptr;
 
+    // ---- Grid vertices (shared by every tier) ------------------------------
     std::vector<SceneVertex> verts(static_cast<size_t>(nx) * nz);
+    float h_min = 1e30f, h_max = -1e30f;
     for (int z = 0; z < nz; ++z) {
         for (int x = 0; x < nx; ++x) {
             const int gx = cx0 + x, gz = cz0 + z;     // global grid coords
@@ -646,10 +690,11 @@ inline std::unique_ptr<gws::renderer::gpu::Mesh> build_terrain_chunk_mesh(
             const float hr = tc->HeightAt(gx + 1, gz) * scale;
             const float hd = tc->HeightAt(gx, gz - 1) * scale;
             const float hu = tc->HeightAt(gx, gz + 1) * scale;
+            const float h  = tc->HeightAt(gx, gz) * scale;
+            h_min = std::min(h_min, h);
+            h_max = std::max(h_max, h);
             SceneVertex v{};
-            v.position = glm::vec3(-half + gx * cell,
-                                   tc->HeightAt(gx, gz) * scale,
-                                   -half + gz * cell);
+            v.position = glm::vec3(-half + gx * cell, h, -half + gz * cell);
             v.normal   = glm::normalize(glm::vec3(hl - hr, 2.0f * cell, hd - hu));
             v.uv       = glm::vec2(static_cast<float>(gx) / res,
                                    static_cast<float>(gz) / res);
@@ -657,23 +702,106 @@ inline std::unique_ptr<gws::renderer::gpu::Mesh> build_terrain_chunk_mesh(
             verts[static_cast<size_t>(z) * nx + x] = v;
         }
     }
+
+    auto grid_at = [nx](int x, int z) -> uint32_t {
+        return static_cast<uint32_t>(z) * nx + x;
+    };
+    auto cell_is_hole = [&](int lx, int lz) {
+        return tc->HasHole(cx0 + lx, cz0 + lz);
+    };
+
+    // ---- Skirt vertices: one dropped copy per PERIMETER grid vertex --------
+    // Indexed by the same (x,z), so a coarse tier that visits every s-th rim
+    // vertex automatically visits every s-th skirt vertex.
+    const float skirt_drop = (h_max - h_min) + cell;
+    std::unordered_map<uint32_t, uint32_t> skirt_of;   // grid index -> skirt index
+    auto skirt_for = [&](int x, int z) -> uint32_t {
+        const uint32_t g = grid_at(x, z);
+        auto it = skirt_of.find(g);
+        if (it != skirt_of.end()) return it->second;
+        SceneVertex v = verts[g];
+        v.position.y -= skirt_drop;
+        verts.push_back(v);
+        const uint32_t s_idx = static_cast<uint32_t>(verts.size() - 1);
+        skirt_of.emplace(g, s_idx);
+        return s_idx;
+    };
+
+    // ---- Tiers -------------------------------------------------------------
     std::vector<uint32_t> idx;
-    idx.reserve(static_cast<size_t>(cx1 - cx0) * (cz1 - cz0) * 6);
-    for (int z = 0; z < cz1 - cz0; ++z) {
-        for (int x = 0; x < cx1 - cx0; ++x) {
-            if (tc->HasHole(cx0 + x, cz0 + z)) continue;   // carved cell
-            const uint32_t i0 = static_cast<uint32_t>(z) * nx + x;
-            const uint32_t i1 = i0 + 1;
-            const uint32_t i2 = i0 + nx;
-            const uint32_t i3 = i2 + 1;
-            // CCW from +Y (same winding convention as gen_plane).
-            idx.insert(idx.end(), {i0, i3, i1, i0, i2, i3});
+    std::vector<MeshLod>  lods;
+    const float chunk_world = static_cast<float>(std::max(ncx, ncz)) * cell;
+
+    for (int lod = 0; lod < kTerrainMaxLods; ++lod) {
+        const int step = 1 << lod;
+        // Only emit a tier that divides the chunk evenly. Edge chunks can be an
+        // awkward size (a 650-cell terrain ends in a 10-cell chunk), and a
+        // partial quad at the rim would leave a real gap rather than a seam a
+        // skirt can hide.
+        if (step > 1 && (ncx % step != 0 || ncz % step != 0)) break;
+        if (ncx / step < 1 || ncz / step < 1) break;
+
+        const uint32_t first_index = static_cast<uint32_t>(idx.size());
+
+        for (int z = 0; z < ncz; z += step) {
+            for (int x = 0; x < ncx; x += step) {
+                // A merged quad is skipped if ANY cell under it is carved.
+                bool holed = false;
+                for (int dz = 0; dz < step && !holed; ++dz)
+                    for (int dx = 0; dx < step && !holed; ++dx)
+                        if (cell_is_hole(x + dx, z + dz)) holed = true;
+                if (holed) continue;
+
+                const uint32_t i0 = grid_at(x,        z);
+                const uint32_t i1 = grid_at(x + step, z);
+                const uint32_t i2 = grid_at(x,        z + step);
+                const uint32_t i3 = grid_at(x + step, z + step);
+                // CCW from +Y (same winding convention as gen_plane).
+                idx.insert(idx.end(), {i0, i3, i1, i0, i2, i3});
+            }
         }
+
+        // Skirt ring for this tier. Each rim segment becomes a quad joining two
+        // rim vertices to their dropped copies. Winding matches the surface so
+        // the same back-face culling decision applies.
+        auto skirt_edge = [&](int ax, int az, int bx, int bz) {
+            const uint32_t a  = grid_at(ax, az);
+            const uint32_t b  = grid_at(bx, bz);
+            const uint32_t as = skirt_for(ax, az);
+            const uint32_t bs = skirt_for(bx, bz);
+            idx.insert(idx.end(), {a, as, b, b, as, bs});
+        };
+        for (int x = 0; x < ncx; x += step) {          // z = 0 edge
+            if (!cell_is_hole(x, 0)) skirt_edge(x + step, 0, x, 0);
+        }
+        for (int x = 0; x < ncx; x += step) {          // z = ncz edge
+            if (!cell_is_hole(x, ncz - 1)) skirt_edge(x, ncz, x + step, ncz);
+        }
+        for (int z = 0; z < ncz; z += step) {          // x = 0 edge
+            if (!cell_is_hole(0, z)) skirt_edge(0, z, 0, z + step);
+        }
+        for (int z = 0; z < ncz; z += step) {          // x = ncx edge
+            if (!cell_is_hole(ncx - 1, z)) skirt_edge(ncx, z + step, ncx, z);
+        }
+
+        const uint32_t count = static_cast<uint32_t>(idx.size()) - first_index;
+        if (count == 0) {
+            if (lod == 0) return nullptr;   // fully carved chunk
+            break;
+        }
+        MeshLod tier{};
+        tier.index_offset = first_index;
+        tier.index_count  = count;
+        tier.distance_threshold =
+            (lod == 0) ? 0.0f
+                       : chunk_world * kTerrainLodDistanceFactor * static_cast<float>(step);
+        lods.push_back(tier);
     }
-    if (idx.empty()) return nullptr;   // fully carved chunk
+    if (lods.empty()) return nullptr;
+
     Submesh sm{};
     sm.material_index = 0;
-    sm.lods.push_back({0, static_cast<uint32_t>(idx.size()), 0.0f});
+    sm.lods = std::move(lods);
     // Geometry is device-local now, so it arrives through a staging copy. The
     // batch matters here more than anywhere else in the engine: a full terrain
     // rebuild creates up to 256 of these, and one queue wait each would be far
@@ -762,10 +890,23 @@ public:
                     }
                 const double build_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - t_begin).count();
+                // Report the LOD tiers of one rebuilt chunk. Terrain LOD is the
+                // kind of feature that can look implemented while selecting
+                // tier 0 forever; the tier list is the evidence that it is not.
+                std::string tiers;
+                for (const auto& m : e.meshes) {
+                    if (!m || m->submeshes().empty()) continue;
+                    for (const auto& l : m->submeshes()[0].lods) {
+                        if (!tiers.empty()) tiers += ", ";
+                        tiers += std::to_string(l.index_count / 3) + " tris @" +
+                                 std::to_string(static_cast<int>(l.distance_threshold)) + "m";
+                    }
+                    break;
+                }
                 spdlog::debug("[Terrain {}] rebuilt {} of {} chunks in {:.2f} ms "
-                              "(chunk rect {},{}..{},{}{})",
+                              "(chunk rect {},{}..{},{}{}) | LODs: {}",
                               entity_id, rebuilt, chunks * chunks, build_ms,
-                              c_x0, c_z0, c_x1, c_z1, full ? ", FULL" : "");
+                              c_x0, c_z0, c_x1, c_z1, full ? ", FULL" : "", tiers);
             }
             e.version = tc->Version();
         }

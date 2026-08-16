@@ -511,7 +511,12 @@ void VulkanShadowMap::draw_items(VkCommandBuffer cmd,
 
         // Shadow LOD = base LOD + 1, capped at the last available tier.
         // Shadow silhouettes hide LOD pops far better than the primary view.
-        const glm::vec3 origin = glm::vec3(d.model[3]);
+        // Geometry centre, not model origin — see the same computation in
+        // VulkanGBuffer::draw_items. Terrain chunks all share one transform, so
+        // the origin would give every chunk the same shadow LOD.
+        const AABB& bb = d.mesh->bounding_box();
+        const glm::vec3 local_center = (bb.min + bb.max) * 0.5f;
+        const glm::vec3 origin = glm::vec3(d.model * glm::vec4(local_center, 1.0f));
         const float distance = glm::length(origin - light_position);
         const size_t base_lod = d.mesh->select_lod(d.submesh_index, distance);
         const size_t shadow_lod = base_lod + 1; // draw_submesh clamps internally

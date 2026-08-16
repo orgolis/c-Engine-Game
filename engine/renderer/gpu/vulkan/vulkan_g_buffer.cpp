@@ -1218,8 +1218,17 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
         vkCmdPushConstants(cmd, active_layout, VK_SHADER_STAGE_VERTEX_BIT,
                            0, sizeof(pc), &pc);
 
-        // Distance from camera to draw origin (model translation column).
-        const glm::vec3 draw_origin = glm::vec3(d.model[3]);
+        // Distance from the camera to the GEOMETRY, not to the model origin.
+        //
+        // Using the model's translation column assumes the geometry sits near
+        // its own origin. Terrain chunks break that assumption completely: every
+        // chunk of a terrain shares the terrain entity's transform, so all of
+        // them reported the same distance and every chunk picked the same LOD —
+        // which would have made per-chunk terrain LOD do nothing at all. The
+        // bounding-box centre is the honest answer for any large mesh.
+        const AABB& bb = d.mesh->bounding_box();
+        const glm::vec3 local_center = (bb.min + bb.max) * 0.5f;
+        const glm::vec3 draw_origin  = glm::vec3(d.model * glm::vec4(local_center, 1.0f));
         const float distance = glm::length(draw_origin - camera_position);
         const size_t lod = d.mesh->select_lod(d.submesh_index, distance);
 

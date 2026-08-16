@@ -7714,6 +7714,11 @@ int main(int argc, char** argv) {
             // ------------------------------------------------------------
             // GPU frame
             // ------------------------------------------------------------
+            // The frame's real blocking point. If the CPU is ahead of the GPU,
+            // or the presentation engine is pacing us, the wait shows up HERE —
+            // and until this was measured, the difference between "the renderer
+            // is slow" and "we are waiting for vsync" was unknowable.
+            { GWS_PROFILE_ZONE("wait_prev_frame_fence");
             vkWaitForFences(device.get_device(), 1, &frame_fences[current_frame],
                             VK_TRUE, UINT64_MAX);
             // The previous frame's occlusion queries are guaranteed available
@@ -7741,6 +7746,9 @@ int main(int argc, char** argv) {
             // Same story for the HZB readback — the GPU finished copying the
             // HZB mip to the host buffer before signalling this fence.
             if (hzb_culler) hzb_culler->pull_readback();
+            }
+
+            GWS_PROFILE_ZONE("acquire_swapchain_image");
             uint32_t image_index = swapchain->acquire_next_image(
                 acquire_sems[current_frame]);
             if (image_index == UINT32_MAX) {

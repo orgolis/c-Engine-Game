@@ -255,3 +255,73 @@ reproducible worst case). Specifically worth pinning down:
    resolution 1024 makes the instrument useless exactly where it is needed.
 3. **Does the lag depend on what the user is doing?** Idle, camera movement, and sculpting are three very
    different code paths; the slider fix in `36f3c26` already removed one of them.
+
+---
+
+## 6. Where the frame time actually goes — the question that closes this out
+
+Instrumenting the two blocking points at the top of the frame answers the "unaccounted ~9 ms" above, and
+it changes what is worth doing next. Resolution 512, all chunks drawn:
+
+```
+frame 9.96 ms
+  acquire_swapchain_image   3.3 – 5.3 ms
+  wait_prev_frame_fence     ~3.0 ms
+  hzb_cull                  0.19 ms
+  ecs_sync                  0.16 ms
+  draw_sort                 0.05 ms
+  build_draw_items          0.04 ms
+  ── all GPU stages summed  under 1 ms
+```
+
+**Six to eight milliseconds of a ten-millisecond frame is the editor waiting for the presentation engine.**
+The swapchain prefers `MAILBOX`, so this is display-refresh pacing, not tearing avoidance and not
+rendering. GPU work is roughly a tenth of the frame; CPU work about a twentieth.
+
+The renderer is not the bottleneck in this scene. It has a large amount of headroom, and "120 fps" was
+the display's number, not the engine's.
+
+## 7. Status: P2 done, P5 deliberately not built
+
+**P2 — terrain LOD: done.** A `MeshLod` is an index range into the mesh's existing buffers, and a terrain
+chunk is a regular grid, so a half-density tier is just an index list visiting every second vertex of the
+same vertex buffer. Coarser tiers cost index data and nothing else — no decimation, no meshoptimizer, no
+extra vertices. Measured on a 64-cell chunk:
+
+| tier | triangles | used beyond |
+|---:|---:|---:|
+| 0 | 8 704 | 0 m |
+| 1 | 2 304 | 100 m |
+| 2 | 640 | 200 m |
+| 3 | 192 | 400 m |
+
+45× fewer triangles at the coarsest tier. Cracks between neighbouring tiers are covered by skirts — a
+vertical apron under each chunk rim, dropped by the chunk's own height range so it cannot be shorter than
+the worst disagreement possible. Holes are honoured at every tier (a merged quad is dropped if any cell
+under it is carved), so caves never seal over with distance.
+
+Two things had to be fixed for it to do anything: LOD distance was measured to the model's **origin**, and
+every chunk of a terrain shares the terrain's transform — so all chunks reported the same distance and
+would have picked the same tier forever. Distance now uses the mesh bounding-box centre, in both the
+G-Buffer and the shadow pass. Cost: a full rebuild is ~50% slower (more index generation) and a sculpt
+rebuild went 11 ms → 15 ms. That is the trade — tiers are built once per edit and paid back on every frame
+of every subsequent draw.
+
+**P5 — GPU-driven occlusion culling: investigated, not built.** Two independent reasons, either sufficient:
+
+1. **It is structurally blocked.** A compute pass can only zero `instanceCount` for commands that already
+   exist, and it cannot run inside a render pass. Today `draw_items` *appends* a submesh's indirect
+   commands and *draws* them in the same loop iteration, inside the render pass. Restructuring to
+   record-everything-then-cull-then-draw means one indirect call covering many meshes, and one indirect
+   call can only read one bound vertex/index buffer — so it needs **pooled geometry buffers**.
+   `vulkan_indirect_draws.h` predicted exactly this: *"Pooling is what a single whole-scene call would
+   need, and that is a later, larger change."*
+
+2. **There is nothing to win right now.** GPU work is under 1 ms of a ~10 ms frame that is 6–8 ms
+   presentation wait. Halving GPU time would change the frame by nothing measurable. The standing
+   directive to move CPU work to the GPU carries its own qualifier — *"if it makes more sense and would
+   result in a performance gain"* — and here it would not.
+
+If GPU-driven culling is still wanted, the honest sequence is **pooled vertex/index buffers first**, then
+a whole-scene indirect pass, then compute culling on top. That is a project, not a task, and it should be
+justified by a scene where GPU time actually dominates — which this one does not.
