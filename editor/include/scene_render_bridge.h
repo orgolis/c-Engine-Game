@@ -595,7 +595,8 @@ inline constexpr int kTerrainChunkCells = 64;
 inline std::unique_ptr<gws::renderer::gpu::Mesh> build_terrain_chunk_mesh(
     const schizo::scene::TerrainComponent* tc,
     gws::renderer::gpu::VulkanDevice* device,
-    int cx0, int cz0, int cells)
+    int cx0, int cz0, int cells,
+    gws::renderer::gpu::MeshUploadBatch* batch = nullptr)
 {
     using namespace gws::renderer::gpu;
     const int   res   = tc->GetResolution();
@@ -643,7 +644,11 @@ inline std::unique_ptr<gws::renderer::gpu::Mesh> build_terrain_chunk_mesh(
     Submesh sm{};
     sm.material_index = 0;
     sm.lods.push_back({0, static_cast<uint32_t>(idx.size()), 0.0f});
-    return Mesh::create(device, verts, idx, {sm});
+    // Geometry is device-local now, so it arrives through a staging copy. The
+    // batch matters here more than anywhere else in the engine: a full terrain
+    // rebuild creates up to 256 of these, and one queue wait each would be far
+    // worse than the bandwidth problem device-local memory was fixing.
+    return Mesh::create(device, verts, idx, {sm}, /*extra_vbo_usage=*/0, batch);
 }
 
 /// Per-terrain-entity CHUNKED GPU mesh cache. On version change, rebuilds
@@ -677,13 +682,20 @@ public:
                                   : std::min(chunks - 1, (x1 + 1) / kTerrainChunkCells);
             const int c_z1 = full ? chunks - 1
                                   : std::min(chunks - 1, (z1 + 1) / kTerrainChunkCells);
-            for (int cz = c_z0; cz <= c_z1; ++cz)
-                for (int cx = c_x0; cx <= c_x1; ++cx)
-                    e.meshes[static_cast<size_t>(cz) * chunks + cx] =
-                        build_terrain_chunk_mesh(tc, device,
-                                                 cx * kTerrainChunkCells,
-                                                 cz * kTerrainChunkCells,
-                                                 kTerrainChunkCells);
+            // One batch for the whole rebuild: every touched chunk's vertex and
+            // index data is staged into a single buffer and copied in one
+            // submit. The batch flushes when it leaves this scope, so the
+            // meshes are fully uploaded before get_or_build returns them.
+            {
+                gws::renderer::gpu::MeshUploadBatch batch(device);
+                for (int cz = c_z0; cz <= c_z1; ++cz)
+                    for (int cx = c_x0; cx <= c_x1; ++cx)
+                        e.meshes[static_cast<size_t>(cz) * chunks + cx] =
+                            build_terrain_chunk_mesh(tc, device,
+                                                     cx * kTerrainChunkCells,
+                                                     cz * kTerrainChunkCells,
+                                                     kTerrainChunkCells, &batch);
+            }
             e.version = tc->Version();
         }
         return e.meshes;

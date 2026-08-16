@@ -75,6 +75,55 @@ struct Submesh {
     uint32_t index_count()  const { return lods.empty() ? 0u : lods[0].index_count;  }
 };
 
+/// Batches the staging uploads of many meshes into ONE submit.
+///
+/// WHY THIS EXISTS. Mesh geometry now lives in DEVICE_LOCAL memory, which can
+/// only be written through a staging copy on the queue. The obvious shape —
+/// one command buffer, submit, `vkQueueWaitIdle`, per mesh — is what the
+/// texture path does, and it is fine for one texture. A terrain rebuild creates
+/// up to 256 chunk meshes in a burst; stalling the queue 256 times would trade
+/// the bandwidth problem for a worse latency one.
+///
+/// So a batch accumulates every mesh's bytes into ONE host staging buffer,
+/// records one `vkCmdCopyBuffer` per destination, and submits once. That also
+/// keeps the allocation count down: one staging allocation per batch rather
+/// than one per mesh.
+///
+/// Not thread-safe, and deliberately scope-shaped: build meshes, let the batch
+/// go out of scope, and the flush happens in the destructor.
+class MeshUploadBatch {
+public:
+    explicit MeshUploadBatch(VulkanDevice* device) : device_(device) {}
+    ~MeshUploadBatch();
+
+    MeshUploadBatch(const MeshUploadBatch&)            = delete;
+    MeshUploadBatch& operator=(const MeshUploadBatch&) = delete;
+
+    /// Queue `size` bytes from `src` to be copied into `dst` at flush time.
+    /// The bytes are copied into the batch immediately, so `src` need not
+    /// outlive this call.
+    void stage(VkBuffer dst, const void* src, VkDeviceSize size);
+
+    /// Upload everything queued and wait for it. Returns false if the staging
+    /// buffer could not be created — callers should treat the meshes built
+    /// through this batch as failed. Safe to call more than once; a flush with
+    /// nothing queued is a no-op.
+    bool flush();
+
+    /// How many copies are waiting. Used by tests and diagnostics.
+    size_t pending() const { return copies_.size(); }
+
+private:
+    struct Copy {
+        VkBuffer     dst    = VK_NULL_HANDLE;
+        VkDeviceSize offset = 0;   // into the staging blob
+        VkDeviceSize size   = 0;
+    };
+    VulkanDevice*        device_ = nullptr;
+    std::vector<uint8_t> blob_;    // CPU-side staging contents
+    std::vector<Copy>    copies_;
+};
+
 class Mesh {
 public:
     Mesh() = default;
@@ -93,11 +142,22 @@ public:
     /// `extra_vbo_usage` adds usage bits to the vertex buffer — e.g.
     /// VK_BUFFER_USAGE_STORAGE_BUFFER_BIT so a compute skinning pass can write
     /// vertices into it (the SkinnedMesh output path). 0 = plain vertex buffer.
+    ///
+    /// `batch` lets a caller building MANY meshes at once pay for one submit
+    /// instead of one per mesh. Pass null and the mesh uploads and waits
+    /// immediately, which is what a one-off caller wants. A terrain rebuild
+    /// creates hundreds of meshes in a burst and must not stall the queue
+    /// hundreds of times — see MeshUploadBatch.
+    ///
+    /// A mesh built through a batch is NOT usable until that batch is flushed:
+    /// its buffers exist but hold nothing. The batch flushes in its destructor,
+    /// so the common scoped use is safe by construction.
     static std::unique_ptr<Mesh> create(VulkanDevice* device,
                                         const std::vector<SceneVertex>& vertices,
                                         const std::vector<uint32_t>& indices,
                                         std::vector<Submesh> submeshes,
-                                        VkBufferUsageFlags extra_vbo_usage = 0);
+                                        VkBufferUsageFlags extra_vbo_usage = 0,
+                                        class MeshUploadBatch* batch = nullptr);
 
     /// Bind vertex+index buffers on the supplied command buffer.
     void bind(VkCommandBuffer cmd) const;

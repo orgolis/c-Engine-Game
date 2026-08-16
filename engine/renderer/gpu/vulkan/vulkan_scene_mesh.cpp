@@ -1,10 +1,24 @@
 /**
  * @file vulkan_scene_mesh.cpp
- * @brief Mesh implementation (host-coherent vertex/index buffers).
+ * @brief Mesh implementation (DEVICE_LOCAL vertex/index buffers, staged upload).
  *
- * Buffers are created host-visible/host-coherent rather than going through
- * a staging-upload path. That keeps the loader simple; for production-scale
- * meshes a staging upload is the right move (TODO).
+ * WHY THIS CHANGED. These buffers used to be HOST_VISIBLE | HOST_COHERENT, with
+ * a comment saying a staging upload was "the right move (TODO)". On a discrete
+ * GPU that TODO is not a nicety: `find_memory_type` returns the FIRST matching
+ * type, and on an RTX 3060 the first HOST_VISIBLE|HOST_COHERENT type sits on a
+ * heap with no DEVICE_LOCAL bit — system RAM. Every vertex and every index of
+ * every mesh was therefore fetched across PCIe by the GPU, on every pass, every
+ * frame.
+ *
+ * Measured cost of that: a resolution-1024 terrain is 49.5 MB of vertices and
+ * 24 MB of indices. The G-Buffer pass pulled it, then the shadow pass pulled it
+ * again — about 147 MB per frame, ~8.8 GB/s at 60 fps, which saturates a
+ * PCIe 3.0 x16 link before a single texture is touched. That was the reported
+ * "graphics lag on large high-resolution terrain".
+ *
+ * Geometry now lives in DEVICE_LOCAL memory and is written once through a
+ * staging copy. See MeshUploadBatch for why the copies are batched rather than
+ * submitted per mesh.
  */
 
 #include "vulkan_scene_mesh.h"
@@ -22,15 +36,22 @@ namespace gws::renderer::gpu {
 
 namespace {
 
-void create_host_buffer(VulkanDevice* device, VkBufferUsageFlags usage,
-                        VkDeviceSize size, const void* src,
-                        VkBuffer& out_buf, VkDeviceMemory& out_mem) {
+/// Create a buffer in DEVICE_LOCAL memory and queue its contents for upload.
+///
+/// The contents go in through `batch` rather than a map+memcpy, because
+/// device-local memory generally is not host-visible. The caller must flush the
+/// batch before the buffer is read.
+void create_device_buffer(VulkanDevice* device, VkBufferUsageFlags usage,
+                          VkDeviceSize size, const void* src,
+                          MeshUploadBatch& batch,
+                          VkBuffer& out_buf, VkDeviceMemory& out_mem) {
     VkDevice vkdev = device->get_device();
 
     VkBufferCreateInfo bi{};
     bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bi.size        = size;
-    bi.usage       = usage;
+    // TRANSFER_DST: the only way into device-local memory is a copy.
+    bi.usage       = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(vkdev, &bi, nullptr, &out_buf) != VK_SUCCESS) {
         throw std::runtime_error("Mesh: vkCreateBuffer failed");
@@ -55,8 +76,7 @@ void create_host_buffer(VulkanDevice* device, VkBufferUsageFlags usage,
     ai.pNext           = (flags_info.flags != 0) ? &flags_info : nullptr;
     ai.allocationSize  = req.size;
     ai.memoryTypeIndex = device->find_memory_type(
-        req.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (vkAllocateMemory(vkdev, &ai, nullptr, &out_mem) != VK_SUCCESS) {
         vkDestroyBuffer(vkdev, out_buf, nullptr);
         out_buf = VK_NULL_HANDLE;
@@ -64,13 +84,146 @@ void create_host_buffer(VulkanDevice* device, VkBufferUsageFlags usage,
     }
     vkBindBufferMemory(vkdev, out_buf, out_mem, 0);
 
-    void* mapped = nullptr;
-    vkMapMemory(vkdev, out_mem, 0, size, 0, &mapped);
-    std::memcpy(mapped, src, static_cast<size_t>(size));
-    vkUnmapMemory(vkdev, out_mem);
+    batch.stage(out_buf, src, size);
 }
 
 } // namespace
+
+// ============================================================================
+// MeshUploadBatch
+// ============================================================================
+
+MeshUploadBatch::~MeshUploadBatch() {
+    // Flushing here is what makes the scoped use safe: a caller that builds
+    // meshes and lets the batch expire gets a correct upload without having to
+    // remember. A caller that flushed already pays nothing — flush() is a no-op
+    // with an empty queue.
+    if (!copies_.empty()) flush();
+}
+
+void MeshUploadBatch::stage(VkBuffer dst, const void* src, VkDeviceSize size) {
+    if (dst == VK_NULL_HANDLE || src == nullptr || size == 0) return;
+    Copy c;
+    c.dst    = dst;
+    c.offset = static_cast<VkDeviceSize>(blob_.size());
+    c.size   = size;
+    blob_.resize(blob_.size() + static_cast<size_t>(size));
+    std::memcpy(blob_.data() + static_cast<size_t>(c.offset), src,
+                static_cast<size_t>(size));
+    copies_.push_back(c);
+}
+
+bool MeshUploadBatch::flush() {
+    if (copies_.empty()) return true;
+    if (!device_) { copies_.clear(); blob_.clear(); return false; }
+
+    VkDevice vkdev = device_->get_device();
+
+    // ---- One staging buffer for the whole batch ---------------------------
+    VkBuffer       staging     = VK_NULL_HANDLE;
+    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    bool ok = true;
+
+    VkBufferCreateInfo bi{};
+    bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size        = static_cast<VkDeviceSize>(blob_.size());
+    bi.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(vkdev, &bi, nullptr, &staging) != VK_SUCCESS) ok = false;
+
+    if (ok) {
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(vkdev, staging, &req);
+        VkMemoryAllocateInfo ai{};
+        ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        ai.allocationSize  = req.size;
+        ai.memoryTypeIndex = device_->find_memory_type(
+            req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(vkdev, &ai, nullptr, &staging_mem) != VK_SUCCESS) ok = false;
+    }
+    if (ok) {
+        vkBindBufferMemory(vkdev, staging, staging_mem, 0);
+        void* mapped = nullptr;
+        if (vkMapMemory(vkdev, staging_mem, 0, bi.size, 0, &mapped) == VK_SUCCESS) {
+            std::memcpy(mapped, blob_.data(), blob_.size());
+            vkUnmapMemory(vkdev, staging_mem);
+        } else {
+            ok = false;
+        }
+    }
+
+    // ---- One command buffer, one submit, one wait -------------------------
+    if (ok) {
+        VkCommandBufferAllocateInfo ca{};
+        ca.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        ca.commandPool        = device_->get_command_pool();
+        ca.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ca.commandBufferCount = 1;
+
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        if (vkAllocateCommandBuffers(vkdev, &ca, &cmd) == VK_SUCCESS) {
+            VkCommandBufferBeginInfo begin{};
+            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkBeginCommandBuffer(cmd, &begin);
+
+            for (const Copy& c : copies_) {
+                VkBufferCopy region{};
+                region.srcOffset = c.offset;
+                region.dstOffset = 0;
+                region.size      = c.size;
+                vkCmdCopyBuffer(cmd, staging, c.dst, 1, &region);
+            }
+
+            // One barrier for the whole batch: every copy must be visible to
+            // vertex/index fetch and to acceleration-structure builds before
+            // anything reads these buffers.
+            VkMemoryBarrier mb{};
+            mb.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            mb.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT |
+                               VK_ACCESS_INDEX_READ_BIT |
+                               VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(
+                cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                0, 1, &mb, 0, nullptr, 0, nullptr);
+
+            vkEndCommandBuffer(cmd);
+
+            VkSubmitInfo submit{};
+            submit.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit.commandBufferCount = 1;
+            submit.pCommandBuffers    = &cmd;
+            vkQueueSubmit(device_->get_graphics_queue(), 1, &submit, VK_NULL_HANDLE);
+            // Waiting once per BATCH is the whole point. The alternative —
+            // waiting per mesh — is what made a 256-chunk terrain rebuild
+            // unacceptable.
+            vkQueueWaitIdle(device_->get_graphics_queue());
+            vkFreeCommandBuffers(vkdev, device_->get_command_pool(), 1, &cmd);
+        } else {
+            ok = false;
+        }
+    }
+
+    if (!ok) {
+        spdlog::error("MeshUploadBatch: staging upload failed ({} copies, {} bytes) — "
+                      "meshes built through this batch will render empty",
+                      copies_.size(), blob_.size());
+    } else {
+        spdlog::debug("MeshUploadBatch: uploaded {} buffers, {:.2f} MB, 1 submit",
+                      copies_.size(), blob_.size() / 1048576.0);
+    }
+
+    if (staging_mem != VK_NULL_HANDLE) vkFreeMemory(vkdev, staging_mem, nullptr);
+    if (staging     != VK_NULL_HANDLE) vkDestroyBuffer(vkdev, staging, nullptr);
+    copies_.clear();
+    blob_.clear();
+    return ok;
+}
 
 Mesh::~Mesh() { destroy(); }
 
@@ -126,7 +279,8 @@ std::unique_ptr<Mesh> Mesh::create(VulkanDevice* device,
                                    const std::vector<SceneVertex>& vertices,
                                    const std::vector<uint32_t>& indices,
                                    std::vector<Submesh> submeshes,
-                                   VkBufferUsageFlags extra_vbo_usage) {
+                                   VkBufferUsageFlags extra_vbo_usage,
+                                   MeshUploadBatch* batch) {
     if (!device || vertices.empty() || indices.empty()) {
         spdlog::error("Mesh::create: invalid args (vertices={}, indices={})",
                       vertices.size(), indices.size());
@@ -272,14 +426,20 @@ std::unique_ptr<Mesh> Mesh::create(VulkanDevice* device,
         ibo_usage |= rt_bits;
     }
     try {
-        create_host_buffer(device, vbo_usage,
-                           sizeof(SceneVertex) * vertices.size(),
-                           vertices.data(),
-                           out->vbo_, out->vbo_memory_);
-        create_host_buffer(device, ibo_usage,
-                           sizeof(uint32_t) * mutable_indices.size(),
-                           mutable_indices.data(),
-                           out->ibo_, out->ibo_memory_);
+        // Without a caller-supplied batch, use a local one: it flushes in its
+        // destructor at the end of this scope, so a one-off caller still gets a
+        // fully uploaded mesh by the time create() returns. With a batch, the
+        // caller owns the flush and pays for one submit across many meshes.
+        MeshUploadBatch local(device);
+        MeshUploadBatch& up = batch ? *batch : local;
+        create_device_buffer(device, vbo_usage,
+                             sizeof(SceneVertex) * vertices.size(),
+                             vertices.data(), up,
+                             out->vbo_, out->vbo_memory_);
+        create_device_buffer(device, ibo_usage,
+                             sizeof(uint32_t) * mutable_indices.size(),
+                             mutable_indices.data(), up,
+                             out->ibo_, out->ibo_memory_);
     } catch (const std::exception& e) {
         spdlog::error("Mesh::create: {}", e.what());
         return nullptr;
