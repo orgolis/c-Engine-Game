@@ -323,6 +323,10 @@ private:
     /// Slots are ringed over frames in flight so the CPU can read a frame's
     /// results before a later frame resets them.
     uint32_t    write_ring_ = 0;
+    /// Which rings have been reset+written at least once. Probing a ring that
+    /// never was is undefined behaviour, and this driver answers it with
+    /// VK_ERROR_DEVICE_LOST rather than VK_NOT_READY.
+    bool        ring_written_[4] = {false, false, false, false};
     /// Last good per-stage times, carried forward when a frame has no fresh
     /// result — an overlay that flickers to zero reads as "the pass vanished".
     double last_shadow_us_       = 0.0;

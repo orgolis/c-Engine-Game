@@ -229,6 +229,7 @@ void VulkanRenderGraph::begin_frame(VkCommandBuffer cmd) {
         write_ring_ = static_cast<uint32_t>(stats_.frame_index % kTimestampRings);
         vkCmdResetQueryPool(cmd, timestamp_pool_,
                             write_ring_ * kSlotsPerRing, kSlotsPerRing);
+        ring_written_[write_ring_] = true;
     }
 }
 
@@ -259,6 +260,12 @@ bool VulkanRenderGraph::resolve_timings() {
         for (uint32_t back = 0; back < kTimestampRings && !found; ++back) {
             const uint32_t ring = static_cast<uint32_t>(
                 (stats_.frame_index + kTimestampRings - back) % kTimestampRings);
+            // Only probe a ring that has actually been RESET and written.
+            // Reading a query that was never reset is undefined behaviour, not a
+            // benign VK_NOT_READY — on this driver it comes back as
+            // VK_ERROR_DEVICE_LOST, which is the failure this whole change was
+            // supposed to remove.
+            if (!ring_written_[ring]) continue;
             std::array<uint64_t, kTimestampSlotsPerStage> probe{};
             const VkResult pr = vkGetQueryPoolResults(
                 config_.device->get_device(), timestamp_pool_,

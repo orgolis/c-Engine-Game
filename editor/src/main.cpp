@@ -718,6 +718,122 @@ static void PushLogicGraphCommand(EditorState& editor_state,
 // Returns false when nothing changed, so a click that sculpts nothing does not
 // push a no-op onto the stack.
 // ============================================================================
+// ============================================================================
+// Screenshot: read the presented swapchain image back and write a .tga.
+//
+// TGA because it needs no library — 18 bytes of header and raw BGR, which is
+// exactly the swapchain's channel order. The point is not image quality; it is
+// being able to SEE what the editor put on screen, from a headless run, on
+// someone else's machine.
+// ============================================================================
+static void capture_swapchain_tga(gws::renderer::gpu::VulkanDevice& device,
+                                  gws::renderer::gpu::VulkanSwapchain* swapchain,
+                                  uint32_t image_index,
+                                  const std::string& path) {
+    if (swapchain == nullptr) return;
+    VkDevice vk = device.get_device();
+    vkDeviceWaitIdle(vk);
+
+    const uint32_t w = swapchain->get_width();
+    const uint32_t h = swapchain->get_height();
+    const VkDeviceSize bytes = VkDeviceSize(w) * h * 4;
+    const VkImage src = swapchain->get_image(image_index);
+
+    VkBuffer       buf = VK_NULL_HANDLE;
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.size = bytes; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (vkCreateBuffer(vk, &bi, nullptr, &buf) != VK_SUCCESS) return;
+    VkMemoryRequirements req{}; vkGetBufferMemoryRequirements(vk, buf, &req);
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = device.find_memory_type(
+        req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(vk, &ai, nullptr, &mem) != VK_SUCCESS) {
+        vkDestroyBuffer(vk, buf, nullptr); return;
+    }
+    vkBindBufferMemory(vk, buf, mem, 0);
+
+    VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    ca.commandPool = device.get_command_pool();
+    ca.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ca.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(vk, &ca, &cmd) != VK_SUCCESS) {
+        vkFreeMemory(vk, mem, nullptr); vkDestroyBuffer(vk, buf, nullptr); return;
+    }
+    VkCommandBufferBeginInfo bg{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bg.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &bg);
+
+    auto barrier = [&](VkImageLayout from, VkImageLayout to,
+                       VkAccessFlags srcA, VkAccessFlags dstA) {
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.oldLayout = from; b.newLayout = to;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = src;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        b.srcAccessMask = srcA; b.dstAccessMask = dstA;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr,
+                             0, nullptr, 1, &b);
+    };
+    barrier(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            0, VK_ACCESS_TRANSFER_READ_BIT);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {w, h, 1};
+    vkCmdCopyImageToBuffer(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &region);
+
+    barrier(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            VK_ACCESS_TRANSFER_READ_BIT, 0);
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
+    vkQueueSubmit(device.get_graphics_queue(), 1, &si, VK_NULL_HANDLE);
+    vkQueueWaitIdle(device.get_graphics_queue());
+    vkFreeCommandBuffers(vk, device.get_command_pool(), 1, &cmd);
+
+    void* mapped = nullptr;
+    if (vkMapMemory(vk, mem, 0, bytes, 0, &mapped) == VK_SUCCESS && mapped) {
+        const uint8_t* px = static_cast<const uint8_t*>(mapped);
+        // Swapchain is B8G8R8A8, which is already TGA's channel order.
+        std::vector<uint8_t> out;
+        out.reserve(18 + size_t(w) * h * 3);
+        const uint8_t hdr[18] = {0,0,2,0,0,0,0,0,0,0,0,0,
+                                 uint8_t(w & 0xFF), uint8_t((w >> 8) & 0xFF),
+                                 uint8_t(h & 0xFF), uint8_t((h >> 8) & 0xFF),
+                                 24, 0};
+        out.insert(out.end(), hdr, hdr + 18);
+        // TGA rows run bottom-up.
+        double lum_sum = 0.0; uint64_t white_px = 0;
+        for (int y = int(h) - 1; y >= 0; --y) {
+            const uint8_t* row = px + size_t(y) * w * 4;
+            for (uint32_t x = 0; x < w; ++x) {
+                const uint8_t b = row[x*4+0], g = row[x*4+1], r = row[x*4+2];
+                out.push_back(b); out.push_back(g); out.push_back(r);
+                lum_sum += (0.2126*r + 0.7152*g + 0.0722*b);
+                if (r > 250 && g > 250 && b > 250) ++white_px;
+            }
+        }
+        vkUnmapMemory(vk, mem);
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        f.write(reinterpret_cast<const char*>(out.data()),
+                static_cast<std::streamsize>(out.size()));
+        const double total = double(w) * h;
+        // The numbers matter as much as the file: they make "the screen is
+        // white" a measurement rather than a description.
+        spdlog::info("[screenshot] wrote {} ({}x{}) — mean luminance {:.1f}/255, "
+                     "pure-white pixels {:.1f}%",
+                     path, w, h, lum_sum / total, 100.0 * double(white_px) / total);
+    }
+    vkFreeMemory(vk, mem, nullptr);
+    vkDestroyBuffer(vk, buf, nullptr);
+}
+
 static bool PushTerrainStrokeCommand(EditorState& editor_state,
                                      const std::shared_ptr<schizo::scene::Scene>& scene,
                                      uint32_t entity_id,
@@ -5045,6 +5161,12 @@ int main(int argc, char** argv) {
     // frame — and it was the half no headless measurement could reach, which is
     // how "editing drops 120 fps to 28" stayed invisible to the harness.
     bool        stress_edit       = false;
+    // --screenshot <path>: write what was actually PRESENTED to a .tga after the
+    // last frame. The editor could measure its own frame times and count its own
+    // draws, but it had no way to answer "what is on the screen" — so a report of
+    // a white window could not be told apart from a report of a hang, and both
+    // were guessed at instead of looked at.
+    std::string screenshot_path;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--net-host" && i + 1 < argc) {
@@ -5087,6 +5209,8 @@ int main(int argc, char** argv) {
             stress_draw_all = true;
         } else if (a == "--stress-terrain-edit") {
             stress_edit = true;
+        } else if (a == "--screenshot" && i + 1 < argc) {
+            screenshot_path = argv[++i];
         } else if (a == "--startup-probe") {
             // Initialise everything, report how long it took, then exit without
             // entering the main loop. This is what makes "editor cold start" —
@@ -8769,6 +8893,9 @@ int main(int argc, char** argv) {
             }
 
             if (frame_limit > 0 && frame_count >= frame_limit) {
+                if (!screenshot_path.empty()) {
+                    capture_swapchain_tga(device, swapchain, image_index, screenshot_path);
+                }
                 spdlog::info("[frames] rendered {} frame(s); exiting as requested", frame_count);
                 break;
             }

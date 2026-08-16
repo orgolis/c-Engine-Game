@@ -132,6 +132,28 @@ private:
     VkDeviceSize    scratch_capacity_      = 0;
     VkDeviceAddress scratch_address_       = 0;
 
+    /// Scratch buffers replaced by a mid-frame growth, kept alive until the GPU
+    /// can no longer be reading them.
+    ///
+    /// The scratch buffer is shared by every acceleration-structure build in a
+    /// frame, and those builds are RECORDED into one command buffer before any
+    /// of them executes. Growing the scratch used to destroy the old buffer
+    /// immediately — while BLAS builds already recorded in that same command
+    /// buffer still referenced its device address. Executing them then wrote to
+    /// freed memory.
+    ///
+    /// It needed two things at once to show: enough meshes that a later build
+    /// asked for more scratch than the first had, all within one frame. A scene
+    /// with only terrain, or only models, would size the scratch once and never
+    /// grow it — which is why this hid until a project had both.
+    struct RetiredBuffer {
+        VkBuffer       buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        uint32_t       frame  = 0;
+    };
+    std::vector<RetiredBuffer> retired_scratch_;
+    uint32_t                   rt_frame_ = 0;
+
     uint32_t        last_instance_count_   = 0;
 };
 

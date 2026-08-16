@@ -169,7 +169,14 @@ void VulkanRtScene::destroy_buffer(VkBuffer& buffer, VkDeviceMemory& memory) con
 
 bool VulkanRtScene::ensure_scratch(VkDeviceSize size) {
     if (size <= scratch_capacity_) return true;
-    destroy_buffer(scratch_buffer_, scratch_memory_);
+    // RETIRE, do not destroy. Builds already recorded into this frame's command
+    // buffer still hold this buffer's device address; freeing it now means they
+    // write into freed memory when the frame executes.
+    if (scratch_buffer_ != VK_NULL_HANDLE) {
+        retired_scratch_.push_back(RetiredBuffer{scratch_buffer_, scratch_memory_, rt_frame_});
+        scratch_buffer_ = VK_NULL_HANDLE;
+        scratch_memory_ = VK_NULL_HANDLE;
+    }
     // Add headroom so we don't reallocate on every frame.
     scratch_capacity_ = align(size * 2, 256);
     if (!create_buffer(scratch_capacity_,
@@ -490,6 +497,24 @@ static_assert(sizeof(RtInstanceDataGpu) == 64, "RtInstanceData layout drift");
 
 void VulkanRtScene::update(VkCommandBuffer cmd, const DrawItem* items, size_t count) {
     if (device_ == nullptr || cmd == VK_NULL_HANDLE) return;
+
+    // Reclaim scratch buffers retired by a mid-frame growth, once no frame that
+    // could reference them is still in flight. The grace is generous because a
+    // scratch buffer is a few hundred KB and a use-after-free here costs the
+    // whole device.
+    ++rt_frame_;
+    constexpr uint32_t kScratchRetireFrames = 8;
+    if (!retired_scratch_.empty() && rt_frame_ > kScratchRetireFrames) {
+        const uint32_t cutoff = rt_frame_ - kScratchRetireFrames;
+        for (auto it = retired_scratch_.begin(); it != retired_scratch_.end();) {
+            if (it->frame <= cutoff) {
+                destroy_buffer(it->buffer, it->memory);
+                it = retired_scratch_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
 
     // Build BLAS for any meshes we haven't seen yet.
     for (size_t i = 0; i < count; ++i) {
