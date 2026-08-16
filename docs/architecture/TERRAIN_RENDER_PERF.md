@@ -1,5 +1,35 @@
 # Terrain rendering performance — what is actually slow, and what to do about it
 
+> ## ⚠️ Correction (2026-08-16) — read this before the rest
+>
+> The headline claim below ("the dominant cost is PCIe vertex traffic") was **reasoned, not measured**,
+> and measurement does **not** support it. P1 was implemented anyway — it is standard practice and it did
+> help — but it is not the fix for the reported lag, and the numbers say so:
+>
+> | measurement (RTX 3060, `--frames`, `--stress-draw-all`) | result |
+> |---|---|
+> | GPU time, geometry pass, resolution 256 / 512 | **0.26 ms / 0.28 ms** |
+> | GPU time, ALL stages summed | **under 1 ms** |
+> | Frame time, scene with a resolution-1024 terrain | 12.09 ms |
+> | Frame time, **same scene with the terrain removed entirely** | **12.88 ms** |
+>
+> Removing the terrain does not make the frame faster. In this harness the terrain is **not** the
+> bottleneck, the frame is **not GPU-bound**, and the reported lag is **not reproduced**. The ~11 ms frame
+> has under 1 ms of GPU and ~0.9 ms of tracked CPU zones; the remainder is unaccounted for.
+>
+> This is exactly the trap recorded as "measure before planning against a famous problem": a plausible
+> bandwidth number (8.8 GB/s) was computed and treated as a diagnosis. The arithmetic below is still
+> correct about *how much data moves*; what was never shown is that moving it was costing frame time.
+>
+> **Two instrument bugs found while checking, both fixed or logged:**
+> - Per-stage GPU timings were resolved every frame and printed nowhere. Now logged under `--log-debug`.
+> - At resolution 1024 those timings resolve as **0.00 ms for every stage** — a readback failure, not a
+>   real zero. This blinds precisely the case under investigation and should be fixed before any further
+>   performance work here.
+>
+> **What is still open:** reproducing the lag as the user sees it — interactively, in the viewport. See
+> the end of this document.
+
 **Question asked:** high resolution on large terrain generates a lot of lag, especially *graphics* lag.
 What can be done **besides world streaming**? And is back-face / occlusion culling working at all?
 
@@ -178,3 +208,50 @@ interior scenes, not for open ground.
 
 P1 and P2 together are expected to remove the reported symptom. P3 and P4 are small enough to fold in
 alongside. P5 is a separate project.
+
+---
+
+## 5. Status after P1, and what the measurements changed
+
+**P1 is done** (`d7c153c`): geometry is now DEVICE_LOCAL, uploaded through a batched staging copy
+(`MeshUploadBatch` — one staging buffer and one submit for a whole terrain rebuild, instead of one queue
+stall per chunk).
+
+Measured, `--stress-draw-all` (frustum culling off, so every chunk draws — reproducible worst case):
+
+| resolution | before | after | change |
+|---:|---:|---:|---:|
+| 256  | 9.36 ms | 9.71 ms | ~noise |
+| 512  | 13.31 ms | 11.03 ms | **−17%** |
+| 1024 | 11.95 ms | 12.23 ms | ~noise |
+
+Full-terrain rebuilds are **28–34% faster**. Frame time is otherwise unchanged, which is consistent with
+the control above: terrain was never the frame-time cost in this harness.
+
+**So P1 is kept on its merits** — device-local geometry is the correct architecture, it removes a real
+PCIe transfer, and it measurably speeds up rebuilds — but **it is not the answer to the reported lag.**
+
+### What this invalidates in the plan above
+
+- **P1's stated justification was wrong.** It is still worth having; the reasoning was not.
+- **P2 (terrain LOD) is unaffected and still worth doing** — terrain genuinely has no LOD tiers, which is
+  a real defect regardless of what it costs today. But it should now be justified by a measurement, not by
+  the bandwidth argument.
+- **P3 and P4 are unaffected** — both are correctness/efficiency fixes that stand on their own. P4's
+  quadratic (`upload()` copying the whole command list once per submesh) is CPU cost that grows with chunk
+  count, and CPU is where the unaccounted frame time is, so **P4 is now a better candidate than P1 was**.
+
+### The real next step: reproduce the lag
+
+The headless harness cannot see the problem: an empty-of-terrain scene costs the same as a
+resolution-1024 one. Before more work, the reported case needs to be reproduced with the instruments now
+available (`--log-debug` for per-frame CPU zones and per-stage GPU time, `--stress-draw-all` for a
+reproducible worst case). Specifically worth pinning down:
+
+1. **What is the other ~11 ms?** Under 1 ms of GPU and ~0.9 ms of tracked CPU zones leaves most of the
+   frame unexplained. The geometry *recording* path — where the per-meshlet cull loop and the quadratic
+   indirect upload live — is not inside a profiler zone. It should be.
+2. **Fix the GPU-timestamp readback at high draw counts.** Reporting 0.00 ms for every stage at
+   resolution 1024 makes the instrument useless exactly where it is needed.
+3. **Does the lag depend on what the user is doing?** Idle, camera movement, and sculpting are three very
+   different code paths; the slider fix in `36f3c26` already removed one of them.

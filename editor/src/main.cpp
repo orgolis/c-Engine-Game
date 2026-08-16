@@ -5031,6 +5031,14 @@ int main(int argc, char** argv) {
     // rebuilding the editor. That is exactly the shape of a measurement that
     // never gets taken.
     bool        log_debug         = false;
+    // --stress-draw-all: disable CPU frustum culling. Not a feature — a
+    // BENCHMARK control. With culling on, a headless --frames run measures
+    // whatever the default camera happens to point at, which for a large
+    // terrain is mostly empty space; two builds can then differ by more than
+    // the change under test. Turning culling off makes every chunk draw every
+    // frame, which is both reproducible and the honest worst case: what the
+    // user sees when actually looking at their terrain.
+    bool        stress_draw_all   = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--net-host" && i + 1 < argc) {
@@ -5069,6 +5077,8 @@ int main(int argc, char** argv) {
             probe_shadergraph = true;
         } else if (a == "--log-debug") {
             log_debug = true;
+        } else if (a == "--stress-draw-all") {
+            stress_draw_all = true;
         } else if (a == "--startup-probe") {
             // Initialise everything, report how long it took, then exit without
             // entering the main loop. This is what makes "editor cold start" —
@@ -5695,7 +5705,9 @@ int main(int argc, char** argv) {
         // frustum. Default-off on the graph for backwards-compat, but for a
         // real editor session we want it on — it dramatically improves perf
         // on scenes with many off-screen objects.
-        graph->set_frustum_culling_enabled(true);
+        graph->set_frustum_culling_enabled(!stress_draw_all);
+        if (stress_draw_all)
+            spdlog::warn("--stress-draw-all: frustum culling OFF (benchmark mode)");
         spdlog::info("Deferred pipeline + render graph ready (frustum culling ON)");
 
         // ----------------------------------------------------------------
@@ -7704,7 +7716,20 @@ int main(int argc, char** argv) {
             // timestamp writes — pull per-pass GPU timings into the profiler
             // the Stage 14 Performance overlay reads (N2). Only feeds when the
             // device supports timestamps; otherwise the GPU section stays empty.
-            if (graph && graph->resolve_timings()) graph->update_gpu_profiler();
+            if (graph && graph->resolve_timings()) {
+                graph->update_gpu_profiler();
+                // Per-stage GPU time has been resolved every frame since the
+                // Stage-14 work and printed nowhere, so "which pass is slow"
+                // had no answer outside the overlay. At debug level it does.
+                if (log_debug && (frame_count % 60) == 0) {
+                    const auto& gs = graph->get_stats();
+                    spdlog::debug("[gpu] shadow {:.2f}ms | geometry {:.2f}ms | "
+                                  "lighting {:.2f}ms | transparent {:.2f}ms | post {:.2f}ms",
+                                  gs.shadow_us / 1000.0, gs.geometry_us / 1000.0,
+                                  gs.lighting_us / 1000.0, gs.transparent_us / 1000.0,
+                                  gs.post_process_us / 1000.0);
+                }
+            }
             // Same story for the HZB readback — the GPU finished copying the
             // HZB mip to the host buffer before signalling this fence.
             if (hzb_culler) hzb_culler->pull_readback();

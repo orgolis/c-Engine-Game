@@ -203,9 +203,13 @@ public:
     /// AS-build usage bits when the device supports ray tracing.
     VkBuffer get_vertex_buffer() const { return vbo_; }
     VkBuffer get_index_buffer()  const { return ibo_; }
-    /// Backing memory of the vertex buffer (host-visible). Exposed so a
-    /// compute-skinning pass / test can map + read the (possibly compute-
-    /// written) vertices without a staging copy.
+    /// Backing memory of the vertex buffer.
+    ///
+    /// NOT host-visible — this is DEVICE_LOCAL memory, so `vkMapMemory` on it is
+    /// invalid. It used to be mappable, and this accessor's contract said so;
+    /// reading vertices back now requires a copy to a host buffer (see
+    /// `skinning_check` for the pattern). Kept only for callers that need the
+    /// allocation handle itself.
     VkDeviceMemory get_vertex_memory() const { return vbo_memory_; }
 
     /// Get the mesh's bounding box in local space (computed at load time).

@@ -94,13 +94,71 @@ int main() {
     vkQueueWaitIdle(device.get_graphics_queue());
     vkFreeCommandBuffers(vk, device.get_command_pool(), 1, &cmd);
 
-    // Map the output vertex buffer (host-visible) and read the skinned verts.
+    // Read the skinned vertices back through a staging copy.
+    //
+    // This used to vkMapMemory the output vertex buffer directly, which worked
+    // only while mesh geometry lived in HOST_VISIBLE memory. It is DEVICE_LOCAL
+    // now (the compute pass writes it and the vertex stage reads it — both on
+    // the GPU), so mapping it is invalid and the test segfaulted on the garbage
+    // pointer. Device-local memory is read back by copying it to a host buffer,
+    // which is what this does.
+    const VkDeviceSize readback_size = sizeof(SceneVertex) * 4;
     std::vector<SceneVertex> out(4);
-    void* p = nullptr;
-    vkMapMemory(vk, sm->output_mesh()->get_vertex_memory(), 0,
-                sizeof(SceneVertex) * 4, 0, &p);
-    std::memcpy(out.data(), p, sizeof(SceneVertex) * 4);
-    vkUnmapMemory(vk, sm->output_mesh()->get_vertex_memory());
+    {
+        VkBuffer       host_buf = VK_NULL_HANDLE;
+        VkDeviceMemory host_mem = VK_NULL_HANDLE;
+
+        VkBufferCreateInfo hbi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        hbi.size        = readback_size;
+        hbi.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        hbi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(vk, &hbi, nullptr, &host_buf) != VK_SUCCESS) {
+            std::printf("  FAIL readback buffer creation\n");
+            return 1;
+        }
+        VkMemoryRequirements req{};
+        vkGetBufferMemoryRequirements(vk, host_buf, &req);
+        VkMemoryAllocateInfo hai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        hai.allocationSize  = req.size;
+        hai.memoryTypeIndex = device.find_memory_type(
+            req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(vk, &hai, nullptr, &host_mem) != VK_SUCCESS) {
+            std::printf("  FAIL readback memory allocation\n");
+            return 1;
+        }
+        vkBindBufferMemory(vk, host_buf, host_mem, 0);
+
+        VkCommandBuffer rc = VK_NULL_HANDLE;
+        VkCommandBufferAllocateInfo rca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        rca.commandPool        = device.get_command_pool();
+        rca.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        rca.commandBufferCount = 1;
+        vkAllocateCommandBuffers(vk, &rca, &rc);
+        VkCommandBufferBeginInfo rbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        rbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(rc, &rbi);
+        VkBufferCopy region{};
+        region.size = readback_size;
+        vkCmdCopyBuffer(rc, sm->output_mesh()->get_vertex_buffer(), host_buf, 1, &region);
+        vkEndCommandBuffer(rc);
+        VkSubmitInfo rsi{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        rsi.commandBufferCount = 1;
+        rsi.pCommandBuffers    = &rc;
+        vkQueueSubmit(device.get_graphics_queue(), 1, &rsi, VK_NULL_HANDLE);
+        vkQueueWaitIdle(device.get_graphics_queue());
+        vkFreeCommandBuffers(vk, device.get_command_pool(), 1, &rc);
+
+        void* p = nullptr;
+        if (vkMapMemory(vk, host_mem, 0, readback_size, 0, &p) != VK_SUCCESS || !p) {
+            std::printf("  FAIL readback map\n");
+            return 1;
+        }
+        std::memcpy(out.data(), p, static_cast<size_t>(readback_size));
+        vkUnmapMemory(vk, host_mem);
+        vkFreeMemory(vk, host_mem, nullptr);
+        vkDestroyBuffer(vk, host_buf, nullptr);
+    }
 
     auto near = [](const glm::vec3& a, const glm::vec3& b, float e = 1e-3f) {
         return glm::length(a - b) < e;
