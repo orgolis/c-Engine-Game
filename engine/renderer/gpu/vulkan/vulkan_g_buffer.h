@@ -320,7 +320,13 @@ private:
     /// below). Selected for `DrawItem::is_terrain` draws. VK_NULL_HANDLE when no
     /// terrain layout was supplied — such draws then take the scene pipeline,
     /// which renders the terrain untextured rather than not at all.
-    VkPipeline       terrain_pipeline_           = VK_NULL_HANDLE;
+    /// Two variants, chosen per draw from `Mesh::is_double_sided()`, exactly as
+    /// the scene pipelines are. A heightfield cannot have overhangs, so a
+    /// terrain with no holes is only ever seen from above and its back faces are
+    /// pure waste. A terrain WITH holes can legitimately be viewed from
+    /// underneath (that is what a cave is), so those keep cull-none.
+    VkPipeline       terrain_pipeline_           = VK_NULL_HANDLE;  // cull back
+    VkPipeline       terrain_pipeline_none_      = VK_NULL_HANDLE;  // cull none
     VkPipelineLayout terrain_pipeline_layout_    = VK_NULL_HANDLE;
 
     // Helper functions

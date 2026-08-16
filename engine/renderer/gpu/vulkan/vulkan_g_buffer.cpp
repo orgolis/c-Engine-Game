@@ -980,7 +980,10 @@ void VulkanGBuffer::create_terrain_pipeline() {
     VkPipelineRasterizationStateCreateInfo rs{};
     rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode    = VK_CULL_MODE_NONE; // terrain can be grazed from below
+    // Overwritten per variant below. Terrain with holes keeps cull-none (a cave
+    // is legitimately viewed from underneath); hole-free terrain culls back
+    // faces, which a heightfield can only show from below the surface.
+    rs.cullMode    = VK_CULL_MODE_NONE;
     rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth   = 1.0f;
 
@@ -1021,10 +1024,19 @@ void VulkanGBuffer::create_terrain_pipeline() {
     info.renderPass          = render_pass_;
     info.subpass             = 0;
 
+    rs.cullMode = VK_CULL_MODE_BACK_BIT;
     if (vkCreateGraphicsPipelines(vk_device, VK_NULL_HANDLE, 1, &info, nullptr,
                                   &terrain_pipeline_) != VK_SUCCESS) {
         spdlog::error("VulkanGBuffer: failed to create terrain pipeline; terrain splat disabled");
         terrain_pipeline_ = VK_NULL_HANDLE;
+    }
+    rs.cullMode = VK_CULL_MODE_NONE;
+    if (vkCreateGraphicsPipelines(vk_device, VK_NULL_HANDLE, 1, &info, nullptr,
+                                  &terrain_pipeline_none_) != VK_SUCCESS) {
+        spdlog::error("VulkanGBuffer: failed to create the cull-none terrain pipeline; "
+                      "terrain with holes will cull its back faces and may show gaps "
+                      "when viewed from inside a cave");
+        terrain_pipeline_none_ = VK_NULL_HANDLE;
     }
 }
 
@@ -1157,13 +1169,19 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
         // pipeline and a terrain material. With either missing it falls through
         // to the scene pipeline and renders untextured — visibly wrong, but
         // present and diagnosable, rather than silently absent.
+        // A terrain chunk carries is_double_sided() when its terrain has holes;
+        // that is the one case where the underside is legitimately visible.
+        VkPipeline terrain_pipe = d.mesh->is_double_sided() ? terrain_pipeline_none_
+                                                            : terrain_pipeline_;
+        if (terrain_pipe == VK_NULL_HANDLE) terrain_pipe = terrain_pipeline_;
+
         const bool use_terrain = d.is_terrain &&
-                                 terrain_pipeline_ != VK_NULL_HANDLE &&
+                                 terrain_pipe != VK_NULL_HANDLE &&
                                  d.terrain_material != nullptr;
 
         VkPipeline pipeline =
             (d.use_graph_material && graph_pipeline_ != VK_NULL_HANDLE) ? graph_pipeline_
-            : use_terrain                                               ? terrain_pipeline_
+            : use_terrain                                               ? terrain_pipe
             : d.mesh->is_double_sided()                                 ? scene_pipeline_none_
                                                                         : scene_pipeline_back_;
         if (pipeline != last_pipeline) {
@@ -1344,6 +1362,10 @@ void VulkanGBuffer::cleanup() {
     if (terrain_pipeline_layout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(vk_device, terrain_pipeline_layout_, nullptr);
         terrain_pipeline_layout_ = VK_NULL_HANDLE;
+    }
+    if (terrain_pipeline_none_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(vk_device, terrain_pipeline_none_, nullptr);
+        terrain_pipeline_none_ = VK_NULL_HANDLE;
     }
     if (terrain_pipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(vk_device, terrain_pipeline_, nullptr);

@@ -460,9 +460,38 @@ private:
 
         auto mesh = Mesh::create(device, verts, idx, submeshes);
         if (!mesh) return nullptr;
-        // OBJ files have no standardised winding convention — flag the mesh
-        // double-sided so the G-Buffer renderer uses the cull-none pipeline.
-        mesh->set_double_sided(true);
+
+        // OBJ has no standardised winding, so this used to flag EVERY OBJ
+        // double-sided — which means every imported model in the project
+        // rasterises both faces of every triangle forever. That is the right
+        // default only when the winding is genuinely unknowable; it usually is
+        // not. Vote: compare each triangle's geometric normal against the
+        // normals the file supplied. If they agree overwhelmingly, the winding
+        // is trustworthy and back-face culling is safe.
+        //
+        // Conservative on purpose — anything short of near-total agreement keeps
+        // cull-none, because a wrongly-culled model renders with holes in it and
+        // that is far worse than drawing some extra triangles.
+        size_t agree = 0, disagree = 0;
+        for (size_t i = 0; i + 2 < idx.size(); i += 3) {
+            const auto& v0 = verts[idx[i]];
+            const auto& v1 = verts[idx[i + 1]];
+            const auto& v2 = verts[idx[i + 2]];
+            const glm::vec3 geom = glm::cross(v1.position - v0.position,
+                                              v2.position - v0.position);
+            const glm::vec3 supplied = v0.normal + v1.normal + v2.normal;
+            if (glm::dot(supplied, supplied) < 1e-12f) continue;   // no usable normal
+            const float d = glm::dot(geom, supplied);
+            if (d > 0.0f) ++agree; else if (d < 0.0f) ++disagree;
+        }
+        const size_t voted = agree + disagree;
+        const bool trustworthy = voted > 0 &&
+                                 agree >= static_cast<size_t>(voted * 0.99);
+        mesh->set_double_sided(!trustworthy);
+        spdlog::info("[AssetMeshCache] '{}': winding {} ({} agree / {} disagree) — {}",
+                     source_path, trustworthy ? "consistent" : "MIXED or unknown",
+                     agree, disagree,
+                     trustworthy ? "back-face culling ON" : "drawn double-sided");
 
         auto out = std::make_unique<Scene>();
         out->meshes.push_back(std::move(mesh));
@@ -596,7 +625,8 @@ inline std::unique_ptr<gws::renderer::gpu::Mesh> build_terrain_chunk_mesh(
     const schizo::scene::TerrainComponent* tc,
     gws::renderer::gpu::VulkanDevice* device,
     int cx0, int cz0, int cells,
-    gws::renderer::gpu::MeshUploadBatch* batch = nullptr)
+    gws::renderer::gpu::MeshUploadBatch* batch = nullptr,
+    bool has_holes = true)
 {
     using namespace gws::renderer::gpu;
     const int   res   = tc->GetResolution();
@@ -652,8 +682,15 @@ inline std::unique_ptr<gws::renderer::gpu::Mesh> build_terrain_chunk_mesh(
     // mouse is held, and baking was the single largest cost in that loop. Terrain
     // already culls per chunk, and a flat 64-cell chunk gains little from
     // per-cluster culling inside it.
-    return Mesh::create(device, verts, idx, {sm}, /*extra_vbo_usage=*/0, batch,
-                        /*bake_meshlets=*/false);
+    auto mesh = Mesh::create(device, verts, idx, {sm}, /*extra_vbo_usage=*/0, batch,
+                             /*bake_meshlets=*/false);
+    // Reuse the double-sided flag to pick the terrain pipeline variant. A
+    // heightfield has no overhangs, so a terrain with no holes can only show its
+    // back faces to a camera under the surface — rasterising them is pure waste.
+    // Holes are the one case where being under the terrain is the point (that is
+    // what a cave is), so those keep cull-none.
+    if (mesh) mesh->set_double_sided(has_holes);
+    return mesh;
 }
 
 /// Per-terrain-entity CHUNKED GPU mesh cache. On version change, rebuilds
@@ -704,6 +741,9 @@ public:
             {
                 const auto t_begin = std::chrono::steady_clock::now();
                 int rebuilt = 0;
+                // Computed once per rebuild, not per chunk: AnyHoles walks the
+                // whole cell mask.
+                const bool has_holes = tc->AnyHoles();
                 gws::renderer::gpu::MeshUploadBatch batch(device);
                 for (int cz = c_z0; cz <= c_z1; ++cz)
                     for (int cx = c_x0; cx <= c_x1; ++cx) {
@@ -716,7 +756,8 @@ public:
                         slot = build_terrain_chunk_mesh(tc, device,
                                                        cx * kTerrainChunkCells,
                                                        cz * kTerrainChunkCells,
-                                                       kTerrainChunkCells, &batch);
+                                                       kTerrainChunkCells, &batch,
+                                                       has_holes);
                         ++rebuilt;
                     }
                 const double build_ms = std::chrono::duration<double, std::milli>(

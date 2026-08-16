@@ -52,16 +52,24 @@ public:
 
     /// Drop everything recorded last frame. Call once per frame before the
     /// first append.
-    void begin_frame() { commands_.clear(); }
+    void begin_frame() { commands_.clear(); uploaded_ = 0; }
 
     /// Record one draw. Returns the command's index, which is what a later
     /// compute pass would use to address it.
     uint32_t append(uint32_t index_count, uint32_t first_index,
                     int32_t vertex_offset = 0, uint32_t instance_count = 1);
 
-    /// Upload everything appended this frame. Returns false if the buffer could
-    /// not be grown, in which case the caller must fall back to direct draws
-    /// rather than issue a call reading stale commands.
+    /// Upload commands appended since the last upload. Returns false if the
+    /// buffer could not be grown, in which case the caller must fall back to
+    /// direct draws rather than issue a call reading stale commands.
+    ///
+    /// INCREMENTAL, and that matters. The draw recorder calls this once per
+    /// SUBMESH — it has to, because each submesh's draw is recorded while that
+    /// mesh's buffers are still bound. Copying the whole command list each time
+    /// made the per-frame copy quadratic in submesh count: with N submeshes
+    /// contributing M meshlets each, the bytes copied were M·N(N+1)/2 rather
+    /// than M·N. A 256-chunk terrain paid tens of MB of memcpy per frame to move
+    /// data that had not changed. Only the new tail is copied now.
     bool upload();
 
     /// Issue `count` draws starting at `first`. Falls back to a loop of
@@ -91,6 +99,10 @@ private:
     bool           multi_draw_ = false;
 
     std::vector<VkDrawIndexedIndirectCommand> commands_;
+    /// How many commands are already in the GPU buffer. Reset by begin_frame,
+    /// and by grow() — a grown buffer is a NEW allocation holding nothing, so
+    /// everything must be re-copied into it.
+    uint32_t uploaded_ = 0;
     mutable uint32_t last_submission_count_ = 0;
 };
 

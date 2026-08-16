@@ -115,9 +115,19 @@ bool VulkanIndirectDrawBuffer::upload() {
     if (commands_.size() > capacity_) {
         const uint32_t want = static_cast<uint32_t>(commands_.size() * 3 / 2 + 256);
         if (!grow(want)) return false;
+        // grow() destroys the old buffer and creates a new one, so nothing in
+        // it has been uploaded. Re-copy from the start.
+        uploaded_ = 0;
     }
-    std::memcpy(mapped_, commands_.data(),
-                commands_.size() * sizeof(VkDrawIndexedIndirectCommand));
+
+    const uint32_t have = static_cast<uint32_t>(commands_.size());
+    if (uploaded_ >= have) return true;   // nothing new since the last call
+
+    const size_t stride = sizeof(VkDrawIndexedIndirectCommand);
+    std::memcpy(static_cast<uint8_t*>(mapped_) + uploaded_ * stride,
+                commands_.data() + uploaded_,
+                (have - uploaded_) * stride);
+    uploaded_ = have;
     return true;
 }
 
