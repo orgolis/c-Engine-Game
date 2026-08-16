@@ -89,7 +89,8 @@ The base renderer every project draws through.
 | Deferred G-buffer + PBR materials | ✅ | |
 | Forward / transparent (WBOIT) | ✅ | |
 | Shadows (cascaded) | ✅ | virtual shadow maps 🔴 |
-| Camera, culling (frustum / meshlet / HZB), LOD (meshopt) | ✅ | HZB + back-face off by default |
+| Camera, culling (frustum / meshlet / HZB), LOD (meshopt) | ✅ | **v0.6.10:** this row previously said "HZB + back-face off by default" and both halves were out of date. HZB has been enabled since Stage 3.C. Back-face culling was on for primitives and glTF but OFF for exactly the content most projects use — terrain (`CULL_MODE_NONE`) and every OBJ (flagged double-sided unconditionally). Terrain now culls back faces unless it has holes (a heightfield has no overhangs; a cave is the one case the underside is visible), and an OBJ is drawn double-sided only when a per-triangle winding vote says its winding is genuinely inconsistent. The shadow pass stays `CULL_MODE_NONE` deliberately — mixed CW/CCW content, and its depth bias is tuned for it |
+| Mesh memory | ✅ **v0.6.10.** Vertex/index buffers are `DEVICE_LOCAL`, uploaded through a batched staging copy (`MeshUploadBatch`: one staging buffer and one submit for a whole terrain rebuild, not one queue stall per mesh). They were `HOST_VISIBLE`, and on a discrete GPU `find_memory_type` returns the first match — system RAM — so every vertex was fetched across PCIe on every pass. **Still open:** one raw `vkAllocateMemory` per buffer; VMA is vendored and configured but not yet used |
 | Sky + image-based lighting | ✅ | |
 | Tonemap (ACES) + auto-exposure, FXAA | ✅ | |
 | Draw-list / Mesh / Material / Texture management, glTF bridge | ✅ | |

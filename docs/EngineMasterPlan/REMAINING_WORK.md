@@ -109,10 +109,21 @@ The cross-cutting integration debt specifically:
 - **Stage 2 — Asset pipeline** 🟢 *acceptance met.* OBJ/glTF/FBX/USD importers → incremental cook →
   mmap runtime; BC7 renders; tiled/page-aligned virtual-texture **format**.
   **Remaining:** optional BC6H/Oodle codecs; the VT **runtime** (page table/feedback/atlas/streamer) is Stage 8.
-- **Stage 3 — Rendering completion** 🟡 *≈ 75%.* Done: DDGI, volumetric fog/froxel, clouds, water,
-  contact shadows, sky/IBL, SSR/SSAO/RT, culling (frustum/meshlet/HZB), post-FX.
+- **Stage 3 — Rendering completion** 🟡 *≈ 78%.* Done: DDGI, volumetric fog/froxel, clouds, water,
+  contact shadows, sky/IBL, SSR/SSAO/RT, culling (frustum/meshlet/HZB), post-FX,
+  **`.mat` material assets** (v0.6.9 — one surface description for objects, imported meshes and terrain
+  layers; all five G-buffer map slots reachable for the first time), **terrain per-layer PBR** on its own
+  14-binding pipeline, **terrain LOD** (v0.6.10 — index tiers over the shared vertex buffer, 45× fewer
+  triangles at the coarsest, skirts for the seams), **DEVICE_LOCAL mesh geometry** with batched staging
+  upload, and back-face culling turned on where it had silently been off.
   **Remaining:** GPU-driven **indirect/mesh-shader** completion (3.1), **virtual shadow maps** (3.4),
-  **material layering / hair / skin** (3.5).
+  **material layering / hair / skin** (3.5), per-object **UV tiling** (needs `MaterialUniforms` to grow
+  past 48 bytes → SPIR-V regen of every shader mirroring that block), and **VMA sub-allocation** (one raw
+  `vkAllocateMemory` per buffer today).
+  **Measured, and worth knowing before optimising further:** in the editor's own scene the frame is
+  ~10 ms of which 6–8 ms is waiting on the presentation engine, GPU work is under 1 ms, and CPU zones are
+  ~0.45 ms. GPU-driven culling (3.1) is additionally blocked on pooled vertex/index buffers — see
+  [`TERRAIN_RENDER_PERF.md`](../architecture/TERRAIN_RENDER_PERF.md).
 
 ---
 
