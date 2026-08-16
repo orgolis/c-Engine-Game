@@ -245,9 +245,30 @@ bool VulkanRenderGraph::resolve_timings() {
         return false;
     }
 
-    // Read the ring the frame we just waited on wrote into.
-    const uint32_t read_ring =
-        static_cast<uint32_t>(stats_.frame_index % kTimestampRings);
+    // Pick the NEWEST ring whose results are actually available.
+    //
+    // The caller has waited on a fence, but which frame that fence belongs to
+    // depends on how many frames the app keeps in flight — the graph does not
+    // know that number, and guessing it wrong means always reading a ring that
+    // is still executing and therefore never reporting a timing at all. Probing
+    // from newest backwards costs a handful of non-blocking queries and is
+    // correct for any frames-in-flight count up to the ring count.
+    uint32_t read_ring = static_cast<uint32_t>(stats_.frame_index % kTimestampRings);
+    {
+        bool found = false;
+        for (uint32_t back = 0; back < kTimestampRings && !found; ++back) {
+            const uint32_t ring = static_cast<uint32_t>(
+                (stats_.frame_index + kTimestampRings - back) % kTimestampRings);
+            std::array<uint64_t, kTimestampSlotsPerStage> probe{};
+            const VkResult pr = vkGetQueryPoolResults(
+                config_.device->get_device(), timestamp_pool_,
+                timestamp_begin_slot(RenderGraphStage::Geometry, ring),
+                kTimestampSlotsPerStage, sizeof(probe), probe.data(),
+                sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+            if (pr == VK_SUCCESS) { read_ring = ring; found = true; }
+        }
+        if (!found) return true;   // nothing complete yet; keep last frame's numbers
+    }
 
     // NO WAIT_BIT. Profiling must never block the CPU on the GPU: if a result
     // is not ready this frame, the honest answer is "no number this frame", not

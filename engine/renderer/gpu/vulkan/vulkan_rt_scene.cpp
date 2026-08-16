@@ -423,7 +423,22 @@ void VulkanRtScene::rebuild_tlas(VkCommandBuffer cmd, const DrawItem* items, siz
         VkAccelerationStructureCreateInfoKHR ci{};
         ci.sType   = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
         ci.buffer  = tlas_.buffer;
-        ci.size    = size_info.accelerationStructureSize;
+        // The FULL capacity, not this frame's required size.
+        //
+        // The reuse test above asks whether the new build fits in
+        // `tlas_capacity_` — the buffer's size, allocated with 2x headroom so a
+        // small change in instance count does not reallocate. But the
+        // acceleration STRUCTURE used to be created with only the size the
+        // instance count needed at that moment, so the headroom was never
+        // usable: as soon as the scene gained instances the build overflowed a
+        // structure the driver had been told was smaller. That writes past the
+        // structure's declared size, which is memory corruption, which loses
+        // the device — a white window and no crash.
+        //
+        // It surfaces while a project loads, because meshes stream in
+        // asynchronously and every one that arrives adds TLAS instances after
+        // the first build has already sized the structure.
+        ci.size    = tlas_capacity_;
         ci.type    = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
         if (fns_->createAccelerationStructure(vk, &ci, nullptr, &tlas_.handle) != VK_SUCCESS) {
             spdlog::error("VulkanRtScene: createAccelerationStructure(TLAS) failed");
