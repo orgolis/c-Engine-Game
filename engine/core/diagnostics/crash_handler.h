@@ -74,6 +74,18 @@ std::string write_report(const std::string& reason);
 void install_hang_watchdog(double seconds = 5.0);
 void hang_heartbeat();
 
+// ---- breadcrumbs ----
+// "It freezes when I click" is only useful if something recorded the click.
+// breadcrumb() appends to a small ring (last 96) that every crash and hang
+// report prints, newest last, with seconds-before-the-report deltas. Cheap
+// enough for interaction events; NOT for per-frame spam.
+void breadcrumb(std::string text);
+
+// Per-frame time, kept as a ring of the last 240. Reports print the recent
+// history so a freeze that was preceded by a slow decline looks different
+// from one that hit out of nowhere.
+void record_frame_ms(double ms);
+
 // ---- logging plumbing (spdlog default logger) ----
 // Attach a rotating file sink (<log_dir>/<app_name>.log) and an in-memory
 // ring-buffer sink to spdlog's default logger. Safe to call once, early.

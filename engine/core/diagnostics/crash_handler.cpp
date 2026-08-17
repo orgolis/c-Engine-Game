@@ -23,6 +23,7 @@
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
 #  include <dbghelp.h>
+#  include <tlhelp32.h>
 #endif
 
 namespace gws::diag {
@@ -123,6 +124,57 @@ void append_system_info(std::ostringstream& out) {
 #endif
 }
 
+// ---- breadcrumbs + frame history --------------------------------------------
+
+std::mutex g_crumb_mutex;
+struct Crumb { uint64_t at_ns; std::string text; };
+std::vector<Crumb> g_crumbs;          // ring, newest appended
+size_t             g_crumb_next = 0;
+constexpr size_t   kMaxCrumbs = 96;
+
+std::mutex          g_frame_mutex;
+std::vector<double> g_frame_ms;       // ring of recent frame times
+size_t              g_frame_next = 0;
+constexpr size_t    kMaxFrames = 240;
+
+uint64_t mono_ns();   // defined with the watchdog below
+
+void append_breadcrumbs(std::ostringstream& out) {
+    out << "\n--- breadcrumbs (newest last) ---\n";
+    std::lock_guard<std::mutex> lk(g_crumb_mutex);
+    if (g_crumbs.empty()) { out << "(none recorded)\n"; return; }
+    const uint64_t now = mono_ns();
+    // Walk the ring oldest-first.
+    for (size_t i = 0; i < g_crumbs.size(); ++i) {
+        const Crumb& c = g_crumbs[(g_crumb_next + i) % g_crumbs.size()];
+        if (c.text.empty()) continue;
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "-%7.2fs  ", double(now - c.at_ns) / 1.0e9);
+        out << buf << c.text << "\n";
+    }
+}
+
+void append_frame_history(std::ostringstream& out) {
+    out << "\n--- frame times, most recent last (ms) ---\n";
+    std::lock_guard<std::mutex> lk(g_frame_mutex);
+    if (g_frame_ms.empty()) { out << "(none recorded)\n"; return; }
+    double sum = 0.0, worst = 0.0;
+    for (double v : g_frame_ms) { sum += v; if (v > worst) worst = v; }
+    char buf[128];
+    std::snprintf(buf, sizeof buf, "count %zu, mean %.2fms (%.0f fps), worst %.2fms\n",
+                  g_frame_ms.size(), sum / double(g_frame_ms.size()),
+                  1000.0 / (sum / double(g_frame_ms.size())), worst);
+    out << buf;
+    int printed = 0;
+    for (size_t i = 0; i < g_frame_ms.size(); ++i) {
+        const double v = g_frame_ms[(g_frame_next + i) % g_frame_ms.size()];
+        std::snprintf(buf, sizeof buf, "%7.2f", v);
+        out << buf;
+        if (++printed % 12 == 0) out << "\n";
+    }
+    if (printed % 12 != 0) out << "\n";
+}
+
 #if defined(_WIN32)
 // --- Windows stack walk + symbolization via DbgHelp -------------------------
 
@@ -151,7 +203,8 @@ std::string exception_code_string(DWORD code) {
 // `thread` defaults to the caller, but the hang watchdog passes the SUSPENDED
 // main thread's handle -- walking a stack that is not your own is the whole
 // point when the thread you care about is the one that stopped responding.
-void append_stack(std::ostringstream& out, CONTEXT ctx, HANDLE thread_in = nullptr) {
+void append_stack(std::ostringstream& out, CONTEXT ctx, HANDLE thread_in = nullptr,
+                  const char* what = nullptr) {
     const HANDLE proc = GetCurrentProcess();
     const HANDLE thread = (thread_in != nullptr) ? thread_in : GetCurrentThread();
 
@@ -163,8 +216,9 @@ void append_stack(std::ostringstream& out, CONTEXT ctx, HANDLE thread_in = nullp
     frame.AddrFrame.Offset = ctx.Rbp; frame.AddrFrame.Mode = AddrModeFlat;
     frame.AddrStack.Offset = ctx.Rsp; frame.AddrStack.Mode = AddrModeFlat;
 
-    out << (thread_in != nullptr ? "\n--- call stack (hung thread) ---\n"
-                                 : "\n--- call stack (crashing thread) ---\n");
+    out << "\n--- call stack ("
+        << (what != nullptr ? what : (thread_in != nullptr ? "hung thread" : "crashing thread"))
+        << ") ---\n";
     std::ostringstream rvas;   // collect module-relative addresses for the addr2line hint
     std::string main_module;
 
@@ -281,6 +335,8 @@ std::string do_write_report(const std::string& reason, void* ep_void) {
     out << "\n(stack trace + minidump are Windows-only)\n";
 #endif
 
+    append_frame_history(out);
+    append_breadcrumbs(out);
     append_system_info(out);
     append_recent_log(out);
 
@@ -384,6 +440,67 @@ uint64_t mono_ns() {
 // -- walking the stack while it is suspended risks deadlocking on a CRT or
 // heap lock the suspended thread happens to hold, and a hung thread's stack is
 // not moving anyway.
+// Best-effort thread name (Win10 1607+). Resolved dynamically because MinGW's
+// import libs do not always carry it.
+std::string thread_name_of(HANDLE th) {
+    using GetThreadDescriptionFn = HRESULT (WINAPI*)(HANDLE, PWSTR*);
+    static auto fn = reinterpret_cast<GetThreadDescriptionFn>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription"));
+    if (fn == nullptr) return "";
+    PWSTR desc = nullptr;
+    if (FAILED(fn(th, &desc)) || desc == nullptr) return "";
+    char buf[128] = {};
+    WideCharToMultiByte(CP_UTF8, 0, desc, -1, buf, sizeof buf - 1, nullptr, nullptr);
+    LocalFree(desc);
+    return buf;
+}
+
+// Every OTHER thread in the process. When the main thread is parked in
+// vkWaitForFences or a job-system wait, its own stack says only "waiting" --
+// the answer is on whichever thread is not finishing. Sampling only the stuck
+// thread would have made this whole exercise say "it is waiting" and stop.
+std::string sample_all_other_threads() {
+    std::ostringstream out;
+    const DWORD me = GetCurrentThreadId();          // the watchdog itself
+    const DWORD main_tid = g_main_thread != nullptr ? GetThreadId(g_main_thread) : 0;
+
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return "(thread snapshot failed)\n";
+
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    int sampled = 0;
+    if (Thread32First(snap, &te)) {
+        do {
+            if (te.th32OwnerProcessID != GetCurrentProcessId()) continue;
+            if (te.th32ThreadID == me || te.th32ThreadID == main_tid) continue;
+            if (++sampled > 16) break;              // keep the report bounded
+
+            HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT |
+                                   THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+            if (th == nullptr) continue;
+
+            CONTEXT ctx{};
+            ctx.ContextFlags = CONTEXT_FULL;
+            if (SuspendThread(th) != DWORD(-1)) {
+                const BOOL got = GetThreadContext(th, &ctx);
+                ResumeThread(th);                   // resume BEFORE walking
+                if (got) {
+                    const std::string nm = thread_name_of(th);
+                    out << "\n[thread " << te.th32ThreadID;
+                    if (!nm.empty()) out << " \"" << nm << "\"";
+                    out << "]\n";
+                    append_stack(out, ctx, th, "other thread");
+                }
+            }
+            CloseHandle(th);
+        } while (Thread32Next(snap, &te));
+    }
+    CloseHandle(snap);
+    if (sampled == 0) out << "(no other threads)\n";
+    return out.str();
+}
+
 std::string sample_hung_stack() {
     if (g_main_thread == nullptr) return "(no main thread handle)\n";
     CONTEXT ctx{};
@@ -431,6 +548,9 @@ void write_hang_report(double stalled_seconds) {
         out << sample_hung_stack();
         if (i < 2) std::this_thread::sleep_for(std::chrono::seconds(2));
     }
+    // Once is enough for the rest: if the main thread is blocked, what matters
+    // is which other thread is holding things up, not how it evolves.
+    out << "\n=== other threads ===\n" << sample_all_other_threads();
     if (g_config.write_minidump && !g_config.report_dir.empty()) {
         const std::string dump = g_config.report_dir + "/hang_" + timestamp(true) + ".dmp";
         write_minidump(dump, nullptr);
@@ -440,6 +560,8 @@ void write_hang_report(double stalled_seconds) {
     out << "\n(stack sampling is Windows-only)\n";
 #endif
 
+    append_frame_history(out);
+    append_breadcrumbs(out);
     append_system_info(out);
     append_recent_log(out);
 
@@ -521,6 +643,28 @@ void install_hang_watchdog(double seconds) {
     g_watchdog_thread->detach();      // outlives shutdown; process exit reaps it
     spdlog::info("[hang] watchdog armed — reports a stack if a frame takes over {:.1f}s",
                  seconds);
+}
+
+void breadcrumb(std::string text) {
+    std::lock_guard<std::mutex> lk(g_crumb_mutex);
+    if (g_crumbs.size() < kMaxCrumbs) {
+        g_crumbs.push_back(Crumb{mono_ns(), std::move(text)});
+        g_crumb_next = 0;                     // still filling; oldest is index 0
+    } else {
+        g_crumbs[g_crumb_next] = Crumb{mono_ns(), std::move(text)};
+        g_crumb_next = (g_crumb_next + 1) % kMaxCrumbs;
+    }
+}
+
+void record_frame_ms(double ms) {
+    std::lock_guard<std::mutex> lk(g_frame_mutex);
+    if (g_frame_ms.size() < kMaxFrames) {
+        g_frame_ms.push_back(ms);
+        g_frame_next = 0;
+    } else {
+        g_frame_ms[g_frame_next] = ms;
+        g_frame_next = (g_frame_next + 1) % kMaxFrames;
+    }
 }
 
 void hang_heartbeat() {

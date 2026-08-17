@@ -837,6 +837,17 @@ static void capture_swapchain_tga(gws::renderer::gpu::VulkanDevice& device,
     vkDestroyBuffer(vk, buf, nullptr);
 }
 
+// Last RESOLVED per-stage GPU times (ms). Captured right after
+// resolve_timings() because the graph clears its *_us fields during the next
+// execute(), so any later read reports zero.
+// GPU identity for crash/hang reports. A graphics freeze that does not say
+// which GPU and driver it happened on is hard to act on, and the report is
+// written long after this becomes known.
+static std::string g_gpu_info;
+
+static double g_gpu_shadow_ms = 0.0, g_gpu_geometry_ms = 0.0, g_gpu_lighting_ms = 0.0,
+              g_gpu_transparent_ms = 0.0, g_gpu_post_ms = 0.0;
+
 static bool PushTerrainStrokeCommand(EditorState& editor_state,
                                      const std::shared_ptr<schizo::scene::Scene>& scene,
                                      uint32_t entity_id,
@@ -1328,6 +1339,7 @@ void ShowOpenDialog(EditorState& editor_state) {
             if (filepath.find(".scene") == std::string::npos) {
                 filepath += ".scene";
             }
+            gws::diag::breadcrumb("load scene: " + filepath);
             editor_state.editor_scene->LoadScene(filepath);
             spdlog::info("Scene loaded from: {}", filepath);
             editor_state.show_open_dialog = false;
@@ -4034,6 +4046,8 @@ void ShowViewport(EditorState& editor_state) {
             if (editor_state.terrain_stroke_active &&
                 (!ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
                  !editor_state.terrain_sculpt_active)) {
+                gws::diag::breadcrumb("terrain stroke committed on entity " +
+                                      std::to_string(editor_state.terrain_stroke_entity));
                 PushTerrainStrokeCommand(editor_state, scene,
                                          editor_state.terrain_stroke_entity,
                                          editor_state.terrain_stroke_heights,
@@ -4350,6 +4364,8 @@ void ShowViewport(EditorState& editor_state) {
                                 if (closest_entity_id != 0) {
                                     editor_state.selected_entity_id = closest_entity_id;
                                     spdlog::info("Entity selected via picking: ID {}", closest_entity_id);
+                                    gws::diag::breadcrumb("viewport click -> selected entity " +
+                                                          std::to_string(closest_entity_id));
                                 }
                             }
                         }
@@ -4382,6 +4398,8 @@ void ShowViewport(EditorState& editor_state) {
                         if (closest_entity_id != 0) {
                             editor_state.selected_entity_id = closest_entity_id;
                             spdlog::info("Entity selected via picking: ID {}", closest_entity_id);
+                                    gws::diag::breadcrumb("viewport click -> selected entity " +
+                                                          std::to_string(closest_entity_id));
                         }
                     }
                 }
@@ -5265,6 +5283,7 @@ int main(int argc, char** argv) {
                 std::string s;
                 s += std::string("project: ") + (sp.empty() ? "(none / launcher)" : sp) + "\n";
                 if (!ss.empty()) s += "scene(arg): " + ss + "\n";
+                if (!g_gpu_info.empty()) s += g_gpu_info;
                 return s;
             };
             gws::diag::install_crash_handler(cc);
@@ -5319,6 +5338,23 @@ int main(int argc, char** argv) {
         render_cfg.enable_validation = true;
         render_cfg.app_name          = "ProjectSchizoEditor";
         device.initialize(render_cfg);
+        {
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties(device.get_physical_device(), &props);
+            char b[512];
+            std::snprintf(b, sizeof b,
+                          "gpu:     %s\ndriver:  %u.%u.%u (raw 0x%08X), Vulkan API %u.%u.%u\n",
+                          props.deviceName,
+                          VK_VERSION_MAJOR(props.driverVersion),
+                          VK_VERSION_MINOR(props.driverVersion),
+                          VK_VERSION_PATCH(props.driverVersion),
+                          props.driverVersion,
+                          VK_VERSION_MAJOR(props.apiVersion),
+                          VK_VERSION_MINOR(props.apiVersion),
+                          VK_VERSION_PATCH(props.apiVersion));
+            g_gpu_info = b;
+            spdlog::info("[diag] {}", g_gpu_info);
+        }
         spdlog::info("VulkanDevice initialized: {}", device.get_device_name());
 
         VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -7906,6 +7942,14 @@ int main(int argc, char** argv) {
             // device supports timestamps; otherwise the GPU section stays empty.
             if (graph && graph->resolve_timings()) {
                 graph->update_gpu_profiler();
+                {
+                    const auto& rs = graph->get_stats();
+                    g_gpu_shadow_ms      = rs.shadow_us / 1000.0;
+                    g_gpu_geometry_ms    = rs.geometry_us / 1000.0;
+                    g_gpu_lighting_ms    = rs.lighting_us / 1000.0;
+                    g_gpu_transparent_ms = rs.transparent_us / 1000.0;
+                    g_gpu_post_ms        = rs.post_process_us / 1000.0;
+                }
                 // Per-stage GPU time has been resolved every frame since the
                 // Stage-14 work and printed nowhere, so "which pass is slow"
                 // had no answer outside the overlay. At debug level it does.
@@ -8275,6 +8319,9 @@ int main(int argc, char** argv) {
             // build_draw_items, exactly where a real stroke lands.
             if (stress_edit) {
                 GWS_PROFILE_ZONE("stress_terrain_edit");
+                if (frame_count % 120 == 0)
+                    gws::diag::breadcrumb("stress terrain edit frame " +
+                                          std::to_string(frame_count));
                 if (auto sc = editor_scene.GetScene()) {
                     for (const auto& ent : sc->GetEntities()) {
                         if (!ent) continue;
@@ -8954,6 +9001,31 @@ int main(int argc, char** argv) {
             // Collect this frame's CPU zones and report a breakdown
             // periodically (the full flame-graph UI is Stage 14).
             GWS_PROFILE_FRAME_END();
+            // Feed the diagnostics ring: a freeze report then shows whether the
+            // frames leading into it were already degrading or were fine right
+            // up to the stall.
+            gws::diag::record_frame_ms(double(delta_time) * 1000.0);
+            // Periodic health line, so editor.log carries a timeline even when
+            // nothing goes wrong -- "it was fine until here" needs a "here".
+            {
+                static double last_health_wall = 0.0;
+                if (now_wall - last_health_wall >= 5.0) {
+                    last_health_wall = now_wall;
+                    const auto& gs = graph->get_stats();
+                    MEMORYSTATUSEX ms{}; ms.dwLength = sizeof(ms);
+                    GlobalMemoryStatusEx(&ms);
+                    spdlog::info("[health] frame {} | {:.1f} fps ({:.2f} ms) | draws {} tris {} "
+                                 "| cull {}/{} vis | gpu shadow {:.2f} geo {:.2f} light {:.2f} "
+                                 "transp {:.2f} post {:.2f} ms | ram {:.1f} GB free",
+                                 frame_count, delta_time > 0.0f ? 1.0f / delta_time : 0.0f,
+                                 double(delta_time) * 1000.0,
+                                 gs.geometry_draw_calls, gs.geometry_triangles,
+                                 gs.frustum_visible_items, gs.frustum_input_items,
+                                 g_gpu_shadow_ms, g_gpu_geometry_ms, g_gpu_lighting_ms,
+                                 g_gpu_transparent_ms, g_gpu_post_ms,
+                                 ms.ullAvailPhys / (1024.0 * 1024 * 1024));
+                }
+            }
 #if GWS_PROFILE_ENABLED
             if (frame_count % (log_debug ? 60 : 240) == 0)
                 // debug level: per-frame profiler breakdown stays out of the
