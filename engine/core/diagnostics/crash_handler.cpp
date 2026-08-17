@@ -119,6 +119,9 @@ void append_system_info(std::ostringstream& out) {
                   mem.ullTotalPhys / (1024.0 * 1024 * 1024),
                   mem.ullAvailPhys / (1024.0 * 1024 * 1024));
     out << buf;
+    // Per-process too: a stall that eats memory is a very different bug
+    // depending on whether the memory was ours.
+    out << "mem: " << memory_summary() << "\n";
 #else
     out << "os:  (non-Windows)\n";
 #endif
@@ -208,8 +211,17 @@ void append_stack(std::ostringstream& out, CONTEXT ctx, HANDLE thread_in = nullp
     const HANDLE proc = GetCurrentProcess();
     const HANDLE thread = (thread_in != nullptr) ? thread_in : GetCurrentThread();
 
-    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
-    SymInitialize(proc, nullptr, TRUE);
+    // ONCE per process, not once per stack. SymInitialize with
+    // fInvadeProcess=TRUE enumerates and loads symbols for every loaded
+    // module -- including the ~100MB NVIDIA driver DLLs. A hang report walks
+    // 3 main-thread samples plus up to 16 other threads, so calling it per
+    // stack ran it 19 times and made the report itself consume gigabytes and
+    // seconds, inflating the very stall it was measuring.
+    static std::atomic<bool> sym_ready{false};
+    if (!sym_ready.exchange(true)) {
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+        SymInitialize(proc, nullptr, TRUE);
+    }
 
     STACKFRAME64 frame{};
     frame.AddrPC.Offset    = ctx.Rip; frame.AddrPC.Mode    = AddrModeFlat;
@@ -623,6 +635,43 @@ void install_crash_handler(const CrashConfig& cfg) {
     g_installed = true;
     spdlog::info("[diag] crash handler installed (reports -> {})",
                  g_config.report_dir.empty() ? "(stderr only)" : g_config.report_dir);
+}
+
+std::string memory_summary() {
+#if defined(_WIN32)
+    // Per-process counters. K32GetProcessMemoryInfo lives in kernel32, so this
+    // needs no extra link library.
+    struct PMCEX {                       // PROCESS_MEMORY_COUNTERS_EX layout
+        DWORD  cb; DWORD PageFaultCount;
+        SIZE_T PeakWorkingSetSize, WorkingSetSize;
+        SIZE_T QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage;
+        SIZE_T QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage;
+        SIZE_T PagefileUsage, PeakPagefileUsage, PrivateUsage;
+    };
+    using Fn = BOOL (WINAPI*)(HANDLE, void*, DWORD);
+    static auto fn = reinterpret_cast<Fn>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "K32GetProcessMemoryInfo"));
+
+    double ws_gb = 0.0, priv_gb = 0.0;
+    if (fn != nullptr) {
+        PMCEX pmc{};
+        pmc.cb = sizeof(pmc);
+        if (fn(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+            ws_gb   = double(pmc.WorkingSetSize) / (1024.0 * 1024 * 1024);
+            priv_gb = double(pmc.PrivateUsage)   / (1024.0 * 1024 * 1024);
+        }
+    }
+    MEMORYSTATUSEX ms{}; ms.dwLength = sizeof(ms);
+    GlobalMemoryStatusEx(&ms);
+    char b[192];
+    std::snprintf(b, sizeof b, "proc ws %.2f GB, private %.2f GB | sys %.1f/%.1f GB free",
+                  ws_gb, priv_gb,
+                  ms.ullAvailPhys / (1024.0 * 1024 * 1024),
+                  ms.ullTotalPhys / (1024.0 * 1024 * 1024));
+    return b;
+#else
+    return "(non-Windows)";
+#endif
 }
 
 void install_hang_watchdog(double seconds) {

@@ -86,6 +86,11 @@ void breadcrumb(std::string text);
 // from one that hit out of nowhere.
 void record_frame_ms(double ms);
 
+// "19 GB of RAM disappeared" is ambiguous until you know whether it was THIS
+// process or something else on the machine. Returns e.g.
+// "proc ws 1.8 GB, private 2.4 GB | sys 28.4/63.9 GB free".
+std::string memory_summary();
+
 // ---- logging plumbing (spdlog default logger) ----
 // Attach a rotating file sink (<log_dir>/<app_name>.log) and an in-memory
 // ring-buffer sink to spdlog's default logger. Safe to call once, early.

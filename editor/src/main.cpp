@@ -5335,7 +5335,18 @@ int main(int argc, char** argv) {
         RenderConfig render_cfg{};
         render_cfg.window_width      = kW;
         render_cfg.window_height     = kH;
-        render_cfg.enable_validation = true;
+        // Validation layers intercept EVERY Vulkan call. Shipping with them on
+        // taxed every user of every release -- and they showed up in the middle
+        // of a user's hang stack, between the loader and the driver, which is
+        // how this was noticed. Debug builds keep them; release builds opt in
+        // with GWS_VALIDATION=1.
+#if defined(NDEBUG)
+        render_cfg.enable_validation = std::getenv("GWS_VALIDATION") != nullptr;
+#else
+        render_cfg.enable_validation = std::getenv("GWS_NO_VALIDATION") == nullptr;
+#endif
+        spdlog::info("[vk] validation layers {}",
+                     render_cfg.enable_validation ? "ON" : "off");
         render_cfg.app_name          = "ProjectSchizoEditor";
         device.initialize(render_cfg);
         {
@@ -7949,6 +7960,18 @@ int main(int argc, char** argv) {
                     g_gpu_lighting_ms    = rs.lighting_us / 1000.0;
                     g_gpu_transparent_ms = rs.transparent_us / 1000.0;
                     g_gpu_post_ms        = rs.post_process_us / 1000.0;
+                    // Name the pass when the GPU itself is what stalled. A
+                    // multi-second wait_prev_frame_fence says only "the GPU was
+                    // busy"; this says which stage was busy.
+                    const double worst = std::max({g_gpu_shadow_ms, g_gpu_geometry_ms,
+                                                   g_gpu_lighting_ms, g_gpu_transparent_ms,
+                                                   g_gpu_post_ms});
+                    if (worst >= 100.0)
+                        spdlog::warn("[gpu-stall] shadow {:.1f} geo {:.1f} light {:.1f} "
+                                     "transp {:.1f} post {:.1f} ms | {}",
+                                     g_gpu_shadow_ms, g_gpu_geometry_ms, g_gpu_lighting_ms,
+                                     g_gpu_transparent_ms, g_gpu_post_ms,
+                                     gws::diag::memory_summary());
                 }
                 // Per-stage GPU time has been resolved every frame since the
                 // Stage-14 work and printed nowhere, so "which pass is slow"
@@ -9016,14 +9039,14 @@ int main(int argc, char** argv) {
                     GlobalMemoryStatusEx(&ms);
                     spdlog::info("[health] frame {} | {:.1f} fps ({:.2f} ms) | draws {} tris {} "
                                  "| cull {}/{} vis | gpu shadow {:.2f} geo {:.2f} light {:.2f} "
-                                 "transp {:.2f} post {:.2f} ms | ram {:.1f} GB free",
+                                 "transp {:.2f} post {:.2f} ms | {}",
                                  frame_count, delta_time > 0.0f ? 1.0f / delta_time : 0.0f,
                                  double(delta_time) * 1000.0,
                                  gs.geometry_draw_calls, gs.geometry_triangles,
                                  gs.frustum_visible_items, gs.frustum_input_items,
                                  g_gpu_shadow_ms, g_gpu_geometry_ms, g_gpu_lighting_ms,
                                  g_gpu_transparent_ms, g_gpu_post_ms,
-                                 ms.ullAvailPhys / (1024.0 * 1024 * 1024));
+                                 gws::diag::memory_summary());
                 }
             }
 #if GWS_PROFILE_ENABLED
