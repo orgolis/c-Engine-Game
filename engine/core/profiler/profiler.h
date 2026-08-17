@@ -23,12 +23,15 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include <spdlog/spdlog.h>
 
 #ifndef GWS_PROFILE_ENABLED
 #  define GWS_PROFILE_ENABLED 1   // cheap (coarse zones); leave on by default.
@@ -102,7 +105,35 @@ public:
         }
         for (const Event& e : retired_) accumulate(e);   // threads that exited
         retired_.clear();
+
+        // A frame that took absurdly long is the single most useful thing this
+        // profiler knows, and until now it only showed it in an on-screen
+        // overlay -- which nobody can read during the freeze they are trying to
+        // report. Frames over the threshold name themselves in the log
+        // instead, so "it freezes when I click" arrives as a measurement.
+        // Threshold in ms via GWS_SLOW_FRAME_MS, default 100.
+        static const double slow_ms = [] {
+            const char* v = std::getenv("GWS_SLOW_FRAME_MS");
+            const double d = (v != nullptr) ? std::atof(v) : 0.0;
+            return (d > 0.0) ? d : 100.0;
+        }();
+        const double frame_ms = double(last_frame_ns_) / 1.0e6;
+        if (frame_ms >= slow_ms) {
+            ++slow_frames_;
+            // Unbounded logging would itself stall a machine that is already
+            // stalling; the first 40 are plenty to find a culprit.
+            if (slow_frames_ <= 40) {
+                // spdlog rather than stderr: the Hub launches the editor with no
+                // console, so a stderr-only report is lost in exactly the case
+                // this exists for -- someone reproducing a freeze on their own
+                // machine. This lands in editor.log.
+                // format_report() only reads last_, so it is safe under the lock.
+                spdlog::warn("[slow-frame] {}", format_report());
+            }
+        }
     }
+
+    uint64_t slow_frame_count() const { return slow_frames_; }
 
     const std::unordered_map<std::string, TagStat>& last_frame() const { return last_; }
     uint64_t last_frame_ns() const { return last_frame_ns_; }
@@ -128,6 +159,7 @@ private:
     std::vector<ThreadBuffer*>                buffers_;
     std::vector<Event>                        retired_;   // from exited threads
     std::unordered_map<std::string, TagStat>  last_;
+    uint64_t                                  slow_frames_    = 0;
     uint64_t                                  frame_begin_ns_ = 0;
     uint64_t                                  last_frame_ns_  = 0;
 };
