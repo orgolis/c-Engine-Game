@@ -843,7 +843,44 @@ static void capture_swapchain_tga(gws::renderer::gpu::VulkanDevice& device,
 // GPU identity for crash/hang reports. A graphics freeze that does not say
 // which GPU and driver it happened on is hard to act on, and the report is
 // written long after this becomes known.
+static const bool g_no_fx     = std::getenv("GWS_NO_FX") != nullptr;
+static const bool g_no_ddgi   = g_no_fx || std::getenv("GWS_NO_DDGI") != nullptr;
+static const bool g_no_ssr    = g_no_fx || std::getenv("GWS_NO_SSR") != nullptr;
+static const bool g_no_water  = g_no_fx || std::getenv("GWS_NO_WATER") != nullptr;
+static const bool g_no_clouds = g_no_fx || std::getenv("GWS_NO_CLOUDS") != nullptr;
+static const bool g_no_vol    = g_no_fx || std::getenv("GWS_NO_VOLUMETRIC") != nullptr;
+static const bool g_no_froxel = g_no_fx || std::getenv("GWS_NO_FROXEL") != nullptr;
 static std::string g_gpu_info;
+
+// ---- frame checkpoints -----------------------------------------------------
+// Every profiler zone summed to ~11ms on a 3367ms frame, so the stall lives
+// between the zones. Checkpoints bracket the whole loop body and report the
+// largest GAP, which localizes a stall no zone covers.
+struct FrameCheckpoints {
+    struct P { const char* label; std::chrono::steady_clock::time_point t; };
+    std::vector<P> pts;
+    void reset()               { pts.clear(); }
+    void mark(const char* lbl) { pts.push_back({lbl, std::chrono::steady_clock::now()}); }
+    double total_ms() const {
+        if (pts.size() < 2) return 0.0;
+        return std::chrono::duration<double, std::milli>(
+                   pts.back().t - pts.front().t).count();
+    }
+    std::string worst_gap() const {
+        if (pts.size() < 2) return "(no checkpoints)";
+        size_t worst = 1; double worst_ms = -1.0;
+        for (size_t i = 1; i < pts.size(); ++i) {
+            const double ms = std::chrono::duration<double, std::milli>(
+                                  pts[i].t - pts[i-1].t).count();
+            if (ms > worst_ms) { worst_ms = ms; worst = i; }
+        }
+        char b[256];
+        std::snprintf(b, sizeof b, "%s -> %s = %.1f ms",
+                      pts[worst-1].label, pts[worst].label, worst_ms);
+        return b;
+    }
+};
+static FrameCheckpoints g_cp;
 
 static double g_gpu_shadow_ms = 0.0, g_gpu_geometry_ms = 0.0, g_gpu_lighting_ms = 0.0,
               g_gpu_transparent_ms = 0.0, g_gpu_post_ms = 0.0;
@@ -5641,8 +5678,33 @@ int main(int argc, char** argv) {
                   lighting->get_output_view(),
                   VK_FORMAT_R16G16B16A16_SFLOAT,
                   env_map->get_view(), env_map->get_sampler(),
-                  kW, kH,
-                  /*use_rt=*/device.has_ray_tracing())
+                  // SSR is the ONLY screen-space effect here running at full
+                  // resolution -- volumetrics and clouds both run at 960x540 --
+                  // and it is the only one tracing two rays per pixel. At 1080p
+                  // that is ~2.1M invocations and ~4M rays every frame.
+                  // GWS_SSR_HALF=1 halves it, to test whether the multi-second
+                  // stall scales with per-pixel ray count.
+                  (std::getenv("GWS_SSR_HALF") != nullptr) ? kW / 2 : kW,
+                  (std::getenv("GWS_SSR_HALF") != nullptr) ? kH / 2 : kH,
+                  // RAY-TRACED SSR IS OFF BY DEFAULT (GWS_SSR_RT=1 opts back in).
+                  //
+                  // Bisected against a reported multi-second freeze: with RT
+                  // SSR enabled the GPU stalls 3-4s on a frame shortly after
+                  // entering play mode (the CPU sits in vkWaitForFences).
+                  // Disabling SSR removes the stall completely (0 vs 1 stall,
+                  // 2/2 runs); disabling any other effect pass -- DDGI, clouds,
+                  // volumetrics, water, froxel fog -- does not. Disabling RT
+                  // also removes it, which narrows it to the ray-query SSR
+                  // path specifically.
+                  //
+                  // It is NOT per-pixel ray cost: halving the SSR resolution
+                  // changed nothing (3674ms vs 3700ms). It is not allocation
+                  // either -- no TLAS realloc, no instance-SSBO realloc and no
+                  // new BLAS occur on the stalling frame. Root cause still
+                  // unknown, so the feature falls back to the screen-space
+                  // march, which reflects fine and never stalls.
+                  /*use_rt=*/device.has_ray_tracing() &&
+                             std::getenv("GWS_SSR_RT") != nullptr)
             : nullptr;
 
         // Volumetric sun lighting / light shafts — ray-marches the sun's
@@ -5882,7 +5944,16 @@ int main(int argc, char** argv) {
         hzb_cfg.depth_height = kH;
         hzb_cfg.max_draws    = 4096;
         hzb_cfg.readback_mip = 4;
-        auto hzb_culler = VulkanHzbCuller::create(&device, hzb_cfg);
+        // GWS_NO_HZB=1 disables HZB occlusion culling at runtime. It does a
+        // GPU->CPU readback every frame, which is the kind of thing that can
+        // serialise the pipeline -- so it needs to be switchable without a
+        // rebuild in order to be bisected against.
+        std::unique_ptr<VulkanHzbCuller> hzb_culler;
+        if (std::getenv("GWS_NO_HZB") == nullptr) {
+            hzb_culler = VulkanHzbCuller::create(&device, hzb_cfg);
+        } else {
+            spdlog::warn("[cull] HZB occlusion culling DISABLED (GWS_NO_HZB)");
+        }
         if (hzb_culler) {
             hzb_culler->set_depth_view(g_buffer->get_depth_view());
         }
@@ -6922,6 +6993,10 @@ int main(int argc, char** argv) {
             // does, it writes a hang report from outside this thread -- the
             // only way a freeze leaves any evidence, since nothing crashes.
             gws::diag::hang_heartbeat();
+            g_cp.reset();
+            g_cp.mark("frame_begin");
+            g_cp.reset();
+            g_cp.mark("frame_begin");
 
             double now_wall = glfwGetTime();
             float delta_time = static_cast<float>(now_wall - last_frame_wall);
@@ -7043,6 +7118,7 @@ int main(int argc, char** argv) {
                 post_processing->set_delta_time(delta_time);
             }
 
+            g_cp.mark("pre_input");
             // Key input
             auto key = [&](int k) { return glfwGetKey(glfw_window, k) == GLFW_PRESS; };
 
@@ -7258,6 +7334,7 @@ int main(int argc, char** argv) {
                 }
             }
 
+            g_cp.mark("pre_scripts");
             // Custom scripts (Stage 12): refresh the API context and drive every
             // ScriptComponent. Runs right after the physics/scene update (so
             // scripts see settled transforms) and before net replication (so a
@@ -7764,7 +7841,7 @@ int main(int argc, char** argv) {
                     }
 
                     // Volumetric sun lighting / light shafts (god rays).
-                    if (volumetric_light) {
+                    if (volumetric_light && !g_no_vol) {
                         ImGui::Separator();
                         ImGui::TextUnformatted("Volumetric Light (god rays)");
                         bool vol = volumetric_light->is_enabled();
@@ -7849,7 +7926,7 @@ int main(int argc, char** argv) {
                     }
 
                     // Volumetric clouds.
-                    if (clouds) {
+                    if (clouds && !g_no_clouds) {
                         ImGui::Separator();
                         ImGui::TextUnformatted("Volumetric Clouds");
                         bool con = clouds->is_enabled();
@@ -7971,6 +8048,7 @@ int main(int argc, char** argv) {
             // ------------------------------------------------------------
             // GPU frame
             // ------------------------------------------------------------
+            g_cp.mark("pre_fence_wait");
             // The frame's real blocking point. If the CPU is ahead of the GPU,
             // or the presentation engine is pacing us, the wait shows up HERE —
             // and until this was measured, the difference between "the renderer
@@ -7981,11 +8059,13 @@ int main(int argc, char** argv) {
             // The previous frame's occlusion queries are guaranteed available
             // after its fence. Pull the results into the culler so this
             // frame can skip occluded draws.
+            g_cp.mark("post_fence");
             if (graph) graph->resolve_occlusion_queries();
             // Same fence guarantees the GPU finished the previous frame's
             // timestamp writes — pull per-pass GPU timings into the profiler
             // the Stage 14 Performance overlay reads (N2). Only feeds when the
             // device supports timestamps; otherwise the GPU section stays empty.
+            g_cp.mark("post_occl_resolve");
             if (graph && graph->resolve_timings()) {
                 graph->update_gpu_profiler();
                 {
@@ -8022,9 +8102,11 @@ int main(int argc, char** argv) {
             }
             // Same story for the HZB readback — the GPU finished copying the
             // HZB mip to the host buffer before signalling this fence.
+            g_cp.mark("post_timings");
             if (hzb_culler) hzb_culler->pull_readback();
             }
 
+            g_cp.mark("post_hzb_readback");
             GWS_PROFILE_ZONE("acquire_swapchain_image");
             uint32_t image_index = swapchain->acquire_next_image(
                 acquire_sems[current_frame]);
@@ -8051,6 +8133,7 @@ int main(int argc, char** argv) {
             begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             vkBeginCommandBuffer(cmd, &begin_info);
 
+            g_cp.mark("pre_skinning");
             // Record the skinned-rig compute skinning FIRST, so its output
             // vertex buffer is ready before the RT-BLAS build, shadow pass, and
             // geometry pass all read it this frame.
@@ -8872,24 +8955,24 @@ int main(int argc, char** argv) {
             // recorded before Lighting so the composite right after it adds
             // up-to-date bounce light. The pass itself no-ops until the TLAS
             // + instance buffer are bound and DDGI is enabled in the panel.
-            if (ddgi) ddgi->execute_trace(cmd);
+            if (ddgi && !g_no_ddgi) ddgi->execute_trace(cmd);
             { GWS_PROFILE_ZONE("stage_lighting");
               graph->execute_stage(cmd, RenderGraphStage::Lighting,   {}); }
             // DDGI composite — adds probe irradiance (indirect diffuse) onto
             // the freshly lit HDR before SSR/clouds/shafts/fog layer over it.
-            if (ddgi) ddgi->execute_composite(cmd);
+            if (ddgi && !g_no_ddgi) ddgi->execute_composite(cmd);
             // SSR — compute reflections + composite into HDR before
             // transparent fragments are drawn. Runs outside the render
             // graph because the graph models only render-pass stages and
             // SSR is a compute + render-pass pair owned by its own class.
-            if (ssr) {
+            if (ssr && !g_no_ssr) {
                 ssr->set_cloud_sky_enabled(clouds && clouds->clouds_visible());
                 ssr->execute(cmd, cam.view, cam.proj, cam.position);
             }
             // Water surfaces — collect every active WaterComponent and render
             // them into the HDR target (before clouds/shafts so atmospherics
             // layer on top of the water).
-            if (water_pass) {
+            if (water_pass && !g_no_water) {
                 water_pass->begin_frame();
                 if (auto wscene = editor_state.editor_scene->GetScene()) {
                     for (const auto& went : wscene->GetEntities()) {
@@ -8941,7 +9024,7 @@ int main(int argc, char** argv) {
             }
             // Froxel fog — nearest homogeneous medium; composite last (over the
             // shafts/clouds) so it fogs everything already lit this frame.
-            if (froxel_fog && froxel_fog->is_enabled()) {
+            if (froxel_fog && froxel_fog->is_enabled() && !g_no_froxel) {
                 froxel_fog->set_sun(sun_dir_for_rt, sun_color_for_rt);
                 froxel_fog->set_shadow_matrix(shadow_view_proj);
                 froxel_fog->set_light_count(lighting->get_light_count());
@@ -9007,6 +9090,7 @@ int main(int argc, char** argv) {
             vkQueueSubmit(device.get_graphics_queue(), 1, &submit_info,
                           frame_fences[current_frame]);
 
+            g_cp.mark("pre_present");
             { GWS_PROFILE_ZONE("present");
               swapchain->present_image(image_index, render_sems[current_frame]); }
             current_frame = (current_frame + 1) % kMaxFrames;
@@ -9070,6 +9154,16 @@ int main(int argc, char** argv) {
             // Feed the diagnostics ring: a freeze report then shows whether the
             // frames leading into it were already degrading or were fine right
             // up to the stall.
+            g_cp.mark("frame_end");
+            // NOT delta_time: it is clamped to 50ms upstream (that clamp is why
+            // the health line reads "20.0 fps" during a multi-second stall), so
+            // a threshold on it can never fire. Measure the checkpoints' own span.
+            if (g_cp.total_ms() >= 100.0)
+                spdlog::warn("[frame-gap] frame {:.1f} ms | worst: {}",
+                             g_cp.total_ms(), g_cp.worst_gap());
+            
+            if (delta_time * 1000.0f >= 100.0f)
+                spdlog::warn("[frame-gap] worst: {}", g_cp.worst_gap());
             gws::diag::record_frame_ms(double(delta_time) * 1000.0);
             // Periodic health line, so editor.log carries a timeline even when
             // nothing goes wrong -- "it was fine until here" needs a "here".

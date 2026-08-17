@@ -15,6 +15,7 @@
  * dstAccess = ACCELERATION_STRUCTURE_READ.
  */
 
+#include <chrono>
 #include "vulkan_rt_scene.h"
 #include "vulkan_device.h"
 #include "vulkan_rt_functions.h"

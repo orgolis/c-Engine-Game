@@ -21,6 +21,7 @@
  * submitted per mesh.
  */
 
+#include <chrono>
 #include "vulkan_scene_mesh.h"
 #include "vulkan_device.h"
 #include "culling.h"
