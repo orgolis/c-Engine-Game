@@ -56,6 +56,24 @@ void install_crash_handler(const CrashConfig& cfg);
 // a recoverable fatal condition). Returns the report path, or "" on failure.
 std::string write_report(const std::string& reason);
 
+// ---- hang watchdog ----
+// A freeze is invisible to everything above: nothing throws, nothing signals,
+// and a per-frame timer never fires because the frame never ends. So the only
+// way to see one is from OUTSIDE the stuck thread.
+//
+// install_hang_watchdog() starts a thread that watches a heartbeat the main
+// loop stamps once per frame. If the heartbeat goes stale for `seconds`, it
+// suspends the main thread just long enough to grab its CONTEXT, then writes a
+// hang_report_*.txt with the stack it was stuck in -- three samples a couple of
+// seconds apart, so a spin (same stack every time) is distinguishable from slow
+// progress (stack moves). Reports once per stall, then re-arms when the
+// heartbeat resumes.
+//
+// Call hang_heartbeat() once per frame from the main thread. Cheap: one
+// relaxed atomic store.
+void install_hang_watchdog(double seconds = 5.0);
+void hang_heartbeat();
+
 // ---- logging plumbing (spdlog default logger) ----
 // Attach a rotating file sink (<log_dir>/<app_name>.log) and an in-memory
 // ring-buffer sink to spdlog's default logger. Safe to call once, early.

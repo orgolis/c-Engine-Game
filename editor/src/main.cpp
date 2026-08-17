@@ -5268,6 +5268,13 @@ int main(int argc, char** argv) {
                 return s;
             };
             gws::diag::install_crash_handler(cc);
+            // Seconds before a stalled frame is treated as a hang. Override
+            // with GWS_HANG_SECONDS to catch shorter stalls.
+            {
+                const char* hs = std::getenv("GWS_HANG_SECONDS");
+                const double secs = (hs != nullptr) ? std::atof(hs) : 0.0;
+                gws::diag::install_hang_watchdog(secs > 0.0 ? secs : 5.0);
+            }
         }
 
         // Mirror all default-logger output into the in-editor "Output" panel.
@@ -6857,6 +6864,10 @@ int main(int argc, char** argv) {
             // last frame's results survive into this frame's first reads).
             frame_allocator.begin_frame();
             GWS_PROFILE_FRAME_BEGIN();
+            // Tell the watchdog this frame started. If the next one never
+            // does, it writes a hang report from outside this thread -- the
+            // only way a freeze leaves any evidence, since nothing crashes.
+            gws::diag::hang_heartbeat();
 
             double now_wall = glfwGetTime();
             float delta_time = static_cast<float>(now_wall - last_frame_wall);

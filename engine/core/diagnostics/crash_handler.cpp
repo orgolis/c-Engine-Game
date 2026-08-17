@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -15,6 +16,8 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <thread>
+#include <chrono>
 
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
@@ -145,9 +148,12 @@ std::string exception_code_string(DWORD code) {
 // a freshly captured one. Frames print module+RVA always (works on stripped
 // builds → symbolize offline with addr2line) plus symbol/file:line when DbgHelp
 // can resolve them.
-void append_stack(std::ostringstream& out, CONTEXT ctx) {
+// `thread` defaults to the caller, but the hang watchdog passes the SUSPENDED
+// main thread's handle -- walking a stack that is not your own is the whole
+// point when the thread you care about is the one that stopped responding.
+void append_stack(std::ostringstream& out, CONTEXT ctx, HANDLE thread_in = nullptr) {
     const HANDLE proc = GetCurrentProcess();
-    const HANDLE thread = GetCurrentThread();
+    const HANDLE thread = (thread_in != nullptr) ? thread_in : GetCurrentThread();
 
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
     SymInitialize(proc, nullptr, TRUE);
@@ -157,7 +163,8 @@ void append_stack(std::ostringstream& out, CONTEXT ctx) {
     frame.AddrFrame.Offset = ctx.Rbp; frame.AddrFrame.Mode = AddrModeFlat;
     frame.AddrStack.Offset = ctx.Rsp; frame.AddrStack.Mode = AddrModeFlat;
 
-    out << "\n--- call stack (crashing thread) ---\n";
+    out << (thread_in != nullptr ? "\n--- call stack (hung thread) ---\n"
+                                 : "\n--- call stack (crashing thread) ---\n");
     std::ostringstream rvas;   // collect module-relative addresses for the addr2line hint
     std::string main_module;
 
@@ -357,6 +364,123 @@ void signal_handler(int sig) {
     std::_Exit(3);
 }
 
+// ---- hang watchdog ----------------------------------------------------------
+
+std::atomic<uint64_t> g_heartbeat_ns{0};
+std::atomic<bool>     g_watchdog_stop{false};
+std::unique_ptr<std::thread> g_watchdog_thread;
+#if defined(_WIN32)
+HANDLE g_main_thread = nullptr;
+#endif
+
+uint64_t mono_ns() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+#if defined(_WIN32)
+// Grab the stuck thread's stack. Suspend only long enough to copy its CONTEXT
+// -- walking the stack while it is suspended risks deadlocking on a CRT or
+// heap lock the suspended thread happens to hold, and a hung thread's stack is
+// not moving anyway.
+std::string sample_hung_stack() {
+    if (g_main_thread == nullptr) return "(no main thread handle)\n";
+    CONTEXT ctx{};
+    ctx.ContextFlags = CONTEXT_FULL;
+    if (SuspendThread(g_main_thread) == DWORD(-1)) return "(SuspendThread failed)\n";
+    const BOOL got = GetThreadContext(g_main_thread, &ctx);
+    ResumeThread(g_main_thread);
+    if (!got) return "(GetThreadContext failed)\n";
+
+    std::ostringstream out;
+    append_stack(out, ctx, g_main_thread);
+    return out.str();
+}
+#endif
+
+void write_hang_report(double stalled_seconds) {
+    // Announce BEFORE sampling. Collecting three stacks takes about four
+    // seconds, and a frozen editor is usually killed by the user long before
+    // that -- so the detection itself has to reach the log immediately, or the
+    // whole report dies with the process and the freeze leaves no trace at all.
+    spdlog::critical("[hang] main loop stalled {:.1f}s — sampling stacks...", stalled_seconds);
+    if (auto l = spdlog::default_logger()) l->flush();
+
+    std::ostringstream out;
+    out << "=== " << g_config.app_name << " HANG report ===\n";
+    out << "time:    " << timestamp(false) << "\n";
+    out << "app:     " << g_config.app_name << " " << g_config.version << "\n";
+    if (!g_config.build_info.empty()) out << "build:   " << g_config.build_info << "\n";
+    out << "reason:  main loop stopped ticking for " << stalled_seconds << "s\n";
+    out << "\nNOTE: this is a FREEZE, not a crash. Nothing threw and nothing\n"
+           "signalled, so no crash report exists for it.\n";
+
+    if (g_config.context_provider) {
+        std::string c;
+        try { c = g_config.context_provider(); } catch (...) {}
+        if (!c.empty()) out << "\n--- app context ---\n" << c
+                            << (c.back() == '\n' ? "" : "\n");
+    }
+
+#if defined(_WIN32)
+    // Three samples: identical stacks mean a spin or a blocking wait; a moving
+    // stack means it is grinding, not stuck.
+    for (int i = 0; i < 3; ++i) {
+        out << "\n=== sample " << (i + 1) << " of 3 ===\n";
+        out << sample_hung_stack();
+        if (i < 2) std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+    if (g_config.write_minidump && !g_config.report_dir.empty()) {
+        const std::string dump = g_config.report_dir + "/hang_" + timestamp(true) + ".dmp";
+        write_minidump(dump, nullptr);
+        out << "\nminidump: " << dump << "\n";
+    }
+#else
+    out << "\n(stack sampling is Windows-only)\n";
+#endif
+
+    append_system_info(out);
+    append_recent_log(out);
+
+    std::string path;
+    if (!g_config.report_dir.empty())
+        path = g_config.report_dir + "/hang_report_" + timestamp(true) + ".txt";
+    const std::string text = out.str();
+    if (!path.empty()) {
+        std::ofstream f(path, std::ios::trunc);
+        if (f) f << text;
+    }
+    // Also name it in the log, so the ordinary editor.log says a hang happened
+    // and where the full report went.
+    spdlog::critical("[hang] main loop stalled {:.1f}s — report: {}",
+                     stalled_seconds, path.empty() ? "(not written)" : path);
+    if (auto l = spdlog::default_logger()) l->flush();
+}
+
+void watchdog_loop(double threshold_s) {
+    bool reported_this_stall = false;
+    uint64_t last_seen = g_heartbeat_ns.load(std::memory_order_relaxed);
+    while (!g_watchdog_stop.load(std::memory_order_relaxed)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        const uint64_t beat = g_heartbeat_ns.load(std::memory_order_relaxed);
+        if (beat == 0) continue;          // not started ticking yet
+        if (beat != last_seen) {          // a new frame began; re-arm reporting
+            last_seen = beat;
+            reported_this_stall = false;
+        }
+        // Measured against the CURRENT beat on every poll, not only when the
+        // beat is unchanged between two polls -- the earlier version needed a
+        // stall to straddle two consecutive polls, so it slept straight
+        // through a 735ms stall that the frame timer did report.
+        const double stalled = double(mono_ns() - beat) / 1.0e9;
+        if (stalled >= threshold_s && !reported_this_stall) {
+            reported_this_stall = true;   // once per stall, not once per check
+            write_hang_report(stalled);
+        }
+    }
+}
+
 }  // namespace
 
 // ---- public API -------------------------------------------------------------
@@ -377,6 +501,30 @@ void install_crash_handler(const CrashConfig& cfg) {
     g_installed = true;
     spdlog::info("[diag] crash handler installed (reports -> {})",
                  g_config.report_dir.empty() ? "(stderr only)" : g_config.report_dir);
+}
+
+void install_hang_watchdog(double seconds) {
+    if (g_watchdog_thread) return;   // idempotent
+#if defined(_WIN32)
+    // A pseudo-handle from GetCurrentThread() is only meaningful to the thread
+    // that asked for it, so duplicate it into a real one the watchdog can use.
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
+                         GetCurrentProcess(), &g_main_thread,
+                         0, FALSE, DUPLICATE_SAME_ACCESS)) {
+        spdlog::warn("[hang] could not duplicate main thread handle; watchdog disabled");
+        return;
+    }
+#endif
+    g_heartbeat_ns.store(mono_ns(), std::memory_order_relaxed);
+    g_watchdog_stop.store(false, std::memory_order_relaxed);
+    g_watchdog_thread = std::make_unique<std::thread>(watchdog_loop, seconds);
+    g_watchdog_thread->detach();      // outlives shutdown; process exit reaps it
+    spdlog::info("[hang] watchdog armed — reports a stack if a frame takes over {:.1f}s",
+                 seconds);
+}
+
+void hang_heartbeat() {
+    g_heartbeat_ns.store(mono_ns(), std::memory_order_relaxed);
 }
 
 std::string write_report(const std::string& reason) {
