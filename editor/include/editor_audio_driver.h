@@ -84,13 +84,23 @@ public:
             p.velocity = track_vel(source_last_, key, pos, dt);
             if (p.spatial && occ) p.occlusion = occ(listener_pos, pos);
             if (it == voices_.end()) {
+                // Already known bad, and still pointing at the same file: skip
+                // silently. Without this the load is retried and the warning
+                // logged EVERY frame.
+                const auto fit = failed_clip_.find(key);
+                if (fit != failed_clip_.end() && fit->second == src->GetClipPath()) {
+                    src->SetPlaying(false);
+                    continue;
+                }
                 const gws::audio::ClipId clip = clip_for(*src);
                 if (clip == gws::audio::kInvalidClip) {
                     spdlog::warn("[audio] entity {}: no playable clip '{}' — set a valid audio file",
                                  key, src->GetClipPath());
-                    src->SetPlaying(false);   // avoid retrying the bad clip every frame
+                    failed_clip_[key] = src->GetClipPath();
+                    src->SetPlaying(false);
                     continue;
                 }
+                failed_clip_.erase(key);   // a path that now loads is no longer bad
                 const gws::audio::VoiceId v = engine_.play(clip, p);
                 if (v != gws::audio::kInvalidVoice) {
                     voices_[key] = v;
@@ -140,6 +150,13 @@ private:
     std::unordered_map<uint32_t, glm::vec3>            source_last_;
     std::unordered_map<uint32_t, glm::vec3>            listener_last_;
     std::unordered_set<uint32_t>                       seen_;
+    /// Entity -> the clip path that already failed to load for it. SetPlaying(false)
+    /// was supposed to stop the retry, but want_play is
+    /// `IsPlaying() || (play_mode && PlayOnStart())` -- so PlayOnStart re-armed it
+    /// every single frame, and the warning logged at frame rate. Remembering the
+    /// failed path stops both the retry and the spam, while still re-trying once
+    /// if the user points the source at a different file.
+    std::unordered_map<uint32_t, std::string>          failed_clip_;
 };
 
 }  // namespace schizo::editor

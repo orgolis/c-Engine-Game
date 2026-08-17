@@ -5199,6 +5199,11 @@ int main(int argc, char** argv) {
     // without synthetic input the whole "it lags when I click in the viewport"
     // case is unreachable to measurement.
     bool        stress_click = false;
+    // --stress-play: enter play mode a few frames in, then sweep the play
+    // camera's yaw. The reported freeze happens in PLAY mode while the camera
+    // turns away from its start angle -- and play mode had NO headless entry
+    // point at all, so that entire path was unreachable to measurement.
+    bool        stress_play = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--net-host" && i + 1 < argc) {
@@ -5245,6 +5250,8 @@ int main(int argc, char** argv) {
             screenshot_path = argv[++i];
         } else if (a == "--select" && i + 1 < argc) {
             startup_select = static_cast<uint32_t>(std::atoi(argv[++i]));
+        } else if (a == "--stress-play") {
+            stress_play = true;
         } else if (a == "--stress-viewport-click") {
             stress_click = true;
         } else if (a == "--startup-probe") {
@@ -6764,7 +6771,7 @@ int main(int argc, char** argv) {
         }
 
         while (!glfwWindowShouldClose(glfw_window)) {
-            glfwPollEvents();
+            { GWS_PROFILE_ZONE("poll_events"); glfwPollEvents(); }
 
             // Poll source-image hot reload ~once/second (not every frame — it
             // stats watched files). Reloads changed textures in place and fires
@@ -7119,6 +7126,33 @@ int main(int argc, char** argv) {
                 if (editor_state.undo_redo_manager.CanRedo())
                     editor_state.undo_redo_manager.Redo();
             }
+            // --stress-play: start playback once, then rotate the play camera
+            // continuously so new geometry keeps entering the frustum.
+            if (stress_play && editor_state.scene_playback_manager) {
+                if (frame_count == 120 && !editor_state.scene_playback_manager->IsPlaying()) {
+                    if (auto sc = editor_state.editor_scene->GetScene()) {
+                        if (editor_state.scene_playback_manager->StartPlayback(sc))
+                            spdlog::info("[stress-play] entered play mode");
+                    }
+                }
+                if (frame_count > 130 && editor_state.scene_playback_manager->IsPlaying()) {
+                    if (auto sc = editor_state.editor_scene->GetScene()) {
+                        for (const auto& ent : sc->GetEntities()) {
+                            if (!ent) continue;
+                            const std::string nm = ent->GetName();
+                            if (nm != "FirstPersonCamera" && nm != "ThirdPersonCamera") continue;
+                            auto tr = ent->GetTransform();
+                            // Rotation is a quaternion here; compose a small
+                            // yaw step rather than nudging Euler components.
+                            const glm::quat yaw =
+                                glm::angleAxis(glm::radians(2.0f), glm::vec3(0, 1, 0));
+                            tr->SetLocalRotation(yaw * tr->GetLocalRotation());
+                            break;
+                        }
+                    }
+                }
+            }
+
             // F5 toggles play/stop. Edge-detected so a held key fires once.
             {
                 static bool prev_f5 = false;
@@ -7213,7 +7247,8 @@ int main(int argc, char** argv) {
 
             if (editor_state.scene_playback_manager &&
                 editor_state.scene_playback_manager->IsPlaying())
-                editor_state.scene_playback_manager->Update(delta_time);
+                { GWS_PROFILE_ZONE("playback_update");
+                  editor_state.scene_playback_manager->Update(delta_time); }
             else {
                 // In edit mode, still need to update the scene so transforms are recalculated
                 // This ensures the hierarchy MarkDirty cascade works in the editor
@@ -8731,7 +8766,8 @@ int main(int argc, char** argv) {
                 // the RT scene on scene switch (doing so previously left
                 // the lighting descriptor pointing at a destroyed TLAS,
                 // which hung the editor on scene load).
-                rt_scene->update(cmd, opaque_draws.data(), opaque_draws.size());
+                { GWS_PROFILE_ZONE("rt_scene_update");
+                  rt_scene->update(cmd, opaque_draws.data(), opaque_draws.size()); }
                 // Re-bind the TLAS handle. rebuild_tlas() always produces
                 // a valid handle (empty TLAS for empty scenes), so this is
                 // never null and the descriptor never dangles.
@@ -8791,6 +8827,7 @@ int main(int argc, char** argv) {
             const glm::mat4 sh_proj = shadow_active
                 ? shadow_view_proj
                 : graph->get_camera().proj;
+            GWS_PROFILE_ZONE("stage_shadow");
             graph->execute_stage(cmd, RenderGraphStage::Shadow,
                 [&](VkCommandBuffer rec_cmd) {
                     uint32_t calls = 0, tris = 0;
@@ -8802,7 +8839,8 @@ int main(int argc, char** argv) {
                                            shadow_draws.size(),
                                            &calls, &tris);
                 });
-            graph->execute_stage(cmd, RenderGraphStage::Geometry,   {});
+            { GWS_PROFILE_ZONE("stage_geometry");
+              graph->execute_stage(cmd, RenderGraphStage::Geometry,   {}); }
             // HZB occlusion: build the depth pyramid from THIS frame's depth
             // (compute downsample chain) + copy the readback mip to a host
             // buffer. pull_readback() next frame feeds test_visibility(), which
@@ -8835,7 +8873,8 @@ int main(int argc, char** argv) {
             // up-to-date bounce light. The pass itself no-ops until the TLAS
             // + instance buffer are bound and DDGI is enabled in the panel.
             if (ddgi) ddgi->execute_trace(cmd);
-            graph->execute_stage(cmd, RenderGraphStage::Lighting,   {});
+            { GWS_PROFILE_ZONE("stage_lighting");
+              graph->execute_stage(cmd, RenderGraphStage::Lighting,   {}); }
             // DDGI composite — adds probe irradiance (indirect diffuse) onto
             // the freshly lit HDR before SSR/clouds/shafts/fog layer over it.
             if (ddgi) ddgi->execute_composite(cmd);
@@ -8911,6 +8950,7 @@ int main(int argc, char** argv) {
             // Transparent stage uses a custom recorder so we can feed it
             // the back-to-front-sorted transparent draw list directly,
             // independent of the graph's stored opaque draw_items_.
+            GWS_PROFILE_ZONE("stage_transparent");
             graph->execute_stage(cmd, RenderGraphStage::Transparent,
                 [&](VkCommandBuffer rec_cmd) {
                     transparent->execute(rec_cmd, transparent_draws, graph->get_camera());
@@ -8931,7 +8971,8 @@ int main(int argc, char** argv) {
                         }
                     }
                 });
-            graph->execute_stage(cmd, RenderGraphStage::PostProcess, {});
+            { GWS_PROFILE_ZONE("stage_post");
+              graph->execute_stage(cmd, RenderGraphStage::PostProcess, {}); }
             graph->end_frame(cmd);
 
             // ImGui render pass — clears swapchain to dark gray, then draws UI on top.
@@ -8962,10 +9003,12 @@ int main(int argc, char** argv) {
             submit_info.pCommandBuffers      = &cmd;
             submit_info.signalSemaphoreCount = 1;
             submit_info.pSignalSemaphores    = &render_sems[current_frame];
+            GWS_PROFILE_ZONE("queue_submit");
             vkQueueSubmit(device.get_graphics_queue(), 1, &submit_info,
                           frame_fences[current_frame]);
 
-            swapchain->present_image(image_index, render_sems[current_frame]);
+            { GWS_PROFILE_ZONE("present");
+              swapchain->present_image(image_index, render_sems[current_frame]); }
             current_frame = (current_frame + 1) % kMaxFrames;
             ++frame_count;
 

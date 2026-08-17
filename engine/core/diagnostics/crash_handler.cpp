@@ -749,7 +749,15 @@ void init_logging(const std::string& log_dir, const std::string& app_name, size_
             spdlog::warn("[diag] file logging unavailable: {}", e.what());
         }
     }
-    logger->flush_on(spdlog::level::info);
+    // flush_on(info) meant EVERY info/warning line hit the disk synchronously.
+    // That is fine at a handful of lines a second and ruinous when something
+    // logs per frame -- a stuck audio clip was logging at frame rate, so the
+    // renderer was paying a disk flush every frame. Errors still flush
+    // immediately (they precede the interesting failures), everything else is
+    // flushed on a 1s timer, and the crash/hang paths flush explicitly before
+    // writing a report, so nothing is lost where it matters.
+    logger->flush_on(spdlog::level::err);
+    spdlog::flush_every(std::chrono::seconds(1));
 }
 
 std::vector<std::string> recent_log_lines(size_t count) {
