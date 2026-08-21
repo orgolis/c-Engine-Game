@@ -26,6 +26,10 @@
 #include <set>
 #include <stdexcept>
 #include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <vector>
 
 namespace gws::renderer::gpu {
 
@@ -77,10 +81,15 @@ void VulkanDevice::initialize(const RenderConfig& config) {
     
     // Create logical device
     create_logical_device();
-    
+
     // Create command pool
     create_command_pool();
-    
+
+    // Load (or start) the cross-run pipeline cache. Must come after the
+    // logical device exists; every subsequent vkCreate*Pipelines call in the
+    // renderer should pass get_pipeline_cache() instead of VK_NULL_HANDLE.
+    create_pipeline_cache();
+
     GWS_LOG_INFO("✅ Vulkan device initialized successfully");
     GWS_LOG_INFO("   GPU: {}", get_device_name());
 }
@@ -88,22 +97,31 @@ void VulkanDevice::initialize(const RenderConfig& config) {
 void VulkanDevice::shutdown() {
     if (device != VK_NULL_HANDLE) {
         wait_idle();
-        
+
         // Cleanup swapchain
         swapchain.reset();
-        
+
         // Cleanup surface
         if (surface != VK_NULL_HANDLE) {
             vkDestroySurfaceKHR(instance, surface, nullptr);
             surface = VK_NULL_HANDLE;
         }
-        
+
         // Cleanup command pool
         if (command_pool != VK_NULL_HANDLE) {
             vkDestroyCommandPool(device, command_pool, nullptr);
             command_pool = VK_NULL_HANDLE;
         }
-        
+
+        // Persist the pipeline cache before the device that owns it goes
+        // away, so the NEXT run's first frame doesn't pay driver JIT cost
+        // this run already paid.
+        save_pipeline_cache();
+        if (pipeline_cache_ != VK_NULL_HANDLE) {
+            vkDestroyPipelineCache(device, pipeline_cache_, nullptr);
+            pipeline_cache_ = VK_NULL_HANDLE;
+        }
+
         // Cleanup resources
         buffers.clear();
         images.clear();
@@ -135,6 +153,65 @@ void VulkanDevice::shutdown() {
     }
     
     GWS_LOG_INFO("✅ Vulkan device shut down");
+}
+
+namespace {
+// %LOCALAPPDATA%/GameWorldshaper/cache/vulkan_pipeline_cache.bin — same
+// %LOCALAPPDATA%/GameWorldshaper convention as the diagnostics directory
+// (editor/src/main.cpp), so both live under one user-data root.
+std::string pipeline_cache_path() {
+    std::string dir;
+    if (const char* la = std::getenv("LOCALAPPDATA"))
+        dir = std::string(la) + "\\GameWorldshaper\\cache";
+    else
+        dir = "cache";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir + "/vulkan_pipeline_cache.bin";
+}
+}  // namespace
+
+void VulkanDevice::create_pipeline_cache() {
+    std::vector<char> initial_data;
+    const std::string path = pipeline_cache_path();
+    {
+        std::ifstream f(path, std::ios::binary | std::ios::ate);
+        if (f) {
+            const std::streamsize size = f.tellg();
+            if (size > 0) {
+                initial_data.resize(static_cast<size_t>(size));
+                f.seekg(0);
+                f.read(initial_data.data(), size);
+            }
+        }
+    }
+
+    VkPipelineCacheCreateInfo ci{};
+    ci.sType           = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    ci.initialDataSize = initial_data.size();
+    ci.pInitialData    = initial_data.empty() ? nullptr : initial_data.data();
+    // A cache file from a different GPU/driver fails the header check
+    // vkCreatePipelineCache does internally; the driver just discards the
+    // stale data and returns an empty cache rather than an error, so no
+    // manual UUID check is needed here.
+    if (vkCreatePipelineCache(device, &ci, nullptr, &pipeline_cache_) != VK_SUCCESS) {
+        GWS_LOG_WARN("VulkanDevice: vkCreatePipelineCache failed; pipelines will not be cached across runs");
+        pipeline_cache_ = VK_NULL_HANDLE;
+        return;
+    }
+    GWS_LOG_INFO("Vulkan pipeline cache: {} ({} bytes loaded from {})",
+                 initial_data.empty() ? "starting empty" : "warm-started",
+                 initial_data.size(), path);
+}
+
+void VulkanDevice::save_pipeline_cache() {
+    if (pipeline_cache_ == VK_NULL_HANDLE) return;
+    size_t size = 0;
+    if (vkGetPipelineCacheData(device, pipeline_cache_, &size, nullptr) != VK_SUCCESS || size == 0) return;
+    std::vector<char> data(size);
+    if (vkGetPipelineCacheData(device, pipeline_cache_, &size, data.data()) != VK_SUCCESS) return;
+    std::ofstream f(pipeline_cache_path(), std::ios::binary | std::ios::trunc);
+    if (f) f.write(data.data(), static_cast<std::streamsize>(size));
 }
 
 void VulkanDevice::wait_idle() {
@@ -748,6 +825,32 @@ void VulkanDevice::create_logical_device() {
         // commands built here always use 0, so it is deliberately not required.
     }
 
+    // shaderInt64 (core VkPhysicalDeviceFeatures, NOT an extension feature):
+    // required by every ray-query shader that addresses BLAS vertex/index
+    // buffers via 64-bit device addresses -- ssr_rt.comp, ddgi_trace.comp,
+    // ssao_rt.comp, lighting_pass.frag. GL_EXT_buffer_reference2's uint64_t
+    // arithmetic lowers to SPIR-V OpTypeInt 64 (capability Int64), which
+    // this feature gates. It is a DIFFERENT flag from
+    // VK_KHR_buffer_device_address's `bufferDeviceAddress` (requested via
+    // bda_features below), which only covers the pointer-indirection side,
+    // not 64-bit integer arithmetic on the value.
+    //
+    // This was never requested, so every RT frame ran those shaders with an
+    // unrequested SPIR-V capability -- undefined behaviour per the Vulkan
+    // spec on every GPU this ever ran on. It went unnoticed because the
+    // validation layer's callback (debug_callback, this file) logs through
+    // GWS_LOG_WARN, which was a silent no-op for the process's entire life
+    // until gws::logging::detail::default_spdlog_logger() gained its
+    // spdlog::default_logger_raw() fallback -- so the warning about it was
+    // being generated and discarded on every single run.
+    bool shader_int64_supported = false;
+    {
+        VkPhysicalDeviceFeatures supported{};
+        vkGetPhysicalDeviceFeatures(physical_device, &supported);
+        shader_int64_supported = supported.shaderInt64 == VK_TRUE;
+        if (shader_int64_supported) device_features.shaderInt64 = VK_TRUE;
+    }
+
     // Device extensions — swapchain is required; the four KHR ray-tracing
     // extensions are added if the physical device advertises all of them.
     std::vector<const char*> extensions = {
@@ -804,13 +907,19 @@ void VulkanDevice::create_logical_device() {
 
         if (!pretend_no_rt &&
             rq_features.rayQuery && as_features.accelerationStructure &&
-            bda_features.bufferDeviceAddress) {
+            bda_features.bufferDeviceAddress && shader_int64_supported) {
             extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
             extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
             extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
             extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
             ray_tracing_supported_ = true;
             GWS_LOG_INFO("✅ Hardware ray tracing supported and enabled");
+        } else if (!pretend_no_rt && rq_features.rayQuery && as_features.accelerationStructure &&
+                   bda_features.bufferDeviceAddress && !shader_int64_supported) {
+            GWS_LOG_WARN("Ray tracing extensions present but shaderInt64 is not — RT disabled "
+                         "(the ray-query shaders need 64-bit integer arithmetic on buffer "
+                         "device addresses)");
+            features2.pNext = nullptr;
         } else {
             GWS_LOG_INFO("Ray tracing extensions present but required features missing — RT disabled");
             features2.pNext = nullptr;

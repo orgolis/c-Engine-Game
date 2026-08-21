@@ -201,7 +201,7 @@ bool VulkanSsrPass::create_compute_pipeline() {
     cpi.stage.module = sm;
     cpi.stage.pName  = "main";
     cpi.layout       = compute_layout_;
-    VkResult r = vkCreateComputePipelines(vk, VK_NULL_HANDLE, 1, &cpi, nullptr, &compute_pipeline_);
+    VkResult r = vkCreateComputePipelines(vk, device_->get_pipeline_cache(), 1, &cpi, nullptr, &compute_pipeline_);
     vkDestroyShaderModule(vk, sm, nullptr);
     if (r != VK_SUCCESS) return false;
 
@@ -428,7 +428,7 @@ bool VulkanSsrPass::create_composite_pipeline(VkImageView hdr_color_view, VkForm
     gpi.pDynamicState       = &dyn;
     gpi.layout              = composite_layout_;
     gpi.renderPass          = composite_render_pass_;
-    VkResult res = vkCreateGraphicsPipelines(vk, VK_NULL_HANDLE, 1, &gpi, nullptr, &composite_pipeline_);
+    VkResult res = vkCreateGraphicsPipelines(vk, device_->get_pipeline_cache(), 1, &gpi, nullptr, &composite_pipeline_);
     vkDestroyShaderModule(vk, sv, nullptr);
     vkDestroyShaderModule(vk, sf, nullptr);
     return res == VK_SUCCESS;

@@ -213,9 +213,31 @@ void SkinnedMesh::skin(VkCommandBuffer cmd, const std::vector<glm::mat4>& bone_g
     vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     vkCmdDispatch(cmd, (vertex_count_ + 63) / 64, 1, 1);
 
-    // Compute write must be visible to the geometry stage's vertex fetch.
-    buf_barrier(VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
+    // Compute write must be visible to every downstream reader of this buffer:
+    //   - the geometry stage's vertex fetch (VERTEX_INPUT / VERTEX_ATTRIBUTE_READ)
+    //   - a BLAS build using it as triangle geometry input, if RT is on
+    //     (ACCELERATION_STRUCTURE_BUILD / ACCELERATION_STRUCTURE_READ)
+    //   - any compute shader that dereferences it via a raw buffer_reference
+    //     device address rather than a descriptor -- e.g. the ray-query SSR
+    //     pass re-shading a hit on a skinned mesh (COMPUTE_SHADER / SHADER_READ)
+    //
+    // Originally this barrier only covered vertex input, because RT and SSR
+    // were added later and both read this buffer by device address, which a
+    // buffer-scoped VkBufferMemoryBarrier's *stage* mask does not
+    // automatically extend to. A driver was free to run the BLAS build or the
+    // SSR dispatch concurrently with (or before) this write completed --
+    // undefined results on a skinned mesh once RT + ray-query SSR were both
+    // live, i.e. exactly when play mode starts animating characters.
+    VkPipelineStageFlags dst_stages = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
+                                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    VkAccessFlags        dst_access = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT |
+                                       VK_ACCESS_SHADER_READ_BIT;
+    if (device_ != nullptr && device_->has_ray_tracing()) {
+        dst_stages |= VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        dst_access |= VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    }
+    buf_barrier(VK_ACCESS_SHADER_WRITE_BIT, dst_access,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, dst_stages);
 }
 
 SkinnedMesh::~SkinnedMesh() { destroy(); }

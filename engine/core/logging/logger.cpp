@@ -13,7 +13,21 @@ static std::mutex g_logger_mutex;
 
 namespace detail {
 spdlog::logger* default_spdlog_logger() {
-    return g_default_logger.get();
+    // gws::logging::Logger::Initialize() is never called by the editor (it
+    // sets up logging via gws::diag::init_logging instead, which mutates
+    // spdlog's own default logger rather than this module's). Before this
+    // fallback, every GWS_LOG_* call anywhere in the engine was a silent
+    // no-op for the entire life of the process -- including error/warn
+    // paths in vulkan_device.cpp, vulkan_swapchain.cpp, barriers.cpp,
+    // graphics_pipeline.cpp, render_pass.cpp, shader_compiler.cpp,
+    // vulkan_command_buffer.cpp, vulkan_descriptor_set.cpp, and
+    // vulkan_surface.cpp: exactly the layer that would otherwise explain a
+    // GPU crash or hang. Falling back to spdlog's active default logger
+    // means those calls reach the same sinks (console + rotating file +
+    // hang/crash ring buffer) as every spdlog::info()-style call elsewhere,
+    // with zero call-site changes required.
+    if (g_default_logger) return g_default_logger.get();
+    return spdlog::default_logger_raw();
 }
 }
 

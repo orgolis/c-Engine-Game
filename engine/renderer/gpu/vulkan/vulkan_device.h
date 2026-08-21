@@ -316,6 +316,15 @@ public:
         return ray_tracing_supported_ ? rt_functions_.get() : nullptr;
     }
 
+    /// Shared VkPipelineCache, loaded from disk at startup (if a compatible
+    /// cache file exists) and saved back at shutdown. Pass this to every
+    /// vkCreate{Graphics,Compute}Pipelines call instead of VK_NULL_HANDLE so
+    /// the driver's shader compilation/linking work is reused across runs
+    /// instead of being repeated -- silently, in the driver, at whatever
+    /// moment a pipeline is first actually used -- every time the process
+    /// restarts. Never null after `initialize()` succeeds.
+    VkPipelineCache get_pipeline_cache() const { return pipeline_cache_; }
+
     /// Attach an externally-created surface (typically from `glfwCreateWindowSurface`).
     /// The device takes ownership for shutdown — the caller must NOT destroy it.
     /// Returns false if attached after a previous surface or if the graphics queue
@@ -343,6 +352,8 @@ private:
     void create_swapchain(void* window_handle,  // HWND on Windows
                           uint32_t width, uint32_t height);
     void create_command_pool();
+    void create_pipeline_cache();
+    void save_pipeline_cache();
 
     // ========================================================================
     // Vulkan Object Management
@@ -379,6 +390,9 @@ private:
 
     // Command Pool
     VkCommandPool command_pool = VK_NULL_HANDLE;
+
+    // Cross-run pipeline cache. See get_pipeline_cache().
+    VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
 
     // Configuration
     RenderConfig config;
