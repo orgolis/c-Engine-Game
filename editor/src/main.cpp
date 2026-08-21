@@ -8872,6 +8872,11 @@ int main(int argc, char** argv) {
                 if (ssr && ssr->uses_rt()) {
                     ssr->set_tlas(rt_scene->get_tlas_handle());
                     ssr->set_instance_data_buffer(rt_scene->get_instance_data_buffer());
+                    // Must travel WITH the buffer above: it is what stops the
+                    // shader dereferencing a stale instance slot, and a stale
+                    // device address there faults the GPU rather than shading
+                    // something wrong.
+                    ssr->set_instance_count(rt_scene->get_instance_count());
                     // Feed the RT reflection re-shade the same sun + ambient
                     // the deferred lighting uses, so reflected geometry is
                     // lit consistently with what's directly visible.

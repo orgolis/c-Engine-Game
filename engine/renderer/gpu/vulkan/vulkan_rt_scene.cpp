@@ -490,7 +490,13 @@ struct RtInstanceDataGpu {
     float    base_color[4];
     float    metallic;
     float    roughness;
-    float    pad0, pad1;
+    // Element counts for the two buffers above, so the shader can bounds-check
+    // before it dereferences them. These reuse the old pad0/pad1 slots, so the
+    // struct is unchanged at 64 bytes. Zero means "do not read" -- the shader
+    // treats a zero count as a failed check, so a mesh we could not measure
+    // degrades to flat shading instead of reading unknown memory.
+    uint32_t index_count;
+    uint32_t vertex_count;
     float    emissive[4];
 };
 static_assert(sizeof(RtInstanceDataGpu) == 64, "RtInstanceData layout drift");
@@ -556,6 +562,12 @@ void VulkanRtScene::update(VkCommandBuffer cmd, const DrawItem* items, size_t co
                 if (it.mesh != nullptr) {
                     d.vbo_addr = buffer_device_address(it.mesh->get_vertex_buffer());
                     d.ibo_addr = buffer_device_address(it.mesh->get_index_buffer());
+                    // Publish the extents the shader validates against. These
+                    // describe the SAME snapshot of the mesh as the addresses
+                    // on the line above, which is the property that makes the
+                    // check meaningful.
+                    d.index_count  = it.mesh->index_count();
+                    d.vertex_count = it.mesh->vertex_count();
                 }
                 if (it.material != nullptr) {
                     const auto& p = it.material->params();

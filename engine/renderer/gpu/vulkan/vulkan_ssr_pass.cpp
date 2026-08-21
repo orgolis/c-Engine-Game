@@ -523,7 +523,8 @@ void VulkanSsrPass::execute(VkCommandBuffer cmd,
         float thickness;
         int32_t num_steps;
         float fresnel_power;
-        float _pad0, _pad1;
+        int32_t instance_count;   // valid entries in the instance SSBO
+        float _pad1;
         float sun_dir[4];     // xyz = direction, w unused
         float sun_color[4];   // rgb = color*intensity, w unused
         float ambient[4];     // rgb = color*intensity, w unused
@@ -540,6 +541,7 @@ void VulkanSsrPass::execute(VkCommandBuffer cmd,
     pc.thickness     = config_.thickness;
     pc.num_steps     = config_.num_steps;
     pc.fresnel_power = config_.fresnel_power;
+    pc.instance_count = static_cast<int32_t>(instance_count_);
     pc.sun_dir[0] = sun_direction_.x; pc.sun_dir[1] = sun_direction_.y; pc.sun_dir[2] = sun_direction_.z;
     pc.sun_color[0] = sun_color_.x; pc.sun_color[1] = sun_color_.y; pc.sun_color[2] = sun_color_.z;
     pc.ambient[0] = ambient_color_.x * ambient_intensity_;

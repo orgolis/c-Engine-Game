@@ -38,7 +38,18 @@ struct RtInstanceData {
     vec4  base_color;
     float metallic;
     float roughness;
-    float pad0, pad1;
+    // Element counts of the buffers the two addresses above point at. These
+    // occupy what used to be two unused padding floats, so the struct is
+    // still 64 bytes and the C++ side's static_assert still holds.
+    //
+    // They exist because the fetch below is a RAW DEVICE ADDRESS read: it
+    // bypasses descriptors, so nothing but these numbers stands between a
+    // stale or mismatched index and an out-of-bounds GPU memory access --
+    // which is an MMU fault, which hangs the device, which Windows resolves
+    // by resetting the driver (TDR) and the user experiences as a
+    // multi-second freeze the renderer never recovers from.
+    uint  index_count;
+    uint  vertex_count;
     vec4  emissive;
 };
 layout(set = 0, binding = 8, scalar) readonly buffer InstanceBuffer {
@@ -56,7 +67,13 @@ layout(push_constant) uniform PC {
     float thickness;
     int   num_steps;
     float fresnel_power;
-    vec2  _pad;
+    // Number of VALID entries in `instances` this frame. The TLAS can outlive
+    // the instance buffer's contents (rebuild_tlas returns early on an
+    // allocation failure, leaving last frame's instanceCustomIndex values in
+    // a structure whose companion SSBO has already been rewritten), so the
+    // index arriving from a ray hit is not automatically in range.
+    int   instance_count;
+    float _pad;
     vec4  sun_dir;    // xyz = direction (light → scene)
     vec4  sun_color;  // rgb = colour × intensity
     vec4  ambient;    // rgb = colour × intensity
@@ -122,23 +139,48 @@ void main() {
         float t        = rayQueryGetIntersectionTEXT(rq, true);
         vec3  hit_pos  = P + N * 0.02 + R * t;
 
-        RtInstanceData inst = instances[inst_idx];
-        vec3 albedo = inst.base_color.rgb;
-        vec3 world_n = N; // fallback
+        // EVERY index below is bounds-checked before it reaches memory, and
+        // that is not defensive style for its own sake: these are raw
+        // buffer_reference reads, so an out-of-range index here is not a
+        // garbage pixel, it is a GPU MMU fault -> device hang -> Windows TDR
+        // -> the multi-second freeze this pass was disabled for twice. A hit
+        // that fails any check falls back to the G-buffer normal and the
+        // instance's flat base colour, which is a slightly wrong reflection
+        // on one pixel -- a trade with no downside against resetting the GPU.
+        vec3 albedo   = vec3(0.5);
+        vec3 emissive = vec3(0.0);
+        vec3 world_n  = N; // fallback
 
-        if (inst.vbo_addr != 0ul && inst.ibo_addr != 0ul) {
-            IndexBuf  ib = IndexBuf(inst.ibo_addr);
-            VertexBuf vb = VertexBuf(inst.vbo_addr);
-            uint i0 = ib.i[prim_idx * 3 + 0];
-            uint i1 = ib.i[prim_idx * 3 + 1];
-            uint i2 = ib.i[prim_idx * 3 + 2];
-            vec3 n0 = vb.v[i0].normal;
-            vec3 n1 = vb.v[i1].normal;
-            vec3 n2 = vb.v[i2].normal;
-            vec3 bc = vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
-            vec3 local_n = normalize(n0 * bc.x + n1 * bc.y + n2 * bc.z);
-            mat4x3 o2w = rayQueryGetIntersectionObjectToWorldEXT(rq, true);
-            world_n = normalize(mat3(o2w) * local_n);
+        if (inst_idx >= 0 && inst_idx < pc.instance_count) {
+            RtInstanceData inst = instances[inst_idx];
+            albedo   = inst.base_color.rgb;
+            emissive = inst.emissive.rgb;
+
+            // prim_idx*3+2 must be a real element of the index buffer, and
+            // each index it yields must be a real element of the vertex
+            // buffer. prim_idx comes from the BLAS, which is built from a
+            // possibly-different snapshot of this mesh than the addresses
+            // stored beside it -- a mesh rebuilt at a lower LOD, or freed and
+            // reallocated, leaves the two disagreeing.
+            uint tri_base = uint(prim_idx) * 3u;
+            if (prim_idx >= 0 && inst.vbo_addr != 0ul && inst.ibo_addr != 0ul &&
+                tri_base + 2u < inst.index_count) {
+                IndexBuf  ib = IndexBuf(inst.ibo_addr);
+                VertexBuf vb = VertexBuf(inst.vbo_addr);
+                uint i0 = ib.i[tri_base + 0u];
+                uint i1 = ib.i[tri_base + 1u];
+                uint i2 = ib.i[tri_base + 2u];
+                if (i0 < inst.vertex_count && i1 < inst.vertex_count &&
+                    i2 < inst.vertex_count) {
+                    vec3 n0 = vb.v[i0].normal;
+                    vec3 n1 = vb.v[i1].normal;
+                    vec3 n2 = vb.v[i2].normal;
+                    vec3 bc = vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
+                    vec3 local_n = normalize(n0 * bc.x + n1 * bc.y + n2 * bc.z);
+                    mat4x3 o2w = rayQueryGetIntersectionObjectToWorldEXT(rq, true);
+                    world_n = normalize(mat3(o2w) * local_n);
+                }
+            }
         }
 
         // Flat-shaded lighting at the hit.
@@ -147,7 +189,7 @@ void main() {
         float shadow = (ndotl > 0.0) ? sun_shadow(hit_pos, world_n, L) : 1.0;
         vec3 lit = albedo * pc.ambient.rgb
                  + albedo * pc.sun_color.rgb * ndotl * shadow
-                 + inst.emissive.rgb;
+                 + emissive;
         reflection_color = lit;
     } else {
         // Genuine miss — sample the sky.

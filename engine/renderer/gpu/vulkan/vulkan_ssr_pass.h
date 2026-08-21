@@ -74,6 +74,14 @@ public:
     /// re-shading. From VulkanRtScene::get_instance_data_buffer().
     void set_instance_data_buffer(VkBuffer buffer);
 
+    /// How many entries of that SSBO are valid this frame
+    /// (VulkanRtScene::get_instance_count()). The shader refuses to read an
+    /// instance at or beyond this index: a ray hit can carry an
+    /// instanceCustomIndex from an older TLAS than the buffer's contents, and
+    /// reading that stale slot yields a stale device address, which faults the
+    /// GPU. Must be set every frame, before execute().
+    void set_instance_count(uint32_t count) { instance_count_ = count; }
+
     /// Primary directional light used to re-shade RT reflection hits.
     /// `color` already folds in intensity. `direction` points from the
     /// light toward the scene (same convention as the lighting pass).
@@ -115,6 +123,7 @@ private:
     bool           use_rt_   = false;
     VkAccelerationStructureKHR tlas_ = VK_NULL_HANDLE;
     VkBuffer       instance_data_buffer_ = VK_NULL_HANDLE;
+    uint32_t       instance_count_       = 0;
     glm::vec3      sun_direction_  = glm::vec3(0.3f, -1.0f, 0.2f);
     glm::vec3      sun_color_      = glm::vec3(1.0f, 0.95f, 0.85f);
     glm::vec3      ambient_color_  = glm::vec3(0.3f);
