@@ -5686,26 +5686,37 @@ int main(int argc, char** argv) {
                   // stall scales with per-pixel ray count.
                   (std::getenv("GWS_SSR_HALF") != nullptr) ? kW / 2 : kW,
                   (std::getenv("GWS_SSR_HALF") != nullptr) ? kH / 2 : kH,
-                  // RAY-TRACED SSR IS ON BY DEFAULT wherever the GPU can do it.
-                  // GWS_NO_SSR_RT=1 falls back to the screen-space march.
+                  // RAY-TRACED SSR IS OFF BY DEFAULT (GWS_SSR_RT=1 opts in).
                   //
-                  // It was defaulted OFF for one release (v0.6.15, commit
-                  // 3b55989) as a symptom-level workaround for a 3-4s GPU
-                  // stall bisected to this path. That cost the feature
-                  // entirely -- screen-space marching cannot reflect anything
-                  // off-screen or behind the camera, which is most of what
-                  // makes reflections read as ray-traced.
+                  // History, so nobody re-opens this the same wrong way twice:
                   //
-                  // The root cause is fixed as of v0.6.16 (commit 7139740):
-                  // ssr_rt.comp needs the SPIR-V Int64 capability for its
-                  // uint64_t buffer-device-address arithmetic, and the core
-                  // shaderInt64 feature that gates it was never requested at
-                  // device creation -- so every RT frame was undefined
-                  // behaviour. The bisect implicated "RT + SSR together"
-                  // because ssr_rt.comp was simply the heaviest user of the
-                  // capability nobody had enabled.
+                  //   v0.6.15 (3b55989) defaulted it off -- a symptom-level
+                  //   workaround for a 3-4s stall bisected to this path.
+                  //   v0.6.16 (7139740) fixed a REAL bug here (shaderInt64 was
+                  //   never requested, so the SPIR-V Int64 capability these
+                  //   shaders need was undefined behaviour) and v0.6.17
+                  //   (d2f628e) turned the default back on believing that was
+                  //   the cause. IT WAS NOT. The freeze returned immediately:
+                  //     [frame-gap] frame 3754.1 ms
+                  //         worst: pre_fence_wait -> post_fence = 3751.4 ms
+                  //   That "verification" was worthless because the
+                  //   --stress-play scene (5 draw items, 1-2 visible) never
+                  //   reproduced the stall even BEFORE the fix. No failing
+                  //   baseline means a passing run proves nothing.
+                  //
+                  // What the v0.6.17 field log adds, and where to look next:
+                  // after the stall every GPU stage timestamp reads 0.00 for
+                  // the rest of the session and the frame rate jumps to
+                  // 400-600 fps with nothing drawing correctly. That is a GPU
+                  // RESET (Windows TDR), not a slow frame -- so the ray-query
+                  // path is FAULTING, not merely expensive. Prime suspect is
+                  // the raw buffer_reference vertex/index fetch in
+                  // ssr_rt.comp (vbo_addr/ibo_addr out of the instance SSBO):
+                  // a bad device address there is an MMU fault, which is a
+                  // hang, which is a TDR, which is this. Reproduce with a real
+                  // project + play mode, confirm the fault, THEN re-enable.
                   /*use_rt=*/device.has_ray_tracing() &&
-                             std::getenv("GWS_NO_SSR_RT") == nullptr)
+                             std::getenv("GWS_SSR_RT") != nullptr)
             : nullptr;
 
         // Volumetric sun lighting / light shafts — ray-marches the sun's
