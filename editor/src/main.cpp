@@ -5686,25 +5686,26 @@ int main(int argc, char** argv) {
                   // stall scales with per-pixel ray count.
                   (std::getenv("GWS_SSR_HALF") != nullptr) ? kW / 2 : kW,
                   (std::getenv("GWS_SSR_HALF") != nullptr) ? kH / 2 : kH,
-                  // RAY-TRACED SSR IS OFF BY DEFAULT (GWS_SSR_RT=1 opts back in).
+                  // RAY-TRACED SSR IS ON BY DEFAULT wherever the GPU can do it.
+                  // GWS_NO_SSR_RT=1 falls back to the screen-space march.
                   //
-                  // Bisected against a reported multi-second freeze: with RT
-                  // SSR enabled the GPU stalls 3-4s on a frame shortly after
-                  // entering play mode (the CPU sits in vkWaitForFences).
-                  // Disabling SSR removes the stall completely (0 vs 1 stall,
-                  // 2/2 runs); disabling any other effect pass -- DDGI, clouds,
-                  // volumetrics, water, froxel fog -- does not. Disabling RT
-                  // also removes it, which narrows it to the ray-query SSR
-                  // path specifically.
+                  // It was defaulted OFF for one release (v0.6.15, commit
+                  // 3b55989) as a symptom-level workaround for a 3-4s GPU
+                  // stall bisected to this path. That cost the feature
+                  // entirely -- screen-space marching cannot reflect anything
+                  // off-screen or behind the camera, which is most of what
+                  // makes reflections read as ray-traced.
                   //
-                  // It is NOT per-pixel ray cost: halving the SSR resolution
-                  // changed nothing (3674ms vs 3700ms). It is not allocation
-                  // either -- no TLAS realloc, no instance-SSBO realloc and no
-                  // new BLAS occur on the stalling frame. Root cause still
-                  // unknown, so the feature falls back to the screen-space
-                  // march, which reflects fine and never stalls.
+                  // The root cause is fixed as of v0.6.16 (commit 7139740):
+                  // ssr_rt.comp needs the SPIR-V Int64 capability for its
+                  // uint64_t buffer-device-address arithmetic, and the core
+                  // shaderInt64 feature that gates it was never requested at
+                  // device creation -- so every RT frame was undefined
+                  // behaviour. The bisect implicated "RT + SSR together"
+                  // because ssr_rt.comp was simply the heaviest user of the
+                  // capability nobody had enabled.
                   /*use_rt=*/device.has_ray_tracing() &&
-                             std::getenv("GWS_SSR_RT") != nullptr)
+                             std::getenv("GWS_NO_SSR_RT") == nullptr)
             : nullptr;
 
         // Volumetric sun lighting / light shafts — ray-marches the sun's
