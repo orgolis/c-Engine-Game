@@ -99,6 +99,20 @@ public:
     void set_cloud_sky_enabled(bool e) { cloud_sky_enabled_ = e; }
 
     bool uses_rt() const { return use_rt_; }
+    /// Whether this GPU could do ray-traced reflections at all. False means
+    /// set_use_rt(true) is a no-op and the UI should say why.
+    bool rt_available() const { return rt_available_; }
+
+    /// Switch between the ray-query and screen-space reflection shaders at
+    /// runtime. Waits for device idle and rebuilds the compute pipeline +
+    /// descriptor set, mirroring VulkanSsaoPass::set_technique().
+    ///
+    /// This exists because the choice used to be made only from an
+    /// environment variable read once at startup -- unreachable for anyone
+    /// launching the editor from the Hub, which is everyone who is not
+    /// building from source. A capability nobody can switch on is a
+    /// capability nobody can test.
+    void set_use_rt(bool on);
 
     SsrConfig& mutable_config() { return config_; }
     const SsrConfig& config() const { return config_; }
@@ -121,6 +135,7 @@ private:
     uint32_t       height_   = 0;
     bool           enabled_  = true;
     bool           use_rt_   = false;
+    bool           rt_available_ = false;
     VkAccelerationStructureKHR tlas_ = VK_NULL_HANDLE;
     VkBuffer       instance_data_buffer_ = VK_NULL_HANDLE;
     uint32_t       instance_count_       = 0;

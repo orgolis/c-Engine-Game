@@ -5241,6 +5241,7 @@ int main(int argc, char** argv) {
     // turns away from its start angle -- and play mode had NO headless entry
     // point at all, so that entire path was unreachable to measurement.
     bool        stress_play = false;
+    bool        stress_ssr_toggle = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--net-host" && i + 1 < argc) {
@@ -5289,6 +5290,14 @@ int main(int argc, char** argv) {
             startup_select = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (a == "--stress-play") {
             stress_play = true;
+        } else if (a == "--stress-ssr-toggle") {
+            // Flip ray-traced reflections on and off repeatedly while
+            // rendering. set_use_rt() destroys and rebuilds the compute
+            // pipeline and descriptor set of a pass that other frames may
+            // still be reading, and a mistake there does not misdraw -- it
+            // hangs the GPU. That made it exactly the kind of path worth
+            // being able to exercise without a human clicking a checkbox.
+            stress_ssr_toggle = true;
         } else if (a == "--stress-viewport-click") {
             stress_click = true;
         } else if (a == "--startup-probe") {
@@ -7214,6 +7223,15 @@ int main(int argc, char** argv) {
                 if (editor_state.undo_redo_manager.CanRedo())
                     editor_state.undo_redo_manager.Redo();
             }
+            // --stress-ssr-toggle: flip reflection modes every 30 frames.
+            if (stress_ssr_toggle && ssr && ssr->rt_available() &&
+                frame_count > 60 && (frame_count % 30) == 0) {
+                const bool want = !ssr->uses_rt();
+                ssr->set_use_rt(want);
+                spdlog::info("[stress-ssr] frame {} -> {}", frame_count,
+                             want ? "ray-traced" : "screen-space");
+            }
+
             // --stress-play: start playback once, then rotate the play camera
             // continuously so new geometry keeps entering the frustum.
             if (stress_play && editor_state.scene_playback_manager) {
@@ -7827,6 +7845,31 @@ int main(int argc, char** argv) {
                     bool ae = post_processing->is_auto_exposure_enabled();
                     if (ImGui::Checkbox("Auto-exposure", &ae))
                         post_processing->set_auto_exposure_enabled(ae);
+
+                    // Reflections. The ray-traced toggle used to be an
+                    // environment variable read once at startup, which made it
+                    // unreachable from a Hub-launched editor -- i.e. for every
+                    // user who is not building from source.
+                    if (ssr) {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Reflections");
+                        bool ssr_on = ssr->is_enabled();
+                        if (ImGui::Checkbox("Enabled##ssr", &ssr_on))
+                            ssr->set_enabled(ssr_on);
+                        bool ssr_rt = ssr->uses_rt();
+                        ImGui::BeginDisabled(!ssr->rt_available());
+                        if (ImGui::Checkbox("Ray-traced##ssr", &ssr_rt))
+                            ssr->set_use_rt(ssr_rt);   // waits for device idle
+                        ImGui::EndDisabled();
+                        if (!ssr->rt_available()) {
+                            ImGui::TextDisabled("(RT unavailable on this GPU)");
+                        } else if (ssr_rt) {
+                            ImGui::TextDisabled("Reflects off-screen geometry.");
+                        } else {
+                            ImGui::TextDisabled("Screen-space only: cannot reflect\n"
+                                                "what is off-screen or behind you.");
+                        }
+                    }
 
                     // Ambient-occlusion technique selector.
                     if (ssao) {

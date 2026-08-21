@@ -33,7 +33,8 @@ std::unique_ptr<VulkanSsrPass> VulkanSsrPass::create(VulkanDevice* device,
     }
     if (width == 0 || height == 0) return nullptr;
     auto p = std::unique_ptr<VulkanSsrPass>(new VulkanSsrPass());
-    p->use_rt_ = use_rt && device->has_ray_tracing();
+    p->rt_available_ = device->has_ray_tracing();
+    p->use_rt_ = use_rt && p->rt_available_;
     if (!p->initialize(device, g_buffer, hdr_color_view, hdr_format,
                        env_cubemap_view, env_cubemap_sampler, width, height)) {
         return nullptr;
@@ -432,6 +433,51 @@ bool VulkanSsrPass::create_composite_pipeline(VkImageView hdr_color_view, VkForm
     vkDestroyShaderModule(vk, sv, nullptr);
     vkDestroyShaderModule(vk, sf, nullptr);
     return res == VK_SUCCESS;
+}
+
+void VulkanSsrPass::set_use_rt(bool on) {
+    if (!rt_available_) on = false;
+    if (on == use_rt_ || device_ == nullptr) return;
+
+    VkDevice vk = device_->get_device();
+    // The compute set and pipeline may still be referenced by frames in
+    // flight; the pass owns no per-frame duplicates, so draining is the only
+    // safe way to replace them. Same reasoning as VulkanSsaoPass::set_technique.
+    vkDeviceWaitIdle(vk);
+
+    if (compute_pipeline_ != VK_NULL_HANDLE) { vkDestroyPipeline(vk, compute_pipeline_, nullptr); compute_pipeline_ = VK_NULL_HANDLE; }
+    if (compute_layout_   != VK_NULL_HANDLE) { vkDestroyPipelineLayout(vk, compute_layout_, nullptr); compute_layout_ = VK_NULL_HANDLE; }
+    if (compute_pool_     != VK_NULL_HANDLE) { vkDestroyDescriptorPool(vk, compute_pool_, nullptr); compute_pool_ = VK_NULL_HANDLE; compute_set_ = VK_NULL_HANDLE; }
+    if (compute_dsl_      != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(vk, compute_dsl_, nullptr); compute_dsl_ = VK_NULL_HANDLE; }
+
+    use_rt_ = on;
+
+    // Forget the RT bindings. The setters below are all no-ops when handed a
+    // value equal to the one they last saw, so without this the caller's
+    // unchanged TLAS handle would never be written into the NEW descriptor
+    // set -- and execute() would then dispatch a ray-query shader against an
+    // unwritten acceleration-structure descriptor, which hangs the device.
+    // The guard in execute() would not catch it: tlas_ is non-null, it is the
+    // DESCRIPTOR that is empty.
+    tlas_                 = VK_NULL_HANDLE;
+    instance_data_buffer_ = VK_NULL_HANDLE;
+    instance_count_       = 0;
+    const VkImageView cloud_view    = cloud_sky_view_;
+    const VkSampler   cloud_sampler = cloud_sky_sampler_;
+    cloud_sky_view_    = VK_NULL_HANDLE;
+    cloud_sky_sampler_ = VK_NULL_HANDLE;
+
+    if (!create_compute_pipeline()) {
+        spdlog::error("VulkanSsrPass::set_use_rt: pipeline rebuild failed; SSR disabled");
+        enabled_ = false;
+        return;
+    }
+    // Re-apply the cloud map, which is bound once rather than per frame and
+    // so would otherwise never be restored.
+    if (cloud_view != VK_NULL_HANDLE) set_cloud_sky(cloud_view, cloud_sampler);
+
+    spdlog::info("VulkanSsrPass: reflections switched to {}",
+                 use_rt_ ? "ray-traced" : "screen-space");
 }
 
 void VulkanSsrPass::set_tlas(VkAccelerationStructureKHR tlas) {
