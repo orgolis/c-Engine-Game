@@ -49,6 +49,19 @@ static int child_crash(const std::string& type, const std::string& dir) {
     return 0;  // unreachable if the crash + handler worked
 }
 
+// ---- child: hammer the log file -------------------------------------------
+// Two of these run at once. Before one-process-per-file they shared a handle
+// and tore each other's lines -- four such tears are visible in the shipped
+// editor.log, one of them mid-timestamp, and past the rotation threshold the
+// damage stops being cosmetic and starts deleting lines outright.
+static int child_logspam(const std::string& dir, const std::string& tag) {
+    gws::diag::init_logging(dir, "crash_check_log");
+    for (int i = 0; i < 3000; ++i)
+        spdlog::info("[{}] line {:04d} padding-padding-padding-padding", tag, i);
+    if (auto l = spdlog::default_logger()) l->flush();
+    return 0;
+}
+
 #if defined(_WIN32)
 static void spawn_wait(const std::string& exe, const std::string& type, const std::string& dir) {
     std::string cmd = "\"" + exe + "\" --crash " + type + " \"" + dir + "\"";
@@ -61,6 +74,19 @@ static void spawn_wait(const std::string& exe, const std::string& type, const st
         CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
     }
 }
+// Launch without waiting: the point is that both are inside init_logging and
+// writing at the same time. spawn_wait would serialise them and prove nothing.
+static HANDLE spawn_async(const std::string& exe, const std::string& args) {
+    std::string cmd = "\"" + exe + "\" " + args;
+    std::vector<char> buf(cmd.begin(), cmd.end()); buf.push_back('\0');
+    STARTUPINFOA si{}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        return nullptr;
+    CloseHandle(pi.hThread);
+    return pi.hProcess;
+}
 static std::string self_path() {
     char b[MAX_PATH]; DWORD n = GetModuleFileNameA(nullptr, b, MAX_PATH);
     return std::string(b, n);
@@ -72,6 +98,8 @@ int main(int argc, char** argv) {
 
     if (argc >= 4 && std::string(argv[1]) == "--crash")
         return child_crash(argv[2], argv[3]);
+    if (argc >= 4 && std::string(argv[1]) == "--logspam")
+        return child_logspam(argv[2], argv[3]);
 
     std::printf("crash_check: crash handler + reporting\n");
     std::error_code ec;
@@ -132,6 +160,41 @@ int main(int argc, char** argv) {
     }
 #else
     std::printf("  (child-process crash tests are Windows-only — skipped)\n");
+#endif
+
+    // ---- 3) two processes must not share one log file -----------------------
+#if defined(_WIN32)
+    {
+        fs::path d = base / "lograce";
+        fs::create_directories(d, ec);
+        std::printf("  spawning two concurrent loggers...\n");
+        HANDLE ha = spawn_async(self, "--logspam \"" + d.string() + "\" A");
+        HANDLE hb = spawn_async(self, "--logspam \"" + d.string() + "\" B");
+        if (ha) { WaitForSingleObject(ha, 30000); CloseHandle(ha); }
+        if (hb) { WaitForSingleObject(hb, 30000); CloseHandle(hb); }
+
+        std::vector<fs::path> logs;
+        for (auto& e : fs::directory_iterator(d, ec))
+            if (e.path().extension() == ".log") logs.push_back(e.path());
+        check("two concurrent processes get two log files", logs.size() == 2);
+
+        // The property that actually matters. A torn write is a line with a
+        // timestamp somewhere other than the start -- one process's bytes
+        // landing in the middle of another's line.
+        int torn = 0, mixed = 0;
+        for (const auto& lp : logs) {
+            std::ifstream f(lp);
+            std::string line; bool sawA = false, sawB = false;
+            while (std::getline(f, line)) {
+                if (line.find("[20", 1) != std::string::npos) ++torn;
+                if (line.find("[A]") != std::string::npos) sawA = true;
+                if (line.find("[B]") != std::string::npos) sawB = true;
+            }
+            if (sawA && sawB) ++mixed;
+        }
+        check("no torn writes across either log", torn == 0);
+        check("neither log carries both processes' lines", mixed == 0);
+    }
 #endif
 
     fs::remove_all(base, ec);

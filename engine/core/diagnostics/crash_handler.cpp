@@ -528,6 +528,40 @@ std::string sample_hung_stack() {
 }
 #endif
 
+#if defined(_WIN32)
+// Is the main thread merely PARKED, rather than stuck?
+//
+// The watchdog fires on "the main loop stopped ticking", and a modal Windows
+// dialog stops it entirely legitimately -- every hang report on the reporting
+// machine turned out to be this. All three showed the same innermost frame,
+// and one showed the whole chain:
+//
+//     NtUserWaitMessage <- IsDialogMessageA <- DialogBoxIndirectParamW <- comdlg32
+//
+// which is a file-open dialog sitting there while somebody reads it. Each of
+// those wrote an 8-9 MB minidump and a report titled HANG.
+//
+// NtUserWaitMessage is a sound discriminator rather than a guess: a thread
+// inside it is blocked waiting for INPUT and is by definition consuming
+// nothing. A genuine freeze parks somewhere else entirely -- a fence wait, a
+// lock, or a spin -- and still reports.
+//
+// Costs one suspend-and-walk, versus the 4 s of sampling plus a minidump it
+// avoids.
+bool main_thread_is_parked_on_input() {
+    const std::string top = sample_hung_stack();
+    // Look only at the innermost frame: deeper frames are the app's own code,
+    // which is where it will resume from and says nothing about being stuck.
+    const size_t first = top.find("#00");
+    if (first == std::string::npos) return false;
+    const size_t eol = top.find('\n', first);
+    const std::string frame0 = top.substr(first, eol == std::string::npos ? std::string::npos
+                                                                          : eol - first);
+    return frame0.find("NtUserWaitMessage") != std::string::npos ||
+           frame0.find("NtUserMsgWaitForMultipleObjects") != std::string::npos;
+}
+#endif
+
 void write_hang_report(double stalled_seconds) {
     // Announce BEFORE sampling. Collecting three stacks takes about four
     // seconds, and a frozen editor is usually killed by the user long before
@@ -610,6 +644,17 @@ void watchdog_loop(double threshold_s) {
         const double stalled = double(mono_ns() - beat) / 1.0e9;
         if (stalled >= threshold_s && !reported_this_stall) {
             reported_this_stall = true;   // once per stall, not once per check
+#if defined(_WIN32)
+            if (main_thread_is_parked_on_input()) {
+                // Not a hang: a modal dialog is open, or the window is simply
+                // waiting for input. Say it once so the gap in the timeline is
+                // explained, and write no report and no 8 MB minidump.
+                spdlog::info("[hang] main loop idle {:.1f}s waiting on window messages "
+                             "(modal dialog or no input) — not a hang, no report written",
+                             stalled);
+                continue;
+            }
+#endif
             write_hang_report(stalled);
         }
     }
@@ -740,11 +785,50 @@ void init_logging(const std::string& log_dir, const std::string& app_name, size_
     if (!log_dir.empty()) {
         try {
             ensure_dir(log_dir);
-            const std::string path = log_dir + "/" + app_name + ".log";
+            std::string path = log_dir + "/" + app_name + ".log";
+
+            // ONE PROCESS PER FILE. rotating_file_sink_mt is thread-safe, not
+            // process-safe: two editors each hold their own handle and their own
+            // mutex, so their writes interleave -- four torn lines are visible
+            // in the shipped log, one of them mid-timestamp. Past the 5 MB
+            // rotation threshold it stops being merely ugly and becomes lossy:
+            // one process renames the file and opens a new one while the other
+            // keeps writing into the renamed copy, and those lines are gone.
+            //
+            // That corrupted the evidence for a real investigation. A session
+            // where two editors ran at once -- one throttled to 20 fps in the
+            // background -- merged into what read as a single session stalling
+            // 492 times, and the GPU-contention artefacts looked like the bug
+            // being hunted.
+            //
+            // A named mutex rather than a lock file, because the OS releases it
+            // when the process dies: a crashed editor never leaves a stale claim
+            // that would push every later run onto a suffixed name.
+            bool second_instance = false;
+#if defined(_WIN32)
+            {
+                static HANDLE s_log_claim = nullptr;   // held for process lifetime
+                const std::string claim = "Local\\GWS_log_" + app_name;
+                s_log_claim = CreateMutexA(nullptr, TRUE, claim.c_str());
+                if (s_log_claim == nullptr || GetLastError() == ERROR_ALREADY_EXISTS)
+                    second_instance = true;
+            }
+            if (second_instance) {
+                path = log_dir + "/" + app_name + "-" +
+                       std::to_string(static_cast<unsigned long>(GetCurrentProcessId())) + ".log";
+            }
+#endif
             auto file = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
                 to_filename(path), /*max_size*/ static_cast<size_t>(5 * 1024 * 1024),
                 /*max_files*/ static_cast<size_t>(3));
             logger->sinks().push_back(file);
+            if (second_instance) {
+                // Say so in the log itself. Someone reading a suffixed file has
+                // to know another editor was running, or the two half-timelines
+                // are more misleading than one interleaved one.
+                spdlog::warn("[diag] another {} is already running — this process logs to {} "
+                             "(one process per file; see crash_handler.cpp)", app_name, path);
+            }
         } catch (const std::exception& e) {
             spdlog::warn("[diag] file logging unavailable: {}", e.what());
         }

@@ -117,6 +117,28 @@ gets ignored.
 > and the budget table said 7 ms for something that cost 609. A probe scene must contain the thing that is
 > expensive, or the metric is measuring its own absence.
 
+> **⚠️ The diagnostics were lying in two ways (found and fixed 2026-08-24, v0.7.1).** Both were discovered while
+> auditing the freeze evidence, and both had been quietly degrading every investigation before it.
+>
+> **The log corrupted itself whenever two editors ran.** `rotating_file_sink_mt` is thread-safe, not *process*-safe,
+> and sat at one fixed path — two instances each held their own handle and mutex. Four torn lines are visible in the
+> shipped `editor.log`, one of them mid-timestamp; past the 5 MB rotation threshold it stops being cosmetic and
+> starts *deleting* lines, because one process renames the file while the other keeps writing into the renamed copy.
+> The cost was real: a session where two editors ran at once — one throttled to 20 fps in the background — merged
+> into what read as a single session stalling **492 times**, and the GPU-contention artefacts looked exactly like the
+> bug being hunted. Now one process per file, claimed with a named mutex (released by the OS on death, so a crash
+> never leaves a stale claim); the second instance logs to `editor-<pid>.log` and says so.
+>
+> **The hang watchdog cried wolf.** All three hang reports on the reporting machine showed the main thread in
+> `NtUserWaitMessage` — *idle*, waiting for input — and one showed the full chain
+> `NtUserWaitMessage ← IsDialogMessageA ← DialogBoxIndirectParamW ← comdlg32`: a file dialog sitting open. Each wrote
+> an 8–9 MB minidump and a report titled HANG. The watchdog now checks the innermost frame first and logs one line
+> instead. A genuine freeze parks in a fence wait, a lock or a spin, and still reports.
+>
+> `crash_check` grew three assertions that spawn two concurrent loggers and assert two files, zero torn writes, and
+> no mixing — **verified to fail with the fix disabled**, because a regression test that passes either way proves
+> nothing.
+
 Two items were **retired by measurement rather than implemented** (2.2, 2.3). The engine has always shipped on
 precompiled SPIR-V, so the PSO-stutter work — inherited from Unreal's well-documented problem — was addressing
 something this engine does not have.
