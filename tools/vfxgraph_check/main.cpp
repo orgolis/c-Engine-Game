@@ -11,6 +11,7 @@
 // ====================
 
 #include "vfx/particle_system.h"
+#include "vfx/vfx_io.h"
 #include "vfx/vfx_graph.h"
 #include "vfx/vfx_module.h"
 
@@ -180,6 +181,86 @@ int main() {
         const bool ok = !ps.particles().empty() &&
                         std::fabs(ps.particles()[0].pos.y - pos.y) < 1e-4f;
         check(ok, "the default stack reproduces the pre-4.3 integrator exactly");
+    }
+
+    // ---- 9. Round-trip, including module ORDER -----------------------------
+    {
+        VfxGraph g = VfxGraph::default_stack();
+        g.name = "campfire_embers";
+        g.move_module(VfxStage::Update, 0, 1);          // Drag now precedes Gravity
+        const VfxGraph back = vfx_from_text(vfx_to_text(g));
+        check(back.name == "campfire_embers", "name round-trips");
+        check(back.stage(VfxStage::Update).size() == 4, "module count round-trips");
+        check(back.stage(VfxStage::Update)[0].kind == ModuleKind::Drag &&
+              back.stage(VfxStage::Update)[1].kind == ModuleKind::Gravity,
+              "module ORDER round-trips -- a sorted reload would change the effect");
+    }
+
+    // ---- 10. Serialisation is deterministic --------------------------------
+    {
+        const VfxGraph g = VfxGraph::default_stack();
+        check(vfx_to_text(g) == vfx_to_text(g), "the same graph serialises byte-identically");
+    }
+
+    // ---- 11. Curve and Gradient parameters survive -------------------------
+    {
+        VfxGraph g = VfxGraph::default_stack();
+        for (auto& m : g.stage(VfxStage::Update)) {
+            if (m.kind != ModuleKind::ColorOverLife) continue;
+            gws::anim::Gradient grad;
+            grad.add({0.0f, glm::vec4(1, 0, 0, 1)});
+            grad.add({0.5f, glm::vec4(0, 1, 0, 1)});
+            grad.add({1.0f, glm::vec4(0, 0, 1, 0)});
+            m.params["GRADIENT"] = grad;
+        }
+        const VfxGraph back = vfx_from_text(vfx_to_text(g));
+        size_t stops = 0, keys = 0;
+        for (const auto& m : back.stage(VfxStage::Update)) {
+            if (m.kind == ModuleKind::ColorOverLife)
+                stops = m.get_gradient("GRADIENT", gws::anim::Gradient()).size();
+            if (m.kind == ModuleKind::SizeOverLife)
+                keys = m.get_curve("CURVE", gws::anim::Curve()).keys().size();
+        }
+        check(stops == 3, "a three-stop gradient round-trips with all three stops");
+        check(keys == 2, "a two-key curve round-trips with both keys");
+    }
+
+    // ---- 12. Indices are grouping, not position ----------------------------
+    // A hand-edited file with descending or duplicated indices must load in
+    // FILE order. Treating the index as a position would reorder the effect.
+    {
+        const std::string text =
+            "VFX_VERSION=1\nNAME=x\nMAX_PARTICLES=64\nWORLD_SPACE=1\n"
+            "STAGE=UPDATE\n"
+            "MODULE.9.KIND=Drag\nMODULE.9.DRAG=0.5\n"
+            "MODULE.2.KIND=Gravity\nMODULE.2.GRAVITY=0,-9.8,0\n";
+        const VfxGraph g = vfx_from_text(text);
+        check(g.stage(VfxStage::Update).size() == 2, "both modules load");
+        check(g.stage(VfxStage::Update)[0].kind == ModuleKind::Drag,
+              "descending indices load in file order, not sorted order");
+    }
+
+    // ---- 13. Garbage yields defaults, absence is distinguishable -----------
+    {
+        const VfxGraph g = vfx_from_text("this is not a vfx file\n\x01\x02\n");
+        check(g.stage(VfxStage::Update).empty() && g.max_particles == 2048,
+              "an unparseable string yields an empty, default graph rather than garbage");
+    }
+    {
+        VfxGraph g;
+        check(!load_vfx("definitely/not/here.vfx", g),
+              "load_vfx reports a missing file -- absent and unparseable are different");
+    }
+    {
+        // An unknown module KIND is skipped, not defaulted to SpawnRate.
+        const std::string text =
+            "VFX_VERSION=1\nSTAGE=UPDATE\n"
+            "MODULE.0.KIND=NotAModule\nMODULE.0.X=1\n"
+            "MODULE.1.KIND=Gravity\nMODULE.1.GRAVITY=0,-1,0\n";
+        const VfxGraph g = vfx_from_text(text);
+        check(g.stage(VfxStage::Update).size() == 1 &&
+              g.stage(VfxStage::Update)[0].kind == ModuleKind::Gravity,
+              "an unknown module kind is skipped, not silently turned into another module");
     }
 
     std::printf("\nvfxgraph_check: %d passed, %d failed\n", g_pass, g_fail);
