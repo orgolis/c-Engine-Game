@@ -62,6 +62,7 @@ target_sources(editor
     src/anim_graph.cpp
     src/anim_graph_panel.cpp
     src/sequence.cpp
+    src/vfx_stack_panel.cpp
     src/timeline_panel.cpp
     src/level_tools.cpp
     src/level_tools_panel.cpp

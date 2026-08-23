@@ -74,6 +74,7 @@
 #include "material_graph_panel.h"           // node-based material editor (4.1)
 #include "node_canvas.h"                    // generic graph surface (4.1/4.3/4.4/4.6)
 #include "curve_editor.h"                     // curve + gradient widgets (4.5)
+#include "vfx_stack_panel.h"                 // VFX module stack editor (4.3)
 #include "command_palette.h"                 // Ctrl+P: one entry point for every action (4.2)
 #include "component_inspector.h"  // generic reflection-driven ECS component authoring (F2)
 
@@ -417,6 +418,8 @@ struct EditorState {
     // Particle simulation on emitter entities (3.9). The GPU draw of the
     // billboards it produces is not built yet — see particle_emitter_cache.h.
     schizo::editor::EditorParticleEmitters particles;
+    schizo::editor::VfxStackPanel vfx_stack;      // 4.3 module-stack editor
+    bool show_vfx_stack = false;
 
     // NPC agents: perception -> behaviour tree -> movement along the baked
     // navmesh (3.5). Only runs during play, so agents do not wander off while
@@ -3874,6 +3877,11 @@ void ShowViewport(EditorState& editor_state) {
         ImGui::SameLine();
 
         if (ImGui::Button(viewport_playing ? "Stop (F5)" : "Play (F5)")) {
+            // Its own zone. Entering play mode builds the physics world, and
+            // being called from inside ShowViewport meant that cost was billed
+            // to "ui_viewport" -- which is why a 609 ms OBJ re-parse read as a
+            // UI problem for six releases instead of as play-mode entry.
+            GWS_PROFILE_ZONE("play_mode_toggle");
             if (viewport_playing) EndPlayMode(editor_state, scene);
             else                  BeginPlayMode(editor_state, scene);
         }
@@ -6597,6 +6605,9 @@ int main(int argc, char** argv) {
             cmds.add("Undo", "Edit", "Ctrl+Z", [&st] {
                 if (st.undo_redo_manager.CanUndo()) st.undo_redo_manager.Undo();
             });
+            cmds.add("VFX: Open Stack Editor", "Window", "", [&st] {
+                st.show_vfx_stack = true;
+            });
             cmds.add("Redo", "Edit", "Ctrl+Y", [&st] {
                 if (st.undo_redo_manager.CanRedo()) st.undo_redo_manager.Redo();
             });
@@ -7671,6 +7682,10 @@ int main(int argc, char** argv) {
             { GWS_PROFILE_ZONE("ui_assetbrowser"); ShowAssetBrowser(editor_state); }
             { GWS_PROFILE_ZONE("ui_playback");    ShowPlaybackControls(editor_state); }
             { GWS_PROFILE_ZONE("ui_performance"); ShowPerformanceOverlay(editor_state); }
+            if (editor_state.show_vfx_stack) {
+                GWS_PROFILE_ZONE("ui_vfxstack");
+                editor_state.vfx_stack.draw(&editor_state.show_vfx_stack);
+            }
 
             // Transient status toast (mesh apply/import result, etc.), top-center.
             if (!editor_state.status_message.empty()) {
