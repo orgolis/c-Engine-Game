@@ -152,9 +152,11 @@ Jolt-backed. **Depends on:** —
 | Sub-feature | Status |
 |---|---|
 | CPU particles + camera-facing billboards + floating-origin rebase | ✅ |
-| GPU billboard draw | 🔴 |
-| GPU particles / compute sim | 🔴 |
-| Decals, trails, ribbons | 🔴 |
+| GPU billboard draw | ✅ (`1b63d7d` — indexed quads after the transparent composite; **pixels still need a human**) |
+| **Authoring: `.vfx` module stack + stack panel (4.3)** | ✅ v0.7.0 — ordered Spawn/Init/Update modules the sim interprets, saved as a text asset, hot-reloaded |
+| GPU particles / compute sim | 🔴 — *enabled but not built*: every module is a pure function of one particle (see `vfx_exec.h`), which is the shape a compute shader executes |
+| Decals, trails, ribbons | 🔴 — ribbons need a second render path; only the billboard pass exists |
+| Sub-emitters, particle collision, event/data interfaces | 🔴 (explicitly out of 4.3 v1) |
 
 ### M5 · Advanced Rendering 🟡 *(sub-toggles)*
 Optional high-fidelity passes on top of the core renderer.

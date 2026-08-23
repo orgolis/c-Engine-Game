@@ -177,9 +177,13 @@ The cross-cutting integration debt specifically:
   layers, replacing four disconnected half-materials of which only one reached the screen; all five G-buffer map
   slots are reachable for the first time, imported OBJs get their `.mtl` textures, and terrain layers get per-layer
   albedo/normal/metal-rough on terrain's own 14-binding pipeline.
-  **Remaining:** animation state-machine graph editor, richer debug visualization (navmesh/AI/froxels), and the whole
-  of [`DEVELOPER_EXPERIENCE.md`](DEVELOPER_EXPERIENCE.md) — material graph, VFX graph, timeline, curve editors,
-  level-design toolkit, command palette, editor extensibility.
+  **Phase 4 authoring is now mostly built** (as of v0.7.0): material graph (4.1), command palette (4.2),
+  **VFX module stack** (4.3), timeline/sequencer (4.4), curve + gradient editors (4.5), animation state-machine
+  graph editor (4.6) and the level-design toolkit (4.7) all exist.
+  **Remaining:** editor extensibility via the scripting backends (4.8), the audio mixer/bus UI (4.9), and richer
+  debug visualization (navmesh/AI/froxels). **Persistence is the honest gap:** of the five authoring documents,
+  only `.vfx` saves — `MaterialGraph`, `AnimGraph` and `Sequence` still have no serialisation at all, so a
+  material graph or a cutscene is lost when the editor closes.
 - **Stage 12 — Scripting** 🟢 done — **exceeds plan**: Python + C++ + C# backends all built + verified (`script_check`)
   with hot reload (plan only asked for Lua).
 - **Stage 13 — Platform** 🔴 Windows-only. **Remaining:** Linux (+ the headless server), consoles, mobile.
