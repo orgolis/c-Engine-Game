@@ -3,6 +3,7 @@
 #include <memory>
 #include <cstdint>
 #include <unordered_map>
+#include <string>
 #include <vector>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -14,6 +15,7 @@ namespace engine::character {
 namespace schizo::scene {
     class Entity;
     class Scene;
+    struct MeshComponent;
 }
 
 namespace schizo::physics {
@@ -49,6 +51,18 @@ public:
      * Stop playing the scene
      */
     void StopPlayback();
+
+    /**
+     * Where the last BuildPhysicsWorld() got its mesh-collider triangles.
+     *
+     * Exposed because "play mode got faster" and "play mode stopped parsing
+     * OBJ files on the main thread" are different claims, and only the second
+     * is the fix. A non-zero disk count means a collider re-read a file in the
+     * frame that entered play mode — the 609 ms stall, back.
+     */
+    size_t LastMeshCollidersFromAsset() const { return last_mesh_from_asset_; }
+    size_t LastMeshCollidersFromDisk()  const { return last_mesh_from_disk_; }
+    size_t LastMeshCollidersFromMemo()  const { return last_mesh_from_memo_; }
     
     /**
      * Pause/resume playback
@@ -176,6 +190,11 @@ public:
     void OnMouseDelta(float dx, float dy) { mouse_delta_x_ += dx; mouse_delta_y_ += dy; }
 
 private:
+    // Mesh-collider triangle provenance from the last BuildPhysicsWorld().
+    size_t last_mesh_from_asset_ = 0;
+    size_t last_mesh_from_disk_  = 0;
+    size_t last_mesh_from_memo_  = 0;
+
     std::shared_ptr<schizo::scene::Scene> scene_;
     std::shared_ptr<schizo::scene::Entity> player_entity_;
     std::shared_ptr<schizo::scene::Entity> playback_camera_;  // Camera being used during playback
@@ -240,5 +259,15 @@ private:
     void TearDownPhysicsWorld();
     void StepPhysics(float delta_time);
 };
+
+/// Mesh-collider triangles from the already-loaded MeshAsset. False when no
+/// asset is resident, which is when the disk path below is the fallback.
+bool collider_triangles_from_asset(const schizo::scene::MeshComponent& mc,
+                                   std::vector<glm::vec3>& out);
+
+/// Mesh-collider triangles by re-parsing the file. Kept as the fallback, and
+/// exposed so physmesh_check can assert the two sources agree -- a collider
+/// silently in the wrong place is far worse than a slow one.
+bool collider_triangles_from_disk(const std::string& path, std::vector<glm::vec3>& out);
 
 } // namespace schizo::editor

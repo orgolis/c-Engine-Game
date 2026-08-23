@@ -5,6 +5,7 @@
 #include "entity.h"
 #include "collider_component.h"
 #include "mesh_component.h"
+#include "assets/mesh_asset.h"       // MeshAsset primitives — collider triangles without a disk read
 #include "asset_path_util.h"       // resolve_asset_path / utf8_path (shared w/ render loader)
 #include "terrain_component.h"
 #include "water_component.h"
@@ -186,6 +187,55 @@ bool LoadMeshTriangles(const std::string& path, std::vector<glm::vec3>& out) {
 }
 
 } // anonymous namespace
+
+// ----------------------------------------------------------------------------
+// Collider triangles: two sources, and why the cheap one has to be tried first.
+//
+// BuildPhysicsWorld used to call LoadMeshTriangles() per mesh collider, which
+// re-parses the OBJ off disk with getline + istringstream per line. Measured on
+// a real project: Porsche 341 ms, building_04 238 ms, and a tree mesh 5 ms that
+// three colliders each paid separately -- 609 ms of synchronous disk parsing in
+// the frame that enters play mode.
+//
+// It was invisible because BeginPlayMode is called from inside ShowViewport, so
+// the whole cost was billed to a profile zone named "ui_viewport" and read as a
+// UI problem for six releases. The published play_mode_entry metric says 7 ms
+// because the headless probe scene has no mesh colliders.
+//
+// The renderer has already parsed these meshes; MeshAsset holds the vertices
+// and indices. Using them costs a walk instead of a file read.
+//
+// The RISK is that the two sources disagree on geometry -- a collider silently
+// in the wrong place is far worse than a slow one -- so physmesh_check asserts
+// they produce identical triangles, and the disk path stays as the fallback.
+// ----------------------------------------------------------------------------
+
+bool collider_triangles_from_disk(const std::string& path, std::vector<glm::vec3>& out) {
+    return LoadMeshTriangles(path, out);
+}
+
+bool collider_triangles_from_asset(const schizo::scene::MeshComponent& mc,
+                                   std::vector<glm::vec3>& out) {
+    out.clear();
+    auto asset = mc.GetMeshAsset();
+    if (!asset) return false;
+    for (const auto& prim : asset->GetPrimitives()) {
+        // Indexed triangles only. A primitive with no indices would need its
+        // own draw-mode handling, and guessing would fabricate geometry.
+        if (prim.indices.size() < 3) continue;
+        out.reserve(out.size() + prim.indices.size());
+        for (size_t i = 0; i + 2 < prim.indices.size(); i += 3) {
+            const uint32_t a = prim.indices[i], b = prim.indices[i + 1], c = prim.indices[i + 2];
+            if (a >= prim.vertices.size() || b >= prim.vertices.size() ||
+                c >= prim.vertices.size())
+                continue;                       // corrupt index: drop the tri, not the mesh
+            out.push_back(prim.vertices[a].position);
+            out.push_back(prim.vertices[b].position);
+            out.push_back(prim.vertices[c].position);
+        }
+    }
+    return !out.empty();
+}
 
 ScenePlaybackManager::ScenePlaybackManager() = default;
 
@@ -646,6 +696,13 @@ void ScenePlaybackManager::BuildPhysicsWorld() {
     TearDownPhysicsWorld();
     if (!scene_) return;
 
+    // Triangle sources for this build. Counted rather than merely used, because
+    // "it got faster" and "it stopped reading the disk" are different claims and
+    // only the second one is the fix — a silent fallback to the disk path would
+    // restore the 609 ms stall with nothing in the log to say so.
+    std::unordered_map<std::string, std::vector<glm::vec3>> tri_memo;
+    size_t stats_from_asset = 0, stats_from_disk = 0, stats_from_memo = 0;
+
     using namespace schizo::physics;
     physics_world_ = std::make_unique<PhysicsWorld>();
     if (!physics_world_->init(glm::vec3(0.0f, -9.81f, 0.0f))) {
@@ -776,9 +833,27 @@ void ScenePlaybackManager::BuildPhysicsWorld() {
         if (col->GetShape() == schizo::scene::ColliderShape::Mesh) {
             auto* mc = ent->GetMeshComponent();
             std::vector<glm::vec3> tris;
-            if (!mc || mc->mesh_path.empty() || !LoadMeshTriangles(mc->mesh_path, tris) || tris.empty()) {
+            if (!mc || mc->mesh_path.empty()) {
                 if (logger) logger->warn("MeshCollider on '{}' unavailable — skipped", ent->GetName());
                 continue;
+            }
+            // Memoised for this build: three colliders sharing one mesh used to
+            // parse the same file three times.
+            if (auto cached = tri_memo.find(mc->mesh_path); cached != tri_memo.end()) {
+                tris = cached->second;
+                ++stats_from_memo;
+            } else {
+                // Cached asset first, disk only as the fallback. See the note
+                // above collider_triangles_from_asset.
+                if (collider_triangles_from_asset(*mc, tris) && !tris.empty()) {
+                    ++stats_from_asset;
+                } else if (collider_triangles_from_disk(mc->mesh_path, tris) && !tris.empty()) {
+                    ++stats_from_disk;
+                } else {
+                    if (logger) logger->warn("MeshCollider on '{}' unavailable — skipped", ent->GetName());
+                    continue;
+                }
+                tri_memo.emplace(mc->mesh_path, tris);
             }
             for (auto& v : tris) v *= world_scale;           // bake scale into the verts
             if (col->IsDynamic()) {
@@ -815,9 +890,18 @@ void ScenePlaybackManager::BuildPhysicsWorld() {
                                  col->IsDynamic() ? "Dynamic" : "Static", static_cast<int>(col->GetShape()));
         ++built;
     }
+    last_mesh_from_asset_ = stats_from_asset;
+    last_mesh_from_disk_  = stats_from_disk;
+    last_mesh_from_memo_  = stats_from_memo;
     if (logger) logger->info("Jolt PhysicsWorld built: {} bodies, {} dynamic, player={}",
                              built, dynamic_entities_.size(),
                              player_char_id_ != 0xFFFFFFFFu ? "yes" : "no");
+    if (logger && (stats_from_asset || stats_from_disk || stats_from_memo)) {
+        // A non-zero disk count is the regression signal: it means a mesh
+        // collider parsed a file on the frame that entered play mode.
+        logger->info("  mesh colliders: {} from loaded asset, {} memoised, {} re-read from DISK",
+                     stats_from_asset, stats_from_memo, stats_from_disk);
+    }
 }
 
 void ScenePlaybackManager::TearDownPhysicsWorld() {
