@@ -154,6 +154,32 @@ int main(int argc, char** argv) {
             } else {
                 std::printf("       collider: %zu triangles\n", tris);
             }
+
+            // The two triangle SOURCES must agree.
+            //
+            // BuildPhysicsWorld now takes mesh-collider triangles from the
+            // already-loaded MeshAsset instead of re-parsing the OBJ, which
+            // removed ~609 ms of synchronous disk parsing from the frame that
+            // enters play mode. That is only safe while the renderer's copy of
+            // the mesh and the file on disk describe the same geometry: if they
+            // ever diverge, colliders move somewhere the model is not, and
+            // nothing errors -- the player just collides with thin air.
+            //
+            // Counted from index buffers, so this compares what the renderer
+            // actually holds, not a second parse of the same text.
+            size_t renderer_tris = 0;
+            for (const auto& m : scene->meshes)
+                for (const auto& sm : m->submeshes())
+                    if (!sm.lods.empty()) renderer_tris += sm.lods[0].index_count / 3;
+            if (renderer_tris != tris) {
+                std::printf("       collider: SOURCE MISMATCH — renderer %zu tris vs file %zu tris\n"
+                            "                 (physics colliders would not match the visible mesh)\n",
+                            renderer_tris, tris);
+                ++failures;
+            } else {
+                std::printf("       collider: sources agree (%zu tris from asset == from file)\n",
+                            renderer_tris);
+            }
         }
     }
 

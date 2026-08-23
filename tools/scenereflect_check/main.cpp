@@ -157,10 +157,13 @@ int main() {
                   sizeof(bool) + 5 * sizeof(float) + sizeof(int),
               "NpcAgentComponent's registered fields account for every non-string field");
 
-        // ParticleEmitterComponent: 2 bools + 1 float + 1 uint32 + 2 vec4.
+        // ParticleEmitterComponent: 2 bools + 2 floats + 1 uint32 + 2 vec4.
+        // The second float is rate_scale (4.3). vfx_path is a std::string and
+        // is excluded here for the same reason target_name is above -- hence
+        // this row now reads "non-string" like the other two.
         check(reflected_bytes<scene::ParticleEmitterComponent>() ==
-                  2 * sizeof(bool) + sizeof(float) + sizeof(uint32_t) + 2 * sizeof(glm::vec4),
-              "ParticleEmitterComponent's registered fields account for every field");
+                  2 * sizeof(bool) + 2 * sizeof(float) + sizeof(uint32_t) + 2 * sizeof(glm::vec4),
+              "ParticleEmitterComponent's registered fields account for every non-string field");
     }
 
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);

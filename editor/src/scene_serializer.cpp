@@ -127,6 +127,12 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
                 schizo::scene::write_reflected(
                     file, "EMITTER", pec,
                     *gws::reflect::reflect<schizo::scene::ParticleEmitterComponent>());
+                // vfx_path is a std::string, so offset reflection cannot carry
+                // it either -- same limit, same hand-written line. An emitter
+                // that forgot which effect it plays falls back to its legacy
+                // fields and looks like the wrong effect rather than none.
+                if (!pec->vfx_path.empty())
+                    file << "EMITTER_VFX_PATH=" << pec->vfx_path << "\n";
             }
             if (auto* nac = entity->GetNpcAgentComponent(); nac && nac->enabled) {
                 schizo::scene::write_reflected(
@@ -562,6 +568,7 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
     // prefix, and fall through when they do not recognise the key, so every
     // legacy parser below still gets its turn and old scenes keep loading.
     if (starts_with(line, "NPCAGENT_TARGET", v)) { p.npc_target = v; p.has_npc = true; return; }
+    if (starts_with(line, "EMITTER_VFX_PATH", v)) { p.emitter.vfx_path = v; p.has_emitter = true; return; }
     if (schizo::scene::apply_reflected_line(
             "EMITTER", line, &p.emitter,
             *gws::reflect::reflect<schizo::scene::ParticleEmitterComponent>())) {

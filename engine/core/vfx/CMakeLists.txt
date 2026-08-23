@@ -5,7 +5,9 @@ cmake_minimum_required(VERSION 3.20)
 # build camera-facing quads for a GPU backend. Rebases with the floating origin.
 # Headers "vfx/<x>.h".
 add_library(gws_vfx STATIC
-    particle_system.cpp)
+    particle_system.cpp
+    vfx_graph.cpp
+    vfx_io.cpp)
 
 target_include_directories(gws_vfx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(gws_vfx PUBLIC glm)

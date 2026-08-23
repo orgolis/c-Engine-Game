@@ -2,8 +2,17 @@
 // ============================================================================
 // node_canvas — a graph editor surface that knows nothing about your nodes.
 //
-// Four Phase 4 items need one of these: the material graph (4.1), the VFX graph
-// (4.3), the timeline (4.4) and the animation state machine (4.6). The engine
+// Three Phase 4 items need one of these: the material graph (4.1), the timeline
+// (4.4) and the animation state machine (4.6).
+//
+// The VFX editor (4.3) was expected to be a fourth and is NOT. It turned out to
+// be an ordered stack of modules per stage -- a LIST, whose order is semantic --
+// so it is drawn as a stack panel (vfx_stack_panel.h). A canvas would earn its
+// place there only one level down, if a module's parameters ever become
+// computed rather than constant. Building it here to match the item's title
+// would have been the wrong UI for the architecture.
+//
+// The engine
 // already had a node editor -- logic_graph_panel.cpp -- but it is 255 lines
 // welded to ecs::LogicNodeKind: it draws logic node titles, it enumerates logic
 // node kinds in its context menu, and its link model is logic-specific. Nothing
