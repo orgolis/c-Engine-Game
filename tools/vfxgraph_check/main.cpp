@@ -10,6 +10,7 @@
 // Pure CPU, no device. Prints "vfxgraph_check: ALL OK" + exits 0 on pass.
 // ====================
 
+#include "vfx/vfx_graph.h"
 #include "vfx/vfx_module.h"
 
 #include <cstdio>
@@ -63,6 +64,62 @@ int main() {
         check(m.get_float("MAX", 9.0f) == 9.0f, "a missing parameter yields the fallback");
         check(m.get_vec3("MIN", glm::vec3(7.0f)) == glm::vec3(7.0f),
               "reading a parameter as the wrong type yields the fallback, not garbage");
+    }
+
+    // ---- 4. The default stack is the current behaviour, written down --------
+    {
+        const VfxGraph g = VfxGraph::default_stack();
+        check(g.stage(VfxStage::Spawn).size() == 1, "default stack has one Spawn module");
+        check(g.stage(VfxStage::Init).size() == 4,  "default stack has four Init modules");
+        check(g.stage(VfxStage::Update).size() == 4, "default stack has four Update modules");
+        // Order is semantic: the current integrator applies gravity and THEN
+        // damps the result. A stack that damps first is different motion.
+        check(g.stage(VfxStage::Update)[0].kind == ModuleKind::Gravity &&
+              g.stage(VfxStage::Update)[1].kind == ModuleKind::Drag,
+              "Gravity precedes Drag, matching the current integrator");
+    }
+
+    // ---- 5. validate() catches what fails silently -------------------------
+    {
+        check(VfxGraph::default_stack().validate().empty(),
+              "the default stack validates clean");
+    }
+    {
+        VfxGraph g = VfxGraph::default_stack();
+        g.stage(VfxStage::Spawn).clear();
+        check(!g.validate().empty(),
+              "a stack with no spawn module is reported, not silently inert");
+    }
+    {
+        VfxGraph g = VfxGraph::default_stack();
+        auto& init = g.stage(VfxStage::Init);
+        for (size_t i = 0; i < init.size(); ++i)
+            if (init[i].kind == ModuleKind::InitColor) { init.erase(init.begin() + i); break; }
+        check(!g.validate().empty(),
+              "ColorOverLife with no InitColor before it is reported");
+    }
+    {
+        VfxGraph g = VfxGraph::default_stack();
+        g.max_particles = 0;
+        check(!g.validate().empty(), "max_particles of 0 is reported");
+    }
+    {
+        // A module placed in the wrong stage runs at the wrong frequency: an
+        // Init module in Update re-initialises every particle every frame,
+        // which reads as "the effect does not move".
+        VfxGraph g = VfxGraph::default_stack();
+        VfxModule stray; stray.kind = ModuleKind::InitLifetime;
+        g.stage(VfxStage::Update).push_back(stray);
+        check(!g.validate().empty(), "a module in the wrong stage is reported");
+    }
+
+    // ---- 6. Reordering ----------------------------------------------------
+    {
+        VfxGraph g = VfxGraph::default_stack();
+        g.move_module(VfxStage::Update, 0, 1);
+        check(g.stage(VfxStage::Update)[0].kind == ModuleKind::Drag &&
+              g.stage(VfxStage::Update)[1].kind == ModuleKind::Gravity,
+              "move_module reorders within a stage");
     }
 
     std::printf("\nvfxgraph_check: %d passed, %d failed\n", g_pass, g_fail);
