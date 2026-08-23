@@ -263,6 +263,28 @@ int main() {
               "an unknown module kind is skipped, not silently turned into another module");
     }
 
+    // ---- 14. A reloaded graph replaces settings without killing particles ---
+    // The distinction that matters for hot reload: swapping the graph must not
+    // clear live particles, or every edit makes the effect vanish and restart,
+    // which reads as a broken editor rather than as a reload.
+    {
+        ParticleSystem ps;
+        ps.set_graph(VfxGraph::default_stack());
+        ps.set_seed(11);
+        ps.emit_burst(20);
+        const size_t before = ps.alive();
+
+        VfxGraph edited = VfxGraph::default_stack();
+        for (auto& m : edited.stage(VfxStage::Update))
+            if (m.kind == ModuleKind::Gravity) m.params["GRAVITY"] = glm::vec3(0.0f, 99.0f, 0.0f);
+        ps.set_graph(edited);
+
+        check(before > 0 && ps.alive() == before, "set_graph keeps the particles already alive");
+        ps.update(0.016f);
+        check(!ps.particles().empty() && ps.particles()[0].vel.y > 0.0f,
+              "and the new gravity applies to them on the next frame");
+    }
+
     std::printf("\nvfxgraph_check: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail == 0) std::printf("vfxgraph_check: ALL OK\n");
     return g_fail == 0 ? 0 : 1;

@@ -431,6 +431,12 @@ struct EditorState {
     schizo::editor::NavBakeStats nav_stats;
 
     gws::assets::AssetWatcher scene_watcher;
+    // A SEPARATE watcher for .vfx assets, deliberately not the scene one:
+    // scene_watcher.clear() is called whenever the open file changes or the
+    // scene is saved, which would silently drop every .vfx watch and kill hot
+    // reload on save -- a failure with no symptom except that edits stop
+    // arriving. Polling two watchers costs nothing; each throttles its own scan.
+    gws::assets::AssetWatcher vfx_watcher;
     std::string  watched_scene_path;      // what scene_watcher is currently on
     bool         watched_scene_dirty = false;   // last known unsaved-changes state
     bool         scene_changed_on_disk = false; // set by the watcher callback
@@ -6233,6 +6239,9 @@ int main(int argc, char** argv) {
         editor_state.character_panel = std::make_unique<schizo::editor::CharacterControllerPanel>();
         editor_state.ability_panel   = std::make_unique<schizo::editor::AbilitySystemPanel>();
         editor_state.network_panel   = std::make_unique<schizo::editor::NetworkSystemPanel>();
+        // .vfx hot reload (4.3): the emitter cache registers a watch per asset
+        // and drains settled edits at the top of its own update().
+        editor_state.particles.set_watcher(&editor_state.vfx_watcher);
         spdlog::info("Editor state and panels initialized");
 
         // Custom scripts (Stage 12): register language backends + bind the
@@ -6950,8 +6959,10 @@ int main(int argc, char** argv) {
                 editor_state.watched_scene_dirty = dirty_now;
 
                 using namespace std::chrono;
-                editor_state.scene_watcher.poll(
-                    duration<double>(steady_clock::now().time_since_epoch()).count());
+                const double now_s =
+                    duration<double>(steady_clock::now().time_since_epoch()).count();
+                editor_state.scene_watcher.poll(now_s);
+                editor_state.vfx_watcher.poll(now_s);   // .vfx hot reload (4.3)
 
                 if (editor_state.scene_changed_on_disk) {
                     if (!editor_state.editor_scene->HasUnsavedChanges()) {
