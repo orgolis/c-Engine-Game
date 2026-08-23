@@ -28,6 +28,7 @@
 #include "scene.h"
 #include "transform.h"
 #include "vfx/particle_system.h"
+#include "vfx/vfx_io.h"
 
 #include <cstdint>
 #include <memory>
@@ -62,12 +63,21 @@ public:
             seen[id] = true;
             auto it = systems_.find(id);
             if (it == systems_.end()) {
-                schizo::vfx::EmitterConfig cfg;
-                cfg.spawn_rate    = pe->spawn_rate;
-                cfg.max_particles = pe->max_particles;
-                cfg.color_start   = pe->color_start;
-                cfg.color_end     = pe->color_end;
-                it = systems_.emplace(id, std::make_unique<schizo::vfx::ParticleSystem>(cfg)).first;
+                // A .vfx asset wins. Falling back to the legacy fields rather
+                // than to library defaults is what keeps an already-authored
+                // emitter looking the way its scene says it should: those four
+                // values are the only record of it that exists.
+                schizo::vfx::VfxGraph graph;
+                if (pe->vfx_path.empty() || !schizo::vfx::load_vfx(pe->vfx_path, graph)) {
+                    schizo::vfx::EmitterConfig cfg;
+                    cfg.spawn_rate    = pe->spawn_rate;
+                    cfg.max_particles = pe->max_particles;
+                    cfg.color_start   = pe->color_start;
+                    cfg.color_end     = pe->color_end;
+                    graph = schizo::vfx::VfxGraph::from_emitter_config(cfg);
+                }
+                it = systems_.emplace(id, std::make_unique<schizo::vfx::ParticleSystem>()).first;
+                it->second->set_graph(graph);
                 // Deterministic per entity: two emitters with the same settings
                 // should not produce identical particle streams, and the same
                 // emitter should look the same across a reload.
@@ -77,6 +87,7 @@ public:
             auto& sys = *it->second;
             sys.set_position(tf->GetWorldPosition());
             sys.set_emitting(pe->emitting);
+            sys.set_rate_scale(pe->rate_scale);
             // Particles are world-space, so a rebase moves them too. Without
             // this they stay at their absolute coordinates while the world
             // shifts underneath — the emitter walks away from its own smoke.

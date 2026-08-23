@@ -45,6 +45,7 @@ GWS_REFLECT_END()
 GWS_REFLECT_BEGIN(schizo::scene::ParticleEmitterComponent)
     GWS_REFLECT_FIELD(enabled)
     GWS_REFLECT_FIELD(emitting)
+    GWS_REFLECT_FIELD(rate_scale)
     GWS_REFLECT_FIELD(spawn_rate)
     GWS_REFLECT_FIELD(max_particles)
     GWS_REFLECT_FIELD(color_start)
@@ -87,7 +88,12 @@ static_assert(sizeof(schizo::scene::SkinnedMeshComponent) == 64,
     "SkinnedMeshComponent changed size. If you added a field, register it above "
     "or it will silently fail to save, then update this number.");
 
-static_assert(sizeof(schizo::scene::ParticleEmitterComponent) == 44,
+// 44 -> 88 with 4.3: vfx_path (a 32-byte std::string, plus its 8-byte
+// alignment) and rate_scale. rate_scale IS registered above; vfx_path cannot
+// be -- offset reflection needs trivially copyable data -- so the scene
+// serializer writes EMITTER_VFX_PATH by hand, the same way it already handles
+// MeshComponent::mesh_path and NpcAgentComponent::target_name.
+static_assert(sizeof(schizo::scene::ParticleEmitterComponent) == 88,
     "ParticleEmitterComponent changed size. If you added a field, register it "
     "above or it will silently fail to save, then update this number.");
 
