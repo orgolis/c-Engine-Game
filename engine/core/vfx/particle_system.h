@@ -26,6 +26,13 @@ struct Particle {
     float     age  = 0.0f;
     float     life = 1.0f;
     float     seed = 0.0f;   // per-particle [0,1) for variation
+
+    // Size and colour are particle STATE, not render-time arithmetic. They used
+    // to be computed inside build_billboards from the emitter config, which a
+    // GPU simulation could not do: compute writes the buffer and the vertex
+    // stage only reads it. Modules write these; the billboard builder reads them.
+    float     size = 0.25f;
+    glm::vec4 color{1.0f};
 };
 
 struct EmitterConfig {

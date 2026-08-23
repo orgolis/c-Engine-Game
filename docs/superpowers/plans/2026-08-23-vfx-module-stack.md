@@ -61,7 +61,7 @@ struct Particle {
 
 Run:
 ```bash
-cmake --build build/windows-debug --target vfx_check && ./build/windows-debug/tools/vfx_check.exe
+cmake --build build/windows-debug --target vfx_check && ./build/windows-debug/bin/vfx_check.exe
 ```
 Expected: PASS — adding unused fields changes nothing. This establishes the baseline.
 
@@ -99,7 +99,7 @@ Delete the now-unused `const float t = ...` line in that function.
 
 Run:
 ```bash
-cmake --build build/windows-debug --target vfx_check && ./build/windows-debug/tools/vfx_check.exe
+cmake --build build/windows-debug --target vfx_check && ./build/windows-debug/bin/vfx_check.exe
 ```
 Expected: PASS, all 12 assertions, identical output to Step 2.
 
@@ -399,7 +399,7 @@ struct VfxModule {
 
 Run:
 ```bash
-cmake --build build/windows-debug --target vfxgraph_check && ./build/windows-debug/tools/vfxgraph_check.exe
+cmake --build build/windows-debug --target vfxgraph_check && ./build/windows-debug/bin/vfxgraph_check.exe
 ```
 Expected: `vfxgraph_check: ALL OK`, 8 passed, 0 failed.
 
@@ -764,7 +764,7 @@ add_library(gws_vfx STATIC
 
 Run:
 ```bash
-cmake --build build/windows-debug --target vfxgraph_check && ./build/windows-debug/tools/vfxgraph_check.exe
+cmake --build build/windows-debug --target vfxgraph_check && ./build/windows-debug/bin/vfxgraph_check.exe
 ```
 Expected: `vfxgraph_check: ALL OK`, 17 passed, 0 failed.
 
@@ -775,7 +775,7 @@ Expected: `vfxgraph_check: ALL OK`, 17 passed, 0 failed.
 Run:
 ```bash
 cmake --build build/windows-debug --target vfx_check --target emitter_check \
-  && ./build/windows-debug/tools/vfx_check.exe && ./build/windows-debug/tools/emitter_check.exe
+  && ./build/windows-debug/bin/vfx_check.exe && ./build/windows-debug/bin/emitter_check.exe
 ```
 Expected: both PASS. Neither file has been edited.
 
@@ -1126,7 +1126,7 @@ Add `float elapsed_ = 0.0f;` to the private members in the header, and change `s
 
 Run:
 ```bash
-cmake --build build/windows-debug --target vfxgraph_check && ./build/windows-debug/tools/vfxgraph_check.exe
+cmake --build build/windows-debug --target vfxgraph_check && ./build/windows-debug/bin/vfxgraph_check.exe
 ```
 Expected: `ALL OK`, 19 passed.
 
@@ -1137,7 +1137,7 @@ Expected: `ALL OK`, 19 passed.
 Run:
 ```bash
 cmake --build build/windows-debug --target vfx_check --target emitter_check \
-  && ./build/windows-debug/tools/vfx_check.exe && ./build/windows-debug/tools/emitter_check.exe
+  && ./build/windows-debug/bin/vfx_check.exe && ./build/windows-debug/bin/emitter_check.exe
 ```
 Expected: both PASS, **with neither file edited**. Confirm with `git status` that `tools/vfx_check/main.cpp` and `tools/emitter_check/main.cpp` are unmodified.
 
@@ -1543,7 +1543,7 @@ add_library(gws_vfx STATIC
 
 Run:
 ```bash
-cmake --build build/windows-debug --target vfxgraph_check && ./build/windows-debug/tools/vfxgraph_check.exe
+cmake --build build/windows-debug --target vfxgraph_check && ./build/windows-debug/bin/vfxgraph_check.exe
 ```
 Expected: `ALL OK`, 29 passed, 0 failed.
 
@@ -1674,7 +1674,7 @@ and the burst count to `static_cast<int>(m.get_float("COUNT", 10.0f) * rate_scal
 
 Run:
 ```bash
-cmake --build build/windows-debug --target emitter_check && ./build/windows-debug/tools/emitter_check.exe
+cmake --build build/windows-debug --target emitter_check && ./build/windows-debug/bin/emitter_check.exe
 ```
 Expected: PASS, **file unmodified** — it only ever touched `enabled` and `emitting`, both of which survive. Confirm with `git status`.
 
@@ -1758,7 +1758,7 @@ Append to `tools/vfxgraph_check/main.cpp`:
 
 Run:
 ```bash
-cmake --build build/windows-debug --target vfxgraph_check && ./build/windows-debug/tools/vfxgraph_check.exe
+cmake --build build/windows-debug --target vfxgraph_check && ./build/windows-debug/bin/vfxgraph_check.exe
 ```
 Expected: PASS — `set_graph` from Task 4 already assigns without touching `particles_`. This assertion pins that property so a later change cannot quietly clear the array. If it FAILS, `set_graph` is clearing particles and must not.
 

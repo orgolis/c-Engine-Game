@@ -25,6 +25,8 @@ void ParticleSystem::spawn_one() {
     const glm::vec3 r(rand01() * 2.0f - 1.0f, rand01() * 2.0f - 1.0f,
                       rand01() * 2.0f - 1.0f);
     p.vel = cfg_.base_velocity + r * cfg_.velocity_spread;
+    p.size  = cfg_.size_start;
+    p.color = cfg_.color_start;
     particles_.push_back(p);
 }
 
@@ -46,6 +48,12 @@ void ParticleSystem::update(float dt) {
         p.vel *= damp;
         p.pos += p.vel * dt;
         p.age += dt;
+        // Size and colour over life. This is the arithmetic build_billboards
+        // used to do at render time, moved to where a module will own it. It
+        // runs AFTER the age increment so the same `t` drives it as before.
+        const float t = p.life > 0.0f ? glm::clamp(p.age / p.life, 0.0f, 1.0f) : 1.0f;
+        p.size  = glm::mix(cfg_.size_start, cfg_.size_end, t);
+        p.color = glm::mix(cfg_.color_start, cfg_.color_end, t);
     }
     // Reap dead (swap-remove keeps it O(n)).
     particles_.erase(
@@ -78,9 +86,11 @@ void ParticleSystem::build_billboards(const glm::vec3& cam_pos, const glm::vec3&
         right = glm::normalize(right);
         const glm::vec3 up = glm::normalize(glm::cross(normal, right));
 
-        const float t = p.life > 0.0f ? glm::clamp(p.age / p.life, 0.0f, 1.0f) : 1.0f;
-        const float size = glm::mix(cfg_.size_start, cfg_.size_end, t) * 0.5f;
-        const glm::vec4 color = glm::mix(cfg_.color_start, cfg_.color_end, t);
+        // Read state rather than recompute it: a GPU simulation writes these in
+        // compute and the vertex stage only reads them, so the CPU path must
+        // work the same way or the two would diverge.
+        const float size = p.size * 0.5f;      // half-extent; p.size is full width
+        const glm::vec4 color = p.color;
 
         const glm::vec3 r = right * size, u = up * size;
         const glm::vec3 c0 = world - r - u, c1 = world + r - u,
