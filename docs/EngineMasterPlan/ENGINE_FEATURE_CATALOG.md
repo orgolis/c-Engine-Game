@@ -88,7 +88,7 @@ The base renderer every project draws through.
 | RHI / Vulkan backend, swapchain, render graph | ✅ | |
 | Deferred G-buffer + PBR materials | ✅ | |
 | Forward / transparent (WBOIT) | ✅ | |
-| Shadows (cascaded) | ✅ | virtual shadow maps 🔴 |
+| Shadows (cascaded) | ✅ | 3 cascades + 3×3 PCF + point-light shadows, and a ray-traced shadow path alongside (`rtShadowEnabled`). Confirmed running at ~0.11 ms/frame. Virtual shadow maps 🔴 |
 | Camera, culling (frustum / meshlet / HZB), LOD (meshopt) | ✅ | **v0.6.10:** this row previously said "HZB + back-face off by default" and both halves were out of date. HZB has been enabled since Stage 3.C. Back-face culling was on for primitives and glTF but OFF for exactly the content most projects use — terrain (`CULL_MODE_NONE`) and every OBJ (flagged double-sided unconditionally). Terrain now culls back faces unless it has holes (a heightfield has no overhangs; a cave is the one case the underside is visible), and an OBJ is drawn double-sided only when a per-triangle winding vote says its winding is genuinely inconsistent. The shadow pass stays `CULL_MODE_NONE` deliberately — mixed CW/CCW content, and its depth bias is tuned for it |
 | Mesh memory | ✅ **v0.6.10.** Vertex/index buffers are `DEVICE_LOCAL`, uploaded through a batched staging copy (`MeshUploadBatch`: one staging buffer and one submit for a whole terrain rebuild, not one queue stall per mesh). They were `HOST_VISIBLE`, and on a discrete GPU `find_memory_type` returns the first match — system RAM — so every vertex was fetched across PCIe on every pass. **Still open:** one raw `vkAllocateMemory` per buffer; VMA is vendored and configured but not yet used |
 | Sky + image-based lighting | ✅ | |
@@ -164,7 +164,9 @@ Optional high-fidelity passes on top of the core renderer.
 |---|---|
 | SSAO, SSR | ✅ |
 | Ray tracing: shadows / AO / reflections (auto on RT GPUs) | ✅ |
-| DDGI (real-time GI) | ✅ |
+| **Coloured metal reflections** | ✅ **v0.7.2.** A metal's F0 is now its own base colour — gold reflects gold. It was hard-coded `vec3(1.0)` in **both** `ssr.comp` and `ssr_rt.comp`, so every metal reflected neutrally white however it was authored, and the coloured Fresnel was collapsed to a scalar before storage so the hue was discarded even when present. Roughness damping was already correct. Toggle: Post-Processing → Reflections → *Tint by surface colour* (a push constant — no pipeline rebuild, no device-idle stall) |
+| Coloured transmission / absorption through transparent objects | 🔴 — nothing in the shading path does refraction, IOR or Beer-Lambert absorption today (the Beer-Lambert code that exists is cloud-only). Next piece of this work |
+| DDGI (real-time GI) | ✅ — one **intensity slider** since v0.7.2, where 0 means off and skips the dispatch; the separate Enable checkbox is gone |
 | Volumetric fog / froxel, light shafts / volumetric sun | ✅ |
 | Volumetric clouds | ✅ |
 | GPU-driven rendering (indirect / mesh shaders) completion | 🟡 |

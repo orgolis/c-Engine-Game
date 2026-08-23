@@ -40,6 +40,12 @@ struct SsrConfig {
     // unrefined steps.
     int   num_steps     = 32;
     float fresnel_power = 3.0f;
+    // Tint a metal's reflection by its own base colour -- correct PBR
+    // (gold reflects gold). Off restores the old neutral-white metals, so
+    // the two can be compared side by side. A push constant, so flipping it
+    // costs nothing: unlike the RT/screen-space switch it rebuilds no
+    // pipeline and never waits for device idle.
+    bool  tint_by_albedo = true;
 };
 
 class VulkanSsrPass {
@@ -99,6 +105,11 @@ public:
     void set_cloud_sky_enabled(bool e) { cloud_sky_enabled_ = e; }
 
     bool uses_rt() const { return use_rt_; }
+
+    /// Tint a metal's reflection by its own base colour. A push constant,
+    /// so unlike set_use_rt() this rebuilds nothing and never waits for idle.
+    bool tint_by_albedo() const { return config_.tint_by_albedo; }
+    void set_tint_by_albedo(bool on) { config_.tint_by_albedo = on; }
     /// Whether this GPU could do ray-traced reflections at all. False means
     /// set_use_rt(true) is a no-op and the UI should say why.
     bool rt_available() const { return rt_available_; }

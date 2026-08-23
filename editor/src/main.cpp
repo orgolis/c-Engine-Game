@@ -7887,6 +7887,20 @@ int main(int argc, char** argv) {
                         if (ImGui::Checkbox("Ray-traced##ssr", &ssr_rt))
                             ssr->set_use_rt(ssr_rt);   // waits for device idle
                         ImGui::EndDisabled();
+
+                        // Metals reflect their OWN colour: gold reflects gold.
+                        // F0 for a metal is its base colour, and this used to be
+                        // hard-coded white, so every metal reflected neutrally
+                        // however it was authored. Unlike the Ray-traced switch
+                        // above, this is a push constant -- no pipeline rebuild
+                        // and no device-idle stall, so it is free to flip while
+                        // comparing.
+                        bool tint = ssr->tint_by_albedo();
+                        if (ImGui::Checkbox("Tint by surface colour##ssr", &tint))
+                            ssr->set_tint_by_albedo(tint);
+                        ImGui::TextDisabled(tint
+                            ? "Metal reflections carry the surface's colour."
+                            : "Metals reflect neutrally (pre-0.7.2 look).");
                         if (!ssr->rt_available()) {
                             ImGui::TextDisabled("(RT unavailable on this GPU)");
                         } else if (ssr_rt) {
@@ -7984,18 +7998,27 @@ int main(int argc, char** argv) {
                     if (ddgi) {
                         ImGui::Separator();
                         ImGui::TextUnformatted("Global Illumination (DDGI)");
-                        bool gon = ddgi->is_enabled();
-                        if (ImGui::Checkbox("Enable##ddgi", &gon)) {
-                            ddgi->set_enabled(gon);
-                            if (gon) ddgi_autofit_pending = true;  // fit on enable
+                        // One control, not a checkbox AND a slider that both mean
+                        // "off". Intensity 0 IS off, and the pass is skipped at 0
+                        // rather than multiplied by zero -- otherwise a scene with GI
+                        // dialled out still pays for 864 probe traces every frame.
+                        auto& gc = ddgi->mutable_config();
+                        float gi_strength = ddgi->is_enabled() ? gc.intensity : 0.0f;
+                        if (ImGui::SliderFloat("Intensity##ddgi", &gi_strength, 0.0f, 4.0f)) {
+                            const bool want_on = gi_strength > 0.0f;
+                            if (want_on != ddgi->is_enabled()) {
+                                ddgi->set_enabled(want_on);
+                                if (want_on) ddgi_autofit_pending = true;  // fit on enable
+                            }
+                            if (want_on) gc.intensity = gi_strength;
                         }
-                        if (gon) {
-                            auto& gc = ddgi->mutable_config();
+                        if (!ddgi->is_enabled())
+                            ImGui::TextDisabled("  off — drag above 0 to enable");
+                        if (ddgi->is_enabled()) {
                             if (ImGui::Button("Fit grid to scene##ddgi"))
                                 ddgi_autofit_pending = true;
                             ImGui::SameLine();
                             ImGui::TextDisabled("(auto on enable)");
-                            ImGui::SliderFloat ("  Intensity##ddgi",   &gc.intensity,   0.0f, 4.0f);
                             ImGui::SliderFloat ("  Hysteresis##ddgi",  &gc.hysteresis,  0.5f, 0.995f, "%.3f");
                             ImGui::SliderFloat ("  Normal bias##ddgi", &gc.normal_bias, 0.0f, 1.0f);
                             ImGui::DragFloat3  ("  Grid origin##ddgi", &gc.origin.x,    0.5f);

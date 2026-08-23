@@ -10,6 +10,7 @@
 
 #include <spdlog/spdlog.h>
 #include <array>
+#include <cstddef>   // offsetof — the push-constant layout contract
 #include <cstring>
 #include <cstdint>
 
@@ -570,11 +571,20 @@ void VulkanSsrPass::execute(VkCommandBuffer cmd,
         int32_t num_steps;
         float fresnel_power;
         int32_t instance_count;   // valid entries in the instance SSBO
-        float _pad1;
+        float tint_by_albedo;     // 1.0 = metals reflect their own colour
         float sun_dir[4];     // xyz = direction, w unused
         float sun_color[4];   // rgb = color*intensity, w unused
         float ambient[4];     // rgb = color*intensity, w unused
     } pc{};
+    // ONE push struct feeds TWO shaders (ssr.comp and ssr_rt.comp), so these
+    // offsets are a contract, not an implementation detail. Verified against
+    // spirv-dis on both variants. instance_count in particular is the bounds
+    // guard that stopped the ray-query TDR -- a field inserted above it would
+    // feed the shader a garbage count and hand back the device reset.
+    static_assert(offsetof(PC, instance_count) == 104,
+                  "instance_count must stay at 104: ssr_rt.comp reads it there");
+    static_assert(offsetof(PC, tint_by_albedo) == 108,
+                  "tint_by_albedo must stay at 108: BOTH ssr shaders read it there");
     const glm::mat4 vp = proj * view;
     std::memcpy(pc.view_proj, &vp[0][0], sizeof(pc.view_proj));
     pc.camera_pos[0] = camera_position.x;
@@ -588,6 +598,7 @@ void VulkanSsrPass::execute(VkCommandBuffer cmd,
     pc.num_steps     = config_.num_steps;
     pc.fresnel_power = config_.fresnel_power;
     pc.instance_count = static_cast<int32_t>(instance_count_);
+    pc.tint_by_albedo = config_.tint_by_albedo ? 1.0f : 0.0f;
     pc.sun_dir[0] = sun_direction_.x; pc.sun_dir[1] = sun_direction_.y; pc.sun_dir[2] = sun_direction_.z;
     pc.sun_color[0] = sun_color_.x; pc.sun_color[1] = sun_color_.y; pc.sun_color[2] = sun_color_.z;
     pc.ambient[0] = ambient_color_.x * ambient_intensity_;

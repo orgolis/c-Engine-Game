@@ -73,7 +73,10 @@ layout(push_constant) uniform PC {
     // a structure whose companion SSBO has already been rewritten), so the
     // index arriving from a ray hit is not automatically in range.
     int   instance_count;
-    float _pad;
+    // 1.0 = a metal's reflection is tinted by its OWN base colour (correct PBR:
+    // gold reflects gold). 0.0 = the old neutral-white behaviour, kept as a
+    // toggle so the difference can be seen side by side.
+    float tint_by_albedo;
     vec4  sun_dir;    // xyz = direction (light → scene)
     vec4  sun_color;  // rgb = colour × intensity
     vec4  ambient;    // rgb = colour × intensity
@@ -208,13 +211,29 @@ void main() {
     }
 
     // Roughness-aware Fresnel weighting (matches ssr.comp / IBL).
+    //
+    // F0 for a METAL is its own base colour -- that is what makes gold reflect
+    // gold and copper reflect copper. This used to be vec3(1.0), so every metal
+    // in the scene reflected neutrally white however it was authored, and the
+    // reflecting surface's colour was simply absent from its reflection.
+    // Dielectrics keep the ~0.01 grey base, which is physically right: their
+    // specular is uncoloured no matter what the diffuse albedo is.
+    vec3 surf_albedo = texture(albedoTex, uv).rgb;
+    vec3 metal_F0    = mix(vec3(1.0), surf_albedo, pc.tint_by_albedo);
     float NdotV = max(dot(N, -V), 0.0);
-    vec3 F0_v = mix(vec3(kBaseReflect), vec3(1.0), metallic);
+    vec3 F0_v = mix(vec3(kBaseReflect), metal_F0, metallic);
     vec3 rough_term = max(vec3(1.0 - roughness), F0_v);
     vec3 F = F0_v + (rough_term - F0_v) *
                     pow(clamp(1.0 - NdotV, 0.0, 1.0), pc.fresnel_power);
     float spec_weight = max(max(F.r, F.g), F.b);
     spec_weight *= mix(smoothness * smoothness, smoothness, metallic);
 
-    imageStore(dstReflection, px, vec4(reflection_color, spec_weight));
+    // F is a COLOUR and was being collapsed to a scalar here, which threw the
+    // hue away even when F0 carried one. The composite blends
+    // HDR = rgb*a + HDR*(1-a), so the tint has to ride in rgb: normalise F by
+    // its own peak and fold it into the radiance, leaving `a` exactly the
+    // strength it always was. Unchanged output for dielectrics and for
+    // tint_by_albedo = 0.
+    vec3 tint = spec_weight > 1e-5 ? F / max(max(F.r, F.g), F.b) : vec3(1.0);
+    imageStore(dstReflection, px, vec4(reflection_color * tint, spec_weight));
 }

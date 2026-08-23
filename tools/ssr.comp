@@ -40,7 +40,12 @@ layout(push_constant) uniform PC {
     float thickness;       // NDC z tolerance after refinement
     int   num_steps;       // coarse marching steps
     float fresnel_power;
-    vec2  _pad;
+    // Both variants share ONE host-side push struct, so these two must keep the
+    // ray-traced shader's offsets: instance_count is meaningless here, and
+    // tint_by_albedo means the same thing in both (1.0 = a metal's reflection
+    // carries its own base colour).
+    int   _unused_instance_count;
+    float tint_by_albedo;
 } pc;
 
 const int   kRefineSteps = 6;     // binary-search refinement iterations
@@ -198,8 +203,17 @@ void main() {
     // Roughness-aware Fresnel — same approximation as IBL. For rough
     // surfaces this caps the grazing-angle boost so non-metals at
     // roughness ~0.7 don't pop to mirror-like reflection at edges.
+    //
+    // F0 for a METAL is its own base colour — gold reflects gold. This was
+    // vec3(1.0), so every metal reflected neutrally white however it was
+    // authored. Fixed in BOTH variants together on purpose: if only the
+    // ray-traced one carried surface colour, ticking the Ray-traced checkbox
+    // would change what metals look like as well as how accurate the
+    // reflections are, and that reads as a broken toggle.
+    vec3 surf_albedo = texture(albedoTex, uv).rgb;
+    vec3 metal_F0    = mix(vec3(1.0), surf_albedo, pc.tint_by_albedo);
     float NdotV = max(dot(N, -V), 0.0);
-    vec3 F0_v = mix(vec3(kBaseReflect), vec3(1.0), metallic);
+    vec3 F0_v = mix(vec3(kBaseReflect), metal_F0, metallic);
     vec3 rough_term = max(vec3(1.0 - roughness), F0_v);
     vec3 F = F0_v + (rough_term - F0_v) *
                     pow(clamp(1.0 - NdotV, 0.0, 1.0), pc.fresnel_power);
@@ -213,5 +227,10 @@ void main() {
     spec_weight *= smoothness_damp;
 
     float alpha = fade * spec_weight;
-    imageStore(dstReflection, px, vec4(hit_color, alpha));
+    // Fold the COLOURED Fresnel into the radiance. spec_weight already took F's
+    // peak, so normalising by that peak leaves alpha exactly the strength it
+    // was and puts the hue where the composite can see it — it blends
+    // HDR = rgb*a + HDR*(1-a) and never looks at anything but rgb and a.
+    vec3 tint = spec_weight > 1e-5 ? F / max(max(F.r, F.g), F.b) : vec3(1.0);
+    imageStore(dstReflection, px, vec4(hit_color * tint, alpha));
 }
