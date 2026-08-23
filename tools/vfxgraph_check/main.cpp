@@ -10,9 +10,12 @@
 // Pure CPU, no device. Prints "vfxgraph_check: ALL OK" + exits 0 on pass.
 // ====================
 
+#include "vfx/particle_system.h"
 #include "vfx/vfx_graph.h"
 #include "vfx/vfx_module.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -120,6 +123,63 @@ int main() {
         check(g.stage(VfxStage::Update)[0].kind == ModuleKind::Drag &&
               g.stage(VfxStage::Update)[1].kind == ModuleKind::Gravity,
               "move_module reorders within a stage");
+    }
+
+    // ---- 7. Module ORDER changes the result --------------------------------
+    // Gravity-then-Drag damps the gravity contribution of this frame;
+    // Drag-then-Gravity does not. The difference is small per frame and
+    // compounds, which is exactly the kind of bug a screenshot cannot show.
+    {
+        auto run = [](bool gravity_first) {
+            VfxGraph g = VfxGraph::default_stack();
+            auto& up = g.stage(VfxStage::Update);
+            if (!gravity_first) std::swap(up[0], up[1]);
+            // Remove randomness so the comparison is exact.
+            for (auto& m : g.stage(VfxStage::Init))
+                if (m.kind == ModuleKind::InitVelocityCone) m.params["SPREAD"] = 0.0f;
+            for (auto& m : g.stage(VfxStage::Update))
+                if (m.kind == ModuleKind::Drag) m.params["DRAG"] = 2.0f;
+
+            ParticleSystem ps;
+            ps.set_graph(g);
+            ps.set_seed(7);
+            ps.emit_burst(1);
+            for (int i = 0; i < 10; ++i) ps.update(0.016f);
+            return ps.particles().empty() ? 0.0f : ps.particles()[0].pos.y;
+        };
+        const float a = run(true), b = run(false);
+        check(std::fabs(a - b) > 1e-4f,
+              "Gravity-then-Drag differs numerically from Drag-then-Gravity");
+    }
+
+    // ---- 8. The default stack matches the pre-4.3 integrator ---------------
+    // The regression gate in one assertion: a stack-driven system and the old
+    // arithmetic must agree, or every saved effect changed meaning.
+    {
+        EmitterConfig cfg;
+        cfg.spawn_rate      = 0.0f;
+        cfg.base_velocity   = glm::vec3(0.0f, 10.0f, 0.0f);
+        cfg.velocity_spread = 0.0f;
+        cfg.gravity         = glm::vec3(0.0f, -10.0f, 0.0f);
+        cfg.drag            = 0.5f;
+
+        ParticleSystem ps(cfg);               // the facade path
+        ps.set_seed(3);
+        ps.emit_burst(1);
+
+        // Hand-rolled reference using the OLD arithmetic, exactly.
+        glm::vec3 vel(0.0f, 10.0f, 0.0f), pos(0.0f);
+        const float dt = 0.016f;
+        for (int i = 0; i < 20; ++i) {
+            ps.update(dt);
+            const float damp = std::max(0.0f, 1.0f - 0.5f * dt);
+            vel += glm::vec3(0.0f, -10.0f, 0.0f) * dt;
+            vel *= damp;
+            pos += vel * dt;
+        }
+        const bool ok = !ps.particles().empty() &&
+                        std::fabs(ps.particles()[0].pos.y - pos.y) < 1e-4f;
+        check(ok, "the default stack reproduces the pre-4.3 integrator exactly");
     }
 
     std::printf("\nvfxgraph_check: %d passed, %d failed\n", g_pass, g_fail);
