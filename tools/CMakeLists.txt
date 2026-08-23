@@ -728,3 +728,11 @@ target_compile_features(innerloop_check PRIVATE cxx_std_20)
 if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(innerloop_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
+
+# vfxgraph_check: VFX module-stack verification (headless, no device) — module
+# stage membership, name round-trip, typed parameter access, stack execution
+# order, .vfx round-trip including module order, and the validate() cases that
+# otherwise fail silently.
+add_executable(vfxgraph_check vfxgraph_check/main.cpp)
+target_link_libraries(vfxgraph_check PRIVATE gws_vfx)
+target_compile_features(vfxgraph_check PRIVATE cxx_std_20)
