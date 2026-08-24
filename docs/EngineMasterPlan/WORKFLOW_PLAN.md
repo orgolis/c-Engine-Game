@@ -159,6 +159,35 @@ gets ignored.
 > rose above the fine one, light leaking where it fell below. Neither change was wrong on its own. Terrain now
 > draws the tier it renders at; `shadow_lod_for()` states the rule in one place, and 10 assertions fail without it.
 
+> **⚠️ The terrain shadow bug was in the ray-query path all along (v0.7.4).** The v0.7.3 fix — terrain drawing the
+> same LOD tier for shadows as for shading — was correct, and changed nothing, because `directionalShadow()`
+> **returns before the shadow map is ever sampled** when ray-traced shadows are on. RT and shadow-map shadows are
+> either/or, not blended, and the reporting machine had `Ray tracing toggle ON` in every session. The fix was
+> landing on a code path that did not execute.
+>
+> The real cause was the ray origin: `worldPos + normal * 0.01`. One centimetre, on terrain whose triangles are
+> metres across. At a grazing sun angle the shadow ray re-enters the triangle it just left, and float precision
+> hundreds of units from the origin is itself coarser than the offset — so broad, slope-correlated regions
+> reported as occluded. That is the contour-following blotching seen on the ground. It became visible when
+> **v0.6.16 fixed the `shaderInt64` UB** that had made the whole ray-query path undefined: once RT shadows
+> genuinely worked, they started self-intersecting. The offset now scales with both surface slope and distance
+> from the origin.
+>
+> **Ray-traced shadows had no control of any kind** — `set_rt_enabled(true)` ran at startup for any capable GPU,
+> with no checkbox and not even an environment variable. With two entirely separate shadow paths and no way to
+> switch, there was no way to tell which one an artefact belonged to. There is a toggle now.
+>
+> **And ray-query shadows are binary** — one ray, `1.0 : 0.0` — so with RT on there was no penumbra whatsoever: a
+> shadow's edge was exactly as dark as its centre. Two controls now shape that. *Light scattering* widens the PCF
+> radius on the shadow-map path and samples a cone the width of the sun's disc on the ray-query path, which is
+> where the gradient actually comes from. *Light persistence* lifts the umbra, since with ambient correctly low
+> there is nothing left to keep a fully occluded point from being pure black.
+>
+> Both parameters had to fit a push block already **exactly at Vulkan's guaranteed 128-byte minimum**. Three
+> booleans occupying three whole floats were packed into one bit field to make room, rather than assuming a
+> device offers more than the spec promises — the same assumption that once shipped a build unable to start on an
+> RX 5700. `static_assert`s pin the size and every changed offset, checked against `spirv-dis`.
+
 Two items were **retired by measurement rather than implemented** (2.2, 2.3). The engine has always shipped on
 precompiled SPIR-V, so the PSO-stutter work — inherited from Unreal's well-documented problem — was addressing
 something this engine does not have.

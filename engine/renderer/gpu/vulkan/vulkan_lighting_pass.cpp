@@ -1458,13 +1458,29 @@ void VulkanLightingPass::render(VkCommandBuffer cmd) {
         uint32_t light_count;
         float ibl_prefilter_mips;
         float ibl_intensity;
-        // Both former pad slots now carry RT toggles. inv_view_proj stays
-        // on a 16-byte boundary (offset 48).
-        float rt_shadow_enabled;
-        float rt_ao_enabled;
+        // This block is EXACTLY 128 bytes -- Vulkan's guaranteed minimum
+        // maxPushConstantsSize. There is no room to grow it, and relying on a
+        // device offering more would work here and fail on someone else's GPU
+        // (the same class of assumption that once shipped a build unable to
+        // start on an RX 5700). So the three booleans that used to occupy
+        // three whole floats are packed into one, freeing two slots for the
+        // shadow softness and persistence controls.
+        //   bit 0 = ray-query shadows, bit 1 = ray-query AO, bit 2 = clouds
+        float flags;
+        float shadow_softness;
         float inv_view_proj[16]; // column-major mat4
-        float cloud_params[4];   // center.x, center.z, half_extent, enabled
+        // [3] was the cloud enable, which moved into `flags`; it now carries
+        // shadow persistence, because this block cannot grow past 128 bytes.
+        float cloud_params[4];   // center.x, center.z, half_extent, persistence
     } pc{};
+    // The shader's Constants block must agree with this byte for byte. Pinned
+    // because the block is at the 128-byte limit: a field added or reordered
+    // here shifts everything after it and the shader reads the wrong values
+    // with no error anywhere.
+    static_assert(sizeof(PC) == 128, "lighting push block must stay at Vulkan's 128-byte minimum");
+    static_assert(offsetof(PC, flags) == 40, "flags offset must match the shader");
+    static_assert(offsetof(PC, shadow_softness) == 44, "shadowSoftness offset must match the shader");
+    static_assert(offsetof(PC, cloud_params) == 112, "cloudParams offset must match the shader");
     pc.camera_x = camera_position_.x;
     pc.camera_y = camera_position_.y;
     pc.camera_z = camera_position_.z;
@@ -1476,8 +1492,13 @@ void VulkanLightingPass::render(VkCommandBuffer cmd) {
     pc.ibl_prefilter_mips = ibl_prefilter_mips_ > 0 ? float(ibl_prefilter_mips_ - 1) : 0.0f;
     pc.ibl_intensity      = ibl_prefilter_mips_ > 0 ? ibl_intensity_ : 0.0f;
     const bool rt_active  = (rt_enabled_ && tlas_ != VK_NULL_HANDLE);
-    pc.rt_shadow_enabled  = rt_active ? 1.0f : 0.0f;
-    pc.rt_ao_enabled      = (rt_active && rt_ao_enabled_) ? 1.0f : 0.0f;
+    int flag_bits = 0;
+    if (rt_active)                       flag_bits |= 1 << 0;
+    if (rt_active && rt_ao_enabled_)     flag_bits |= 1 << 1;
+    if (cloud_params_.w > 0.5f)          flag_bits |= 1 << 2;
+    pc.flags              = static_cast<float>(flag_bits);
+    pc.shadow_softness    = shadow_softness_;
+
     // Inverse of (proj * view-rotation-only). Strips the camera translation
     // so the sky shader reconstructs a world-space ray DIRECTION without a
     // precision-losing `world - cameraPos` subtraction (which made the
@@ -1488,7 +1509,7 @@ void VulkanLightingPass::render(VkCommandBuffer cmd) {
     pc.cloud_params[0] = cloud_params_.x;
     pc.cloud_params[1] = cloud_params_.y;
     pc.cloud_params[2] = cloud_params_.z;
-    pc.cloud_params[3] = cloud_params_.w;
+    pc.cloud_params[3] = shadow_persistence_;   // enable moved to flags bit 2
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc), &pc);
 

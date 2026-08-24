@@ -53,15 +53,30 @@ layout(push_constant) uniform Constants {
     uint  lightCount;
     float iblPrefilterMips;
     float iblIntensity;
-    float rtShadowEnabled; // 1.0 → use ray-query shadow path
-    float rtAoEnabled;     // 1.0 → use ray-query AO instead of SSAO texture
+    // Three booleans packed into one float, because this block is EXACTLY
+    // 128 bytes -- Vulkan's guaranteed minimum maxPushConstantsSize -- and
+    // growing it would work on this GPU and fail on someone else's. Bit 0 =
+    // ray-query shadows, bit 1 = ray-query AO, bit 2 = cloud shadows.
+    float flags;
+    // How far light spreads into shadow. 0 = the old hard edge; larger values
+    // widen the penumbra (shadow-map PCF radius, and the sun's apparent angular
+    // size for the ray-query path).
+    float shadowSoftness;
     mat4  invViewProj;
-    vec4  cloudParams;     // x=center.x, y=center.z, z=half_extent, w=enabled
+    // w carries shadow PERSISTENCE, not a cloud value: how much light survives
+    // inside a fully occluded region. It rides here because this block is at
+    // Vulkan's 128-byte floor and the cloud enable vacated the slot.
+    vec4  cloudParams;     // x=center.x, y=center.z, z=half_extent, w=persistence
 } pc;
+
+bool flagSet(int bit) { return (int(pc.flags) & (1 << bit)) != 0; }
+#define RT_SHADOWS_ON  flagSet(0)
+#define RT_AO_ON       flagSet(1)
+#define CLOUD_SHADOW_ON flagSet(2)
 
 // How much sun reaches `worldPos` through the clouds overhead (1 = clear).
 float cloudShadowFactor(vec3 worldPos) {
-    if (pc.cloudParams.w < 0.5) return 1.0;
+    if (!CLOUD_SHADOW_ON) return 1.0;
     vec2 uv = (worldPos.xz - pc.cloudParams.xy) / (2.0 * pc.cloudParams.z) + 0.5;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
     return clamp(texture(cloudShadow, uv).r, 0.0, 1.0);
@@ -135,25 +150,57 @@ float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
            GeometrySchlickGGX(NdotL, roughness);
 }
 
+// Percentage-closer filtering. The kernel RADIUS is what produces a penumbra:
+// a fixed 3x3 at one texel spans three texels of gradient, which on a 2048 map
+// covering a large scene collapses to a hard edge on screen. Widening the
+// radius spreads the transition over more texels; the sample count grows with
+// it so the gradient stays smooth instead of banding into rings.
 float PCF(sampler2DArray sm, vec2 uv, float layer, float expected_depth, float bias) {
-    float shadow = 0.0;
     vec2 texelSize = 1.0 / vec2(textureSize(sm, 0).xy);
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
-            float pcfDepth = texture(sm, vec3(uv + vec2(x, y) * texelSize, layer)).r;
+    float radius = 1.0 + pc.shadowSoftness * 6.0;      // texels
+    int   steps  = int(clamp(radius, 1.0, 4.0));       // 3x3 .. 9x9 taps
+    float shadow = 0.0;
+    float taken  = 0.0;
+    for (int x = -steps; x <= steps; ++x) {
+        for (int y = -steps; y <= steps; ++y) {
+            vec2 o = vec2(x, y) * (radius / float(steps)) * texelSize;
+            float pcfDepth = texture(sm, vec3(uv + o, layer)).r;
             shadow += (expected_depth - bias) > pcfDepth ? 0.0 : 1.0;
+            taken  += 1.0;
         }
     }
-    return shadow / 9.0;
+    return shadow / taken;
 }
 
 // Trace a single occlusion ray. Returns 1.0 if the ray reaches `t_max`
 // without hitting anything (lit), 0.0 if it hits geometry first (shadowed).
 // `worldPos` is offset by `+normal * 0.01` before tracing to avoid the
 // surface self-intersecting itself at t=0.
+// Forward declaration: the cone sampler below jitters with it, and it is
+// defined further down beside the AO code that also uses it.
+float aoHash(vec2 p);
+
 #ifdef GWS_RAY_QUERY
-float rayQueryShadow(vec3 worldPos, vec3 normal, vec3 ray_dir, float t_max) {
-    vec3 origin = worldPos + normal * 0.01;
+// How far to lift a shadow ray off the surface it starts on.
+//
+// A fixed 1 cm was not enough and produced the terrain artefact this replaced:
+// broad, slope-following patches of false shadow. Two things defeat a constant
+// offset. Terrain triangles are METRES across, so at a grazing sun angle the
+// ray re-enters the very triangle it left; and float precision on a world
+// coordinate hundreds of units from the origin is itself coarser than 1 cm, so
+// the offset can round away entirely.
+//
+// So it scales with both. The slope term is tan(angle between the surface and
+// the ray) -- grazing rays need the most lift -- and the magnitude term keeps
+// the offset above the representable step at this distance from the origin.
+float shadowRayEpsilon(vec3 worldPos, vec3 normal, vec3 ray_dir) {
+    float ndotl = max(dot(normal, ray_dir), 0.0);
+    float slope = sqrt(max(1.0 - ndotl * ndotl, 0.0)) / max(ndotl, 0.05);
+    float scale = max(1.0, length(worldPos) * 1e-3);
+    return clamp(0.02 * (1.0 + slope) * scale, 0.02, 2.0);
+}
+
+float rayQueryShadowOne(vec3 origin, vec3 ray_dir, float t_max) {
     rayQueryEXT rq;
     rayQueryInitializeEXT(rq, scene_tlas,
         gl_RayFlagsOpaqueEXT |
@@ -163,6 +210,39 @@ float rayQueryShadow(vec3 worldPos, vec3 normal, vec3 ray_dir, float t_max) {
     while (rayQueryProceedEXT(rq)) {}
     return (rayQueryGetIntersectionTypeEXT(rq, true) ==
             gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
+}
+
+// A single ray gives a BINARY result -- lit or not -- which is why ray-traced
+// shadows had no penumbra at all and a shadow's edge was exactly as dark as its
+// centre. Real shadows soften because the sun is a disc, not a point: near the
+// edge only part of it is hidden. Spreading a few rays over a cone the width of
+// that disc reproduces it, and the fraction that get through IS the gradient.
+float rayQueryShadow(vec3 worldPos, vec3 normal, vec3 ray_dir, float t_max) {
+    vec3 origin = worldPos + normal * shadowRayEpsilon(worldPos, normal, ray_dir);
+
+    if (pc.shadowSoftness <= 0.001)
+        return rayQueryShadowOne(origin, ray_dir, t_max);
+
+    // Cone half-angle. The real sun is ~0.27 degrees; the slider scales up from
+    // there so the effect is dialable rather than physically fixed.
+    float spread = pc.shadowSoftness * 0.08;
+    vec3 up = abs(ray_dir.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tx = normalize(cross(up, ray_dir));
+    vec3 ty = cross(ray_dir, tx);
+
+    // Rotated per pixel so the low sample count reads as a soft gradient rather
+    // than as a repeating pattern of hard copies.
+    float ang = aoHash(gl_FragCoord.xy) * 6.2831853;
+    float lit = 0.0;
+    const int kConeRays = 8;
+    for (int i = 0; i < kConeRays; ++i) {
+        float t = (float(i) + 0.5) / float(kConeRays);
+        float r = sqrt(t) * spread;
+        float a = ang + t * 6.2831853 * 2.39996;   // golden-angle spiral
+        vec3 d = normalize(ray_dir + tx * (cos(a) * r) + ty * (sin(a) * r));
+        lit += rayQueryShadowOne(origin, d, t_max);
+    }
+    return lit / float(kConeRays);
 }
 #else
 // No ray query on this device: fully lit, so shadowing falls back to
@@ -261,7 +341,7 @@ float contactShadow(vec3 worldPos, vec3 N, vec3 Ldir) {
 
 float directionalShadow(vec3 worldPos, vec3 normal, Light L) {
     if (L.castsShadow == 0u) return 1.0;
-    if (pc.rtShadowEnabled > 0.5) {
+    if (RT_SHADOWS_ON) {
         // Sun direction is -L.direction (light direction is "from" the
         // sun toward the surface; the ray to the sun goes the other way).
         // 1000 is well past any plausible scene extent.
@@ -285,7 +365,7 @@ float directionalShadow(vec3 worldPos, vec3 normal, Light L) {
 
 float pointShadow(vec3 worldPos, vec3 normal, Light L) {
     if (L.castsShadow == 0u) return 1.0;
-    if (pc.rtShadowEnabled > 0.5) {
+    if (RT_SHADOWS_ON) {
         vec3 to_light = L.position.xyz - worldPos;
         float dist = length(to_light);
         if (dist < 1e-4) return 1.0;
@@ -302,7 +382,7 @@ float pointShadow(vec3 worldPos, vec3 normal, Light L) {
 // Without RT there is no per-spot shadow map, so it returns lit (no shadow).
 float spotShadow(vec3 worldPos, vec3 normal, Light L) {
     if (L.castsShadow == 0u) return 1.0;
-    if (pc.rtShadowEnabled > 0.5) {
+    if (RT_SHADOWS_ON) {
         vec3 to_light = L.position.xyz - worldPos;
         float dist = length(to_light);
         if (dist < 1e-4) return 1.0;
@@ -370,6 +450,12 @@ vec3 evaluateLight(Light L, vec3 N, vec3 V, vec3 worldPos,
     else                          shadow = directionalShadow(worldPos, N, L);
     // The directional (sun) light is additionally occluded by clouds overhead.
     if (L.position.w == 0.0) shadow *= cloudShadowFactor(worldPos);
+    // Light persistence: how much of this light still reaches a fully occluded
+    // point. Applied AFTER the occlusion tests, so it lifts the umbra without
+    // touching the penumbra gradient the softness term produces. Physically
+    // this is the light that arrives by bouncing rather than directly -- with a
+    // low ambient and none of it, every shadow is a flat black silhouette.
+    shadow = mix(pc.cloudParams.w, 1.0, shadow);
     return (kD * albedo / PI + specular) * radiance * NdotL * shadow;
 }
 

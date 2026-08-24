@@ -163,7 +163,7 @@ Optional high-fidelity passes on top of the core renderer.
 | Sub-feature | Status |
 |---|---|
 | SSAO, SSR | ✅ |
-| Ray tracing: shadows / AO / reflections (auto on RT GPUs) | ✅ |
+| Ray tracing: shadows / AO / reflections (auto on RT GPUs) | ✅ — **and now switchable (v0.7.4).** RT shadows replace the shadow map entirely rather than blending with it, and until now had no toggle anywhere, so an artefact could not be attributed to a path. Soft shadows on both paths: PCF radius for the map, a sun-disc cone for ray queries (a single ray is binary and has no penumbra at all) |
 | **Coloured metal reflections** | ✅ **v0.7.2.** A metal's F0 is now its own base colour — gold reflects gold. It was hard-coded `vec3(1.0)` in **both** `ssr.comp` and `ssr_rt.comp`, so every metal reflected neutrally white however it was authored, and the coloured Fresnel was collapsed to a scalar before storage so the hue was discarded even when present. Roughness damping was already correct. Toggle: Post-Processing → Reflections → *Tint by surface colour* (a push constant — no pipeline rebuild, no device-idle stall) |
 | Coloured transmission / absorption through transparent objects | 🔴 — nothing in the shading path does refraction, IOR or Beer-Lambert absorption today (the Beer-Lambert code that exists is cloud-only). Next piece of this work |
 | DDGI (real-time GI) | ✅ — one **intensity slider** since v0.7.2, where 0 means off and skips the dispatch; the separate Enable checkbox is gone |

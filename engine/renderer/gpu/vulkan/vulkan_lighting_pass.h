@@ -217,6 +217,19 @@ public:
     /// 1 = use only the split-sum IBL term as ambient. Default 1.
     void set_ibl_intensity(float intensity) { ibl_intensity_ = intensity; }
 
+    /// How far light spreads into a shadow. 0 keeps the old hard edge; larger
+    /// widens the penumbra -- a bigger PCF radius for the shadow-map path, and
+    /// a wider sampling cone for the ray-query path, which is otherwise binary
+    /// and has no gradient at all.
+    void set_shadow_softness(float s) { shadow_softness_ = s < 0.0f ? 0.0f : s; }
+    float shadow_softness() const { return shadow_softness_; }
+
+    /// How much light still reaches a fully occluded point -- the light that
+    /// arrives by bouncing rather than directly. 0 is the old pure black, which
+    /// with a low ambient turns every shadow into a flat silhouette.
+    void set_shadow_persistence(float p) { shadow_persistence_ = p < 0.0f ? 0.0f : p; }
+    float shadow_persistence() const { return shadow_persistence_; }
+
     /// Toggle the hardware ray-tracing shadow path. When on AND `set_tlas`
     /// has bound a non-null acceleration structure, the lighting shader's
     /// `directionalShadow` switches from PCF-sampled shadow maps to an
@@ -387,6 +400,8 @@ private:
     // Open outdoor scenes can push this up to ~0.8 from the inspector;
     // for true PBR-correct lighting on a clear outdoor scene, 1.0.
     float       ibl_intensity_         = 0.4f;
+    float       shadow_softness_       = 0.35f;   // a visible penumbra by default
+    float       shadow_persistence_    = 0.05f;   // shadows are dark, not voids
 
     // Environment cubemap (owned by VulkanEnvironmentMap).
     VkImageView env_cubemap_view_    = VK_NULL_HANDLE;

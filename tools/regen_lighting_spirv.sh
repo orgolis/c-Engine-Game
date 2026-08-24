@@ -6,11 +6,12 @@
 # apart silently -- which is worse than the crash this split fixed, because it
 # only shows up as "the lighting looks different on that PC".
 set -e
-GV="${GLSLANG:-/c/VulkanSDK/1.4.341.1/Bin/glslangValidator}"
+GV="${GLSLANG:-/c/VulkanSDK/1.4.357.0/Bin/glslangValidator.exe}"
 cd "$(dirname "$0")"
 "$GV" --target-env vulkan1.2 -DGWS_RAY_QUERY -S frag -o lighting_pass.frag.spv      lighting_pass.frag
 "$GV" --target-env vulkan1.2                 -S frag -o lighting_pass_nort.frag.spv lighting_pass.frag
 python spv_to_header.py lighting_pass.vert.spv kLightingPassVertSpv \
                         lighting_pass.frag.spv kLightingPassFragSpv \
                         ../engine/renderer/gpu/vulkan/lighting_pass_spirv.h
-echo "regenerate the non-RT header via the inline emitter in the fix commit"
+python emit_lighting_nort_header.py
+echo "both lighting variants regenerated"

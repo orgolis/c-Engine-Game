@@ -8002,6 +8002,43 @@ int main(int argc, char** argv) {
                         ImGui::TextDisabled("  resolution-scaled, over the viewport");
                     }
 
+                    // Shadow shaping. Both of these exist because a shadow was
+                    // a binary stencil: hard at the edge and pure black in the
+                    // middle, with nothing in between. Softness gives the edge a
+                    // gradient; persistence stops the middle being a void.
+                    {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Shadows");
+                        // Ray-traced shadows were switched on at startup for any
+                        // GPU that could do them and had NO control anywhere -- not
+                        // a checkbox, not even an environment variable. They take a
+                        // completely different path from shadow maps rather than
+                        // blending with them (directionalShadow returns early), so
+                        // with no way to switch you also had no way to tell which
+                        // path an artefact belonged to.
+                        bool rts = lighting->is_rt_enabled();
+                        ImGui::BeginDisabled(!device.has_ray_tracing());
+                        if (ImGui::Checkbox("Ray-traced shadows##rtsh", &rts))
+                            lighting->set_rt_enabled(rts);
+                        ImGui::EndDisabled();
+                        if (!device.has_ray_tracing())
+                            ImGui::TextDisabled("  (no ray tracing on this GPU)");
+                        else
+                            ImGui::TextDisabled(rts
+                                ? "  Ray-queried against real geometry."
+                                : "  Cascaded shadow maps with PCF.");
+                        float soft = lighting->shadow_softness();
+                        if (ImGui::SliderFloat("Light scattering##shadow", &soft, 0.0f, 1.0f))
+                            lighting->set_shadow_softness(soft);
+                        ImGui::TextDisabled("  How far light spreads into shadow:");
+                        ImGui::TextDisabled("  0 is a hard edge, higher softens it.");
+                        float persist = lighting->shadow_persistence();
+                        if (ImGui::SliderFloat("Light persistence##shadow", &persist, 0.0f, 0.5f))
+                            lighting->set_shadow_persistence(persist);
+                        ImGui::TextDisabled("  Light still reaching a shadow's core:");
+                        ImGui::TextDisabled("  0 is pure black, which reads flat.");
+                    }
+
                     // Ambient / sky light -- the floor under everything.
                     //
                     // 0 here means ZERO. It could not before: global_ambient was
