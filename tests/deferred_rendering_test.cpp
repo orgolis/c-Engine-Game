@@ -101,6 +101,26 @@ TEST_CASE("Cascaded shadow map configuration", "[deferred][shadow]") {
     CHECK(config.pcf_samples == 9); // 3x3 PCF in shader
 }
 
+TEST_CASE("Shadow LOD bias skips terrain", "[deferred][shadow][terrain]") {
+    // Ordinary meshes drop a tier in the shadow pass: a silhouette needs less
+    // detail than a shaded surface, and the saving is deliberate.
+    CHECK(shadow_lod_for(0, /*is_terrain=*/false) == 1);
+    CHECK(shadow_lod_for(2, /*is_terrain=*/false) == 3);
+
+    // Terrain must draw the SAME tier the G-buffer drew. A terrain LOD tier is
+    // a different heightfield, not a decimated copy, so a coarser one puts the
+    // shadow map's depth on a surface that is not the one being shaded --
+    // which lands shadows in the wrong place on the ground.
+    CHECK(shadow_lod_for(0, /*is_terrain=*/true) == 0);
+    CHECK(shadow_lod_for(2, /*is_terrain=*/true) == 2);
+
+    // The property, stated once rather than per-case: terrain never coarsens.
+    for (size_t lod = 0; lod < 8; ++lod) {
+        CHECK(shadow_lod_for(lod, true) == lod);
+        CHECK(shadow_lod_for(lod, false) > lod);
+    }
+}
+
 // =============================================================================
 // Post-processing configuration
 // =============================================================================

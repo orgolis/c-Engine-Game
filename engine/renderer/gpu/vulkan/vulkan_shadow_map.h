@@ -30,6 +30,28 @@ enum class ShadowMapType {
     Standard2D,    // Standard 2D shadow map for spot lights
 };
 
+/// Which LOD tier the shadow pass draws, given the tier the G-buffer chose for
+/// the same submesh at the same distance.
+///
+/// Ordinary meshes drop one tier. A shadow silhouette tolerates far less detail
+/// than a shaded surface, so this is a deliberate and worthwhile saving.
+///
+/// TERRAIN MUST NOT. A terrain LOD tier is not a decimated copy of the same
+/// shape -- it is a DIFFERENT HEIGHTFIELD, with peaks cut off and hollows
+/// filled in (see kTerrainMaxLods in scene_render_bridge.h: four tiers, each
+/// sampling the heightmap at a coarser step). Rendering a coarser tier into the
+/// shadow map records depth for a surface that is not the surface being shaded,
+/// and the depth comparison is then against the wrong height: false shadow
+/// wherever the coarse tier rises above the fine one, light leaking wherever it
+/// falls below. That reads as shadows sitting in the wrong place on terrain.
+///
+/// The bias itself predates terrain LOD by months and was harmless while every
+/// terrain chunk had exactly one tier -- draw_submesh clamped the +1 away. It
+/// only became a bug when terrain gained tiers.
+inline size_t shadow_lod_for(size_t gbuffer_lod, bool is_terrain) {
+    return is_terrain ? gbuffer_lod : gbuffer_lod + 1;
+}
+
 /**
  * @struct ShadowMapConfig
  * @brief Configuration for shadow map

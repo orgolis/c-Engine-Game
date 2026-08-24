@@ -5528,9 +5528,17 @@ int main(int argc, char** argv) {
         g_cfg.terrain_set_layout  = terrain_mat_layout;
         auto g_buffer = VulkanGBuffer::create(&device, g_cfg);
 
+        // How much of the ambient term comes from image-based sky lighting
+        // rather than the flat constant. Matches the renderer's own default;
+        // named here because the Ambient slider has to scale both halves
+        // together or 0 is not actually 0.
+        constexpr float kIblShareOfAmbient = 0.4f;
         LightingConfig l_cfg{};
         l_cfg.ambient_color   = glm::vec3(0.3f);
-        l_cfg.global_ambient  = 1.0f;
+        // Was 1.0, which handed every surface 0.3 x albedo of light with no
+        // light source in the scene -- nothing could ever look dark. The
+        // Ambient / sky light slider drives this now, and 0 means 0.
+        l_cfg.global_ambient  = 0.25f;
         auto lighting = VulkanLightingPass::create(&device, l_cfg, g_buffer.get());
         // Scene LightComponents are synced into the lighting pass each
         // frame in the render loop below. If the scene contains no
@@ -7992,6 +8000,40 @@ int main(int argc, char** argv) {
                             game_ui.set_enabled(uon);
                         ImGui::TextDisabled("  anchored HUD: health/XP/ability bars,");
                         ImGui::TextDisabled("  resolution-scaled, over the viewport");
+                    }
+
+                    // Ambient / sky light -- the floor under everything.
+                    //
+                    // 0 here means ZERO. It could not before: global_ambient was
+                    // 1.0 against a 0.3 ambient colour, so every surface received
+                    // 0.3 x albedo for free, and a further slice of the ambient
+                    // term came from IBL whose intensity (0.4) had no UI at all.
+                    // Turning "ambient" down therefore never reached darkness --
+                    // the sky half kept shining.
+                    //
+                    // One control drives both halves, so the two cannot disagree.
+                    {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Ambient / sky light");
+                        float amb = l_cfg.global_ambient;
+                        if (ImGui::SliderFloat("Strength##ambient", &amb, 0.0f, 1.0f)) {
+                            l_cfg.global_ambient = amb;
+                            lighting->set_ambient_light(amb);
+                            // IBL is the sky half of the same term. Scaled by the
+                            // same slider so 0 silences it too -- otherwise the
+                            // slider bottoms out at "still lit by the sky".
+                            lighting->set_ibl_intensity(amb * kIblShareOfAmbient);
+                            // SSR and clouds re-read l_cfg every frame; the
+                            // transparent pass is handed its ambient ONCE at
+                            // startup, so without this push glass keeps the old
+                            // value while everything else goes dark -- which reads
+                            // as a bug in transparency rather than in ambient.
+                            if (transparent)
+                                transparent->set_ambient(l_cfg.ambient_color, amb);
+                        }
+                        if (amb <= 0.0f)
+                            ImGui::TextDisabled("  0 — no ambient, no sky light:\n"
+                                                "  surfaces with no light on them are black.");
                     }
 
                     // DDGI probe-grid global illumination (Master Plan §3.2).

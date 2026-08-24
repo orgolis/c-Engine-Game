@@ -139,6 +139,26 @@ gets ignored.
 > no mixing — **verified to fail with the fix disabled**, because a regression test that passes either way proves
 > nothing.
 
+> **⚠️ Two lighting defaults that made the renderer impossible to judge (fixed 2026-08-24, v0.7.2–v0.7.3).**
+>
+> **Every metal reflected white.** F0 for a metal is its own base colour; both SSR shaders hard-coded `vec3(1.0)`,
+> and the coloured Fresnel was collapsed to a scalar before storage, so the hue was discarded even where it
+> survived. Fixed in both variants together — had only the ray-traced one carried colour, ticking *Ray-traced*
+> would have changed what metals **look like** as well as how accurate the reflections are.
+>
+> **Nothing could ever look dark.** `global_ambient` was **1.0** against a `0.3` ambient colour, so every surface
+> received 0.3 × albedo with no light source in the scene, and a further 40% of the ambient term came from IBL
+> whose intensity had **no UI at all**. Turning ambient down never reached darkness, because the sky half kept
+> shining. One slider now drives both halves and 0 means 0.
+>
+> **Shadows sat wrong on terrain**, and the bug was in the seam between two individually correct decisions. The
+> shadow pass draws one LOD tier coarser than the G-buffer — a real and deliberate saving, since a silhouette
+> needs less detail than a shaded surface, and it dates from April. Terrain then gained LOD tiers (P2), where a
+> tier is not a decimated copy but a **different heightfield** with peaks cut and hollows filled. From that point
+> the shadow map held depth for a surface that was not the one being shaded: false shadow where the coarse tier
+> rose above the fine one, light leaking where it fell below. Neither change was wrong on its own. Terrain now
+> draws the tier it renders at; `shadow_lod_for()` states the rule in one place, and 10 assertions fail without it.
+
 Two items were **retired by measurement rather than implemented** (2.2, 2.3). The engine has always shipped on
 precompiled SPIR-V, so the PSO-stutter work — inherited from Unreal's well-documented problem — was addressing
 something this engine does not have.
