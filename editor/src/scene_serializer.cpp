@@ -179,6 +179,15 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
                     file << "MESH_RENDERER_MATERIAL=" << mr->GetMaterialPath() << "\n";
                 if (mr->GetOverrideAssetMaterial())
                     file << "MESH_RENDERER_MATERIAL_OVERRIDE=1\n";
+                // Material-instance overrides. Written only when something is
+                // actually overridden, so scenes that use none do not churn.
+                if (mr->GetMaterialOverrides() != 0u) {
+                    file << "MESH_RENDERER_MATOVR=" << mr->GetMaterialOverrides() << "\n";
+                    file << "MESH_RENDERER_MATOVR_UVS=" << mr->GetUvScale().x  << ","
+                         << mr->GetUvScale().y  << "\n";
+                    file << "MESH_RENDERER_MATOVR_UVO=" << mr->GetUvOffset().x << ","
+                         << mr->GetUvOffset().y << "\n";
+                }
             }
 
             // LightComponent — full property emission (previous version emitted
@@ -445,6 +454,9 @@ struct ParsedEntity {
     std::string mesh_renderer_albedo_tex;
     std::string mesh_renderer_material;              // .mat asset; wins over the inline fields
     bool mesh_renderer_override_asset_mat = false;
+    uint32_t  mesh_renderer_matovr = 0;
+    glm::vec2 mesh_renderer_uv_scale{1.0f, 1.0f};
+    glm::vec2 mesh_renderer_uv_offset{0.0f, 0.0f};
 
     bool has_light = false;
     int  light_type = 0;
@@ -623,6 +635,10 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
     // match — starts_with is a prefix test, and "MESH_RENDERER_MATERIAL" is a
     // prefix of "MESH_RENDERER_MATERIAL_OVERRIDE".
     if (starts_with(line, "MESH_RENDERER_MATERIAL_OVERRIDE", v)) { p.mesh_renderer_override_asset_mat = (v == "1"); return; }
+    // The two UV keys are tested before the bare MATOVR key they extend.
+    if (starts_with(line, "MESH_RENDERER_MATOVR_UVS", v)) { std::sscanf(v.c_str(), "%f,%f", &p.mesh_renderer_uv_scale.x,  &p.mesh_renderer_uv_scale.y);  return; }
+    if (starts_with(line, "MESH_RENDERER_MATOVR_UVO", v)) { std::sscanf(v.c_str(), "%f,%f", &p.mesh_renderer_uv_offset.x, &p.mesh_renderer_uv_offset.y); return; }
+    if (starts_with(line, "MESH_RENDERER_MATOVR", v))     { p.mesh_renderer_matovr = static_cast<uint32_t>(std::stoul(v)); return; }
     if (starts_with(line, "MESH_RENDERER_MATERIAL", v)) { p.mesh_renderer_material = v; return; }
 
     if (starts_with(line, "LIGHT_TYPE", v))        { p.has_light = true; p.light_type = std::stoi(v); return; }
@@ -842,6 +858,9 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
             mr->SetAlbedoTexturePath(p.mesh_renderer_albedo_tex);
             mr->SetMaterialPath(p.mesh_renderer_material);
             mr->SetOverrideAssetMaterial(p.mesh_renderer_override_asset_mat);
+            mr->SetMaterialOverrides(p.mesh_renderer_matovr);
+            mr->SetUvScale(p.mesh_renderer_uv_scale);
+            mr->SetUvOffset(p.mesh_renderer_uv_offset);
         }
     }
 

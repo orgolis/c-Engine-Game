@@ -23,6 +23,7 @@
 #include "skinned_mesh_component.h"
 #include "transform.h"
 
+#include "mesh_renderer_component.h"
 #include "terrain_component.h"
 
 #include <cmath>
@@ -90,6 +91,21 @@ int main() {
         tc->SetLayerMetallic(2, 0.30f);
         tc->SetLayerRoughness(2, 0.60f);
 
+        // Material-instance overrides: a shared .mat plus this object's own
+        // tint and UV. The mask and the values are separate state, so both are
+        // pushed off their defaults.
+        auto crate = scn->CreateEntity("Crate");
+        crate->AddComponent<scene::MeshRendererComponent>();
+        auto mrc = crate->GetComponent<scene::MeshRendererComponent>();
+        check(mrc != nullptr, "the crate has a mesh renderer to override on");
+        mrc->SetMaterialPath("assets/materials/wood.mat");
+        using MR = scene::MeshRendererComponent;
+        mrc->SetMaterialOverride(MR::kOverrideBaseColor, true);
+        mrc->SetMaterialOverride(MR::kOverrideUv, true);
+        mrc->SetColor(glm::vec4(0.9f, 0.2f, 0.1f, 1.0f));
+        mrc->SetUvScale(glm::vec2(3.0f, 7.0f));
+        mrc->SetUvOffset(glm::vec2(-0.25f, 0.5f));
+
         check(editor::SceneSerializer::SaveScene(path, scn), "the scene saves");
     }
 
@@ -132,6 +148,33 @@ int main() {
         }
     } else {
         check(false, "the terrain entity round-trips");
+    }
+
+    // ---- material instance overrides ---------------------------------------
+    if (auto crate = loaded->GetEntityByName("Crate")) {
+        auto mrc = crate->GetComponent<scene::MeshRendererComponent>();
+        check(mrc != nullptr, "the overriding object round-trips");
+        if (mrc) {
+            using MR = scene::MeshRendererComponent;
+            check(mrc->GetMaterialPath() == "assets/materials/wood.mat",
+                  "it still points at the shared material");
+            check(mrc->HasMaterialOverride(MR::kOverrideBaseColor), "its tint override survives");
+            check(mrc->HasMaterialOverride(MR::kOverrideUv),        "its UV override survives");
+            // The MASK is not the VALUES. A serializer that writes one and not
+            // the other leaves an override switched on with a default value --
+            // the object renders wrong rather than not at all, which is worse.
+            check(std::fabs(mrc->GetColor().r - 0.9f) < 1e-3f,   "and the tint value with it");
+            check(std::fabs(mrc->GetUvScale().y - 7.0f) < 1e-3f, "and the UV tiling");
+            check(std::fabs(mrc->GetUvOffset().x + 0.25f) < 1e-3f,
+                  "and a negative UV offset");
+            // Nothing was silently switched on.
+            check(!mrc->HasMaterialOverride(MR::kOverrideMetallic),
+                  "an untouched field is NOT overridden");
+            check(!mrc->HasMaterialOverride(MR::kOverrideRoughness),
+                  "nor is another one");
+        }
+    } else {
+        check(false, "the overriding object round-trips");
     }
 
     auto fire  = loaded->GetEntityByName("Campfire");

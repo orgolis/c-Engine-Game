@@ -311,6 +311,88 @@ bool MaterialEditorPanel::render_asset_mode(const std::shared_ptr<Entity>& entit
     ImGui::Text("%s%s", edit_.name.empty() ? "(unnamed)" : edit_.name.c_str(),
                 dirty_ ? "  *unsaved*" : "");
 
+    // Instance overrides live on the COMPONENT and are written into the scene
+    // file, unlike the asset edits below -- so unlike them, they do dirty the
+    // scene. Tracked separately for exactly that reason.
+    bool instance_changed = false;
+
+    // ---- This object's overrides -------------------------------------------
+    // Deliberately OUTSIDE the tabs below. Those edit the shared asset and
+    // change it for every object using it; these change only this one. Putting
+    // them in the same tab strip would make "am I editing the asset or the
+    // object?" a question the UI invites and never answers -- and it sits right
+    // under the sharing warning because an override is the answer to it.
+    {
+        using MR = MeshRendererComponent;
+        bool changed = false;
+        const uint32_t ov = mr->GetMaterialOverrides();
+
+        if (ImGui::CollapsingHeader("This object overrides",
+                                    ov ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
+            ImGui::TextDisabled("Ticked fields use this object's value instead of\n"
+                                "the material's. Unticking restores the material's.");
+
+            auto flag = [&](const char* label, uint32_t bit) {
+                bool on = mr->HasMaterialOverride(bit);
+                if (ImGui::Checkbox(label, &on)) {
+                    mr->SetMaterialOverride(bit, on);
+                    changed = true;
+                }
+                return on;
+            };
+
+            if (flag("Tint##ovc", MR::kOverrideBaseColor)) {
+                glm::vec4 c = mr->GetColor();
+                ImGui::SameLine();
+                if (ImGui::ColorEdit4("##ovcv", &c.x, ImGuiColorEditFlags_NoInputs)) {
+                    mr->SetColor(c); changed = true;
+                }
+            }
+            if (flag("Metallic##ovm", MR::kOverrideMetallic)) {
+                float v = mr->GetMetallic();
+                ImGui::SameLine(); ImGui::SetNextItemWidth(-1.0f);
+                if (ImGui::SliderFloat("##ovmv", &v, 0.0f, 1.0f)) { mr->SetMetallic(v); changed = true; }
+            }
+            if (flag("Roughness##ovr", MR::kOverrideRoughness)) {
+                float v = mr->GetRoughness();
+                ImGui::SameLine(); ImGui::SetNextItemWidth(-1.0f);
+                if (ImGui::SliderFloat("##ovrv", &v, 0.0f, 1.0f)) { mr->SetRoughness(v); changed = true; }
+            }
+            if (flag("Emissive##ove", MR::kOverrideEmissive)) {
+                glm::vec3 e = mr->GetEmissive();
+                if (ImGui::ColorEdit3("##ovev", &e.x, ImGuiColorEditFlags_NoInputs)) {
+                    mr->SetEmissive(e); changed = true;
+                }
+                float gi = mr->GetEmissiveIntensity();
+                ImGui::SameLine(); ImGui::SetNextItemWidth(-1.0f);
+                if (ImGui::DragFloat("##ovegv", &gi, 0.05f, 0.0f, 64.0f, "glow %.2f")) {
+                    mr->SetEmissiveIntensity(gi); changed = true;
+                }
+            }
+            if (flag("UV tiling / offset##ovu", MR::kOverrideUv)) {
+                glm::vec2 sc = mr->GetUvScale(), of = mr->GetUvOffset();
+                if (ImGui::DragFloat2("Tiling##ovuv", &sc.x, 0.01f, 0.01f, 256.0f, "%.2f")) {
+                    mr->SetUvScale(sc); changed = true;
+                }
+                if (ImGui::DragFloat2("Offset##ovuo", &of.x, 0.005f, -16.0f, 16.0f, "%.3f")) {
+                    mr->SetUvOffset(of); changed = true;
+                }
+            }
+
+            if (ov != 0u) {
+                if (ImGui::SmallButton("Clear all overrides")) {
+                    mr->SetMaterialOverrides(0u);
+                    changed = true;
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(back to the material exactly)");
+            }
+        }
+        // Folded into the panel's return value, which is how every other edit
+        // here reports itself; the caller owns marking the scene dirty.
+        if (changed) instance_changed = true;
+    }
+
     bool live = false, commit = false;
 
     if (ImGui::BeginTabBar("##mat_tabs")) {
@@ -391,9 +473,13 @@ bool MaterialEditorPanel::render_asset_mode(const std::shared_ptr<Entity>& entit
     }
 
     // A material edit changes the ASSET, not the scene — the scene file has no
-    // copy of these values, only the path. Reporting the scene as modified here
-    // would prompt to save a file nothing changed in.
-    return false;
+    // copy of these values, only the path. Reporting the scene as modified for
+    // those would prompt to save a file nothing changed in.
+    //
+    // Instance overrides are the exception: they are component state and the
+    // scene file is the only place they exist, so they must dirty it or an
+    // override is silently lost on close.
+    return instance_changed;
 }
 
 bool MaterialEditorPanel::render_inline_mode(const std::shared_ptr<Entity>& entity,

@@ -167,6 +167,47 @@ public:
     bool GetOverrideAssetMaterial() const { return override_asset_material_; }
     void SetOverrideAssetMaterial(bool o) { override_asset_material_ = o; }
 
+    // ---- Material instance overrides -----------------------------------
+    // An assigned .mat normally supplies EVERYTHING. That is the right default
+    // -- one surface description, not two competing ones -- but it makes the
+    // common case expensive: ten crates that differ only in tint needed ten
+    // .mat files, which then drift apart the first time the shared parts change.
+    //
+    // An override says "take the asset, then use MY value for this one field".
+    // The values are the INLINE fields that already exist on this component, so
+    // an override stores no new state: it only changes whether the inline value
+    // is consulted. That also means unticking an override restores the asset's
+    // value exactly, with nothing to reset.
+    //
+    // NOT the same thing as GetOverrideAssetMaterial() above, which is about a
+    // glTF's own baked-in materials rather than an assigned .mat.
+    //
+    // Textures are deliberately absent. Swapping a map is not an instance of a
+    // material, it is a different material -- and two places to describe a
+    // surface is what produced the half-material systems this replaced.
+    enum MaterialOverride : uint32_t {
+        kOverrideBaseColor = 1u << 0,
+        kOverrideMetallic  = 1u << 1,
+        kOverrideRoughness = 1u << 2,
+        kOverrideEmissive  = 1u << 3,   // colour + intensity together
+        kOverrideUv        = 1u << 4,   // tiling + offset together
+    };
+    uint32_t GetMaterialOverrides() const { return material_overrides_; }
+    void     SetMaterialOverrides(uint32_t m) { material_overrides_ = m; }
+    bool HasMaterialOverride(uint32_t bit) const { return (material_overrides_ & bit) != 0u; }
+    void SetMaterialOverride(uint32_t bit, bool on) {
+        if (on) material_overrides_ |= bit;
+        else    material_overrides_ &= ~bit;
+    }
+
+    /// Per-object UV tiling / offset, used when kOverrideUv is set. The only
+    /// override that needs its own storage, because the inline fields never
+    /// carried a UV transform.
+    const glm::vec2& GetUvScale()  const { return uv_scale_; }
+    const glm::vec2& GetUvOffset() const { return uv_offset_; }
+    void SetUvScale(const glm::vec2& v)  { uv_scale_  = v; }
+    void SetUvOffset(const glm::vec2& v) { uv_offset_ = v; }
+
 protected:
     MeshType  mesh_type_      = MeshType::Cube;
     glm::vec4 color_          = glm::vec4(1.0f);  // White by default
@@ -185,6 +226,9 @@ protected:
     float     emissive_intensity_ = 1.0f;
     std::string albedo_texture_path_;   // optional base-colour texture
     std::string material_path_;         // optional .mat asset; wins over the above
+    uint32_t    material_overrides_ = 0;   // bits from MaterialOverride
+    glm::vec2   uv_scale_{1.0f, 1.0f};
+    glm::vec2   uv_offset_{0.0f, 0.0f};
     bool        override_asset_material_ = false;
 };
 

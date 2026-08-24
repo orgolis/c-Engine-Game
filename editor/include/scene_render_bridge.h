@@ -64,6 +64,22 @@ inline gws::assets::MaterialDesc resolve_entity_material(
         (materials && mr->HasMaterial()) ? materials->get(mr->GetMaterialPath()) : nullptr;
     if (asset) {
         d = *asset;
+        // Then this object's own values, for the fields it claims. Reading the
+        // inline fields means an override needs no separate storage and
+        // unticking one restores the asset's value with nothing to reset.
+        using MR = schizo::scene::MeshRendererComponent;
+        const uint32_t ov = mr->GetMaterialOverrides();
+        if (ov & MR::kOverrideBaseColor) d.base_color = mr->GetColor();
+        if (ov & MR::kOverrideMetallic)  d.metallic   = mr->GetMetallic();
+        if (ov & MR::kOverrideRoughness) d.roughness  = mr->GetRoughness();
+        if (ov & MR::kOverrideEmissive) {
+            d.emissive           = mr->GetEmissive();
+            d.emissive_intensity = mr->GetEmissiveIntensity();
+        }
+        if (ov & MR::kOverrideUv) {
+            d.uv_scale  = mr->GetUvScale();
+            d.uv_offset = mr->GetUvOffset();
+        }
     } else {
         d.base_color         = mr->GetColor();
         d.metallic           = mr->GetMetallic();

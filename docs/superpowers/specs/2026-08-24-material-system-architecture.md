@@ -101,13 +101,20 @@ material — was rejected because it duplicates the entire lighting path and eve
 
 ## 4. The tiers, on those foundations
 
-### Tier 1 — finish what is half-built
+### Tier 1 — finish what is half-built ✅ **DONE (v0.7.6–v0.7.8)**
 - **Terrain per-layer metallic / roughness / normal_scale.** `TerrainComponent` carries only
   `tiling_`; the renderer's `TerrainLayerMaterial` already accepts the rest. This single gap is
   why terrain cannot be made to reflect at all, which is the symptom that started this.
 - **Per-material UV offset / scale.** Only terrain has tiling today.
 - **Material instances** — one `.mat` reused with per-object overrides, instead of duplicating
-  a file to change one number.
+  a file to change one number. Implemented as a bitmask plus the component's EXISTING inline
+  fields as the override values, so an override stores no new state and unticking one restores
+  the asset's value exactly, with nothing to reset.
+
+**Found while building it:** `MaterialDesc::content_hash()` did not cover the new UV fields, so a
+tiling edit would never have invalidated the cached GPU material — the surface keeps its old
+repeat and the edit appears to do nothing. Caught because `material_check` already asserts the
+hash reacts to every field the GPU can observe.
 
 ### Tier 2 — the features you see
 - **Triplanar projection.** Terrain textures currently stretch into smears on any steep slope,
