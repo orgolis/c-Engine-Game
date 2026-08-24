@@ -318,6 +318,10 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
                     // worse than showing a stale texture.
                     if (tc->HasLayerMaterial(i))
                         file << "TERRAIN_LAYERMAT" << i << "=" << tc->GetLayerMaterial(i) << "\n";
+                    // Per-layer surface for layers with no material asset.
+                    file << "TERRAIN_LAYERMETAL"  << i << "=" << tc->GetLayerMetallic(i)    << "\n";
+                    file << "TERRAIN_LAYERROUGH"  << i << "=" << tc->GetLayerRoughness(i)   << "\n";
+                    file << "TERRAIN_LAYERNSCALE" << i << "=" << tc->GetLayerNormalScale(i) << "\n";
                 }
                 const std::string sf = "terrain_" + std::to_string(entity->GetId()) + ".splat";
                 std::ofstream sb(scene_dir + sf, std::ios::binary);
@@ -503,6 +507,11 @@ struct ParsedEntity {
     std::string terrain_layer[schizo::scene::kTerrainLayers];
     std::string terrain_layer_mat[schizo::scene::kTerrainLayers];
     float       terrain_tiling[schizo::scene::kTerrainLayers] = {16.0f, 16.0f, 16.0f, 16.0f};
+    // Defaults match TerrainComponent's, so a scene written before these keys
+    // existed loads with exactly the surface it had.
+    float       terrain_layer_metal[schizo::scene::kTerrainLayers]  = {0.0f, 0.0f, 0.0f, 0.0f};
+    float       terrain_layer_rough[schizo::scene::kTerrainLayers]  = {0.95f, 0.95f, 0.95f, 0.95f};
+    float       terrain_layer_nscale[schizo::scene::kTerrainLayers] = {1.0f, 1.0f, 1.0f, 1.0f};
     std::string terrain_splat_file;
     std::string terrain_holes_file;
     bool        terrain_water          = false;
@@ -724,7 +733,21 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
         // would otherwise swallow the longer one and store "MAT0=path" as an
         // albedo texture path — a scene that loads without error and renders
         // the wrong thing.
+        // Ordered specific-before-general as a matter of habit, NOT because a
+        // collision is possible here: starts_with requires '=' immediately
+        // after the key, and the index digit already differs from the letter
+        // ("TERRAIN_LAYER0" vs "TERRAIN_LAYERMETAL0" diverge at position 13).
+        // Checked by deliberately reversing the order -- sceneio_check still
+        // passed -- so this ordering is defensive, not load-bearing. Said
+        // plainly because the comment above LAYERMAT reads as though the
+        // collision were real, and repeating a claim is how it becomes folklore.
+        const std::string ek = "TERRAIN_LAYERMETAL"  + std::to_string(i);
+        const std::string rk = "TERRAIN_LAYERROUGH"  + std::to_string(i);
+        const std::string nk = "TERRAIN_LAYERNSCALE" + std::to_string(i);
         if (starts_with(line, mk.c_str(), v)) { p.terrain_layer_mat[i] = v; return; }
+        if (starts_with(line, ek.c_str(), v)) { p.terrain_layer_metal[i]  = std::stof(v); return; }
+        if (starts_with(line, rk.c_str(), v)) { p.terrain_layer_rough[i]  = std::stof(v); return; }
+        if (starts_with(line, nk.c_str(), v)) { p.terrain_layer_nscale[i] = std::stof(v); return; }
         if (starts_with(line, lk.c_str(), v)) { p.terrain_layer[i]  = v; return; }
         if (starts_with(line, tk.c_str(), v)) { p.terrain_tiling[i] = std::stof(v); return; }
     }
@@ -921,6 +944,9 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
                 tc->SetLayerPath(i, p.terrain_layer[i]);
                 tc->SetLayerMaterial(i, p.terrain_layer_mat[i]);
                 tc->SetTiling(i, p.terrain_tiling[i]);
+                tc->SetLayerMetallic(i,    p.terrain_layer_metal[i]);
+                tc->SetLayerRoughness(i,   p.terrain_layer_rough[i]);
+                tc->SetLayerNormalScale(i, p.terrain_layer_nscale[i]);
             }
             // Holes (caves).
             if (!p.terrain_holes_file.empty()) {

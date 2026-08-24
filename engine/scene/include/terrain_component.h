@@ -213,6 +213,33 @@ public:
     float GetTiling(int i) const { return tiling_[clamp_layer(i)]; }
     void  SetTiling(int i, float t) { tiling_[clamp_layer(i)] = std::max(0.01f, t); ++splat_version_; }
 
+    /// Per-layer surface response, used when the layer has NO material asset.
+    ///
+    /// Without these a layer could only be dielectric and almost fully rough,
+    /// because the fallback material synthesised for a plain albedo texture hard
+    /// coded metallic = 0 and roughness = 0.95. Terrain therefore could not be
+    /// made to reflect anything at all unless you first authored a whole .mat
+    /// file, which is a long way to go to make ground look wet.
+    ///
+    /// A layer WITH a material asset ignores these: an asset still wins
+    /// entirely, so the same material looks identical on terrain and on an
+    /// object. These are the fast path, not a competing one.
+    ///
+    /// Deliberately NOT bumping splat_version_. These land in the terrain
+    /// uniform block, which the render bridge diffs separately -- so dragging a
+    /// roughness slider stays a 144-byte memcpy instead of rebuilding the splat
+    /// texture and the descriptor set.
+    float GetLayerMetallic(int i) const { return layer_metallic_[clamp_layer(i)]; }
+    void  SetLayerMetallic(int i, float v) { layer_metallic_[clamp_layer(i)] = std::clamp(v, 0.0f, 1.0f); }
+
+    /// Clamped to a floor rather than 0: a perfectly smooth surface is a mirror
+    /// the BRDF divides by, which the material asset loader guards the same way.
+    float GetLayerRoughness(int i) const { return layer_roughness_[clamp_layer(i)]; }
+    void  SetLayerRoughness(int i, float v) { layer_roughness_[clamp_layer(i)] = std::clamp(v, 0.02f, 1.0f); }
+
+    float GetLayerNormalScale(int i) const { return layer_normal_scale_[clamp_layer(i)]; }
+    void  SetLayerNormalScale(int i, float v) { layer_normal_scale_[clamp_layer(i)] = std::clamp(v, 0.0f, 4.0f); }
+
     // ---- Splatmap (RGBA8, row-major; channel = layer weight) ----
     int SplatResolution() const { return splat_res_; }
     const std::vector<uint8_t>& Splat() const { return splat_; }
@@ -303,6 +330,11 @@ private:
     std::array<std::string, kTerrainLayers> layer_paths_{};       // legacy albedo-only
     std::array<std::string, kTerrainLayers> layer_materials_{};   // .mat, wins over the above
     std::array<float, kTerrainLayers>       tiling_{ 16.0f, 16.0f, 16.0f, 16.0f };
+    // Defaults reproduce the old hard-coded fallback exactly -- dielectric and
+    // 0.95 rough -- so every terrain authored before this looks unchanged.
+    std::array<float, kTerrainLayers>       layer_metallic_{ 0.0f, 0.0f, 0.0f, 0.0f };
+    std::array<float, kTerrainLayers>       layer_roughness_{ 0.95f, 0.95f, 0.95f, 0.95f };
+    std::array<float, kTerrainLayers>       layer_normal_scale_{ 1.0f, 1.0f, 1.0f, 1.0f };
     int                  splat_res_     = 256;
     std::vector<uint8_t> splat_;            // RGBA8, res*res*4
     uint64_t             splat_version_ = 1;

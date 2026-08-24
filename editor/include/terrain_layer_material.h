@@ -52,8 +52,13 @@ inline gws::assets::MaterialDesc resolve_terrain_layer_material(
     }
 
     gws::assets::MaterialDesc d;
-    d.albedo_map = terrain.GetLayerPath(index);
-    d.roughness  = kTerrainLegacyRoughness;
+    d.albedo_map   = terrain.GetLayerPath(index);
+    // From the component now, not a constant. kTerrainLegacyRoughness remains
+    // the component's DEFAULT, so a terrain nobody has touched is unchanged --
+    // but a layer can now be made metallic or glossy without inventing a .mat.
+    d.metallic     = terrain.GetLayerMetallic(index);
+    d.roughness    = terrain.GetLayerRoughness(index);
+    d.normal_scale = terrain.GetLayerNormalScale(index);
     return d;
 }
 

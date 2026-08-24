@@ -3067,6 +3067,53 @@ void ShowInspector(EditorState& editor_state) {
                         ImGui::SetTooltip("How many times this layer repeats across the whole\n"
                                           "terrain. Lives here, not in the material, so one rock\n"
                                           "can be reused on terrains of different sizes.");
+
+                    // Per-layer surface. Disabled when the layer has a material
+                    // asset, because an asset wins entirely -- showing live
+                    // sliders that silently do nothing is worse than showing
+                    // them greyed with the reason.
+                    if (has_mat) {
+                        ImGui::BeginDisabled();
+                        float dummy_m = 0.0f, dummy_r = 0.0f;
+                        ImGui::SetNextItemWidth(-70.0f);
+                        ImGui::SliderFloat("##metal_d", &dummy_m, 0.0f, 1.0f, "from material");
+                        ImGui::SameLine(); ImGui::TextDisabled("metallic");
+                        ImGui::SetNextItemWidth(-70.0f);
+                        ImGui::SliderFloat("##rough_d", &dummy_r, 0.0f, 1.0f, "from material");
+                        ImGui::SameLine(); ImGui::TextDisabled("roughness");
+                        ImGui::EndDisabled();
+                    } else {
+                        float me = terrain_comp->GetLayerMetallic(i);
+                        ImGui::SetNextItemWidth(-70.0f);
+                        if (ImGui::SliderFloat("##metal", &me, 0.0f, 1.0f, "%.2f")) {
+                            terrain_comp->SetLayerMetallic(i, me);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                        ImGui::SameLine(); ImGui::TextDisabled("metallic");
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("0 = ordinary ground, 1 = bare metal.\n"
+                                              "A metal reflects its own colour, so this is what\n"
+                                              "makes terrain reflect anything at all.");
+
+                        float ro = terrain_comp->GetLayerRoughness(i);
+                        ImGui::SetNextItemWidth(-70.0f);
+                        if (ImGui::SliderFloat("##rough", &ro, 0.02f, 1.0f, "%.2f")) {
+                            terrain_comp->SetLayerRoughness(i, ro);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                        ImGui::SameLine(); ImGui::TextDisabled("roughness");
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("1 = dry and matte (the old fixed value), lower is\n"
+                                              "glossier. Wet ground and polished stone live near 0.2.");
+
+                        float ns = terrain_comp->GetLayerNormalScale(i);
+                        ImGui::SetNextItemWidth(-70.0f);
+                        if (ImGui::SliderFloat("##nscale", &ns, 0.0f, 4.0f, "%.2f")) {
+                            terrain_comp->SetLayerNormalScale(i, ns);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                        ImGui::SameLine(); ImGui::TextDisabled("normal scale");
+                    }
                     ImGui::PopID();
                 }
                 ImGui::Separator();

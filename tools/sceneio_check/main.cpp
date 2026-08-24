@@ -23,6 +23,8 @@
 #include "skinned_mesh_component.h"
 #include "transform.h"
 
+#include "terrain_component.h"
+
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -74,6 +76,20 @@ int main() {
         nac->attack_range  = 3.5f;
         nac->ability_index = 2;
 
+        // Terrain per-layer surface. Values chosen to be nothing like the
+        // defaults, so a field that silently fails to round-trip reads as its
+        // default and the assertion catches it.
+        auto ground = scn->CreateEntity("Ground");
+        ground->AddComponent<scene::TerrainComponent>();
+        auto tc = ground->GetComponent<scene::TerrainComponent>();
+        tc->SetLayerPath(0, "assets/textures/rock.png");
+        tc->SetLayerMetallic(0, 0.80f);
+        tc->SetLayerRoughness(0, 0.15f);
+        tc->SetLayerNormalScale(0, 2.50f);
+        tc->SetTiling(0, 48.0f);
+        tc->SetLayerMetallic(2, 0.30f);
+        tc->SetLayerRoughness(2, 0.60f);
+
         check(editor::SceneSerializer::SaveScene(path, scn), "the scene saves");
     }
 
@@ -83,6 +99,39 @@ int main() {
     if (!loaded) {
         std::printf("\n%d passed, %d failed\nFAIL sceneio_check\n", g_pass, g_fail + 1);
         return 1;
+    }
+
+    // ---- terrain per-layer surface -----------------------------------------
+    // Without these a terrain layer could only be dielectric and 0.95 rough,
+    // because the fallback material hard-coded both -- so terrain could not be
+    // made to reflect without authoring a .mat.
+    if (auto ground = loaded->GetEntityByName("Ground")) {
+        auto tc = ground->GetComponent<scene::TerrainComponent>();
+        check(tc != nullptr, "the terrain entity round-trips");
+        if (tc) {
+            check(std::fabs(tc->GetLayerMetallic(0)    - 0.80f) < 1e-3f, "layer 0 metallic survives");
+            check(std::fabs(tc->GetLayerRoughness(0)   - 0.15f) < 1e-3f, "layer 0 roughness survives");
+            check(std::fabs(tc->GetLayerNormalScale(0) - 2.50f) < 1e-3f, "layer 0 normal scale survives");
+            check(std::fabs(tc->GetLayerMetallic(2)    - 0.30f) < 1e-3f, "layer 2 metallic survives");
+            check(std::fabs(tc->GetLayerRoughness(2)   - 0.60f) < 1e-3f, "layer 2 roughness survives");
+
+            // The albedo path must be untouched by the surface keys sharing
+            // its prefix. Not the trap it looks like -- starts_with demands an
+            // '=' right after the key, so no collision is actually reachable,
+            // and reversing the reader's key order leaves this passing. Kept
+            // anyway: it costs nothing and it pins the round trip of a field
+            // that sits next to five new ones.
+            check(tc->GetLayerPath(0) == "assets/textures/rock.png",
+                  "the albedo path did not swallow a surface key");
+
+            // Untouched layers keep the historical look exactly.
+            check(std::fabs(tc->GetLayerRoughness(1) - 0.95f) < 1e-3f,
+                  "an untouched layer still defaults to the pre-0.7.6 roughness");
+            check(std::fabs(tc->GetLayerMetallic(1)) < 1e-3f,
+                  "and to dielectric");
+        }
+    } else {
+        check(false, "the terrain entity round-trips");
     }
 
     auto fire  = loaded->GetEntityByName("Campfire");
