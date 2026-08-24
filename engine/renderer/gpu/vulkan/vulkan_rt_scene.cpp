@@ -20,6 +20,8 @@
 #include "vulkan_device.h"
 #include "vulkan_rt_functions.h"
 #include "vulkan_scene_mesh.h"
+
+#include <vector>
 #include "vulkan_scene_material.h"
 #include "vulkan_render_graph.h" // DrawItem
 
@@ -244,34 +246,81 @@ bool VulkanRtScene::ensure_blas(VkCommandBuffer cmd, const Mesh* mesh) {
     // must match SceneVertex exactly (pos+normal+uv+tangent = 12 floats);
     // any mismatch makes the builder walk past valid data into random
     // memory and either produce garbage geometry or hang.
-    VkAccelerationStructureGeometryTrianglesDataKHR tri{};
-    tri.sType                       = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
-    tri.vertexFormat                = VK_FORMAT_R32G32B32_SFLOAT;
-    tri.vertexData.deviceAddress    = vbo_addr;
-    tri.vertexStride                = sizeof(SceneVertex);
-    tri.maxVertex                   = mesh->vertex_count() - 1;
-    tri.indexType                   = VK_INDEX_TYPE_UINT32;
-    tri.indexData.deviceAddress     = ibo_addr;
+    // LOD 0 ONLY, and one geometry per submesh.
+    //
+    // An index buffer holds EVERY LOD tier back to back, and this used to hand
+    // the builder the whole thing. Every coarser tier is the same surface
+    // rendered again at lower density, occupying the same space -- so the
+    // acceleration structure contained several overlapping copies of one
+    // object, and a ray leaving the visible surface could hit a copy of it.
+    //
+    // On terrain that is not subtle. A coarser tier samples the heightmap at a
+    // wider step, so it cuts peaks off and fills hollows in: its triangles sit
+    // metres above the visible ground in places. Shadow rays hit them and the
+    // ground goes dark in broad, slope-following patches. Measured before the
+    // fix: every terrain chunk's BLAS carried 1.4x its visible geometry.
+    //
+    // This is why raising the shadow-ray epsilon did not help -- the occluder
+    // was never the surface the ray started on. It was a different surface
+    // entirely, far beyond any self-intersection offset.
+    std::vector<VkAccelerationStructureGeometryKHR>       geoms;
+    std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
+    std::vector<uint32_t>                                 max_prims;
 
-    VkAccelerationStructureGeometryKHR geom{};
-    geom.sType                       = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
-    geom.geometryType                = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-    geom.geometry.triangles          = tri;
-    geom.flags                       = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    const auto make_geometry = [&](uint32_t index_offset, uint32_t index_count) {
+        VkAccelerationStructureGeometryTrianglesDataKHR tri{};
+        tri.sType                    = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+        tri.vertexFormat             = VK_FORMAT_R32G32B32_SFLOAT;
+        tri.vertexData.deviceAddress = vbo_addr;
+        // Stride must match SceneVertex exactly; any mismatch makes the builder
+        // walk past valid data into random memory.
+        tri.vertexStride             = sizeof(SceneVertex);
+        tri.maxVertex                = mesh->vertex_count() - 1;
+        tri.indexType                = VK_INDEX_TYPE_UINT32;
+        tri.indexData.deviceAddress  = ibo_addr;
+
+        VkAccelerationStructureGeometryKHR g{};
+        g.sType              = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+        g.geometryType       = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+        g.geometry.triangles = tri;
+        g.flags              = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        geoms.push_back(g);
+
+        VkAccelerationStructureBuildRangeInfoKHR r{};
+        r.primitiveCount  = index_count / 3;
+        // BYTE offset into the index buffer, not an index count.
+        r.primitiveOffset = index_offset * static_cast<uint32_t>(sizeof(uint32_t));
+        ranges.push_back(r);
+        max_prims.push_back(r.primitiveCount);
+    };
+
+    for (const auto& sm : mesh->submeshes()) {
+        if (sm.lods.empty() || sm.lods[0].index_count < 3) continue;
+        make_geometry(sm.lods[0].index_offset, sm.lods[0].index_count);
+    }
+    // A mesh that declares no submeshes still has to cast a shadow; fall back
+    // to the whole buffer, which is what every mesh used to get.
+    if (geoms.empty()) make_geometry(0, mesh->index_count());
+    if (geoms.empty()) {
+        spdlog::warn("VulkanRtScene::ensure_blas: mesh has no buildable geometry; skipping");
+        return false;
+    }
 
     VkAccelerationStructureBuildGeometryInfoKHR build{};
     build.sType                      = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
     build.type                       = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
     build.flags                      = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
     build.mode                       = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-    build.geometryCount              = 1;
-    build.pGeometries                = &geom;
+    build.geometryCount              = static_cast<uint32_t>(geoms.size());
+    build.pGeometries                = geoms.data();
 
     VkAccelerationStructureBuildSizesInfoKHR size_info{};
     size_info.sType                  = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    // One max-primitive count PER GEOMETRY -- passing a single value while
+    // geometryCount > 1 under-sizes the structure and corrupts the build.
     fns_->getAccelerationStructureBuildSizes(
         vk, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
-        &build, &triangle_count, &size_info);
+        &build, max_prims.data(), &size_info);
 
     AccelerationStructure blas{};
     if (!create_buffer(size_info.accelerationStructureSize,
@@ -297,9 +346,7 @@ bool VulkanRtScene::ensure_blas(VkCommandBuffer cmd, const Mesh* mesh) {
     build.dstAccelerationStructure   = blas.handle;
     build.scratchData.deviceAddress  = scratch_address_;
 
-    VkAccelerationStructureBuildRangeInfoKHR range{};
-    range.primitiveCount = triangle_count;
-    const VkAccelerationStructureBuildRangeInfoKHR* p_range = &range;
+    const VkAccelerationStructureBuildRangeInfoKHR* p_range = ranges.data();
     fns_->cmdBuildAccelerationStructures(cmd, 1, &build, &p_range);
 
     // Make this BLAS visible to the upcoming TLAS build.

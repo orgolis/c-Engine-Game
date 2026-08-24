@@ -188,6 +188,24 @@ gets ignored.
 > device offers more than the spec promises — the same assumption that once shipped a build unable to start on an
 > RX 5700. `static_assert`s pin the size and every changed offset, checked against `spirv-dis`.
 
+> **⚠️ The terrain shadow bug, actually found (v0.7.5) — and the two wrong answers before it.** The acceleration
+> structure contained **every LOD tier of every mesh, superimposed**. `ensure_blas` handed the builder
+> `mesh->index_count()`, the whole index buffer — but an index buffer holds all tiers back to back, and each
+> coarser tier is the same surface again at lower density, in the same space.
+>
+> On terrain that is not subtle: a coarser tier samples the heightmap at a wider step, cutting peaks off and
+> filling hollows in, so its triangles sit metres above the visible ground in places. Shadow rays hit them and
+> the ground darkens in broad, slope-following patches. **Measured before the fix: every terrain chunk's BLAS
+> carried 1.4× its visible geometry** (35,520 indices against 26,112 in LOD 0).
+>
+> That measurement is also why the two earlier attempts failed, and both failures were informative. The v0.7.3
+> LOD fix was correct but landed on the shadow-map path, which ray-traced shadows bypass entirely. The v0.7.4
+> ray-epsilon fix assumed self-intersection — but the occluder was never the surface the ray started on, so no
+> offset could ever have been large enough. **The symptom said "shadow", the cause was in the geometry.**
+>
+> Now one BLAS geometry per submesh, using that submesh's LOD 0 range. Regular meshes had the same defect; it was
+> merely less visible, because a decimated LOD hugs the surface it came from while a terrain tier does not.
+
 Two items were **retired by measurement rather than implemented** (2.2, 2.3). The engine has always shipped on
 precompiled SPIR-V, so the PSO-stutter work — inherited from Unreal's well-documented problem — was addressing
 something this engine does not have.

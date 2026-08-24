@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(GameWorldshaper
-    VERSION 0.7.4
+    VERSION 0.7.5
     DESCRIPTION "A custom 3D game engine for an open-world multiplayer action RPG"
     LANGUAGES C CXX)
 
