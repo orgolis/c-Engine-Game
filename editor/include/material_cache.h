@@ -133,6 +133,8 @@ public:
         params.roughness_factor   = desc.roughness;
         params.occlusion_strength = desc.occlusion;
         params.normal_scale       = desc.normal_scale;
+        params.uv_transform       = glm::vec4(desc.uv_scale.x,  desc.uv_scale.y,
+                                              desc.uv_offset.x, desc.uv_offset.y);
         // emissive_factor.a doubles as the G-Buffer's alpha_cutoff (see
         // MaterialUniforms). Cutoff 0 means "opaque, no discard"; Blend needs a
         // non-zero cutoff anyway so it casts a binarised shadow, since it skips

@@ -71,6 +71,8 @@ MaterialDesc make_populated() {
     m.metallic_roughness_map = "assets/textures/cobble_mr.png";
     m.occlusion_map          = "assets/textures/cobble_ao.png";
     m.emissive_map           = "assets/textures/cobble_e.png";
+    m.uv_scale               = glm::vec2(4.0f, 2.5f);   // non-uniform on purpose
+    m.uv_offset              = glm::vec2(0.125f, -0.75f);
     return m;
 }
 
@@ -109,6 +111,11 @@ int main() {
               dst.metallic_roughness_map == src.metallic_roughness_map &&
               dst.occlusion_map == src.occlusion_map &&
               dst.emissive_map == src.emissive_map, "all five map paths survive");
+        // UV transform. Non-uniform and with a negative component, so a
+        // loader that reads one component into both -- or drops the sign --
+        // fails here instead of shipping a surface that tiles wrongly.
+        check(dst.uv_scale  == src.uv_scale,  "UV tiling survives, both components");
+        check(dst.uv_offset == src.uv_offset, "UV offset survives, including a negative");
         check(dst.content_hash() == src.content_hash(), "content hash survives the round trip");
     }
 
@@ -132,6 +139,12 @@ int main() {
         { MaterialDesc m = base; m.emissive.g = 0.9f;           differs(m, "emissive colour"); }
         { MaterialDesc m = base; m.emissive_intensity = 1.0f;   differs(m, "emissive intensity"); }
         { MaterialDesc m = base; m.alpha_mode = MaterialAlphaMode::Blend; differs(m, "alpha mode"); }
+        // The UV transform is as observable as any other field: it changes
+        // where every map is sampled. A hash that ignores it means editing
+        // tiling updates nothing on the GPU -- the material cache never
+        // notices, and the surface keeps its old repeat.
+        { MaterialDesc m = base; m.uv_scale.x  = 8.0f;  differs(m, "UV tiling"); }
+        { MaterialDesc m = base; m.uv_offset.y = 0.25f; differs(m, "UV offset"); }
         { MaterialDesc m = base; m.alpha_cutoff = 0.9f;         differs(m, "alpha cutoff"); }
         { MaterialDesc m = base; m.double_sided = false;        differs(m, "double-sided"); }
         { MaterialDesc m = base; m.albedo_map = "other.png";    differs(m, "albedo map"); }

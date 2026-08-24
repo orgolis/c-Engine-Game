@@ -338,6 +338,30 @@ bool MaterialEditorPanel::render_asset_mode(const std::shared_ptr<Entity>& entit
                               edit_.occlusion_map);
             t |= texture_slot("Emissive", "Self-illumination. Read as sRGB, then scaled\n"
                                           "by Emissive Glow.", edit_.emissive_map);
+
+            // UV transform. Applies to every map above at once -- transforming
+            // them individually is how one map ends up unaligned with the rest
+            // and the surface looks subtly wrong in a way nobody can point at.
+            ImGui::SeparatorText("UV transform");
+            if (ImGui::DragFloat2("Tiling", &edit_.uv_scale.x, 0.01f, 0.01f, 256.0f, "%.2f")) {
+                t = true;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("How many times the maps repeat across the mesh's UVs.\n"
+                                  "Lets a wall and a floor share one brick material at\n"
+                                  "different densities instead of duplicating the .mat.");
+            if (ImGui::DragFloat2("Offset", &edit_.uv_offset.x, 0.005f, -16.0f, 16.0f, "%.3f")) {
+                t = true;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Shifts the maps across the surface. Useful to break up\n"
+                                  "visible repetition between two objects using one material.");
+            if (ImGui::SmallButton("Reset UV")) {
+                edit_.uv_scale  = glm::vec2(1.0f);
+                edit_.uv_offset = glm::vec2(0.0f);
+                t = true;
+            }
+
             if (t) { live = true; commit = true; }
             ImGui::EndTabItem();
         }

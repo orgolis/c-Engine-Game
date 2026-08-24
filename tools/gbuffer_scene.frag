@@ -12,6 +12,9 @@ layout(set = 1, binding = 0) uniform MaterialUBO {
     float occlusion_strength;
     float normal_scale;
     vec4  emissive_factor;
+    // xy = UV scale, zw = UV offset. Appended, so a shader that does not
+    // declare it still reads every field above at the same offset.
+    vec4  uv_transform;
 } mat;
 layout(set = 1, binding = 1) uniform sampler2D albedoMap;
 layout(set = 1, binding = 2) uniform sampler2D normalMap;
@@ -25,22 +28,27 @@ layout(location = 2) out vec4 outAlbedoMetallic;
 layout(location = 3) out vec4 outMaterial;
 
 void main() {
-    vec4 base = texture(albedoMap, inUV) * mat.base_color_factor;
+    // One transform, applied once, used by every sampler below. Doing it per
+    // sampler is how one map ends up untransformed and the surface looks
+    // subtly wrong in a way nobody can point at.
+    vec2 uv = inUV * mat.uv_transform.xy + mat.uv_transform.zw;
+
+    vec4 base = texture(albedoMap, uv) * mat.base_color_factor;
 
     float alpha_cutoff = mat.emissive_factor.a;
     if (alpha_cutoff > 0.0 && base.a < alpha_cutoff) discard;
 
-    vec3 nmap = texture(normalMap, inUV).xyz * 2.0 - 1.0;
+    vec3 nmap = texture(normalMap, uv).xyz * 2.0 - 1.0;
     nmap.xy *= mat.normal_scale;
     mat3 TBN = mat3(normalize(inTangent), normalize(inBitangent), normalize(inNormal));
     vec3 N   = normalize(TBN * nmap);
 
-    vec3 mr  = texture(mrMap, inUV).rgb;
+    vec3 mr  = texture(mrMap, uv).rgb;
     float roughness = clamp(mr.g * mat.roughness_factor, 0.04, 1.0);
     float metallic  = clamp(mr.b * mat.metallic_factor, 0.0, 1.0);
 
-    float ao   = texture(aoMap, inUV).r * mat.occlusion_strength;
-    vec3  emis = mat.emissive_factor.rgb + texture(emissiveMap, inUV).rgb;
+    float ao   = texture(aoMap, uv).r * mat.occlusion_strength;
+    vec3  emis = mat.emissive_factor.rgb + texture(emissiveMap, uv).rgb;
 
     outPosition         = vec4(inWorldPos, 1.0);
     outNormalRoughness  = vec4(N, roughness);

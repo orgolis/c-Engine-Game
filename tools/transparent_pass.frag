@@ -47,6 +47,9 @@ layout(set = 1, binding = 0) uniform MaterialUBO {
     float occlusion_strength;
     float normal_scale;
     vec4  emissive_factor;
+    // xy = UV scale, zw = UV offset. Appended, so a shader that does not
+    // declare it still reads every field above at the same offset.
+    vec4  uv_transform;
 } mat;
 layout(set = 1, binding = 1) uniform sampler2D albedoMap;
 layout(set = 1, binding = 2) uniform sampler2D normalMap;
@@ -154,16 +157,20 @@ vec3 evaluateLight(Light L, vec3 N, vec3 V, vec3 wp,
 }
 
 void main() {
-    vec4 base = texture(albedoMap, inUV) * mat.base_color_factor;
-    vec3 nmap = texture(normalMap, inUV).xyz * 2.0 - 1.0;
+    // Same UV transform the G-buffer uses. A cutout material with a UV
+    // transform would otherwise be alpha-tested at untransformed coordinates
+    // here, so its shadow would be cut in a different shape than the object.
+    vec2 uv = inUV * mat.uv_transform.xy + mat.uv_transform.zw;
+    vec4 base = texture(albedoMap, uv) * mat.base_color_factor;
+    vec3 nmap = texture(normalMap, uv).xyz * 2.0 - 1.0;
     nmap.xy *= mat.normal_scale;
     mat3 TBN = mat3(normalize(inTangent), normalize(inBitangent), normalize(inNormal));
     vec3 N = normalize(TBN * nmap);
-    vec3 mr = texture(mrMap, inUV).rgb;
+    vec3 mr = texture(mrMap, uv).rgb;
     float roughness = clamp(mr.g * mat.roughness_factor, 0.04, 1.0);
     float metallic  = clamp(mr.b * mat.metallic_factor, 0.0,  1.0);
-    float ao   = texture(aoMap, inUV).r * mat.occlusion_strength;
-    vec3  emis = mat.emissive_factor.rgb + texture(emissiveMap, inUV).rgb;
+    float ao   = texture(aoMap, uv).r * mat.occlusion_strength;
+    vec3  emis = mat.emissive_factor.rgb + texture(emissiveMap, uv).rgb;
     vec3 V = normalize(env.camera_position.xyz - inWorldPos);
 
     vec3 direct = vec3(0.0);

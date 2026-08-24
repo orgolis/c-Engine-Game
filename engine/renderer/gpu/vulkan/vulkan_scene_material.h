@@ -45,8 +45,15 @@ struct MaterialUniforms {
     float     occlusion_strength   = 1.0f;
     float     normal_scale         = 1.0f;
     glm::vec4 emissive_factor      = glm::vec4(0.0f); // RGB + alpha_cutoff (a)
+    /// UV transform: xy = scale (tiling), zw = offset. Identity by default, so
+    /// every material authored before this samples exactly where it used to.
+    ///
+    /// Terrain has had per-layer tiling since it got materials; ordinary objects
+    /// had none at all, so a wall and a floor sharing one brick material could
+    /// not repeat it at different densities without duplicating the .mat.
+    glm::vec4 uv_transform         = glm::vec4(1.0f, 1.0f, 0.0f, 0.0f);
 };
-static_assert(sizeof(MaterialUniforms) == 48, "MaterialUniforms layout drift");
+static_assert(sizeof(MaterialUniforms) == 64, "MaterialUniforms layout drift");
 
 class Material {
 public:

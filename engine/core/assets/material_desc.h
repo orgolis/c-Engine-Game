@@ -93,6 +93,11 @@ inline constexpr int kMaterialFormatVersion = 1;
 /// "add a material" a destructive action.
 struct MaterialDesc {
     std::string name;
+    /// UV tiling and offset for this material. Not part of the PBR surface --
+    /// it describes how the maps are laid onto geometry, which is why a brick
+    /// wall and a brick floor can share one material at different densities.
+    glm::vec2 uv_scale{1.0f, 1.0f};
+    glm::vec2 uv_offset{0.0f, 0.0f};
 
     // ---- Factors (→ gpu::MaterialUniforms) ----
     glm::vec4 base_color{1.0f, 1.0f, 1.0f, 1.0f};
@@ -160,6 +165,12 @@ struct MaterialDesc {
         mix_f(metallic); mix_f(roughness); mix_f(occlusion); mix_f(normal_scale);
         mix_f(emissive.r); mix_f(emissive.g); mix_f(emissive.b); mix_f(emissive_intensity);
         mix_f(alpha_cutoff);
+        // The UV transform changes where every map is sampled, so it is as
+        // observable as any factor above. Omitting it would mean a tiling edit
+        // never invalidates the cached GPU material -- the surface keeps its
+        // old repeat and the edit appears to do nothing.
+        mix_f(uv_scale.x);  mix_f(uv_scale.y);
+        mix_f(uv_offset.x); mix_f(uv_offset.y);
         const uint8_t flags = static_cast<uint8_t>(alpha_mode) |
                               (double_sided ? 0x80u : 0u);
         mix_bytes(&flags, sizeof flags);
@@ -240,6 +251,8 @@ inline std::string material_to_text(const MaterialDesc& m) {
     o << "# GameWorldshaper material\n";
     o << "MATERIAL_VERSION=" << kMaterialFormatVersion << "\n";
     o << "NAME=" << m.name << "\n";
+    o << "UV_SCALE=" << m.uv_scale.x << "," << m.uv_scale.y << "\n";
+    o << "UV_OFFSET=" << m.uv_offset.x << "," << m.uv_offset.y << "\n";
     o << "BASE_COLOR=" << m.base_color.r << "," << m.base_color.g << ","
                        << m.base_color.b << "," << m.base_color.a << "\n";
     o << "METALLIC=" << m.metallic << "\n";
@@ -280,6 +293,8 @@ inline MaterialDesc material_from_text(const std::string& text) {
         const std::string val = detail::trim(line.substr(eq + 1));
 
         if      (key == "NAME")               m.name = val;
+        else if (key == "UV_SCALE")           detail::parse_vec(val, &m.uv_scale.x, 2);
+        else if (key == "UV_OFFSET")          detail::parse_vec(val, &m.uv_offset.x, 2);
         else if (key == "BASE_COLOR")         detail::parse_vec(val, &m.base_color.r, 4);
         else if (key == "METALLIC")           m.metallic = detail::parse_float(val, m.metallic);
         else if (key == "ROUGHNESS")          m.roughness = detail::parse_float(val, m.roughness);
