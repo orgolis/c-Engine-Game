@@ -280,6 +280,33 @@ gets ignored.
 > **The reachable path is part of the feature**, and “the code is right” is not the same claim as “someone
 > can use it.”
 
+> **v0.7.16 — drag and drop, applied to the reachable-path lesson.** The direct follow-on from v0.7.15,
+> and the first feature built with that lesson in hand rather than after it.
+>
+> The engine had a dozen drop targets already and every one was a **specific named field**: the terrain layer's
+> material box, the Sky HDR box, the script path box, the audio clip box. Each worked. Together they meant the
+> gesture only succeeded if you already knew which panel, which section and which text box — the same shape
+> of failure as v0.7.15, where every control existed and no route reached it.
+>
+> Now an asset can be dropped on the object itself, in the hierarchy or in the viewport. Three decisions are
+> worth recording:
+>
+> **The rules live in a table apart from the panels** (`asset_drop.h`). Several places accept a drop; if each
+> decided for itself what a texture means, they would drift, and a texture that sets the albedo in one place and
+> silently does nothing in another is not a bug anyone reports clearly. The table is ImGui-free and under test.
+>
+> **Every decision carries a message, refusals included.** A drop that does nothing and says nothing is
+> indistinguishable from a drop that missed the target — and the user cannot tell which, so they try again
+> and conclude the feature is broken. `assetdrop_check` asserts across all 45 combinations of kind and
+> target that none is silent.
+>
+> **The viewport applies to the object under the cursor, not to the selection.** The pre-existing viewport drop
+> took mesh assets only and applied them to whatever was selected, printing *“Select an entity first”*. A drag
+> is aimed with a mouse; using the selection guarantees the wrong object eventually gets the texture. Picking
+> now goes through one `PickEntityAt` shared with the click path — both click loops were replaced by calls
+> to it, so “a drop and a click resolve to the same object” is true by construction rather than by
+> coincidence.
+
 Two items were **retired by measurement rather than implemented** (2.2, 2.3). The engine has always shipped on
 precompiled SPIR-V, so the PSO-stutter work — inherited from Unreal's well-documented problem — was addressing
 something this engine does not have.

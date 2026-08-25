@@ -791,3 +791,19 @@ target_compile_features(texgen_check PRIVATE cxx_std_20)
 if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(texgen_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
+
+# assetdrop_check: what dropping an asset on something MEANS. The rules live
+# apart from any panel because a drop can land in several places (a hierarchy
+# row, the viewport) and if each decided for itself they would disagree -- a
+# texture that sets the albedo in one place and silently does nothing in
+# another is not a bug anyone reports clearly. Every failure mode asserted here
+# is a quiet one: a material on a light has nothing to apply to, a texture on a
+# shared material repaints every object using it, and an .hdr treated as an
+# ordinary texture sets an albedo to an equirectangular sky, which renders --
+# as nonsense. Asserts that no combination of kind and target is ever silent.
+add_executable(assetdrop_check assetdrop_check/main.cpp)
+target_include_directories(assetdrop_check PRIVATE ../editor/include)
+target_compile_features(assetdrop_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(assetdrop_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()

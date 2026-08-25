@@ -102,6 +102,7 @@
 #include "audio_components.h"
 #include "asset_browser_panel.h"
 #include "asset_inspector.h"
+#include "asset_drop.h"        // one rule table for every drop site
 #include "logic_graph_panel.h"   // visual node editor for the scene logic graph
 #include "material_editor_panel.h"
 #include "asset_import_dialog.h"
@@ -1764,6 +1765,202 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
     }
 }
 
+// The entity under a viewport point, or null. Same ray and same AABB test the
+// click path uses, so a drop and a click at the same pixel resolve to the same
+// object -- if they used different tests, aiming a drag would be guesswork.
+//
+// Coordinates are pixels relative to the rendered image, not to the window.
+std::shared_ptr<schizo::scene::Entity> PickEntityAt(
+        const std::shared_ptr<schizo::scene::Scene>& scene,
+        const schizo::editor::ViewportCamera& camera,
+        float x, float y, float width, float height) {
+    if (!scene || width <= 0.0f || height <= 0.0f) return nullptr;
+    if (x < 0.0f || y < 0.0f || x >= width || y >= height) return nullptr;
+
+    auto [ray_origin, ray_direction] = camera.GetPickingRay(x, y, width, height);
+
+    std::shared_ptr<schizo::scene::Entity> closest;
+    float closest_distance = std::numeric_limits<float>::max();
+    for (const auto& entity : scene->GetEntities()) {
+        if (!entity) continue;
+        auto transform = entity->GetTransform();
+        if (!transform) continue;
+        const glm::vec3 pos   = transform->GetWorldPosition();
+        const glm::vec3 scale = transform->GetLocalScale() * 0.5f;
+        const float distance = schizo::editor::ViewportCamera::RayAABBIntersection(
+            ray_origin, ray_direction, pos - scale, pos + scale);
+        if (distance > 0.0f && distance < closest_distance) {
+            closest_distance = distance;
+            closest = entity;
+        }
+    }
+    return closest;
+}
+
+// Accept ANY asset payload and hand back the path it carries.
+//
+// The browser tags a drag by the file's kind so a typed slot can refuse the
+// wrong thing, but a general drop target wants all of them -- the decision
+// about what a file MEANS is made from its extension, not from which payload
+// tag it arrived under. That matters for one case in particular: an .hdr is
+// dragged as a TEXTURE_ASSET, and treating it as a plain texture would set an
+// object's albedo to an equirectangular sky.
+std::string accept_any_asset_payload() {
+    using AB = schizo::editor::AssetBrowserPanel;
+    static const char* const kAll[] = {
+        AB::kPayloadMesh, AB::kPayloadTexture, AB::kPayloadAudio, AB::kPayloadScript,
+        AB::kPayloadScene, AB::kPayloadMaterial, AB::kPayloadPrefab, AB::kPayloadOther,
+    };
+    for (const char* tag : kAll) {
+        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(tag)) {
+            const char* p = static_cast<const char*>(pl->Data);
+            if (p && p[0]) return p;
+        }
+    }
+    return {};
+}
+
+// Carry out a drop. `target` may be null, meaning it landed on empty space.
+//
+// Everything about WHAT should happen is decided in asset_drop.h, which is
+// ImGui-free and under test; this function only performs the chosen action and
+// reports the message. Splitting them is what keeps the hierarchy and the
+// viewport from developing different opinions about a texture.
+void apply_asset_drop(EditorState& editor_state,
+                      const std::shared_ptr<schizo::scene::Entity>& target,
+                      const std::string& path) {
+    namespace ad = schizo::editor::assetdrop;
+    using namespace schizo::scene;
+
+    auto scene = editor_state.editor_scene ? editor_state.editor_scene->GetScene() : nullptr;
+    if (!scene || path.empty()) return;
+
+    const ad::Kind kind = ad::kind_of(path);
+
+    // Describe the target from the real scene, then let the rules decide.
+    ad::Target t;
+    std::string name = "this object";
+    std::shared_ptr<MeshRendererComponent> mr;
+    std::shared_ptr<TerrainComponent> terrain;
+    if (target) {
+        t.exists = true;
+        name     = target->GetName();
+        mr       = target->GetComponent<MeshRendererComponent>();
+        terrain  = target->GetComponent<TerrainComponent>();
+        t.has_mesh_renderer  = (mr != nullptr);
+        t.has_terrain        = (terrain != nullptr);
+        t.has_material_asset = mr && mr->HasMaterial();
+        if (t.has_material_asset) {
+            for (const auto& e : scene->GetEntities()) {
+                if (!e || e == target) continue;
+                if (auto other = e->GetComponent<MeshRendererComponent>())
+                    if (other->GetMaterialPath() == mr->GetMaterialPath()) ++t.material_sharers;
+            }
+        }
+    }
+
+    const ad::Decision d = ad::decide(kind, t, name);
+    bool touched_scene = true;
+
+    switch (d.action) {
+        case ad::Action::Reject:
+            touched_scene = false;
+            break;
+
+        case ad::Action::SetSceneSky:
+            scene->SetSkyHdr(path);
+            break;
+
+        case ad::Action::SetObjectMaterial:
+            mr->SetMaterialPath(path);
+            break;
+
+        case ad::Action::SetTerrainLayerMaterial:
+            terrain->SetLayerMaterial(editor_state.terrain_paint_layer, path);
+            break;
+
+        case ad::Action::SetTerrainLayerTexture:
+            terrain->SetLayerPath(editor_state.terrain_paint_layer, path);
+            break;
+
+        case ad::Action::SetInlineAlbedo:
+            mr->SetAlbedoTexturePath(path);
+            break;
+
+        case ad::Action::SetMaterialAlbedo: {
+            // Edits the shared ASSET, so it goes through the cache and the file
+            // rather than the component -- and the scene is NOT dirtied, because
+            // the scene file holds only the path, not these values.
+            const std::string mat_path = mr->GetMaterialPath();
+            if (editor_state.material_assets) {
+                if (const gws::assets::MaterialDesc* cur = editor_state.material_assets->get(mat_path)) {
+                    gws::assets::MaterialDesc next = *cur;
+                    next.albedo_map = path;
+                    editor_state.material_assets->save(mat_path, next);
+                }
+            }
+            touched_scene = false;
+            break;
+        }
+
+        case ad::Action::AddScript: {
+            auto sc = target->GetComponent<ScriptComponent>();
+            if (!sc) { target->AddComponent<ScriptComponent>(); sc = target->GetComponent<ScriptComponent>(); }
+            if (sc) {
+                sc->SetScriptPath(path);
+                editor_state.script_system.force_reload(target->GetId());
+            }
+            break;
+        }
+
+        case ad::Action::SetMesh: {
+            // Meshes are dragged with their ABSOLUTE path so they can be
+            // imported from outside the project; the entity stores the
+            // project-relative one the import produced.
+            const std::string proj = schizo::editor::import_asset_into_project(path, "models");
+            if (proj.empty()) {
+                editor_state.set_status("Mesh not found on disk: " + path);
+                return;
+            }
+            target->SetMesh(proj);
+            break;
+        }
+
+        case ad::Action::AttachAudio: {
+            auto src = target->GetComponent<AudioSourceComponent>();
+            if (!src) { target->AddComponent<AudioSourceComponent>(); src = target->GetComponent<AudioSourceComponent>(); }
+            if (src) {
+                src->SetClipPath(path);
+                src->SetClipGuid(AudioGuidFromPath(path));
+            }
+            break;
+        }
+
+        case ad::Action::InstantiatePrefab: {
+            auto spawned = schizo::editor::SceneSerializer::LoadPrefab(path, scene);
+            if (!spawned) {
+                editor_state.set_status("Could not instantiate " + path);
+                return;
+            }
+            if (target) spawned->SetParent(target);
+            editor_state.selected_entity_id  = spawned->GetId();
+            editor_state.prev_selected_entity = spawned->GetId();
+            break;
+        }
+
+        case ad::Action::LoadScene:
+            if (!editor_state.editor_scene->LoadScene(path))
+                editor_state.set_status("Could not open " + path);
+            touched_scene = false;
+            break;
+    }
+
+    if (touched_scene) editor_state.editor_scene->MarkModified();
+    editor_state.set_status(d.message);
+    if (d.action == ad::Action::Reject) spdlog::info("[drop] refused: {}", d.message);
+    else                                spdlog::info("[drop] {} -> {}", path, d.message);
+}
+
 void ShowSceneHierarchy(EditorState& editor_state) {
     if (!editor_state.show_scene_hierarchy) return;
     
@@ -2175,38 +2372,12 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                         }
                     }
                     
-                    // A prefab dropped ON an entity instantiates under it.
-                    if (const ImGuiPayload* pf = ImGui::AcceptDragDropPayload(
-                            schizo::editor::AssetBrowserPanel::kPayloadPrefab)) {
-                        const char* rel = static_cast<const char*>(pf->Data);
-                        if (rel && rel[0]) {
-                            auto spawned = schizo::editor::SceneSerializer::LoadPrefab(rel, scene);
-                            if (spawned) {
-                                spawned->SetParent(entity);
-                                editor_state.selected_entity_id = spawned->GetId();
-                                editor_state.editor_scene->MarkModified();
-                                spdlog::info("[Prefab] instantiated '{}' under '{}'",
-                                             rel, entity->GetName());
-                            } else {
-                                spdlog::warn("[Prefab] could not instantiate '{}'", rel);
-                            }
-                        }
-                    }
+                    // ANY asset dropped on an entity. What each kind means is
+                    // decided in asset_drop.h, shared with the viewport target
+                    // below so the two cannot disagree about a texture.
+                    if (const std::string dropped = accept_any_asset_payload(); !dropped.empty())
+                        apply_asset_drop(editor_state, entity, dropped);
 
-                    // Also accept mesh assets — import into the project + assign.
-                    if (const ImGuiPayload* mesh_payload = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
-                        const char* dropped = static_cast<const char*>(mesh_payload->Data);
-                        if (dropped && dropped[0]) {
-                            const std::string proj = schizo::editor::import_asset_into_project(dropped, "models");
-                            if (!proj.empty()) {
-                                entity->SetMesh(proj);
-                                editor_state.editor_scene->MarkModified();
-                                editor_state.set_status("Applied mesh: " + proj + "  (on '" + entity->GetName() + "')");
-                            } else {
-                                editor_state.set_status(std::string("Mesh not found on disk: ") + dropped);
-                            }
-                        }
-                    }
                     
                     ImGui::EndDragDropTarget();
                 }
@@ -2292,22 +2463,13 @@ void ShowSceneHierarchy(EditorState& editor_state) {
         // the scene root. Without this the only way to place one is onto an
         // existing entity, which silently makes every prefab a child of
         // something -- and an empty scene would have nowhere to drop at all.
+        // Dropped on the LIST rather than on a row: no target entity. A prefab
+        // lands at the scene root and an .hdr becomes the sky; anything needing
+        // an object says so rather than doing nothing.
         if (ImGui::BeginDragDropTargetCustom(ImGui::GetCurrentWindow()->InnerRect,
                                              ImGui::GetID("##hier_root_drop"))) {
-            if (const ImGuiPayload* pf = ImGui::AcceptDragDropPayload(
-                    schizo::editor::AssetBrowserPanel::kPayloadPrefab)) {
-                const char* rel = static_cast<const char*>(pf->Data);
-                if (rel && rel[0]) {
-                    auto spawned = schizo::editor::SceneSerializer::LoadPrefab(rel, scene);
-                    if (spawned) {
-                        editor_state.selected_entity_id = spawned->GetId();
-                        editor_state.editor_scene->MarkModified();
-                        spdlog::info("[Prefab] instantiated '{}' at the scene root", rel);
-                    } else {
-                        spdlog::warn("[Prefab] could not instantiate '{}'", rel);
-                    }
-                }
-            }
+            if (const std::string dropped = accept_any_asset_payload(); !dropped.empty())
+                apply_asset_drop(editor_state, nullptr, dropped);
             ImGui::EndDragDropTarget();
         }
 
@@ -4619,30 +4781,13 @@ void ShowViewport(EditorState& editor_state) {
                                 }
                             } else {
                                 // No gizmo hit, select entity normally
-                                uint32_t closest_entity_id = 0;
-                                float closest_distance = std::numeric_limits<float>::max();
-                                
-                                const auto& entities = scene->GetEntities();
-                                for (const auto& entity : entities) {
-                                    auto transform = entity->GetTransform();
-                                    auto pos = transform->GetWorldPosition();
-                                    auto scale = transform->GetLocalScale() * 0.5f;
-                                    
-                                    // AABB bounds
-                                    glm::vec3 aabb_min = pos - scale;
-                                    glm::vec3 aabb_max = pos + scale;
-                                    
-                                    // Test intersection
-                                    float distance = schizo::editor::ViewportCamera::RayAABBIntersection(
-                                        ray_origin, ray_direction, aabb_min, aabb_max
-                                    );
-                                    
-                                    if (distance > 0 && distance < closest_distance) {
-                                        closest_distance = distance;
-                                        closest_entity_id = entity->GetId();
-                                    }
-                                }
-                                
+                                // Shared with the viewport's drag-and-drop target, so a drop and a
+                                // click at the same pixel always resolve to the same object.
+                                auto picked = PickEntityAt(scene, editor_state.viewport_camera,
+                                                           viewport_x, viewport_y,
+                                                           viewport_size.x, viewport_size.y);
+                                const uint32_t closest_entity_id = picked ? picked->GetId() : 0;
+
                                 if (closest_entity_id != 0) {
                                     editor_state.selected_entity_id = closest_entity_id;
                                     spdlog::info("Entity selected via picking: ID {}", closest_entity_id);
@@ -4653,30 +4798,13 @@ void ShowViewport(EditorState& editor_state) {
                         }
                     } else {
                         // No gizmo visible or no selection, do normal entity picking
-                        uint32_t closest_entity_id = 0;
-                        float closest_distance = std::numeric_limits<float>::max();
-                        
-                        const auto& entities = scene->GetEntities();
-                        for (const auto& entity : entities) {
-                            auto transform = entity->GetTransform();
-                            auto pos = transform->GetWorldPosition();
-                            auto scale = transform->GetLocalScale() * 0.5f;
-                            
-                            // AABB bounds
-                            glm::vec3 aabb_min = pos - scale;
-                            glm::vec3 aabb_max = pos + scale;
-                            
-                            // Test intersection
-                            float distance = schizo::editor::ViewportCamera::RayAABBIntersection(
-                                ray_origin, ray_direction, aabb_min, aabb_max
-                            );
-                            
-                            if (distance > 0 && distance < closest_distance) {
-                                closest_distance = distance;
-                                closest_entity_id = entity->GetId();
-                            }
-                        }
-                        
+                        // Shared with the viewport's drag-and-drop target, so a drop and a
+                        // click at the same pixel always resolve to the same object.
+                        auto picked = PickEntityAt(scene, editor_state.viewport_camera,
+                                                   viewport_x, viewport_y,
+                                                   viewport_size.x, viewport_size.y);
+                        const uint32_t closest_entity_id = picked ? picked->GetId() : 0;
+
                         if (closest_entity_id != 0) {
                             editor_state.selected_entity_id = closest_entity_id;
                             spdlog::info("Entity selected via picking: ID {}", closest_entity_id);
@@ -4850,25 +4978,24 @@ void ShowViewport(EditorState& editor_state) {
             
             // Gizmo drag handling
             
-            // DROP TARGET - Viewport can receive mesh assets
+            // DROP TARGET - the viewport applies an asset to the object UNDER
+            // THE CURSOR, not to the current selection. A drag is aimed with the
+            // mouse; applying it to whatever happened to be selected is the one
+            // behaviour that guarantees the wrong object gets the texture.
+            //
+            // Missing everything is a legitimate outcome: dropping an .hdr on
+            // empty sky sets the scene sky, which is exactly right.
             if (ImGui::BeginDragDropTarget()) {
-                if (const ImGuiPayload* mesh_payload = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
-                    const char* dropped = (const char*)mesh_payload->Data;
-                    if (scene && editor_state.selected_entity_id != 0) {
-                        auto entity = scene->GetEntityById(editor_state.selected_entity_id);
-                        if (entity && dropped && dropped[0]) {
-                            const std::string proj = schizo::editor::import_asset_into_project(dropped, "models");
-                            if (!proj.empty()) {
-                                entity->SetMesh(proj);
-                                editor_state.editor_scene->MarkModified();
-                                editor_state.set_status("Applied mesh: " + proj + "  (on '" + entity->GetName() + "')");
-                            } else {
-                                editor_state.set_status(std::string("Mesh not found on disk: ") + dropped);
-                            }
-                        }
-                    } else {
-                        editor_state.set_status("Select an entity first, then drop the mesh on it.");
-                    }
+                if (const std::string dropped = accept_any_asset_payload(); !dropped.empty() && scene) {
+                    // image_min, not GetCursorScreenPos -- the same anchor the
+                    // click path uses. GetCursorScreenPos points BELOW the image
+                    // and once made every pick off by the image height.
+                    const ImVec2 m = ImGui::GetMousePos();
+                    apply_asset_drop(editor_state,
+                                     PickEntityAt(scene, editor_state.viewport_camera,
+                                                  m.x - image_min.x, m.y - image_min.y,
+                                                  viewport_size.x, viewport_size.y),
+                                     dropped);
                 }
                 ImGui::EndDragDropTarget();
             }
