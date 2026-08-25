@@ -206,6 +206,30 @@ gets ignored.
 > Now one BLAS geometry per submesh, using that submesh's LOD 0 range. Regular meshes had the same defect; it was
 > merely less visible, because a decimated LOD hugs the surface it came from while a terrain tier does not.
 
+> **The material programme (v0.7.6-v0.7.12), an unplanned strand.** Started from a user report that read as a
+> feature request — *"materials and textures need work and don't exist for terrain at all; I'd like to put a
+> texture on the ground and see it reflect"* - and turned out to name a real defect rather than a gap. Terrain
+> **did** have per-layer materials (v0.6.9), but the fallback path used when a layer has no `.mat` had metallic,
+> roughness and normal scale as **hard-coded constants**. A default terrain was therefore incapable of reflecting
+> anything, whatever the inspector claimed, and no amount of texture painting would change it. Spec:
+> [material-system-architecture](../superpowers/specs/2026-08-24-material-system-architecture.md).
+>
+> Shipped, in order: terrain surface properties (v0.7.6), shadow softness and persistence (v0.7.7) because very
+> low ambient light made every shadow a flat black shape with no gradient from edge to core, bindless texture
+> foundations (v0.7.8), triplanar projection (v0.7.9) because plan-projected UVs smear on every cliff face,
+> UV scale/offset (v0.7.10), a real per-frame descriptor set (v0.7.11), and parallax occlusion mapping (v0.7.12).
+>
+> **The set-0 story is the one worth remembering.** The scene pipeline's set 0 was an *empty* descriptor layout,
+> created only so that the material could occupy set 1 and destroyed on the following line. That is fine until a
+> fragment shader needs the camera position — and both POM and the detail-map distance fade do. There was nowhere
+> to put it: the vertex push block is `{ mat4 mvp; mat4 model; }`, exactly 128 bytes, which is Vulkan's
+> *guaranteed minimum* `maxPushConstantsSize` and so the only size that is portable. Two features were blocked by
+> a placeholder nobody had revisited.
+>
+> **Still open on this strand:** vertex-colour blending (needs a vertex-format change, which the BLAS stride
+> depends on), more than 4 terrain layers (the first real consumer of bindless), Foundation B (shading-model IDs
+> in `outPosition.w`) and the Tier 3 BRDFs it unlocks, and coloured transmission through transparent objects.
+
 Two items were **retired by measurement rather than implemented** (2.2, 2.3). The engine has always shipped on
 precompiled SPIR-V, so the PSO-stutter work — inherited from Unreal's well-documented problem — was addressing
 something this engine does not have.
