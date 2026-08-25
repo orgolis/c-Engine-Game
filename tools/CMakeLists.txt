@@ -745,3 +745,18 @@ target_compile_features(vfxgraph_check PRIVATE cxx_std_20)
 add_executable(bindless_check bindless_check/main.cpp)
 target_include_directories(bindless_check PRIVATE ${CMAKE_SOURCE_DIR}/engine/renderer/gpu)
 target_compile_features(bindless_check PRIVATE cxx_std_20)
+
+# assetops_check: rename / duplicate / cut / copy / paste behind the asset
+# browser's context menu. Every one of these can lose a file, and the failure
+# modes are quiet: "CON.txt" is a reserved device name that fails to create
+# without erroring, a trailing space is silently trimmed so the rename appears
+# to do nothing, pasting a folder into its own subtree recurses until the disk
+# fills, and a cut left on the clipboard turns one move into a stamp. Asserts
+# the refusals as hard as the successes, and that a refusal leaves the disk
+# untouched. Runs in a temp directory it creates and removes.
+add_executable(assetops_check assetops_check/main.cpp)
+target_include_directories(assetops_check PRIVATE ../editor/include)
+target_compile_features(assetops_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(assetops_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()

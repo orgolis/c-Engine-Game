@@ -100,6 +100,7 @@
 #include "collider_component.h"
 #include "audio_components.h"
 #include "asset_browser_panel.h"
+#include "asset_inspector.h"
 #include "logic_graph_panel.h"   // visual node editor for the scene logic graph
 #include "material_editor_panel.h"
 #include "asset_import_dialog.h"
@@ -211,6 +212,17 @@ struct EditorState {
 
     // Scene/Entity data
     uint32_t selected_entity_id = 0;  // 0 = no selection
+
+    // Asset selection. An entity and an asset are ONE selection between them,
+    // the way Unity treats them: picking either replaces the other, so the
+    // Inspector never has to guess which the user meant.
+    //
+    // Entity selection is assigned from ten different places (hierarchy,
+    // viewport picking, the palette, undo, ...). Rather than route all ten
+    // through a setter, the change is DETECTED here once per frame -- which
+    // also catches any site added later without anyone remembering this rule.
+    schizo::editor::AssetInspector asset_inspector;
+    uint32_t prev_selected_entity = 0;
 
     // Command palette (4.2). The registry is rebuilt once at startup; it
     // holds no scene state, so it does not need refreshing per frame.
@@ -2262,6 +2274,76 @@ void ShowSceneHierarchy(EditorState& editor_state) {
     }
 }
 
+// The Inspector's asset half. Facts and preview come from the snapshot the
+// AssetInspector took when the selection changed, never from the disk.
+void DrawAssetInspector(EditorState& editor_state) {
+    schizo::editor::AssetInspector& ai = editor_state.asset_inspector;
+    const auto& p = ai.properties();
+
+    if (!p.valid) {
+        ImGui::TextDisabled("%s", ai.rel_path().c_str());
+        ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.35f, 1.0f), "This file no longer exists.");
+        if (ImGui::Button("Clear selection")) ai.Clear();
+        return;
+    }
+
+    ImGui::TextUnformatted(p.name.c_str());
+    ImGui::TextDisabled("%s", p.type.c_str());
+    ImGui::Separator();
+
+    if (ImGui::BeginTable("##asset_facts", 2, ImGuiTableFlags_SizingStretchProp)) {
+        auto row = [](const char* k, const std::string& v) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("%s", k);
+            ImGui::TableSetColumnIndex(1); ImGui::TextWrapped("%s", v.c_str());
+        };
+        row("Path", ai.rel_path());
+        if (p.is_dir) {
+            row("Contents", std::to_string(p.file_count) + " files, " +
+                            std::to_string(p.dir_count) + " folders");
+        }
+        row("Size", schizo::editor::assetops::human_size(p.size_bytes));
+        row("Modified", p.modified.empty() ? "unknown" : p.modified);
+        if (p.read_only) row("Attributes", "Read-only");
+        ImGui::EndTable();
+    }
+
+    ImGui::Separator();
+
+    // Actions. A .scene is the one asset type the editor can act on directly;
+    // everything else hands off to the OS, which is honest about what exists.
+    if (p.type == "Scene") {
+        if (ImGui::Button("Open Scene") && editor_state.editor_scene) {
+            if (!editor_state.editor_scene->LoadScene(ai.rel_path()))
+                spdlog::warn("[Inspector] failed to load scene '{}'", ai.rel_path());
+        }
+        ImGui::SameLine();
+    }
+    if (!p.is_dir) {
+        if (ImGui::Button("Open Externally")) schizo::editor::AssetBrowserPanel::OsOpen(ai.abs_path());
+        ImGui::SameLine();
+    }
+    if (ImGui::Button("Reveal")) schizo::editor::AssetBrowserPanel::OsReveal(ai.abs_path());
+    ImGui::SameLine();
+    if (ImGui::Button("Copy Path")) ImGui::SetClipboardText(ai.rel_path().c_str());
+
+    // Text preview. Text assets are the ones where the whole point is the
+    // content -- a .mat or a .vfx is a handful of lines, and showing them saves
+    // a round trip through an external editor just to check a value.
+    if (ai.previewable()) {
+        ImGui::Separator();
+        ImGui::TextDisabled("Contents%s", ai.preview_truncated() ? " (first 8 KB)" : "");
+        ImGui::InputTextMultiline("##asset_preview",
+                                  const_cast<char*>(ai.preview().c_str()),
+                                  ai.preview().size() + 1,
+                                  ImVec2(-1.0f, ImGui::GetTextLineHeight() * 14.0f),
+                                  ImGuiInputTextFlags_ReadOnly);
+    } else if (!p.is_dir) {
+        ImGui::Separator();
+        ImGui::TextDisabled("No text preview (binary file).");
+    }
+}
+
 void ShowInspector(EditorState& editor_state) {
     if (!editor_state.show_inspector) return;
     
@@ -2273,7 +2355,18 @@ void ShowInspector(EditorState& editor_state) {
     ImGui::Begin("Inspector", &editor_state.show_inspector, flags);  // docked window = child; End() must always run
     {
         auto scene = editor_state.editor_scene->GetScene();
-        if (!scene || editor_state.selected_entity_id == 0) {
+
+        // One selection between entities and assets: whichever was picked last
+        // wins. Detected rather than pushed, so the ten places that assign an
+        // entity id need no knowledge of the asset browser.
+        if (editor_state.selected_entity_id != editor_state.prev_selected_entity) {
+            editor_state.prev_selected_entity = editor_state.selected_entity_id;
+            if (editor_state.selected_entity_id != 0) editor_state.asset_inspector.Clear();
+        }
+
+        if (editor_state.selected_entity_id == 0 && editor_state.asset_inspector.HasSelection()) {
+            DrawAssetInspector(editor_state);
+        } else if (!scene || editor_state.selected_entity_id == 0) {
             ImGui::TextDisabled("No entity selected.");
             if (scene) {
                 // ---- Scene Environment (scene-bound sky) ----
@@ -6333,6 +6426,14 @@ int main(int argc, char** argv) {
                     spdlog::info("[AssetBrowser] loaded scene '{}'", p);
                 else
                     spdlog::warn("[AssetBrowser] failed to load scene '{}'", p);
+            };
+        // Clicking an asset shows it in the Inspector, and drops the entity
+        // selection so the two cannot both claim the panel.
+        editor_state.asset_browser->on_select_asset =
+            [&editor_state](const schizo::editor::AssetEntry& e) {
+                editor_state.asset_inspector.Select(e.abs_path, e.rel_path, e.type);
+                editor_state.selected_entity_id  = 0;
+                editor_state.prev_selected_entity = 0;
             };
         editor_state.material_editor = std::make_unique<schizo::editor::MaterialEditorPanel>();
         editor_state.asset_import_dialog = std::make_unique<schizo::editor::AssetImportDialog>();

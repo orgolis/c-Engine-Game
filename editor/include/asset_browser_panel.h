@@ -14,6 +14,8 @@
 // opens: folders navigate, .scene files load into the editor, everything else
 // opens with the OS default app (scripts land in your code editor).
 
+#include "asset_file_ops.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -57,6 +59,12 @@ public:
     /// for signature compatibility; `open` drives the close button.
     void Render(const std::shared_ptr<schizo::scene::Scene>& scene, bool* open = nullptr);
 
+    /// Shell handoffs, exposed because the Inspector offers the same two verbs
+    /// on the same file and duplicating the ShellExecute calls would let the
+    /// two drift. No-ops off Windows.
+    static void OsOpen(const std::string& abs_path);
+    static void OsReveal(const std::string& abs_path);
+
     /// Re-scan the current directory (main.cpp calls this after OS file drops).
     void RefreshAssets();
 
@@ -71,6 +79,11 @@ public:
     /// Invoked when the user double-clicks a .scene file (main.cpp wires this
     /// to EditorScene::LoadScene).
     std::function<void(const std::string& runtime_relative_path)> on_open_scene;
+
+    /// Invoked when the SELECTED entry changes (single click), so the Inspector
+    /// can show the asset. Fires on the change only, never every frame -- the
+    /// receiver reads the file, which is not something to do at frame rate.
+    std::function<void(const AssetEntry&)> on_select_asset;
 
 private:
     // ---- data ----
@@ -99,6 +112,20 @@ private:
     bool        want_new_folder_ = false;    // menu -> open the New Folder modal
     bool        want_new_file_   = false;    // menu -> open the New File modal
 
+    // ---- Explorer-style file operations ----------------------------------
+    // The operations themselves live in asset_file_ops.h, ImGui-free and under
+    // test; what is kept here is only the UI state wrapped around them.
+    assetops::Clipboard clipboard_;
+    std::string pending_rename_;             // abs path being renamed
+    char        rename_buf_[128] = {};
+    bool        want_rename_ = false;
+    std::string pending_props_;              // abs path shown in Properties
+    assetops::Properties props_;             // cached: inspecting a folder walks it
+    bool        want_props_ = false;
+    std::string op_error_;                   // a refusal, shown until dismissed
+    std::string status_;                     // transient success line
+    double      status_until_ = 0.0;         // when to stop showing it
+
     // ---- helpers ----
     void detect_roots();
     void list_current();                     // fills entries_ from current_ (+ search)
@@ -108,6 +135,13 @@ private:
     void render_tree_dir(const std::filesystem::path& dir, int depth);
     void render_entries();
     void render_context_menu(const AssetEntry& e);
+    void render_background_menu();               // right-click on empty space
+    void render_edit_items(const AssetEntry* e); // cut/copy/paste/... shared by both menus
+    void handle_shortcuts();                     // F2, Ctrl+C/X/V/D, Del
+    void begin_rename(const AssetEntry& e);
+    void begin_properties(const AssetEntry& e);
+    void report(assetops::Error err, const std::string& ok_message);
+    const AssetEntry* selected_entry() const;
     void render_new_menu();                  // "New" items (folder / script / item-defs / text)
     void render_modals();
     void navigate(const std::filesystem::path& dir);

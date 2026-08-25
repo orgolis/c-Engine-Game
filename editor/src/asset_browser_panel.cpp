@@ -354,12 +354,14 @@ void AssetBrowserPanel::Render(const std::shared_ptr<schizo::scene::Scene>& /*sc
                 ImGui::TableSetColumnIndex(1);
                 ImGui::BeginChild("##ab_files", ImVec2(0, 0));
                 render_entries();
+                render_background_menu();
                 ImGui::EndChild();
                 ImGui::EndTable();
             }
         } else {
             ImGui::BeginChild("##ab_files", ImVec2(0, -status_h));
             render_entries();
+            render_background_menu();
             ImGui::EndChild();
         }
 
@@ -380,6 +382,20 @@ void AssetBrowserPanel::Render(const std::shared_ptr<schizo::scene::Scene>& /*sc
             ImGui::Text("%zu items", entries_.size());
         }
 
+        // What is on the clipboard, and how it will land. Explorer shows this
+        // by ghosting the cut icon; there is no icon here to ghost, so it is
+        // said in words -- otherwise a cut made two folders ago is invisible.
+        if (!clipboard_.empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("|  %s: %s", clipboard_.cut ? "Cut" : "Copied",
+                                clipboard_.items.front().filename().string().c_str());
+        }
+        if (!status_.empty() && ImGui::GetTime() < status_until_) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1.0f), "|  %s", status_.c_str());
+        }
+
+        handle_shortcuts();
         render_modals();
     }
     ImGui::End();
@@ -594,6 +610,7 @@ void AssetBrowserPanel::render_entries() {
                         ImGui::GetColorU32(type_color(e.type)), e.name.c_str(), nullptr, tile_w - 6.0f);
 
             if (clicked) {
+                if (selected_ != i && on_select_asset) on_select_asset(e);
                 selected_ = i;
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     if (e.is_dir) { navigate(e.abs_path); navigated = true; ImGui::PopID(); break; }
@@ -647,6 +664,7 @@ void AssetBrowserPanel::render_entries() {
             dl->AddText(ImVec2(icon_tl.x + icon_h + 5.0f, icon_tl.y),
                         ImGui::GetColorU32(type_color(e.type)), e.name.c_str());
             if (clicked) {
+                if (selected_ != i && on_select_asset) on_select_asset(e);
                 selected_ = i;
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     if (e.is_dir) {
@@ -687,19 +705,143 @@ void AssetBrowserPanel::render_entries() {
     }
 }
 
+void AssetBrowserPanel::OsOpen(const std::string& abs_path)   { os_open(abs_path); }
+void AssetBrowserPanel::OsReveal(const std::string& abs_path) { os_reveal(abs_path); }
+
+const AssetEntry* AssetBrowserPanel::selected_entry() const {
+    if (selected_ < 0 || selected_ >= static_cast<int>(entries_.size())) return nullptr;
+    return &entries_[static_cast<size_t>(selected_)];
+}
+
+void AssetBrowserPanel::report(assetops::Error err, const std::string& ok_message) {
+    dirty_ = true;
+    if (err != assetops::Error::None) {
+        // A refusal gets a modal rather than a log line. These are all cases
+        // where the user asked for something and nothing happened; a silent
+        // no-op reads as a broken editor.
+        op_error_ = assetops::message(err);
+        spdlog::warn("[AssetBrowser] {}", op_error_);
+        return;
+    }
+    status_       = ok_message;
+    status_until_ = ImGui::GetTime() + 4.0;
+    spdlog::info("[AssetBrowser] {}", ok_message);
+}
+
+void AssetBrowserPanel::begin_rename(const AssetEntry& e) {
+    pending_rename_ = e.abs_path;
+    std::snprintf(rename_buf_, sizeof rename_buf_, "%s", e.name.c_str());
+    want_rename_ = true;
+}
+
+void AssetBrowserPanel::begin_properties(const AssetEntry& e) {
+    pending_props_ = e.abs_path;
+    // Inspected ONCE here, not per frame: a folder's size means walking its
+    // whole subtree, which a modal redrawn at 60 Hz would do 60 times a second.
+    props_       = assetops::inspect(e.abs_path, e.type);
+    want_props_  = true;
+}
+
+// The edit verbs, shared by the item menu and the empty-space menu so the two
+// can never drift apart. `e` is null when the user right-clicked empty space,
+// where only Paste applies.
+void AssetBrowserPanel::render_edit_items(const AssetEntry* e) {
+    const bool has_item = (e != nullptr);
+
+    if (ImGui::MenuItem("Cut", "Ctrl+X", false, has_item))
+        clipboard_.cut_one(e->abs_path);
+    if (ImGui::MenuItem("Copy", "Ctrl+C", false, has_item))
+        clipboard_.copy_one(e->abs_path);
+
+    // Paste targets the folder being SHOWN, or the folder under the cursor if
+    // that is what was right-clicked -- which is what Explorer does.
+    const bool into_dir = has_item && e->is_dir;
+    const fs::path paste_dst = into_dir ? fs::path(e->abs_path) : current_;
+    const std::string paste_label =
+        into_dir ? std::string("Paste into \"") + e->name + "\"" : std::string("Paste");
+    if (ImGui::MenuItem(paste_label.c_str(), "Ctrl+V", false, !clipboard_.empty())) {
+        std::vector<fs::path> made;
+        const assetops::Error err = assetops::paste(clipboard_, paste_dst, &made);
+        report(err, made.empty() ? "Pasted." : "Pasted " + made[0].filename().string());
+    }
+
+    ImGui::Separator();
+
+    if (ImGui::MenuItem("Rename", "F2", false, has_item)) begin_rename(*e);
+    if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, has_item)) {
+        fs::path out;
+        const assetops::Error err = assetops::duplicate(e->abs_path, &out);
+        report(err, out.empty() ? "Duplicated." : "Created " + out.filename().string());
+    }
+    if (ImGui::MenuItem("Delete...", "Del", false, has_item)) pending_delete_ = e->abs_path;
+}
+
 void AssetBrowserPanel::render_context_menu(const AssetEntry& e) {
     if (ImGui::BeginPopupContextItem("##ab_item")) {
         ImGui::TextDisabled("%s", e.name.c_str());
         ImGui::Separator();
-        if (!e.is_dir && ImGui::MenuItem("Open")) os_open(e.abs_path);
-        if (e.is_dir && ImGui::MenuItem("Open Folder")) navigate(e.abs_path);
+        if (!e.is_dir && ImGui::MenuItem("Open", "Enter")) os_open(e.abs_path);
+        if (e.is_dir && ImGui::MenuItem("Open Folder", "Enter")) navigate(e.abs_path);
+        ImGui::Separator();
+        render_edit_items(&e);
+        ImGui::Separator();
         if (ImGui::MenuItem("Reveal in Explorer")) os_reveal(e.abs_path);
         if (ImGui::MenuItem("Copy Path")) ImGui::SetClipboardText(e.rel_path.c_str());
         if (ImGui::MenuItem("Copy Absolute Path")) ImGui::SetClipboardText(e.abs_path.c_str());
         ImGui::Separator();
-        if (ImGui::MenuItem("Delete...")) pending_delete_ = e.abs_path;
+        if (ImGui::MenuItem("Properties", "Alt+Enter")) begin_properties(e);
         ImGui::EndPopup();
     }
+}
+
+// Right-click on empty space. Explorer offers Paste and New here; without it,
+// a copied file has nowhere to be pasted except onto another file.
+void AssetBrowserPanel::render_background_menu() {
+    if (ImGui::BeginPopupContextWindow("##ab_bg",
+                                       ImGuiPopupFlags_MouseButtonRight |
+                                       ImGuiPopupFlags_NoOpenOverItems)) {
+        ImGui::TextDisabled("%s", current_.filename().string().c_str());
+        ImGui::Separator();
+        render_edit_items(nullptr);
+        ImGui::Separator();
+        if (ImGui::BeginMenu("New")) { render_new_menu(); ImGui::EndMenu(); }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Reveal Folder in Explorer")) os_reveal(current_.string());
+        if (ImGui::MenuItem("Refresh")) dirty_ = true;
+        ImGui::EndPopup();
+    }
+}
+
+// Keyboard verbs. Gated on the panel being focused, or Ctrl+C in the viewport
+// would copy a file instead of an entity.
+void AssetBrowserPanel::handle_shortcuts() {
+    if (!ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) return;
+    // A modal is up, or a text field has the keyboard: F2 inside the rename box
+    // must type an 'F2', not restart the rename.
+    if (ImGui::GetIO().WantTextInput) return;
+    if (!pending_rename_.empty() || !pending_delete_.empty() || !op_error_.empty()) return;
+
+    const bool ctrl = ImGui::GetIO().KeyCtrl;
+    const AssetEntry* e = selected_entry();
+
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_V, false) && !clipboard_.empty()) {
+        std::vector<fs::path> made;
+        const assetops::Error err = assetops::paste(clipboard_, current_, &made);
+        report(err, made.empty() ? "Pasted." : "Pasted " + made[0].filename().string());
+        return;
+    }
+    if (!e) return;
+
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_C, false)) clipboard_.copy_one(e->abs_path);
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_X, false)) clipboard_.cut_one(e->abs_path);
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) {
+        fs::path out;
+        const assetops::Error err = assetops::duplicate(e->abs_path, &out);
+        report(err, out.empty() ? "Duplicated." : "Created " + out.filename().string());
+    }
+    if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_F2, false))     begin_rename(*e);
+    if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_Delete, false)) pending_delete_ = e->abs_path;
+    if (ImGui::GetIO().KeyAlt && ImGui::IsKeyPressed(ImGuiKey_Enter, false)) begin_properties(*e);
 }
 
 void AssetBrowserPanel::render_new_menu() {
@@ -732,6 +874,85 @@ void AssetBrowserPanel::render_modals() {
     // Open the New Folder / New File modals requested from a (now-closed) menu.
     if (want_new_folder_) { ImGui::OpenPopup("New Folder##ab"); want_new_folder_ = false; }
     if (want_new_file_)   { ImGui::OpenPopup("New File##ab");   want_new_file_   = false; }
+    if (want_rename_)     { ImGui::OpenPopup("Rename##ab");     want_rename_     = false; }
+    if (want_props_)      { ImGui::OpenPopup("Properties##ab"); want_props_      = false; }
+    if (!op_error_.empty() && !ImGui::IsPopupOpen("Cannot do that##ab"))
+        ImGui::OpenPopup("Cannot do that##ab");
+
+    // A refused operation. The text comes straight from asset_file_ops.h, which
+    // explains WHY rather than reporting a code -- most of these refusals are
+    // Windows rules the user has no reason to know.
+    if (ImGui::BeginPopupModal("Cannot do that##ab", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 380.0f);
+        ImGui::TextUnformatted(op_error_.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::Separator();
+        if (ImGui::Button("OK", ImVec2(120, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            op_error_.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    // Rename. Validation runs as the user types, so the reason a name is
+    // refused appears before they commit to it rather than after.
+    if (ImGui::BeginPopupModal("Rename##ab", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextDisabled("%s", pending_rename_.c_str());
+        ImGui::SetNextItemWidth(320);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        const bool submit = ImGui::InputText("##ab_rn", rename_buf_, sizeof rename_buf_,
+                                             ImGuiInputTextFlags_EnterReturnsTrue);
+        assetops::Error why = assetops::Error::None;
+        const bool name_ok = assetops::is_valid_filename(rename_buf_, &why);
+        if (!name_ok) {
+            ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 320.0f);
+            ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.35f, 1.0f), "%s", assetops::message(why));
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::BeginDisabled(!name_ok);
+        if ((ImGui::Button("Rename", ImVec2(120, 0)) || (submit && name_ok)) && name_ok) {
+            fs::path out;
+            const assetops::Error err = assetops::rename(pending_rename_, rename_buf_, &out);
+            report(err, out.empty() ? "Renamed." : "Renamed to " + out.filename().string());
+            pending_rename_.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            pending_rename_.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    // Properties. Read from the snapshot taken when the dialog opened.
+    if (ImGui::BeginPopupModal("Properties##ab", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (!props_.valid) {
+            ImGui::TextUnformatted("This item no longer exists.");
+        } else if (ImGui::BeginTable("##ab_props", 2, ImGuiTableFlags_SizingStretchProp)) {
+            auto row = [](const char* k, const std::string& v) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("%s", k);
+                ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(v.c_str());
+            };
+            row("Name",     props_.name);
+            row("Type",     props_.type);
+            row("Location", props_.location);
+            row("Size",     human_size(props_.size_bytes) +
+                            (props_.is_dir ? " (" + std::to_string(props_.file_count) + " files, " +
+                                             std::to_string(props_.dir_count) + " folders)" : ""));
+            row("Modified", props_.modified.empty() ? "unknown" : props_.modified);
+            row("Attributes", props_.read_only ? "Read-only" : "Normal");
+            ImGui::EndTable();
+        }
+        ImGui::Separator();
+        if (ImGui::Button("Close", ImVec2(120, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            pending_props_.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 
     // Delete confirmation.
     if (!pending_delete_.empty() && !ImGui::IsPopupOpen("Delete?##ab"))
