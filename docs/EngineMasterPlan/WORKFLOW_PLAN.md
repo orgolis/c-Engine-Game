@@ -307,6 +307,34 @@ gets ignored.
 > to it, so “a drop and a click resolve to the same object” is true by construction rather than by
 > coincidence.
 
+> **v0.7.17 — a prefab is an object, not a file.** Two requests: move files between folders in the browser,
+> and inspect a selected asset the way a scene object is inspected, *“so i can like apply component and
+> stuff”*.
+>
+> The move half is small and reuses `assetops::paste` so a drag inherits the guards cut/paste already had.
+>
+> The inspection half looked like it needed a rewrite and did not. `ShowInspector` is about 1,600 lines, but it
+> reads the scene and the selected id **once, at the top** — everything after that works from those two
+> values. So a prefab is loaded into a **staging scene** of its own, and the same 1,600 lines run against it
+> unchanged. The feature cost a dozen lines at the head of a function rather than a parallel inspector, and the
+> lesson is that reading a large function before assuming it needs restructuring is usually cheaper than the
+> restructuring.
+>
+> Two details that mattered more than the plumbing:
+>
+> The inspector calls `MarkModified()` from **over a hundred places**, and editing a prefab through it would
+> raise a false “unsaved scene” prompt from every one of them. An RAII guard snapshots and restores the
+> flag — RAII specifically because the function returns from several points, and a guard that only ran on the
+> last would leave the scene falsely dirty on all the others. That same guard doubles as the change detector,
+> which is what makes save-on-gesture-end possible without a signal from any of those hundred sites.
+>
+> A **Parts** list picks which entity of the subtree is being inspected. Without it a prefab with children could
+> only ever have its root edited — the half of “all properties and children” that would have gone
+> quietly missing, since the root editing correctly would have looked like the feature working.
+>
+> **Still open:** the staged prefab does not render in the viewport, so its properties are edited without seeing
+> them. And prefabs remain **baked** — placed copies do not follow the asset.
+
 Two items were **retired by measurement rather than implemented** (2.2, 2.3). The engine has always shipped on
 precompiled SPIR-V, so the PSO-stutter work — inherited from Unreal's well-documented problem — was addressing
 something this engine does not have.

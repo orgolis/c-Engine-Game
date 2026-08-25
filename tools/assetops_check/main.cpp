@@ -231,6 +231,42 @@ static void test_clipboard(const fs::path& dir) {
           "pasting into a missing folder reports NotFound");
 }
 
+// Moving a FOLDER is what the browser does when a folder tile is dragged onto
+// another one. A move implemented as "copy the top level" leaves the children
+// behind and reports success -- the folder appears in the right place, emptied.
+static void test_move_folder(const fs::path& dir) {
+    std::cout << "-- moving a folder --\n";
+    const fs::path src  = dir / "movable";
+    const fs::path dest = dir / "destination";
+    fs::create_directories(src / "nested");
+    fs::create_directories(dest);
+    write_file(src / "top.txt", "top");
+    write_file(src / "nested" / "deep.txt", "deep");
+
+    ops::Clipboard clip;
+    clip.cut_one(src);
+    check(ops::paste(clip, dest) == ops::Error::None, "a folder moves");
+    check(!fs::exists(src), "the original is gone");
+    check(fs::exists(dest / "movable" / "top.txt"), "its files came along");
+    check(fs::exists(dest / "movable" / "nested" / "deep.txt"),
+          "and so did the nested ones -- a top-level-only move would pass the line above");
+
+    std::ifstream f(dest / "movable" / "nested" / "deep.txt", std::ios::binary);
+    std::string body((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    check(body == "deep", "with their contents intact");
+    f.close();
+
+    // Moving it back onto a name that already exists must uniquify, not merge:
+    // merging two folders silently is how files get overwritten.
+    fs::create_directories(dir / "movable");
+    write_file(dir / "movable" / "different.txt", "other");
+    clip.cut_one(dest / "movable");
+    check(ops::paste(clip, dir) == ops::Error::None, "moving onto an existing name succeeds");
+    check(fs::exists(dir / "movable (2)"), "by uniquifying rather than merging");
+    check(fs::exists(dir / "movable" / "different.txt"),
+          "and the folder that was already there is untouched");
+}
+
 static void test_paste_into_self(const fs::path& dir) {
     std::cout << "-- the recursive paste --\n";
     const fs::path outer = dir / "outer";
@@ -299,6 +335,7 @@ int main() {
     test_rename(base);
     test_duplicate(base);
     test_clipboard(base);
+    test_move_folder(base);
     test_paste_into_self(base);
     test_properties(base);
 

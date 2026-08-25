@@ -554,6 +554,10 @@ void AssetBrowserPanel::render_tree_dir(const fs::path& dir, int depth) {
         if (current_ == sd) flags |= ImGuiTreeNodeFlags_Selected;
         const bool node_open = ImGui::TreeNodeEx(name.c_str(), flags);
         if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) navigate(sd);
+        // The tree is how a file moves UP a level: the file pane only shows the
+        // current folder's children, so without this the only direction a drag
+        // could go is deeper.
+        render_move_target(sd);
         if (node_open) {
             render_tree_dir(sd, depth + 1);   // lazy: only when expanded
             ImGui::TreePop();
@@ -625,12 +629,18 @@ void AssetBrowserPanel::render_entries() {
                     else os_open(e.abs_path);
                 }
             }
-            if (!e.is_dir && ImGui::BeginDragDropSource()) {
+            // Folders drag too, so a whole folder can be moved. They carry the
+            // generic payload: nothing in a scene accepts a folder, which is
+            // exactly right -- dropping one on an object should do nothing.
+            if (ImGui::BeginDragDropSource()) {
                 const std::string& data = (0 == std::strcmp(e.type, "Mesh")) ? e.abs_path : e.rel_path;
-                ImGui::SetDragDropPayload(payload_for(e.type), data.c_str(), data.size() + 1);
+                ImGui::SetDragDropPayload(e.is_dir ? kPayloadOther : payload_for(e.type),
+                                          data.c_str(), data.size() + 1);
+                drag_abs_path_ = e.abs_path;
                 ImGui::Text("%s  (%s)", e.name.c_str(), e.type);
                 ImGui::EndDragDropSource();
             }
+            if (e.is_dir) render_move_target(e.abs_path);
             render_context_menu(e);
             ImGui::PopID();
 
@@ -691,13 +701,16 @@ void AssetBrowserPanel::render_entries() {
             // source file and import it into the project (a project-relative path
             // can fail to resolve depending on the launch CWD). Other asset types
             // keep the runtime-relative path.
-            if (!e.is_dir && ImGui::BeginDragDropSource()) {
+            if (ImGui::BeginDragDropSource()) {
                 const std::string& data =
                     (0 == std::strcmp(e.type, "Mesh")) ? e.abs_path : e.rel_path;
-                ImGui::SetDragDropPayload(payload_for(e.type), data.c_str(), data.size() + 1);
+                ImGui::SetDragDropPayload(e.is_dir ? kPayloadOther : payload_for(e.type),
+                                          data.c_str(), data.size() + 1);
+                drag_abs_path_ = e.abs_path;
                 ImGui::Text("%s  (%s)", e.name.c_str(), e.type);
                 ImGui::EndDragDropSource();
             }
+            if (e.is_dir) render_move_target(e.abs_path);
 
             render_context_menu(e);
 
@@ -803,6 +816,42 @@ void AssetBrowserPanel::render_context_menu(const AssetEntry& e) {
 
 // Right-click on empty space. Explorer offers Paste and New here; without it,
 // a copied file has nowhere to be pasted except onto another file.
+// Drop a browser entry INTO a folder to move it there.
+//
+// Goes through the same assetops::paste a cut/paste does, rather than calling
+// rename directly, so a drag inherits every guard that path already has: no
+// overwriting, no folder into its own subtree, and no move into the folder the
+// file already occupies. A drag is the gesture most likely to land somewhere
+// unintended, so it is the one that needs those guards most.
+void AssetBrowserPanel::render_move_target(const fs::path& dst_dir) {
+    if (!ImGui::BeginDragDropTarget()) return;
+
+    // Peek rather than accept: this target must not swallow a payload that was
+    // meant for a scene consumer, and a drag that did not start in this panel
+    // has no source path recorded.
+    const ImGuiPayload* pl = ImGui::GetDragDropPayload();
+    if (pl && !drag_abs_path_.empty()) {
+        using AB = AssetBrowserPanel;
+        static const char* const kMine[] = {
+            AB::kPayloadMesh, AB::kPayloadTexture, AB::kPayloadAudio, AB::kPayloadScript,
+            AB::kPayloadScene, AB::kPayloadMaterial, AB::kPayloadPrefab, AB::kPayloadOther,
+        };
+        for (const char* tag : kMine) {
+            if (!pl->IsDataType(tag)) continue;
+            if (ImGui::AcceptDragDropPayload(tag)) {
+                assetops::Clipboard move;
+                move.cut_one(drag_abs_path_);
+                const assetops::Error err = assetops::paste(move, dst_dir);
+                report(err, "Moved " + fs::path(drag_abs_path_).filename().string() +
+                            " to " + dst_dir.filename().string());
+                drag_abs_path_.clear();
+            }
+            break;
+        }
+    }
+    ImGui::EndDragDropTarget();
+}
+
 // Dropping a scene entity here saves it as a prefab in the folder being shown.
 // The target covers the WHOLE file pane rather than a single row, because the
 // gesture is "put this in this folder", not "put this on that file".

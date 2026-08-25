@@ -134,6 +134,15 @@ private:
     std::string status_;                     // transient success line
     double      status_until_ = 0.0;         // when to stop showing it
 
+    /// Absolute path of the entry currently being dragged FROM this panel.
+    ///
+    /// The payload itself carries a runtime-relative path (or, for meshes, an
+    /// absolute one) because that is what the scene consumers want. A move
+    /// needs the absolute source regardless of type, and ImGui allows only one
+    /// payload per drag, so the source is recorded here when the drag starts.
+    /// Only ever read while a payload from this panel is being delivered.
+    std::string drag_abs_path_;
+
     // ---- helpers ----
     void detect_roots();
     void list_current();                     // fills entries_ from current_ (+ search)
@@ -145,6 +154,7 @@ private:
     void render_context_menu(const AssetEntry& e);
     void render_background_menu();               // right-click on empty space
     void render_entity_drop_target();            // hierarchy entity -> .prefab
+    void render_move_target(const std::filesystem::path& dst_dir);  // drop a file INTO a folder
     void render_edit_items(const AssetEntry* e); // cut/copy/paste/... shared by both menus
     void handle_shortcuts();                     // F2, Ctrl+C/X/V/D, Del
     void begin_rename(const AssetEntry& e);

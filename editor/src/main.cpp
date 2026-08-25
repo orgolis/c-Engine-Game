@@ -226,6 +226,21 @@ struct EditorState {
     schizo::editor::AssetInspector asset_inspector;
     uint32_t prev_selected_entity = 0;
 
+    // ---- Prefab editing -------------------------------------------------
+    // A prefab selected in the browser is inspected as the OBJECT it is, not as
+    // a file: it is loaded into a scene of its own and the ordinary entity
+    // inspector runs against that. Nothing about the inspector needed changing
+    // -- it wants a scene and an entity id, and this supplies different ones.
+    //
+    // The staging scene is deliberately NOT the live scene. Instantiating into
+    // the real scene to edit would put an object in the level that the user did
+    // not place and has to remember to remove.
+    std::shared_ptr<schizo::scene::Scene> prefab_stage;
+    std::string prefab_edit_path;    // which .prefab the stage holds
+    uint32_t    prefab_root_id = 0;
+    uint32_t    prefab_selected_id = 0;  // which staged entity the inspector shows
+    bool        prefab_dirty   = false;
+
     // Command palette (4.2). The registry is rebuilt once at startup; it
     // holds no scene state, so it does not need refreshing per frame.
     // Gizmo snapping (4.7). Off by default; Ctrl enables it for the
@@ -2478,6 +2493,54 @@ void ShowSceneHierarchy(EditorState& editor_state) {
     }
 }
 
+// Write the staged prefab back to its file.
+void FlushPrefabEdits(EditorState& st) {
+    if (!st.prefab_dirty || !st.prefab_stage || st.prefab_edit_path.empty()) return;
+    auto root = st.prefab_stage->GetEntityById(st.prefab_root_id);
+    if (root && schizo::editor::SceneSerializer::SavePrefab(st.prefab_edit_path, root)) {
+        st.set_status("Saved " + st.prefab_edit_path);
+        st.asset_inspector.Refresh();   // size and timestamp changed
+    }
+    st.prefab_dirty = false;
+}
+
+// Load the selected .prefab into its own scene, once. Re-selecting the same
+// prefab is a no-op, so the stage survives across frames and holds edits.
+bool EnsurePrefabStage(EditorState& st) {
+    const std::string& path = st.asset_inspector.rel_path();
+    if (path.empty()) return false;
+    if (st.prefab_edit_path == path && st.prefab_stage && st.prefab_root_id != 0) return true;
+
+    FlushPrefabEdits(st);   // don't lose edits to the prefab being left
+    st.prefab_stage = std::make_shared<schizo::scene::Scene>("prefab-stage");
+    auto root = schizo::editor::SceneSerializer::LoadPrefab(path, st.prefab_stage);
+    st.prefab_edit_path = path;
+    st.prefab_root_id     = root ? root->GetId() : 0;
+    st.prefab_selected_id = st.prefab_root_id;
+    st.prefab_dirty       = false;
+    return st.prefab_root_id != 0;
+}
+
+// Restores the scene's unsaved flag and writes the prefab when the gesture ends.
+// RAII because ShowInspector returns from several places, and a guard that only
+// ran on the last one would leave the scene falsely dirty on all the others.
+struct PrefabEditGuard {
+    EditorState* st = nullptr;
+    bool active = false;
+    bool prev_unsaved = false;
+
+    ~PrefabEditGuard() {
+        if (!active || !st || !st->editor_scene) return;
+        if (st->editor_scene->HasUnsavedChanges() && !prev_unsaved) {
+            st->prefab_dirty = true;
+            st->editor_scene->SetUnsavedChanges(prev_unsaved);
+        }
+        // Written when nothing is being dragged, not every frame: a slider held
+        // for two seconds would otherwise rewrite the file 120 times.
+        if (st->prefab_dirty && !ImGui::IsAnyItemActive()) FlushPrefabEdits(*st);
+    }
+};
+
 // The Inspector's asset half. Facts and preview come from the snapshot the
 // AssetInspector took when the selection changed, never from the disk.
 void DrawAssetInspector(EditorState& editor_state) {
@@ -2585,9 +2648,76 @@ void ShowInspector(EditorState& editor_state) {
             if (editor_state.selected_entity_id != 0) editor_state.asset_inspector.Clear();
         }
 
-        if (editor_state.selected_entity_id == 0 && editor_state.asset_inspector.HasSelection()) {
+        // A PREFAB is inspected as an object: the staging scene and its root
+        // replace the live scene and the selection, and everything below runs
+        // unchanged against them.
+        uint32_t inspect_id = editor_state.selected_entity_id;
+        PrefabEditGuard prefab_guard;
+        if (editor_state.selected_entity_id == 0 &&
+            editor_state.asset_inspector.HasSelection() &&
+            editor_state.asset_inspector.properties().type == "Prefab" &&
+            EnsurePrefabStage(editor_state)) {
+            scene      = editor_state.prefab_stage;
+            inspect_id = editor_state.prefab_root_id;
+
+            prefab_guard.st            = &editor_state;
+            prefab_guard.active        = true;
+            prefab_guard.prev_unsaved  = editor_state.editor_scene->HasUnsavedChanges();
+
+            ImGui::TextColored(ImVec4(0.55f, 0.78f, 1.0f, 1.0f), "Editing prefab");
+            ImGui::TextDisabled("%s", editor_state.prefab_edit_path.c_str());
+            ImGui::TextWrapped("Changes save to the asset, not to the scene. Objects already "
+                               "placed from this prefab are separate copies and do not follow.");
+            if (ImGui::SmallButton("Save now")) {
+                editor_state.prefab_dirty = true;
+                FlushPrefabEdits(editor_state);
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reload")) {
+                editor_state.prefab_edit_path.clear();   // forces a fresh load
+                editor_state.prefab_dirty = false;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled(editor_state.prefab_dirty ? "unsaved" : "saved");
+
+            // A prefab is a subtree, and the inspector shows one entity. Without
+            // this, a prefab with children could only ever have its ROOT edited
+            // -- which is the half of "all properties and children" that would
+            // have been quietly missing.
+            if (auto stage_root = scene->GetEntityById(editor_state.prefab_root_id)) {
+                std::function<void(const std::shared_ptr<schizo::scene::Entity>&, int)> row =
+                    [&](const std::shared_ptr<schizo::scene::Entity>& e, int depth) {
+                        if (!e) return;
+                        ImGui::PushID(static_cast<int>(e->GetId()));
+                        if (depth) ImGui::Indent(12.0f * depth);
+                        if (ImGui::Selectable(e->GetName().c_str(),
+                                              editor_state.prefab_selected_id == e->GetId()))
+                            editor_state.prefab_selected_id = e->GetId();
+                        if (depth) ImGui::Unindent(12.0f * depth);
+                        ImGui::PopID();
+                        for (const auto& c : e->GetChildren()) row(c, depth + 1);
+                    };
+                if (!stage_root->GetChildren().empty()) {
+                    ImGui::TextDisabled("Parts");
+                    ImGui::BeginChild("##prefab_tree", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 5.0f), true);
+                    row(stage_root, 0);
+                    ImGui::EndChild();
+                }
+            }
+            if (editor_state.prefab_selected_id != 0) inspect_id = editor_state.prefab_selected_id;
+            ImGui::Separator();
+        }
+
+        if (!prefab_guard.active &&
+            editor_state.selected_entity_id == 0 && editor_state.asset_inspector.HasSelection()) {
             DrawAssetInspector(editor_state);
-        } else if (!scene || editor_state.selected_entity_id == 0) {
+            // Return, rather than falling through to the entity lookup below --
+            // which, with no entity selected, printed "Entity not found"
+            // underneath every selected asset from v0.7.13 until this was found.
+            ImGui::End();
+            return;
+        }
+        if (!scene || inspect_id == 0) {
             ImGui::TextDisabled("No entity selected.");
             if (scene) {
                 // ---- Scene Environment (scene-bound sky) ----
@@ -2626,8 +2756,8 @@ void ShowInspector(EditorState& editor_state) {
             return;
         }
         
-        // Get selected entity by ID
-        auto selected_entity = scene->GetEntityById(editor_state.selected_entity_id);
+        // Get selected entity by ID (the prefab root when editing a prefab)
+        auto selected_entity = scene->GetEntityById(inspect_id);
         if (!selected_entity) {
             ImGui::Text("Entity not found");
             ImGui::End();

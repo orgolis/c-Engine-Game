@@ -62,6 +62,16 @@ public:
      */
     void MarkModified() { has_unsaved_changes_ = true; }
 
+    /// Force the flag, used to RESTORE it rather than to set it.
+    ///
+    /// The inspector calls MarkModified() from something over a hundred places.
+    /// When it is editing a PREFAB rather than the scene, every one of those
+    /// would raise a false "unsaved scene" prompt for a file the scene does not
+    /// contain. Snapshotting the flag and putting it back afterwards neutralises
+    /// all of them at one point, which beats auditing a hundred call sites for a
+    /// condition none of them can see.
+    void SetUnsavedChanges(bool v) { has_unsaved_changes_ = v; }
+
     // Wire the ECS bridge so save/load also persist authoritative gameplay
     // components to a `.gameplay` sidecar (F3). Optional — null = OOP-only save.
     void SetEcsBridge(EcsSceneBridge* b) { ecs_bridge_ = b; }
