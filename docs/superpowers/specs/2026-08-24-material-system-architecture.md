@@ -121,8 +121,13 @@ hash reacts to every field the GPU can observe.
   property of the surface, not of the texture on it. Off by default: it triples texture fetches
   where the blend is active and a flat terrain gains nothing. Normals use the cheap UDN-style
   blend, which is an approximation and is documented as one in the shader.
-- **Detail maps / detail normals** for close-up fidelity.
-- **Parallax occlusion mapping.**
+- **Detail maps / detail normals** ✅ **DONE (v0.7.10).** No distance fade: that needs a camera
+  position, and the G-buffer vertex push block is already exactly 128 bytes (Vulkan's guaranteed
+  minimum), so there is nowhere to put one. Mip selection carries most of it.
+- **Parallax occlusion mapping.** BLOCKED on the same thing: POM needs a tangent-space view
+  vector, so the G-buffer pass needs a **per-frame descriptor set at set 0**, which it does not
+  currently have. That set is the real prerequisite, and it would also give detail maps their
+  distance fade.
 - **Vertex-colour blending.**
 - **Terrain layers beyond four** — requires Foundation A.
 

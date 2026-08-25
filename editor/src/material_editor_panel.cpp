@@ -424,6 +424,25 @@ bool MaterialEditorPanel::render_asset_mode(const std::shared_ptr<Entity>& entit
             // UV transform. Applies to every map above at once -- transforming
             // them individually is how one map ends up unaligned with the rest
             // and the surface looks subtly wrong in a way nobody can point at.
+            // Detail maps. Below the five PBR slots because they modify what
+            // those produce rather than replacing any of them.
+            ImGui::SeparatorText("Detail");
+            t |= texture_slot("Detail Color",
+                              "Higher-frequency colour blended over Base Color. "
+                              "Mid-grey is neutral, which is what detail textures "
+                              "are authored around.", edit_.detail_albedo_map);
+            t |= texture_slot("Detail Normal",
+                              "Higher-frequency normal added to the base normal.",
+                              edit_.detail_normal_map);
+            if (ImGui::DragFloat("Detail tiling", &edit_.detail_scale, 0.1f, 1.0f, 128.0f, "%.1fx"))
+                t = true;
+            if (ImGui::SliderFloat("Detail color strength", &edit_.detail_albedo_strength, 0.0f, 1.0f))
+                t = true;
+            if (ImGui::SliderFloat("Detail normal strength", &edit_.detail_normal_strength, 0.0f, 2.0f))
+                t = true;
+            if (edit_.detail_albedo_map.empty() && edit_.detail_normal_map.empty())
+                ImGui::TextDisabled("  No detail maps - strengths have no effect.");
+
             ImGui::SeparatorText("UV transform");
             if (ImGui::DragFloat2("Tiling", &edit_.uv_scale.x, 0.01f, 0.01f, 256.0f, "%.2f")) {
                 t = true;

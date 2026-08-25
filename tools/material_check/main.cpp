@@ -73,6 +73,11 @@ MaterialDesc make_populated() {
     m.emissive_map           = "assets/textures/cobble_e.png";
     m.uv_scale               = glm::vec2(4.0f, 2.5f);   // non-uniform on purpose
     m.uv_offset              = glm::vec2(0.125f, -0.75f);
+    m.detail_albedo_map      = "assets/textures/grain_c.png";
+    m.detail_normal_map      = "assets/textures/grain_n.png";
+    m.detail_scale           = 23.5f;
+    m.detail_albedo_strength = 0.65f;
+    m.detail_normal_strength = 1.40f;
     return m;
 }
 
@@ -116,6 +121,13 @@ int main() {
         // fails here instead of shipping a surface that tiles wrongly.
         check(dst.uv_scale  == src.uv_scale,  "UV tiling survives, both components");
         check(dst.uv_offset == src.uv_offset, "UV offset survives, including a negative");
+        check(dst.detail_albedo_map == src.detail_albedo_map, "detail colour map survives");
+        check(dst.detail_normal_map == src.detail_normal_map, "detail normal map survives");
+        check(std::fabs(dst.detail_scale - src.detail_scale) < 1e-3f, "detail tiling survives");
+        check(std::fabs(dst.detail_albedo_strength - src.detail_albedo_strength) < 1e-3f,
+              "detail colour strength survives");
+        check(std::fabs(dst.detail_normal_strength - src.detail_normal_strength) < 1e-3f,
+              "detail normal strength survives");
         check(dst.content_hash() == src.content_hash(), "content hash survives the round trip");
     }
 
@@ -145,6 +157,10 @@ int main() {
         // notices, and the surface keeps its old repeat.
         { MaterialDesc m = base; m.uv_scale.x  = 8.0f;  differs(m, "UV tiling"); }
         { MaterialDesc m = base; m.uv_offset.y = 0.25f; differs(m, "UV offset"); }
+        { MaterialDesc m = base; m.detail_scale = 4.0f;             differs(m, "detail tiling"); }
+        { MaterialDesc m = base; m.detail_albedo_strength = 0.1f;   differs(m, "detail colour strength"); }
+        { MaterialDesc m = base; m.detail_normal_strength = 0.1f;   differs(m, "detail normal strength"); }
+        { MaterialDesc m = base; m.detail_albedo_map = "other.png"; differs(m, "detail colour map"); }
         { MaterialDesc m = base; m.alpha_cutoff = 0.9f;         differs(m, "alpha cutoff"); }
         { MaterialDesc m = base; m.double_sided = false;        differs(m, "double-sided"); }
         { MaterialDesc m = base; m.albedo_map = "other.png";    differs(m, "albedo map"); }

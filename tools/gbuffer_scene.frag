@@ -15,12 +15,15 @@ layout(set = 1, binding = 0) uniform MaterialUBO {
     // xy = UV scale, zw = UV offset. Appended, so a shader that does not
     // declare it still reads every field above at the same offset.
     vec4  uv_transform;
+    vec4  detail;   // x=tiling multiplier, y=albedo strength, z=normal strength
 } mat;
 layout(set = 1, binding = 1) uniform sampler2D albedoMap;
 layout(set = 1, binding = 2) uniform sampler2D normalMap;
 layout(set = 1, binding = 3) uniform sampler2D mrMap;
 layout(set = 1, binding = 4) uniform sampler2D aoMap;
 layout(set = 1, binding = 5) uniform sampler2D emissiveMap;
+layout(set = 1, binding = 6) uniform sampler2D detailAlbedoMap;
+layout(set = 1, binding = 7) uniform sampler2D detailNormalMap;
 
 layout(location = 0) out vec4 outPosition;
 layout(location = 1) out vec4 outNormalRoughness;
@@ -33,12 +36,33 @@ void main() {
     // subtly wrong in a way nobody can point at.
     vec2 uv = inUV * mat.uv_transform.xy + mat.uv_transform.zw;
 
+    // Detail maps: the same surface at a much higher frequency, blended over
+    // the base so close-up detail exists without authoring the base at a
+    // density the whole surface cannot afford.
+    //
+    // NO DISTANCE FADE. Detail is meant for near surfaces and ideally fades out
+    // with range, but that needs a camera position, and the G-buffer vertex
+    // push block is already exactly 128 bytes -- Vulkan's guaranteed minimum --
+    // so there is nowhere to put one without a per-frame descriptor set the
+    // pass does not have. Mip selection carries most of it; the fade is the
+    // reason set 0 will eventually exist.
+    vec2 duv = uv * mat.detail.x;
+
     vec4 base = texture(albedoMap, uv) * mat.base_color_factor;
+    // A mid-grey detail texel (0.5) doubles to 1.0 and is therefore neutral,
+    // which is the convention detail maps are authored to. Strength 0 makes the
+    // mix an exact identity, so a material without detail maps is unchanged.
+    base.rgb *= mix(vec3(1.0), texture(detailAlbedoMap, duv).rgb * 2.0, mat.detail.y);
 
     float alpha_cutoff = mat.emissive_factor.a;
     if (alpha_cutoff > 0.0 && base.a < alpha_cutoff) discard;
 
     vec3 nmap = texture(normalMap, uv).xyz * 2.0 - 1.0;
+    // Detail normal, added in TANGENT space before the TBN transform. The xy of
+    // a tangent-space normal is its slope, and summing slopes is the standard
+    // cheap blend -- correct enough for the small perturbations a detail map
+    // carries, and it costs one add rather than a second basis.
+    nmap.xy += (texture(detailNormalMap, duv).xy * 2.0 - 1.0) * mat.detail.z;
     nmap.xy *= mat.normal_scale;
     mat3 TBN = mat3(normalize(inTangent), normalize(inBitangent), normalize(inNormal));
     vec3 N   = normalize(TBN * nmap);

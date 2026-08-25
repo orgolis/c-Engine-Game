@@ -52,8 +52,19 @@ struct MaterialUniforms {
     /// had none at all, so a wall and a floor sharing one brick material could
     /// not repeat it at different densities without duplicating the .mat.
     glm::vec4 uv_transform         = glm::vec4(1.0f, 1.0f, 0.0f, 0.0f);
+    /// Detail maps: x = tiling multiplier, y = albedo strength,
+    /// z = normal strength, w unused.
+    ///
+    /// A tiled texture is sharp at its authored density and mush at arm's
+    /// length. A detail map is the same surface at a much higher frequency,
+    /// blended on top, so close-up detail exists without authoring the base at
+    /// a density the whole terrain cannot afford.
+    ///
+    /// Both strengths default to 0, which makes the blend an exact identity --
+    /// so a material without detail maps is bit-for-bit what it was.
+    glm::vec4 detail               = glm::vec4(8.0f, 0.0f, 0.0f, 0.0f);
 };
-static_assert(sizeof(MaterialUniforms) == 64, "MaterialUniforms layout drift");
+static_assert(sizeof(MaterialUniforms) == 80, "MaterialUniforms layout drift");
 
 class Material {
 public:
@@ -91,9 +102,15 @@ public:
                                             const Texture* emissive,
                                             const Texture* default_white  = nullptr,
                                             const Texture* default_normal = nullptr,
-                                            const Texture* default_black  = nullptr);
+                                            const Texture* default_black  = nullptr,
+                                            // Appended with defaults so the
+                                            // fourteen existing call sites keep
+                                            // compiling unchanged; only the
+                                            // material cache passes them.
+                                            const Texture* detail_albedo  = nullptr,
+                                            const Texture* detail_normal  = nullptr);
 
-    /// Re-write the 5 image-sampler bindings from the textures this material
+    /// Re-write the 7 image-sampler bindings from the textures this material
     /// currently references. Call after a bound texture was hot-reloaded in
     /// place (its `view()` changed but the object identity did not). The caller
     /// must ensure the GPU is idle. No-op if the material bound only defaults.
@@ -133,7 +150,7 @@ private:
     // Resolved textures bound to slots 1..5 (base, normal, MR, AO, emissive).
     // Non-owning — may point at supplied textures, shared defaults, or the
     // fallbacks above. Used by rewrite_textures()/bound_textures().
-    const Texture* tex_[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    const Texture* tex_[7] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 
     void destroy();
 };

@@ -18,13 +18,13 @@
 namespace gws::renderer::gpu {
 
 VkDescriptorSetLayout Material::create_descriptor_set_layout(VkDevice device) {
-    std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
     bindings[0].binding         = 0;
     bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    for (uint32_t i = 1; i < 6; ++i) {
+    for (uint32_t i = 1; i < 8; ++i) {
         bindings[i].binding         = i;
         bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[i].descriptorCount = 1;
@@ -48,7 +48,7 @@ VkDescriptorPool Material::create_descriptor_pool(VkDevice device, uint32_t max_
     sizes[0].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     sizes[0].descriptorCount = max_materials;
     sizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    sizes[1].descriptorCount = max_materials * 5;
+    sizes[1].descriptorCount = max_materials * 7;   // 5 PBR maps + 2 detail
 
     VkDescriptorPoolCreateInfo ci{};
     ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -131,7 +131,9 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
                                            const Texture* emissive,
                                            const Texture* default_white,
                                            const Texture* default_normal,
-                                           const Texture* default_black) {
+                                           const Texture* default_black,
+                                           const Texture* detail_albedo,
+                                           const Texture* detail_normal) {
     if (!device || layout == VK_NULL_HANDLE || pool == VK_NULL_HANDLE) {
         spdlog::error("Material::create: missing device/layout/pool");
         return nullptr;
@@ -209,12 +211,20 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
     const Texture* mr_tex     = pick(metallic_roughness, default_white,  out->fallback_white_,  &Texture::create_default_white);
     const Texture* ao_tex     = pick(occlusion,          default_white,  out->fallback_white_,  &Texture::create_default_white);
     const Texture* emis_tex   = pick(emissive,           default_black,  out->fallback_black_,  &Texture::create_default_black);
+    // Detail slots fall back to the same shared defaults. They are never
+    // sampled meaningfully when unused, because the cache zeroes the detail
+    // STRENGTHS whenever the maps are absent -- so the blend is an identity and
+    // what sits in the slot cannot matter.
+    const Texture* dtl_alb_tex = pick(detail_albedo, default_white,  out->fallback_white_,  &Texture::create_default_white);
+    const Texture* dtl_nrm_tex = pick(detail_normal, default_normal, out->fallback_normal_, &Texture::create_default_normal);
 
     out->tex_[0] = base_tex;
     out->tex_[1] = normal_tex;
     out->tex_[2] = mr_tex;
     out->tex_[3] = ao_tex;
     out->tex_[4] = emis_tex;
+    out->tex_[5] = dtl_alb_tex;
+    out->tex_[6] = dtl_nrm_tex;
 
     // 4) Write descriptor set
     VkDescriptorBufferInfo bufinfo{};
@@ -230,15 +240,17 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
         return info;
     };
 
-    std::array<VkDescriptorImageInfo, 5> imgs = {
+    std::array<VkDescriptorImageInfo, 7> imgs = {
         make_image_info(base_tex),
         make_image_info(normal_tex),
         make_image_info(mr_tex),
         make_image_info(ao_tex),
         make_image_info(emis_tex),
+        make_image_info(dtl_alb_tex),
+        make_image_info(dtl_nrm_tex),
     };
 
-    std::array<VkWriteDescriptorSet, 6> writes{};
+    std::array<VkWriteDescriptorSet, 8> writes{};
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet          = out->descriptor_set_;
     writes[0].dstBinding      = 0;
@@ -246,7 +258,7 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
     writes[0].descriptorCount = 1;
     writes[0].pBufferInfo     = &bufinfo;
 
-    for (uint32_t i = 0; i < 5; ++i) {
+    for (uint32_t i = 0; i < 7; ++i) {
         writes[i + 1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i + 1].dstSet          = out->descriptor_set_;
         writes[i + 1].dstBinding      = i + 1;

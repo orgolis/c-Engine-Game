@@ -99,6 +99,18 @@ struct MaterialDesc {
     glm::vec2 uv_scale{1.0f, 1.0f};
     glm::vec2 uv_offset{0.0f, 0.0f};
 
+    /// Detail maps. A tiled texture is sharp at its authored density and mush
+    /// at arm's length; a detail map is the same surface at a much higher
+    /// frequency, blended on top.
+    ///
+    /// Strengths default to 0 -- the blend is then an exact identity, so adding
+    /// the fields changes nothing about materials that do not use them.
+    std::string detail_albedo_map;
+    std::string detail_normal_map;
+    float detail_scale            = 8.0f;   // multiplies the base tiling
+    float detail_albedo_strength  = 0.0f;
+    float detail_normal_strength  = 0.0f;
+
     // ---- Factors (→ gpu::MaterialUniforms) ----
     glm::vec4 base_color{1.0f, 1.0f, 1.0f, 1.0f};
     float     metallic     = 0.0f;
@@ -171,6 +183,11 @@ struct MaterialDesc {
         // old repeat and the edit appears to do nothing.
         mix_f(uv_scale.x);  mix_f(uv_scale.y);
         mix_f(uv_offset.x); mix_f(uv_offset.y);
+        // Detail maps are as observable as any other field; leaving them out
+        // would mean editing detail strength never invalidates the cached GPU
+        // material, exactly the trap the UV fields fell into.
+        mix_f(detail_scale); mix_f(detail_albedo_strength); mix_f(detail_normal_strength);
+        mix_s(detail_albedo_map); mix_s(detail_normal_map);
         const uint8_t flags = static_cast<uint8_t>(alpha_mode) |
                               (double_sided ? 0x80u : 0u);
         mix_bytes(&flags, sizeof flags);
@@ -253,6 +270,11 @@ inline std::string material_to_text(const MaterialDesc& m) {
     o << "NAME=" << m.name << "\n";
     o << "UV_SCALE=" << m.uv_scale.x << "," << m.uv_scale.y << "\n";
     o << "UV_OFFSET=" << m.uv_offset.x << "," << m.uv_offset.y << "\n";
+    o << "DETAIL_ALBEDO_MAP=" << m.detail_albedo_map << "\n";
+    o << "DETAIL_NORMAL_MAP=" << m.detail_normal_map << "\n";
+    o << "DETAIL_SCALE=" << m.detail_scale << "\n";
+    o << "DETAIL_ALBEDO_STRENGTH=" << m.detail_albedo_strength << "\n";
+    o << "DETAIL_NORMAL_STRENGTH=" << m.detail_normal_strength << "\n";
     o << "BASE_COLOR=" << m.base_color.r << "," << m.base_color.g << ","
                        << m.base_color.b << "," << m.base_color.a << "\n";
     o << "METALLIC=" << m.metallic << "\n";
@@ -295,6 +317,11 @@ inline MaterialDesc material_from_text(const std::string& text) {
         if      (key == "NAME")               m.name = val;
         else if (key == "UV_SCALE")           detail::parse_vec(val, &m.uv_scale.x, 2);
         else if (key == "UV_OFFSET")          detail::parse_vec(val, &m.uv_offset.x, 2);
+        else if (key == "DETAIL_ALBEDO_MAP")  m.detail_albedo_map = val;
+        else if (key == "DETAIL_NORMAL_MAP")  m.detail_normal_map = val;
+        else if (key == "DETAIL_SCALE")       m.detail_scale = detail::parse_float(val, m.detail_scale);
+        else if (key == "DETAIL_ALBEDO_STRENGTH") m.detail_albedo_strength = detail::parse_float(val, m.detail_albedo_strength);
+        else if (key == "DETAIL_NORMAL_STRENGTH") m.detail_normal_strength = detail::parse_float(val, m.detail_normal_strength);
         else if (key == "BASE_COLOR")         detail::parse_vec(val, &m.base_color.r, 4);
         else if (key == "METALLIC")           m.metallic = detail::parse_float(val, m.metallic);
         else if (key == "ROUGHNESS")          m.roughness = detail::parse_float(val, m.roughness);
