@@ -886,6 +886,95 @@ void VulkanDevice::create_logical_device() {
     VkPhysicalDeviceFeatures2 features2{};
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 
+    // ---- Bindless textures (descriptor indexing) ---------------------------
+    //
+    // Core in Vulkan 1.2, and this instance asks for 1.3, so no extension is
+    // needed -- but the FEATURES still have to be queried and enabled, and are
+    // not universal. Terrain currently burns 14 descriptor bindings for one
+    // splat map plus three maps across four layers, which is the whole reason
+    // it needs a pipeline of its own. Indexing lets a material name a texture
+    // by index instead, which is what makes ">4 terrain layers" and material
+    // layering possible at all.
+    //
+    // Queried, gated, and forceable off. The engine has already shipped a build
+    // that would not start on an RX 5700 because a capability was assumed, and
+    // the lesson recorded from that is that a capability-dependent branch needs
+    // a way to force it or it is untested by construction.
+    VkPhysicalDeviceVulkan12Features v12_features{};
+    v12_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    {
+        VkPhysicalDeviceFeatures2 probe{};
+        probe.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        probe.pNext = &v12_features;
+        vkGetPhysicalDeviceFeatures2(physical_device, &probe);
+
+        const char* force_off = std::getenv("GWS_FORCE_NO_BINDLESS");
+        const bool  pretend_off = force_off && force_off[0] == '1';
+        if (pretend_off)
+            GWS_LOG_INFO("GWS_FORCE_NO_BINDLESS=1 — pretending this GPU has no descriptor indexing");
+
+        // Every one of these is required by the bindless table. Partially-bound
+        // matters as much as the rest: the array is sized for the maximum and
+        // is legitimately full of holes, and without it every unused slot would
+        // have to be written with a dummy or the device is in undefined state.
+        const bool all_present =
+            v12_features.descriptorIndexing &&
+            v12_features.runtimeDescriptorArray &&
+            v12_features.shaderSampledImageArrayNonUniformIndexing &&
+            v12_features.descriptorBindingPartiallyBound &&
+            v12_features.descriptorBindingSampledImageUpdateAfterBind &&
+            v12_features.descriptorBindingVariableDescriptorCount;
+
+        if (!pretend_off && all_present) {
+            VkPhysicalDeviceDescriptorIndexingProperties di_props{};
+            di_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES;
+            VkPhysicalDeviceProperties2 props2{};
+            props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            props2.pNext = &di_props;
+            vkGetPhysicalDeviceProperties2(physical_device, &props2);
+
+            // Cap the table well below the device maximum. Some drivers report
+            // millions, and allocating a descriptor pool for that is a waste
+            // measured in hundreds of megabytes for a slot count no project
+            // here will approach.
+            const uint32_t device_max = di_props.maxPerStageDescriptorUpdateAfterBindSampledImages;
+            max_bindless_textures_ = device_max < kBindlessTextureCap ? device_max
+                                                                      : kBindlessTextureCap;
+            bindless_supported_ = max_bindless_textures_ >= 64;
+
+            if (bindless_supported_) {
+                // Enable exactly what was checked. Enabling a feature that was
+                // not queried is undefined behaviour, which is how the
+                // shaderInt64 bug lived undetected for the life of the project.
+                v12_features.descriptorIndexing = VK_TRUE;
+                v12_features.runtimeDescriptorArray = VK_TRUE;
+                v12_features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+                v12_features.descriptorBindingPartiallyBound = VK_TRUE;
+                v12_features.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+                v12_features.descriptorBindingVariableDescriptorCount = VK_TRUE;
+                v12_features.pNext = nullptr;   // head of the chain; linked below
+                GWS_LOG_INFO("✅ Bindless textures supported — {} slots (device max {})",
+                             max_bindless_textures_, device_max);
+            } else {
+                GWS_LOG_WARN("Descriptor indexing present but only {} update-after-bind sampled "
+                             "images — too few for a bindless table; using bound textures",
+                             device_max);
+            }
+        } else if (!pretend_off) {
+            GWS_LOG_INFO("Descriptor indexing unavailable on this device — using bound textures "
+                         "(indexing={} runtimeArray={} nonUniform={} partiallyBound={} "
+                         "updateAfterBind={} variableCount={})",
+                         (bool)v12_features.descriptorIndexing,
+                         (bool)v12_features.runtimeDescriptorArray,
+                         (bool)v12_features.shaderSampledImageArrayNonUniformIndexing,
+                         (bool)v12_features.descriptorBindingPartiallyBound,
+                         (bool)v12_features.descriptorBindingSampledImageUpdateAfterBind,
+                         (bool)v12_features.descriptorBindingVariableDescriptorCount);
+        }
+        if (!bindless_supported_) v12_features = {};   // enable nothing we did not check
+        v12_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    }
+
     if (rt_exts_present) {
         // Chain everything and ask the GPU what it actually supports.
         features2.pNext = &rq_features;
@@ -928,10 +1017,15 @@ void VulkanDevice::create_logical_device() {
         GWS_LOG_INFO("Ray tracing extensions not available on this device — RT disabled");
     }
 
-    // Also enable basic device features (preserve existing behavior — empty struct).
-    if (ray_tracing_supported_) {
-        // Use Features2 chain so pNext picks up rq/as/bda.
-        features2.features = device_features;
+    // Features2 UNCONDITIONALLY now. Bindless has to be chained whether or not
+    // ray tracing is on, and the old shape -- pEnabledFeatures when RT was off,
+    // the chain when it was on -- had no room for a second optional feature
+    // block. The chain is built here so there is exactly one place that decides
+    // what the device is created with.
+    features2.features = device_features;
+    if (bindless_supported_) {
+        v12_features.pNext = features2.pNext;   // in front of the RT chain, if any
+        features2.pNext    = &v12_features;
     }
 
     VkDeviceCreateInfo create_info{};
@@ -940,12 +1034,8 @@ void VulkanDevice::create_logical_device() {
     create_info.pQueueCreateInfos = queue_create_infos.data();
     create_info.enabledExtensionCount = extensions.size();
     create_info.ppEnabledExtensionNames = extensions.data();
-    if (ray_tracing_supported_) {
-        create_info.pNext = &features2;
-        create_info.pEnabledFeatures = nullptr; // mutually exclusive with Features2
-    } else {
-        create_info.pEnabledFeatures = &device_features;
-    }
+    create_info.pNext = &features2;
+    create_info.pEnabledFeatures = nullptr;   // mutually exclusive with Features2
 
     vkCreateDevice(physical_device, &create_info, nullptr, &device);
 

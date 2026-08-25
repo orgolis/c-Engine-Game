@@ -308,6 +308,14 @@ public:
     /// + VK_KHR_acceleration_structure (and the required dependencies). When
     /// false, RT features will not be enabled even if the engine config
     /// requests them — call sites should fall back to the raster path.
+    /// Whether this device can index textures by number instead of by binding.
+    /// False is a supported configuration, not a failure -- the bound-texture
+    /// path is kept for it, and GWS_FORCE_NO_BINDLESS exercises that path on a
+    /// machine that does support indexing.
+    bool bindless_supported() const { return bindless_supported_; }
+    /// Slots in the bindless table. 0 when unsupported.
+    uint32_t max_bindless_textures() const { return max_bindless_textures_; }
+
     bool has_ray_tracing() const { return ray_tracing_supported_; }
 
     /// Resolved RT extension function pointers. Only valid when
@@ -402,6 +410,12 @@ private:
     // were available and the rayQuery + accelerationStructure features
     // were enabled on the logical device. See `has_ray_tracing()`.
     bool ray_tracing_supported_ = false;
+    bool bindless_supported_    = false;
+    uint32_t max_bindless_textures_ = 0;
+    /// Table size ceiling. Drivers report maxima in the millions; a pool sized
+    /// for that costs hundreds of megabytes to serve a slot count no project
+    /// here will approach.
+    static constexpr uint32_t kBindlessTextureCap = 4096;
 
     // Set at logical-device creation when samplerAnisotropy was supported and
     // enabled. `max_anisotropy_` mirrors the device's limit. See

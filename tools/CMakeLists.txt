@@ -736,3 +736,12 @@ endif()
 add_executable(vfxgraph_check vfxgraph_check/main.cpp)
 target_link_libraries(vfxgraph_check PRIVATE gws_vfx)
 target_compile_features(vfxgraph_check PRIVATE cxx_std_20)
+
+# bindless_check: slot bookkeeping for the bindless texture table (headless, no
+# device). The Vulkan half of bindless fails loudly — a bad descriptor write
+# trips validation. The bookkeeping fails silently: a slot handed out twice
+# makes two materials share a texture, and a slot never reused runs the table
+# dry, after which everything samples slot 0. Both render something plausible.
+add_executable(bindless_check bindless_check/main.cpp)
+target_include_directories(bindless_check PRIVATE ${CMAKE_SOURCE_DIR}/engine/renderer/gpu)
+target_compile_features(bindless_check PRIVATE cxx_std_20)
