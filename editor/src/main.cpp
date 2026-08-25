@@ -35,6 +35,7 @@
 #include "vulkan/vulkan_scene_mesh.h"
 #include "vulkan/vulkan_scene_material.h"
 #include "vulkan/vulkan_texture_manager.h"  // runtime texture handling (Stage 2)
+#include "vulkan/vulkan_bindless_textures.h" // bindless table (material Foundation A)
 #include "imported_skinned_actor.h"          // rigged-glTF import → GPU skin (Path B)
 #include "skinned_demo.h"                    // Stage 5 skinned-animation test rig
 #include "skinned_actor_cache.h"             // per-entity skinned actors (3.8)
@@ -5544,6 +5545,12 @@ int main(int argc, char** argv) {
         // cache then called vkDestroySampler on a dead handle -- a warning on
         // this driver, undefined behaviour in general. The reference keeps
         // every existing use site unchanged.
+        // Bindless texture table (material architecture, Foundation A). Null
+        // on a device without descriptor indexing, which every consumer must
+        // treat as "use the bound path" rather than as an error.
+        auto bindless_textures =
+            gws::renderer::gpu::VulkanBindlessTextures::create(&device);
+
         auto texture_manager_holder = std::make_unique<TextureManager>(&device);
         TextureManager& texture_manager = *texture_manager_holder;
         {
@@ -9533,6 +9540,12 @@ int main(int argc, char** argv) {
         lighting.reset();
         g_buffer.reset();
 
+        // Before device.shutdown(), not at function scope. A unique_ptr declared
+        // in main outlives the explicit shutdown, so its destructor calls
+        // vkDestroyDescriptorPool on a dead device -- the loader reports
+        // "Invalid device" and the process exits non-zero after an otherwise
+        // clean run. The same trap model_check documents for loaded scenes.
+        bindless_textures.reset();
         spdlog::info("[exit] device.shutdown...");
         device.shutdown();
         spdlog::info("[exit] glfw teardown...");

@@ -1024,7 +1024,20 @@ void VulkanDevice::create_logical_device() {
     // what the device is created with.
     features2.features = device_features;
     if (bindless_supported_) {
-        v12_features.pNext = features2.pNext;   // in front of the RT chain, if any
+        // VkPhysicalDeviceVulkan12Features SUBSUMES several standalone feature
+        // structs, and chaining both is invalid usage -- VUID-VkDeviceCreateInfo
+        // -pNext-02830, which fires for the BufferDeviceAddress struct the ray
+        // tracing path chains. So when the 1.2 block is used it carries that
+        // feature too, and the standalone struct is unlinked.
+        //
+        // Worth stating because it is a trap the RT path walked into the moment
+        // a second optional feature block appeared: the two work perfectly in
+        // isolation and are illegal together.
+        if (ray_tracing_supported_) {
+            v12_features.bufferDeviceAddress = bda_features.bufferDeviceAddress;
+            as_features.pNext = nullptr;          // drop bda from the RT chain
+        }
+        v12_features.pNext = features2.pNext;     // in front of the RT chain, if any
         features2.pNext    = &v12_features;
     }
 

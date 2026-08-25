@@ -114,6 +114,7 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_skinned_mesh.cpp
     gpu/vulkan/skinned_gltf_loader.cpp
     gpu/vulkan/vulkan_scene_material.cpp
+    gpu/vulkan/vulkan_bindless_textures.cpp
     gpu/vulkan/vulkan_terrain_material.cpp
     gpu/vulkan/vulkan_gltf_loader.cpp
     gpu/vulkan/culling.cpp
