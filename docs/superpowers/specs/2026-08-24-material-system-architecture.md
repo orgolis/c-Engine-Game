@@ -117,8 +117,10 @@ repeat and the edit appears to do nothing. Caught because `material_check` alrea
 hash reacts to every field the GPU can observe.
 
 ### Tier 2 — the features you see
-- **Triplanar projection.** Terrain textures currently stretch into smears on any steep slope,
-  because a heightfield is UV-mapped from above. The single most visible item in this document.
+- **Triplanar projection.** ✅ **DONE (v0.7.9).** Per terrain, not per layer — the stretch is a
+  property of the surface, not of the texture on it. Off by default: it triples texture fetches
+  where the blend is active and a flat terrain gains nothing. Normals use the cheap UDN-style
+  blend, which is an approximation and is documented as one in the shader.
 - **Detail maps / detail normals** for close-up fidelity.
 - **Parallax occlusion mapping.**
 - **Vertex-colour blending.**
@@ -132,7 +134,10 @@ lighting shader plus authoring in `.mat`, the material editor, and the material 
 - **Material layering** — requires Foundation A.
 - **Decals** — a deferred decal pass writing into the G-buffer before lighting.
 - **Texture streaming** — mip-level residency driven by what the camera can see.
-- **Virtual texturing** — requires Foundation A and streaming. The largest single item here and
+- **Virtual texturing** — requires Foundation A and streaming. **Correction to this document:**
+  it is NOT green-field. `vulkan_virtual_texture.h` already implements the `.vt` format, the mmap
+  and zero-copy per-tile addressing; what is missing is the residency/streaming runtime. That makes
+  it meaningfully cheaper than estimated above. Still the largest single item here and
   the one most likely to be cut on reflection; it is included because the scope was chosen
   explicitly, but it should be re-examined before it starts rather than entered by momentum.
 

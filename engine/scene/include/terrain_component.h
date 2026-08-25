@@ -237,6 +237,25 @@ public:
     float GetLayerRoughness(int i) const { return layer_roughness_[clamp_layer(i)]; }
     void  SetLayerRoughness(int i, float v) { layer_roughness_[clamp_layer(i)] = std::clamp(v, 0.02f, 1.0f); }
 
+    /// Triplanar projection for this terrain's layers.
+    ///
+    /// A heightfield is UV-mapped from directly above, so the steeper a slope
+    /// the further its texture is stretched -- a cliff is a smear of the few
+    /// texels the top-down projection gave it. Per terrain rather than per
+    /// layer: the stretch is a property of the surface, not of the texture on
+    /// it, and four independent toggles would only produce terrain where some
+    /// layers smear and others do not.
+    ///
+    /// Off by default. It triples the texture fetches where the blend is
+    /// active, and a flat terrain gains nothing from paying that.
+    bool  GetTriplanar() const { return triplanar_; }
+    void  SetTriplanar(bool on) { triplanar_ = on; }
+
+    /// How sharply one projection gives way to the next. Higher keeps each
+    /// dominant over more of the surface and narrows the cross-fade.
+    float GetTriplanarSharpness() const { return triplanar_sharpness_; }
+    void  SetTriplanarSharpness(float v) { triplanar_sharpness_ = std::clamp(v, 1.0f, 16.0f); }
+
     float GetLayerNormalScale(int i) const { return layer_normal_scale_[clamp_layer(i)]; }
     void  SetLayerNormalScale(int i, float v) { layer_normal_scale_[clamp_layer(i)] = std::clamp(v, 0.0f, 4.0f); }
 
@@ -335,6 +354,8 @@ private:
     std::array<float, kTerrainLayers>       layer_metallic_{ 0.0f, 0.0f, 0.0f, 0.0f };
     std::array<float, kTerrainLayers>       layer_roughness_{ 0.95f, 0.95f, 0.95f, 0.95f };
     std::array<float, kTerrainLayers>       layer_normal_scale_{ 1.0f, 1.0f, 1.0f, 1.0f };
+    bool                                   triplanar_ = false;
+    float                                  triplanar_sharpness_ = 4.0f;
     int                  splat_res_     = 256;
     std::vector<uint8_t> splat_;            // RGBA8, res*res*4
     uint64_t             splat_version_ = 1;

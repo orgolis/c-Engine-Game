@@ -42,6 +42,7 @@ layout(set = 1, binding = 0) uniform TerrainMaterialUBO {
     // rather than four float[4] arrays because std140 pads a float array to a
     // 16-byte stride anyway — this way the padding is at least readable.
     vec4 mrno[4];
+    vec4 triplanar;   // x=on, y=sharpness, z=terrain world size
 } mat;
 
 layout(set = 1, binding = 1)  uniform sampler2D splatMap;
@@ -63,7 +64,33 @@ layout(location = 1) out vec4 outNormalRoughness;
 layout(location = 2) out vec4 outAlbedoMetallic;
 layout(location = 3) out vec4 outMaterial;
 
+// Blend weights for the three world-axis projections. Squared-and-normalised
+// off the surface normal, raised to `sharpness`: higher keeps each projection
+// dominant over more of the surface and narrows the cross-fade, which hides the
+// blend seam on hard edges at the cost of a harder transition on gentle ones.
+vec3 triWeights(vec3 n, float sharpness) {
+    vec3 w = pow(abs(n), vec3(sharpness));
+    return w / max(w.x + w.y + w.z, 1e-5);
+}
+
+// One texture, sampled down all three axes and blended. `freq` is repeats per
+// world unit, so the result is independent of how the mesh happens to be
+// UV-mapped -- which is the entire point.
+vec4 triSample(sampler2D t, vec3 wpos, vec3 w, float freq) {
+    return texture(t, wpos.zy * freq) * w.x
+         + texture(t, wpos.xz * freq) * w.y
+         + texture(t, wpos.xy * freq) * w.z;
+}
+
 void main() {
+    // Triplanar state, resolved once. `on` is a uniform branch: every fragment
+    // of a terrain agrees, so the whole wave takes one side and the untaken
+    // path costs nothing.
+    const bool  tri_on    = mat.triplanar.x > 0.5;
+    const float tri_sharp = max(mat.triplanar.y, 1.0);
+    const float tri_world = max(mat.triplanar.z, 1e-3);
+    vec3  tri_w = tri_on ? triWeights(normalize(inNormal), tri_sharp) : vec3(0.0);
+
     vec4 w = texture(splatMap, inUV);
     float sum = w.r + w.g + w.b + w.a;
     // Default to layer 0 where nothing was painted, so fresh terrain shows a
@@ -77,10 +104,20 @@ void main() {
     vec2 uv3 = inUV * mat.tiling.w;
 
     // ---- Albedo: each layer's texture times its tint, weighted -------------
-    vec3 albedo = texture(albedo0, uv0).rgb * mat.tint[0].rgb * w.r
-                + texture(albedo1, uv1).rgb * mat.tint[1].rgb * w.g
-                + texture(albedo2, uv2).rgb * mat.tint[2].rgb * w.b
-                + texture(albedo3, uv3).rgb * mat.tint[3].rgb * w.a;
+    // Tiling is "repeats across the terrain"; triplanar needs repeats per world
+    // unit, so the two differ by the terrain's size rather than by a second set
+    // of authored numbers that could drift apart.
+    vec4 freq = mat.tiling / tri_world;
+
+    vec3 a0 = tri_on ? triSample(albedo0, inWorldPos, tri_w, freq.x).rgb : texture(albedo0, uv0).rgb;
+    vec3 a1 = tri_on ? triSample(albedo1, inWorldPos, tri_w, freq.y).rgb : texture(albedo1, uv1).rgb;
+    vec3 a2 = tri_on ? triSample(albedo2, inWorldPos, tri_w, freq.z).rgb : texture(albedo2, uv2).rgb;
+    vec3 a3 = tri_on ? triSample(albedo3, inWorldPos, tri_w, freq.w).rgb : texture(albedo3, uv3).rgb;
+
+    vec3 albedo = a0 * mat.tint[0].rgb * w.r
+                + a1 * mat.tint[1].rgb * w.g
+                + a2 * mat.tint[2].rgb * w.b
+                + a3 * mat.tint[3].rgb * w.a;
 
     // ---- Normals: unpack each layer, scale, blend in TANGENT space ---------
     // Blending tangent-space normals before the TBN transform (rather than
@@ -91,10 +128,18 @@ void main() {
     // An unbound slot holds the engine's flat-blue default, which unpacks to
     // (0,0,1) — the identity. That is what makes "no normal map on this layer"
     // cost nothing and change nothing, rather than needing a shader branch.
-    vec3 n0 = texture(normal0, uv0).xyz * 2.0 - 1.0;
-    vec3 n1 = texture(normal1, uv1).xyz * 2.0 - 1.0;
-    vec3 n2 = texture(normal2, uv2).xyz * 2.0 - 1.0;
-    vec3 n3 = texture(normal3, uv3).xyz * 2.0 - 1.0;
+    //
+    // Under triplanar the three projections each carry their own tangent frame,
+    // and blending them as if they shared one is an APPROXIMATION -- the cheap
+    // "UDN"-style blend. It is wrong in principle and close enough in practice
+    // on terrain, where normal maps carry surface detail rather than large
+    // directional features. Stated plainly because the alternative costs three
+    // TBN reconstructions per layer, and the stretch it would fix is invisible
+    // next to the stretch triplanar removes.
+    vec3 n0 = (tri_on ? triSample(normal0, inWorldPos, tri_w, freq.x).xyz : texture(normal0, uv0).xyz) * 2.0 - 1.0;
+    vec3 n1 = (tri_on ? triSample(normal1, inWorldPos, tri_w, freq.y).xyz : texture(normal1, uv1).xyz) * 2.0 - 1.0;
+    vec3 n2 = (tri_on ? triSample(normal2, inWorldPos, tri_w, freq.z).xyz : texture(normal2, uv2).xyz) * 2.0 - 1.0;
+    vec3 n3 = (tri_on ? triSample(normal3, inWorldPos, tri_w, freq.w).xyz : texture(normal3, uv3).xyz) * 2.0 - 1.0;
     n0.xy *= mat.mrno[0].z;
     n1.xy *= mat.mrno[1].z;
     n2.xy *= mat.mrno[2].z;

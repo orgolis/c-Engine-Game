@@ -69,8 +69,23 @@ struct TerrainMaterialUniforms {
     std::array<glm::vec4, kTerrainMaterialLayers> mrno{
         glm::vec4(0.0f, 1.0f, 1.0f, 1.0f), glm::vec4(0.0f, 1.0f, 1.0f, 1.0f),
         glm::vec4(0.0f, 1.0f, 1.0f, 1.0f), glm::vec4(0.0f, 1.0f, 1.0f, 1.0f)};
+
+    /// Triplanar projection: x = on/off, y = blend sharpness, z = terrain world
+    /// size, w unused.
+    ///
+    /// A heightfield is UV-mapped from directly above, so the steeper a slope
+    /// gets the further its texture is stretched -- a cliff face is a smear of
+    /// the few texels the top-down projection gave it. Triplanar samples the
+    /// same texture down all three world axes and blends by the normal, which
+    /// costs three samples where the blend is active and none of the stretch.
+    ///
+    /// The world size is here because the tiling numbers are "repeats across
+    /// the whole terrain" while triplanar needs a world-space frequency; the
+    /// shader divides one by the other rather than needing a second set of
+    /// authored numbers that could disagree.
+    glm::vec4 triplanar{0.0f, 4.0f, 100.0f, 0.0f};
 };
-static_assert(sizeof(TerrainMaterialUniforms) == 144, "TerrainMaterialUniforms layout drift");
+static_assert(sizeof(TerrainMaterialUniforms) == 160, "TerrainMaterialUniforms layout drift");
 
 /// Textures for one terrain layer. A null slot binds the engine default for
 /// that map — shared white for albedo and metal/rough, flat blue for normal —

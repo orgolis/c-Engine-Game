@@ -88,6 +88,8 @@ int main() {
         tc->SetLayerRoughness(0, 0.15f);
         tc->SetLayerNormalScale(0, 2.50f);
         tc->SetTiling(0, 48.0f);
+        tc->SetTriplanar(true);
+        tc->SetTriplanarSharpness(9.5f);
         tc->SetLayerMetallic(2, 0.30f);
         tc->SetLayerRoughness(2, 0.60f);
 
@@ -125,6 +127,9 @@ int main() {
         auto tc = ground->GetComponent<scene::TerrainComponent>();
         check(tc != nullptr, "the terrain entity round-trips");
         if (tc) {
+            check(tc->GetTriplanar(), "triplanar survives the round trip");
+            check(std::fabs(tc->GetTriplanarSharpness() - 9.5f) < 1e-3f,
+                  "and its blend sharpness with it");
             check(std::fabs(tc->GetLayerMetallic(0)    - 0.80f) < 1e-3f, "layer 0 metallic survives");
             check(std::fabs(tc->GetLayerRoughness(0)   - 0.15f) < 1e-3f, "layer 0 roughness survives");
             check(std::fabs(tc->GetLayerNormalScale(0) - 2.50f) < 1e-3f, "layer 0 normal scale survives");

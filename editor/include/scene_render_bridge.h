@@ -1066,6 +1066,13 @@ public:
         TerrainMaterialUniforms params{};
         params.tiling = glm::vec4(tc->GetTiling(0), tc->GetTiling(1),
                                   tc->GetTiling(2), tc->GetTiling(3));
+        // The world size travels with the toggle because tiling is authored as
+        // "repeats across the terrain" while triplanar needs repeats per world
+        // unit. Deriving one from the other in the shader keeps a single set of
+        // authored numbers; a second set would drift.
+        params.triplanar = glm::vec4(tc->GetTriplanar() ? 1.0f : 0.0f,
+                                     tc->GetTriplanarSharpness(),
+                                     tc->GetSize(), 0.0f);
         for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
             params.tint[i] = descs[i].base_color;
             params.mrno[i] = glm::vec4(descs[i].metallic, descs[i].roughness,

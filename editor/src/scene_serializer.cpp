@@ -332,6 +332,9 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
                     file << "TERRAIN_LAYERROUGH"  << i << "=" << tc->GetLayerRoughness(i)   << "\n";
                     file << "TERRAIN_LAYERNSCALE" << i << "=" << tc->GetLayerNormalScale(i) << "\n";
                 }
+                file << "TERRAIN_TRIPLANAR=" << (tc->GetTriplanar() ? 1 : 0) << "\n";
+                file << "TERRAIN_TRISHARP=" << tc->GetTriplanarSharpness() << "\n";
+
                 const std::string sf = "terrain_" + std::to_string(entity->GetId()) + ".splat";
                 std::ofstream sb(scene_dir + sf, std::ios::binary);
                 if (sb) {
@@ -524,6 +527,8 @@ struct ParsedEntity {
     float       terrain_layer_metal[schizo::scene::kTerrainLayers]  = {0.0f, 0.0f, 0.0f, 0.0f};
     float       terrain_layer_rough[schizo::scene::kTerrainLayers]  = {0.95f, 0.95f, 0.95f, 0.95f};
     float       terrain_layer_nscale[schizo::scene::kTerrainLayers] = {1.0f, 1.0f, 1.0f, 1.0f};
+    bool        terrain_triplanar = false;
+    float       terrain_tri_sharp = 4.0f;
     std::string terrain_splat_file;
     std::string terrain_holes_file;
     bool        terrain_water          = false;
@@ -767,6 +772,8 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
         if (starts_with(line, lk.c_str(), v)) { p.terrain_layer[i]  = v; return; }
         if (starts_with(line, tk.c_str(), v)) { p.terrain_tiling[i] = std::stof(v); return; }
     }
+    if (starts_with(line, "TERRAIN_TRIPLANAR", v))     { p.terrain_triplanar = (v == "1"); return; }
+    if (starts_with(line, "TERRAIN_TRISHARP", v))      { p.terrain_tri_sharp = std::stof(v); return; }
     if (starts_with(line, "TERRAIN_SPLAT", v))        { p.terrain_splat_file = v; return; }
     if (starts_with(line, "TERRAIN_HOLES", v))        { p.terrain_holes_file = v; return; }
     if (starts_with(line, "TERRAIN_WATER_DEEP", v))    { std::sscanf(v.c_str(), "%f,%f,%f", &p.terrain_water_deep.r, &p.terrain_water_deep.g, &p.terrain_water_deep.b); return; }
@@ -959,6 +966,8 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
                 }
             }
             // Splat layers + tiling + the painted splatmap.
+            tc->SetTriplanar(p.terrain_triplanar);
+            tc->SetTriplanarSharpness(p.terrain_tri_sharp);
             for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
                 tc->SetLayerPath(i, p.terrain_layer[i]);
                 tc->SetLayerMaterial(i, p.terrain_layer_mat[i]);

@@ -2956,6 +2956,37 @@ void ShowInspector(EditorState& editor_state) {
                 ImGui::SliderFloat("Paint Strength##terrain", &editor_state.terrain_paint_strength, 0.01f, 1.0f);
                 ImGui::SliderFloat("Paint Radius##terrain",   &editor_state.terrain_brush_radius,   0.5f, 50.0f);
 
+                // Triplanar. Sits above the per-layer list because it is a
+                // property of the terrain surface, not of any one layer.
+                {
+                    bool tri = terrain_comp->GetTriplanar();
+                    if (ImGui::Checkbox("Triplanar projection##terr", &tri)) {
+                        terrain_comp->SetTriplanar(tri);
+                        editor_state.editor_scene->MarkModified();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::BeginTooltip();
+                        ImGui::TextUnformatted("A heightfield is textured from directly above, so the");
+                        ImGui::TextUnformatted("steeper a slope the more its texture is stretched -");
+                        ImGui::TextUnformatted("cliffs become smears. This samples down all three");
+                        ImGui::TextUnformatted("world axes and blends by the normal.");
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Costs three texture fetches where the blend is active.");
+                        ImGui::EndTooltip();
+                    }
+                    if (tri) {
+                        float sh = terrain_comp->GetTriplanarSharpness();
+                        ImGui::SetNextItemWidth(-70.0f);
+                        if (ImGui::SliderFloat("##trisharp", &sh, 1.0f, 16.0f, "%.1f")) {
+                            terrain_comp->SetTriplanarSharpness(sh);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("blend sharpness");
+                    }
+                    ImGui::Separator();
+                }
+
                 // Per-layer surface + tiling.
                 //
                 // Two ways to give a layer a surface, and the panel says which
