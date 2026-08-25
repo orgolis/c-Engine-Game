@@ -10,23 +10,29 @@ set -e
 GV="${GLSLANG:-/c/VulkanSDK/1.4.357.0/Bin/glslangValidator.exe}"
 cd "$(dirname "$0")"
 
-# gbuffer_scene has NO .vert source in this repo -- only its compiled words,
-# inside gbuffer_scene_spirv.h. 607c5d9 ("extract inline GLSL to files") missed
-# it, so that vertex shader cannot be rebuilt from anything. Its FRAGMENT array
-# is therefore replaced in place and the vertex array left untouched: rewriting
-# the whole header would delete a shader nobody can regenerate.
-"$GV" --target-env vulkan1.2 -S frag -o gbuffer_scene.frag.spv gbuffer_scene.frag
-python replace_spv_array.py ../engine/renderer/gpu/vulkan/gbuffer_scene_spirv.h \
-                            kGBufferSceneFragSpv gbuffer_scene.frag.spv
-
-for s in transparent_pass shadow_caster; do
+# gbuffer_scene.vert was MISSING from the repo until 2026-08-25 -- 607c5d9
+# ("extract inline GLSL to files") left it behind, so only its compiled words
+# survived inside gbuffer_scene_spirv.h and the shader could not be rebuilt at
+# all. It was recovered by disassembling that array with spirv-cross; the
+# restored source compiles to an identical interface -- same locations, same
+# entry point, same push-constant offsets, checked against the shipped SPIR-V.
+#
+# So all three are ordinary vert/frag pairs again, and replace_spv_array.py is
+# not needed here any more. That script stays in the tree because the same
+# rescue would work for any other header that loses its source.
+for s in gbuffer_scene transparent_pass shadow_caster; do
     "$GV" --target-env vulkan1.2 -S vert -o "$s.vert.spv" "$s.vert"
     "$GV" --target-env vulkan1.2 -S frag -o "$s.frag.spv" "$s.frag"
 done
 
+python spv_to_header.py gbuffer_scene.vert.spv    kGBufferSceneVertSpv \
+                        gbuffer_scene.frag.spv    kGBufferSceneFragSpv \
+                        ../engine/renderer/gpu/vulkan/gbuffer_scene_spirv.h
+
 python spv_to_header.py transparent_pass.vert.spv kTransparentVertSpv \
                         transparent_pass.frag.spv kTransparentFragSpv \
                         ../engine/renderer/gpu/vulkan/transparent_pass_spirv.h
+
 python spv_to_header.py shadow_caster.vert.spv    kShadowCasterVertSpv \
                         shadow_caster.frag.spv    kShadowCasterFragSpv \
                         ../engine/renderer/gpu/vulkan/shadow_caster_spirv.h
