@@ -50,6 +50,7 @@ public:
     static constexpr const char* kPayloadScript  = "SCRIPT_ASSET";
     static constexpr const char* kPayloadScene   = "SCENE_ASSET";
     static constexpr const char* kPayloadMaterial = "MATERIAL_ASSET";
+    static constexpr const char* kPayloadPrefab   = "PREFAB_ASSET";
     static constexpr const char* kPayloadOther   = "ASSET_ITEM";
 
     AssetBrowserPanel();
@@ -84,6 +85,13 @@ public:
     /// can show the asset. Fires on the change only, never every frame -- the
     /// receiver reads the file, which is not something to do at frame rate.
     std::function<void(const AssetEntry&)> on_select_asset;
+
+    /// Invoked when a scene-hierarchy entity is dropped onto the browser, to
+    /// save it as a prefab. The panel supplies the DESTINATION FOLDER and a
+    /// unique filename; the host resolves the id and writes the file, because
+    /// the browser knows nothing about scenes and should not start now.
+    /// Returns the name written, or empty on failure.
+    std::function<std::string(uint32_t entity_id, const std::string& dest_dir)> on_drop_entity;
 
 private:
     // ---- data ----
@@ -136,6 +144,7 @@ private:
     void render_entries();
     void render_context_menu(const AssetEntry& e);
     void render_background_menu();               // right-click on empty space
+    void render_entity_drop_target();            // hierarchy entity -> .prefab
     void render_edit_items(const AssetEntry* e); // cut/copy/paste/... shared by both menus
     void handle_shortcuts();                     // F2, Ctrl+C/X/V/D, Del
     void begin_rename(const AssetEntry& e);

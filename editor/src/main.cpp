@@ -87,6 +87,7 @@
 
 // Editor / scene headers
 #include "editor_scene.h"
+#include "scene_serializer.h"   // prefabs: SavePrefab / LoadPrefab
 #include "project.h"            // modular project model (manifest + features)
 #include "project_launcher.h"  // first-run project launcher UI
 #include "project_paths.h"     // per-project content sandbox (working-dir scoping)
@@ -2174,6 +2175,24 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                         }
                     }
                     
+                    // A prefab dropped ON an entity instantiates under it.
+                    if (const ImGuiPayload* pf = ImGui::AcceptDragDropPayload(
+                            schizo::editor::AssetBrowserPanel::kPayloadPrefab)) {
+                        const char* rel = static_cast<const char*>(pf->Data);
+                        if (rel && rel[0]) {
+                            auto spawned = schizo::editor::SceneSerializer::LoadPrefab(rel, scene);
+                            if (spawned) {
+                                spawned->SetParent(entity);
+                                editor_state.selected_entity_id = spawned->GetId();
+                                editor_state.editor_scene->MarkModified();
+                                spdlog::info("[Prefab] instantiated '{}' under '{}'",
+                                             rel, entity->GetName());
+                            } else {
+                                spdlog::warn("[Prefab] could not instantiate '{}'", rel);
+                            }
+                        }
+                    }
+
                     // Also accept mesh assets — import into the project + assign.
                     if (const ImGuiPayload* mesh_payload = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
                         const char* dropped = static_cast<const char*>(mesh_payload->Data);
@@ -2269,6 +2288,29 @@ void ShowSceneHierarchy(EditorState& editor_state) {
             }
         }
         
+        // A prefab dropped on the LIST rather than on an entity instantiates at
+        // the scene root. Without this the only way to place one is onto an
+        // existing entity, which silently makes every prefab a child of
+        // something -- and an empty scene would have nowhere to drop at all.
+        if (ImGui::BeginDragDropTargetCustom(ImGui::GetCurrentWindow()->InnerRect,
+                                             ImGui::GetID("##hier_root_drop"))) {
+            if (const ImGuiPayload* pf = ImGui::AcceptDragDropPayload(
+                    schizo::editor::AssetBrowserPanel::kPayloadPrefab)) {
+                const char* rel = static_cast<const char*>(pf->Data);
+                if (rel && rel[0]) {
+                    auto spawned = schizo::editor::SceneSerializer::LoadPrefab(rel, scene);
+                    if (spawned) {
+                        editor_state.selected_entity_id = spawned->GetId();
+                        editor_state.editor_scene->MarkModified();
+                        spdlog::info("[Prefab] instantiated '{}' at the scene root", rel);
+                    } else {
+                        spdlog::warn("[Prefab] could not instantiate '{}'", rel);
+                    }
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+
         ImGui::EndChild();
         ImGui::End();
     }
@@ -6427,6 +6469,38 @@ int main(int argc, char** argv) {
                 else
                     spdlog::warn("[AssetBrowser] failed to load scene '{}'", p);
             };
+        // Dragging a hierarchy entity onto the browser saves it, and every
+        // descendant, as a .prefab. The browser hands over the destination
+        // folder and knows nothing else about it: resolving an id to an entity
+        // is the scene's business, not a file panel's.
+        editor_state.asset_browser->on_drop_entity =
+            [&editor_state](uint32_t entity_id, const std::string& dest_dir) -> std::string {
+                if (!editor_state.editor_scene) return {};
+                auto scn = editor_state.editor_scene->GetScene();
+                if (!scn) return {};
+                auto e = scn->GetEntityById(entity_id);
+                if (!e) return {};
+
+                // Sanitise, because an entity name is free text and reaches a
+                // filename here: "Light #2" and "a/b" are both legal names and
+                // neither is a legal file.
+                std::string stem;
+                for (char c : e->GetName()) {
+                    const bool ok = std::isalnum(static_cast<unsigned char>(c)) ||
+                                    c == '_' || c == '-' || c == ' ';
+                    stem += ok ? c : '_';
+                }
+                while (!stem.empty() && (stem.back() == ' ' || stem.back() == '.')) stem.pop_back();
+                if (stem.empty()) stem = "Prefab";
+
+                const std::filesystem::path dst =
+                    schizo::editor::assetops::unique_sibling(
+                        std::filesystem::path(dest_dir) / (stem + ".prefab"));
+                if (dst.empty()) return {};
+                if (!schizo::editor::SceneSerializer::SavePrefab(dst.string(), e)) return {};
+                return dst.filename().string();
+            };
+
         // Clicking an asset shows it in the Inspector, and drops the entity
         // selection so the two cannot both claim the panel.
         editor_state.asset_browser->on_select_asset =

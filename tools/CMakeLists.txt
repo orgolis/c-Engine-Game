@@ -760,3 +760,19 @@ target_compile_features(assetops_check PRIVATE cxx_std_20)
 if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(assetops_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
+
+# prefab_check: a prefab gives back the SUBTREE that was saved. The request was
+# "save it with all properties and children", and both halves fail quietly: a
+# writer that captures the entity but not its components produces a file that
+# loads, names itself right, and is an empty box; a writer that keeps the ROOT's
+# PARENT_ID -- the id of whatever it was parented to in the scene it came from
+# -- produces a prefab that looks correct until the day that id exists in the
+# target scene, and then parents itself to a stranger. Also asserts fresh ids,
+# because reusing the saved ones means two copies of one prefab collide.
+add_executable(prefab_check prefab_check/main.cpp ../editor/src/scene_serializer.cpp)
+target_include_directories(prefab_check PRIVATE ../editor/include ../engine/scene/include)
+target_link_libraries(prefab_check PRIVATE scene gws_reflection gws_ecs gws_logging glm)
+target_compile_features(prefab_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(prefab_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()

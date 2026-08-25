@@ -7,6 +7,7 @@
 #include "scene.h"
 
 #include <imgui.h>
+#include <imgui_internal.h>   // BeginDragDropTargetCustom: a pane-wide drop target
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cctype>
@@ -59,6 +60,7 @@ const char* payload_for(const char* type) {
     if (!std::strcmp(type, "Script"))  return AssetBrowserPanel::kPayloadScript;
     if (!std::strcmp(type, "Scene"))   return AssetBrowserPanel::kPayloadScene;
     if (!std::strcmp(type, "Material")) return AssetBrowserPanel::kPayloadMaterial;
+    if (!std::strcmp(type, "Prefab"))  return AssetBrowserPanel::kPayloadPrefab;
     return AssetBrowserPanel::kPayloadOther;
 }
 
@@ -155,6 +157,7 @@ const char* AssetBrowserPanel::classify(const std::string& e) {
     if (e == ".py" || e == ".cpp" || e == ".cc" || e == ".cs")       return "Script";
     if (e == ".scene")                                               return "Scene";
     if (e == ".mat")                                                 return "Material";
+    if (e == ".prefab")                                              return "Prefab";
     if (e == ".pak" || e == ".vt" || e == ".r32" || e == ".splat")   return "Cooked";
     if (e == ".frag" || e == ".vert" || e == ".comp" || e == ".spv" ||
         e == ".glsl")                                                return "Shader";
@@ -354,6 +357,7 @@ void AssetBrowserPanel::Render(const std::shared_ptr<schizo::scene::Scene>& /*sc
                 ImGui::TableSetColumnIndex(1);
                 ImGui::BeginChild("##ab_files", ImVec2(0, 0));
                 render_entries();
+                render_entity_drop_target();
                 render_background_menu();
                 ImGui::EndChild();
                 ImGui::EndTable();
@@ -361,6 +365,7 @@ void AssetBrowserPanel::Render(const std::shared_ptr<schizo::scene::Scene>& /*sc
         } else {
             ImGui::BeginChild("##ab_files", ImVec2(0, -status_h));
             render_entries();
+            render_entity_drop_target();
             render_background_menu();
             ImGui::EndChild();
         }
@@ -796,6 +801,25 @@ void AssetBrowserPanel::render_context_menu(const AssetEntry& e) {
 
 // Right-click on empty space. Explorer offers Paste and New here; without it,
 // a copied file has nowhere to be pasted except onto another file.
+// Dropping a scene entity here saves it as a prefab in the folder being shown.
+// The target covers the WHOLE file pane rather than a single row, because the
+// gesture is "put this in this folder", not "put this on that file".
+void AssetBrowserPanel::render_entity_drop_target() {
+    if (!ImGui::BeginDragDropTargetCustom(ImGui::GetCurrentWindow()->InnerRect,
+                                          ImGui::GetID("##ab_entity_drop")))
+        return;
+    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("ENTITY_NODE")) {
+        if (pl->DataSize == sizeof(uint32_t) && on_drop_entity) {
+            uint32_t id = 0;
+            std::memcpy(&id, pl->Data, sizeof id);
+            const std::string written = on_drop_entity(id, current_.string());
+            if (written.empty()) report(assetops::Error::Filesystem, "");
+            else                 report(assetops::Error::None, "Saved " + written);
+        }
+    }
+    ImGui::EndDragDropTarget();
+}
+
 void AssetBrowserPanel::render_background_menu() {
     if (ImGui::BeginPopupContextWindow("##ab_bg",
                                        ImGuiPopupFlags_MouseButtonRight |

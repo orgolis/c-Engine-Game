@@ -230,6 +230,35 @@ gets ignored.
 > depends on), more than 4 terrain layers (the first real consumer of bindless), Foundation B (shading-model IDs
 > in `outPosition.w`) and the Tier 3 BRDFs it unlocks, and coloured transmission through transparent objects.
 
+> **The asset-browser strand (v0.7.13-v0.7.14).** The other four fifths of the same user request. The browser
+> could look at files and open them; it could not act on them, clicking one showed nothing anywhere, and there
+> was no way to save a configured entity for reuse.
+>
+> **v0.7.13** gave it Explorer's verbs — rename, duplicate, cut/copy/paste, Properties — on the item
+> menu, on a right-click over empty space, and on the keyboard. The operations live in `asset_file_ops.h`
+> with no ImGui in them, because every one can destroy someone's work and none of it is testable through a UI.
+> **Nothing is ever overwritten**: where Explorer raises a replace/skip dialog this uniquifies instead, since a
+> surprising name is recoverable and a replaced file is not. Names are checked against *Windows* rules before
+> reaching the filesystem, because those failures are silent — `CON.txt` is a reserved device name that
+> fails to create without erroring, and a trailing space is trimmed so the rename appears to do nothing.
+>
+> **v0.7.14** made prefabs work in both directions, and the design decision worth keeping is that **a prefab is
+> a scene file holding one subtree**. The scene format already writes every property of every entity and already
+> carries `PARENT_ID` resolved in a second pass; inventing a second format would have meant a second writer to
+> keep in step, and the failure mode of two writers is that a new component field reaches one and not the other.
+> So `SaveScene`'s entity-block writer was *extracted* rather than copied, and prefabs pass it a set of the ids
+> being written so the root's `PARENT_ID` is suppressed.
+>
+> That suppression is the subtle one. Left in, the root names whatever it was parented to in the scene it came
+> from. That id resolves to nothing in a fresh scene, so the prefab lands at the root and **looks correct** —
+> until the day the id happens to exist in the target scene, and the prefab silently parents itself to a
+> stranger. Mutation-testing confirmed it: removing the guard failed exactly *one* assertion, and the
+> "lands at the scene root" one still passed.
+>
+> **Still open on this strand:** prefab *linking* — instances are baked copies, so editing the asset does not
+> update placed instances. That needs an override system, which is a project of its own; v1 is deliberately
+> what Unity shipped first.
+
 Two items were **retired by measurement rather than implemented** (2.2, 2.3). The engine has always shipped on
 precompiled SPIR-V, so the PSO-stutter work — inherited from Unreal's well-documented problem — was addressing
 something this engine does not have.

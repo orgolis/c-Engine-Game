@@ -17,6 +17,7 @@
 #include "reflected_text_io.h"         // KEY=value driven by reflection
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <unordered_set>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -48,6 +49,343 @@ static std::string dir_of(const std::string& path) {
 // Save
 // ============================================================================
 
+// Write one entity as an [ENTITY_n] block. Extracted from SaveScene so that
+// PREFABS use the identical writer -- a prefab is a scene file holding one
+// subtree, and two writers would drift the moment a component gained a field.
+//
+// `subtree_ids`, when given, is the set of ids being written. PARENT_ID is
+// emitted only for a parent INSIDE that set, which is what detaches a prefab's
+// root from whatever it was parented to in the scene it came from. Passing
+// nullptr writes the parent unconditionally, which is the scene-save case.
+void write_entity_block(std::ofstream& file,
+                       const std::shared_ptr<schizo::scene::Entity>& entity,
+                       size_t i,
+                       const std::string& scene_dir,
+                       const std::unordered_set<uint32_t>* subtree_ids) {
+    file << "[ENTITY_" << i << "]\n";
+    file << "NAME=" << entity->GetName() << "\n";
+    file << "ID=" << entity->GetId() << "\n";
+    file << "ACTIVE=" << (entity->IsActive() ? "1" : "0") << "\n";
+    file << "TAG=" << entity->GetTag() << "\n";
+
+    if (auto parent = entity->GetParent()) {
+        if (!subtree_ids || subtree_ids->count(parent->GetId()))
+            file << "PARENT_ID=" << parent->GetId() << "\n";
+    }
+
+    if (auto t = entity->GetTransform()) {
+        auto pos   = t->GetLocalPosition();
+        auto rot   = t->GetLocalRotation();
+        auto scale = t->GetLocalScale();
+        file << "TRANSFORM_POS="   << pos.x   << "," << pos.y   << "," << pos.z   << "\n";
+        file << "TRANSFORM_ROT="   << rot.x   << "," << rot.y   << "," << rot.z   << "," << rot.w << "\n";
+        file << "TRANSFORM_SCALE=" << scale.x << "," << scale.y << "," << scale.z << "\n";
+    }
+
+    // Built-in MeshComponent (always present on Entity; only emit when
+    // a mesh path is actually assigned to keep saves terse).
+    if (auto mc = entity->GetMeshComponent()) {
+        if (!mc->mesh_path.empty()) {
+            file << "MESH_PATH="       << mc->mesh_path << "\n";
+            file << "MESH_USE_ASSET="  << (mc->use_asset_mesh ? "1" : "0") << "\n";
+        }
+    }
+
+    // Rigged character (3.8). Written only when set, like MESH_PATH, so
+    // a scene without one round-trips byte-identical.
+    if (auto smc = entity->GetSkinnedMeshComponent()) {
+        if (smc->active()) {
+            file << "SKINNED_PATH="  << smc->gltf_path  << "\n";
+            file << "SKINNED_CLIP="  << smc->clip_index << "\n";
+            file << "SKINNED_PLAY="  << (smc->playing ? "1" : "0") << "\n";
+            file << "SKINNED_SPEED=" << smc->speed      << "\n";
+        }
+    }
+
+    // Particle emitters (3.9) and NPC agents (3.5), written through
+    // reflection. Neither was saved AT ALL before this: configure an
+    // emitter or an agent, save, reopen, and the settings were silently
+    // gone. That is exactly the failure the reflection work was meant to
+    // prevent, and it happened because the reflection was never
+    // connected to the serializer.
+    //
+    // Written only when enabled, so a scene that uses neither
+    // round-trips byte-identical and existing files do not churn.
+    if (auto* pec = entity->GetParticleEmitterComponent(); pec && pec->enabled) {
+        schizo::scene::write_reflected(
+            file, "EMITTER", pec,
+            *gws::reflect::reflect<schizo::scene::ParticleEmitterComponent>());
+        // vfx_path is a std::string, so offset reflection cannot carry
+        // it either -- same limit, same hand-written line. An emitter
+        // that forgot which effect it plays falls back to its legacy
+        // fields and looks like the wrong effect rather than none.
+        if (!pec->vfx_path.empty())
+            file << "EMITTER_VFX_PATH=" << pec->vfx_path << "\n";
+    }
+    if (auto* nac = entity->GetNpcAgentComponent(); nac && nac->enabled) {
+        schizo::scene::write_reflected(
+            file, "NPCAGENT", nac,
+            *gws::reflect::reflect<schizo::scene::NpcAgentComponent>());
+        // target_name is a std::string, so offset reflection cannot
+        // carry it -- an agent that forgot who it was hunting would
+        // simply stand still, with nothing to explain why.
+        file << "NPCAGENT_TARGET=" << nac->target_name << "\n";
+    }
+
+    // TransformComponent (separate Component-derived wrapper users can
+    // explicitly Add; presence-only marker, no extra data).
+    if (entity->GetComponent<schizo::scene::TransformComponent>()) {
+        file << "HAS_TRANSFORM_COMP=1\n";
+    }
+
+    // MeshRendererComponent — primitive type + color, used by the
+    // editor's "+ Add Entity → Cube/Sphere/..." path.
+    if (auto mr = entity->GetComponent<schizo::scene::MeshRendererComponent>()) {
+        const auto& col = mr->GetColor();
+        file << "HAS_MESH_RENDERER=1\n";
+        file << "MESH_RENDERER_TYPE="  << static_cast<int>(mr->GetMeshType()) << "\n";
+        file << "MESH_RENDERER_COLOR=" << col.r << "," << col.g << "," << col.b << "," << col.a << "\n";
+        file << "MESH_RENDERER_ALPHA_MODE="   << static_cast<int>(mr->GetAlphaMode()) << "\n";
+        // Preserve the old key for one cycle so scenes saved before
+        // the AlphaMode enum still load — handled in the parser too.
+        file << "MESH_RENDERER_TRANSPARENT=" << (mr->IsTransparent() ? "1" : "0") << "\n";
+        file << "MESH_RENDERER_ALPHA_CUTOFF=" << mr->GetAlphaCutoff() << "\n";
+        file << "MESH_RENDERER_METALLIC="    << mr->GetMetallic()    << "\n";
+        file << "MESH_RENDERER_ROUGHNESS="   << mr->GetRoughness()   << "\n";
+        file << "MESH_RENDERER_OCCLUSION="   << mr->GetOcclusion()   << "\n";
+        auto e = mr->GetEmissive();
+        file << "MESH_RENDERER_EMISSIVE="    << e.r << "," << e.g << "," << e.b << "\n";
+        if (mr->HasAlbedoTexture())
+            file << "MESH_RENDERER_ALBEDO_TEX=" << mr->GetAlbedoTexturePath() << "\n";
+        // A .mat reference. The inline fields above are still written
+        // even when one is assigned: they cost a line each, and they are
+        // what the entity falls back to if the material asset is later
+        // deleted or moved — losing the object's look entirely because a
+        // file went missing would be a much worse outcome than keeping a
+        // stale colour.
+        if (mr->HasMaterial())
+            file << "MESH_RENDERER_MATERIAL=" << mr->GetMaterialPath() << "\n";
+        if (mr->GetOverrideAssetMaterial())
+            file << "MESH_RENDERER_MATERIAL_OVERRIDE=1\n";
+        // Material-instance overrides. Written only when something is
+        // actually overridden, so scenes that use none do not churn.
+        if (mr->GetMaterialOverrides() != 0u) {
+            file << "MESH_RENDERER_MATOVR=" << mr->GetMaterialOverrides() << "\n";
+            file << "MESH_RENDERER_MATOVR_UVS=" << mr->GetUvScale().x  << ","
+                 << mr->GetUvScale().y  << "\n";
+            file << "MESH_RENDERER_MATOVR_UVO=" << mr->GetUvOffset().x << ","
+                 << mr->GetUvOffset().y << "\n";
+        }
+    }
+
+    // LightComponent — full property emission (previous version emitted
+    // these keys but the load path ignored them).
+    if (auto light_comp = entity->GetComponent<schizo::scene::LightComponent>()) {
+        file << "LIGHT_TYPE="        << static_cast<int>(light_comp->GetType()) << "\n";
+        auto color = light_comp->GetColor();
+        file << "LIGHT_COLOR="       << color.r << "," << color.g << "," << color.b << "\n";
+        file << "LIGHT_INTENSITY="   << light_comp->GetIntensity() << "\n";
+        file << "LIGHT_TEMPERATURE=" << light_comp->GetTemperature() << "\n";
+
+        if (light_comp->GetType() != schizo::scene::LightType::Directional) {
+            file << "LIGHT_RANGE=" << light_comp->GetRange() << "\n";
+        }
+
+        if (light_comp->GetType() == schizo::scene::LightType::Spot) {
+            auto angles = light_comp->GetSpotAngles();
+            file << "LIGHT_SPOT_INNER="   << angles.x << "\n";
+            file << "LIGHT_SPOT_OUTER="   << angles.y << "\n";
+            file << "LIGHT_SPOT_FALLOFF=" << light_comp->GetSpotFalloff() << "\n";
+        }
+
+        file << "LIGHT_CAST_SHADOW="    << (light_comp->GetCastShadow() ? "1" : "0") << "\n";
+        file << "LIGHT_SHADOW_QUALITY=" << static_cast<int>(light_comp->GetShadowQuality()) << "\n";
+        auto shadow_bias = light_comp->GetShadowBias();
+        file << "LIGHT_SHADOW_BIAS="    << shadow_bias.x << "," << shadow_bias.y << "\n";
+        file << "LIGHT_SHADOW_FILTER="  << light_comp->GetShadowFilterRadius() << "\n";
+        auto shadow_planes = light_comp->GetShadowPlanes();
+        file << "LIGHT_SHADOW_PLANES="  << shadow_planes.x << "," << shadow_planes.y << "\n";
+
+        if (light_comp->GetType() == schizo::scene::LightType::Directional) {
+            file << "LIGHT_CASCADE_COUNT=" << light_comp->GetCascadeCount() << "\n";
+        }
+
+        file << "LIGHT_VOLUMETRIC=" << light_comp->GetVolumetricIntensity() << "\n";
+        if (light_comp->GetType() == schizo::scene::LightType::Area) {
+            auto sz = light_comp->GetAreaSize();
+            file << "LIGHT_AREA_SIZE=" << sz.x << "," << sz.y << "\n";
+            file << "LIGHT_TWO_SIDED=" << (light_comp->IsTwoSided() ? "1" : "0") << "\n";
+        }
+        if (!light_comp->GetCookiePath().empty())
+            file << "LIGHT_COOKIE=" << light_comp->GetCookiePath() << "\n";
+    }
+
+    // CameraComponent — intrinsic camera attached to the entity.
+    if (auto cam = entity->GetComponent<schizo::scene::CameraComponent>()) {
+        file << "HAS_CAMERA=1\n";
+        file << "CAMERA_PROJECTION=" << static_cast<int>(cam->GetProjection()) << "\n";
+        file << "CAMERA_FOV="        << cam->GetFOV()                << "\n";
+        file << "CAMERA_NEAR="       << cam->GetNearPlane()          << "\n";
+        file << "CAMERA_FAR="        << cam->GetFarPlane()           << "\n";
+        file << "CAMERA_ORTHO_SIZE=" << cam->GetOrthographicSize()   << "\n";
+        const auto& cc = cam->GetClearColor();
+        file << "CAMERA_CLEAR_COLOR=" << cc.r << "," << cc.g << "," << cc.b << "," << cc.a << "\n";
+    }
+
+    // ColliderComponent — authoring data for Phase 2 physics. Only
+    // fields relevant to the chosen shape are written; the loader
+    // ignores irrelevant ones for that shape.
+    if (auto col = entity->GetComponent<schizo::scene::ColliderComponent>()) {
+        file << "HAS_COLLIDER=1\n";
+        file << "COLLIDER_SHAPE=" << static_cast<int>(col->GetShape()) << "\n";
+        auto off = col->GetOffset();
+        file << "COLLIDER_OFFSET=" << off.x << "," << off.y << "," << off.z << "\n";
+        file << "COLLIDER_DYNAMIC=" << (col->IsDynamic() ? "1" : "0") << "\n";
+        file << "COLLIDER_MASS=" << col->GetMass() << "\n";
+        file << "COLLIDER_TRIGGER=" << (col->IsTrigger() ? "1" : "0") << "\n";
+        file << "COLLIDER_LAYER=" << static_cast<int>(col->GetLayer()) << "\n";
+        file << "COLLIDER_MASK=" << col->GetMask() << "\n";
+
+        switch (col->GetShape()) {
+            case schizo::scene::ColliderShape::Box: {
+                auto he = col->GetHalfExtents();
+                file << "COLLIDER_HALF_EXTENTS=" << he.x << "," << he.y << "," << he.z << "\n";
+                break;
+            }
+            case schizo::scene::ColliderShape::Sphere:
+                file << "COLLIDER_RADIUS=" << col->GetRadius() << "\n";
+                break;
+            case schizo::scene::ColliderShape::Capsule:
+                file << "COLLIDER_RADIUS=" << col->GetRadius() << "\n";
+                file << "COLLIDER_HEIGHT=" << col->GetHeight() << "\n";
+                break;
+            case schizo::scene::ColliderShape::Plane: {
+                auto n = col->GetPlaneNormal();
+                file << "COLLIDER_PLANE_NORMAL=" << n.x << "," << n.y << "," << n.z << "\n";
+                break;
+            }
+            default: break;
+        }
+    }
+
+    // Audio Source
+    if (auto as = entity->GetComponent<schizo::scene::AudioSourceComponent>()) {
+        file << "HAS_AUDIO_SRC=1\n";
+        file << "AUDIO_SRC_CLIP="          << as->GetClipPath() << "\n";
+        file << "AUDIO_SRC_VOLUME="        << as->GetVolume() << "\n";
+        file << "AUDIO_SRC_PITCH="         << as->GetPitch() << "\n";
+        file << "AUDIO_SRC_RADIUS="        << as->GetRadius() << "\n";
+        file << "AUDIO_SRC_LOOP="          << (as->IsLooping() ? "1" : "0") << "\n";
+        file << "AUDIO_SRC_SPATIAL="       << (as->IsSpatial() ? "1" : "0") << "\n";
+        file << "AUDIO_SRC_PLAY_ON_START=" << (as->PlayOnStart() ? "1" : "0") << "\n";
+    }
+
+    // Audio Listener
+    if (auto al = entity->GetComponent<schizo::scene::AudioListenerComponent>()) {
+        file << "HAS_AUDIO_LISTENER=1\n";
+        file << "AUDIO_LISTENER_GAIN="   << al->GetMasterGain() << "\n";
+        file << "AUDIO_LISTENER_ACTIVE=" << (al->IsActive() ? "1" : "0") << "\n";
+    }
+
+    // Terrain — params inline + the heightmap in a sidecar binary
+    // (terrain_<id>.r32) next to the .scene file.
+    if (auto tc = entity->GetComponent<schizo::scene::TerrainComponent>()) {
+        file << "TERRAIN_RES="          << tc->GetResolution() << "\n";
+        file << "TERRAIN_SIZE="         << tc->GetSize() << "\n";
+        file << "TERRAIN_HEIGHT_SCALE=" << tc->GetHeightScale() << "\n";
+        const std::string hf = "terrain_" + std::to_string(entity->GetId()) + ".r32";
+        std::ofstream hb(scene_dir + hf, std::ios::binary);
+        if (hb) {
+            const auto& H = tc->Heights();
+            hb.write(reinterpret_cast<const char*>(H.data()),
+                     static_cast<std::streamsize>(H.size() * sizeof(float)));
+            file << "TERRAIN_HEIGHTS=" << hf << "\n";
+        }
+
+        // Splat painting (Phase C): per-layer texture paths + tiling
+        // inline, and the RGBA splatmap in a sidecar (terrain_<id>.splat:
+        // a small "res\n" header line then res*res*4 raw bytes).
+        for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
+            file << "TERRAIN_LAYER" << i << "=" << tc->GetLayerPath(i) << "\n";
+            file << "TERRAIN_TILING" << i << "=" << tc->GetTiling(i) << "\n";
+            // A layer's .mat, when it has one. The legacy albedo path
+            // above is still written: it is what the layer falls back to
+            // if the material is later deleted, and losing a terrain's
+            // whole look because one file went missing would be much
+            // worse than showing a stale texture.
+            if (tc->HasLayerMaterial(i))
+                file << "TERRAIN_LAYERMAT" << i << "=" << tc->GetLayerMaterial(i) << "\n";
+            // Per-layer surface for layers with no material asset.
+            file << "TERRAIN_LAYERMETAL"  << i << "=" << tc->GetLayerMetallic(i)    << "\n";
+            file << "TERRAIN_LAYERROUGH"  << i << "=" << tc->GetLayerRoughness(i)   << "\n";
+            file << "TERRAIN_LAYERNSCALE" << i << "=" << tc->GetLayerNormalScale(i) << "\n";
+        }
+        file << "TERRAIN_TRIPLANAR=" << (tc->GetTriplanar() ? 1 : 0) << "\n";
+        file << "TERRAIN_TRISHARP=" << tc->GetTriplanarSharpness() << "\n";
+
+        const std::string sf = "terrain_" + std::to_string(entity->GetId()) + ".splat";
+        std::ofstream sb(scene_dir + sf, std::ios::binary);
+        if (sb) {
+            const int sres = tc->SplatResolution();
+            sb << sres << "\n";
+            const auto& S = tc->Splat();
+            sb.write(reinterpret_cast<const char*>(S.data()),
+                     static_cast<std::streamsize>(S.size()));
+            file << "TERRAIN_SPLAT=" << sf << "\n";
+        }
+
+        // Holes (caves) — sidecar of res*res bytes, only when any set.
+        if (tc->AnyHoles()) {
+            const std::string hf2 = "terrain_" + std::to_string(entity->GetId()) + ".holes";
+            std::ofstream ob(scene_dir + hf2, std::ios::binary);
+            if (ob) {
+                const auto& H2 = tc->Holes();
+                ob.write(reinterpret_cast<const char*>(H2.data()),
+                         static_cast<std::streamsize>(H2.size()));
+                file << "TERRAIN_HOLES=" << hf2 << "\n";
+            }
+        }
+
+        // Integrated water.
+        if (tc->IsWaterEnabled()) {
+            const auto& wd = tc->GetWaterDeepColor();
+            const auto& ws = tc->GetWaterShallowColor();
+            file << "TERRAIN_WATER=" << (tc->IsWaterPhysical() ? 1 : 0)
+                 << "," << tc->GetWaterLevel() << "\n";
+            file << "TERRAIN_WATER_DEEP="    << wd.r << "," << wd.g << "," << wd.b << "\n";
+            file << "TERRAIN_WATER_SHALLOW=" << ws.r << "," << ws.g << "," << ws.b << "\n";
+            file << "TERRAIN_WATER_WAVES=" << tc->GetWaterWaveHeight() << ","
+                 << tc->GetWaterWaveSpeed() << "," << tc->GetWaterWaveScale() << "\n";
+            file << "TERRAIN_WATER_LOOK=" << tc->GetWaterClarity() << ","
+                 << tc->GetWaterReflectivity() << "\n";
+        }
+    }
+
+    // Script component (Stage 12).
+    if (auto sc = entity->GetComponent<schizo::scene::ScriptComponent>()) {
+        file << "SCRIPT_PATH="    << sc->GetScriptPath() << "\n";
+        file << "SCRIPT_ENABLED=" << (sc->IsEnabled() ? "1" : "0") << "\n";
+        for (const auto& [k, v] : sc->Params())
+            file << "SCRIPT_PARAM=" << k << "=" << v << "\n";
+    }
+
+    // Water component (terrain expansion).
+    if (auto wc = entity->GetComponent<schizo::scene::WaterComponent>()) {
+        file << "WATER_PHYSICAL=" << (wc->IsPhysical() ? "1" : "0") << "\n";
+        const auto& sz = wc->GetSize();
+        const auto& dc = wc->GetDeepColor();
+        const auto& sc2 = wc->GetShallowColor();
+        file << "WATER_SIZE="    << sz.x << "," << sz.y << "\n";
+        file << "WATER_DEEP="    << dc.r << "," << dc.g << "," << dc.b << "\n";
+        file << "WATER_SHALLOW=" << sc2.r << "," << sc2.g << "," << sc2.b << "\n";
+        file << "WATER_WAVES="   << wc->GetWaveHeight() << "," << wc->GetWaveSpeed()
+             << "," << wc->GetWaveScale() << "\n";
+        file << "WATER_LOOK="    << wc->GetClarity() << "," << wc->GetReflectivity() << "\n";
+    }
+
+    file << "\n";
+}
+
 bool SceneSerializer::SaveScene(const std::string& filepath,
                                 const std::shared_ptr<schizo::scene::Scene>& scene) {
     if (!scene) {
@@ -75,327 +413,7 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
             const auto& entity = entities[i];
             if (!entity) continue;
 
-            file << "[ENTITY_" << i << "]\n";
-            file << "NAME=" << entity->GetName() << "\n";
-            file << "ID=" << entity->GetId() << "\n";
-            file << "ACTIVE=" << (entity->IsActive() ? "1" : "0") << "\n";
-            file << "TAG=" << entity->GetTag() << "\n";
-
-            if (auto parent = entity->GetParent()) {
-                file << "PARENT_ID=" << parent->GetId() << "\n";
-            }
-
-            if (auto t = entity->GetTransform()) {
-                auto pos   = t->GetLocalPosition();
-                auto rot   = t->GetLocalRotation();
-                auto scale = t->GetLocalScale();
-                file << "TRANSFORM_POS="   << pos.x   << "," << pos.y   << "," << pos.z   << "\n";
-                file << "TRANSFORM_ROT="   << rot.x   << "," << rot.y   << "," << rot.z   << "," << rot.w << "\n";
-                file << "TRANSFORM_SCALE=" << scale.x << "," << scale.y << "," << scale.z << "\n";
-            }
-
-            // Built-in MeshComponent (always present on Entity; only emit when
-            // a mesh path is actually assigned to keep saves terse).
-            if (auto mc = entity->GetMeshComponent()) {
-                if (!mc->mesh_path.empty()) {
-                    file << "MESH_PATH="       << mc->mesh_path << "\n";
-                    file << "MESH_USE_ASSET="  << (mc->use_asset_mesh ? "1" : "0") << "\n";
-                }
-            }
-
-            // Rigged character (3.8). Written only when set, like MESH_PATH, so
-            // a scene without one round-trips byte-identical.
-            if (auto smc = entity->GetSkinnedMeshComponent()) {
-                if (smc->active()) {
-                    file << "SKINNED_PATH="  << smc->gltf_path  << "\n";
-                    file << "SKINNED_CLIP="  << smc->clip_index << "\n";
-                    file << "SKINNED_PLAY="  << (smc->playing ? "1" : "0") << "\n";
-                    file << "SKINNED_SPEED=" << smc->speed      << "\n";
-                }
-            }
-
-            // Particle emitters (3.9) and NPC agents (3.5), written through
-            // reflection. Neither was saved AT ALL before this: configure an
-            // emitter or an agent, save, reopen, and the settings were silently
-            // gone. That is exactly the failure the reflection work was meant to
-            // prevent, and it happened because the reflection was never
-            // connected to the serializer.
-            //
-            // Written only when enabled, so a scene that uses neither
-            // round-trips byte-identical and existing files do not churn.
-            if (auto* pec = entity->GetParticleEmitterComponent(); pec && pec->enabled) {
-                schizo::scene::write_reflected(
-                    file, "EMITTER", pec,
-                    *gws::reflect::reflect<schizo::scene::ParticleEmitterComponent>());
-                // vfx_path is a std::string, so offset reflection cannot carry
-                // it either -- same limit, same hand-written line. An emitter
-                // that forgot which effect it plays falls back to its legacy
-                // fields and looks like the wrong effect rather than none.
-                if (!pec->vfx_path.empty())
-                    file << "EMITTER_VFX_PATH=" << pec->vfx_path << "\n";
-            }
-            if (auto* nac = entity->GetNpcAgentComponent(); nac && nac->enabled) {
-                schizo::scene::write_reflected(
-                    file, "NPCAGENT", nac,
-                    *gws::reflect::reflect<schizo::scene::NpcAgentComponent>());
-                // target_name is a std::string, so offset reflection cannot
-                // carry it -- an agent that forgot who it was hunting would
-                // simply stand still, with nothing to explain why.
-                file << "NPCAGENT_TARGET=" << nac->target_name << "\n";
-            }
-
-            // TransformComponent (separate Component-derived wrapper users can
-            // explicitly Add; presence-only marker, no extra data).
-            if (entity->GetComponent<schizo::scene::TransformComponent>()) {
-                file << "HAS_TRANSFORM_COMP=1\n";
-            }
-
-            // MeshRendererComponent — primitive type + color, used by the
-            // editor's "+ Add Entity → Cube/Sphere/..." path.
-            if (auto mr = entity->GetComponent<schizo::scene::MeshRendererComponent>()) {
-                const auto& col = mr->GetColor();
-                file << "HAS_MESH_RENDERER=1\n";
-                file << "MESH_RENDERER_TYPE="  << static_cast<int>(mr->GetMeshType()) << "\n";
-                file << "MESH_RENDERER_COLOR=" << col.r << "," << col.g << "," << col.b << "," << col.a << "\n";
-                file << "MESH_RENDERER_ALPHA_MODE="   << static_cast<int>(mr->GetAlphaMode()) << "\n";
-                // Preserve the old key for one cycle so scenes saved before
-                // the AlphaMode enum still load — handled in the parser too.
-                file << "MESH_RENDERER_TRANSPARENT=" << (mr->IsTransparent() ? "1" : "0") << "\n";
-                file << "MESH_RENDERER_ALPHA_CUTOFF=" << mr->GetAlphaCutoff() << "\n";
-                file << "MESH_RENDERER_METALLIC="    << mr->GetMetallic()    << "\n";
-                file << "MESH_RENDERER_ROUGHNESS="   << mr->GetRoughness()   << "\n";
-                file << "MESH_RENDERER_OCCLUSION="   << mr->GetOcclusion()   << "\n";
-                auto e = mr->GetEmissive();
-                file << "MESH_RENDERER_EMISSIVE="    << e.r << "," << e.g << "," << e.b << "\n";
-                if (mr->HasAlbedoTexture())
-                    file << "MESH_RENDERER_ALBEDO_TEX=" << mr->GetAlbedoTexturePath() << "\n";
-                // A .mat reference. The inline fields above are still written
-                // even when one is assigned: they cost a line each, and they are
-                // what the entity falls back to if the material asset is later
-                // deleted or moved — losing the object's look entirely because a
-                // file went missing would be a much worse outcome than keeping a
-                // stale colour.
-                if (mr->HasMaterial())
-                    file << "MESH_RENDERER_MATERIAL=" << mr->GetMaterialPath() << "\n";
-                if (mr->GetOverrideAssetMaterial())
-                    file << "MESH_RENDERER_MATERIAL_OVERRIDE=1\n";
-                // Material-instance overrides. Written only when something is
-                // actually overridden, so scenes that use none do not churn.
-                if (mr->GetMaterialOverrides() != 0u) {
-                    file << "MESH_RENDERER_MATOVR=" << mr->GetMaterialOverrides() << "\n";
-                    file << "MESH_RENDERER_MATOVR_UVS=" << mr->GetUvScale().x  << ","
-                         << mr->GetUvScale().y  << "\n";
-                    file << "MESH_RENDERER_MATOVR_UVO=" << mr->GetUvOffset().x << ","
-                         << mr->GetUvOffset().y << "\n";
-                }
-            }
-
-            // LightComponent — full property emission (previous version emitted
-            // these keys but the load path ignored them).
-            if (auto light_comp = entity->GetComponent<schizo::scene::LightComponent>()) {
-                file << "LIGHT_TYPE="        << static_cast<int>(light_comp->GetType()) << "\n";
-                auto color = light_comp->GetColor();
-                file << "LIGHT_COLOR="       << color.r << "," << color.g << "," << color.b << "\n";
-                file << "LIGHT_INTENSITY="   << light_comp->GetIntensity() << "\n";
-                file << "LIGHT_TEMPERATURE=" << light_comp->GetTemperature() << "\n";
-
-                if (light_comp->GetType() != schizo::scene::LightType::Directional) {
-                    file << "LIGHT_RANGE=" << light_comp->GetRange() << "\n";
-                }
-
-                if (light_comp->GetType() == schizo::scene::LightType::Spot) {
-                    auto angles = light_comp->GetSpotAngles();
-                    file << "LIGHT_SPOT_INNER="   << angles.x << "\n";
-                    file << "LIGHT_SPOT_OUTER="   << angles.y << "\n";
-                    file << "LIGHT_SPOT_FALLOFF=" << light_comp->GetSpotFalloff() << "\n";
-                }
-
-                file << "LIGHT_CAST_SHADOW="    << (light_comp->GetCastShadow() ? "1" : "0") << "\n";
-                file << "LIGHT_SHADOW_QUALITY=" << static_cast<int>(light_comp->GetShadowQuality()) << "\n";
-                auto shadow_bias = light_comp->GetShadowBias();
-                file << "LIGHT_SHADOW_BIAS="    << shadow_bias.x << "," << shadow_bias.y << "\n";
-                file << "LIGHT_SHADOW_FILTER="  << light_comp->GetShadowFilterRadius() << "\n";
-                auto shadow_planes = light_comp->GetShadowPlanes();
-                file << "LIGHT_SHADOW_PLANES="  << shadow_planes.x << "," << shadow_planes.y << "\n";
-
-                if (light_comp->GetType() == schizo::scene::LightType::Directional) {
-                    file << "LIGHT_CASCADE_COUNT=" << light_comp->GetCascadeCount() << "\n";
-                }
-
-                file << "LIGHT_VOLUMETRIC=" << light_comp->GetVolumetricIntensity() << "\n";
-                if (light_comp->GetType() == schizo::scene::LightType::Area) {
-                    auto sz = light_comp->GetAreaSize();
-                    file << "LIGHT_AREA_SIZE=" << sz.x << "," << sz.y << "\n";
-                    file << "LIGHT_TWO_SIDED=" << (light_comp->IsTwoSided() ? "1" : "0") << "\n";
-                }
-                if (!light_comp->GetCookiePath().empty())
-                    file << "LIGHT_COOKIE=" << light_comp->GetCookiePath() << "\n";
-            }
-
-            // CameraComponent — intrinsic camera attached to the entity.
-            if (auto cam = entity->GetComponent<schizo::scene::CameraComponent>()) {
-                file << "HAS_CAMERA=1\n";
-                file << "CAMERA_PROJECTION=" << static_cast<int>(cam->GetProjection()) << "\n";
-                file << "CAMERA_FOV="        << cam->GetFOV()                << "\n";
-                file << "CAMERA_NEAR="       << cam->GetNearPlane()          << "\n";
-                file << "CAMERA_FAR="        << cam->GetFarPlane()           << "\n";
-                file << "CAMERA_ORTHO_SIZE=" << cam->GetOrthographicSize()   << "\n";
-                const auto& cc = cam->GetClearColor();
-                file << "CAMERA_CLEAR_COLOR=" << cc.r << "," << cc.g << "," << cc.b << "," << cc.a << "\n";
-            }
-
-            // ColliderComponent — authoring data for Phase 2 physics. Only
-            // fields relevant to the chosen shape are written; the loader
-            // ignores irrelevant ones for that shape.
-            if (auto col = entity->GetComponent<schizo::scene::ColliderComponent>()) {
-                file << "HAS_COLLIDER=1\n";
-                file << "COLLIDER_SHAPE=" << static_cast<int>(col->GetShape()) << "\n";
-                auto off = col->GetOffset();
-                file << "COLLIDER_OFFSET=" << off.x << "," << off.y << "," << off.z << "\n";
-                file << "COLLIDER_DYNAMIC=" << (col->IsDynamic() ? "1" : "0") << "\n";
-                file << "COLLIDER_MASS=" << col->GetMass() << "\n";
-                file << "COLLIDER_TRIGGER=" << (col->IsTrigger() ? "1" : "0") << "\n";
-                file << "COLLIDER_LAYER=" << static_cast<int>(col->GetLayer()) << "\n";
-                file << "COLLIDER_MASK=" << col->GetMask() << "\n";
-
-                switch (col->GetShape()) {
-                    case schizo::scene::ColliderShape::Box: {
-                        auto he = col->GetHalfExtents();
-                        file << "COLLIDER_HALF_EXTENTS=" << he.x << "," << he.y << "," << he.z << "\n";
-                        break;
-                    }
-                    case schizo::scene::ColliderShape::Sphere:
-                        file << "COLLIDER_RADIUS=" << col->GetRadius() << "\n";
-                        break;
-                    case schizo::scene::ColliderShape::Capsule:
-                        file << "COLLIDER_RADIUS=" << col->GetRadius() << "\n";
-                        file << "COLLIDER_HEIGHT=" << col->GetHeight() << "\n";
-                        break;
-                    case schizo::scene::ColliderShape::Plane: {
-                        auto n = col->GetPlaneNormal();
-                        file << "COLLIDER_PLANE_NORMAL=" << n.x << "," << n.y << "," << n.z << "\n";
-                        break;
-                    }
-                    default: break;
-                }
-            }
-
-            // Audio Source
-            if (auto as = entity->GetComponent<schizo::scene::AudioSourceComponent>()) {
-                file << "HAS_AUDIO_SRC=1\n";
-                file << "AUDIO_SRC_CLIP="          << as->GetClipPath() << "\n";
-                file << "AUDIO_SRC_VOLUME="        << as->GetVolume() << "\n";
-                file << "AUDIO_SRC_PITCH="         << as->GetPitch() << "\n";
-                file << "AUDIO_SRC_RADIUS="        << as->GetRadius() << "\n";
-                file << "AUDIO_SRC_LOOP="          << (as->IsLooping() ? "1" : "0") << "\n";
-                file << "AUDIO_SRC_SPATIAL="       << (as->IsSpatial() ? "1" : "0") << "\n";
-                file << "AUDIO_SRC_PLAY_ON_START=" << (as->PlayOnStart() ? "1" : "0") << "\n";
-            }
-
-            // Audio Listener
-            if (auto al = entity->GetComponent<schizo::scene::AudioListenerComponent>()) {
-                file << "HAS_AUDIO_LISTENER=1\n";
-                file << "AUDIO_LISTENER_GAIN="   << al->GetMasterGain() << "\n";
-                file << "AUDIO_LISTENER_ACTIVE=" << (al->IsActive() ? "1" : "0") << "\n";
-            }
-
-            // Terrain — params inline + the heightmap in a sidecar binary
-            // (terrain_<id>.r32) next to the .scene file.
-            if (auto tc = entity->GetComponent<schizo::scene::TerrainComponent>()) {
-                file << "TERRAIN_RES="          << tc->GetResolution() << "\n";
-                file << "TERRAIN_SIZE="         << tc->GetSize() << "\n";
-                file << "TERRAIN_HEIGHT_SCALE=" << tc->GetHeightScale() << "\n";
-                const std::string hf = "terrain_" + std::to_string(entity->GetId()) + ".r32";
-                std::ofstream hb(scene_dir + hf, std::ios::binary);
-                if (hb) {
-                    const auto& H = tc->Heights();
-                    hb.write(reinterpret_cast<const char*>(H.data()),
-                             static_cast<std::streamsize>(H.size() * sizeof(float)));
-                    file << "TERRAIN_HEIGHTS=" << hf << "\n";
-                }
-
-                // Splat painting (Phase C): per-layer texture paths + tiling
-                // inline, and the RGBA splatmap in a sidecar (terrain_<id>.splat:
-                // a small "res\n" header line then res*res*4 raw bytes).
-                for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
-                    file << "TERRAIN_LAYER" << i << "=" << tc->GetLayerPath(i) << "\n";
-                    file << "TERRAIN_TILING" << i << "=" << tc->GetTiling(i) << "\n";
-                    // A layer's .mat, when it has one. The legacy albedo path
-                    // above is still written: it is what the layer falls back to
-                    // if the material is later deleted, and losing a terrain's
-                    // whole look because one file went missing would be much
-                    // worse than showing a stale texture.
-                    if (tc->HasLayerMaterial(i))
-                        file << "TERRAIN_LAYERMAT" << i << "=" << tc->GetLayerMaterial(i) << "\n";
-                    // Per-layer surface for layers with no material asset.
-                    file << "TERRAIN_LAYERMETAL"  << i << "=" << tc->GetLayerMetallic(i)    << "\n";
-                    file << "TERRAIN_LAYERROUGH"  << i << "=" << tc->GetLayerRoughness(i)   << "\n";
-                    file << "TERRAIN_LAYERNSCALE" << i << "=" << tc->GetLayerNormalScale(i) << "\n";
-                }
-                file << "TERRAIN_TRIPLANAR=" << (tc->GetTriplanar() ? 1 : 0) << "\n";
-                file << "TERRAIN_TRISHARP=" << tc->GetTriplanarSharpness() << "\n";
-
-                const std::string sf = "terrain_" + std::to_string(entity->GetId()) + ".splat";
-                std::ofstream sb(scene_dir + sf, std::ios::binary);
-                if (sb) {
-                    const int sres = tc->SplatResolution();
-                    sb << sres << "\n";
-                    const auto& S = tc->Splat();
-                    sb.write(reinterpret_cast<const char*>(S.data()),
-                             static_cast<std::streamsize>(S.size()));
-                    file << "TERRAIN_SPLAT=" << sf << "\n";
-                }
-
-                // Holes (caves) — sidecar of res*res bytes, only when any set.
-                if (tc->AnyHoles()) {
-                    const std::string hf2 = "terrain_" + std::to_string(entity->GetId()) + ".holes";
-                    std::ofstream ob(scene_dir + hf2, std::ios::binary);
-                    if (ob) {
-                        const auto& H2 = tc->Holes();
-                        ob.write(reinterpret_cast<const char*>(H2.data()),
-                                 static_cast<std::streamsize>(H2.size()));
-                        file << "TERRAIN_HOLES=" << hf2 << "\n";
-                    }
-                }
-
-                // Integrated water.
-                if (tc->IsWaterEnabled()) {
-                    const auto& wd = tc->GetWaterDeepColor();
-                    const auto& ws = tc->GetWaterShallowColor();
-                    file << "TERRAIN_WATER=" << (tc->IsWaterPhysical() ? 1 : 0)
-                         << "," << tc->GetWaterLevel() << "\n";
-                    file << "TERRAIN_WATER_DEEP="    << wd.r << "," << wd.g << "," << wd.b << "\n";
-                    file << "TERRAIN_WATER_SHALLOW=" << ws.r << "," << ws.g << "," << ws.b << "\n";
-                    file << "TERRAIN_WATER_WAVES=" << tc->GetWaterWaveHeight() << ","
-                         << tc->GetWaterWaveSpeed() << "," << tc->GetWaterWaveScale() << "\n";
-                    file << "TERRAIN_WATER_LOOK=" << tc->GetWaterClarity() << ","
-                         << tc->GetWaterReflectivity() << "\n";
-                }
-            }
-
-            // Script component (Stage 12).
-            if (auto sc = entity->GetComponent<schizo::scene::ScriptComponent>()) {
-                file << "SCRIPT_PATH="    << sc->GetScriptPath() << "\n";
-                file << "SCRIPT_ENABLED=" << (sc->IsEnabled() ? "1" : "0") << "\n";
-                for (const auto& [k, v] : sc->Params())
-                    file << "SCRIPT_PARAM=" << k << "=" << v << "\n";
-            }
-
-            // Water component (terrain expansion).
-            if (auto wc = entity->GetComponent<schizo::scene::WaterComponent>()) {
-                file << "WATER_PHYSICAL=" << (wc->IsPhysical() ? "1" : "0") << "\n";
-                const auto& sz = wc->GetSize();
-                const auto& dc = wc->GetDeepColor();
-                const auto& sc2 = wc->GetShallowColor();
-                file << "WATER_SIZE="    << sz.x << "," << sz.y << "\n";
-                file << "WATER_DEEP="    << dc.r << "," << dc.g << "," << dc.b << "\n";
-                file << "WATER_SHALLOW=" << sc2.r << "," << sc2.g << "," << sc2.b << "\n";
-                file << "WATER_WAVES="   << wc->GetWaveHeight() << "," << wc->GetWaveSpeed()
-                     << "," << wc->GetWaveScale() << "\n";
-                file << "WATER_LOOK="    << wc->GetClarity() << "," << wc->GetReflectivity() << "\n";
-            }
-
-            file << "\n";
+            write_entity_block(file, entity, i, scene_dir, nullptr);
         }
 
         file.close();
@@ -403,6 +421,60 @@ bool SceneSerializer::SaveScene(const std::string& filepath,
         return true;
     } catch (const std::exception& e) {
         spdlog::error("Exception while saving scene: {}", e.what());
+        return false;
+    }
+}
+
+// Depth-first collection of a subtree, parents before children. The order
+// matters on load only as far as the id map is concerned -- parents are
+// resolved in a second pass either way -- but a file a person can read with
+// the root at the top is worth the two lines it costs.
+namespace {
+void collect_subtree(const std::shared_ptr<schizo::scene::Entity>& e,
+                     std::vector<std::shared_ptr<schizo::scene::Entity>>& out) {
+    if (!e) return;
+    out.push_back(e);
+    for (const auto& c : e->GetChildren()) collect_subtree(c, out);
+}
+} // namespace
+
+bool SceneSerializer::SavePrefab(const std::string& filepath,
+                                 const std::shared_ptr<schizo::scene::Entity>& root) {
+    if (!root) {
+        spdlog::error("Cannot save a null entity as a prefab");
+        return false;
+    }
+
+    std::vector<std::shared_ptr<schizo::scene::Entity>> subtree;
+    collect_subtree(root, subtree);
+
+    // The id set the writer consults. Built BEFORE anything is written, so a
+    // child whose parent is outside the subtree cannot smuggle in a dangling
+    // PARENT_ID that would land it at the scene root on load with no warning.
+    std::unordered_set<uint32_t> ids;
+    ids.reserve(subtree.size());
+    for (const auto& e : subtree) ids.insert(e->GetId());
+
+    std::ofstream file(filepath);
+    if (!file.is_open()) {
+        spdlog::error("Failed to open prefab for writing: {}", filepath);
+        return false;
+    }
+    const std::string prefab_dir = dir_of(filepath);
+
+    try {
+        file << "PREFAB_NAME=" << root->GetName() << "\n";
+        file << "PREFAB_VERSION=1\n";
+        file << "ENTITY_COUNT=" << subtree.size() << "\n";
+        file << "\n";
+        for (size_t i = 0; i < subtree.size(); ++i)
+            write_entity_block(file, subtree[i], i, prefab_dir, &ids);
+        file.close();
+        spdlog::info("Prefab '{}' saved to {} ({} entities)",
+                     root->GetName(), filepath, subtree.size());
+        return true;
+    } catch (const std::exception& e) {
+        spdlog::error("Exception while saving prefab: {}", e.what());
         return false;
     }
 }
@@ -1128,6 +1200,92 @@ std::shared_ptr<schizo::scene::Scene> SceneSerializer::LoadScene(const std::stri
         return scene;
     } catch (const std::exception& e) {
         spdlog::error("Exception while loading scene: {}", e.what());
+        return nullptr;
+    }
+}
+
+std::shared_ptr<schizo::scene::Entity> SceneSerializer::LoadPrefab(
+    const std::string& filepath,
+    const std::shared_ptr<schizo::scene::Scene>& scene) {
+    if (!scene) {
+        spdlog::error("Cannot instantiate a prefab into a null scene");
+        return nullptr;
+    }
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        spdlog::error("Failed to open prefab: {}", filepath);
+        return nullptr;
+    }
+
+    try {
+        std::string line;
+        // Skip the header. ENTITY_COUNT is its last key in both formats, so a
+        // scene file dropped in here loads as a prefab rather than failing --
+        // which is the useful behaviour: it instantiates the whole scene as a
+        // group of roots, and the first is returned.
+        while (std::getline(file, line)) {
+            std::string v;
+            if (starts_with(line, "ENTITY_COUNT", v)) break;
+        }
+
+        std::vector<ParsedEntity> parsed;
+        ParsedEntity current;
+        bool in_entity = false;
+        auto finish_current = [&]() {
+            if (in_entity) parsed.push_back(current);
+            current = ParsedEntity{};
+            in_entity = false;
+        };
+        while (std::getline(file, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            if (line.compare(0, 8, "[ENTITY_") == 0) { finish_current(); in_entity = true; continue; }
+            if (in_entity) apply_line_to_entity(current, line);
+        }
+        finish_current();
+        file.close();
+
+        if (parsed.empty()) {
+            spdlog::warn("Prefab '{}' contains no entities", filepath);
+            return nullptr;
+        }
+
+        const std::string prefab_dir = dir_of(filepath);
+        std::unordered_map<uint32_t, std::shared_ptr<schizo::scene::Entity>> id_map;
+        std::vector<std::shared_ptr<schizo::scene::Entity>> entities;
+        entities.reserve(parsed.size());
+        for (const auto& p : parsed) {
+            auto e = construct_entity(p, prefab_dir);
+            // The saved id keys the parent map ONLY. The entity gets a fresh id
+            // of its own, so instantiating one prefab twice does not produce two
+            // entities claiming the same id.
+            if (p.saved_id != 0) id_map[p.saved_id] = e;
+            entities.push_back(e);
+        }
+
+        std::shared_ptr<schizo::scene::Entity> root;
+        for (size_t i = 0; i < parsed.size(); ++i) {
+            const uint32_t pid = parsed[i].parent_id;
+            if (pid == 0) {
+                // No parent inside the file: a root. The FIRST one is the
+                // prefab's root, since the writer emits depth-first.
+                if (!root) root = entities[i];
+                continue;
+            }
+            auto it = id_map.find(pid);
+            if (it == id_map.end()) {
+                spdlog::warn("Prefab entity '{}' refers to unknown parent {} - left at the root",
+                             parsed[i].name, pid);
+                if (!root) root = entities[i];
+                continue;
+            }
+            entities[i]->SetParent(it->second);
+        }
+
+        for (auto& e : entities) scene->AddEntity(e);
+        spdlog::info("Prefab '{}' instantiated ({} entities)", filepath, entities.size());
+        return root ? root : entities.front();
+    } catch (const std::exception& e) {
+        spdlog::error("Exception while instantiating prefab: {}", e.what());
         return nullptr;
     }
 }
