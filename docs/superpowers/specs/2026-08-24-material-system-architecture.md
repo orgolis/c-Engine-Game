@@ -124,10 +124,9 @@ hash reacts to every field the GPU can observe.
 - **Detail maps / detail normals** ✅ **DONE (v0.7.10).** No distance fade: that needs a camera
   position, and the G-buffer vertex push block is already exactly 128 bytes (Vulkan's guaranteed
   minimum), so there is nowhere to put one. Mip selection carries most of it.
-- **Parallax occlusion mapping.** BLOCKED on the same thing: POM needs a tangent-space view
-  vector, so the G-buffer pass needs a **per-frame descriptor set at set 0**, which it does not
-  currently have. That set is the real prerequisite, and it would also give detail maps their
-  distance fade.
+- **Parallax occlusion mapping.** UNBLOCKED as of v0.7.11 — the G-buffer's set 0 was an empty
+  placeholder and now carries per-frame values including the camera position. POM itself is the
+  next item; the prerequisite is built and the detail-map distance fade already uses it.
 - **Vertex-colour blending.**
 - **Terrain layers beyond four** — requires Foundation A.
 

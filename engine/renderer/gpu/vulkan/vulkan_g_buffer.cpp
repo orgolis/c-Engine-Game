@@ -702,16 +702,17 @@ void VulkanGBuffer::create_scene_pipeline() {
     // we declare a single layout slot at index 1. Vulkan accepts a layout with
     // any leading sets unset *as long as we don't reference them in shaders*.
     // We do: shaders only reference set=1, so we pass a 2-entry array with
-    // set=0 = an empty layout and set=1 = the material layout.
-    VkDescriptorSetLayoutCreateInfo empty_info{};
-    empty_info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    empty_info.bindingCount = 0;
-    VkDescriptorSetLayout empty_layout = VK_NULL_HANDLE;
-    if (vkCreateDescriptorSetLayout(vk_device, &empty_info, nullptr, &empty_layout) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create empty descriptor set layout for scene pipeline");
+    // set=0 = per-frame uniforms, set=1 = the material layout.
+    //
+    // Set 0 was an empty placeholder until v0.7.11: created only so the
+    // material could sit at set 1, then destroyed on the next line. It carries
+    // the camera position now, which the vertex push block has no room for --
+    // that block is { mat4 mvp; mat4 model; }, exactly Vulkan's 128-byte floor.
+    if (!create_frame_resources(vk_device)) {
+        throw std::runtime_error("Failed to create per-frame descriptor resources for scene pipeline");
     }
 
-    std::array<VkDescriptorSetLayout, 2> set_layouts = { empty_layout, config_.material_set_layout };
+    std::array<VkDescriptorSetLayout, 2> set_layouts = { frame_set_layout_, config_.material_set_layout };
 
     VkPipelineLayoutCreateInfo layout_info{};
     layout_info.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -720,12 +721,11 @@ void VulkanGBuffer::create_scene_pipeline() {
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges    = &push_range;
     if (vkCreatePipelineLayout(vk_device, &layout_info, nullptr, &scene_pipeline_layout_) != VK_SUCCESS) {
-        vkDestroyDescriptorSetLayout(vk_device, empty_layout, nullptr);
         throw std::runtime_error("Failed to create scene pipeline layout");
     }
-
-    // Empty layout is no longer needed once the pipeline layout is built.
-    vkDestroyDescriptorSetLayout(vk_device, empty_layout, nullptr);
+    // frame_set_layout_ is NOT destroyed here. The old empty layout could be,
+    // because a pipeline layout copies what it needs; this one is still needed
+    // to allocate and bind the set every frame.
 
     scene_pipeline_back_ = build_scene_variant(vert->handle, frag->handle,
                                                VK_CULL_MODE_BACK_BIT);
@@ -1103,6 +1103,77 @@ void VulkanGBuffer::draw_demo_triangle(VkCommandBuffer cmd,
     vkCmdDraw(cmd, 3, 1, 0, 0);
 }
 
+bool VulkanGBuffer::create_frame_resources(VkDevice vk_device) {
+    VkDescriptorSetLayoutBinding b{};
+    b.binding         = 0;
+    b.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    b.descriptorCount = 1;
+    b.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo li{};
+    li.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    li.bindingCount = 1;
+    li.pBindings    = &b;
+    if (vkCreateDescriptorSetLayout(vk_device, &li, nullptr, &frame_set_layout_) != VK_SUCCESS)
+        return false;
+
+    VkDescriptorPoolSize ps{};
+    ps.type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    ps.descriptorCount = 1;
+    VkDescriptorPoolCreateInfo pi{};
+    pi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pi.maxSets       = 1;
+    pi.poolSizeCount = 1;
+    pi.pPoolSizes    = &ps;
+    if (vkCreateDescriptorPool(vk_device, &pi, nullptr, &frame_pool_) != VK_SUCCESS) return false;
+
+    VkDescriptorSetAllocateInfo ai{};
+    ai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool     = frame_pool_;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts        = &frame_set_layout_;
+    if (vkAllocateDescriptorSets(vk_device, &ai, &frame_set_) != VK_SUCCESS) return false;
+
+    // 16 bytes: a vec4 carrying the camera position. Sized as a vec4 rather
+    // than a vec3 because std140 pads it to 16 anyway, and a named spare
+    // component is easier to use later than a rediscovered pad.
+    const VkDeviceSize kSize = 16;
+    VkBufferCreateInfo bi{};
+    bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size        = kSize;
+    bi.usage       = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(vk_device, &bi, nullptr, &frame_buffer_) != VK_SUCCESS) return false;
+
+    VkMemoryRequirements req{};
+    vkGetBufferMemoryRequirements(vk_device, frame_buffer_, &req);
+    VkMemoryAllocateInfo mi{};
+    mi.sType          = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mi.allocationSize = req.size;
+    mi.memoryTypeIndex = device_->find_memory_type(
+        req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(vk_device, &mi, nullptr, &frame_memory_) != VK_SUCCESS) return false;
+    vkBindBufferMemory(vk_device, frame_buffer_, frame_memory_, 0);
+    // Persistently mapped: the block is written once per frame and coherent
+    // memory needs no flush, so a map/unmap pair each frame would be pure cost.
+    vkMapMemory(vk_device, frame_memory_, 0, kSize, 0, &frame_mapped_);
+
+    VkDescriptorBufferInfo bufi{};
+    bufi.buffer = frame_buffer_;
+    bufi.offset = 0;
+    bufi.range  = kSize;
+    VkWriteDescriptorSet w{};
+    w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet          = frame_set_;
+    w.dstBinding      = 0;
+    w.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    w.descriptorCount = 1;
+    w.pBufferInfo     = &bufi;
+    vkUpdateDescriptorSets(vk_device, 1, &w, 0, nullptr);
+    return true;
+}
+
 void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
                                const glm::mat4& view,
                                const glm::mat4& proj,
@@ -1117,6 +1188,13 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
     if (out_draw_calls) *out_draw_calls = 0;
     if (out_triangles)  *out_triangles  = 0;
     last_indirect_submissions_ = 0;
+
+    // Per-frame block, written and bound ONCE for the whole pass rather than
+    // per draw: every draw in the pass sees the same camera.
+    if (frame_mapped_ != nullptr) {
+        const float cam[4] = { camera_position.x, camera_position.y, camera_position.z, 0.0f };
+        std::memcpy(frame_mapped_, cam, sizeof cam);
+    }
     if (scene_pipeline_back_ == VK_NULL_HANDLE || scene_pipeline_none_ == VK_NULL_HANDLE ||
         draws == nullptr || draw_count == 0) {
         return;
@@ -1193,6 +1271,20 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
             // genuinely invalidated by switching to the other.
             last_material         = nullptr;
             last_terrain_material = nullptr;
+
+            // Set 0 goes the same way, and for the same reason. Binding it once
+            // for the pass looked right and was not: switching to the terrain
+            // pipeline invalidates every set bound under the scene layout, so
+            // the scene draws after the first terrain chunk had NO set 0 --
+            // VUID-vkCmdDrawIndexed-None-08600, then a cascade of
+            // invalid-command-buffer errors behind it.
+            //
+            // Only for the scene path: terrain's layout is a different one and
+            // does not declare this set.
+            if (!use_terrain && frame_set_ != VK_NULL_HANDLE) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        scene_pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
+            }
         }
 
         const VkPipelineLayout active_layout =
@@ -1382,6 +1474,16 @@ void VulkanGBuffer::cleanup() {
     }
     if (scene_pipeline_layout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(vk_device, scene_pipeline_layout_, nullptr);
+        // Per-frame set-0 resources. Unmapped before the memory is freed: the
+        // mapping is persistent, and freeing mapped memory is undefined.
+        if (frame_mapped_)     { vkUnmapMemory(vk_device, frame_memory_); frame_mapped_ = nullptr; }
+        if (frame_buffer_)     vkDestroyBuffer(vk_device, frame_buffer_, nullptr);
+        if (frame_memory_)     vkFreeMemory(vk_device, frame_memory_, nullptr);
+        if (frame_pool_)       vkDestroyDescriptorPool(vk_device, frame_pool_, nullptr);
+        if (frame_set_layout_) vkDestroyDescriptorSetLayout(vk_device, frame_set_layout_, nullptr);
+        frame_buffer_ = VK_NULL_HANDLE; frame_memory_ = VK_NULL_HANDLE;
+        frame_pool_ = VK_NULL_HANDLE;   frame_set_layout_ = VK_NULL_HANDLE;
+        frame_set_  = VK_NULL_HANDLE;
         scene_pipeline_layout_ = VK_NULL_HANDLE;
     }
     if (demo_vertex_buffer_ != VK_NULL_HANDLE) {

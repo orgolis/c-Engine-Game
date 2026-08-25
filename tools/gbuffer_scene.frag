@@ -5,6 +5,13 @@ layout(location = 2) in vec2 inUV;
 layout(location = 3) in vec3 inTangent;
 layout(location = 4) in vec3 inBitangent;
 
+// Per-frame values, shared by every draw in the pass. Set 0 was an empty
+// layout until v0.7.11; the camera position cannot live in push constants
+// because the vertex block is already at Vulkan's 128-byte floor.
+layout(set = 0, binding = 0) uniform FrameUBO {
+    vec4 cameraPos;   // xyz = world position, w unused
+} frame;
+
 layout(set = 1, binding = 0) uniform MaterialUBO {
     vec4  base_color_factor;
     float metallic_factor;
@@ -47,12 +54,24 @@ void main() {
     // pass does not have. Mip selection carries most of it; the fade is the
     // reason set 0 will eventually exist.
     vec2 duv = uv * mat.detail.x;
+    // Detail fades out with range. A detail map is a high-frequency texture; at
+    // distance it is minified past the point of adding anything and only
+    // contributes aliasing that mips cannot fully remove. Fading it also
+    // reclaims the sampling cost where it buys nothing.
+    //
+    // The range is deliberately fixed rather than authored: it is a property of
+    // how far the eye can resolve that frequency, not of the material, and one
+    // more slider here would be one more thing to set wrong.
+    const float kDetailFadeStart = 12.0;
+    const float kDetailFadeEnd   = 40.0;
+    float view_dist  = distance(inWorldPos, frame.cameraPos.xyz);
+    float detail_fade = 1.0 - smoothstep(kDetailFadeStart, kDetailFadeEnd, view_dist);
 
     vec4 base = texture(albedoMap, uv) * mat.base_color_factor;
     // A mid-grey detail texel (0.5) doubles to 1.0 and is therefore neutral,
     // which is the convention detail maps are authored to. Strength 0 makes the
     // mix an exact identity, so a material without detail maps is unchanged.
-    base.rgb *= mix(vec3(1.0), texture(detailAlbedoMap, duv).rgb * 2.0, mat.detail.y);
+    base.rgb *= mix(vec3(1.0), texture(detailAlbedoMap, duv).rgb * 2.0, mat.detail.y * detail_fade);
 
     float alpha_cutoff = mat.emissive_factor.a;
     if (alpha_cutoff > 0.0 && base.a < alpha_cutoff) discard;
@@ -62,7 +81,7 @@ void main() {
     // a tangent-space normal is its slope, and summing slopes is the standard
     // cheap blend -- correct enough for the small perturbations a detail map
     // carries, and it costs one add rather than a second basis.
-    nmap.xy += (texture(detailNormalMap, duv).xy * 2.0 - 1.0) * mat.detail.z;
+    nmap.xy += (texture(detailNormalMap, duv).xy * 2.0 - 1.0) * (mat.detail.z * detail_fade);
     nmap.xy *= mat.normal_scale;
     mat3 TBN = mat3(normalize(inTangent), normalize(inBitangent), normalize(inNormal));
     vec3 N   = normalize(TBN * nmap);

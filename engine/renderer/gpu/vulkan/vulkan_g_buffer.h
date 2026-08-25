@@ -312,6 +312,33 @@ private:
     VkPipeline       scene_pipeline_none_        = VK_NULL_HANDLE;
     VkPipelineLayout scene_pipeline_layout_      = VK_NULL_HANDLE;
 
+    // ---- Per-frame uniforms (set 0) -------------------------------------
+    // Set 0 used to be an EMPTY layout: created, handed to the pipeline layout
+    // so the material could sit at set 1, and destroyed on the next line. It is
+    // real now, because two features need a value that is neither per-material
+    // nor expressible in push constants.
+    //
+    // The vertex push block is { mat4 mvp; mat4 model; } -- exactly 128 bytes,
+    // Vulkan's guaranteed minimum maxPushConstantsSize. There is no room for a
+    // camera position, and without one a fragment shader cannot compute a view
+    // vector. That blocks parallax occlusion mapping outright and costs detail
+    // maps their distance fade.
+    //
+    // ONE buffer, not one per frame in flight. The GPU may still be reading
+    // last frame's copy while this frame writes it, which is a genuine
+    // write-after-read hazard -- and the payload is a camera position used for
+    // a distance fade. One frame of staleness there is imperceptible, and
+    // triple-buffering it would add three allocations and an index to thread
+    // through every call site to fix something nobody can see. Revisit if
+    // anything latency-sensitive ever moves into this block.
+    VkDescriptorSetLayout frame_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorPool      frame_pool_       = VK_NULL_HANDLE;
+    VkDescriptorSet       frame_set_        = VK_NULL_HANDLE;
+    VkBuffer              frame_buffer_     = VK_NULL_HANDLE;
+    VkDeviceMemory        frame_memory_     = VK_NULL_HANDLE;
+    void*                 frame_mapped_     = nullptr;
+    bool create_frame_resources(VkDevice vk_device);
+
     /// Terrain splat pipeline, with its OWN pipeline layout: the terrain
     /// fragment shader declares fourteen bindings at set=1 where the scene
     /// shader declares six, so the two cannot share a layout. Push constants are
