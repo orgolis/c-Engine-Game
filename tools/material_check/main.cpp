@@ -206,6 +206,30 @@ int main() {
         check(!m.has_any_map(), "no maps bound");
     }
 
+    // ---- The "New > Material" template --------------------------------------
+    // The asset browser creates a .mat by writing material_to_text() of a
+    // default desc. If that text does not parse back, EVERY material the menu
+    // creates is dead on arrival -- and the symptom is a material that exists
+    // in the browser, opens to an error, and cannot be assigned to anything.
+    //
+    // Asserted against the writer rather than a copied string literal, because
+    // a literal here would keep passing after the format gained a field.
+    std::printf("\nThe New > Material template is a loadable material:\n");
+    {
+        MaterialDesc fresh;
+        fresh.name = "new_material";
+        const std::string tmpl = gws::assets::material_to_text(fresh);
+        check(!tmpl.empty(), "the template is not empty");
+
+        const MaterialDesc back = gws::assets::material_from_text(tmpl);
+        check(back.name == "new_material", "the name survives");
+        check(back.content_hash() == fresh.content_hash(),
+              "and it round-trips to the SAME material, field for field");
+        check(!back.has_any_map(), "a fresh material binds no maps");
+        check(near_eq(back.roughness, 1.0f) && near_eq(back.metallic, 0.0f),
+              "and starts at the renderer's no-material look, so creating one changes nothing");
+    }
+
     // ---- Malformed input ---------------------------------------------------
     std::printf("\nMalformed input degrades rather than corrupts:\n");
     {

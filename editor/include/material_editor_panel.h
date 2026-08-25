@@ -67,6 +67,18 @@ public:
                 MaterialAssetCache* materials,
                 const std::shared_ptr<schizo::scene::Scene>& scene = nullptr);
 
+    /// Draw the editor for a .mat FILE, with no entity involved.
+    ///
+    /// The panel above needs an entity carrying a MeshRenderer, which made every
+    /// control here unreachable for the two cases that matter most: a material
+    /// that is not on anything yet, and a terrain layer material -- terrain has
+    /// no MeshRenderer at all, so a layer's .mat could be typed as a path and
+    /// never edited.
+    ///
+    /// `path` is runtime-relative, as stored in scenes and terrain layers.
+    /// Returns true if the file was written this frame.
+    bool RenderForPath(const std::string& path, MaterialAssetCache* materials);
+
 private:
     /// Working copy of the asset being edited, so a drag can update the cache
     /// each frame and the file only on release.
@@ -83,6 +95,7 @@ private:
     bool render_inline_mode(const std::shared_ptr<schizo::scene::Entity>& entity,
                             MaterialAssetCache* materials);
     bool render_presets(gws::assets::MaterialDesc& target);
+    void render_material_body(const std::string& path, MaterialAssetCache* materials);
 };
 
 }  // namespace schizo::editor

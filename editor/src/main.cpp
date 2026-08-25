@@ -2350,6 +2350,23 @@ void DrawAssetInspector(EditorState& editor_state) {
         ImGui::EndTable();
     }
 
+    // A MATERIAL gets the real editor rather than a text dump. This is the
+    // whole point of selecting one: every control existed already, but reaching
+    // them meant selecting an object that already had this material assigned --
+    // impossible for a material not yet on anything, and impossible forever for
+    // a terrain layer, since terrain carries no MeshRenderer.
+    if (p.type == "Material" && editor_state.material_editor && editor_state.material_assets) {
+        ImGui::Separator();
+        editor_state.material_editor->RenderForPath(ai.rel_path(), editor_state.material_assets);
+        ImGui::Separator();
+        if (ImGui::Button("Reveal")) schizo::editor::AssetBrowserPanel::OsReveal(ai.abs_path());
+        ImGui::SameLine();
+        if (ImGui::Button("Copy Path")) ImGui::SetClipboardText(ai.rel_path().c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("Drag this onto an object or a terrain layer to use it.");
+        return;
+    }
+
     ImGui::Separator();
 
     // Actions. A .scene is the one asset type the editor can act on directly;

@@ -266,6 +266,128 @@ bool MaterialEditorPanel::Render(const std::shared_ptr<Entity>& entity,
     return changed;
 }
 
+// The material EDITING UI, extracted so that a .mat selected in the asset
+// browser gets exactly the same controls as one reached through an object.
+//
+// It was previously inline in render_asset_mode, which meant every control --
+// textures, detail maps, parallax, UV transform -- was reachable only by
+// selecting an entity with a MeshRenderer. Terrain has no MeshRenderer, so
+// none of it could be reached for a terrain layer material at all.
+//
+// Edits `edit_`, pushes to the cache while a control is being dragged and
+// writes the file when the gesture ends.
+void MaterialEditorPanel::render_material_body(const std::string& path,
+                                              MaterialAssetCache* materials) {
+    bool live = false, commit = false;
+
+    if (ImGui::BeginTabBar("##mat_tabs")) {
+        if (ImGui::BeginTabItem("Surface")) {
+            pbr_controls(edit_, live, commit);
+            bool ds = edit_.double_sided;
+            if (ImGui::Checkbox("Double sided", &ds)) {
+                edit_.double_sided = ds;
+                live = commit = true;
+            }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Textures")) {
+            ImGui::TextDisabled("Drag textures from the Asset Browser onto a slot.");
+            bool t = false;
+            t |= texture_slot("Base Color", "Albedo / diffuse. Read as sRGB.",
+                              edit_.albedo_map);
+            t |= texture_slot("Normal", "Tangent-space normal map. Linear data —\n"
+                                        "loaded without sRGB decoding.",
+                              edit_.normal_map);
+            t |= texture_slot("Metal/Rough",
+                              "glTF packing: GREEN = roughness, BLUE = metallic.\n"
+                              "Linear data.", edit_.metallic_roughness_map);
+            t |= texture_slot("Occlusion", "Ambient occlusion, RED channel. Linear data.",
+                              edit_.occlusion_map);
+            t |= texture_slot("Emissive", "Self-illumination. Read as sRGB, then scaled\n"
+                                          "by Emissive Glow.", edit_.emissive_map);
+
+            // UV transform. Applies to every map above at once -- transforming
+            // them individually is how one map ends up unaligned with the rest
+            // and the surface looks subtly wrong in a way nobody can point at.
+            // Detail maps. Below the five PBR slots because they modify what
+            // those produce rather than replacing any of them.
+            ImGui::SeparatorText("Detail");
+            t |= texture_slot("Detail Color",
+                              "Higher-frequency colour blended over Base Color. "
+                              "Mid-grey is neutral, which is what detail textures "
+                              "are authored around.", edit_.detail_albedo_map);
+            t |= texture_slot("Detail Normal",
+                              "Higher-frequency normal added to the base normal.",
+                              edit_.detail_normal_map);
+            if (ImGui::DragFloat("Detail tiling", &edit_.detail_scale, 0.1f, 1.0f, 128.0f, "%.1fx"))
+                t = true;
+            if (ImGui::SliderFloat("Detail color strength", &edit_.detail_albedo_strength, 0.0f, 1.0f))
+                t = true;
+            if (ImGui::SliderFloat("Detail normal strength", &edit_.detail_normal_strength, 0.0f, 2.0f))
+                t = true;
+            if (edit_.detail_albedo_map.empty() && edit_.detail_normal_map.empty())
+                ImGui::TextDisabled("  No detail maps - strengths have no effect.");
+
+            ImGui::SeparatorText("Parallax");
+            t |= texture_slot("Height",
+                              "Greyscale depth. White is the surface, black is deepest.",
+                              edit_.height_map);
+            if (ImGui::SliderFloat("Parallax depth", &edit_.parallax_depth, 0.0f, 0.2f, "%.3f"))
+                t = true;
+            if (edit_.height_map.empty())
+                ImGui::TextDisabled("  No height map - parallax is off.");
+            else if (edit_.parallax_depth <= 0.0f)
+                ImGui::TextDisabled("  Depth 0 - the ray march is skipped entirely.");
+
+            ImGui::SeparatorText("UV transform");
+            if (ImGui::DragFloat2("Tiling", &edit_.uv_scale.x, 0.01f, 0.01f, 256.0f, "%.2f")) {
+                t = true;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("How many times the maps repeat across the mesh's UVs.\n"
+                                  "Lets a wall and a floor share one brick material at\n"
+                                  "different densities instead of duplicating the .mat.");
+            if (ImGui::DragFloat2("Offset", &edit_.uv_offset.x, 0.005f, -16.0f, 16.0f, "%.3f")) {
+                t = true;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Shifts the maps across the surface. Useful to break up\n"
+                                  "visible repetition between two objects using one material.");
+            if (ImGui::SmallButton("Reset UV")) {
+                edit_.uv_scale  = glm::vec2(1.0f);
+                edit_.uv_offset = glm::vec2(0.0f);
+                t = true;
+            }
+
+            if (t) { live = true; commit = true; }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Presets")) {
+            if (render_presets(edit_)) { live = true; commit = true; }
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
+    // In memory while dragging (the viewport follows the mouse), on disk when
+    // the gesture ends.
+    if (live) {
+        materials->set(path, edit_);
+        dirty_ = true;
+    }
+    if (commit) {
+        if (materials->save(path, edit_)) dirty_ = false;
+    }
+
+    ImGui::Separator();
+    if (dirty_) {
+        if (ImGui::Button("Save##mat", ImVec2(-1, 0)))
+            if (materials->save(path, edit_)) dirty_ = false;
+    } else {
+        ImGui::TextDisabled("Saved to %s", path.c_str());
+    }
+}
+
 bool MaterialEditorPanel::render_asset_mode(const std::shared_ptr<Entity>& entity,
                                             MaterialAssetCache* materials,
                                             const std::shared_ptr<Scene>& scene) {
@@ -393,114 +515,7 @@ bool MaterialEditorPanel::render_asset_mode(const std::shared_ptr<Entity>& entit
         if (changed) instance_changed = true;
     }
 
-    bool live = false, commit = false;
-
-    if (ImGui::BeginTabBar("##mat_tabs")) {
-        if (ImGui::BeginTabItem("Surface")) {
-            pbr_controls(edit_, live, commit);
-            bool ds = edit_.double_sided;
-            if (ImGui::Checkbox("Double sided", &ds)) {
-                edit_.double_sided = ds;
-                live = commit = true;
-            }
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Textures")) {
-            ImGui::TextDisabled("Drag textures from the Asset Browser onto a slot.");
-            bool t = false;
-            t |= texture_slot("Base Color", "Albedo / diffuse. Read as sRGB.",
-                              edit_.albedo_map);
-            t |= texture_slot("Normal", "Tangent-space normal map. Linear data —\n"
-                                        "loaded without sRGB decoding.",
-                              edit_.normal_map);
-            t |= texture_slot("Metal/Rough",
-                              "glTF packing: GREEN = roughness, BLUE = metallic.\n"
-                              "Linear data.", edit_.metallic_roughness_map);
-            t |= texture_slot("Occlusion", "Ambient occlusion, RED channel. Linear data.",
-                              edit_.occlusion_map);
-            t |= texture_slot("Emissive", "Self-illumination. Read as sRGB, then scaled\n"
-                                          "by Emissive Glow.", edit_.emissive_map);
-
-            // UV transform. Applies to every map above at once -- transforming
-            // them individually is how one map ends up unaligned with the rest
-            // and the surface looks subtly wrong in a way nobody can point at.
-            // Detail maps. Below the five PBR slots because they modify what
-            // those produce rather than replacing any of them.
-            ImGui::SeparatorText("Detail");
-            t |= texture_slot("Detail Color",
-                              "Higher-frequency colour blended over Base Color. "
-                              "Mid-grey is neutral, which is what detail textures "
-                              "are authored around.", edit_.detail_albedo_map);
-            t |= texture_slot("Detail Normal",
-                              "Higher-frequency normal added to the base normal.",
-                              edit_.detail_normal_map);
-            if (ImGui::DragFloat("Detail tiling", &edit_.detail_scale, 0.1f, 1.0f, 128.0f, "%.1fx"))
-                t = true;
-            if (ImGui::SliderFloat("Detail color strength", &edit_.detail_albedo_strength, 0.0f, 1.0f))
-                t = true;
-            if (ImGui::SliderFloat("Detail normal strength", &edit_.detail_normal_strength, 0.0f, 2.0f))
-                t = true;
-            if (edit_.detail_albedo_map.empty() && edit_.detail_normal_map.empty())
-                ImGui::TextDisabled("  No detail maps - strengths have no effect.");
-
-            ImGui::SeparatorText("Parallax");
-            t |= texture_slot("Height",
-                              "Greyscale depth. White is the surface, black is deepest.",
-                              edit_.height_map);
-            if (ImGui::SliderFloat("Parallax depth", &edit_.parallax_depth, 0.0f, 0.2f, "%.3f"))
-                t = true;
-            if (edit_.height_map.empty())
-                ImGui::TextDisabled("  No height map - parallax is off.");
-            else if (edit_.parallax_depth <= 0.0f)
-                ImGui::TextDisabled("  Depth 0 - the ray march is skipped entirely.");
-
-            ImGui::SeparatorText("UV transform");
-            if (ImGui::DragFloat2("Tiling", &edit_.uv_scale.x, 0.01f, 0.01f, 256.0f, "%.2f")) {
-                t = true;
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("How many times the maps repeat across the mesh's UVs.\n"
-                                  "Lets a wall and a floor share one brick material at\n"
-                                  "different densities instead of duplicating the .mat.");
-            if (ImGui::DragFloat2("Offset", &edit_.uv_offset.x, 0.005f, -16.0f, 16.0f, "%.3f")) {
-                t = true;
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Shifts the maps across the surface. Useful to break up\n"
-                                  "visible repetition between two objects using one material.");
-            if (ImGui::SmallButton("Reset UV")) {
-                edit_.uv_scale  = glm::vec2(1.0f);
-                edit_.uv_offset = glm::vec2(0.0f);
-                t = true;
-            }
-
-            if (t) { live = true; commit = true; }
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Presets")) {
-            if (render_presets(edit_)) { live = true; commit = true; }
-            ImGui::EndTabItem();
-        }
-        ImGui::EndTabBar();
-    }
-
-    // In memory while dragging (the viewport follows the mouse), on disk when
-    // the gesture ends.
-    if (live) {
-        materials->set(path, edit_);
-        dirty_ = true;
-    }
-    if (commit) {
-        if (materials->save(path, edit_)) dirty_ = false;
-    }
-
-    ImGui::Separator();
-    if (dirty_) {
-        if (ImGui::Button("Save##mat", ImVec2(-1, 0)))
-            if (materials->save(path, edit_)) dirty_ = false;
-    } else {
-        ImGui::TextDisabled("Saved to %s", path.c_str());
-    }
+    render_material_body(path, materials);
 
     // A material edit changes the ASSET, not the scene — the scene file has no
     // copy of these values, only the path. Reporting the scene as modified for
@@ -510,6 +525,42 @@ bool MaterialEditorPanel::render_asset_mode(const std::shared_ptr<Entity>& entit
     // scene file is the only place they exist, so they must dirty it or an
     // override is silently lost on close.
     return instance_changed;
+}
+
+bool MaterialEditorPanel::RenderForPath(const std::string& path,
+                                        MaterialAssetCache* materials) {
+    if (!materials || path.empty()) return false;
+
+    const MaterialDesc* loaded = materials->get(path);
+    if (!loaded) {
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.40f, 1.0f),
+                           "This material could not be loaded.");
+        ImGui::TextWrapped("The file may be missing or malformed. Fix it on disk, then "
+                           "reload -- the editor will not substitute a default, because a "
+                           "material that quietly renders as white looks like a lighting "
+                           "bug rather than a missing file.");
+        if (ImGui::Button("Reload##mat_path")) materials->invalidate(path);
+        return false;
+    }
+
+    // Re-sync when the selection changed, or when the file changed under us and
+    // there is nothing unsaved to lose.
+    if (edit_path_ != path || (!dirty_ && edit_.content_hash() != loaded->content_hash())) {
+        edit_      = *loaded;
+        edit_path_ = path;
+        dirty_     = false;
+    }
+
+    ImGui::Text("%s%s", edit_.name.empty() ? "(unnamed)" : edit_.name.c_str(),
+                dirty_ ? "  *unsaved*" : "");
+    ImGui::TextDisabled("%s", path.c_str());
+    ImGui::TextWrapped("Edits here change the ASSET, so every object and every terrain "
+                       "layer using it changes with it.");
+    ImGui::Separator();
+
+    const bool was_dirty = dirty_;
+    render_material_body(path, materials);
+    return was_dirty && !dirty_;
 }
 
 bool MaterialEditorPanel::render_inline_mode(const std::shared_ptr<Entity>& entity,

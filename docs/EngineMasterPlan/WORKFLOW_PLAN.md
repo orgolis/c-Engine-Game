@@ -259,6 +259,27 @@ gets ignored.
 > update placed instances. That needs an override system, which is a project of its own; v1 is deliberately
 > what Unity shipped first.
 
+> **v0.7.15, and the lesson about what “done” means.** Nine releases of material work shipped
+> before the user reported: *“I can't test if you've done anything because the interfaces don't actually
+> exist.”* They were right, and every one of those releases was individually correct.
+>
+> The renderer could apply a texture. The `.mat` format round-tripped under test. The material editor had
+> controls for albedo, normal, metal-rough, occlusion, emissive, detail maps, parallax and UV transform. What
+> did not exist was a **route** to any of it:
+>
+> * No way to CREATE a `.mat`. The New menu offered a folder, three script kinds, an item table and a text
+>   file. A fresh project could not obtain its first material at all.
+> * The editor keys off a `MeshRenderer`, so a material not yet on an object was unreachable — and a
+>   **terrain layer** material was unreachable permanently, because terrain has no MeshRenderer. The terrain
+>   layer slot accepted a typed path and a dragged `.mat`, and there was nowhere to edit what it pointed at.
+> * The project contained **no textures**. One sky HDR, five OBJs, some scripts. Every path for applying a
+>   texture worked and there was nothing to apply.
+>
+> Each release verified the thing it changed. None verified that a person could *reach* it, and the check
+> suites cannot see a missing menu item — they test the layer under the UI, which was correct throughout.
+> **The reachable path is part of the feature**, and “the code is right” is not the same claim as “someone
+> can use it.”
+
 Two items were **retired by measurement rather than implemented** (2.2, 2.3). The engine has always shipped on
 precompiled SPIR-V, so the PSO-stutter work — inherited from Unreal's well-documented problem — was addressing
 something this engine does not have.

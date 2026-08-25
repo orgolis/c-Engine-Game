@@ -776,3 +776,18 @@ target_compile_features(prefab_check PRIVATE cxx_std_20)
 if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(prefab_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
+
+# texgen_check: the starter textures a new project has none of. Two failure
+# modes, neither of which errors: a BMP with the wrong row stride SHEARS
+# diagonally rather than failing to load (and 512 is divisible by 4, so a
+# forgotten pad passes at the default size and breaks at every odd one), and a
+# generator that emits a flat colour produces a perfectly valid image that
+# teaches nothing -- a mirror and a matte surface reflect a flat colour
+# identically, which is the exact thing a checker exists to show. So the
+# pattern is asserted, not just the header.
+add_executable(texgen_check texgen_check/main.cpp)
+target_include_directories(texgen_check PRIVATE ../editor/include)
+target_compile_features(texgen_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(texgen_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
