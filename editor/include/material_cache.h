@@ -128,6 +128,7 @@ public:
         e.tex[4] = load_map(desc.emissive_map,           /*srgb=*/true);
         e.tex[5] = load_map(desc.detail_albedo_map,      /*srgb=*/true);
         e.tex[6] = load_map(desc.detail_normal_map,      /*srgb=*/false);
+        e.tex[7] = load_map(desc.height_map,             /*srgb=*/false);
 
         MaterialUniforms params{};
         params.base_color_factor  = desc.base_color;
@@ -147,6 +148,10 @@ public:
             desc.detail_albedo_map.empty() ? 0.0f : desc.detail_albedo_strength,
             desc.detail_normal_map.empty() ? 0.0f : desc.detail_normal_strength,
             0.0f);
+        // Depth 0 whenever there is no height map, so the shader's bypass is
+        // taken and the ray march never runs against a flat white default.
+        params.parallax = glm::vec4(
+            desc.height_map.empty() ? 0.0f : desc.parallax_depth, 0.0f, 0.0f, 0.0f);
         // emissive_factor.a doubles as the G-Buffer's alpha_cutoff (see
         // MaterialUniforms). Cutoff 0 means "opaque, no discard"; Blend needs a
         // non-zero cutoff anyway so it casts a binarised shadow, since it skips
@@ -163,7 +168,7 @@ public:
             textures ? textures->white()  : nullptr,
             textures ? textures->normal() : nullptr,
             textures ? textures->black()  : nullptr,
-            e.tex[5].get(), e.tex[6].get());
+            e.tex[5].get(), e.tex[6].get(), e.tex[7].get());
         if (!e.material) {
             // Do NOT cache the failure. Unlike a bad file path, pool exhaustion
             // is transient — the next sweep frees sets — and caching it would
@@ -251,7 +256,7 @@ private:
     struct Entry {
         // shared_ptr: these may be owned by the TextureManager and shared with
         // other materials. Held here so they outlive the descriptor set.
-        std::shared_ptr<gws::renderer::gpu::Texture> tex[7];   // 5 PBR + 2 detail
+        std::shared_ptr<gws::renderer::gpu::Texture> tex[8];   // 5 PBR + 2 detail + height
         std::unique_ptr<gws::renderer::gpu::Material> material;
         uint64_t last_used = 0;
     };

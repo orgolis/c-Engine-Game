@@ -18,13 +18,13 @@
 namespace gws::renderer::gpu {
 
 VkDescriptorSetLayout Material::create_descriptor_set_layout(VkDevice device) {
-    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 9> bindings{};
     bindings[0].binding         = 0;
     bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    for (uint32_t i = 1; i < 8; ++i) {
+    for (uint32_t i = 1; i < 9; ++i) {
         bindings[i].binding         = i;
         bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[i].descriptorCount = 1;
@@ -48,7 +48,7 @@ VkDescriptorPool Material::create_descriptor_pool(VkDevice device, uint32_t max_
     sizes[0].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     sizes[0].descriptorCount = max_materials;
     sizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    sizes[1].descriptorCount = max_materials * 7;   // 5 PBR maps + 2 detail
+    sizes[1].descriptorCount = max_materials * 8;   // 5 PBR + 2 detail + height
 
     VkDescriptorPoolCreateInfo ci{};
     ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -133,7 +133,8 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
                                            const Texture* default_normal,
                                            const Texture* default_black,
                                            const Texture* detail_albedo,
-                                           const Texture* detail_normal) {
+                                           const Texture* detail_normal,
+                                           const Texture* height) {
     if (!device || layout == VK_NULL_HANDLE || pool == VK_NULL_HANDLE) {
         spdlog::error("Material::create: missing device/layout/pool");
         return nullptr;
@@ -217,6 +218,11 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
     // what sits in the slot cannot matter.
     const Texture* dtl_alb_tex = pick(detail_albedo, default_white,  out->fallback_white_,  &Texture::create_default_white);
     const Texture* dtl_nrm_tex = pick(detail_normal, default_normal, out->fallback_normal_, &Texture::create_default_normal);
+    // Height falls back to white = 1.0. Parallax reads depth as (1 - height),
+    // so white is zero depth: a flat surface, which is the right answer for a
+    // material with no height map even before the depth scale disables the
+    // march outright.
+    const Texture* height_tex  = pick(height,        default_white,  out->fallback_white_,  &Texture::create_default_white);
 
     out->tex_[0] = base_tex;
     out->tex_[1] = normal_tex;
@@ -225,6 +231,7 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
     out->tex_[4] = emis_tex;
     out->tex_[5] = dtl_alb_tex;
     out->tex_[6] = dtl_nrm_tex;
+    out->tex_[7] = height_tex;
 
     // 4) Write descriptor set
     VkDescriptorBufferInfo bufinfo{};
@@ -240,7 +247,7 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
         return info;
     };
 
-    std::array<VkDescriptorImageInfo, 7> imgs = {
+    std::array<VkDescriptorImageInfo, 8> imgs = {
         make_image_info(base_tex),
         make_image_info(normal_tex),
         make_image_info(mr_tex),
@@ -248,9 +255,10 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
         make_image_info(emis_tex),
         make_image_info(dtl_alb_tex),
         make_image_info(dtl_nrm_tex),
+        make_image_info(height_tex),
     };
 
-    std::array<VkWriteDescriptorSet, 8> writes{};
+    std::array<VkWriteDescriptorSet, 9> writes{};
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet          = out->descriptor_set_;
     writes[0].dstBinding      = 0;
@@ -258,7 +266,7 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
     writes[0].descriptorCount = 1;
     writes[0].pBufferInfo     = &bufinfo;
 
-    for (uint32_t i = 0; i < 7; ++i) {
+    for (uint32_t i = 0; i < 8; ++i) {
         writes[i + 1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i + 1].dstSet          = out->descriptor_set_;
         writes[i + 1].dstBinding      = i + 1;

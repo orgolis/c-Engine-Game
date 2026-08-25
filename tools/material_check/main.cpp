@@ -78,6 +78,8 @@ MaterialDesc make_populated() {
     m.detail_scale           = 23.5f;
     m.detail_albedo_strength = 0.65f;
     m.detail_normal_strength = 1.40f;
+    m.height_map             = "assets/textures/cobble_h.png";
+    m.parallax_depth         = 0.045f;
     return m;
 }
 
@@ -123,6 +125,8 @@ int main() {
         check(dst.uv_offset == src.uv_offset, "UV offset survives, including a negative");
         check(dst.detail_albedo_map == src.detail_albedo_map, "detail colour map survives");
         check(dst.detail_normal_map == src.detail_normal_map, "detail normal map survives");
+        check(dst.height_map == src.height_map, "height map survives");
+        check(std::fabs(dst.parallax_depth - src.parallax_depth) < 1e-4f, "parallax depth survives");
         check(std::fabs(dst.detail_scale - src.detail_scale) < 1e-3f, "detail tiling survives");
         check(std::fabs(dst.detail_albedo_strength - src.detail_albedo_strength) < 1e-3f,
               "detail colour strength survives");
@@ -161,6 +165,8 @@ int main() {
         { MaterialDesc m = base; m.detail_albedo_strength = 0.1f;   differs(m, "detail colour strength"); }
         { MaterialDesc m = base; m.detail_normal_strength = 0.1f;   differs(m, "detail normal strength"); }
         { MaterialDesc m = base; m.detail_albedo_map = "other.png"; differs(m, "detail colour map"); }
+        { MaterialDesc m = base; m.parallax_depth = 0.09f;          differs(m, "parallax depth"); }
+        { MaterialDesc m = base; m.height_map = "other_h.png";      differs(m, "height map"); }
         { MaterialDesc m = base; m.alpha_cutoff = 0.9f;         differs(m, "alpha cutoff"); }
         { MaterialDesc m = base; m.double_sided = false;        differs(m, "double-sided"); }
         { MaterialDesc m = base; m.albedo_map = "other.png";    differs(m, "albedo map"); }

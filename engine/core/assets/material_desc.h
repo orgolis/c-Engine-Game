@@ -111,6 +111,11 @@ struct MaterialDesc {
     float detail_albedo_strength  = 0.0f;
     float detail_normal_strength  = 0.0f;
 
+    /// Height map + parallax depth. Depth 0 disables the effect entirely,
+    /// which is what "no parallax" costs: nothing.
+    std::string height_map;
+    float parallax_depth          = 0.0f;
+
     // ---- Factors (→ gpu::MaterialUniforms) ----
     glm::vec4 base_color{1.0f, 1.0f, 1.0f, 1.0f};
     float     metallic     = 0.0f;
@@ -188,6 +193,7 @@ struct MaterialDesc {
         // material, exactly the trap the UV fields fell into.
         mix_f(detail_scale); mix_f(detail_albedo_strength); mix_f(detail_normal_strength);
         mix_s(detail_albedo_map); mix_s(detail_normal_map);
+        mix_f(parallax_depth); mix_s(height_map);
         const uint8_t flags = static_cast<uint8_t>(alpha_mode) |
                               (double_sided ? 0x80u : 0u);
         mix_bytes(&flags, sizeof flags);
@@ -275,6 +281,8 @@ inline std::string material_to_text(const MaterialDesc& m) {
     o << "DETAIL_SCALE=" << m.detail_scale << "\n";
     o << "DETAIL_ALBEDO_STRENGTH=" << m.detail_albedo_strength << "\n";
     o << "DETAIL_NORMAL_STRENGTH=" << m.detail_normal_strength << "\n";
+    o << "HEIGHT_MAP=" << m.height_map << "\n";
+    o << "PARALLAX_DEPTH=" << m.parallax_depth << "\n";
     o << "BASE_COLOR=" << m.base_color.r << "," << m.base_color.g << ","
                        << m.base_color.b << "," << m.base_color.a << "\n";
     o << "METALLIC=" << m.metallic << "\n";
@@ -322,6 +330,8 @@ inline MaterialDesc material_from_text(const std::string& text) {
         else if (key == "DETAIL_SCALE")       m.detail_scale = detail::parse_float(val, m.detail_scale);
         else if (key == "DETAIL_ALBEDO_STRENGTH") m.detail_albedo_strength = detail::parse_float(val, m.detail_albedo_strength);
         else if (key == "DETAIL_NORMAL_STRENGTH") m.detail_normal_strength = detail::parse_float(val, m.detail_normal_strength);
+        else if (key == "HEIGHT_MAP")         m.height_map = val;
+        else if (key == "PARALLAX_DEPTH")     m.parallax_depth = detail::parse_float(val, m.parallax_depth);
         else if (key == "BASE_COLOR")         detail::parse_vec(val, &m.base_color.r, 4);
         else if (key == "METALLIC")           m.metallic = detail::parse_float(val, m.metallic);
         else if (key == "ROUGHNESS")          m.roughness = detail::parse_float(val, m.roughness);

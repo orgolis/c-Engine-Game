@@ -63,8 +63,13 @@ struct MaterialUniforms {
     /// Both strengths default to 0, which makes the blend an exact identity --
     /// so a material without detail maps is bit-for-bit what it was.
     glm::vec4 detail               = glm::vec4(8.0f, 0.0f, 0.0f, 0.0f);
+    /// Parallax: x = depth scale (0 disables), y/z/w unused.
+    ///
+    /// Depth 0 is an exact bypass, not a scale of zero -- the ray march is
+    /// skipped entirely, so a material without a height map costs nothing.
+    glm::vec4 parallax             = glm::vec4(0.0f);
 };
-static_assert(sizeof(MaterialUniforms) == 80, "MaterialUniforms layout drift");
+static_assert(sizeof(MaterialUniforms) == 96, "MaterialUniforms layout drift");
 
 class Material {
 public:
@@ -108,9 +113,10 @@ public:
                                             // compiling unchanged; only the
                                             // material cache passes them.
                                             const Texture* detail_albedo  = nullptr,
-                                            const Texture* detail_normal  = nullptr);
+                                            const Texture* detail_normal  = nullptr,
+                                            const Texture* height         = nullptr);
 
-    /// Re-write the 7 image-sampler bindings from the textures this material
+    /// Re-write the 8 image-sampler bindings from the textures this material
     /// currently references. Call after a bound texture was hot-reloaded in
     /// place (its `view()` changed but the object identity did not). The caller
     /// must ensure the GPU is idle. No-op if the material bound only defaults.
@@ -150,7 +156,7 @@ private:
     // Resolved textures bound to slots 1..5 (base, normal, MR, AO, emissive).
     // Non-owning — may point at supplied textures, shared defaults, or the
     // fallbacks above. Used by rewrite_textures()/bound_textures().
-    const Texture* tex_[7] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    const Texture* tex_[8] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 
     void destroy();
 };

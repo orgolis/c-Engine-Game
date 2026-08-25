@@ -443,6 +443,17 @@ bool MaterialEditorPanel::render_asset_mode(const std::shared_ptr<Entity>& entit
             if (edit_.detail_albedo_map.empty() && edit_.detail_normal_map.empty())
                 ImGui::TextDisabled("  No detail maps - strengths have no effect.");
 
+            ImGui::SeparatorText("Parallax");
+            t |= texture_slot("Height",
+                              "Greyscale depth. White is the surface, black is deepest.",
+                              edit_.height_map);
+            if (ImGui::SliderFloat("Parallax depth", &edit_.parallax_depth, 0.0f, 0.2f, "%.3f"))
+                t = true;
+            if (edit_.height_map.empty())
+                ImGui::TextDisabled("  No height map - parallax is off.");
+            else if (edit_.parallax_depth <= 0.0f)
+                ImGui::TextDisabled("  Depth 0 - the ray march is skipped entirely.");
+
             ImGui::SeparatorText("UV transform");
             if (ImGui::DragFloat2("Tiling", &edit_.uv_scale.x, 0.01f, 0.01f, 256.0f, "%.2f")) {
                 t = true;
