@@ -145,6 +145,30 @@ that could hold a frame rate under any load.
 every effect pass still execute unconditionally (`main.cpp:~9890-10017`). Closing the viewport should cost
 nothing and currently costs a full frame. Minor next to F1, and nearly free to fix.
 
+### F9 — No suballocator: one device allocation per texture and per mesh 🟠
+
+No VMA and no custom suballocator. **62 raw `vkAllocateMemory` call sites**, including 4 in
+`vulkan_texture.cpp` and 3 in `vulkan_scene_mesh.cpp` — the per-asset paths.
+`maxMemoryAllocationCount` is never queried anywhere in the engine.
+
+This is not a bug today; it is an **asset-count ceiling the engine does not know it has**. Drivers commonly
+cap allocations at 4096, and a project with a few thousand textures and meshes will meet it — as an
+allocation failure on a user's machine, not during development. Each allocation also carries alignment
+padding, so real footprint consistently exceeds the sum of the resources.
+
+### F10 — Render targets are never aliased, and all are sized for 1920×1080 🟠
+
+No `LAZILY_ALLOCATED`, no `TRANSIENT_ATTACHMENT_BIT`, no memory aliasing anywhere. Roughly **59
+render-target images** are created across the passes (10 in the G-buffer, 12 in post-processing, 8 in clouds,
+10 in the environment map, …), each holding a permanent allocation for the whole run, and most live for a
+single pass.
+
+This is **F1 seen as a memory cost rather than a bandwidth one** — every target is sized for the hardcoded
+1920×1080 regardless of the window. On integrated graphics that footprint is shared system RAM taken from the
+CPU. A dozen full-screen `RGBA16F` targets at 1080p is ~200&nbsp;MB summed, and perhaps ~40&nbsp;MB if aliased
+down to the peak concurrent set. The render graph already knows each resource's first and last use, which is
+exactly what aliasing needs: **the structure to exploit this exists and is unused.**
+
 ---
 
 ## Checked, and NOT the problem
@@ -163,7 +187,7 @@ Recorded so they are not re-investigated. Several are actively good.
 | **Block compression** | BC1/BC3/BC5/BC7 supported by the texture loader |
 | **Pipeline cache** | Created at device init and persisted to disk (`vulkan_device.cpp:91,119`) |
 | **Swapchain** | `minImageCount + 1`, `frames_in_flight = 2`, MAILBOX preferred with FIFO fallback — all sane |
-| **Frame allocator** | Exists (`engine/core/memory/frame_allocator.h`); no significant per-frame allocation in the render path |
+| **Frame allocator (CPU)** | Exists (`engine/core/memory/frame_allocator.h`); no significant per-frame heap allocation in the render path. **GPU** allocation is a separate story — see F9/F10 |
 | **Physics** | Not implicated in a simple scene. The mesh-collider memoisation from the v0.7.x fix still stands |
 
 ---
@@ -199,6 +223,9 @@ something:
 6. **Skip the 3D pipeline when the viewport is hidden (F8).**
 7. **Auto-detect the preset** from `VkPhysicalDeviceType` so an integrated GPU gets a usable first launch
    without finding the settings menu.
+8. **Alias render targets and add a suballocator (F9, F10).** Footprint work rather than frame-time work; the
+   right time is when a real project starts to strain memory, or when F1 is fixed and the targets need to be
+   recreated on resize anyway — the two changes touch the same code.
 
 Items 1–4 are days rather than weeks. **1 must come first** — not because it is the biggest win, but because
 without it none of the others can be shown to have worked, and this project has twice been burned by a
