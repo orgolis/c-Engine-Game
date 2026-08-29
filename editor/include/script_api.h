@@ -118,6 +118,36 @@ struct ScriptApi {
     float (*distance)(void* ctx, uint32_t a, uint32_t b) = nullptr;             // world-space
     void  (*translate)(void* ctx, uint32_t e, const float delta[3]) = nullptr;  // move by delta
     bool  (*get_forward)(void* ctx, uint32_t e, float out[3]) = nullptr;        // -Z forward, world
+
+    // ---- editor extensions (Phase 4.8) ----
+    // Filled only for EDITOR scripts -- the ones loaded from the project's
+    // editor_scripts/ folder, which run in edit mode with no entity. A gameplay
+    // script sees these as null and cannot reach into the editor.
+    //
+    // Appended at the very end, like the gameplay block above, so the ABI prefix
+    // the C++ backend hands to user-compiled DLLs stays byte-identical.
+    //
+    // register_command takes a TOKEN, not a callback: this table crosses a C ABI
+    // into three languages, and a function pointer back into a Python VM or a
+    // .NET assembly is not something all three can express. The token is the
+    // name of a no-argument entry point in the script itself, which every
+    // backend already knows how to look up -- pocketpy by module global, the C++
+    // DLL by GetProcAddress, C# by method name.
+    void (*register_command)(void* ctx, const char* title, const char* category,
+                             const char* token) = nullptr;
+    /// Run any editor command by its exact title -- built-in or another
+    /// extension's. This is the half that makes the palette a real automation
+    /// surface rather than a menu: a script can drive anything the editor does.
+    bool (*run_command)(void* ctx, const char* title) = nullptr;
+
+    uint32_t (*selected_entity)(void* ctx) = nullptr;              // 0 when nothing is selected
+    void     (*select_entity)(void* ctx, uint32_t e) = nullptr;
+    int      (*entity_count)(void* ctx) = nullptr;
+    uint32_t (*entity_at)(void* ctx, int index) = nullptr;         // 0 when out of range
+    int      (*entity_name)(void* ctx, uint32_t e, char* out, int out_size) = nullptr;
+    /// Show a message on the editor's status line -- an extension needs a way to
+    /// report what it did that is not the log file.
+    void (*set_status)(void* ctx, const char* msg) = nullptr;
 };
 
 }  // namespace schizo::editor

@@ -21,6 +21,14 @@ using VoiceId = uint32_t;   // handle to a playing instance     (0 = invalid)
 inline constexpr ClipId  kInvalidClip  = 0;
 inline constexpr VoiceId kInvalidVoice = 0;
 
+// Mix-bus handle (Phase 4.9). Lives here rather than in bus.h because
+// VoiceParams travels through the lock-free command queue and must stay a POD
+// the audio thread can copy; bus.h owns the table, this owns the handle.
+using BusId = uint8_t;
+inline constexpr BusId    kMasterBus  = 0;     // always the root bus
+inline constexpr BusId    kInvalidBus = 255;
+inline constexpr uint32_t kMaxBuses   = 32;    // bounds the parent walk in BusGraph
+
 // The mixer always produces this format (the device matches it).
 struct AudioFormat {
     uint32_t sample_rate = 48000;
@@ -45,6 +53,7 @@ struct VoiceParams {
     glm::vec3 velocity{0.0f};         // world velocity (Doppler, Step 3)
     float     radius  = 10.0f;        // distance at which the voice fades out
     float     occlusion = 0.0f;       // 0 clear … 1 fully blocked (lowpass + duck, Step 6)
+    BusId     bus     = kMasterBus;  // which mix bus this voice folds into
 };
 
 // Listener pose (game thread → mixer). Position/orientation come from the

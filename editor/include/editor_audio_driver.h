@@ -80,6 +80,15 @@ public:
             p.radius   = src->GetRadius();
             p.looping  = src->IsLooping();
             p.spatial  = src->IsSpatial();
+            // Name -> BusId every frame. Cheap (a handful of buses, a string
+            // compare) and it means renaming or adding a bus in the mixer takes
+            // effect on already-playing sources without a reload. An unknown
+            // name resolves to Master, so a typo is audible on the wrong fader
+            // rather than silent.
+            {
+                const gws::audio::BusId b = engine_.mixer().buses().find(src->GetBus());
+                p.bus = (b == gws::audio::kInvalidBus) ? gws::audio::kMasterBus : b;
+            }
             p.position = pos;
             p.velocity = track_vel(source_last_, key, pos, dt);
             if (p.spatial && occ) p.occlusion = occ(listener_pos, pos);

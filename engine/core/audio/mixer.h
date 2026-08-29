@@ -15,6 +15,7 @@
 // Doppler) lands in Step 3 — voices already carry the position/velocity params.
 
 #include "audio/audio_types.h"
+#include "audio/bus.h"
 #include "audio/command_queue.h"
 
 #include <atomic>
@@ -26,6 +27,11 @@ namespace gws::audio {
 class Mixer {
 public:
     static constexpr uint32_t kMaxVoices = 256;   // acceptance target: 128 concurrent
+    // Longest block mix() will process in one pass. Bus scratch is preallocated
+    // for this at init(); a larger request is chunked rather than reallocated,
+    // because growing a buffer inside a real-time callback is exactly the thing
+    // this class promises never to do.
+    static constexpr uint32_t kMaxBlockFrames = 2048;
 
     void init(AudioFormat fmt);
     AudioFormat format() const { return format_; }
@@ -43,6 +49,17 @@ public:
     void    set_voice(VoiceId v, const VoiceParams& p);
     void    set_occlusion(VoiceId v, float occlusion);   // 0 clear … 1 blocked
     void    set_listener(const Listener& l);
+
+    // ---- mix buses (Phase 4.9) ----
+    // Reading the table from the game thread mirrors listener(): the audio
+    // thread owns the authoritative copy and edits cross via the queue, so a UI
+    // fader never races mix(). Bus NAMES and topology (add) are setup-time only.
+    const BusGraph& buses() const { return buses_; }
+    BusGraph&       buses_setup() { return buses_; }        // add()/rename, not during playback
+    void            set_bus(BusId b, const Bus& value);     // gain/mute/solo, real-time-safe
+
+    /// Post-fader peak of bus b over the last mix() call, for the meter.
+    float bus_peak(BusId b) const { return b < kMaxBuses ? bus_peak_[b] : 0.0f; }
 
     // ---- Audio thread: fill `frames` of interleaved output ----
     void mix(float* out, uint32_t frames);
@@ -67,6 +84,7 @@ private:
     void drain_commands();
     void start_voice(const Command& c);
     void mix_voice(Voice& v, const Clip& c, float* out, uint32_t frames);
+    void mix_block(float* out, uint32_t frames, size_t nbus);
 
     AudioFormat           format_{};
     std::vector<Clip>     clips_;        // index i ↔ ClipId (i + 1)
@@ -75,6 +93,9 @@ private:
     Listener              listener_{};
     std::atomic<uint32_t> next_voice_{1};
     size_t                active_count_ = 0;
+    BusGraph              buses_{};      // audio-thread-owned bus table
+    std::vector<float>    scratch_;      // kMaxBuses * kMaxBlockFrames * channels
+    float                 bus_peak_[kMaxBuses]{};
 };
 
 }  // namespace gws::audio

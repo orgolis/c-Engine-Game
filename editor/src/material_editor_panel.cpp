@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <cstdint>
 
 namespace schizo::editor {
 

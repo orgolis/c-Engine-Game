@@ -34,6 +34,14 @@ struct Command {
     std::string           category;   // "File" — shown dimmed, and searchable
     std::string           shortcut;   // "Ctrl+S", display only
     std::function<void()> run;
+    // Which editor extension registered this (Phase 4.8); empty for the
+    // editor's own commands. Reloading an extension removes its previous
+    // commands by this tag. Without an owner there is no way to tell a script's
+    // command from a built-in, so a reload would APPEND a second copy of each
+    // one -- and because every copy still works, nothing looks broken until the
+    // palette is full of duplicates. That is the failure mode hot reload has by
+    // default, so the tag exists from the start rather than after it is seen.
+    std::string           owner;
 };
 
 /// Score `query` against `text`. Higher is better; 0 means no match.
@@ -84,6 +92,33 @@ public:
              std::function<void()> run) {
         commands_.push_back({std::move(title), std::move(category),
                              std::move(shortcut), std::move(run)});
+    }
+
+    /// Register a command belonging to `owner` (an extension's identity).
+    void add_owned(std::string title, std::string category, std::string shortcut,
+                   std::function<void()> run, std::string owner) {
+        commands_.push_back({std::move(title), std::move(category),
+                             std::move(shortcut), std::move(run), std::move(owner)});
+    }
+
+    /// Drop every command registered by `owner`. Returns how many went.
+    /// Call this BEFORE re-running an extension, never after -- the reverse
+    /// order removes the commands the reload just added.
+    size_t remove_owned_by(const std::string& owner) {
+        if (owner.empty()) return 0;      // never mass-remove the built-ins
+        const size_t before = commands_.size();
+        commands_.erase(std::remove_if(commands_.begin(), commands_.end(),
+                                       [&](const Command& c) { return c.owner == owner; }),
+                        commands_.end());
+        return before - commands_.size();
+    }
+
+    /// Run a command by exact title. Returns false when no such command exists,
+    /// which is what lets one extension call another's command by name.
+    bool run_by_title(const std::string& title) const {
+        for (const Command& c : commands_)
+            if (c.title == title) { if (c.run) c.run(); return true; }
+        return false;
     }
 
     void clear() { commands_.clear(); }

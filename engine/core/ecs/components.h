@@ -103,6 +103,11 @@ struct AudioSource {
     float    pitch  = 1.0f;
     float    radius = 10.0f;
     uint32_t flags  = 0;         // bit0 looping, bit1 spatial, bit2 playing
+    // Mix bus this source folds into (gws::audio::BusId; 0 = Master). Stored as
+    // a raw index rather than a name because the ECS component is the RUNTIME
+    // form -- the authoring layer keeps the name, so inserting a bus cannot
+    // silently re-route sounds authored before it.
+    uint8_t  bus    = 0;
 };
 // The "ears": one active listener entity (usually the camera/player) drives
 // the audio mixer's pan/attenuation. Pose comes from the entity's Transform.

@@ -3,6 +3,8 @@
 // ============================================================
 
 #include "script_api_editor.h"
+#include "command_palette.h"
+#include "editor_extensions.h"
 #include "scene_playback_manager.h"
 #include "ecs_bridge.h"
 
@@ -444,6 +446,66 @@ bool api_get_forward(void* ctx, uint32_t e, float out[3]) {
 
 }  // namespace
 
+// ---- editor extensions (Phase 4.8) -----------------------------------------
+//
+// These are the only entries that act on the EDITOR rather than on the scene's
+// contents, which is why they are grouped and why bind_editor_script_api only
+// wires them when the ctx was given a command registry.
+
+void api_register_command(void* ctx, const char* title, const char* category, const char* token) {
+    auto* c = C(ctx);
+    if (!c->commands || !c->extensions) return;
+    c->extensions->register_command_from_script(*c->commands, title, category, token);
+}
+
+bool api_run_command(void* ctx, const char* title) {
+    auto* c = C(ctx);
+    if (!c->commands || !title) return false;
+    // By title, against the same registry the palette searches -- so a script
+    // reaches every built-in command, not a parallel list that would drift.
+    return c->commands->run_by_title(title);
+}
+
+uint32_t api_selected_entity(void* ctx) {
+    auto* c = C(ctx);
+    return c->get_selection ? c->get_selection() : 0u;
+}
+
+void api_select_entity(void* ctx, uint32_t e) {
+    auto* c = C(ctx);
+    if (c->set_selection) c->set_selection(e);
+}
+
+int api_entity_count(void* ctx) {
+    auto* c = C(ctx);
+    return c->scene ? static_cast<int>(c->scene->GetEntities().size()) : 0;
+}
+
+uint32_t api_entity_at(void* ctx, int index) {
+    auto* c = C(ctx);
+    if (!c->scene || index < 0) return 0u;
+    const auto& all = c->scene->GetEntities();
+    if (static_cast<size_t>(index) >= all.size()) return 0u;
+    return all[static_cast<size_t>(index)] ? all[static_cast<size_t>(index)]->GetId() : 0u;
+}
+
+int api_entity_name(void* ctx, uint32_t e, char* out, int out_size) {
+    if (!out || out_size <= 0) return 0;
+    out[0] = 0;
+    auto* c = C(ctx);
+    if (!c->scene) return 0;
+    auto ent = c->scene->GetEntityById(e);
+    if (!ent) return 0;
+    const std::string& n = ent->GetName();
+    const int len = std::snprintf(out, static_cast<size_t>(out_size), "%s", n.c_str());
+    return len < 0 ? 0 : (len < out_size ? len : out_size - 1);
+}
+
+void api_set_status(void* ctx, const char* msg) {
+    auto* c = C(ctx);
+    if (c->set_status && msg) c->set_status(msg);
+}
+
 void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.ctx                = ctx;
     api.log                = &api_log;
@@ -501,6 +563,20 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.distance           = &api_distance;
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;
+
+    // Editor-extension entries: bound only when this ctx was given a registry,
+    // so a gameplay script's table keeps them null and a gameplay script cannot
+    // register editor commands even by accident.
+    if (ctx->commands && ctx->extensions) {
+        api.register_command = &api_register_command;
+        api.run_command      = &api_run_command;
+        api.selected_entity  = &api_selected_entity;
+        api.select_entity    = &api_select_entity;
+        api.entity_count     = &api_entity_count;
+        api.entity_at        = &api_entity_at;
+        api.entity_name      = &api_entity_name;
+        api.set_status       = &api_set_status;
+    }
 }
 
 }  // namespace schizo::editor

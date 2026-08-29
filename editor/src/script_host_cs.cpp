@@ -25,6 +25,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #ifdef _WIN32
@@ -133,10 +134,16 @@ struct DotnetRuntime {
 };
 DotnetRuntime g_dotnet;
 
+// Phase 4.8: an extension command. Same shape as Start minus the entity, and
+// it must be [UnmanagedCallersOnly] like the other two.
+using CsCommandFn = void (*)(ScriptApi*);
+
 class CsInstance final : public ScriptInstance {
 public:
-    CsInstance(const ScriptApi* api, CsStartFn s, CsUpdateFn u)
-        : api_(api), start_(s), update_(u) {}
+    CsInstance(const ScriptApi* api, CsStartFn s, CsUpdateFn u,
+               std::wstring asm_path, std::wstring type_name)
+        : api_(api), start_(s), update_(u),
+          asm_path_(std::move(asm_path)), type_name_(std::move(type_name)) {}
     bool start(uint32_t entity, std::string& err) override {
         (void)err;
         if (start_) start_(const_cast<ScriptApi*>(api_), entity);
@@ -147,10 +154,37 @@ public:
         if (update_) update_(const_cast<ScriptApi*>(api_), entity, dt);
         return true;
     }
+
+    // Bound on demand: which methods exist is up to the script, so unlike
+    // Start/Update there is no fixed list to resolve when the assembly loads.
+    // The binding is cached because load_assembly_and_get_function_pointer is
+    // far too slow to run on every click of a menu item.
+    bool invoke(const char* token, std::string& err) override {
+        if (!token || !*token) { err = "empty command token"; return false; }
+        const std::string key(token);
+        auto it = commands_.find(key);
+        if (it == commands_.end()) {
+            void*     fn  = nullptr;
+            const int lrc = g_dotnet.load_fn(asm_path_.c_str(), type_name_.c_str(),
+                                             widen(key).c_str(),
+                                             UNMANAGEDCALLERSONLY_METHOD, nullptr, &fn);
+            if (lrc != 0 || !fn) {
+                err = "Schizo.Bridge." + key + " not found or not [UnmanagedCallersOnly] (0x" +
+                      std::to_string(lrc) + ")";
+                return false;
+            }
+            it = commands_.emplace(key, reinterpret_cast<CsCommandFn>(fn)).first;
+        }
+        it->second(const_cast<ScriptApi*>(api_));
+        return true;
+    }
 private:
     const ScriptApi* api_;
     CsStartFn        start_;
     CsUpdateFn       update_;
+    std::wstring     asm_path_;
+    std::wstring     type_name_;
+    std::unordered_map<std::string, CsCommandFn> commands_;
 };
 
 class CsHost final : public ScriptHost {
@@ -240,7 +274,8 @@ public:
 
         return std::make_unique<CsInstance>(api,
                                             reinterpret_cast<CsStartFn>(start_fn),
-                                            reinterpret_cast<CsUpdateFn>(update_fn));
+                                            reinterpret_cast<CsUpdateFn>(update_fn),
+                                            wasm, wtype);
     }
 };
 

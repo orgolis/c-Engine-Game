@@ -74,6 +74,10 @@ namespace {
 
 using StartFn  = void (*)(const SchizoScriptApi*, unsigned);
 using UpdateFn = void (*)(const SchizoScriptApi*, unsigned, float);
+// Phase 4.8: a command entry point. Takes the api so an extension command can
+// do the same things on_start can, and nothing else -- a command is a verb, not
+// a lifecycle hook.
+using CommandFn = void (*)(const SchizoScriptApi*);
 
 // Run a command line, capture combined stdout+stderr, return exit code.
 int run_capture(const std::string& cmd, std::string& out) {
@@ -107,6 +111,22 @@ public:
     bool update(uint32_t entity, float dt, std::string& err) override {
         (void)err;
         if (update_) update_(reinterpret_cast<const SchizoScriptApi*>(api_), entity, dt);
+        return true;
+    }
+
+    // The token is an exported symbol name. Resolved on each call rather than
+    // cached at load: the set of commands is decided by the script at run time,
+    // so there is no list to resolve against when the DLL is opened.
+    bool invoke(const char* token, std::string& err) override {
+        if (!token || !*token) { err = "empty command token"; return false; }
+        if (!mod_) { err = "script module is not loaded"; return false; }
+        auto fn = reinterpret_cast<CommandFn>(GetProcAddress(mod_, token));
+        if (!fn) {
+            err = std::string("the script exports no function named '") + token +
+                  "' (it must be extern \"C\" and __declspec(dllexport))";
+            return false;
+        }
+        fn(reinterpret_cast<const SchizoScriptApi*>(api_));
         return true;
     }
 

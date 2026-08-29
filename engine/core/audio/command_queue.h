@@ -18,13 +18,21 @@
 namespace gws::audio {
 
 struct Command {
-    enum class Type : uint8_t { Play, Stop, SetVoice, SetListener, SetOcclusion };
+    enum class Type : uint8_t { Play, Stop, SetVoice, SetListener, SetOcclusion, SetBus };
     Type        type     = Type::Play;
     VoiceId     voice    = kInvalidVoice;
     ClipId      clip     = kInvalidClip;
     float       scalar   = 0.0f;        // single-value payload (e.g. occlusion)
     VoiceParams params;
     Listener    listener;
+    // SetBus payload. Deliberately the bus FIELDS and not a Bus struct: Bus
+    // carries a std::string name, and a ring buffer the audio thread drains
+    // must stay trivially copyable and allocation-free. Names are set at setup
+    // time (like add_clip), never from a command.
+    BusId       bus       = kInvalidBus;
+    float       bus_gain  = 1.0f;
+    bool        bus_mute  = false;
+    bool        bus_solo  = false;
 };
 
 class CommandQueue {

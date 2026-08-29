@@ -97,6 +97,20 @@ typedef struct SchizoScriptApi {
     float (*distance)(void* ctx, unsigned a, unsigned b);
     void  (*translate)(void* ctx, unsigned e, const float delta[3]);
     bool  (*get_forward)(void* ctx, unsigned e, float out[3]);
+    /* editor extensions (Phase 4.8) -- non-null ONLY for scripts loaded from
+       the project's editor_scripts/ folder. A gameplay script sees null here.
+       A command entry point is:
+           SCHIZO_SCRIPT void my_command(const SchizoScriptApi* api) { ... }
+       and is named to register_command as its token. */
+    void (*register_command)(void* ctx, const char* title, const char* category,
+                             const char* token);
+    bool (*run_command)(void* ctx, const char* title);
+    unsigned (*selected_entity)(void* ctx);
+    void     (*select_entity)(void* ctx, unsigned e);
+    int      (*entity_count)(void* ctx);
+    unsigned (*entity_at)(void* ctx, int index);
+    int      (*entity_name)(void* ctx, unsigned e, char* out, int out_size);
+    void     (*set_status)(void* ctx, const char* msg);
 } SchizoScriptApi;
 
 }  // extern "C"

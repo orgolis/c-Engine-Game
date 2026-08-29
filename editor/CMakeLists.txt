@@ -66,6 +66,9 @@ target_sources(editor
     src/timeline_panel.cpp
     src/level_tools.cpp
     src/level_tools_panel.cpp
+    src/audio_mixer_panel.cpp
+    src/editor_extensions.cpp
+    src/extensions_panel.cpp
     src/material_graph_panel.cpp
     src/shader_compile_service.cpp
     ../engine/core/shadergraph/material_graph.cpp

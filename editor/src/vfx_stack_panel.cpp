@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <vector>
+#include <cstdint>
 
 namespace schizo::editor {
 

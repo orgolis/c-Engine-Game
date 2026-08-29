@@ -278,6 +278,7 @@ void write_entity_block(std::ofstream& file,
         file << "AUDIO_SRC_LOOP="          << (as->IsLooping() ? "1" : "0") << "\n";
         file << "AUDIO_SRC_SPATIAL="       << (as->IsSpatial() ? "1" : "0") << "\n";
         file << "AUDIO_SRC_PLAY_ON_START=" << (as->PlayOnStart() ? "1" : "0") << "\n";
+        file << "AUDIO_SRC_BUS="           << as->GetBus() << "\n";
     }
 
     // Audio Listener
@@ -581,6 +582,7 @@ struct ParsedEntity {
     bool        audio_src_loop          = false;
     bool        audio_src_spatial       = true;
     bool        audio_src_play_on_start = false;
+    std::string audio_src_bus           = "Master";
 
     bool        has_audio_listener      = false;
     float       audio_listener_gain     = 1.0f;
@@ -809,6 +811,7 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
     if (starts_with(line, "AUDIO_SRC_LOOP", v))          { p.audio_src_loop = (v == "1"); return; }
     if (starts_with(line, "AUDIO_SRC_SPATIAL", v))       { p.audio_src_spatial = (v == "1"); return; }
     if (starts_with(line, "AUDIO_SRC_PLAY_ON_START", v)) { p.audio_src_play_on_start = (v == "1"); return; }
+    if (starts_with(line, "AUDIO_SRC_BUS", v))           { p.audio_src_bus = v; return; }
     if (starts_with(line, "HAS_AUDIO_LISTENER", v))      { p.has_audio_listener = (v == "1"); return; }
     if (starts_with(line, "AUDIO_LISTENER_GAIN", v))     { p.audio_listener_gain = std::stof(v); return; }
     if (starts_with(line, "AUDIO_LISTENER_ACTIVE", v))   { p.audio_listener_active = (v == "1"); return; }
@@ -1013,6 +1016,7 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
             as->SetLooping(p.audio_src_loop);
             as->SetSpatial(p.audio_src_spatial);
             as->SetPlayOnStart(p.audio_src_play_on_start);
+            as->SetBus(p.audio_src_bus);
         }
     }
 

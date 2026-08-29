@@ -14,6 +14,13 @@ void Mixer::init(AudioFormat fmt) {
     clips_.reserve(1024);          // append-only without realloc while playing
     listener_ = Listener{};
     active_count_ = 0;
+
+    // One scratch block per POSSIBLE bus, not per current bus: buses can be
+    // added after init(), and a resize here would have to happen on whichever
+    // thread called add() while mix() was reading.
+    buses_.reset_to_defaults();
+    scratch_.assign(static_cast<size_t>(kMaxBuses) * kMaxBlockFrames * fmt.channels, 0.0f);
+    for (float& p : bus_peak_) p = 0.0f;
 }
 
 ClipId Mixer::add_clip(Clip clip) {
@@ -68,6 +75,16 @@ void Mixer::set_listener(const Listener& l) {
     queue_.push(c);
 }
 
+void Mixer::set_bus(BusId b, const Bus& value) {
+    Command c;
+    c.type     = Command::Type::SetBus;
+    c.bus      = b;
+    c.bus_gain = value.gain;
+    c.bus_mute = value.mute;
+    c.bus_solo = value.solo;
+    queue_.push(c);
+}
+
 void Mixer::drain_commands() {
     Command c;
     while (queue_.pop(c)) {
@@ -89,6 +106,15 @@ void Mixer::drain_commands() {
                 break;
             case Command::Type::SetListener:
                 listener_ = c.listener;
+                break;
+            case Command::Type::SetBus:
+                // Only the three mixable fields; name and parent are structure,
+                // which the command deliberately cannot carry.
+                if (Bus* b = buses_.bus(c.bus)) {
+                    b->gain = c.bus_gain < 0.0f ? 0.0f : c.bus_gain;
+                    b->mute = c.bus_mute;
+                    b->solo = c.bus_solo;
+                }
                 break;
         }
     }
@@ -117,19 +143,66 @@ void Mixer::mix(float* out, uint32_t frames) {
 
     drain_commands();
 
-    size_t active = 0;
-    for (Voice& v : voices_) {
-        if (!v.active) continue;
-        if (v.clip == kInvalidClip || v.clip > clips_.size()) { v.active = false; continue; }
-        mix_voice(v, clips_[v.clip - 1], out, frames);
-        if (v.active) ++active;
+    // Peaks describe THIS call, so they reset here and accumulate across chunks.
+    for (float& p : bus_peak_) p = 0.0f;
+
+    const size_t nbus = buses_.count();
+    uint32_t     done = 0;
+    while (done < frames) {
+        const uint32_t n = (frames - done) < kMaxBlockFrames ? (frames - done) : kMaxBlockFrames;
+        mix_block(out + static_cast<size_t>(done) * ch, n, nbus);
+        done += n;
     }
+
+    // Counted after every chunk, because a voice can end partway through one.
+    size_t active = 0;
+    for (const Voice& v : voices_) if (v.active) ++active;
     active_count_ = active;
 
     const float mg = listener_.master_gain;
     if (mg != 1.0f) {
         const size_t n = static_cast<size_t>(frames) * ch;
         for (size_t i = 0; i < n; ++i) out[i] *= mg;
+    }
+}
+
+// Sum every voice into ITS OWN bus, then fold the buses into the output.
+//
+// A per-voice "multiply by the bus gain" would produce identical audio and no
+// meter: a bus's level is the level of the SUM of its voices, and once the
+// voices are already mixed into the master there is nothing left to measure.
+// The accumulation is also where a per-bus effect would go later.
+void Mixer::mix_block(float* out, uint32_t frames, size_t nbus) {
+    const uint32_t ch     = format_.channels;
+    const size_t   stride = static_cast<size_t>(kMaxBlockFrames) * ch;
+    const size_t   used   = static_cast<size_t>(frames) * ch;
+
+    for (size_t b = 0; b < nbus; ++b)
+        std::fill(scratch_.begin() + b * stride, scratch_.begin() + b * stride + used, 0.0f);
+
+    for (Voice& v : voices_) {
+        if (!v.active) continue;
+        if (v.clip == kInvalidClip || v.clip > clips_.size()) { v.active = false; continue; }
+        // A voice naming a bus that no longer exists is routed to Master rather
+        // than dropped: a sound that vanishes is reported as a missing asset and
+        // costs far more to diagnose than one playing on the wrong fader.
+        BusId b = v.params.bus;
+        if (b >= nbus) b = kMasterBus;
+        mix_voice(v, clips_[v.clip - 1], &scratch_[static_cast<size_t>(b) * stride], frames);
+    }
+
+    for (size_t b = 0; b < nbus; ++b) {
+        const float g = buses_.effective_gain(static_cast<BusId>(b));
+        if (g == 0.0f) continue;             // muted or un-soloed: contributes nothing, meters zero
+        const float* src  = &scratch_[b * stride];
+        float        peak = bus_peak_[b];
+        for (size_t i = 0; i < used; ++i) {
+            const float sample = src[i] * g;
+            out[i] += sample;
+            const float mag = sample < 0.0f ? -sample : sample;
+            if (mag > peak) peak = mag;
+        }
+        bus_peak_[b] = peak;
     }
 }
 

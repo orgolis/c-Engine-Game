@@ -387,6 +387,50 @@ void build_engine_module(pkpy::VM* vm) {
         return vm->None;
     });
 
+    // ---- editor extensions (Phase 4.8) ----
+    // Null for gameplay scripts, so calling these from one is a clean no-op
+    // rather than a crash -- the table simply has no editor entries filled.
+    vm->bind(mod, "register_command(title: str, category: str, token: str) -> None",
+             [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->register_command)
+            g_api->register_command(g_api->ctx, sarg(vm, args[0]).c_str(),
+                                    sarg(vm, args[1]).c_str(), sarg(vm, args[2]).c_str());
+        return vm->None;
+    });
+    vm->bind(mod, "run_command(title: str) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        const bool r = (g_api && g_api->run_command)
+                     ? g_api->run_command(g_api->ctx, sarg(vm, args[0]).c_str()) : false;
+        return VAR(r);
+    });
+    vm->bind(mod, "selected_entity() -> int", [](pkpy::VM* vm, pkpy::ArgsView) {
+        pkpy::i64 r = (g_api && g_api->selected_entity) ? g_api->selected_entity(g_api->ctx) : 0;
+        return VAR(r);
+    });
+    vm->bind(mod, "select_entity(e: int) -> None", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->select_entity) g_api->select_entity(g_api->ctx, earg(vm, args[0]));
+        return vm->None;
+    });
+    vm->bind(mod, "entity_count() -> int", [](pkpy::VM* vm, pkpy::ArgsView) {
+        pkpy::i64 r = (g_api && g_api->entity_count) ? g_api->entity_count(g_api->ctx) : 0;
+        return VAR(r);
+    });
+    vm->bind(mod, "entity_at(index: int) -> int", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        pkpy::i64 r = (g_api && g_api->entity_at)
+                    ? g_api->entity_at(g_api->ctx, static_cast<int>(CAST(pkpy::i64, args[0]))) : 0;
+        return VAR(r);
+    });
+    vm->bind(mod, "entity_name(e: int) -> str", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        char buf[128];
+        buf[0] = 0;
+        if (g_api && g_api->entity_name)
+            g_api->entity_name(g_api->ctx, earg(vm, args[0]), buf, static_cast<int>(sizeof buf));
+        return VAR(pkpy::Str(buf));
+    });
+    vm->bind(mod, "set_status(msg: str) -> None", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->set_status) g_api->set_status(g_api->ctx, sarg(vm, args[0]).c_str());
+        return vm->None;
+    });
+
     // ---- spatial helpers ----
     vm->bind(mod, "distance(a: int, b: int) -> float", [](pkpy::VM* vm, pkpy::ArgsView args) {
         float d = (g_api && g_api->distance) ? g_api->distance(g_api->ctx, earg(vm, args[0]), earg(vm, args[1])) : -1.0f;
@@ -431,6 +475,36 @@ public:
     bool update(uint32_t entity, float dt, std::string& err) override {
         if (on_update_ == nullptr) return true;
         return call1(on_update_, entity, /*with_dt=*/true, dt, err);
+    }
+
+    // Phase 4.8: a command's token is the name of a module-level function.
+    bool invoke(const char* token, std::string& err) override {
+        if (!token || !*token) { err = "empty command token"; return false; }
+        auto* vm = vm_.get();
+        if (vm->_main == nullptr) { err = "script module is gone"; return false; }
+        pkpy::PyVar fn = vm->_main->attr().try_get(pkpy::StrName(token));
+        if (fn == nullptr) {
+            // Named and missing is the likeliest authoring mistake -- a command
+            // registered against a function that was renamed or never written --
+            // so it says which name it looked for rather than failing mutely.
+            err = std::string("no function named '") + token + "' in this script";
+            return false;
+        }
+        g_api = api_;
+        g_py_err.clear();
+        try {
+            vm->call(fn);
+            return true;
+        } catch (pkpy::Exception& e) {
+            pkpy::Str t = e.summary();
+            err.assign(t.data, static_cast<size_t>(t.size));
+        } catch (const std::exception& e) {
+            err = e.what();
+        } catch (...) {
+            err = "unknown script error";
+        }
+        if (err.empty() && !g_py_err.empty()) err = g_py_err;
+        return false;
     }
 
 private:

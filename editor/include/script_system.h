@@ -37,6 +37,17 @@ public:
     // Both return false on script error; `err` gets the message.
     virtual bool start(uint32_t entity, std::string& err) = 0;
     virtual bool update(uint32_t entity, float dt, std::string& err) = 0;
+
+    /// Call a no-argument entry point named `token` (Phase 4.8) -- how an editor
+    /// command registered by a script gets back into that script when someone
+    /// runs it. Not pure virtual: a backend that cannot do it stays compilable
+    /// and simply reports so, rather than every host being forced to grow a stub
+    /// on the day this was added.
+    virtual bool invoke(const char* token, std::string& err) {
+        err = std::string("this script backend cannot invoke '") +
+              (token ? token : "") + "'";
+        return false;
+    }
 };
 
 class ScriptHost {

@@ -180,10 +180,22 @@ The cross-cutting integration debt specifically:
   **Phase 4 authoring is now mostly built** (as of v0.7.0): material graph (4.1), command palette (4.2),
   **VFX module stack** (4.3), timeline/sequencer (4.4), curve + gradient editors (4.5), animation state-machine
   graph editor (4.6) and the level-design toolkit (4.7) all exist.
-  **Remaining:** editor extensibility via the scripting backends (4.8), the audio mixer/bus UI (4.9), and richer
-  debug visualization (navmesh/AI/froxels). **Persistence is the honest gap:** of the five authoring documents,
-  only `.vfx` saves — `MaterialGraph`, `AnimGraph` and `Sequence` still have no serialisation at all, so a
-  material graph or a cutscene is lost when the editor closes.
+  **Phase 4 is COMPLETE as of v0.8.0** — 4.8 (editor extensibility via all three scripting backends: scripts in
+  `<project>/editor_scripts/` register palette commands and can run any editor command by name, `Window ›
+  Extensions`) and 4.9 (**audio mix buses** + the mixer panel — the plan claimed this rode an existing Stage-6
+  bus graph and there was none, so the routing layer was built first).
+  **Remaining:** richer debug visualization (navmesh/AI/froxels).
+  **Persistence is still the honest gap, and closing Phase 4 does not close it:** of the five authoring
+  documents only `.vfx` and the v0.8.0 mixer layout save. `MaterialGraph`, `AnimGraph` and `Sequence` still have
+  **no serialisation at all**, so a material graph or a cutscene is lost when the editor closes. This is a
+  bigger hole than either v0.8.0 item filled and is the strongest candidate for the next release.
+- **CI coverage — found during v0.8.0.** `gws test` discovers checks by scanning for `*_check` binaries beside
+  itself, so a check CI never *builds* is a check CI never *runs*, silently and with a green tick. CI was
+  building **35 of 68**. Among the 33 orphans was `includes_check` — written after a missing `<cstdint>` broke
+  the **v0.6.0 release build**, and never once run by CI; it was failing on eleven files. 31 orphans now build
+  and pass. **Two remain red on `main` and are excluded by name, not hidden:** `shadersource_check`
+  (`gbuffer_scene.vert`, `gbuffer_scene.frag` and `shadow_caster.frag` no longer compile to the SPIR-V that
+  ships) and `terrainmat_check` (one UBO-size assertion). Both predate v0.8.0 and are **open**.
 - **Stage 12 — Scripting** 🟢 done — **exceeds plan**: Python + C++ + C# backends all built + verified (`script_check`)
   with hot reload (plan only asked for Lua).
 - **Stage 13 — Platform** 🔴 Windows-only. **Remaining:** Linux (+ the headless server), consoles, mobile.

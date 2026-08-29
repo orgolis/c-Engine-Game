@@ -6,6 +6,7 @@
 
 #include <fstream>
 #include <sstream>
+#include <cstdint>
 
 namespace schizo::vfx {
 namespace {

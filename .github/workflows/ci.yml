@@ -1,16 +1,13 @@
 # ============================================================================
 # Continuous integration — build the tree and run the headless check suite.
-#
 # WHY THIS EXISTS: `release-engine.yml` only triggers on `v*` tags, so nothing
 # validated the tree between releases. That blind spot let a broken clean clone
 # survive twenty consecutive releases (see issue #2). This workflow runs on
 # every pull request and every push to main, so breakage surfaces immediately
 # instead of at release time.
-#
 # It builds with the project's canonical toolchain (MinGW-UCRT g++ + Ninja +
 # Vulkan SDK) rather than the pinned absolute paths in CMakePresets.json, which
 # point at a local Strawberry install that does not exist on a runner.
-#
 # NOTE for editors of this file: never put `shell:` on a `uses:` step. That is
 # invalid and fails the run in 0s — it has bitten this repo twice before.
 # ============================================================================
@@ -81,12 +78,31 @@ jobs:
         # so a compile break there sailed past a green CI run and only failed at
         # release time. Building the editor closes that hole.
         run: |
+          # The 33 targets added below existed for months and CI built NONE of
+          # them, so `gws test` -- which finds checks by scanning for *_check
+          # binaries beside itself -- never saw them. includes_check is the
+          # sharpest case: written after a missing <cstdint> broke the v0.6.0
+          # RELEASE build, and never once run by CI.
+          #
+          # Two are still absent because they FAIL on main today and predate
+          # this change: shadersource_check (gbuffer_scene.vert/.frag and
+          # shadow_caster.frag no longer compile to the SPIR-V that ships) and
+          # terrainmat_check (one UBO-size assertion). Left out so this does not
+          # turn CI red for faults it did not introduce -- named, not dropped.
           cmake --build build -j $(nproc) --target \
             gameplay_check physics_check net_check repl_check server_check \
             mp_check prediction_check audio_check profiler_check texture_check \
             model_check anim_check skinning_check skinned_import_check \
             ai_check ui_check world_check combat_check vfx_check crash_check \
             vfxgraph_check emitter_check scenereflect_check sceneio_check componentsync_check bindless_check material_check \
+            animgraph_check assetdrop_check assetops_check assetpath_check assetwatch_check \
+            canvasview_check cullbench_check curve_check ecsauthority_check editcoalesce_check \
+            includes_check leveltools_check locomotion_check materialcache_check navbake_check \
+            navrebase_check npcagent_check palette_check phase3exit_check physrebase_check \
+            playchanges_check prefab_check reflectio_check sequence_check shadercompile_check \
+            shadergraph_check snap_check taskrunner_check texgen_check undo_check \
+            vehiclemove_check \
+            audiobus_check extension_check \
             script_check assetcook dedicated_server editor gws headless docgen projectctl innerloop_check
 
       - name: Run the check suite
@@ -130,11 +146,9 @@ jobs:
 
       - name: Inner-loop budgets
         # Phase 2 exit criterion (#14). Two jobs, deliberately separated:
-        #
         #   PUBLISH — the numbers land in the run summary every time, so drift
         #   is visible in the PR rather than discovered a year later when the
         #   inner loop is already slow. This is the part that does the work.
-        #
         #   GATE — --tolerance 4 fails only at 4x budget. A shared runner is
         #   virtualised, noisily co-tenanted and an order slower on I/O than a
         #   dev box; gating at 1x would fail honest PRs, and a gate that cries
@@ -143,7 +157,6 @@ jobs:
         #   six commits because a grep inverted the result. So CI catches
         #   order-of-magnitude regressions and the published trend catches the
         #   rest.
-        #
         # editor_cold_start reports "unmeasured" here: --startup-probe needs a
         # Vulkan device and runners have none. It IS measured on a developer
         # machine, and saying so beats pretending the row is covered.

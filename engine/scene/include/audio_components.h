@@ -56,6 +56,14 @@ public:
     bool PlayOnStart() const { return play_on_start_; }
     void SetPlayOnStart(bool b) { play_on_start_ = b; }
 
+    // Mix bus, BY NAME (Phase 4.9). The authoring layer stores the name and the
+    // runtime resolves it to a BusId every frame, so adding or reordering buses
+    // in the mixer cannot re-point sounds that were authored earlier -- which
+    // storing the index here would do silently, and only to already-saved scenes.
+    // An unknown name falls back to Master audibly rather than muting the source.
+    const std::string& GetBus() const { return bus_; }
+    void               SetBus(const std::string& b) { bus_ = b.empty() ? "Master" : b; }
+
     // Runtime-only: whether the source should currently sound (edit-mode preview
     // or Play mode). Not serialized.
     bool IsPlaying() const { return playing_; }
@@ -79,6 +87,7 @@ private:
     // is audible as soon as Play starts. Defaulting this off was the #1 cause
     // of "audio not working" reports — the source sat silent with no feedback.
     bool        play_on_start_ = true;
+    std::string bus_           = "Master";
     bool        playing_       = false;   // runtime only — not serialized
 };
 

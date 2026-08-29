@@ -57,6 +57,8 @@
 #include "profiler/frame_capture.h" // N5: one-frame draw-list snapshot
 #include "memory/memory_snapshot.h" // N3: per-tag live bytes + allocator registry
 #include "audio/audio_engine.h"     // Stage 6: miniaudio device + spatial mixer
+#include "audio_mixer_panel.h"       // Phase 4.9: mix-bus faders / mute / solo / meters
+#include "editor_extensions.h"      // Phase 4.8: user-written editor extensions
 #include "physics/jolt_physics.h"   // Stage 6 step 6: raycast for audio occlusion
 #include "net_profiler.h"           // N4: network bandwidth / RTT / loss / rollback
 #include "vulkan/gpu_profiler.h"    // N2: per-pass GPU timing
@@ -181,6 +183,7 @@ struct EditorState {
     bool show_post_processing = true;   // closable Post-Processing dock panel
     bool show_terminal = true;          // embedded OS shell terminal panel
     bool show_output = true;            // editor log output console panel
+    bool show_audio_mixer = false;      // Audio Mixer panel (Phase 4.9)
 
     // Transient status line shown over the viewport (mesh apply/import result etc).
     std::string status_message;
@@ -190,6 +193,13 @@ struct EditorState {
     // The persistent ECS bridge (set in main). Lets the inspector author gameplay
     // components on an entity's authoritative ECS entity (F1/F2).
     schizo::editor::EcsSceneBridge* ecs_bridge = nullptr;
+
+    // The audio engine (set in main), for the same reason as ecs_bridge. The
+    // Inspector needs the mix-bus NAMES to offer a routing dropdown, and the
+    // Audio Mixer panel edits the very same table -- there is one bus table in
+    // the process, owned by the Mixer, so the panel and the sounds can never
+    // disagree about what "SFX" means.
+    gws::audio::AudioEngine* audio = nullptr;
 
     // Terrain sculpting (Phase A). Brush state shared by the Inspector's
     // Terrain section and the viewport sculpt handler.
@@ -401,6 +411,17 @@ struct EditorState {
     schizo::editor::ScriptSystem    script_system;
     schizo::editor::EditorScriptCtx script_ctx;
     schizo::editor::ScriptApi       script_api;
+
+    // Editor extensions (Phase 4.8). A SEPARATE ctx + table from the gameplay
+    // one above, deliberately: bind_editor_script_api only wires the editor
+    // entries when the ctx carries a command registry, so a gameplay script's
+    // table leaves register_command and friends null and cannot reach the
+    // editor even by accident. Sharing one table would hand every gameplay
+    // script the ability to rewrite the command palette.
+    schizo::editor::ExtensionSystem extensions;
+    schizo::editor::EditorScriptCtx extension_ctx;
+    schizo::editor::ScriptApi       extension_api;
+    bool show_extensions = false;
     double script_play_time = 0.0;   // seconds since Play started
 
     // ---- Project system (modular features + launcher) ----
@@ -1630,6 +1651,8 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             ImGui::MenuItem("Animation State Machine", nullptr, &editor_state.show_anim_graph);
             ImGui::MenuItem("Performance (Stage 14)", nullptr, &editor_state.show_performance);
             ImGui::MenuItem("Debug Panels (Phase 6)", nullptr, &editor_state.show_debug_panels);
+            ImGui::MenuItem("Audio Mixer", nullptr, &editor_state.show_audio_mixer);
+            ImGui::MenuItem("Extensions", nullptr, &editor_state.show_extensions);
             ImGui::MenuItem("Post-Processing", nullptr, &editor_state.show_post_processing);
             ImGui::MenuItem("Output (Log)", nullptr, &editor_state.show_output);
             ImGui::MenuItem("Terminal", nullptr, &editor_state.show_terminal);
@@ -3241,6 +3264,34 @@ void ShowInspector(EditorState& editor_state) {
                 bool play_start = audio_src->PlayOnStart();
                 if (ImGui::Checkbox("Play on Start##audiosrc", &play_start)) {
                     audio_src->SetPlayOnStart(play_start); editor_state.editor_scene->MarkModified();
+                }
+
+                // Bus routing (4.9). Without this the mixer's faders control
+                // nothing a person can assign, which is the v0.7.15 failure --
+                // every control present, no route to it.
+                if (editor_state.audio) {
+                    const gws::audio::BusGraph& bg = editor_state.audio->mixer().buses();
+                    const std::string cur = audio_src->GetBus();
+                    if (ImGui::BeginCombo("Bus##audiosrc", cur.c_str())) {
+                        for (size_t i = 0; i < bg.count(); ++i) {
+                            const gws::audio::Bus* b = bg.bus(static_cast<gws::audio::BusId>(i));
+                            if (!b) continue;
+                            const bool sel = (b->name == cur);
+                            if (ImGui::Selectable(b->name.c_str(), sel)) {
+                                audio_src->SetBus(b->name);
+                                editor_state.editor_scene->MarkModified();
+                            }
+                            if (sel) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    // A scene authored against a bus this project no longer has
+                    // still plays -- on Master -- and says so, rather than the
+                    // sound quietly moving faders nobody expects.
+                    if (bg.find(cur) == gws::audio::kInvalidBus)
+                        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
+                                           "Bus \"%s\" not in this project - playing on Master",
+                                           cur.c_str());
                 }
 
                 ImGui::Separator();
@@ -6811,6 +6862,30 @@ int main(int argc, char** argv) {
         spdlog::info("[script] backends registered: .py (Python/pocketpy), "
                      ".cpp/.cc (native C++ via g++), .cs (C#/.NET)");
 
+        // Editor extensions (Phase 4.8): the same three backends, separate
+        // instances -- a VM shared with gameplay scripts would let one clobber
+        // the other's globals.
+        editor_state.extensions.register_host(".py", schizo::editor::make_python_host());
+        if (auto ext_cpp = schizo::editor::make_cpp_host())
+            editor_state.extensions.register_host(".cpp", std::move(ext_cpp));
+        if (auto ext_cs = schizo::editor::make_cs_host())
+            editor_state.extensions.register_host(".cs", std::move(ext_cs));
+        {
+            auto& ectx      = editor_state.extension_ctx;
+            ectx.commands   = &editor_state.commands;
+            ectx.extensions = &editor_state.extensions;
+            // Selection and status as callables, so this header never has to
+            // know what EditorState is.
+            ectx.get_selection = [&editor_state] { return editor_state.selected_entity_id; };
+            ectx.set_selection = [&editor_state](uint32_t e) {
+                editor_state.selected_entity_id = e;
+            };
+            ectx.set_status = [&editor_state](const std::string& m) {
+                editor_state.set_status(m);
+            };
+            schizo::editor::bind_editor_script_api(editor_state.extension_api, &ectx);
+        }
+
         // ----------------------------------------------------------------
         // Populate default base scene — light + ground only. The user adds
         // additional entities via the Scene Hierarchy "+ Add Entity" menu.
@@ -7038,6 +7113,17 @@ int main(int argc, char** argv) {
         // scene each frame (clip decode-on-first-play + per-entity voice map).
         schizo::editor::EditorAudioDriver audio_driver(audio);
 
+        // The Inspector needs the bus names to offer routing, so it gets the
+        // engine the same way it gets the ECS bridge.
+        editor_state.audio = &audio;
+        {
+            // A project with no layout file keeps BusGraph's seeded defaults --
+            // that is a working mixer, not a failure, so this never warns.
+            std::string berr;
+            if (schizo::editor::load_audio_buses(audio, &berr))
+                spdlog::info("[audio] project bus layout applied");
+        }
+
         {
             // One-time live self-check that the parallel path works end-to-end
             // in the real build (not just standalone tests).
@@ -7183,6 +7269,17 @@ int main(int argc, char** argv) {
             cmds.add("Toggle Inspector", "Window", "", [&st] {
                 st.show_inspector = !st.show_inspector;
             });
+            cmds.add("Toggle Audio Mixer", "Window", "", [&st] {
+                st.show_audio_mixer = !st.show_audio_mixer;
+            });
+            cmds.add("Toggle Extensions", "Window", "", [&st] {
+                st.show_extensions = !st.show_extensions;
+            });
+            cmds.add("Reload Editor Extensions", "Script", "", [&st] {
+                st.extensions.reload_all(st.commands, st.extension_api);
+                st.set_status("Reloaded " + std::to_string(st.extensions.extensions().size()) +
+                              " editor extension(s)");
+            });
             cmds.add("Toggle Asset Browser", "Window", "", [&st] {
                 st.show_asset_browser = !st.show_asset_browser;
             });
@@ -7214,6 +7311,15 @@ int main(int argc, char** argv) {
         }
 
         spdlog::info("[palette] {} commands registered", cmds.size());
+
+        // Editor extensions load LAST, after every built-in command exists --
+        // an extension may call run_command("Save Scene") from its on_start, and
+        // loading first would make that depend on registration order.
+        editor_state.extensions.load_all(
+            schizo::editor::project_root() / "editor_scripts",
+            editor_state.commands, editor_state.extension_api);
+        if (!editor_state.extensions.extensions().empty())
+            spdlog::info("[palette] {} commands after extensions", cmds.size());
         }
 
         // Shader compiler for material graphs (4.1). Looked for beside the
@@ -7960,6 +8066,19 @@ int main(int argc, char** argv) {
                 editor_state.script_api.time = editor_state.script_play_time;
                 editor_state.script_system.update(ctx.scene, script_play,
                                                   delta_time, editor_state.script_api);
+
+                // Editor extensions run in EDIT mode, so their ctx is refreshed
+                // every frame regardless of play state.
+                auto& ectx    = editor_state.extension_ctx;
+                ectx.scene    = ctx.scene;
+                ectx.playback = ctx.playback;
+                ectx.window   = ctx.window;
+                ectx.bridge   = ctx.bridge;
+                ectx.dt       = delta_time;
+                editor_state.extension_api.dt   = delta_time;
+                editor_state.extension_api.time = editor_state.script_play_time;
+                editor_state.extensions.poll(editor_state.commands,
+                                             editor_state.extension_api, delta_time);
             }
 
             // Multiplayer: report this instance's player (entity id + position;
@@ -8223,6 +8342,17 @@ int main(int argc, char** argv) {
             { GWS_PROFILE_ZONE("ui_inspector");   ShowInspector(editor_state); }
             { GWS_PROFILE_ZONE("ui_assetbrowser"); ShowAssetBrowser(editor_state); }
             { GWS_PROFILE_ZONE("ui_playback");    ShowPlaybackControls(editor_state); }
+            if (editor_state.show_audio_mixer) {
+                GWS_PROFILE_ZONE("ui_audiomixer");
+                schizo::editor::ShowAudioMixer(&editor_state.show_audio_mixer, audio);
+            }
+            if (editor_state.show_extensions) {
+                GWS_PROFILE_ZONE("ui_extensions");
+                schizo::editor::ShowExtensionsPanel(&editor_state.show_extensions,
+                                                    editor_state.extensions,
+                                                    editor_state.commands,
+                                                    editor_state.extension_api);
+            }
             { GWS_PROFILE_ZONE("ui_performance"); ShowPerformanceOverlay(editor_state); }
             if (editor_state.show_vfx_stack) {
                 GWS_PROFILE_ZONE("ui_vfxstack");

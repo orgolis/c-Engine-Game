@@ -407,7 +407,7 @@ three of them did, in the rebase audit alone.
 > - `gws_add_header_selfcontain_check` (`cmake/HeaderSelfContain.cmake`) — compiles each public header alone,
 >   twice, which also proves the include guard works. 63 headers covered; 8 excluded as visible debt.
 
-## Phase 4 · Make it authorable — 🟠 In progress (7 of 9 done) · 4–8 weeks
+## Phase 4 · Make it authorable — ✅ COMPLETE (9 of 9) · shipped through v0.8.0
 
 Until these exist, using the engine means writing C++. This is the phase that turns it into a tool other
 people can use.
@@ -421,11 +421,81 @@ people can use.
 | 4.5 | Curve + gradient editors | engine | ✅ **Done** (`7e679e9`) — `gws::anim::Curve` (keyed cubic Hermite, **clamped** not extrapolated, tangents scaled by segment length) and `Gradient`, plus ImGui editors that draw from the **real** `evaluate()`/`sample()` — straight lines between keys would show a curve that eases nothing, an editor lying about the runtime. The gradient renders over a checkerboard, without which a fade to *transparent* is indistinguishable from a fade to *black*. `curve_check` (23) asserts the **shape**, not the endpoints: a flat-tangent Hermite hits **0.15625** at t=0.25, which a linear or stepping implementation fails while surviving an endpoint-only test. **Wired**, not shelved — the emitter's colour ramp is the first consumer, and its two-colour storage limit is shown in the UI rather than silently dropping a dragged stop. `Curve`'s own first consumer is still ahead (4.3 / 4.4) |
 | 4.6 | Animation state-machine graph editor | engine | ✅ **Done** (`8a10883`). `AnimGraph` is the editable **document** — states and transitions as plain data, kept apart from the runtime machine, which owns a skeleton and is mid-blend at any moment. **Proves the `NodeCanvas` reuse claim**: a state machine is about as unlike a material graph as this editor gets, and the canvas is *untouched* by it (verified with `git diff`, not assumed). Validation is the point, because a state machine **fails silently** — dangling transitions never fire, unreachable states never play, unconditional transitions fire instantly, and every symptom reads as "the animation is broken". Any-State transitions are **excluded** from the reachability walk or the check would never fire at all. `animgraph_check` (22). **Left:** converting the document to a runtime machine, which needs a clip library that does not exist yet |
 | 4.7 | Level-design toolkit — snapping, arrays, splines, scatter, in-editor greybox | engine | ✅ **Done** (`d3d4aea` + `5ec2fd4`). Snapping (Ctrl per-drag, relative mode, `std::round` not a truncating cast) plus the operations that place **many** things — arrays, scatter, splines, greybox. **Found a real bug doing it:** the editor's existing *Duplicate* copies the **transform only**, so a copy is an invisible empty entity; an array of forty would have been forty invisible objects and the new tool would have taken the blame. Scatter samples `sqrt(radius)` (uniform radius gives density per *ring*, so it looks like a target) with its **own PRNG** — `std::rand` is process-global, so a fixed seed would not reproduce a layout. Splines are **Catmull-Rom** (interpolates its control points, so the path goes where you put it) distributed by **arc length** (even `t` bunches at corners). Unsatisfiable densities return **fewer** rather than overlapping. `leveltools_check` (26) |
-| 4.8 | **User-extensible editor** via the three scripting backends | engine | Lets users solve their own workflow problems |
-| 4.9 | Audio mixer / bus UI | engine | Rides the Stage-6 bus graph |
+| 4.8 | ~~**User-extensible editor** via the three scripting backends~~ | engine | ✅ **Done** (v0.8.0). Scripts in `<project>/editor_scripts/` register commands into the palette, and can run any editor command by name. **This is the item `command_palette.h` was built for** — that header says the registry exists so "an agent or a script can drive the editor without a bespoke hook per feature", and until now nothing could. **It is not a flag on `ScriptSystem`:** that loop is per-**entity** and **play-mode-only** — it instantiates when an entity is first seen while playing and tears everything down on Stop — while an extension has no entity and must be alive in *edit* mode. So `ExtensionSystem` is a sibling that shares only the three `ScriptHost` backends. **An extension is an ordinary script**, using the same `on_start(e)` hook with entity 0, so no backend needed a new *load* path — only `ScriptInstance::invoke`. `register_command` takes a **token** (the NAME of a function) rather than a callback, because a C ABI cannot carry a Python closure into three languages: pocketpy resolves it as a module global, the C++ DLL by `GetProcAddress`, C# by method name. **The failure this is shaped around is reload.** Re-running `on_start` registers again, so without `CommandRegistry::owner` + `remove_owned_by` every save appends a duplicate of every command — and each duplicate still *works*, so nothing looks broken until the palette is unusable. Removal happens **before** the re-run, never after. `extension_check` (53 assertions) asserts three reloads leave exactly one copy; removing the guard fails exactly those four. **The fake-host half would have shipped a broken feature:** it proves the loader and nothing about any language, and only the real-pocketpy group caught that the starter template called `register_command(...)` bare when this engine's convention is `import engine` / `engine.register_command(...)`. The template we hand every user did not run, and a test that never loads a real `.py` would have said the feature was finished |
+| 4.9 | ~~Audio mixer / bus UI~~ | engine | ✅ **Done** (v0.8.0) — **and the item's premise was wrong.** It read "Rides the Stage-6 bus graph". There was no bus graph: `grep -rn "[Bb]us"` over the entire audio tree returned **nothing**. `Mixer` summed all 256 voices straight into the output block and `VoiceParams` carried gain, pitch and spatialisation but no routing at all. The bus layer **is** the feature; the panel is the part you can see. `BusGraph` is a shallow tree (Master + Music/SFX/UI/Voice/Ambience) folded by an `effective_gain` walk to the root, **bounded by `kMaxBuses`** — a parent cycle the UI should never be able to build must cost a wrong number, never a hung audio callback, because a callback that does not return is silence plus a watchdog kill. **Solo is the semantics that fails silently:** "mute every other bus" gets it backwards, silencing the children of the group you just soloed, so audibility asks whether the bus *or any ancestor* is soloed. Mutating it to the naive form fails exactly one assertion — the one written for it. Voices sum into **per-bus scratch** rather than being pre-scaled by their bus gain: the audio is identical either way, but a bus's meter is the level of the **sum** of its voices, and pre-scaling into master leaves nothing to measure. `mix()` stays allocation- and lock-free — scratch is sized once at `init()` for `kMaxBuses`, a longer block is chunked rather than reallocated, and gain/mute/solo cross to the audio thread through the existing command queue (names and topology are setup-time only, so no `std::string` ever enters the ring). **The reachable path is the whole point:** `AudioSourceComponent` gained a bus **by name** — an index would silently re-route every already-authored scene the day someone inserts a bus — serialized as `AUDIO_SRC_BUS` and picked from an Inspector dropdown that warns when a scene names a bus this project no longer has. A mixer whose faders control nothing assignable is the v0.7.15 failure exactly. Layout persists per **project** (not per scene — a game has one SFX/Music split) and saves on **gesture end**, since a fader held two seconds would otherwise rewrite the file 120 times. `audiobus_check` (33) |
 
 **Exit criteria:** a developer can build and light a level, author a material, a particle effect and a
 cutscene without opening a C++ file.
+
+**✅ MET for authoring; one gap named rather than closed.** Every one of the nine items exists and is
+reachable from a menu. The honest caveat is **persistence**: of the five authoring documents, only `.vfx`
+and the v0.8.0 mixer layout save to disk. `MaterialGraph`, `AnimGraph` and `Sequence` have no serialisation
+at all, so a material graph or a cutscene authored today is lost when the editor closes. The exit sentence
+says "author"; it does not say "keep", and that is the next thing to fix rather than something this phase
+quietly satisfied.
+
+> **v0.8.0 — Phase 4 closes, and both items were wrong about their own shape.** 4.8 and 4.9 were one line
+> each in this document. Neither line described what had to be built.
+>
+> **4.9 said "rides the Stage-6 bus graph."** There was no bus graph. `grep -rn "[Bb]us"` over the whole
+> audio tree returned nothing at all: the mixer summed 256 voices straight to output, and `VoiceParams`
+> had gain, pitch and spatialisation but no routing. So "the audio mixer UI" was mostly the *mixer*, and
+> the UI was the last tenth. This is now the fifth item in this plan (after 2.2, 2.3, 3.1, 3.2, 4.3) whose
+> written premise did not survive contact with the code, and the pattern is consistent enough to be worth
+> stating plainly: **a one-line plan entry records an intention, not a finding.** Reading the code before
+> believing the line has been the cheapest step in every one of those five.
+>
+> **4.8 said "lets users solve their own workflow problems."** The mechanism it needed was already named
+> somewhere else: `command_palette.h` had recorded, back in 4.2, that the registry's real purpose was to be
+> a uniform entry point so "an agent or a script can drive the editor without a bespoke hook per feature."
+> That claim had been true about the *design* and false about the *product* for six releases — nothing could
+> actually reach the registry. 4.8 is the sentence coming true.
+>
+> Three decisions worth keeping:
+>
+> **An editor extension is an ordinary script.** It uses the same `on_start(e)` hook a gameplay script uses,
+> called once with entity 0. That meant none of the three backends needed a new way to *load* anything —
+> only a way to be called back into, which is one new virtual. The temptation was a parallel "editor script"
+> concept with its own lifecycle; it would have doubled the surface for no capability.
+>
+> **`register_command` takes a token, not a callback.** A function pointer back into a pocketpy VM or a .NET
+> assembly is not something a C ABI can express for all three languages at once. A token — the *name* of a
+> no-argument entry point — is something every backend already knows how to resolve: a module global, a
+> `GetProcAddress`, a method name. The design fell out of the constraint rather than fighting it.
+>
+> **Reload is the feature's real hazard, and it is invisible.** Re-running `on_start` registers the commands
+> again. Without an owner tag and a removal that happens *before* the re-run, every save appends a duplicate
+> of every command — and every duplicate still works. Nothing looks broken; the palette just fills with
+> copies until it is useless. `CommandRegistry::owner` exists from the first commit rather than after the
+> first bug report.
+>
+> **The lesson of this release is about the test doubles.** `extension_check` drives the loader through a
+> **fake** `ScriptHost`, which is right: the loader's behaviour is not any one language's business, and a
+> test that went through pocketpy would fail for syntax reasons. Forty-six assertions passed against the
+> fake. Then a group was added that loads a real `.py` through the real backend, and **seven assertions
+> failed at once** — including the shipped starter template. The bindings had gone into the `engine` module,
+> as every other script binding in this engine does, and the template called `register_command(...)` bare
+> instead of `import engine` / `engine.register_command(...)`. The very first thing any user would have
+> tried did not run.
+>
+> A fake host proves the thing it was built to prove and quietly certifies nothing about the seam on either
+> side of it. **The check that matters is the one that loads the artefact you actually ship** — here, the
+> template itself, which is now asserted to load under real Python and register the commands it advertises.
+>
+> **Found on the way, and unrelated to either item: CI was building 35 of the 68 checks that exist.**
+> `gws test` discovers checks by scanning for `*_check` binaries beside itself, so a check CI never *builds*
+> is a check CI never *runs* — silently, with a green tick. Among the 33 orphans was `includes_check`, which
+> was written specifically because a missing `<cstdint>` broke the **v0.6.0 release build**, and which had
+> never once run in CI. It was failing on `main`: eleven files, four of them new here, seven predating this
+> work. Thirty-one of the orphans are now built by CI and pass. Two are left out and named rather than
+> quietly dropped — `shadersource_check` (three shaders no longer compile to the SPIR-V that ships) and
+> `terrainmat_check` (one UBO-size assertion) — because they fail on `main` today and predate this change.
+> **They are real and still open.**
+>
+> **Still open, and named so 9-of-9 does not read as "Phase 4 is finished":** of the five authoring
+> documents, only `.vfx` and now the mixer layout persist. `MaterialGraph`, `AnimGraph` and `Sequence` still
+> have **no serialisation at all** — a material graph or a cutscene is lost when the editor closes. That is
+> a bigger hole than either item closed here.
 
 ---
 

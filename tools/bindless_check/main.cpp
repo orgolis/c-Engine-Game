@@ -18,6 +18,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <cstdint>
 
 using gws::renderer::gpu::BindlessIndexAllocator;
 

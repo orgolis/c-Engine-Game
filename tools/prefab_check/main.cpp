@@ -34,6 +34,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <cstdint>
 
 using namespace schizo;
 

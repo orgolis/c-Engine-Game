@@ -558,6 +558,37 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(audio_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# audiobus_check: Phase 4.9 verification — the mix-bus graph (gain folding
+# through parents, mute, solo including soloed GROUPS, parent-cycle safety) and
+# that Mixer::mix actually routes through it, metering post-fader.
+add_executable(audiobus_check audiobus_check/main.cpp)
+target_link_libraries(audiobus_check PRIVATE gws_audio)
+target_compile_features(audiobus_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(audiobus_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
+# extension_check: Phase 4.8 verification — the editor-extension loader driven
+# by a FAKE ScriptHost, so the command lifecycle (register / reload without
+# duplicating / invoke-by-token / errors surfaced) is tested without a VM.
+# Compiles editor_extensions.cpp directly: it is ImGui-free and depends only on
+# the command registry and the ScriptHost interface.
+# The REAL pocketpy host is linked in too: the fake host proves the loader, and
+# only the real one proves that a person's .py file actually reaches the editor.
+add_executable(extension_check
+    extension_check/main.cpp
+    ${CMAKE_SOURCE_DIR}/editor/src/editor_extensions.cpp
+    ${CMAKE_SOURCE_DIR}/editor/src/script_host_python.cpp
+    ${CMAKE_SOURCE_DIR}/editor/src/script_params.cpp)
+target_include_directories(extension_check PRIVATE
+    ${CMAKE_SOURCE_DIR}/editor/include
+    ${CMAKE_SOURCE_DIR}/third_party/pocketpy)
+target_link_libraries(extension_check PRIVATE scene spdlog::spdlog)
+target_compile_features(extension_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(extension_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # profiler_check: Stage 14 verification — N4 network-profiler (Transport
 # NetStats, NetProfiler bandwidth, prediction rollback depth) + N3 memory
 # snapshot (per-tag tracker + opt-in AllocatorRegistry). Memory headers are

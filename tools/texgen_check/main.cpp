@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <set>
 #include <string>
+#include <cstdint>
 
 namespace tg = schizo::editor::texgen;
 

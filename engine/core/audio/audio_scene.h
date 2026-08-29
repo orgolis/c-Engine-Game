@@ -109,6 +109,7 @@ private:
                 p.radius   = src.radius;
                 p.looping  = (src.flags & kAudioLooping) != 0;
                 p.spatial  = (src.flags & kAudioSpatial) != 0;
+                p.bus      = src.bus;
                 p.position = t.position;
                 p.velocity = track_velocity(last_source_, key, t.position, dt);
                 if (p.spatial && occlusion_fn_)

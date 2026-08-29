@@ -6,6 +6,7 @@
 #include "vulkan_device.h"
 
 #include <spdlog/spdlog.h>
+#include <cstdint>
 
 namespace gws::renderer::gpu {
 
