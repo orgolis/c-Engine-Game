@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "document_bar.h"
 
 namespace schizo::editor {
 
@@ -97,11 +98,16 @@ const MenuEntry kChannels[] = {
 
 void draw_material_graph_panel(bool& open, MaterialGraph& graph, NodeCanvas& canvas,
                                std::string& out_glsl, bool& out_dirty,
-                               bool& preview, const std::string& compile_status) {
+                               bool& preview, const std::string& compile_status,
+                               DocumentFile* doc) {
     if (!open) return;
 
     ImGui::SetNextWindowSize(ImVec2(980.0f, 620.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Material Graph", &open)) { ImGui::End(); return; }
+
+    // The file this document lives in (4.10). Null for callers that have no
+    // file -- a test harness, or a scratch document.
+    if (doc) draw_document_bar(*doc, "material graph");
 
     // ---- toolbar ----------------------------------------------------------
     const auto gen = graph.generate();

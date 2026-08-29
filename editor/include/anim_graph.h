@@ -88,6 +88,13 @@ class AnimGraph {
 public:
     AnimGraph();
 
+    /// Empty the document completely -- no states, no transitions, ids restarted.
+    /// Exists for LOADING: the constructor seeds an "Idle" state so a fresh
+    /// canvas is never an empty void, and a loader that did not clear would
+    /// leave that seed sitting alongside the file's own states, gaining one
+    /// orphan every time a graph was opened.
+    void clear();
+
     uint32_t add_state(const std::string& name, float x = 0.0f, float y = 0.0f);
     void     remove_state(uint32_t id);
     AnimGraphState*       state(uint32_t id);

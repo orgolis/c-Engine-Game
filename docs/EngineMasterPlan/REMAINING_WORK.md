@@ -185,10 +185,13 @@ The cross-cutting integration debt specifically:
   Extensions`) and 4.9 (**audio mix buses** + the mixer panel — the plan claimed this rode an existing Stage-6
   bus graph and there was none, so the routing layer was built first).
   **Remaining:** richer debug visualization (navmesh/AI/froxels).
-  **Persistence is still the honest gap, and closing Phase 4 does not close it:** of the five authoring
-  documents only `.vfx` and the v0.8.0 mixer layout save. `MaterialGraph`, `AnimGraph` and `Sequence` still have
-  **no serialisation at all**, so a material graph or a cutscene is lost when the editor closes. This is a
-  bigger hole than either v0.8.0 item filled and is the strongest candidate for the next release.
+  **Persistence: CLOSED in v0.8.1 (item 4.10).** All five authoring documents now round-trip — `.vfx`, the
+  mixer layout, and the three that had no serialisation at all: `.matgraph`, `.animgraph` and `.seq`. Each is
+  creatable from **New > Authoring**, opens on double-click into its own editor, and carries a document bar
+  with the path, a dirty marker and Save. Formats follow `vfx_io.h` rather than being invented three times;
+  enums are written by name, so reordering one cannot silently rewrite saved documents. `docio_check` (70)
+  found a real bug on the way: `std::stoi` throws on `kAnyState` (0xFFFFFFFF), so every Any-State transition
+  was being dropped on load, with no error.
 - **CI coverage — found during v0.8.0.** `gws test` discovers checks by scanning for `*_check` binaries beside
   itself, so a check CI never *builds* is a check CI never *runs*, silently and with a green tick. CI was
   building **35 of 68**. Among the 33 orphans was `includes_check` — written after a missing `<cstdint>` broke

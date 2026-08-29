@@ -164,6 +164,12 @@ class MaterialGraph {
 public:
     MaterialGraph();
 
+    /// Reset to a bare graph: one Output node and nothing else, ids restarted.
+    /// The Output is re-created rather than dropped because a graph without one
+    /// cannot generate anything -- the same reason the constructor makes it and
+    /// the editor will not let it be deleted.
+    void clear();
+
     NodeId add_node(NodeKind kind, float x = 0.0f, float y = 0.0f);
     void   remove_node(NodeId id);
     Node*  node(NodeId id);

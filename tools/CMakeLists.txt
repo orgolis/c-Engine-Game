@@ -589,6 +589,28 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(extension_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# docio_check: the three Phase 4 authoring documents (material graph, anim graph,
+# sequence) had NO serialisation at all -- a material graph or a cutscene was
+# lost when the editor closed. Every field is round-tripped at a NON-DEFAULT
+# value, because a round trip of defaults passes against a writer that emits
+# nothing (exactly how emitters and NPC agents went unwritten until 3.7). The
+# strongest assertions are behavioural: identical generated GLSL, identical
+# evaluation across the timeline, identical validation output.
+add_executable(docio_check
+    docio_check/main.cpp
+    ${CMAKE_SOURCE_DIR}/editor/src/doc_io.cpp
+    ${CMAKE_SOURCE_DIR}/editor/src/anim_graph.cpp
+    ${CMAKE_SOURCE_DIR}/editor/src/sequence.cpp
+    ${CMAKE_SOURCE_DIR}/engine/core/shadergraph/material_graph.cpp)
+target_include_directories(docio_check PRIVATE
+    ${CMAKE_SOURCE_DIR}/editor/include
+    ${CMAKE_SOURCE_DIR}/engine/core)
+target_link_libraries(docio_check PRIVATE glm)
+target_compile_features(docio_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(docio_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # profiler_check: Stage 14 verification — N4 network-profiler (Transport
 # NetStats, NetProfiler bandwidth, prediction rollback depth) + N3 memory
 # snapshot (per-tag tracker + opt-in AllocatorRegistry). Memory headers are

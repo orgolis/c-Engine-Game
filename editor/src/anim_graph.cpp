@@ -16,6 +16,13 @@ AnimGraph::AnimGraph() {
     entry_ = add_state("Idle", 80.0f, 120.0f);
 }
 
+void AnimGraph::clear() {
+    states_.clear();
+    transitions_.clear();
+    next_id_ = 1;
+    entry_   = 0;
+}
+
 uint32_t AnimGraph::add_state(const std::string& name, float x, float y) {
     AnimGraphState s;
     s.id   = next_id_++;

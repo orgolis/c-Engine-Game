@@ -59,6 +59,7 @@
 #include "audio/audio_engine.h"     // Stage 6: miniaudio device + spatial mixer
 #include "audio_mixer_panel.h"       // Phase 4.9: mix-bus faders / mute / solo / meters
 #include "editor_extensions.h"      // Phase 4.8: user-written editor extensions
+#include "doc_io.h"                 // Phase 4.10: the three authoring documents persist
 #include "physics/jolt_physics.h"   // Stage 6 step 6: raycast for audio occlusion
 #include "net_profiler.h"           // N4: network bandwidth / RTT / loss / rollback
 #include "vulkan/gpu_profiler.h"    // N2: per-pass GPU timing
@@ -422,6 +423,14 @@ struct EditorState {
     schizo::editor::EditorScriptCtx extension_ctx;
     schizo::editor::ScriptApi       extension_api;
     bool show_extensions = false;
+
+    // The file each authoring document is being edited from (4.10). Before this
+    // the three documents existed only in memory: a material graph or a
+    // cutscene was lost the moment the editor closed, and nothing in any of the
+    // three panels said so.
+    schizo::editor::DocumentFile material_graph_doc;
+    schizo::editor::DocumentFile anim_graph_doc;
+    schizo::editor::DocumentFile sequence_doc;
     double script_play_time = 0.0;   // seconds since Play started
 
     // ---- Project system (modular features + launcher) ----
@@ -6794,6 +6803,51 @@ int main(int argc, char** argv) {
                 else
                     spdlog::warn("[AssetBrowser] failed to load scene '{}'", p);
             };
+        // Double-clicking an authoring document opens it in ITS editor rather
+        // than in Notepad (4.10). Returning false falls through to the OS, so a
+        // document type not wired here still does something.
+        editor_state.asset_browser->on_open_document =
+            [&editor_state](const schizo::editor::AssetEntry& e) -> bool {
+                namespace ed = schizo::editor;
+                const std::string ext = std::filesystem::path(e.abs_path).extension().string();
+
+                auto opened = [&](ed::DocumentFile& doc, const std::string& fresh, bool ok) {
+                    if (!ok) {
+                        editor_state.set_status("Could not open " + e.name);
+                        return false;
+                    }
+                    doc.path       = e.abs_path;
+                    doc.saved_text = fresh;      // just-loaded == on disk, so not dirty
+                    doc.dirty      = false;
+                    doc.status.clear();
+                    editor_state.set_status("Opened " + e.name);
+                    return true;
+                };
+
+                if (ext == ed::kMaterialGraphExtension) {
+                    const bool ok = ed::load_material_graph(e.abs_path, editor_state.material_graph);
+                    editor_state.show_material_graph = true;
+                    // Force a recompile: the graph the panel is about to draw is
+                    // not the one whose GLSL is cached.
+                    editor_state.material_graph_dirty = true;
+                    return opened(editor_state.material_graph_doc,
+                                  ed::material_graph_to_text(editor_state.material_graph), ok);
+                }
+                if (ext == ed::kAnimGraphExtension) {
+                    const bool ok = ed::load_anim_graph(e.abs_path, editor_state.anim_graph);
+                    editor_state.show_anim_graph = true;
+                    return opened(editor_state.anim_graph_doc,
+                                  ed::anim_graph_to_text(editor_state.anim_graph), ok);
+                }
+                if (ext == ed::kSequenceExtension) {
+                    const bool ok = ed::load_sequence(e.abs_path, editor_state.sequence);
+                    editor_state.show_timeline = true;
+                    return opened(editor_state.sequence_doc,
+                                  ed::sequence_to_text(editor_state.sequence), ok);
+                }
+                return false;
+            };
+
         // Dragging a hierarchy entity onto the browser saves it, and every
         // descendant, as a .prefab. The browser hands over the destination
         // folder and knows nothing else about it: resolving an id to an entity
@@ -8422,12 +8476,31 @@ int main(int argc, char** argv) {
                 editor_state.asset_import_dialog->RenderDialog();
             ShowPreferences(editor_state);
 
+            // ---- authoring documents (4.10) ------------------------------
+            // Dirty is a COMPARISON against what is on disk, not a flag raised
+            // at each edit site. A flag has to be set everywhere the document
+            // can change, and the site that gets missed leaves the document
+            // permanently clean -- which silently discards work on close, the
+            // exact failure this item exists to end.
+            {
+                using schizo::editor::DocumentFile;
+                const std::string mg_now = schizo::editor::material_graph_to_text(editor_state.material_graph);
+                const std::string ag_now = schizo::editor::anim_graph_to_text(editor_state.anim_graph);
+                const std::string sq_now = schizo::editor::sequence_to_text(editor_state.sequence);
+                auto mark = [](DocumentFile& d, const std::string& now) {
+                    d.dirty = !d.path.empty() && now != d.saved_text;
+                };
+                mark(editor_state.material_graph_doc, mg_now);
+                mark(editor_state.anim_graph_doc,     ag_now);
+                mark(editor_state.sequence_doc,       sq_now);
+            }
+
             // Animation state machine (4.6).
             if (editor_state.show_anim_graph) {
                 bool changed = false;
                 schizo::editor::draw_anim_graph_panel(
                     editor_state.show_anim_graph, editor_state.anim_graph,
-                    editor_state.anim_canvas, changed);
+                    editor_state.anim_canvas, changed, &editor_state.anim_graph_doc);
             }
 
             // Timeline (4.4).
@@ -8438,7 +8511,39 @@ int main(int argc, char** argv) {
                     editor_state.timeline,
                     editor_state.editor_scene->GetScene(),
                     editor_state.selected_entity_id,
-                    delta_time);
+                    delta_time,
+                    &editor_state.sequence_doc);
+            }
+
+            // Saves requested by a document bar this frame. Performed here
+            // because main owns both the document and its serialiser -- giving a
+            // panel the serialiser would drag all three document headers into
+            // every panel and put the filesystem back inside the UI.
+            {
+                using schizo::editor::DocumentFile;
+                auto finish = [](DocumentFile& d, bool ok, const std::string& fresh) {
+                    d.save_requested = false;
+                    if (ok) { d.saved_text = fresh; d.dirty = false; d.status = "saved"; }
+                    else    { d.status = "SAVE FAILED"; }
+                };
+                if (editor_state.material_graph_doc.save_requested) {
+                    const bool ok = schizo::editor::save_material_graph(
+                        editor_state.material_graph_doc.path, editor_state.material_graph);
+                    finish(editor_state.material_graph_doc, ok,
+                           schizo::editor::material_graph_to_text(editor_state.material_graph));
+                }
+                if (editor_state.anim_graph_doc.save_requested) {
+                    const bool ok = schizo::editor::save_anim_graph(
+                        editor_state.anim_graph_doc.path, editor_state.anim_graph);
+                    finish(editor_state.anim_graph_doc, ok,
+                           schizo::editor::anim_graph_to_text(editor_state.anim_graph));
+                }
+                if (editor_state.sequence_doc.save_requested) {
+                    const bool ok = schizo::editor::save_sequence(
+                        editor_state.sequence_doc.path, editor_state.sequence);
+                    finish(editor_state.sequence_doc, ok,
+                           schizo::editor::sequence_to_text(editor_state.sequence));
+                }
             }
 
             // Level tools (4.7).
@@ -8463,7 +8568,8 @@ int main(int argc, char** argv) {
                     editor_state.material_glsl,
                     editor_state.material_graph_dirty,
                     editor_state.material_preview,
-                    editor_state.material_compile_status);
+                    editor_state.material_compile_status,
+                    &editor_state.material_graph_doc);
 
                 // Compile only when the graph actually changed. The service
                 // also hashes the source, so a dirty flag raised by a node

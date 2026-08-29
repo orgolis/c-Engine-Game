@@ -8,6 +8,8 @@
 // unchanged by this panel.
 // ============================================================================
 
+#include "document_bar.h"
+
 namespace schizo::editor {
 
 class AnimGraph;
@@ -15,6 +17,6 @@ class NodeCanvas;
 
 /// `out_modified` is SET when the graph changes, never cleared.
 void draw_anim_graph_panel(bool& open, AnimGraph& graph, NodeCanvas& canvas,
-                           bool& out_modified);
+                           bool& out_modified, DocumentFile* doc = nullptr);
 
 }  // namespace schizo::editor

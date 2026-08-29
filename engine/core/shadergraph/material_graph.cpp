@@ -82,6 +82,13 @@ MaterialGraph::MaterialGraph() {
     output_ = add_node(NodeKind::Output, 520.0f, 180.0f);
 }
 
+void MaterialGraph::clear() {
+    nodes_.clear();
+    links_.clear();
+    next_id_ = 0;
+    output_  = add_node(NodeKind::Output, 520.0f, 180.0f);
+}
+
 NodeId MaterialGraph::add_node(NodeKind kind, float x, float y) {
     Node n;
     n.id   = next_id_++;

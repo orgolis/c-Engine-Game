@@ -102,7 +102,7 @@ jobs:
             playchanges_check prefab_check reflectio_check sequence_check shadercompile_check \
             shadergraph_check snap_check taskrunner_check texgen_check undo_check \
             vehiclemove_check \
-            audiobus_check extension_check \
+            audiobus_check extension_check docio_check \
             script_check assetcook dedicated_server editor gws headless docgen projectctl innerloop_check
 
       - name: Run the check suite

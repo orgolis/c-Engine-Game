@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <memory>
 
+#include "document_bar.h"
+
 namespace schizo::scene { class Scene; }
 
 namespace schizo::editor {
@@ -29,6 +31,7 @@ void draw_timeline_panel(bool& open,
                          TimelineState& st,
                          const std::shared_ptr<schizo::scene::Scene>& scene,
                          uint32_t selected_entity_id,
-                         float delta_time);
+                         float delta_time,
+                         DocumentFile* doc = nullptr);
 
 }  // namespace schizo::editor

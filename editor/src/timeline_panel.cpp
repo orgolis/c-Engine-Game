@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include "document_bar.h"
 
 namespace schizo::editor {
 
@@ -72,11 +73,16 @@ void draw_timeline_panel(bool& open,
                          TimelineState& st,
                          const std::shared_ptr<scene::Scene>& scene,
                          uint32_t selected_entity_id,
-                         float delta_time) {
+                         float delta_time,
+                         DocumentFile* doc) {
     if (!open) return;
 
     ImGui::SetNextWindowSize(ImVec2(880.0f, 420.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Timeline", &open)) { ImGui::End(); return; }
+
+    // The file this document lives in (4.10). Null for callers that have no
+    // file -- a test harness, or a scratch document.
+    if (doc) draw_document_bar(*doc, "sequence");
 
     // ---- transport ---------------------------------------------------------
     if (ImGui::Button(st.playing ? "Pause" : "Play")) st.playing = !st.playing;

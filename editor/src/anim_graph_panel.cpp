@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <string>
+#include "document_bar.h"
 
 namespace schizo::editor {
 
@@ -37,11 +38,15 @@ ImU32 state_color(bool is_entry) {
 }  // namespace
 
 void draw_anim_graph_panel(bool& open, AnimGraph& graph, NodeCanvas& canvas,
-                           bool& out_modified) {
+                           bool& out_modified, DocumentFile* doc) {
     if (!open) return;
 
     ImGui::SetNextWindowSize(ImVec2(940.0f, 600.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Animation State Machine", &open)) { ImGui::End(); return; }
+
+    // The file this document lives in (4.10). Null for callers that have no
+    // file -- a test harness, or a scratch document.
+    if (doc) draw_document_bar(*doc, "animation graph");
 
     // ---- problems, permanently visible -------------------------------------
     // Every failure this catches is silent at runtime: the character simply

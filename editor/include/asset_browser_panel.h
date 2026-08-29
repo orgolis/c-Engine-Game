@@ -86,6 +86,12 @@ public:
     /// receiver reads the file, which is not something to do at frame rate.
     std::function<void(const AssetEntry&)> on_select_asset;
 
+    /// Double-click on an authoring document (.matgraph / .animgraph / .seq).
+    /// Return true when it was opened in-editor; false falls through to the OS,
+    /// so a document type the editor has not wired yet still opens in a text
+    /// editor instead of doing nothing at all.
+    std::function<bool(const AssetEntry&)> on_open_document;
+
     /// Invoked when a scene-hierarchy entity is dropped onto the browser, to
     /// save it as a prefab. The panel supplies the DESTINATION FOLDER and a
     /// unique filename; the host resolves the id and writes the file, because

@@ -407,7 +407,7 @@ three of them did, in the rebase audit alone.
 > - `gws_add_header_selfcontain_check` (`cmake/HeaderSelfContain.cmake`) — compiles each public header alone,
 >   twice, which also proves the include guard works. 63 headers covered; 8 excluded as visible debt.
 
-## Phase 4 · Make it authorable — ✅ COMPLETE (9 of 9) · shipped through v0.8.0
+## Phase 4 · Make it authorable — ✅ COMPLETE (10 of 10) · shipped through v0.8.1
 
 Until these exist, using the engine means writing C++. This is the phase that turns it into a tool other
 people can use.
@@ -424,15 +424,17 @@ people can use.
 | 4.8 | ~~**User-extensible editor** via the three scripting backends~~ | engine | ✅ **Done** (v0.8.0). Scripts in `<project>/editor_scripts/` register commands into the palette, and can run any editor command by name. **This is the item `command_palette.h` was built for** — that header says the registry exists so "an agent or a script can drive the editor without a bespoke hook per feature", and until now nothing could. **It is not a flag on `ScriptSystem`:** that loop is per-**entity** and **play-mode-only** — it instantiates when an entity is first seen while playing and tears everything down on Stop — while an extension has no entity and must be alive in *edit* mode. So `ExtensionSystem` is a sibling that shares only the three `ScriptHost` backends. **An extension is an ordinary script**, using the same `on_start(e)` hook with entity 0, so no backend needed a new *load* path — only `ScriptInstance::invoke`. `register_command` takes a **token** (the NAME of a function) rather than a callback, because a C ABI cannot carry a Python closure into three languages: pocketpy resolves it as a module global, the C++ DLL by `GetProcAddress`, C# by method name. **The failure this is shaped around is reload.** Re-running `on_start` registers again, so without `CommandRegistry::owner` + `remove_owned_by` every save appends a duplicate of every command — and each duplicate still *works*, so nothing looks broken until the palette is unusable. Removal happens **before** the re-run, never after. `extension_check` (53 assertions) asserts three reloads leave exactly one copy; removing the guard fails exactly those four. **The fake-host half would have shipped a broken feature:** it proves the loader and nothing about any language, and only the real-pocketpy group caught that the starter template called `register_command(...)` bare when this engine's convention is `import engine` / `engine.register_command(...)`. The template we hand every user did not run, and a test that never loads a real `.py` would have said the feature was finished |
 | 4.9 | ~~Audio mixer / bus UI~~ | engine | ✅ **Done** (v0.8.0) — **and the item's premise was wrong.** It read "Rides the Stage-6 bus graph". There was no bus graph: `grep -rn "[Bb]us"` over the entire audio tree returned **nothing**. `Mixer` summed all 256 voices straight into the output block and `VoiceParams` carried gain, pitch and spatialisation but no routing at all. The bus layer **is** the feature; the panel is the part you can see. `BusGraph` is a shallow tree (Master + Music/SFX/UI/Voice/Ambience) folded by an `effective_gain` walk to the root, **bounded by `kMaxBuses`** — a parent cycle the UI should never be able to build must cost a wrong number, never a hung audio callback, because a callback that does not return is silence plus a watchdog kill. **Solo is the semantics that fails silently:** "mute every other bus" gets it backwards, silencing the children of the group you just soloed, so audibility asks whether the bus *or any ancestor* is soloed. Mutating it to the naive form fails exactly one assertion — the one written for it. Voices sum into **per-bus scratch** rather than being pre-scaled by their bus gain: the audio is identical either way, but a bus's meter is the level of the **sum** of its voices, and pre-scaling into master leaves nothing to measure. `mix()` stays allocation- and lock-free — scratch is sized once at `init()` for `kMaxBuses`, a longer block is chunked rather than reallocated, and gain/mute/solo cross to the audio thread through the existing command queue (names and topology are setup-time only, so no `std::string` ever enters the ring). **The reachable path is the whole point:** `AudioSourceComponent` gained a bus **by name** — an index would silently re-route every already-authored scene the day someone inserts a bus — serialized as `AUDIO_SRC_BUS` and picked from an Inspector dropdown that warns when a scene names a bus this project no longer has. A mixer whose faders control nothing assignable is the v0.7.15 failure exactly. Layout persists per **project** (not per scene — a game has one SFX/Music split) and saves on **gesture end**, since a fader held two seconds would otherwise rewrite the file 120 times. `audiobus_check` (33) |
 
+| 4.10 | ~~**The authoring documents persist**~~ | engine | ✅ **Done** (v0.8.1) — the gap v0.8.0 named rather than closed. `MaterialGraph`, `AnimGraph` and `Sequence` were built, reachable and tested, and **none of them could be saved**: a material graph or a cutscene was lost the moment the editor closed, and no panel said so. `.matgraph` / `.animgraph` / `.seq` take their conventions **wholesale from `vfx_io.h`** — version stamp, every field written including defaults, unknown keys ignored, parsing that always succeeds — rather than three formats invented separately. **Enums are written as NAMES, never indices:** an index is a promise nobody will reorder the enum, and the day someone inserts a `NodeKind` every saved graph silently becomes a different graph, with no error, because every index still parses. Same argument that put a bus *name* in v0.8.0's audio source. **IDs are remapped on load, not trusted** — the document is rebuilt through its own `add_*` API so its id counter stays ahead of what it holds; writing ids straight into the vectors would leave the counter at 1 and the next node the user added would collide with a loaded one. **The reachable path**: a New ▸ Authoring menu (there was previously no way to *create* any of the three), double-click to open in the right panel, and a shared document bar showing the path, a dirty marker and Save. **Dirty is a comparison against what is on disk, not a flag** — a flag has to be set at every mutation site, and the one that gets missed leaves a document permanently clean, silently discarding work on close, which is the exact failure this item exists to end. `docio_check` (70) |
+|  ↳ the bug the check caught | `kAnyState` is `0xFFFFFFFF`. `std::stoi` throws `out_of_range` on it, so an int-based parse silently returned the fallback: **every "interrupt from anywhere" transition loaded as from-state 0**, matched no state, and was dropped. Nothing errored — the death animation would simply have stopped playing. Found because the check asserts that specific transition survives, written before the code because it was the obvious silent case |
+
 **Exit criteria:** a developer can build and light a level, author a material, a particle effect and a
 cutscene without opening a C++ file.
 
-**✅ MET for authoring; one gap named rather than closed.** Every one of the nine items exists and is
-reachable from a menu. The honest caveat is **persistence**: of the five authoring documents, only `.vfx`
-and the v0.8.0 mixer layout save to disk. `MaterialGraph`, `AnimGraph` and `Sequence` have no serialisation
-at all, so a material graph or a cutscene authored today is lost when the editor closes. The exit sentence
-says "author"; it does not say "keep", and that is the next thing to fix rather than something this phase
-quietly satisfied.
+**✅ MET, including the part the exit sentence did not say.** Every item exists and is reachable from a
+menu, and as of **v0.8.1** every authoring document also **persists** — the caveat this section carried at
+v0.8.0 (only `.vfx` and the mixer layout saved) is closed by 4.10. All five documents now round-trip:
+`.vfx`, the mixer layout, `.matgraph`, `.animgraph` and `.seq`. The sentence said "author" and not "keep";
+keeping is now true as well, rather than a gap the phase closed around.
 
 > **v0.8.0 — Phase 4 closes, and both items were wrong about their own shape.** 4.8 and 4.9 were one line
 > each in this document. Neither line described what had to be built.
@@ -496,6 +498,56 @@ quietly satisfied.
 > documents, only `.vfx` and now the mixer layout persist. `MaterialGraph`, `AnimGraph` and `Sequence` still
 > have **no serialisation at all** — a material graph or a cutscene is lost when the editor closes. That is
 > a bigger hole than either item closed here.
+
+> **v0.8.1 — the gap v0.8.0 refused to paper over.** Closing Phase 4 at 9-of-9 came with a caveat written
+> into this document rather than left out of it: of the five authoring documents, only `.vfx` and the new
+> mixer layout persisted. `MaterialGraph`, `AnimGraph` and `Sequence` had **no serialisation at all**. Three
+> finished editors, each with its own test suite, each producing work that existed only until the window
+> closed.
+>
+> That is a different failure from v0.7.15's. There the feature existed and had no route to it; here the
+> route existed, the editor worked, and the *result* went nowhere. Both are the same underlying mistake —
+> verifying the layer I built rather than the thing a person ends up with.
+>
+> **Nothing about the three formats is new.** `vfx_io.h` had already settled every question: a version
+> stamp, every field written including defaults, unknown keys ignored, missing keys defaulted, and a parse
+> that always succeeds so a damaged file yields a usable empty document rather than an error path nobody
+> wrote a UI for. Reusing that wholesale is the entire reason this was a small change rather than three
+> design arguments.
+>
+> Two decisions were specific to these three, and both are about what breaks *later*:
+>
+> **Enums are written by name.** An index in a file is a promise that nobody will ever reorder the enum.
+> The day someone inserts a `NodeKind`, every saved graph silently becomes a different graph — no error,
+> because every index still parses. This is the same reasoning that put a bus *name* rather than a bus index
+> into `AudioSourceComponent` one release earlier, and it is worth stating as a rule: **a file should name
+> what it means, not where it happened to sit.**
+>
+> **IDs are remapped, not trusted.** Documents are rebuilt through their own `add_*` API so the internal id
+> counter stays ahead of everything loaded. Writing ids straight into the vectors would leave the counter at
+> 1, and the next node the user added would collide with one from the file.
+>
+> **The check found a real bug, and it was the one it was written for.** `kAnyState` is `0xFFFFFFFF`;
+> `std::stoi` throws `out_of_range` on it, so an int-based parse quietly returned the fallback. Every
+> "interrupt from anywhere" transition — hit reactions, deaths, teleports — loaded as from-state 0, matched
+> no state, and was **dropped**. No error, no warning: the character would simply never play its death
+> animation again. The assertion existed before the bug because Any-State was the obvious silent case, which
+> is the whole argument for writing the test around the failure mode rather than around the happy path.
+>
+> **Applying last release's lesson immediately.** v0.8.0 shipped an editor-extension template that could not
+> run, because its test built its own copy of the template instead of loading the one the New menu writes.
+> So here the starter documents live in `doc_io` as functions, the Asset Browser calls them, and
+> `docio_check` loads *those* — one definition, pointed at from both places. The check also asserts the
+> starter material graph generates working GLSL, not merely that it parses.
+>
+> **The assertion style is the point, not the count.** A round-trip test that builds a default document and
+> compares it to itself passes against a writer that emits nothing — both sides are default. That is not
+> hypothetical: item 3.7 found particle emitters and NPC agents were never written to the scene file at all,
+> and it survived because nothing asserted a non-default value. So every field here is set to a distinctive
+> non-default value before saving. The strongest assertions are behavioural rather than field-by-field: a
+> material graph must generate **byte-identical GLSL** after a round trip, a sequence must evaluate the same
+> at every instant, an anim graph must report the same validation problems. A document can differ from its
+> original in ways no getter reveals; it cannot differ in what it produces.
 
 ---
 

@@ -3,6 +3,7 @@
 // ============================================================
 
 #include "asset_browser_panel.h"
+#include "doc_io.h"        // Phase 4 document templates + the .matgraph/.animgraph/.seq types
 
 #include "scene.h"
 #include "material_desc.h"
@@ -52,6 +53,7 @@ ImVec4 type_color(const char* type) {
     if (!std::strcmp(type, "Material")) return {1.00f, 0.55f, 0.75f, 1.0f};
     if (!std::strcmp(type, "Shader"))  return {0.95f, 0.80f, 0.50f, 1.0f};
     if (!std::strcmp(type, "Cooked"))  return {0.70f, 0.72f, 0.78f, 1.0f};
+    if (!std::strcmp(type, "Document")) return {0.55f, 0.90f, 0.85f, 1.0f};
     return {0.85f, 0.85f, 0.85f, 1.0f};
 }
 
@@ -160,6 +162,10 @@ const char* AssetBrowserPanel::classify(const std::string& e) {
     if (e == ".scene")                                               return "Scene";
     if (e == ".mat")                                                 return "Material";
     if (e == ".prefab")                                              return "Prefab";
+    // The Phase 4 authoring documents. Given their own type rather than
+    // falling through to "File" so they are visibly openable -- a document that
+    // looks like an unknown blob is one nobody double-clicks.
+    if (e == ".matgraph" || e == ".animgraph" || e == ".seq")        return "Document";
     if (e == ".pak" || e == ".vt" || e == ".r32" || e == ".splat")   return "Cooked";
     if (e == ".frag" || e == ".vert" || e == ".comp" || e == ".spv" ||
         e == ".glsl")                                                return "Shader";
@@ -626,6 +632,8 @@ void AssetBrowserPanel::render_entries() {
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     if (e.is_dir) { navigate(e.abs_path); navigated = true; ImGui::PopID(); break; }
                     else if (0 == std::strcmp(e.type, "Scene") && on_open_scene) on_open_scene(e.rel_path);
+                    else if (0 == std::strcmp(e.type, "Document") && on_open_document &&
+                             on_open_document(e)) { /* handled in-editor */ }
                     else os_open(e.abs_path);
                 }
             }
@@ -690,6 +698,9 @@ void AssetBrowserPanel::render_entries() {
                         break;   // entries_ changed — stop iterating
                     } else if (0 == std::strcmp(e.type, "Scene") && on_open_scene) {
                         on_open_scene(e.rel_path);
+                    } else if (0 == std::strcmp(e.type, "Document") && on_open_document &&
+                               on_open_document(e)) {
+                        // opened in its own editor panel
                     } else {
                         os_open(e.abs_path);   // scripts/textures open in default app
                     }
@@ -970,6 +981,27 @@ void AssetBrowserPanel::render_new_menu() {
         tex("Checker",  "checker.bmp",  texgen::Pattern::Checker);
         tex("Grid",     "grid.bmp",     texgen::Pattern::Grid);
         tex("UV chart", "uv_chart.bmp", texgen::Pattern::UV);
+        ImGui::EndMenu();
+    }
+    // Authoring documents (4.10). Before this there was no way to CREATE one at
+    // all, which is the v0.7.15 shape exactly: three finished editors and no
+    // route to a file for any of them.
+    if (ImGui::BeginMenu("Authoring")) {
+        if (ImGui::MenuItem("Material Graph (.matgraph)")) {
+            std::snprintf(new_file_buf_, sizeof new_file_buf_, "%s", "new_material.matgraph");
+            new_file_template_ = starter_material_graph_text();
+            want_new_file_ = true;
+        }
+        if (ImGui::MenuItem("Animation Graph (.animgraph)")) {
+            std::snprintf(new_file_buf_, sizeof new_file_buf_, "%s", "new_state_machine.animgraph");
+            new_file_template_ = starter_anim_graph_text();
+            want_new_file_ = true;
+        }
+        if (ImGui::MenuItem("Sequence (.seq)")) {
+            std::snprintf(new_file_buf_, sizeof new_file_buf_, "%s", "new_sequence.seq");
+            new_file_template_ = starter_sequence_text();
+            want_new_file_ = true;
+        }
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Gameplay")) {

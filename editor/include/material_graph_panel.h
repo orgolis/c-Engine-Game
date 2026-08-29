@@ -12,6 +12,8 @@
 
 #include <string>
 
+#include "document_bar.h"
+
 namespace schizo::editor {
 
 class NodeCanvas;
@@ -26,6 +28,7 @@ void draw_material_graph_panel(bool& open,
                                std::string& out_glsl,
                                bool& out_dirty,
                                bool& preview,
-                               const std::string& compile_status);
+                               const std::string& compile_status,
+                               DocumentFile* doc = nullptr);
 
 }  // namespace schizo::editor
