@@ -8,7 +8,8 @@
 [`DEVELOPER_EXPERIENCE.md`](DEVELOPER_EXPERIENCE.md) (tool) ·
 [`PRODUCT_AND_ECOSYSTEM.md`](PRODUCT_AND_ECOSYSTEM.md) (product) ·
 [`REMAINING_WORK.md`](REMAINING_WORK.md) (verified state + repo health) ·
-[`ENGINE_FEATURE_CATALOG.md`](ENGINE_FEATURE_CATALOG.md) (module catalog)
+[`ENGINE_FEATURE_CATALOG.md`](ENGINE_FEATURE_CATALOG.md) (module catalog) ·
+[`PERFORMANCE_AUDIT.md`](PERFORMANCE_AUDIT.md) (why simple scenes are slow on low-end hardware)
 
 **Tracked on GitHub** as milestones `Phase 0` … `Phase 9` across three repositories:
 `orgolis/c-Engine-Game` (engine + editor), `orgolis/WorldShaper-Hub` (launcher/product),

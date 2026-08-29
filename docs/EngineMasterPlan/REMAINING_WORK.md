@@ -192,6 +192,13 @@ The cross-cutting integration debt specifically:
   enums are written by name, so reordering one cannot silently rewrite saved documents. `docio_check` (70)
   found a real bug on the way: `std::stoi` throws on `kAnyState` (0xFFFFFFFF), so every Any-State transition
   was being dropped on load, with no error.
+- **Low-end performance — audited 2026-08-29, not yet fixed.** A simple scene is slow on weak hardware, and
+  the cause is resolution-dependent rather than scene-dependent: the renderer draws at a **hardcoded
+  1920×1080** regardless of window or viewport size (`VulkanRenderGraph::resize()` exists and is never
+  called), each pixel costs **28 bytes of G-buffer** including a world-position target reconstructible from
+  depth, and SSAO/SSR/clouds/volumetric light all default on. It stayed hidden because the GPU profiler times
+  five render-graph stages and **none** of the expensive passes. Eight findings, evidence and a recommended
+  order in [`PERFORMANCE_AUDIT.md`](PERFORMANCE_AUDIT.md). **Nothing is fixed yet.**
 - **CI coverage — found during v0.8.0.** `gws test` discovers checks by scanning for `*_check` binaries beside
   itself, so a check CI never *builds* is a check CI never *runs*, silently and with a green tick. CI was
   building **35 of 68**. Among the 33 orphans was `includes_check` — written after a missing `<cstdint>` broke
