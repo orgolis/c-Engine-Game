@@ -70,6 +70,22 @@ layout(push_constant) uniform Constants {
 } pc;
 
 bool flagSet(int bit) { return (int(pc.flags) & (1 << bit)) != 0; }
+
+// Soft-shadow cone rays, packed into bits 8-11 of the same float.
+//
+// It cannot be its own push-constant field: this block is EXACTLY 128 bytes,
+// Vulkan's guaranteed minimum, so an extra float would work here and fail on a
+// device that offers no more. Bits 0-2 are booleans and 8-11 hold a count of
+// 1..8, which is all the range this needs.
+//
+// Why it is worth controlling at all: this is the most expensive number in the
+// engine. Eight rays per pixel PER LIGHT at 1080p is ~16.6M ray traversals a
+// frame for one light, and the lighting pass measured 10-12 ms on an RTX 3060
+// with an 18-draw scene -- 94% of GPU time. Halving the count halves that.
+int shadowRayCount() {
+    int n = (int(pc.flags) >> 8) & 0xF;
+    return clamp(n, 1, 8);
+}
 #define RT_SHADOWS_ON  flagSet(0)
 #define RT_AO_ON       flagSet(1)
 #define CLOUD_SHADOW_ON flagSet(2)
@@ -234,7 +250,7 @@ float rayQueryShadow(vec3 worldPos, vec3 normal, vec3 ray_dir, float t_max) {
     // than as a repeating pattern of hard copies.
     float ang = aoHash(gl_FragCoord.xy) * 6.2831853;
     float lit = 0.0;
-    const int kConeRays = 8;
+    const int kConeRays = shadowRayCount();
     for (int i = 0; i < kConeRays; ++i) {
         float t = (float(i) + 0.5) / float(kConeRays);
         float r = sqrt(t) * spread;

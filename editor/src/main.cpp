@@ -6482,6 +6482,7 @@ int main(int argc, char** argv) {
             if (volumetric_light) volumetric_light->set_enabled(rs.volumetric);
             if (froxel_fog)       froxel_fog->set_enabled(rs.froxel);
             if (ddgi)             ddgi->set_enabled(rs.ddgi);
+            if (lighting)         lighting->set_shadow_ray_count(rs.shadow_rays);
         };
 
         if (!had_settings) {
@@ -9005,6 +9006,25 @@ int main(int argc, char** argv) {
                             lighting->set_shadow_softness(soft);
                         ImGui::TextDisabled("  How far light spreads into shadow:");
                         ImGui::TextDisabled("  0 is a hard edge, higher softens it.");
+                        // The most expensive number in the renderer. Eight rays
+                        // per pixel PER LIGHT at 1080p is ~16.6M ray traversals
+                        // a frame, and the lighting pass measured 10-12 ms on an
+                        // RTX 3060 with an 18-draw scene. Softness 0 already
+                        // takes the 1-ray path; this makes the middle reachable.
+                        int rays = lighting->shadow_ray_count();
+                        if (ImGui::SliderInt("Shadow rays##shadow", &rays, 1, 8)) {
+                            lighting->set_shadow_ray_count(rays);
+                            render_settings.shadow_rays = rays;
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit())
+                            schizo::editor::save_render_settings(render_settings);
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip(
+                                "Rays per pixel for ray-traced soft shadows, per light. "
+                                "This is the single most expensive number in the renderer: "
+                                "at 8 the lighting pass measured 10-12 ms on an RTX 3060 with "
+                                "a near-empty scene. 1 gives a hard edge and costs an eighth.");
+                        ImGui::TextDisabled("  Cost is linear in this: 4 halves the shadow cost.");
                         float persist = lighting->shadow_persistence();
                         if (ImGui::SliderFloat("Light persistence##shadow", &persist, 0.0f, 0.5f))
                             lighting->set_shadow_persistence(persist);

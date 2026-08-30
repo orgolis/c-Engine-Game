@@ -221,6 +221,13 @@ public:
     /// widens the penumbra -- a bigger PCF radius for the shadow-map path, and
     /// a wider sampling cone for the ray-query path, which is otherwise binary
     /// and has no gradient at all.
+    /// Rays per pixel for ray-query soft shadows (1..8, default 8).
+    ///
+    /// The most expensive single number in the renderer: 8 rays per pixel per
+    /// light at 1080p is ~16.6M traversals a frame, and the lighting pass measured
+    /// 10-12 ms on an RTX 3060 with an 18-draw scene. 1 ray is a hard edge.
+    void set_shadow_ray_count(int n) { shadow_ray_count_ = n < 1 ? 1 : (n > 8 ? 8 : n); }
+    int  shadow_ray_count() const { return shadow_ray_count_; }
     void set_shadow_softness(float s) { shadow_softness_ = s < 0.0f ? 0.0f : s; }
     float shadow_softness() const { return shadow_softness_; }
 
@@ -400,7 +407,8 @@ private:
     // Open outdoor scenes can push this up to ~0.8 from the inspector;
     // for true PBR-correct lighting on a clear outdoor scene, 1.0.
     float       ibl_intensity_         = 0.4f;
-    float       shadow_softness_       = 0.35f;   // a visible penumbra by default
+    float       shadow_softness_       = 0.35f;
+    int   shadow_ray_count_ = 8;   // cone rays for RT soft shadows (see the setter)   // a visible penumbra by default
     float       shadow_persistence_    = 0.05f;   // shadows are dark, not voids
 
     // Environment cubemap (owned by VulkanEnvironmentMap).

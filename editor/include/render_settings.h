@@ -69,6 +69,10 @@ struct RenderSettings {
     /// created, and the device must be told before it enables the extension.
     bool ray_tracing = true;
 
+    /// Rays per pixel for ray-traced soft shadows, per light (1..8).
+    /// Linear in cost, and the cost it is linear in is the largest in the frame.
+    int shadow_rays = 8;
+
     /// Set every effect flag and the render scale from `p`. Custom is a no-op:
     /// it means "the user has hand-edited these", so applying it must not
     /// overwrite the very choices it stands for.

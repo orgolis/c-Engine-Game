@@ -49,6 +49,7 @@ int main() {
         // costs 10-12 ms because its ray-query variant casts per-pixel shadow
         // rays. A Low that leaves that on is not a Low.
         check("ray tracing off",  !s.ray_tracing);
+        check("shadow rays down to 1", s.shadow_rays == 1);
         check("and the render scale drops", approx(s.render_scale, 0.5f));
         check("preset is recorded", s.preset == QualityPreset::Low);
     }
@@ -67,6 +68,8 @@ int main() {
               hi.ssao && hi.ssr && hi.clouds && hi.volumetric);
         check("Medium also drops ray tracing", !mid.ray_tracing);
         check("only High takes ray tracing",   hi.ray_tracing && !lo.ray_tracing);
+        check("shadow rays rise with quality",
+              lo.shadow_rays < mid.shadow_rays && mid.shadow_rays < hi.shadow_rays);
         check("scale increases with quality",
               lo.render_scale < mid.render_scale && mid.render_scale < hi.render_scale);
         check("froxel stays opt-in even at High", !hi.froxel);
@@ -105,7 +108,8 @@ int main() {
         check("every flag survives",   b.ssao == a.ssao && b.ssr == a.ssr &&
                                        b.clouds == a.clouds && b.volumetric == a.volumetric &&
                                        b.froxel == a.froxel && b.ddgi == a.ddgi &&
-                                       b.ray_tracing == a.ray_tracing);
+                                       b.ray_tracing == a.ray_tracing &&
+                                       b.shadow_rays == a.shadow_rays);
         check("text is stable", render_settings_to_text(b) == render_settings_to_text(a));
     }
 
@@ -125,6 +129,12 @@ int main() {
         RenderSettings big;
         render_settings_from_text("RENDER_SCALE=9\n", big);
         check("scale above 1 is clamped", approx(big.render_scale, RenderSettings::kMaxScale));
+
+        RenderSettings rays;
+        render_settings_from_text("SHADOW_RAYS=99\n", rays);
+        check("an absurd ray count is clamped", rays.shadow_rays == 8);
+        render_settings_from_text("SHADOW_RAYS=0\n", rays);
+        check("zero rays is clamped to 1", rays.shadow_rays == 1);
 
         RenderSettings nan_s;
         render_settings_from_text("RENDER_SCALE=notanumber\n", nan_s);

@@ -67,6 +67,7 @@ void RenderSettings::apply_preset(QualityPreset p) {
             // a pass at lower quality still pays its full-screen traffic.
             ssao = ssr = clouds = volumetric = froxel = ddgi = false;
             ray_tracing  = false;   // the 10-12 ms per-pixel shadow rays
+            shadow_rays  = 1;
             render_scale = 0.5f;
             break;
         case QualityPreset::Medium:
@@ -77,6 +78,7 @@ void RenderSettings::apply_preset(QualityPreset p) {
             froxel     = false;
             ddgi       = false;
             ray_tracing = false;   // still the dominant cost; Medium cannot afford it
+            shadow_rays = 4;
             render_scale = 0.75f;
             break;
         case QualityPreset::High:
@@ -85,6 +87,7 @@ void RenderSettings::apply_preset(QualityPreset p) {
             froxel = false;       // stays opt-in even at High: it is very heavy
             ddgi   = false;       // needs hardware ray tracing
             ray_tracing = true;
+            shadow_rays = 8;
             render_scale = 1.0f;
             break;
     }
@@ -97,6 +100,7 @@ QualityPreset RenderSettings::detect_preset() const {
         if (probe.ssao == ssao && probe.ssr == ssr && probe.clouds == clouds &&
             probe.volumetric == volumetric && probe.froxel == froxel &&
             probe.ddgi == ddgi && probe.ray_tracing == ray_tracing &&
+            probe.shadow_rays == shadow_rays &&
             std::abs(probe.render_scale - render_scale) < 1e-4f) {
             return p;
         }
@@ -107,6 +111,8 @@ QualityPreset RenderSettings::detect_preset() const {
 void RenderSettings::sanitize() {
     if (!(render_scale >= kMinScale)) render_scale = kMinScale;   // also catches NaN
     if (render_scale > kMaxScale)     render_scale = kMaxScale;
+    if (shadow_rays < 1) shadow_rays = 1;
+    if (shadow_rays > 8) shadow_rays = 8;
 }
 
 std::string render_settings_to_text(const RenderSettings& s) {
@@ -121,6 +127,7 @@ std::string render_settings_to_text(const RenderSettings& s) {
     o << "FROXEL="       << (s.froxel ? 1 : 0) << "\n";
     o << "DDGI="         << (s.ddgi ? 1 : 0) << "\n";
     o << "RAY_TRACING="  << (s.ray_tracing ? 1 : 0) << "\n";
+    o << "SHADOW_RAYS="  << s.shadow_rays << "\n";
     return o.str();
 }
 
@@ -144,6 +151,7 @@ void render_settings_from_text(const std::string& text, RenderSettings& out) {
         else if (k == "FROXEL")       out.froxel       = as_bool(v);
         else if (k == "DDGI")         out.ddgi         = as_bool(v);
         else if (k == "RAY_TRACING")  out.ray_tracing  = as_bool(v);
+        else if (k == "SHADOW_RAYS")  out.shadow_rays  = static_cast<int>(as_float(trim(v), 8.0f));
     }
     out.sanitize();
 }

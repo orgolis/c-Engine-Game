@@ -1496,6 +1496,9 @@ void VulkanLightingPass::render(VkCommandBuffer cmd) {
     if (rt_active)                       flag_bits |= 1 << 0;
     if (rt_active && rt_ao_enabled_)     flag_bits |= 1 << 1;
     if (cloud_params_.w > 0.5f)          flag_bits |= 1 << 2;
+    // Cone-ray count in bits 8-11. Packed rather than added as a field because
+    // the block is at Vulkan's 128-byte floor; see the shader's comment.
+    flag_bits |= (std::clamp(shadow_ray_count_, 1, 8) & 0xF) << 8;
     pc.flags              = static_cast<float>(flag_bits);
     pc.shadow_softness    = shadow_softness_;
 
