@@ -299,7 +299,7 @@ the work gets aimed at real numbers instead of inference.
 **Still unverified after this release:** the overlay's numbers on real hardware.
 That is the point of shipping it.
 
-### v0.8.3 — resolution and control
+### v0.8.3 — resolution and control ✅ SHIPPED
 
 Aimed using whatever v0.8.2 reports.
 
@@ -308,7 +308,8 @@ Aimed using whatever v0.8.2 reports.
 | 1 | **F1 — stop rendering at a hardcoded 1920×1080** | Targets are sized from the real framebuffer times the render scale. (Live viewport-tracking resize needs resize paths on seven more passes — see the correction under F1 — and is tracked separately.) |
 | 2 | **F7 — render-scale control** | A slider in the UI; 0.5 quarters the pixel work, visible in the overlay. |
 | 3 | **F3 / F4 / F6 — quality presets in the UI** | A preset control with a real Low; defaults chosen per device type; every `GWS_NO_*` env var has a UI equivalent, reachable from a Hub-launched editor. |
-| 4 | **F8 — skip the pipeline when the viewport is hidden** | Closing the Viewport panel drops GPU time to approximately the ImGui cost. |
+| 4 | **F0 — ray tracing becomes a setting** | ✅ Per-pixel ray-query shadows in the lighting pass, measured at 10–12 ms, are off at Low and Medium and have a checkbox. Applies at startup. |
+| 5 | ~~F8 — skip the pipeline when the viewport is hidden~~ | **Deferred to v0.8.4.** The smallest win of the set, and gating the whole scene block interacts with play mode and the swapchain image the ImGui pass still needs. Not worth rushing into a release whose point is letting someone test on a second machine. |
 
 **Release gate:** on the low-end machine, Low + 0.5 render scale produces a
 *measured, reported* improvement. Not "feels faster".
