@@ -628,6 +628,20 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(gpuzones_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# rendersettings_check: the quality-preset and render-scale model (F3/F4/F6/F7).
+# The assertions are about how such a control quietly fails to help -- a "Low"
+# that lowers sample counts instead of disabling passes, a preset that
+# overwrites the hand-edits it represents, a broken file that downgrades
+# visuals or yields a render scale of 0.
+add_executable(rendersettings_check
+    rendersettings_check/main.cpp
+    ${CMAKE_SOURCE_DIR}/editor/src/render_settings.cpp)
+target_include_directories(rendersettings_check PRIVATE ${CMAKE_SOURCE_DIR}/editor/include)
+target_compile_features(rendersettings_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(rendersettings_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # profiler_check: Stage 14 verification — N4 network-profiler (Transport
 # NetStats, NetProfiler bandwidth, prediction rollback depth) + N3 memory
 # snapshot (per-tag tracker + opt-in AllocatorRegistry). Memory headers are

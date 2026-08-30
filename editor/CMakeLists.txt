@@ -67,6 +67,7 @@ target_sources(editor
     src/level_tools.cpp
     src/level_tools_panel.cpp
     src/audio_mixer_panel.cpp
+    src/render_settings.cpp
     src/doc_io.cpp
     src/document_bar.cpp
     src/editor_extensions.cpp

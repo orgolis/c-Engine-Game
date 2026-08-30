@@ -47,8 +47,17 @@ whatever the docked Viewport panel happens to be.
 **Consequence.** On a 1366×768 laptop the engine renders **1.98× more pixels than the entire display has**,
 and the viewport panel showing the result is smaller again — a docked viewport around 950×600 means roughly
 **3.6× the pixel work is done and thrown away**. Every resolution-dependent cost in the frame is multiplied by
-that factor. This is the largest single waste found, and the fix is the one that already has a written
-implementation waiting to be called.
+that factor. This is the largest single waste found.
+
+> **Correction (2026-08-30), from trying to fix it.** This entry originally said "the fix already has a
+> written implementation waiting to be called." That was too optimistic and is worth recording rather than
+> quietly editing away. `VulkanRenderGraph::resize()` covers only the **G-buffer, lighting and
+> post-processing**. SSR, transparent, volumetric light, froxel fog, water, HZB and DDGI own full-screen
+> targets and have **no resize method at all** — and resizing only some would leave those passes sampling a
+> G-buffer of a different size, which is corruption rather than a slow frame. Live viewport-tracking resize
+> therefore needs resize paths on seven more passes and is its own piece of work. What ships first is the
+> half that is safe: **sizing the targets from the real framebuffer times a render scale**, which is where
+> most of the win is for a small display anyway.
 
 ### F2 — The GPU profiler cannot see the expensive passes 🔴
 

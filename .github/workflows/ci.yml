@@ -103,6 +103,7 @@ jobs:
             shadergraph_check snap_check taskrunner_check texgen_check undo_check \
             vehiclemove_check \
             audiobus_check extension_check docio_check gpuzones_check \
+            rendersettings_check \
             script_check assetcook dedicated_server editor gws headless docgen projectctl innerloop_check
 
       - name: Run the check suite
