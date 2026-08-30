@@ -45,6 +45,10 @@ int main() {
         check("volumetric off", !s.volumetric);
         check("froxel off",     !s.froxel);
         check("DDGI off",       !s.ddgi);
+        // The measured headline: on an RTX 3060 with 18 draws the lighting pass
+        // costs 10-12 ms because its ray-query variant casts per-pixel shadow
+        // rays. A Low that leaves that on is not a Low.
+        check("ray tracing off",  !s.ray_tracing);
         check("and the render scale drops", approx(s.render_scale, 0.5f));
         check("preset is recorded", s.preset == QualityPreset::Low);
     }
@@ -61,6 +65,8 @@ int main() {
               mid.ssao && !mid.ssr && !mid.clouds && !mid.volumetric);
         check("High enables the expensive four",
               hi.ssao && hi.ssr && hi.clouds && hi.volumetric);
+        check("Medium also drops ray tracing", !mid.ray_tracing);
+        check("only High takes ray tracing",   hi.ray_tracing && !lo.ray_tracing);
         check("scale increases with quality",
               lo.render_scale < mid.render_scale && mid.render_scale < hi.render_scale);
         check("froxel stays opt-in even at High", !hi.froxel);
@@ -98,7 +104,8 @@ int main() {
         check("render scale survives", approx(b.render_scale, 0.625f));
         check("every flag survives",   b.ssao == a.ssao && b.ssr == a.ssr &&
                                        b.clouds == a.clouds && b.volumetric == a.volumetric &&
-                                       b.froxel == a.froxel && b.ddgi == a.ddgi);
+                                       b.froxel == a.froxel && b.ddgi == a.ddgi &&
+                                       b.ray_tracing == a.ray_tracing);
         check("text is stable", render_settings_to_text(b) == render_settings_to_text(a));
     }
 

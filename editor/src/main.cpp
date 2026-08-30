@@ -6014,6 +6014,12 @@ int main(int argc, char** argv) {
         // ----------------------------------------------------------------
         VulkanDevice device;
         RenderConfig render_cfg{};
+        // Measured on an RTX 3060 with 18 draws: the lighting pass costs 10-12 ms
+        // because its ray-query variant casts per-pixel shadow rays. The device
+        // must be told before it enables the extension, and the lighting pass
+        // picks its shader variant from has_ray_tracing() at pipeline creation --
+        // so this necessarily applies at startup.
+        render_cfg.enable_ray_tracing = render_settings.ray_tracing;
         render_cfg.window_width      = kW;
         render_cfg.window_height     = kH;
         // Validation layers intercept EVERY Vulkan call. Shipping with them on
@@ -8815,6 +8821,20 @@ int main(int argc, char** argv) {
                         ImGui::SetTooltip(
                             "Render targets are created at startup, so a new scale takes "
                             "effect on the next launch.");
+                    bool rt_on = render_settings.ray_tracing;
+                    if (ImGui::Checkbox("Ray tracing", &rt_on)) {
+                        render_settings.ray_tracing = rt_on;
+                        render_settings.preset = render_settings.detect_preset();
+                        schizo::editor::save_render_settings(render_settings);
+                        editor_state.set_status("Ray tracing saved - restart to apply");
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip(
+                            "The lighting pass casts per-pixel ray-query shadow rays when this "
+                            "is on. Measured at 10-12 ms on an RTX 3060 with a near-empty scene "
+                            "- by far the most expensive thing in the frame. Applies on restart.");
+                    ImGui::SameLine();
+                    ImGui::TextDisabled(device.has_ray_tracing() ? "(active)" : "(inactive)");
                     ImGui::TextDisabled("3D renders at %ux%u", kW, kH);
                     ImGui::Separator();
                 }

@@ -57,6 +57,18 @@ struct RenderSettings {
     bool froxel     = false;   // already opt-in: heavy
     bool ddgi       = false;   // also needs hardware ray tracing
 
+    /// Take hardware ray tracing when the device offers it.
+    ///
+    /// The single most expensive thing measured in this engine. On an RTX 3060
+    /// with a trivial scene -- 18 draws, 96k triangles -- the deferred lighting
+    /// pass costs **10-12 ms**, about 94% of measured GPU time, because its
+    /// ray-query variant casts shadow rays per pixel and loops them for soft
+    /// shadows. Off, the lighting pass compiles its non-RT shader instead.
+    ///
+    /// Applies at startup: the shader variant is chosen when the pipeline is
+    /// created, and the device must be told before it enables the extension.
+    bool ray_tracing = true;
+
     /// Set every effect flag and the render scale from `p`. Custom is a no-op:
     /// it means "the user has hand-edited these", so applying it must not
     /// overwrite the very choices it stands for.

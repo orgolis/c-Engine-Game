@@ -24,6 +24,41 @@ of them already exist and work — which is why they have not helped.
 
 ---
 
+## F0 — MEASURED: the lighting pass is 94% of the frame 🔴
+
+**The first real numbers, from the user's own testing on 2026-08-30 (v0.8.2, RTX 3060).** Everything else in
+this document was inference from reading source; this is measurement, and it outranks the lot.
+
+Scene: **18 draws, 96,704 triangles** — trivially small. 1920×1080. Steady 60 fps.
+
+| Pass | Time |
+|---|---|
+| shadow | 0.20 ms |
+| geometry | 0.33 ms |
+| **lighting** | **10.0 – 11.8 ms** |
+| transparent | 0.12 ms |
+| post | 0.26 ms |
+
+The log also says: `VulkanLightingPass: using the ray-query fragment shader`. `tools/lighting_pass.frag`
+casts **ray-query shadow rays per pixel** (`rayQueryShadowOne`), looped for soft shadows
+(`lit += rayQueryShadowOne(...)`). That is the 11.8 ms.
+
+**What this confirms and what it changes.** It confirms the audit's central thesis outright — an
+18-draw scene costs 16.5 ms, so the frame is scene-independent. It *changes* the ranking: the single most
+expensive thing in this engine is not the G-buffer's width or any post-process, it is per-pixel ray-traced
+shadows inside the deferred lighting pass. On a fast discrete card. Every effect in §06 combined is smaller.
+
+And it was reachable only through **`GWS_FORCE_NO_RT=1`** — an environment variable. That is the *third*
+instance of the same failure in this audit (F4 was the first two). Now a preset flag: **Low and Medium
+disable ray tracing**, with a checkbox beside them.
+
+*Caveat worth stating:* on a machine **without** `VK_KHR_ray_query` the lighting pass already compiles its
+non-RT variant, so the low-end device's profile is different from this one and may not be dominated by
+lighting at all. This measurement is from the fast machine. It is still the largest single number anyone has
+produced here.
+
+---
+
 ## Findings
 
 Ranked by expected win per unit of effort. Every claim carries the evidence that produced it.

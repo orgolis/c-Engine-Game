@@ -58,6 +58,15 @@ struct RenderConfig {
     uint32_t window_height = 1080;
     bool enable_validation = true;
     bool enable_vsync = true;
+    /// Whether to take ray tracing when the device offers it.
+    ///
+    /// Measured on an RTX 3060 with a trivial scene (18 draws, 96k triangles):
+    /// the deferred lighting pass costs **10-12 ms** because its ray-query
+    /// variant casts shadow rays per pixel, in a loop for soft shadows. That is
+    /// ~94% of measured GPU time on a fast card. Turning it off was previously
+    /// possible only via GWS_FORCE_NO_RT=1 -- an environment variable, and so
+    /// unreachable for anyone launching from the Hub.
+    bool enable_ray_tracing = true;
     uint32_t frames_in_flight = 2;
     std::string app_name = "GameWorldshaper";
 };

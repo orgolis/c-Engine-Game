@@ -396,6 +396,46 @@ int main() {
               count_titled(cmds, "Select First Entity") == 1);
     }
 
+    std::printf("\n[group] four copies of the same extension (a real user setup)\n");
+    {
+        // Reported from the field: "New Extension..." clicked four times leaves
+        // my_extension.py plus _1/_2/_3, all identical, all registering the same
+        // two command TITLES. Four backends, four owners, one title each.
+        CommandRegistry cmds;
+        ExtensionSystem sys;
+        ctx.cmds = &cmds; ctx.sys = &sys;
+        sys.register_host(".fake", std::make_unique<FakeHost>());
+        fs::remove_all(root, ec); fs::create_directories(root, ec);
+        for (int i = 0; i < 4; ++i)
+            write_script(root / ("dup_" + std::to_string(i) + ".fake"),
+                         "CMD hello Count Entities\n" "CMD first Select First\n");
+        sys.load_all(root, cmds, api);
+
+        check("all four load", sys.extensions().size() == 4);
+        check("all four are healthy", sys.failed_count() == 0);
+        check("each registered its own two", sys.total_commands() == 8);
+        check("the title appears four times", count_titled(cmds, "Count Entities") == 4);
+
+        // Reloading repeatedly must not accumulate. This is the case the owner
+        // tag exists for, now with four owners sharing a title.
+        for (int i = 0; i < 5; ++i) sys.reload_all(cmds, api);
+        check("five reloads leave exactly four", count_titled(cmds, "Count Entities") == 4);
+        check("and the total is stable", sys.total_commands() == 8);
+
+        // Invoking by title must reach a LIVE instance, not a destroyed one.
+        FakeInstance::invoked.clear();
+        check("running the shared title works after reloads",
+              cmds.run_by_title("Count Entities") && FakeInstance::invoked.size() == 1);
+
+        // Deleting one file must not disturb the other three.
+        fs::remove(root / "dup_2.fake", ec);
+        sys.poll(cmds, api, 10.0f);
+        check("removing one leaves three", count_titled(cmds, "Count Entities") == 3);
+        check("the others still run", cmds.run_by_title("Count Entities"));
+        check("the removed one is listed with a reason", sys.failed_count() == 1);
+    }
+
+
     fs::remove_all(root, ec);
     std::printf("\n%s — %d failure(s)\n", g_failures ? "FAILED" : "PASSED", g_failures);
     return g_failures ? 1 : 0;

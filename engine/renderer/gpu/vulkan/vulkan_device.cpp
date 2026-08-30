@@ -990,9 +990,17 @@ void VulkanDevice::create_logical_device() {
         // path nobody can run locally is a path nobody tests, and this makes it
         // one command instead of one shopping trip.
         const char* force_no_rt = std::getenv("GWS_FORCE_NO_RT");
-        const bool  pretend_no_rt = force_no_rt && force_no_rt[0] == '1';
-        if (pretend_no_rt)
+        const bool  env_no_rt = force_no_rt && force_no_rt[0] == '1';
+        // The same switch, reachable. config_.enable_ray_tracing is driven by
+        // the quality preset, so a person can turn off the per-pixel ray-query
+        // shadows -- the single most expensive thing measured -- without setting
+        // an environment variable they cannot reach through the Hub.
+        const bool  pretend_no_rt = env_no_rt || !this->config.enable_ray_tracing;
+        if (env_no_rt)
             GWS_LOG_INFO("GWS_FORCE_NO_RT=1 — pretending this GPU has no ray tracing");
+        else if (pretend_no_rt)
+            GWS_LOG_INFO("[perf] ray tracing disabled by the quality preset — "
+                         "the lighting pass will use its non-RT shader");
 
         if (!pretend_no_rt &&
             rq_features.rayQuery && as_features.accelerationStructure &&
