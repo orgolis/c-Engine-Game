@@ -110,6 +110,39 @@ void GPUProfiler::submit_frame(const std::vector<std::pair<std::string, float>>&
   }
 }
 
+void GPUProfiler::begin_gpu_frame() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  total_gpu_time_ms_ = 0.0f;
+  seen_this_frame_.clear();
+}
+
+void GPUProfiler::submit_partial(const std::vector<std::pair<std::string, float>>& passes) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& [name, ms] : passes) {
+    PassTiming& timing = pass_timings_[name];
+    if (timing.name.empty()) {
+      timing.name = name;
+      timing.history.resize(100, 0.0f);
+    }
+    timing.duration_ms = ms;
+    if (!timing.history.empty()) {
+      timing.history[timing.history_index] = ms;
+      timing.history_index = (timing.history_index + 1) % static_cast<int>(timing.history.size());
+    }
+    total_gpu_time_ms_ += ms;
+    seen_this_frame_.insert(name);
+  }
+}
+
+void GPUProfiler::end_gpu_frame() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  // A pass no producer reported this frame is not running; show 0 rather than
+  // last frame's value.
+  for (auto& [name, timing] : pass_timings_) {
+    if (seen_this_frame_.find(name) == seen_this_frame_.end()) timing.duration_ms = 0.0f;
+  }
+}
+
 const GPUProfiler::PassTiming* GPUProfiler::get_pass_timing(const std::string& pass_name) const {
   std::lock_guard<std::mutex> lock(mutex_);
 

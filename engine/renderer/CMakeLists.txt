@@ -129,6 +129,11 @@ target_sources(renderer PRIVATE
 # read engine::vulkan::GPUProfiler::instance().
 target_sources(renderer PRIVATE gpu/vulkan/gpu_profiler.cpp)
 
+# Name-keyed GPU timestamp zones (performance audit F2). gpuzones_check builds
+# the same file with GWS_ZONES_NO_VULKAN so the bookkeeping is testable with no
+# device; here the Vulkan half compiles normally.
+target_sources(renderer PRIVATE gpu/vulkan/gpu_zones.cpp)
+
 # Header files - Core Graphics Abstraction
 target_sources(renderer PRIVATE
     include/graphics.h

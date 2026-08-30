@@ -611,6 +611,23 @@ if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     target_link_options(docio_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# gpuzones_check: the name/slot/liveness bookkeeping behind per-pass GPU timing
+# (performance audit F2). Compiled WITHOUT GWS_ZONES_HAVE_VULKAN so the pure
+# half is testable with no device -- the failure modes worth asserting (a slot
+# that moves between frames, a full table aliasing two zones, a pass that
+# stopped running still reporting its last value) are all in that half, and
+# every one of them produces a believable overlay rather than an error.
+add_executable(gpuzones_check
+    gpuzones_check/main.cpp
+    ${CMAKE_SOURCE_DIR}/engine/renderer/gpu/vulkan/gpu_zones.cpp)
+target_include_directories(gpuzones_check PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/renderer/gpu/vulkan)
+target_compile_definitions(gpuzones_check PRIVATE GWS_ZONES_NO_VULKAN)
+target_compile_features(gpuzones_check PRIVATE cxx_std_20)
+if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+    target_link_options(gpuzones_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # profiler_check: Stage 14 verification — N4 network-profiler (Transport
 # NetStats, NetProfiler bandwidth, prediction rollback depth) + N3 memory
 # snapshot (per-tag tracker + opt-in AllocatorRegistry). Memory headers are

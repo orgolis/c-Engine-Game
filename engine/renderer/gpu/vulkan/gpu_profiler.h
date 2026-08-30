@@ -6,6 +6,7 @@
 #include <utility>
 #include <cstdint>
 #include <mutex>
+#include <set>
 
 namespace engine::vulkan {
 
@@ -75,6 +76,21 @@ public:
    */
   void submit_frame(const std::vector<std::pair<std::string, float>>& passes);
 
+  /// Additive frame accounting (performance audit F2).
+  ///
+  /// submit_frame() resets the total and zeroes anything absent from its
+  /// argument, so it can only be called by ONE producer per frame. The frame's
+  /// timings now come from two: the render graph's five render-pass stages, and
+  /// GpuZones for every compute pass dispatched between them. With the old API
+  /// the second call clobbered the first, which is how the reported total came
+  /// to exclude the most expensive work in the frame.
+  ///
+  /// Bracket the frame with begin_gpu_frame()/end_gpu_frame() and let each
+  /// producer call submit_partial().
+  void begin_gpu_frame();
+  void submit_partial(const std::vector<std::pair<std::string, float>>& passes);
+  void end_gpu_frame();
+
   /**
    * Get timing for specific pass
    * @param pass_name Pass to look up
@@ -108,6 +124,7 @@ private:
 
   float timestamp_to_ms_ = 1.0f / 1e6f;  // GPU timestamp conversion factor
   float total_gpu_time_ms_ = 0.0f;
+  std::set<std::string> seen_this_frame_;   // producers that reported this frame
 
   mutable std::mutex mutex_;
 

@@ -56,6 +56,7 @@
 #include "profiler/profiler.h" // scoped CPU zones, per-thread (Stage 0.6)
 #include "profiler/frame_capture.h" // N5: one-frame draw-list snapshot
 #include "memory/memory_snapshot.h" // N3: per-tag live bytes + allocator registry
+#include "vulkan/gpu_zones.h"        // perf F2: per-pass GPU timestamps for EVERY pass
 #include "audio/audio_engine.h"     // Stage 6: miniaudio device + spatial mixer
 #include "audio_mixer_panel.h"       // Phase 4.9: mix-bus faders / mute / solo / meters
 #include "editor_extensions.h"      // Phase 4.8: user-written editor extensions
@@ -7159,6 +7160,16 @@ int main(int argc, char** argv) {
         // the listener defaults to the editor camera when no AudioListener
         // entity is active.
         // ----------------------------------------------------------------
+        // Per-pass GPU timestamps (performance audit F2). The render graph times
+        // its five render-pass stages; every compute pass dispatched BETWEEN them
+        // -- SSAO, SSR, DDGI, clouds, volumetric light, froxel fog, water -- was
+        // timed by nothing at all, and the profiler total was the sum of only what
+        // it had been handed. One name-keyed system now covers the whole frame.
+        engine::vulkan::GpuZones gpu_zones;
+        gpu_zones.init(device.get_physical_device(), device.get_device(),
+                       device.get_graphics_queue_family());
+        uint64_t gpu_frame = 0;   // ring index for the timestamp pool
+
         gws::audio::AudioEngine audio;
         if (!audio.init())
             spdlog::warn("[audio] no playback device available — audio disabled");
@@ -9019,6 +9030,14 @@ int main(int argc, char** argv) {
             // the Stage 14 Performance overlay reads (N2). Only feeds when the
             // device supports timestamps; otherwise the GPU section stays empty.
             g_cp.mark("post_occl_resolve");
+            // Reset the frame accumulator BEFORE either producer reports.
+            //
+            // Two of them now feed one frame: the render graph resolves its five
+            // render-pass stages here, and GpuZones reports every compute pass
+            // dispatched between them at end_frame() further down. Resetting between
+            // the two would discard whichever reported first -- which is the same
+            // class of bug this item exists to fix, merely inverted.
+            engine::vulkan::GPUProfiler::instance().begin_gpu_frame();
             if (graph && graph->resolve_timings()) {
                 graph->update_gpu_profiler();
                 {
@@ -9784,6 +9803,7 @@ int main(int argc, char** argv) {
                 g_buffer->set_indirect_draws(nullptr);
             }
 
+            gpu_zones.begin_frame(cmd, gpu_frame++);
             graph->begin_frame(cmd);
 
             // RT scene update — build BLAS for any newly-seen meshes and
@@ -9888,7 +9908,10 @@ int main(int argc, char** argv) {
             // ran at the top of THIS frame against the PREVIOUS frame's pyramid.
             // Without this call the CPU HZB is never populated — the reason the
             // occlusion test was previously dropping objects (garbage data).
-            if (hzb_culler) hzb_culler->build_and_readback(cmd);
+            if (hzb_culler) {
+                engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "HZB");
+                hzb_culler->build_and_readback(cmd);
+            }
             // SSAO compute dispatch — runs after the G-Buffer is populated
             // and before lighting samples the occlusion texture. Outside
             // the render graph because it's a compute pass and the graph
@@ -9900,7 +9923,8 @@ int main(int argc, char** argv) {
                                    cam.position);
                     vxao->compute_ao(cmd);
                 } else {
-                    ssao->execute(cmd, cam.view, cam.proj);
+                    { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "SSAO");
+                    ssao->execute(cmd, cam.view, cam.proj); }
                 }
             }
             // Cloud shadow map — produced before lighting so the deferred
@@ -9913,19 +9937,26 @@ int main(int argc, char** argv) {
             // recorded before Lighting so the composite right after it adds
             // up-to-date bounce light. The pass itself no-ops until the TLAS
             // + instance buffer are bound and DDGI is enabled in the panel.
-            if (ddgi && !g_no_ddgi) ddgi->execute_trace(cmd);
+            if (ddgi && !g_no_ddgi) {
+                engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "DDGI.Trace");
+                ddgi->execute_trace(cmd);
+            }
             { GWS_PROFILE_ZONE("stage_lighting");
               graph->execute_stage(cmd, RenderGraphStage::Lighting,   {}); }
             // DDGI composite — adds probe irradiance (indirect diffuse) onto
             // the freshly lit HDR before SSR/clouds/shafts/fog layer over it.
-            if (ddgi && !g_no_ddgi) ddgi->execute_composite(cmd);
+            if (ddgi && !g_no_ddgi) {
+                engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "DDGI.Composite");
+                ddgi->execute_composite(cmd);
+            }
             // SSR — compute reflections + composite into HDR before
             // transparent fragments are drawn. Runs outside the render
             // graph because the graph models only render-pass stages and
             // SSR is a compute + render-pass pair owned by its own class.
             if (ssr && !g_no_ssr) {
                 ssr->set_cloud_sky_enabled(clouds && clouds->clouds_visible());
-                ssr->execute(cmd, cam.view, cam.proj, cam.position);
+                { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "SSR");
+                ssr->execute(cmd, cam.view, cam.proj, cam.position); }
             }
             // Water surfaces — collect every active WaterComponent and render
             // them into the HDR target (before clouds/shafts so atmospherics
@@ -9962,7 +9993,8 @@ int main(int argc, char** argv) {
                 static float water_time = 0.0f;
                 water_time += delta_time;
                 water_pass->set_sun(sun_dir_for_rt, sun_color_for_rt);
-                water_pass->execute(cmd, cam.view, cam.proj, cam.position, water_time);
+                { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "Water");
+                water_pass->execute(cmd, cam.view, cam.proj, cam.position, water_time); }
             }
 
             // Volumetric clouds — distant sky layer; composite before the
@@ -9970,7 +10002,8 @@ int main(int argc, char** argv) {
             if (clouds) {
                 clouds->set_sun(sun_dir_for_rt, sun_color_for_rt);
                 clouds->set_ambient(l_cfg.ambient_color);
-                clouds->execute(cmd, cam.view, cam.proj, cam.position);
+                { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "Clouds");
+                clouds->execute(cmd, cam.view, cam.proj, cam.position); }
             }
             // Volumetric sun lighting / light shafts — feed it the same sun +
             // shadow VP the deferred lighting/shadow stage used, then march.
@@ -9978,7 +10011,8 @@ int main(int argc, char** argv) {
                 volumetric_light->set_sun(sun_dir_for_rt, sun_color_for_rt);
                 volumetric_light->set_shadow_matrix(shadow_view_proj);
                 if (clouds) volumetric_light->set_cloud_shadow_params(clouds->get_shadow_params());
-                volumetric_light->execute(cmd, cam.view, cam.proj, cam.position);
+                { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "VolumetricLight");
+                volumetric_light->execute(cmd, cam.view, cam.proj, cam.position); }
             }
             // Froxel fog — nearest homogeneous medium; composite last (over the
             // shafts/clouds) so it fogs everything already lit this frame.
@@ -9986,7 +10020,8 @@ int main(int argc, char** argv) {
                 froxel_fog->set_sun(sun_dir_for_rt, sun_color_for_rt);
                 froxel_fog->set_shadow_matrix(shadow_view_proj);
                 froxel_fog->set_light_count(lighting->get_light_count());
-                froxel_fog->execute(cmd, cam.view, cam.proj, cam.position);
+                { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "FroxelFog");
+                froxel_fog->execute(cmd, cam.view, cam.proj, cam.position); }
             }
             // Transparent stage uses a custom recorder so we can feed it
             // the back-to-front-sorted transparent draw list directly,
@@ -10015,6 +10050,8 @@ int main(int argc, char** argv) {
             { GWS_PROFILE_ZONE("stage_post");
               graph->execute_stage(cmd, RenderGraphStage::PostProcess, {}); }
             graph->end_frame(cmd);
+            gpu_zones.end_frame(device.get_device());
+            engine::vulkan::GPUProfiler::instance().end_gpu_frame();
 
             // ImGui render pass — clears swapchain to dark gray, then draws UI on top.
             // The 3D scene is shown inside the Viewport panel via ImGui::Image().
@@ -10263,6 +10300,7 @@ int main(int argc, char** argv) {
         // clean run. The same trap model_check documents for loaded scenes.
         bindless_textures.reset();
         spdlog::info("[exit] device.shutdown...");
+        gpu_zones.shutdown(device.get_device());
         device.shutdown();
         spdlog::info("[exit] glfw teardown...");
         glfwDestroyWindow(glfw_window);

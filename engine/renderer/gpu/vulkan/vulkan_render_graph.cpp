@@ -346,7 +346,9 @@ void VulkanRenderGraph::update_gpu_profiler() {
     add(RenderGraphStage::Lighting,    stats_.lighting_us);
     add(RenderGraphStage::Transparent, stats_.transparent_us);
     add(RenderGraphStage::PostProcess, stats_.post_process_us);
-    engine::vulkan::GPUProfiler::instance().submit_frame(passes);
+    // Additive: GpuZones reports the compute passes dispatched between these
+    // stages in the same frame, and submit_frame() would have clobbered them.
+    engine::vulkan::GPUProfiler::instance().submit_partial(passes);
 }
 
 
