@@ -5522,6 +5522,29 @@ void ShowPerformanceOverlay(EditorState& editor_state) {
         const auto& passes = gpu.get_all_timings();
         const float gpu_total = gpu.get_total_gpu_time_ms();
         ImGui::Text("total %.2f ms   load %.0f%%", gpu_total, gpu.get_gpu_load_percent());
+        ImGui::SameLine();
+        // Reading a live overlay off a screen and retyping it is how a
+        // performance report gets rounded, reordered and half-remembered. One
+        // button puts the exact numbers somewhere they can be pasted, and the
+        // log line means a report can be reconstructed after the fact.
+        if (ImGui::SmallButton("Copy breakdown")) {
+            std::vector<const engine::vulkan::GPUProfiler::PassTiming*> sorted;
+            for (const auto& [n, t] : passes) sorted.push_back(&t);
+            std::sort(sorted.begin(), sorted.end(),
+                      [](const auto* a2, const auto* b2) { return a2->duration_ms > b2->duration_ms; });
+            std::string rep = "GPU breakdown - total " +
+                              std::to_string(gpu_total) + " ms\n";
+            for (const auto* t : sorted) {
+                char row[160];
+                std::snprintf(row, sizeof row, "  %-18s %7.3f ms  %5.1f%%\n",
+                              t->name.c_str(), t->duration_ms,
+                              gpu_total > 0.0f ? 100.0f * t->duration_ms / gpu_total : 0.0f);
+                rep += row;
+            }
+            ImGui::SetClipboardText(rep.c_str());
+            spdlog::info("[perf] {}", rep);
+            editor_state.set_status("GPU breakdown copied to the clipboard");
+        }
         if (passes.empty()) {
             ImGui::TextDisabled("no GPU timings (timestamps disabled?)");
         } else {

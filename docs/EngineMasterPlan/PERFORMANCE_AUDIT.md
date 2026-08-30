@@ -244,45 +244,57 @@ measurement that was confidently wrong.
 
 ## Work plan
 
-**Status: nothing here has shipped.** The work below lands on `main` as it is
-finished; the last tagged release is **v0.8.1** and the Hub still installs that.
-Versioning continues in the 0.8 series — 0.9 is not the next number.
+**Versioning continues in the 0.8 series.** Each item states what *done* means in
+terms that can be checked, because the recurring failure in this project is a fix
+that was believed rather than verified.
 
-Three releases. Each has a stated **done** criterion that can be checked, because the recurring failure in
-this project is a fix that was believed rather than verified.
+### v0.8.2 — the profiler tells the truth ✅ SHIPPED
 
-### v0.8.2 — "see it, then afford it"
+Deliberately small and shipped on its own, ahead of any actual optimization.
+Half of F2's done criterion is *"read the overlay on the machine that is slow"*,
+and that cannot be done from here — so the diagnostic ships first and the rest of
+the work gets aimed at real numbers instead of inference.
 
-The whole release is diagnosis plus control. Nothing here changes how the engine looks at default quality;
-it changes what a person can measure and what they can turn off.
+| Item | State |
+|---|---|
+| **F2 — every pass is timed** | ✅ One name-keyed timestamp system (`gpu_zones`) replaces the five-stage enum-keyed one. SSAO, SSR, DDGI, clouds, volumetric light, froxel fog, water and HZB are timed for the first time. `GPUProfiler` gained an additive API so the graph and the zones both report into one frame instead of one clobbering the other. `gpuzones_check` (25), mutation-verified. |
+| **Copy breakdown** | ✅ A button in the GPU (N2) panel puts the exact sorted per-pass numbers on the clipboard and in the log, so a report does not have to be retyped off a live overlay. |
+| **Render-settings model** | ✅ Presets + render scale, persisted, `rendersettings_check` (31). **Inert in this release** — no UI is wired to it yet. |
 
-| # | Item | Done when |
-|---|---|---|
-| 1 | **F2 — profiler covers every pass** | Every pass dispatched in a frame appears in the GPU (N2) overlay with its own timestamped duration, and the reported total equals the sum of what actually ran. A pass that did not run reads 0, not a stale value. Verified by a headless check on the accounting, and by reading the overlay in the editor. |
-| 2 | **F1 — targets sized to the viewport** | Resizing the Viewport panel changes the render resolution; `VulkanRenderGraph::resize()` is called and no longer dead; the false comment is gone. Verified by the overlay's pass times falling when the panel shrinks. |
-| 3 | **F8 — skip the pipeline when the viewport is hidden** | Closing the Viewport panel drops GPU time to approximately the ImGui cost. |
-| 4 | **F7 — render-scale control** | A slider in the UI scales render resolution independently of panel size; 0.5 quarters the pixel work, visible in the overlay. |
-| 5 | **F3 / F4 / F6 — quality presets** | A preset control with a real **Low** that disables SSAO, SSR, clouds and volumetric light; defaults chosen per device type; every `GWS_NO_*` env var has a UI equivalent. Reachable from the Hub-launched editor with no environment variables. |
+**Still unverified after this release:** the overlay's numbers on real hardware.
+That is the point of shipping it.
 
-**Release gate:** on the low-end machine, the overlay accounts for the whole frame, and Low + 0.5 render scale
-produces a measured, reported improvement. Not "feels faster".
+### v0.8.3 — resolution and control
 
-### v0.8.3 — bandwidth
-
-| # | Item | Done when |
-|---|---|---|
-| 6 | **F5 — drop the G-buffer position attachment** | Position is reconstructed from depth in all 14 consumers; the G-buffer is 20 B/px; output is visually unchanged (compared against captured reference images), and the overlay shows the Geometry and Lighting passes cheaper. |
-
-### v0.8.4 — footprint
+Aimed using whatever v0.8.2 reports.
 
 | # | Item | Done when |
 |---|---|---|
-| 7 | **F9 — suballocator** | Texture and mesh uploads draw from pooled blocks; `maxMemoryAllocationCount` is queried and the headroom logged. |
-| 8 | **F10 — alias transient render targets** | Peak render-target footprint measurably below the naive sum; reported in the Memory (N3) panel. |
+| 1 | **F1 — stop rendering at a hardcoded 1920×1080** | Targets are sized from the real framebuffer times the render scale. (Live viewport-tracking resize needs resize paths on seven more passes — see the correction under F1 — and is tracked separately.) |
+| 2 | **F7 — render-scale control** | A slider in the UI; 0.5 quarters the pixel work, visible in the overlay. |
+| 3 | **F3 / F4 / F6 — quality presets in the UI** | A preset control with a real Low; defaults chosen per device type; every `GWS_NO_*` env var has a UI equivalent, reachable from a Hub-launched editor. |
+| 4 | **F8 — skip the pipeline when the viewport is hidden** | Closing the Viewport panel drops GPU time to approximately the ImGui cost. |
+
+**Release gate:** on the low-end machine, Low + 0.5 render scale produces a
+*measured, reported* improvement. Not "feels faster".
+
+### v0.8.4 — bandwidth
+
+| # | Item | Done when |
+|---|---|---|
+| 5 | **F5 — drop the G-buffer position attachment** | Reconstructed from depth in all 14 consumers; G-buffer is 20 B/px; output visually unchanged against captured references; Geometry and Lighting measurably cheaper. |
+
+### v0.8.5 — footprint
+
+| # | Item | Done when |
+|---|---|---|
+| 6 | **F9 — suballocator** | Texture and mesh uploads draw from pooled blocks; `maxMemoryAllocationCount` queried and headroom logged. |
+| 7 | **F10 — alias transient render targets** | Peak render-target footprint measurably below the naive sum, reported in the Memory (N3) panel. |
 
 ### Deliberately not in the plan yet
 
-The unexamined list stands: draw-call counts, shader occupancy, whether project textures are actually cooked
-to BC, terrain's pipeline, editor UI cost, vertex formats, overdraw, and the CPU side. **Item 1 exists partly
-to answer these** — once the overlay accounts for the whole frame, the next thing to optimise stops being a
-matter of opinion.
+The unexamined list stands: draw-call counts, shader occupancy, whether project
+textures are actually cooked to BC, terrain's pipeline, editor UI cost, vertex
+formats, overdraw, and the CPU side. **v0.8.2 exists partly to answer these** —
+once the overlay accounts for the whole frame, what to optimise next stops being
+a matter of opinion.
