@@ -19,6 +19,8 @@
 namespace fs = std::filesystem;
 
 namespace schizo::editor {
+namespace { bool want_overwrite_prompt_ = false; }
+
 
 void ShowExtensionsPanel(bool* open, ExtensionSystem& sys, CommandRegistry& cmds,
                          const ScriptApi& api) {
@@ -37,19 +39,27 @@ void ShowExtensionsPanel(bool* open, ExtensionSystem& sys, CommandRegistry& cmds
     if (ImGui::Button("Reload All")) sys.reload_all(cmds, api);
     ImGui::SameLine();
     if (ImGui::Button("New Extension...")) {
-        // Numbered rather than overwriting: the template refuses to clobber, and
-        // a button that silently does nothing the second time is worse than one
-        // that makes a second file.
-        std::string err;
-        for (int i = 0; i < 100; ++i) {
-            char name[64];
-            if (i == 0) std::snprintf(name, sizeof name, "my_extension.py");
-            else        std::snprintf(name, sizeof name, "my_extension_%d.py", i);
-            const fs::path p = sys.dir() / name;
-            if (ExtensionSystem::write_template(p, &err)) {
-                spdlog::info("[ext] wrote starter extension {}", p.string());
+        // Reported from the field: clicking this four times left my_extension.py
+        // plus _1, _2 and _3 -- four identical files, four live script VMs, and
+        // all four registering the SAME two command titles. Only the first is
+        // reachable from the palette (run_by_title returns the first match), so
+        // three of them cost a VM and can never be run.
+        //
+        // The old loop numbered its way past any existing file because "a button
+        // that silently does nothing the second time is worse than one that makes
+        // a second file". Both of those are bad. The third option is to say what
+        // happened, which is what this does.
+        const fs::path first = sys.dir() / "my_extension.py";
+        std::error_code ec;
+        if (fs::exists(first, ec)) {
+            want_overwrite_prompt_ = true;
+        } else {
+            std::string err;
+            if (ExtensionSystem::write_template(first, &err)) {
+                spdlog::info("[ext] wrote starter extension {}", first.string());
                 sys.reload_all(cmds, api);
-                break;
+            } else {
+                spdlog::warn("[ext] could not write {}: {}", first.string(), err);
             }
         }
     }
@@ -113,6 +123,40 @@ void ShowExtensionsPanel(bool* open, ExtensionSystem& sys, CommandRegistry& cmds
             ImGui::TreePop();
         }
         ImGui::PopID();
+    }
+
+    // Asked, not assumed: a starter file already exists, and silently adding a
+    // near-duplicate beside it is how four of them accumulated.
+    if (want_overwrite_prompt_) { ImGui::OpenPopup("Starter exists##ext"); want_overwrite_prompt_ = false; }
+    if (ImGui::BeginPopupModal("Starter exists##ext", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("my_extension.py already exists in this project.");
+        ImGui::TextDisabled("Extra copies register the same command names, so only the");
+        ImGui::TextDisabled("first is reachable from the palette - and each one costs a VM.");
+        ImGui::Separator();
+        if (ImGui::Button("Open the existing file", ImVec2(190, 0))) {
+            const fs::path p = sys.dir() / "my_extension.py";
+#ifdef _WIN32
+            std::system(("start \"\" \"" + p.string() + "\"").c_str());
+#endif
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Make another anyway", ImVec2(170, 0))) {
+            std::string err;
+            for (int i = 1; i < 100; ++i) {
+                char name[64];
+                std::snprintf(name, sizeof name, "my_extension_%d.py", i);
+                if (ExtensionSystem::write_template(sys.dir() / name, &err)) {
+                    spdlog::info("[ext] wrote starter extension {}", name);
+                    sys.reload_all(cmds, api);
+                    break;
+                }
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(90, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
     }
 
     ImGui::End();

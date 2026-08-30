@@ -56,6 +56,19 @@ the four. **All pass.** So the loader's bookkeeping (owner tags, slot stability,
 dangling instances) is not the fault. Whatever this is, it is below that layer — most plausibly in VM
 lifetime inside the real pocketpy host, which the fake-host tests cannot see.
 
+## The one step that would settle it
+
+Symbolizing. `engine-v0.8.2-win64-symbols.tar.gz` (161 MB) is published on the release and the report prints
+the exact `addr2line` invocation for the four original frames:
+
+```
+addr2line -f -C -e editor.exe 0x2E1C20 0x19DC 0x9184CB 0x1157
+```
+
+Everything above is circumstantial. That command is not. It has not been run because the verdict needed was
+only *"is this the performance work"*, and the thread evidence answers that on its own — but if this recurs,
+run it first rather than reasoning from nearest-symbol names again.
+
 ## To get further
 
 1. **Symbolize properly.** `engine-v0.8.2-win64-symbols.tar.gz` (161 MB) is published on the release, and
@@ -70,6 +83,8 @@ lifetime inside the real pocketpy host, which the fake-host tests cannot see.
   all registering the same command titles means three of them are unreachable through the palette
   (`run_by_title` returns the first match) while all four still cost a VM. It should offer to open the
   existing file rather than quietly making `_3`.
-- **The crash report's "recent log" section is labelled *newest last* but is dominated by startup lines**,
-  so the 40 seconds before the fault are missing. A ring buffer that keeps the newest N lines would have
-  made this far easier to place.
+- **~~The crash report's recent-log section is dominated by startup lines.~~ CORRECTION: it is not.**
+  The ring holds the last 400 formatted lines and its tail did carry health lines up to 4 seconds before the
+  fault; the session was short enough that 400 lines reached back to startup, and I had only read the *head*
+  of the section before claiming otherwise. The reporter is working as designed. What the last four seconds
+  contained was simply nothing unusual — which is information, not a tooling gap.
