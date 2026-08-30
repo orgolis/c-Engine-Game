@@ -100,7 +100,7 @@ QualityPreset RenderSettings::detect_preset() const {
         if (probe.ssao == ssao && probe.ssr == ssr && probe.clouds == clouds &&
             probe.volumetric == volumetric && probe.froxel == froxel &&
             probe.ddgi == ddgi && probe.ray_tracing == ray_tracing &&
-            probe.shadow_rays == shadow_rays &&
+            probe.shadow_rays == shadow_rays && probe.vsync == vsync &&
             std::abs(probe.render_scale - render_scale) < 1e-4f) {
             return p;
         }
@@ -128,6 +128,7 @@ std::string render_settings_to_text(const RenderSettings& s) {
     o << "DDGI="         << (s.ddgi ? 1 : 0) << "\n";
     o << "RAY_TRACING="  << (s.ray_tracing ? 1 : 0) << "\n";
     o << "SHADOW_RAYS="  << s.shadow_rays << "\n";
+    o << "VSYNC="        << (s.vsync ? 1 : 0) << "\n";
     return o.str();
 }
 
@@ -152,6 +153,7 @@ void render_settings_from_text(const std::string& text, RenderSettings& out) {
         else if (k == "DDGI")         out.ddgi         = as_bool(v);
         else if (k == "RAY_TRACING")  out.ray_tracing  = as_bool(v);
         else if (k == "SHADOW_RAYS")  out.shadow_rays  = static_cast<int>(as_float(trim(v), 8.0f));
+        else if (k == "VSYNC")        out.vsync        = as_bool(v);
     }
     out.sanitize();
 }

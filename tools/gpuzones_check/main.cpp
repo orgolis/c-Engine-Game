@@ -18,12 +18,14 @@
 // Each of those produces a believable overlay. None of them produces an error.
 
 #include "gpu_zones.h"
+#include "gpu_profiler.h"
 
 #include <cstdint>
 #include <cstdio>
 #include <string>
 
 using engine::vulkan::ZoneRegistry;
+using engine::vulkan::GPUProfiler;
 
 static int g_failures = 0;
 static void check(const char* name, bool ok) {
@@ -128,6 +130,53 @@ int main() {
         check("an empty registry has nothing to report", empty.ran_count() == 0 &&
                                                          empty.count() == 0);
         check("an empty name is still a name", empty.index_of("") == 0 && empty.count() == 1);
+    }
+
+
+    std::printf("\n[group] the profiler must not zero what nobody reported this frame\n");
+    {
+        // REGRESSION (v0.8.2, reported from the field as "all gpu times show
+        // zeros"). The additive API reset the accumulator and zeroed every
+        // unreported pass EVERY frame -- but the producers only report
+        // INTERMITTENTLY: the render graph's resolve_timings() returns false
+        // until a ring result is ready, and GpuZones::end_frame() returns early
+        // for the same reason. So on any frame where neither had data, the whole
+        // panel went to zero, and the GPU cost appeared to move into the CPU's
+        // fence wait because that was the only number left.
+        auto& p = GPUProfiler::instance();
+
+        p.begin_gpu_frame();
+        p.submit_partial({{"Geometry", 2.0f}, {"Lighting", 8.0f}});
+        p.submit_partial({{"SSR", 3.0f}});
+        p.end_gpu_frame();
+        check("a reported pass shows its value",
+              p.get_pass_timing("Lighting") && p.get_pass_timing("Lighting")->duration_ms == 8.0f);
+        check("total is the sum of every producer", p.get_total_gpu_time_ms() == 13.0f);
+
+        // The frame that broke it: nobody had a result ready.
+        p.begin_gpu_frame();
+        p.end_gpu_frame();
+        check("an unreported pass KEEPS its last value, it does not blank",
+              p.get_pass_timing("Lighting") && p.get_pass_timing("Lighting")->duration_ms == 8.0f);
+        check("and the total survives too", p.get_total_gpu_time_ms() == 13.0f);
+
+        // A pass that genuinely stopped must still reach zero -- but reported as
+        // zero BY ITS PRODUCER, which is the only thing that knows.
+        p.begin_gpu_frame();
+        p.submit_partial({{"Geometry", 2.0f}, {"Lighting", 8.0f}});
+        p.submit_partial({{"SSR", 0.0f}});
+        p.end_gpu_frame();
+        check("a producer reporting 0 does zero it",
+              p.get_pass_timing("SSR") && p.get_pass_timing("SSR")->duration_ms == 0.0f);
+        check("total follows", p.get_total_gpu_time_ms() == 10.0f);
+
+        // One producer reporting must not blank the other's passes.
+        p.begin_gpu_frame();
+        p.submit_partial({{"SSR", 5.0f}});
+        p.end_gpu_frame();
+        check("the other producer's passes survive a partial frame",
+              p.get_pass_timing("Lighting") && p.get_pass_timing("Lighting")->duration_ms == 8.0f);
+        check("total counts everything on display", p.get_total_gpu_time_ms() == 15.0f);
     }
 
     std::printf("\n%s — %d failure(s)\n", g_failures ? "FAILED" : "PASSED", g_failures);

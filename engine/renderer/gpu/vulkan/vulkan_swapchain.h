@@ -13,6 +13,16 @@ namespace gws::renderer::gpu {
 
 class VulkanSwapchain {
 public:
+    /// Present with vsync (FIFO) or without (MAILBOX / IMMEDIATE).
+    ///
+    /// Exists so "GPU-bound" and "paced by the display" can be told apart. With
+    /// FIFO the CPU's fence wait absorbs BOTH, and a 12-14 ms wait looks alarming
+    /// when it may be nothing more than the frame arriving early and waiting for
+    /// the monitor. RenderConfig has carried an enable_vsync flag since the start
+    /// and nothing ever read it.
+    static void set_vsync(bool on);
+    static bool vsync();
+
     VulkanSwapchain(VkDevice device,
                    VkPhysicalDevice physical_device,
                    VkSurfaceKHR surface,

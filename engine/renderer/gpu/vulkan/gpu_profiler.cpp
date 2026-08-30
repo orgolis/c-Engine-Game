@@ -112,8 +112,11 @@ void GPUProfiler::submit_frame(const std::vector<std::pair<std::string, float>>&
 
 void GPUProfiler::begin_gpu_frame() {
   std::lock_guard<std::mutex> lock(mutex_);
-  total_gpu_time_ms_ = 0.0f;
   seen_this_frame_.clear();
+  // The total is NOT reset here. It is recomputed in end_gpu_frame() from
+  // whatever the panel is actually showing, so it can never disagree with the
+  // rows above it -- and a frame in which no producer had data leaves both the
+  // rows and the total alone instead of blanking them.
 }
 
 void GPUProfiler::submit_partial(const std::vector<std::pair<std::string, float>>& passes) {
@@ -129,18 +132,27 @@ void GPUProfiler::submit_partial(const std::vector<std::pair<std::string, float>
       timing.history[timing.history_index] = ms;
       timing.history_index = (timing.history_index + 1) % static_cast<int>(timing.history.size());
     }
-    total_gpu_time_ms_ += ms;
     seen_this_frame_.insert(name);
   }
 }
 
 void GPUProfiler::end_gpu_frame() {
   std::lock_guard<std::mutex> lock(mutex_);
-  // A pass no producer reported this frame is not running; show 0 rather than
-  // last frame's value.
-  for (auto& [name, timing] : pass_timings_) {
-    if (seen_this_frame_.find(name) == seen_this_frame_.end()) timing.duration_ms = 0.0f;
-  }
+
+  // DO NOT zero passes that nobody reported this frame.
+  //
+  // The first version of this did, and it emptied the whole panel. Both
+  // producers report only INTERMITTENTLY -- the render graph's
+  // resolve_timings() returns false until a ring result is ready, and
+  // GpuZones::end_frame() bails for the same reason -- so on most frames
+  // neither had data, everything was blanked, and the GPU cost appeared to have
+  // moved into the CPU's fence wait because that was the only number left.
+  //
+  // Absence of a report means "no news", not "it stopped". A pass that really
+  // stopped is reported as 0 BY ITS PRODUCER, which is the only thing that
+  // knows the difference -- GpuZones tracks per-ring liveness for exactly this.
+  total_gpu_time_ms_ = 0.0f;
+  for (const auto& [name, timing] : pass_timings_) total_gpu_time_ms_ += timing.duration_ms;
 }
 
 const GPUProfiler::PassTiming* GPUProfiler::get_pass_timing(const std::string& pass_name) const {

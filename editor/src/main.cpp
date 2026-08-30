@@ -6020,6 +6020,10 @@ int main(int argc, char** argv) {
         // picks its shader variant from has_ray_tracing() at pipeline creation --
         // so this necessarily applies at startup.
         render_cfg.enable_ray_tracing = render_settings.ray_tracing;
+        render_cfg.enable_vsync = render_settings.vsync;
+        // The swapchain picks its present mode from this; set it before the
+        // device creates one.
+        gws::renderer::gpu::VulkanSwapchain::set_vsync(render_settings.vsync);
         render_cfg.window_width      = kW;
         render_cfg.window_height     = kH;
         // Validation layers intercept EVERY Vulkan call. Shipping with them on
@@ -8822,6 +8826,20 @@ int main(int argc, char** argv) {
                         ImGui::SetTooltip(
                             "Render targets are created at startup, so a new scale takes "
                             "effect on the next launch.");
+                    bool vs_on = render_settings.vsync;
+                    if (ImGui::Checkbox("VSync", &vs_on)) {
+                        render_settings.vsync = vs_on;
+                        render_settings.preset = render_settings.detect_preset();
+                        schizo::editor::save_render_settings(render_settings);
+                        editor_state.set_status("VSync saved - restart to apply");
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip(
+                            "Off uncaps the frame rate. Mainly a measurement tool: with vsync on, "
+                            "the CPU's fence wait absorbs both 'the GPU is busy' and 'the frame is "
+                            "waiting for the monitor', so a 12-14 ms wait cannot tell you which. "
+                            "Turn it off to find out. Applies on restart.");
+                    ImGui::SameLine();
                     bool rt_on = render_settings.ray_tracing;
                     if (ImGui::Checkbox("Ray tracing", &rt_on)) {
                         render_settings.ray_tracing = rt_on;

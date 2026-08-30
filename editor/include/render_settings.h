@@ -73,6 +73,14 @@ struct RenderSettings {
     /// Linear in cost, and the cost it is linear in is the largest in the frame.
     int shadow_rays = 8;
 
+    /// Present with vsync. Off uncaps the frame rate where the driver allows it.
+    ///
+    /// Not a performance setting so much as a MEASUREMENT one: with vsync on,
+    /// the CPU's fence wait absorbs both "the GPU is busy" and "the frame is
+    /// waiting for the monitor", and the two are indistinguishable. Turn it off
+    /// to find out which you have.
+    bool vsync = true;
+
     /// Set every effect flag and the render scale from `p`. Custom is a no-op:
     /// it means "the user has hand-edited these", so applying it must not
     /// overwrite the very choices it stands for.

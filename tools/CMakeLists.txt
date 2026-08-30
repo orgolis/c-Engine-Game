@@ -619,7 +619,8 @@ endif()
 # every one of them produces a believable overlay rather than an error.
 add_executable(gpuzones_check
     gpuzones_check/main.cpp
-    ${CMAKE_SOURCE_DIR}/engine/renderer/gpu/vulkan/gpu_zones.cpp)
+    ${CMAKE_SOURCE_DIR}/engine/renderer/gpu/vulkan/gpu_zones.cpp
+    ${CMAKE_SOURCE_DIR}/engine/renderer/gpu/vulkan/gpu_profiler.cpp)
 target_include_directories(gpuzones_check PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/renderer/gpu/vulkan)
 target_compile_definitions(gpuzones_check PRIVATE GWS_ZONES_NO_VULKAN)

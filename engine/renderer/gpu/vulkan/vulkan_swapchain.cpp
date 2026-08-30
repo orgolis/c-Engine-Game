@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdint>
 
+namespace { bool g_vsync = true; }   // see VulkanSwapchain::set_vsync
+
 namespace gws::renderer::gpu {
 
 VulkanSwapchain::VulkanSwapchain(VkDevice device,
@@ -54,6 +56,16 @@ void VulkanSwapchain::initialize(uint32_t width, uint32_t height) {
     // Choose best options
     VkSurfaceFormatKHR surface_format = choose_surface_format(formats);
     VkPresentModeKHR present_mode = choose_present_mode(present_modes);
+    // Named out loud, because the CPU's fence wait absorbs display pacing and
+    // GPU cost alike: a 13.3 ms wait on a 75 Hz monitor is the frame finishing
+    // early and waiting for the refresh, not the renderer being slow. Without
+    // this line the two are indistinguishable from the log.
+    GWS_LOG_INFO("[swapchain] present mode: {} ({})",
+                 present_mode == VK_PRESENT_MODE_FIFO_KHR      ? "FIFO"      :
+                 present_mode == VK_PRESENT_MODE_MAILBOX_KHR   ? "MAILBOX"   :
+                 present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE" : "other",
+                 g_vsync ? "vsync on - frame rate capped to the refresh rate"
+                         : "vsync off - uncapped");
     extent = choose_swap_extent(capabilities);
     
     image_format = surface_format.format;
@@ -210,17 +222,31 @@ VkSurfaceFormatKHR VulkanSwapchain::choose_surface_format(
     return available_formats.empty() ? VkSurfaceFormatKHR{} : available_formats[0];
 }
 
+
+void VulkanSwapchain::set_vsync(bool on) { g_vsync = on; }
+bool VulkanSwapchain::vsync() { return g_vsync; }
+
 VkPresentModeKHR VulkanSwapchain::choose_present_mode(
     const std::vector<VkPresentModeKHR>& available_modes) {
-    
-    // Prefer mailbox for triple buffering
-    for (const auto& mode : available_modes) {
-        if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
-            return mode;
-        }
+
+    auto has = [&](VkPresentModeKHR m) {
+        for (const auto& a : available_modes) if (a == m) return true;
+        return false;
+    };
+
+    if (g_vsync) {
+        // FIFO is always available and is the honest default: it presents once
+        // per refresh and does not render frames nobody sees.
+        return VK_PRESENT_MODE_FIFO_KHR;
     }
-    
-    // Fallback to FIFO (always available)
+
+    // Unlocked. MAILBOX first (renders ahead, presents the newest, no tearing),
+    // then IMMEDIATE (tears, but the only option on some drivers), then FIFO --
+    // which is not unlocked at all, so say so rather than pretend.
+    if (has(VK_PRESENT_MODE_MAILBOX_KHR))   return VK_PRESENT_MODE_MAILBOX_KHR;
+    if (has(VK_PRESENT_MODE_IMMEDIATE_KHR)) return VK_PRESENT_MODE_IMMEDIATE_KHR;
+    GWS_LOG_WARN("[swapchain] vsync off requested but neither MAILBOX nor IMMEDIATE "
+                 "is available - staying on FIFO, so the frame rate stays capped");
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
