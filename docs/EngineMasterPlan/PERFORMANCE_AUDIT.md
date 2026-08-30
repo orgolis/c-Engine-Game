@@ -244,10 +244,14 @@ measurement that was confidently wrong.
 
 ## Work plan
 
+**Status: nothing here has shipped.** The work below lands on `main` as it is
+finished; the last tagged release is **v0.8.1** and the Hub still installs that.
+Versioning continues in the 0.8 series — 0.9 is not the next number.
+
 Three releases. Each has a stated **done** criterion that can be checked, because the recurring failure in
 this project is a fix that was believed rather than verified.
 
-### v0.9.0 — "see it, then afford it"
+### v0.8.2 — "see it, then afford it"
 
 The whole release is diagnosis plus control. Nothing here changes how the engine looks at default quality;
 it changes what a person can measure and what they can turn off.
@@ -263,13 +267,13 @@ it changes what a person can measure and what they can turn off.
 **Release gate:** on the low-end machine, the overlay accounts for the whole frame, and Low + 0.5 render scale
 produces a measured, reported improvement. Not "feels faster".
 
-### v0.9.1 — bandwidth
+### v0.8.3 — bandwidth
 
 | # | Item | Done when |
 |---|---|---|
 | 6 | **F5 — drop the G-buffer position attachment** | Position is reconstructed from depth in all 14 consumers; the G-buffer is 20 B/px; output is visually unchanged (compared against captured reference images), and the overlay shows the Geometry and Lighting passes cheaper. |
 
-### v0.9.2 — footprint
+### v0.8.4 — footprint
 
 | # | Item | Done when |
 |---|---|---|
