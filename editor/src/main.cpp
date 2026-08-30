@@ -57,6 +57,7 @@
 #include "profiler/frame_capture.h" // N5: one-frame draw-list snapshot
 #include "memory/memory_snapshot.h" // N3: per-tag live bytes + allocator registry
 #include "vulkan/gpu_zones.h"        // perf F2: per-pass GPU timestamps for EVERY pass
+#include "render_settings.h"        // perf F1/F7: render scale + quality presets
 #include "audio/audio_engine.h"     // Stage 6: miniaudio device + spatial mixer
 #include "audio_mixer_panel.h"       // Phase 4.9: mix-bus faders / mute / solo / meters
 #include "editor_extensions.h"      // Phase 4.8: user-written editor extensions
@@ -5956,8 +5957,30 @@ int main(int argc, char** argv) {
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         glfwWindowHint(GLFW_RESIZABLE,  GLFW_TRUE);
 
-        constexpr uint32_t kW = 1920, kH = 1080;
-        GLFWwindow* glfw_window = glfwCreateWindow(kW, kH,
+        // Per-machine graphics settings (performance audit F1/F7). Loaded before
+        // the window so the render scale is known when the targets are sized.
+        // A missing file is the first launch, not an error: pick a preset from
+        // the device rather than making someone find the settings menu to get a
+        // usable first run.
+        schizo::editor::RenderSettings render_settings;
+        const bool had_settings = schizo::editor::load_render_settings(render_settings);
+
+        // The window used to be created at a hardcoded 1920x1080 -- larger than
+        // the whole display on a 1366x768 laptop, which then rendered more
+        // pixels than it could ever show. Fit it to the monitor's WORK area
+        // (excludes the taskbar) so a small screen gets a window it can hold.
+        uint32_t win_w = 1920, win_h = 1080;
+        if (GLFWmonitor* mon = glfwGetPrimaryMonitor()) {
+            int wx = 0, wy = 0, ww = 0, wh = 0;
+            glfwGetMonitorWorkarea(mon, &wx, &wy, &ww, &wh);
+            if (ww > 0 && wh > 0) {
+                win_w = static_cast<uint32_t>(std::min<int>(static_cast<int>(win_w), ww));
+                win_h = static_cast<uint32_t>(std::min<int>(static_cast<int>(win_h), wh));
+            }
+        }
+
+        GLFWwindow* glfw_window = glfwCreateWindow(static_cast<int>(win_w),
+                                                    static_cast<int>(win_h),
                                                     "Project Schizo - Editor",
                                                     nullptr, nullptr);
         if (!glfw_window) {
@@ -5965,7 +5988,26 @@ int main(int argc, char** argv) {
             glfwTerminate();
             return 1;
         }
-        spdlog::info("GLFW window created ({}x{})", kW, kH);
+
+        // Size the offscreen 3D targets from the REAL framebuffer, not a
+        // constant. This is the audit's largest single waste: every
+        // resolution-dependent cost in the frame -- G-buffer fill, SSAO, SSR,
+        // clouds, volumetric light, the whole post chain -- was being paid at
+        // 1920x1080 regardless of what the window or the display could show.
+        int fbw = 0, fbh = 0;
+        glfwGetFramebufferSize(glfw_window, &fbw, &fbh);
+        if (fbw <= 0 || fbh <= 0) { fbw = static_cast<int>(win_w); fbh = static_cast<int>(win_h); }
+
+        const float rscale = render_settings.render_scale;
+        // At least 2 so a degenerate scale can never produce a zero-sized image.
+        const uint32_t kW = static_cast<uint32_t>(std::max(2.0f, fbw * rscale));
+        const uint32_t kH = static_cast<uint32_t>(std::max(2.0f, fbh * rscale));
+
+        spdlog::info("GLFW window created ({}x{}), framebuffer {}x{}", win_w, win_h, fbw, fbh);
+        spdlog::info("[perf] render targets {}x{} (scale {:.2f}) -- was a hardcoded 1920x1080",
+                     kW, kH, rscale);
+        if (!had_settings)
+            spdlog::info("[perf] no saved graphics settings; using defaults until a preset is chosen");
 
         // ----------------------------------------------------------------
         // Vulkan device + surface + swapchain
@@ -6419,6 +6461,54 @@ int main(int argc, char** argv) {
                 ssr->set_cloud_sky(clouds->get_cloud_sky_view(),
                                    clouds->get_cloud_sky_sampler());
         }
+
+        // ----------------------------------------------------------------
+        // Apply the graphics settings (performance audit F3/F4/F6)
+        // ----------------------------------------------------------------
+        // Every expensive effect defaulted to ON in its own header, and the
+        // only way to turn them all off was GWS_NO_FX -- an environment
+        // variable, and so unreachable for anyone launching from the Hub. One
+        // place now decides, from a setting a person can change.
+        auto apply_render_settings = [&](const schizo::editor::RenderSettings& rs) {
+            if (ssao)             ssao->set_enabled(rs.ssao);
+            if (ssr)              ssr->set_enabled(rs.ssr);
+            if (clouds)           clouds->set_enabled(rs.clouds);
+            if (volumetric_light) volumetric_light->set_enabled(rs.volumetric);
+            if (froxel_fog)       froxel_fog->set_enabled(rs.froxel);
+            if (ddgi)             ddgi->set_enabled(rs.ddgi);
+        };
+
+        if (!had_settings) {
+            // First launch: choose from the device rather than making someone
+            // discover the settings menu to get a usable frame rate.
+            VkPhysicalDeviceProperties dp{};
+            vkGetPhysicalDeviceProperties(device.get_physical_device(), &dp);
+            VkPhysicalDeviceMemoryProperties mp{};
+            vkGetPhysicalDeviceMemoryProperties(device.get_physical_device(), &mp);
+            uint64_t vram = 0;
+            for (uint32_t i = 0; i < mp.memoryHeapCount; ++i)
+                if (mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+                    vram = std::max<uint64_t>(vram, mp.memoryHeaps[i].size);
+            const bool integrated = dp.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+
+            const auto picked = schizo::editor::preset_for_device(integrated, vram);
+            render_settings.apply_preset(picked);
+            schizo::editor::save_render_settings(render_settings);
+            spdlog::info("[perf] first launch on {} ({}, {:.1f} GB device-local) -> preset {}",
+                         dp.deviceName, integrated ? "integrated" : "discrete",
+                         static_cast<double>(vram) / (1024.0 * 1024.0 * 1024.0),
+                         schizo::editor::quality_preset_name(picked));
+            // The scale the preset just chose cannot apply to targets already
+            // created at this size; it takes effect next launch. Said out loud
+            // rather than left to look like the setting did nothing.
+            spdlog::info("[perf] render scale {:.2f} applies on next launch",
+                         render_settings.render_scale);
+        }
+        apply_render_settings(render_settings);
+        spdlog::info("[perf] preset {} - ssao {} ssr {} clouds {} volumetric {} froxel {} ddgi {}",
+                     schizo::editor::quality_preset_name(render_settings.preset),
+                     render_settings.ssao, render_settings.ssr, render_settings.clouds,
+                     render_settings.volumetric, render_settings.froxel, render_settings.ddgi);
 
         // Water surfaces (terrain expansion) — renders WaterComponent rects
         // into the HDR target between SSR and the atmospheric composites.
@@ -8669,6 +8759,65 @@ int main(int argc, char** argv) {
             // EditorState). Toggles + live sliders for every effect.
             if (post_processing && editor_state.show_post_processing) {
                 ImGui::Begin("Post-Processing", &editor_state.show_post_processing);  // docked window = child; End() must always run
+
+                // ---- Quality (performance audit F3/F4/F6/F7) ----------------
+                // First thing in the panel, because on weak hardware it is the
+                // only control that matters. Before this, turning the expensive
+                // passes off meant setting GWS_NO_FX -- an environment variable,
+                // unreachable from a Hub-launched editor.
+                {
+                    using schizo::editor::QualityPreset;
+                    using schizo::editor::quality_preset_name;
+
+                    ImGui::TextUnformatted("Quality");
+                    ImGui::SetNextItemWidth(160);
+                    const QualityPreset cur = render_settings.preset;
+                    if (ImGui::BeginCombo("Preset", quality_preset_name(cur))) {
+                        for (QualityPreset p : {QualityPreset::Low, QualityPreset::Medium,
+                                                QualityPreset::High, QualityPreset::Custom}) {
+                            const bool sel = (p == cur);
+                            if (ImGui::Selectable(quality_preset_name(p), sel) && p != cur) {
+                                render_settings.apply_preset(p);
+                                apply_render_settings(render_settings);
+                                schizo::editor::save_render_settings(render_settings);
+                                editor_state.set_status(
+                                    std::string("Quality: ") + quality_preset_name(p) +
+                                    " (render scale applies on restart)");
+                            }
+                            if (sel) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip(
+                            "Low disables SSAO, SSR, clouds and volumetric light. A pass that "
+                            "does not run costs nothing; one at lower quality still pays its "
+                            "full-screen bandwidth.");
+
+                    ImGui::SetNextItemWidth(160);
+                    float rs = render_settings.render_scale;
+                    if (ImGui::SliderFloat("Render scale", &rs,
+                                           schizo::editor::RenderSettings::kMinScale,
+                                           schizo::editor::RenderSettings::kMaxScale, "%.2f")) {
+                        render_settings.render_scale = rs;
+                        render_settings.preset = render_settings.detect_preset();
+                    }
+                    // Saved on gesture end, not per frame: a slider held for two
+                    // seconds would otherwise rewrite the file 120 times.
+                    if (ImGui::IsItemDeactivatedAfterEdit()) {
+                        render_settings.sanitize();
+                        schizo::editor::save_render_settings(render_settings);
+                        editor_state.set_status("Render scale saved - restart to apply");
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(restart)");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip(
+                            "Render targets are created at startup, so a new scale takes "
+                            "effect on the next launch.");
+                    ImGui::TextDisabled("3D renders at %ux%u", kW, kH);
+                    ImGui::Separator();
+                }
                 {
                     bool bloom = post_processing->is_effect_enabled(
                         gws::renderer::gpu::PostProcessEffect::Bloom);
@@ -9027,6 +9176,32 @@ int main(int argc, char** argv) {
                     if (scan)
                         ImGui::SliderFloat("  Scanline strength",
                             &post_processing->scanline_intensity_ref(), 0.0f, 1.0f);
+                }
+
+                // Individual effect toggles live further down this panel and
+                // write straight to the passes. Rather than intercept each one,
+                // read the live state back: any hand toggle lands here, moves
+                // the preset to Custom, and persists. Saved only on an actual
+                // change, so this is not a file write every frame.
+                {
+                    schizo::editor::RenderSettings live = render_settings;
+                    if (ssao)             live.ssao       = ssao->is_enabled();
+                    if (ssr)              live.ssr        = ssr->is_enabled();
+                    if (clouds)           live.clouds     = clouds->is_enabled();
+                    if (volumetric_light) live.volumetric = volumetric_light->is_enabled();
+                    if (froxel_fog)       live.froxel     = froxel_fog->is_enabled();
+                    if (ddgi)             live.ddgi       = ddgi->is_enabled();
+                    live.preset = live.detect_preset();
+
+                    if (live.ssao != render_settings.ssao || live.ssr != render_settings.ssr ||
+                        live.clouds != render_settings.clouds ||
+                        live.volumetric != render_settings.volumetric ||
+                        live.froxel != render_settings.froxel ||
+                        live.ddgi != render_settings.ddgi ||
+                        live.preset != render_settings.preset) {
+                        render_settings = live;
+                        schizo::editor::save_render_settings(render_settings);
+                    }
                 }
                 ImGui::End();
             }
