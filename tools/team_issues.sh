@@ -13,6 +13,22 @@ REPO="orgolis/c-Engine-Game"
 command -v gh >/dev/null 2>&1 || { echo "gh not found"; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "Run: gh auth login"; exit 1; }
 
+# Two halves, separately runnable. Creating issues is additive; closing four is
+# visible to everyone on the tracker, so it is opt-in rather than bundled.
+#   sh tools/team_issues.sh              -> create only (default)
+#   sh tools/team_issues.sh --close-only -> close the shipped Phase 4 issues
+#   sh tools/team_issues.sh --all        -> both
+DO_CREATE=1
+DO_CLOSE=0
+case "${1:-}" in
+  --close-only) DO_CREATE=0; DO_CLOSE=1 ;;
+  --all)        DO_CREATE=1; DO_CLOSE=1 ;;
+  "")           ;;
+  *) echo "usage: $0 [--close-only|--all]"; exit 1 ;;
+esac
+
+
+if [ "$DO_CREATE" = "1" ]; then
 echo "=== creating 4 issue(s) ==="
 
 gh issue create --repo "$REPO" \
@@ -177,6 +193,9 @@ should be assumed live until symbolized.
 ISSUE_BODY_EOF
   )"
 
+fi
+
+if [ "$DO_CLOSE" = "1" ]; then
 echo "=== closing 4 shipped Phase 4 issue(s) ==="
 
 gh issue close 29 --repo "$REPO" --comment "$(cat <<'CLOSE_EOF'
@@ -198,5 +217,7 @@ gh issue close 69 --repo "$REPO" --comment "$(cat <<'CLOSE_EOF'
 Done in v0.8.0 as workflow-plan item 4.9. Note the item's premise was wrong — it said this rode an existing Stage-6 bus graph and there was none, so the routing layer had to be built first. `audiobus_check` (33). Details in the plan's 4.9 row.
 CLOSE_EOF
   )"
+
+fi
 
 echo "done"
