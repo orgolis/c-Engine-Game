@@ -119,7 +119,7 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
             } else {
                 ImGui::TextDisabled("Double-click a project to open it.");
                 ImGui::Dummy(ImVec2(0, 4));
-                ImGui::BeginChild("recent_list", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 1.4f), true);
+                ImGui::BeginChild("recent_list", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 3.0f), true);
                 const auto& items = registry.items();
                 for (int i = 0; i < static_cast<int>(items.size()); ++i) {
                     const auto& it = items[i];
