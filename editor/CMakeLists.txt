@@ -114,6 +114,15 @@ else()
     target_compile_options(editor PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# The editor still contains a couple of Win32 CRT/system calls in main.cpp.
+# On Linux, force-include a small compatibility header so those call sites can
+# stay unchanged while the rest of the Linux port is brought up incrementally.
+if(UNIX AND NOT APPLE)
+    target_compile_options(editor PRIVATE
+        -include
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/linux_compat.h)
+endif()
+
 # Native Win32 file dialogs (GetOpenFileName / GetSaveFileName) live in
 # comdlg32 — MinGW-w64 doesn't auto-link it, MSVC does. Pull it in
 # explicitly on Windows so both toolchains build the editor.
