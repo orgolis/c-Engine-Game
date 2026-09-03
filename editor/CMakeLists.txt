@@ -27,6 +27,7 @@ target_link_libraries(editor
         ability
         network
         renderer
+        gws_platform       # OS integration (dialogs, shell helpers, ...)
         gws_jobs           # work-stealing job system (Stage 0.3)
         gws_profiler       # core CPU profiler - scoped zones (Stage 0.6)
         gws_ecs            # ECS World + components (Stage 1)
@@ -136,7 +137,7 @@ endif()
 # explicitly on Windows so both toolchains build the editor.
 if(WIN32)
     # comdlg32: GetOpenFileName/GetSaveFileName (scene dialogs).
-    # shell32 + ole32: SHBrowseForFolder + CoTaskMemFree (project-folder picker).
+    # shell32 + ole32: other remaining native shell integrations.
     target_link_libraries(editor PRIVATE comdlg32 shell32 ole32)
 endif()
 
