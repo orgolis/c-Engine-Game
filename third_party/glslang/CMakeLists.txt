@@ -11,7 +11,7 @@ if(glslang_FOUND)
     target_link_libraries(glslang_wrapper INTERFACE
         glslang
         SPIRV
-        SPIR-Tools
+        SPIRV-Tools
     )
 elseif(MSVC AND DEFINED ENV{VULKAN_SDK})
     # MSVC only: link against the Vulkan SDK's pre-built MSVC static libs.
