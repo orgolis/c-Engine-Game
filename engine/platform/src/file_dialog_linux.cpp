@@ -1,6 +1,7 @@
 #include "gws/platform/file_dialog.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 namespace gws::platform {
