@@ -56,25 +56,25 @@ target_sources(editor
         src/play_mode_changes.cpp
         src/edit_coalescer.cpp
         src/logic_graph_panel.cpp
-    src/command_palette.cpp
-    src/curve_editor.cpp
-    src/node_canvas.cpp
-    src/anim_graph.cpp
-    src/anim_graph_panel.cpp
-    src/sequence.cpp
-    src/vfx_stack_panel.cpp
-    src/timeline_panel.cpp
-    src/level_tools.cpp
-    src/level_tools_panel.cpp
-    src/audio_mixer_panel.cpp
-    src/render_settings.cpp
-    src/doc_io.cpp
-    src/document_bar.cpp
-    src/editor_extensions.cpp
-    src/extensions_panel.cpp
-    src/material_graph_panel.cpp
-    src/shader_compile_service.cpp
-    ../engine/core/shadergraph/material_graph.cpp
+        src/command_palette.cpp
+        src/curve_editor.cpp
+        src/node_canvas.cpp
+        src/anim_graph.cpp
+        src/anim_graph_panel.cpp
+        src/sequence.cpp
+        src/vfx_stack_panel.cpp
+        src/timeline_panel.cpp
+        src/level_tools.cpp
+        src/level_tools_panel.cpp
+        src/audio_mixer_panel.cpp
+        src/render_settings.cpp
+        src/doc_io.cpp
+        src/document_bar.cpp
+        src/editor_extensions.cpp
+        src/extensions_panel.cpp
+        src/material_graph_panel.cpp
+        src/shader_compile_service.cpp
+        ../engine/core/shadergraph/material_graph.cpp
         src/editor_scene.cpp
         src/scene_serializer.cpp
         src/mesh_generator.cpp
@@ -94,7 +94,6 @@ target_sources(editor
         src/script_api_editor.cpp
         src/script_params.cpp
         src/scene_playback_manager.cpp
-        src/terminal_panel.cpp
         src/console_panel.cpp
         # ImGui core
         ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui.cpp
@@ -106,6 +105,15 @@ target_sources(editor
         ${CMAKE_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_glfw.cpp
         ${CMAKE_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_vulkan.cpp
 )
+
+# The embedded terminal is implemented with Windows ConPTY. Keep that full
+# implementation on Windows and provide a small non-Windows panel stub so the
+# rest of the editor can build while a POSIX PTY backend is still pending.
+if(WIN32)
+    target_sources(editor PRIVATE src/terminal_panel.cpp)
+else()
+    target_sources(editor PRIVATE src/terminal_panel_linux.cpp)
+endif()
 
 # Compiler flags
 if(MSVC)
