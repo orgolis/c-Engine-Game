@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <fstream>
 #include <vector>
+#include <GLFW/glfw3.h>
 
 namespace gws::renderer::gpu {
 
@@ -42,13 +43,13 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     VkDebugUtilsMessageTypeFlagsEXT message_type,
     const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
     void* user_data) {
-    
+
     if (message_severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
         GWS_LOG_WARN("[Vulkan] {}", callback_data->pMessage);
     } else {
         GWS_LOG_INFO("[Vulkan] {}", callback_data->pMessage);
     }
-    
+
     return VK_FALSE;
 }
 
@@ -64,9 +65,9 @@ VulkanDevice::~VulkanDevice() {
 
 void VulkanDevice::initialize(const RenderConfig& config) {
     this->config = config;
-    
+
     GWS_LOG_INFO("Initializing Vulkan device: {}", config.app_name);
-    
+
     // Create Vulkan instance (may clear this->config.enable_validation if the
     // validation layer isn't installed on this machine).
     create_instance(this->config);
@@ -75,10 +76,10 @@ void VulkanDevice::initialize(const RenderConfig& config) {
     if (this->config.enable_validation) {
         setup_debug_messenger();
     }
-    
+
     // Select physical device
     pick_physical_device();
-    
+
     // Create logical device
     create_logical_device();
 
@@ -130,12 +131,12 @@ void VulkanDevice::shutdown() {
         fences.clear();
         semaphores.clear();
         command_buffers.clear();
-        
+
         // Cleanup device
         vkDestroyDevice(device, nullptr);
         device = VK_NULL_HANDLE;
     }
-    
+
     // Cleanup debug messenger
     if (debug_messenger != VK_NULL_HANDLE) {
         auto destroy_func = (PFN_vkDestroyDebugUtilsMessengerEXT)
@@ -145,13 +146,13 @@ void VulkanDevice::shutdown() {
         }
         debug_messenger = VK_NULL_HANDLE;
     }
-    
+
     // Cleanup instance
     if (instance != VK_NULL_HANDLE) {
         vkDestroyInstance(instance, nullptr);
         instance = VK_NULL_HANDLE;
     }
-    
+
     GWS_LOG_INFO("✅ Vulkan device shut down");
 }
 
@@ -301,10 +302,10 @@ uint32_t VulkanDevice::acquire_next_image(Handle<Semaphore> signal_semaphore) {
         GWS_LOG_ERROR("Swapchain not initialized!");
         return ~0u;
     }
-    
+
     VulkanSemaphore* sem = get_resource<VulkanSemaphore>(
         *reinterpret_cast<Handle<VulkanSemaphore>*>(&signal_semaphore));
-    
+
     return swapchain->acquire_next_image(
         sem ? sem->get_vk_semaphore() : VK_NULL_HANDLE);
 }
@@ -315,10 +316,10 @@ void VulkanDevice::present_image(uint32_t image_index,
         GWS_LOG_ERROR("Swapchain not initialized!");
         return;
     }
-    
+
     VulkanSemaphore* sem = get_resource<VulkanSemaphore>(
         *reinterpret_cast<Handle<VulkanSemaphore>*>(&wait_semaphore));
-    
+
     swapchain->present_image(image_index,
                             sem ? sem->get_vk_semaphore() : VK_NULL_HANDLE);
 }
@@ -352,35 +353,35 @@ uint32_t VulkanDevice::get_swapchain_format() const {
 CommandBuffer* VulkanDevice::begin_command_buffer() {
     // Allocate or reuse command buffer
     VulkanCommandBuffer* cmd_buffer = nullptr;
-    
+
     if (!available_command_buffers.empty()) {
         cmd_buffer = available_command_buffers.front();
         available_command_buffers.pop();
     } else {
         // Allocate new command buffer
         auto new_cmd = std::make_unique<VulkanCommandBuffer>();
-        
+
         VkCommandBufferAllocateInfo allocate_info{};
         allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         allocate_info.commandPool = command_pool;
         allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocate_info.commandBufferCount = 1;
-        
-        vkAllocateCommandBuffers(device, &allocate_info, 
+
+        vkAllocateCommandBuffers(device, &allocate_info,
                                 &new_cmd->command_buffer);
-        
+
         cmd_buffer = new_cmd.get();
         command_buffers.push_back(std::move(new_cmd));
     }
-    
+
     // Begin recording
     VkCommandBufferBeginInfo begin_info{};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    
+
     vkBeginCommandBuffer(cmd_buffer->get_vk_command_buffer(), &begin_info);
     cmd_buffer->is_recording = true;
-    
+
     return cmd_buffer;
 }
 
@@ -390,20 +391,20 @@ void VulkanDevice::submit_command_buffer(CommandBuffer* cmd_buffer,
     if (!vk_cmd) {
         return;
     }
-    
+
     // End recording
     vkEndCommandBuffer(vk_cmd->get_vk_command_buffer());
     vk_cmd->is_recording = false;
-    
+
     // Submit
     VkSubmitInfo submit_info{};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &vk_cmd->command_buffer;
-    
+
     VulkanFence* fence = get_resource<VulkanFence>(
         *reinterpret_cast<Handle<VulkanFence>*>(&signal_fence));
-    
+
     vkQueueSubmit(graphics_queue, 1, &submit_info,
                 fence ? fence->get_vk_fence() : VK_NULL_HANDLE);
 }
@@ -411,22 +412,22 @@ void VulkanDevice::submit_command_buffer(CommandBuffer* cmd_buffer,
 void VulkanDevice::wait_fence(Handle<Fence> fence) {
     VulkanFence* vk_fence = get_resource<VulkanFence>(
         *reinterpret_cast<Handle<VulkanFence>*>(&fence));
-    
+
     if (!vk_fence) {
         return;
     }
-    
+
     vkWaitForFences(device, 1, &vk_fence->fence, VK_TRUE, UINT64_MAX);
 }
 
 void VulkanDevice::reset_fence(Handle<Fence> fence) {
     VulkanFence* vk_fence = get_resource<VulkanFence>(
         *reinterpret_cast<Handle<VulkanFence>*>(&fence));
-    
+
     if (!vk_fence) {
         return;
     }
-    
+
     vkResetFences(device, 1, &vk_fence->fence);
 }
 
@@ -482,53 +483,53 @@ void VulkanDevice::destroy_pipeline(Handle<Pipeline> pipeline) {
 
 Handle<Fence> VulkanDevice::create_fence(bool signaled) {
     auto fence = std::make_unique<VulkanFence>();
-    
+
     VkFenceCreateInfo create_info{};
     create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     create_info.flags = signaled ? VK_FENCE_CREATE_SIGNALED_BIT : 0;
-    
+
     vkCreateFence(device, &create_info, nullptr, &fence->fence);
-    
+
     uint64_t handle_id = allocate_handle<VulkanFence>();
     fences[handle_id] = std::move(fence);
-    
+
     return Handle<Fence>(handle_id);
 }
 
 void VulkanDevice::destroy_fence(Handle<Fence> fence) {
     VulkanFence* vk_fence = get_resource<VulkanFence>(
         *reinterpret_cast<Handle<VulkanFence>*>(&fence));
-    
+
     if (!vk_fence) {
         return;
     }
-    
+
     vkDestroyFence(device, vk_fence->fence, nullptr);
     free_resource<VulkanFence>(*reinterpret_cast<Handle<VulkanFence>*>(&fence));
 }
 
 Handle<Semaphore> VulkanDevice::create_semaphore() {
     auto semaphore = std::make_unique<VulkanSemaphore>();
-    
+
     VkSemaphoreCreateInfo create_info{};
     create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    
+
     vkCreateSemaphore(device, &create_info, nullptr, &semaphore->semaphore);
-    
+
     uint64_t handle_id = allocate_handle<VulkanSemaphore>();
     semaphores[handle_id] = std::move(semaphore);
-    
+
     return Handle<Semaphore>(handle_id);
 }
 
 void VulkanDevice::destroy_semaphore(Handle<Semaphore> semaphore) {
     VulkanSemaphore* vk_sem = get_resource<VulkanSemaphore>(
         *reinterpret_cast<Handle<VulkanSemaphore>*>(&semaphore));
-    
+
     if (!vk_sem) {
         return;
     }
-    
+
     vkDestroySemaphore(device, vk_sem->semaphore, nullptr);
     free_resource<VulkanSemaphore>(*reinterpret_cast<Handle<VulkanSemaphore>*>(&semaphore));
 }
@@ -588,7 +589,7 @@ std::string VulkanDevice::get_device_name() const {
     if (physical_device == VK_NULL_HANDLE) {
         return "Unknown";
     }
-    
+
     VkPhysicalDeviceProperties properties;
     vkGetPhysicalDeviceProperties(physical_device, &properties);
     return properties.deviceName;
@@ -638,10 +639,18 @@ void VulkanDevice::create_instance(RenderConfig& config) {
     app_info.apiVersion = VK_API_VERSION_1_3;
 
     // Required extensions
-    std::vector<const char*> extensions = {
-        VK_KHR_SURFACE_EXTENSION_NAME,
-        VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
-    };
+    uint32_t glfw_extension_count = 0;
+    const char** glfw_extensions =
+        glfwGetRequiredInstanceExtensions(&glfw_extension_count);
+
+    if (!glfw_extensions || glfw_extension_count == 0) {
+        throw std::runtime_error(
+            "GLFW did not provide required Vulkan instance extensions");
+    }
+
+    std::vector<const char*> extensions(
+        glfw_extensions,
+        glfw_extensions + glfw_extension_count);
 
     // Validation layers — ONLY enable when requested AND actually installed. On a
     // machine without the Vulkan SDK the layer is absent; requesting it anyway
@@ -703,10 +712,10 @@ void VulkanDevice::setup_debug_messenger() {
         VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
         VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
     create_info.pfnUserCallback = debug_callback;
-    
+
     auto create_func = (PFN_vkCreateDebugUtilsMessengerEXT)
         vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
-    
+
     if (create_func) {
         create_func(instance, &create_info, nullptr, &debug_messenger);
         GWS_LOG_INFO("✅ Debug messenger enabled");
@@ -716,34 +725,34 @@ void VulkanDevice::setup_debug_messenger() {
 void VulkanDevice::pick_physical_device() {
     uint32_t device_count = 0;
     vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
-    
+
     if (device_count == 0) {
         GWS_LOG_ERROR("No Vulkan devices found!");
         return;
     }
-    
+
     std::vector<VkPhysicalDevice> devices(device_count);
     vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
-    
+
     // Choose discrete GPU if available, otherwise integrated
     int best_score = -1;
     for (const auto& dev : devices) {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(dev, &props);
-        
+
         int score = 0;
         if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             score += 1000;
         } else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
             score += 100;
         }
-        
+
         if (score > best_score) {
             best_score = score;
             physical_device = dev;
         }
     }
-    
+
     if (physical_device != VK_NULL_HANDLE) {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(physical_device, &props);
@@ -754,14 +763,14 @@ void VulkanDevice::pick_physical_device() {
 void VulkanDevice::create_logical_device() {
     // Get queue families
     uint32_t queue_family_count = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, 
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device,
                                             &queue_family_count, nullptr);
-    
+
     std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
     vkGetPhysicalDeviceQueueFamilyProperties(physical_device,
                                             &queue_family_count,
                                             queue_families.data());
-    
+
     // Find graphics queue family
     for (uint32_t i = 0; i < queue_families.size(); ++i) {
         if (queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
@@ -769,13 +778,13 @@ void VulkanDevice::create_logical_device() {
             break;
         }
     }
-    
+
     present_queue_family = graphics_queue_family;  // Same queue
-    
+
     // Create device
     std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
     std::set<uint32_t> unique_queue_families = {graphics_queue_family};
-    
+
     float queue_priority = 1.0f;
     for (uint32_t queue_family : unique_queue_families) {
         VkDeviceQueueCreateInfo queue_create_info{};
@@ -785,7 +794,7 @@ void VulkanDevice::create_logical_device() {
         queue_create_info.pQueuePriorities = &queue_priority;
         queue_create_infos.push_back(queue_create_info);
     }
-    
+
     // Device features
     VkPhysicalDeviceFeatures device_features{};
 
@@ -1076,7 +1085,7 @@ void VulkanDevice::create_logical_device() {
     // Get queues
     vkGetDeviceQueue(device, graphics_queue_family, 0, &graphics_queue);
     vkGetDeviceQueue(device, present_queue_family, 0, &present_queue);
-    
+
     GWS_LOG_INFO("✅ Logical device created");
 }
 
@@ -1085,7 +1094,7 @@ void VulkanDevice::create_command_pool() {
     create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     create_info.queueFamilyIndex = graphics_queue_family;
-    
+
     vkCreateCommandPool(device, &create_info, nullptr, &command_pool);
     GWS_LOG_INFO("✅ Command pool created");
 }
