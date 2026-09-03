@@ -180,7 +180,7 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
             ImGui::TextUnformatted("Features");
             ImGui::TextDisabled("Core systems (Rendering, ECS, Assets, Editor) are always included.");
             ImGui::Dummy(ImVec2(0, 2));
-            ImGui::BeginChild("new_features", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 1.8f), true);
+            ImGui::BeginChild("new_features", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 3.0f), true);
             draw_feature_checkboxes(new_features);
             ImGui::EndChild();
 
