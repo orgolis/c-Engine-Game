@@ -1,6 +1,9 @@
 # Phase 1: Core systems (math, memory, logging, etc.)
 add_subdirectory(core)
 
+# Shared OS/platform services used by the editor and engine-facing tools.
+add_subdirectory(platform)
+
 # Phase 2: Graphics & Rendering
 add_subdirectory(window)
 add_subdirectory(renderer)
