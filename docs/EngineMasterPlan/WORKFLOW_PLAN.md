@@ -552,6 +552,39 @@ keeping is now true as well, rather than a gap the phase closed around.
 
 ---
 
+## Who is on what (2026-08-30)
+
+**Engine performance is being worked separately** and is not team work right now — it has its own document
+([`PERFORMANCE_AUDIT.md`](PERFORMANCE_AUDIT.md)), its own release line (v0.8.2 → v0.8.4 so far), and it is
+mid-measurement. Picking up F5/F8/F9/F10 from that plan will collide.
+
+**Phase 5 is the team's next work.** Every row below already has a tracker issue except 5.4:
+
+| Item | Issue |
+|---|---|
+| 5.1 Deterministic replay | [#38](https://github.com/orgolis/c-Engine-Game/issues/38) |
+| 5.2 Time-travel debugging | [#39](https://github.com/orgolis/c-Engine-Game/issues/39) |
+| 5.3 Replay attached to crash reports | [#40](https://github.com/orgolis/c-Engine-Game/issues/40) |
+| 5.4 Replay as regression test | **to be created** — `tools/team_issues.sh` |
+| 5.5 Hub: upgrade preflight | [WorldShaper-Hub#5](https://github.com/orgolis/WorldShaper-Hub/issues/5) |
+| 5.6 Hub: project health dashboard | [WorldShaper-Hub#6](https://github.com/orgolis/WorldShaper-Hub/issues/6) |
+| 5.7 Explain why this is broken | [#41](https://github.com/orgolis/c-Engine-Game/issues/41) |
+| 5.8 Remote profiling on device | [#43](https://github.com/orgolis/c-Engine-Game/issues/43) |
+| 5.9 Automated play testing | [#42](https://github.com/orgolis/c-Engine-Game/issues/42) |
+
+**5.1 gates most of the phase.** 5.2, 5.3 and 5.4 all consume the recording format, so starting them before
+it exists means guessing at it and redoing the guess.
+
+**Three defects are also open and are not performance work:** two checks that are red on `main` and excluded
+from CI by name (`terrainmat_check`, `shadersource_check`) and an unattributed reproducible crash
+([`OPEN_CRASH_20260830.md`](OPEN_CRASH_20260830.md)). Good entry points — each is bounded and has a written
+first step.
+
+`tools/team_issues.sh` creates the four missing issues and closes the four Phase 4 issues whose work shipped
+(#29, #32, #36, #69). It needs `gh auth login` first.
+
+---
+
 ## Phase 5 · Differentiate — 🟠 High · 4–8 weeks
 
 Two capabilities no competitor can answer quickly, both of which fall out of architecture already in place.
