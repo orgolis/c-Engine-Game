@@ -5149,12 +5149,12 @@ void ShowViewport(EditorState& editor_state) {
                 }
 
                 // Vertical camera movement (Q/E keys for intuitive up/down)
-                if (ImGui::IsKeyDown(ImGuiKey_Q)) {
-                    spdlog::debug("[Q] Move camera up");
+                if (ImGui::IsKeyDown(ImGuiKey_E)) {
+                    spdlog::debug("[E] Move camera up");
                     editor_state.viewport_camera.MoveLocal(0.0f, 0.0f, 1.0f);  // Up
                 }
-                if (ImGui::IsKeyDown(ImGuiKey_E)) {
-                    spdlog::debug("[E] Move camera down");
+                if (ImGui::IsKeyDown(ImGuiKey_Q)) {
+                    spdlog::debug("[Q] Move camera down");
                     editor_state.viewport_camera.MoveLocal(0.0f, 0.0f, -1.0f);  // Down
                 }
             }
