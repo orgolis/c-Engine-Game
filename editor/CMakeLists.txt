@@ -143,7 +143,11 @@ endif()
 # --- Install / packaging: the editor is packaged (component "engine") as the
 #     flat engine release the Hub installs. Everything ships under COMPONENT
 #     engine so CPack excludes third-party libs' own install() output. ---
-gws_bundle_runtime(editor "${GWS_ENGINE_DEST}")   # runtime DLLs (COMPONENT engine)
+# MinGW needs its runtime DLLs next to the executable. Linux links against its
+# normal system runtime and must not attempt to copy Windows .dll files.
+if(WIN32)
+    gws_bundle_runtime(editor "${GWS_ENGINE_DEST}")   # runtime DLLs (COMPONENT engine)
+endif()
 install(TARGETS editor RUNTIME DESTINATION "${GWS_ENGINE_DEST}" COMPONENT engine)
 
 # Ship the shader compiler beside the editor so material graphs (4.1) can be
