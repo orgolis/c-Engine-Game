@@ -227,11 +227,18 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
 
     if (!error_msg.empty()) {
         ImGui::Dummy(ImVec2(0, 4));
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", error_msg.c_str());
+        ImGui::TextColored(
+            ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+            "%s",
+            error_msg.c_str()
+        );
     }
 
-    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - ImGui::GetFrameHeightWithSpacing() - 8.0f);
-    if (ImGui::Button("Quit", ImVec2(100, 0))) quit = true;
+    ImGui::Dummy(ImVec2(0, 8));
+
+    if (ImGui::Button("Quit", ImVec2(100, 0))) {
+        quit = true;
+    }
 
     ImGui::End();
     return chosen;

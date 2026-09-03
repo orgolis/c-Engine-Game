@@ -5,7 +5,7 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
-
+#include <cstdio>
 // gws Vulkan renderer
 #include "vulkan/vulkan_device.h"
 #include "vulkan/vulkan_shader_registry.h"   // --startup-probe cost attribution
@@ -175,7 +175,7 @@ using namespace gws::renderer::gpu;
 // Editor state
 struct EditorState {
     schizo::editor::EditorScene* editor_scene = nullptr;
-    
+
     bool show_scene_hierarchy = true;
     bool show_inspector = true;
     bool show_asset_browser = true;
@@ -317,25 +317,25 @@ struct EditorState {
     // Viewport display options
     bool show_grid = true;
     bool wireframe_mode = false;
-    
+
     // File dialog state
     bool show_save_dialog = false;
     bool show_open_dialog = false;
     char save_filename[256] = "untitled.scene";
     char open_filename[256] = "";
-    
+
     // Rename dialog state
     bool show_rename_dialog = false;
     uint32_t rename_entity_id = 0;
     char rename_buffer[256] = "";
-    
+
     // Viewport texture (Vulkan post-processing output displayed in ImGui)
     VkDescriptorSet viewport_texture_id = VK_NULL_HANDLE;
 
     // Transform Gizmo
     schizo::editor::TransformGizmo transform_gizmo;
     bool show_gizmo = true;
-    
+
     // Asset Browser
     std::unique_ptr<schizo::editor::AssetBrowserPanel> asset_browser;
 
@@ -354,10 +354,10 @@ struct EditorState {
     // the GPU cache built from these). Borrowed here so the inspector can edit a
     // material without main() having to thread it through every panel call.
     schizo::editor::MaterialAssetCache* material_assets = nullptr;
-    
+
     // Asset Import Dialog
     std::unique_ptr<schizo::editor::AssetImportDialog> asset_import_dialog;
-    
+
     // Gizmo dragging state
     bool gizmo_dragging = false;
     // Transform captured when a gizmo drag begins, so the whole drag becomes ONE
@@ -374,24 +374,24 @@ struct EditorState {
     // its position and only its SPACING becomes exact.
     glm::vec3 gizmo_drag_origin = glm::vec3(0.0f);
     glm::vec3 gizmo_drag_offset = glm::vec3(0.0f);
-    
+
     // Undo/Redo
     schizo::editor::UndoRedoManager undo_redo_manager;
-    
+
     // Drag and drop
     std::vector<std::string> dropped_files;
-    
+
     // Scene Playback System
     std::unique_ptr<schizo::editor::ScenePlaybackManager> scene_playback_manager;
     bool show_playback_controls = true;
     bool show_debug_panels = true;
     bool show_performance = true;   // Stage 14 unified profiler overlay
-    
+
     // Debug Panels
     std::unique_ptr<schizo::editor::CharacterControllerPanel> character_panel;
     std::unique_ptr<schizo::editor::AbilitySystemPanel> ability_panel;
     std::unique_ptr<schizo::editor::NetworkSystemPanel> network_panel;
-    
+
     // Placeholder pointers for demo (would come from scene entities)
     engine::character::CharacterController* selected_character_controller = nullptr;
     engine::ability::AbilitySystem* selected_ability_system = nullptr;
@@ -559,15 +559,15 @@ static EditorState* g_editor_state = nullptr;
 // GLFW drop callback for drag-and-drop file support
 static void DropCallback(GLFWwindow* window, int count, const char** paths) {
     if (!g_editor_state) return;
-    
+
     spdlog::info("Dropped {} files into editor", count);
     for (int i = 0; i < count; ++i) {
         std::string full_path(paths[i]);
-        
+
         // Extract just the filename for display
         size_t last_slash = full_path.find_last_of("/\\");
         std::string filename = (last_slash != std::string::npos) ? full_path.substr(last_slash + 1) : full_path;
-        
+
         spdlog::info("  - File {}: {} (full path: {})", i + 1, filename, full_path);
         // Store the full path so asset manager can find the file
         g_editor_state->dropped_files.push_back(full_path);
@@ -1393,15 +1393,15 @@ void ShowPlayChangesDialog(EditorState& editor_state) {
 
 void ShowSaveDialog(EditorState& editor_state) {
     if (!editor_state.show_save_dialog) return;
-    
+
     ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_FirstUseEver);
     if (ImGui::BeginPopupModal("Save Scene As", &editor_state.show_save_dialog)) {
         ImGui::Text("Enter filename:");
         ImGui::InputText("##filename", editor_state.save_filename, sizeof(editor_state.save_filename));
-        
+
         ImGui::Spacing();
         ImGui::Separator();
-        
+
         if (ImGui::Button("Save", ImVec2(80, 0))) {
             std::string filepath = std::string("scenes/") + editor_state.save_filename;
             if (filepath.find(".scene") == std::string::npos) {
@@ -1412,25 +1412,25 @@ void ShowSaveDialog(EditorState& editor_state) {
             editor_state.show_save_dialog = false;
             ImGui::CloseCurrentPopup();
         }
-        
+
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(80, 0))) {
             editor_state.show_save_dialog = false;
             ImGui::CloseCurrentPopup();
         }
-        
+
         ImGui::EndPopup();
     }
 }
 
 void ShowOpenDialog(EditorState& editor_state) {
     if (!editor_state.show_open_dialog) return;
-    
+
     ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_FirstUseEver);
     if (ImGui::BeginPopupModal("Open Scene", &editor_state.show_open_dialog)) {
         ImGui::Text("Enter filename:");
         ImGui::InputText("##openfilename", editor_state.open_filename, sizeof(editor_state.open_filename));
-        
+
         ImGui::Spacing();
         ImGui::Text("Recent scenes:");
         if (ImGui::MenuItem("scenes/default.scene")) {
@@ -1438,10 +1438,10 @@ void ShowOpenDialog(EditorState& editor_state) {
             editor_state.show_open_dialog = false;
             ImGui::CloseCurrentPopup();
         }
-        
+
         ImGui::Spacing();
         ImGui::Separator();
-        
+
         if (ImGui::Button("Open", ImVec2(80, 0))) {
             std::string filepath = std::string("scenes/") + editor_state.open_filename;
             if (filepath.find(".scene") == std::string::npos) {
@@ -1453,28 +1453,28 @@ void ShowOpenDialog(EditorState& editor_state) {
             editor_state.show_open_dialog = false;
             ImGui::CloseCurrentPopup();
         }
-        
+
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(80, 0))) {
             editor_state.show_open_dialog = false;
             ImGui::CloseCurrentPopup();
         }
-        
+
         ImGui::EndPopup();
     }
 }
 
 void ShowRenameDialog(EditorState& editor_state) {
     if (!editor_state.show_rename_dialog) return;
-    
+
     ImGui::SetNextWindowSize(ImVec2(350, 150), ImGuiCond_FirstUseEver);
     if (ImGui::BeginPopupModal("Rename Entity", &editor_state.show_rename_dialog)) {
         ImGui::Text("Enter new name:");
         ImGui::InputText("##entityname", editor_state.rename_buffer, sizeof(editor_state.rename_buffer));
-        
+
         ImGui::Spacing();
         ImGui::Separator();
-        
+
         if (ImGui::Button("Rename", ImVec2(80, 0))) {
             auto scene = editor_state.editor_scene->GetScene();
             if (scene) {
@@ -1482,7 +1482,7 @@ void ShowRenameDialog(EditorState& editor_state) {
                 if (entity && strlen(editor_state.rename_buffer) > 0) {
                     std::string old_name = entity->GetName();
                     std::string new_name = editor_state.rename_buffer;
-                    
+
                     if (old_name != new_name) {
                         // Create undo/redo command for rename
                         auto rename_cmd = std::make_unique<schizo::editor::FunctionCommand>(
@@ -1490,7 +1490,7 @@ void ShowRenameDialog(EditorState& editor_state) {
                             [entity, old_name]() { entity->SetName(old_name); },
                             "Rename to " + new_name
                         );
-                        
+
                         editor_state.undo_redo_manager.ExecuteCommand(std::move(rename_cmd));
                         editor_state.editor_scene->MarkModified();
                         spdlog::info("Renamed entity: {} -> {}", old_name, new_name);
@@ -1500,13 +1500,13 @@ void ShowRenameDialog(EditorState& editor_state) {
             editor_state.show_rename_dialog = false;
             ImGui::CloseCurrentPopup();
         }
-        
+
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(80, 0))) {
             editor_state.show_rename_dialog = false;
             ImGui::CloseCurrentPopup();
         }
-        
+
         ImGui::EndPopup();
     }
 }
@@ -1628,12 +1628,12 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
         // Edit menu
         if (ImGui::BeginMenu("Edit")) {
             bool can_undo = editor_state.undo_redo_manager.CanUndo();
-            if (ImGui::MenuItem(editor_state.undo_redo_manager.GetUndoDescription().c_str(), 
+            if (ImGui::MenuItem(editor_state.undo_redo_manager.GetUndoDescription().c_str(),
                               "Ctrl+Z", false, can_undo)) {
                 editor_state.undo_redo_manager.Undo();
                 spdlog::info("Undo: {}", editor_state.undo_redo_manager.GetRedoDescription());
             }
-            
+
             bool can_redo = editor_state.undo_redo_manager.CanRedo();
             if (ImGui::MenuItem(editor_state.undo_redo_manager.GetRedoDescription().c_str(),
                               "Ctrl+Y", false, can_redo)) {
@@ -1646,7 +1646,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             }
             ImGui::EndMenu();
         }
-        
+
         // View menu
         if (ImGui::BeginMenu("View")) {
             ImGui::MenuItem("Scene Hierarchy", nullptr, &editor_state.show_scene_hierarchy);
@@ -1689,7 +1689,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             }
             ImGui::EndMenu();
         }
-        
+
         // Tools menu
         if (ImGui::BeginMenu("Tools")) {
             if (ImGui::MenuItem("Build Scene")) {
@@ -1770,7 +1770,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
                                  ", " + std::to_string(editor_state.npc_agents.chasing()) +
                                  " chasing").c_str(), nullptr, false, false);
             }
-            
+
             const bool playing_now = editor_state.scene_playback_manager &&
                                      editor_state.scene_playback_manager->IsPlaying();
             const char* play_label = playing_now ? "Stop (F5)" : "Play (F5)";
@@ -1797,7 +1797,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             }
             ImGui::EndMenu();
         }
-        
+
         // Help menu
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::MenuItem("Show Demo Window")) {
@@ -1809,7 +1809,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             }
             ImGui::EndMenu();
         }
-        
+
         ImGui::EndMainMenuBar();
     }
 }
@@ -2012,12 +2012,12 @@ void apply_asset_drop(EditorState& editor_state,
 
 void ShowSceneHierarchy(EditorState& editor_state) {
     if (!editor_state.show_scene_hierarchy) return;
-    
+
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove;  // Fixed position
     if (editor_state.gizmo_dragging) {
         flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
     }
-    
+
     ImGui::Begin("Scene Hierarchy", &editor_state.show_scene_hierarchy, flags);  // docked window = child; End() must always run
     {
         auto scene = editor_state.editor_scene->GetScene();
@@ -2026,15 +2026,15 @@ void ShowSceneHierarchy(EditorState& editor_state) {
             ImGui::End();
             return;
         }
-        
+
         ImGui::Text("Scene: %s", scene->GetName().c_str());
         ImGui::Separator();
-        
+
         // Create entity button dropdown
         if (ImGui::Button("+ Add Entity")) {
             ImGui::OpenPopup("AddEntityPopup");
         }
-        
+
         if (ImGui::BeginPopup("AddEntityPopup")) {
             // Primitive entities
             if (ImGui::MenuItem("Cube")) {
@@ -2164,7 +2164,7 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
                 ImGui::CloseCurrentPopup();
             }
-            
+
             if (ImGui::MenuItem("Capsule")) {
                 auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
@@ -2186,7 +2186,7 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
                 ImGui::CloseCurrentPopup();
             }
-            
+
             if (ImGui::MenuItem("Cylinder")) {
                 auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
@@ -2208,7 +2208,7 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
                 ImGui::CloseCurrentPopup();
             }
-            
+
             if (ImGui::MenuItem("Plane")) {
                 auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
@@ -2230,9 +2230,9 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
                 ImGui::CloseCurrentPopup();
             }
-            
+
             ImGui::Separator();
-            
+
             // Special entities
             if (ImGui::MenuItem("Player")) {
                 auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
@@ -2255,7 +2255,7 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
                 ImGui::CloseCurrentPopup();
             }
-            
+
             if (ImGui::MenuItem("Camera")) {
                 auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
@@ -2277,9 +2277,9 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
                 ImGui::CloseCurrentPopup();
             }
-            
+
             ImGui::Separator();
-            
+
             // Light sources
             if (ImGui::MenuItem("Directional Light")) {
                 auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
@@ -2302,7 +2302,7 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
                 ImGui::CloseCurrentPopup();
             }
-            
+
             if (ImGui::MenuItem("Global Light")) {
                 auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
@@ -2324,12 +2324,12 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
                 ImGui::CloseCurrentPopup();
             }
-            
+
             ImGui::Separator();
-            
+
             if (ImGui::MenuItem("Empty Entity")) {
                 auto entity_name = "Entity_" + std::to_string(scene->GetEntityCount());
-                
+
                 // Create undo/redo command for entity creation
                 auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
@@ -2353,24 +2353,24 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
                 ImGui::CloseCurrentPopup();
             }
-            
+
             ImGui::EndPopup();
         }
-        
+
         ImGui::SameLine();
         ImGui::Text("(%zu entities)", scene->GetEntityCount());
         ImGui::Separator();
-        
+
         ImGui::BeginChild("EntityList", ImVec2(0, 0), true);
-        
+
         // Helper lambda to recursively display entity hierarchy
-        std::function<void(const std::shared_ptr<schizo::scene::Entity>&)> draw_entity_node = 
+        std::function<void(const std::shared_ptr<schizo::scene::Entity>&)> draw_entity_node =
             [&](const std::shared_ptr<schizo::scene::Entity>& entity) {
                 if (!entity) return;
-                
+
                 const auto& children = entity->GetChildren();
                 bool has_children = !children.empty();
-                
+
                 ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen;
                 if (!has_children) {
                     flags |= ImGuiTreeNodeFlags_Leaf;
@@ -2378,21 +2378,21 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 if (editor_state.selected_entity_id == entity->GetId()) {
                     flags |= ImGuiTreeNodeFlags_Selected;
                 }
-                
+
                 // Build display string with name, ID, and active status
                 std::string label = entity->GetName() + " (ID: " + std::to_string(entity->GetId()) + ")";
                 if (!entity->IsActive()) {
                     label += " [inactive]";
                 }
-                
+
                 bool node_open = ImGui::TreeNodeEx((void*)(intptr_t)entity->GetId(), flags, "%s", label.c_str());
-                
+
                 // Handle selection on click
                 if (ImGui::IsItemClicked()) {
                     editor_state.selected_entity_id = entity->GetId();
                     spdlog::debug("Selected entity: {} (ID: {})", entity->GetName(), entity->GetId());
                 }
-                
+
                 // DRAG SOURCE - Entity can be dragged to reparent
                 if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
                     // Store entity ID as payload
@@ -2401,13 +2401,13 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                     ImGui::Text("Reparenting: %s", entity->GetName().c_str());
                     ImGui::EndDragDropSource();
                 }
-                
+
                 // DROP TARGET - Entity can receive other entities as children
                 if (ImGui::BeginDragDropTarget()) {
                     if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ENTITY_NODE")) {
                         IM_ASSERT(payload->DataSize == sizeof(uint32_t));
                         uint32_t dragged_entity_id = *(const uint32_t*)payload->Data;
-                        
+
                         // Find and reparent the dragged entity
                         auto dragged = scene->GetEntityById(dragged_entity_id);
                         if (dragged && dragged != entity) {  // Can't parent to self
@@ -2420,27 +2420,29 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                             editor_state.editor_scene->MarkModified();
                         }
                     }
-                    
+
                     // ANY asset dropped on an entity. What each kind means is
                     // decided in asset_drop.h, shared with the viewport target
                     // below so the two cannot disagree about a texture.
                     if (const std::string dropped = accept_any_asset_payload(); !dropped.empty())
                         apply_asset_drop(editor_state, entity, dropped);
 
-                    
+
                     ImGui::EndDragDropTarget();
                 }
-                
+
                 // Right-click context menu
                 if (ImGui::BeginPopupContextItem()) {
                     if (ImGui::MenuItem("Rename", nullptr, false)) {
                         editor_state.show_rename_dialog = true;
                         editor_state.rename_entity_id = entity->GetId();
-                        strncpy_s(editor_state.rename_buffer, sizeof(editor_state.rename_buffer), 
-                                 entity->GetName().c_str(), _TRUNCATE);
+                        std::snprintf(editor_state.rename_buffer,
+                          sizeof(editor_state.rename_buffer),
+                          "%s",
+                          entity->GetName().c_str());
                         ImGui::OpenPopup("Rename Entity");
                     }
-                    
+
                     if (ImGui::MenuItem("Duplicate")) {
                         // Create a copy of this entity
                         auto duplicated = scene->CreateEntity(entity->GetName() + "_copy");
@@ -2449,48 +2451,48 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                         dst_transform->SetLocalPosition(src_transform->GetLocalPosition());
                         dst_transform->SetLocalRotation(src_transform->GetLocalRotation());
                         dst_transform->SetLocalScale(src_transform->GetLocalScale());
-                        
+
                         // If entity has a parent, set the same parent for the copy
                         if (entity->GetParent()) {
                             duplicated->SetParent(entity->GetParent());
                         }
-                        
+
                         spdlog::info("Duplicated entity: {} -> {}", entity->GetName(), duplicated->GetName());
                         editor_state.editor_scene->MarkModified();
                     }
-                    
+
                     if (ImGui::MenuItem("Create Child")) {
                         auto child = scene->CreateEntity("Child_" + std::to_string(scene->GetEntityCount()));
                         child->SetParent(entity);
                         spdlog::info("Created child entity: {}", child->GetName());
                         editor_state.editor_scene->MarkModified();
                     }
-                    
+
                     ImGui::Separator();
-                    
+
                     if (ImGui::MenuItem("Copy", "Ctrl+C")) {
                         // Copy entity ID to clipboard (simplified copy)
                         spdlog::info("Copied entity: {}", entity->GetName());
                     }
-                    
+
                     ImGui::Separator();
-                    
+
                     bool is_active = entity->IsActive();
                     if (ImGui::MenuItem(is_active ? "Deactivate" : "Activate")) {
                         entity->SetActive(!is_active);
                         spdlog::info("Toggled active state for: {}", entity->GetName());
                         editor_state.editor_scene->MarkModified();
                     }
-                    
+
                     ImGui::Separator();
-                    
+
                     if (ImGui::MenuItem("Delete", "Delete", false)) {
                         PushDeleteEntityCommand(editor_state, scene, entity);
                     }
-                    
+
                     ImGui::EndPopup();
                 }
-                
+
                 // Recursively draw children
                 if (node_open) {
                     for (const auto& child : children) {
@@ -2499,7 +2501,7 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                     ImGui::TreePop();
                 }
             };
-        
+
         // Draw root entities (those without parents)
         const auto& entities = scene->GetEntities();
         for (const auto& entity : entities) {
@@ -2507,7 +2509,7 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 draw_entity_node(entity);
             }
         }
-        
+
         // A prefab dropped on the LIST rather than on an entity instantiates at
         // the scene root. Without this the only way to place one is onto an
         // existing entity, which silently makes every prefab a child of
@@ -2664,12 +2666,12 @@ void DrawAssetInspector(EditorState& editor_state) {
 
 void ShowInspector(EditorState& editor_state) {
     if (!editor_state.show_inspector) return;
-    
+
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove;  // Fixed position
     if (editor_state.gizmo_dragging) {
         flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
     }
-    
+
     ImGui::Begin("Inspector", &editor_state.show_inspector, flags);  // docked window = child; End() must always run
     {
         auto scene = editor_state.editor_scene->GetScene();
@@ -2789,7 +2791,7 @@ void ShowInspector(EditorState& editor_state) {
             ImGui::End();
             return;
         }
-        
+
         // Get selected entity by ID (the prefab root when editing a prefab)
         auto selected_entity = scene->GetEntityById(inspect_id);
         if (!selected_entity) {
@@ -2797,10 +2799,10 @@ void ShowInspector(EditorState& editor_state) {
             ImGui::End();
             return;
         }
-        
+
         ImGui::Text("Entity: %s (ID: %u)", selected_entity->GetName().c_str(), selected_entity->GetId());
         ImGui::Separator();
-        
+
         // Display current mesh model
         auto mesh_comp = selected_entity->GetMeshComponent();
         if (mesh_comp && !mesh_comp->mesh_path.empty()) {
@@ -2902,41 +2904,41 @@ void ShowInspector(EditorState& editor_state) {
         }
 
         ImGui::Separator();
-        
+
         // Entity name editing
         static char entity_name_buf[256];
         if (ImGui::InputText("Name", entity_name_buf, sizeof(entity_name_buf))) {
             selected_entity->SetName(entity_name_buf);
             editor_state.editor_scene->MarkModified();
         }
-        
+
         // Active toggle
         bool is_active = selected_entity->IsActive();
         if (ImGui::Checkbox("Active", &is_active)) {
             selected_entity->SetActive(is_active);
             editor_state.editor_scene->MarkModified();
         }
-        
+
         ImGui::Separator();
-        
+
         // Model and Texture Preview Section
         if (ImGui::TreeNode("Model Preview")) {
             ImGui::Columns(2, "model_preview_cols", true);
-            
+
             // Left column: preview area
             ImVec2 preview_size(150, 150);
             ImGui::BeginChild("ModelPreview", preview_size, true, ImGuiWindowFlags_NoScrollbar);
-            
+
             // Display a simple representation of the model
             if (mesh_comp && !mesh_comp->mesh_path.empty()) {
                 ImGui::Text("Model: %s", mesh_comp->mesh_path.c_str());
             } else {
                 ImGui::TextDisabled("[Default Cube]");
             }
-            
+
             ImGui::EndChild();
             ImGui::NextColumn();
-            
+
             // Right column: controls
             ImGui::Text("Model Scale");
             static float mesh_scale = 1.0f;
@@ -2946,54 +2948,54 @@ void ShowInspector(EditorState& editor_state) {
                 editor_state.editor_scene->MarkModified();
             }
             ImGui::TextWrapped("Adjusts model size without affecting entity transform or colliders.");
-            
+
             ImGui::Columns(1);
             ImGui::TreePop();
         }
-        
+
         ImGui::Separator();
         ImGui::Text("Transform");
-        
+
         auto transform = selected_entity->GetTransform();
         glm::vec3 pos = transform->GetLocalPosition();
         glm::vec3 rot = glm::degrees(glm::eulerAngles(transform->GetLocalRotation()));
         glm::vec3 scale = transform->GetLocalScale();
-        
+
         if (ImGui::DragFloat3("Position##local", &pos[0], 0.1f)) {
             transform->SetLocalPosition(pos);
             editor_state.editor_scene->MarkModified();
         }
-        
+
         if (ImGui::DragFloat3("Rotation##local", &rot[0], 0.5f)) {
             // Convert Euler angles back to quaternion
             glm::quat new_rot = glm::quat(glm::radians(rot));
             transform->SetLocalRotation(new_rot);
             editor_state.editor_scene->MarkModified();
         }
-        
+
         if (ImGui::DragFloat3("Scale##local", &scale[0], 0.1f, 0.1f)) {
             transform->SetLocalScale(scale);
             editor_state.editor_scene->MarkModified();
         }
-        
+
         // World space transform (read-only)
         if (ImGui::TreeNode("World Transform")) {
             ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
             ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-            
+
             glm::vec3 world_pos = transform->GetWorldPosition();
             glm::vec3 world_rot = glm::degrees(glm::eulerAngles(transform->GetWorldRotation()));
             glm::vec3 world_scale = transform->GetWorldScale();
-            
+
             ImGui::DragFloat3("Position##world", &world_pos[0], 0.1f);
             ImGui::DragFloat3("Rotation##world", &world_rot[0], 0.5f);
             ImGui::DragFloat3("Scale##world", &world_scale[0], 0.1f);
-            
+
             ImGui::PopStyleVar();
             ImGui::PopItemFlag();
             ImGui::TreePop();
         }
-        
+
         // Hierarchy
         if (ImGui::TreeNode("Hierarchy")) {
             auto parent = selected_entity->GetParent();
@@ -3002,7 +3004,7 @@ void ShowInspector(EditorState& editor_state) {
             } else {
                 ImGui::Text("Parent: [none]");
             }
-            
+
             const auto& children = selected_entity->GetChildren();
             ImGui::Text("Children: %zu", children.size());
             // BeginChild() must always be paired with EndChild() since ImGui
@@ -3017,13 +3019,13 @@ void ShowInspector(EditorState& editor_state) {
             }
             ImGui::TreePop();
         }
-        
+
         // Components section
         ImGui::Separator();
         if (ImGui::TreeNode("Components")) {
             const auto& components = selected_entity->GetComponents();
             ImGui::Text("Total components: %zu", components.size());
-            
+
             if (!components.empty()) {
                 ImGui::Separator();
                 ImGui::Text("Attached Components:");
@@ -3031,13 +3033,13 @@ void ShowInspector(EditorState& editor_state) {
                     ImGui::Text("  [%zu] %s", i, typeid(*components[i]).name());
                 }
             }
-            
+
             // Add component button
             ImGui::Separator();
             if (ImGui::Button("+ Add Component", ImVec2(-1, 0))) {
                 ImGui::OpenPopup("AddComponentMenu");
             }
-            
+
             // Add component popup menu
             if (ImGui::BeginPopupContextItem("AddComponentMenu", ImGuiPopupFlags_NoOpenOverExistingPopup)) {
                 if (ImGui::MenuItem("Transform Component")) {
@@ -3046,7 +3048,7 @@ void ShowInspector(EditorState& editor_state) {
                     spdlog::info("Added TransformComponent to entity: {}", selected_entity->GetName());
                     ImGui::CloseCurrentPopup();
                 }
-                
+
                 if (ImGui::BeginMenu("Light##add_light")) {
                     if (ImGui::MenuItem("Directional Light")) {
                         selected_entity->AddComponent<schizo::scene::LightComponent>(
@@ -3209,7 +3211,7 @@ void ShowInspector(EditorState& editor_state) {
 
                 ImGui::EndPopup();
             }
-            
+
             ImGui::TreePop();
         }
 
@@ -3914,17 +3916,17 @@ void ShowInspector(EditorState& editor_state) {
                     default:                                    light_type_str = "Light";             break;
                 }
                 ImGui::Text("Type: %s", light_type_str);
-                
+
                 // Enable/Disable
                 bool enabled = light_comp->IsEnabled();
                 if (ImGui::Checkbox("Enabled##light", &enabled)) {
                     light_comp->SetEnabled(enabled);
                     editor_state.editor_scene->MarkModified();
                 }
-                    
+
                     ImGui::Separator();
                     ImGui::Text("Color & Intensity");
-                    
+
                     // Color picker
                     glm::vec3 color = light_comp->GetColor();
                     float color_arr[3] = {color.r, color.g, color.b};
@@ -3932,14 +3934,14 @@ void ShowInspector(EditorState& editor_state) {
                         light_comp->SetColor(color_arr[0], color_arr[1], color_arr[2]);
                         editor_state.editor_scene->MarkModified();
                     }
-                    
+
                     // Intensity
                     float intensity = light_comp->GetIntensity();
                     if (ImGui::SliderFloat("Intensity##light", &intensity, 0.0f, 5.0f)) {
                         light_comp->SetIntensity(intensity);
                         editor_state.editor_scene->MarkModified();
                     }
-                    
+
                     // Temperature
                     float temperature = light_comp->GetTemperature();
                     if (ImGui::SliderFloat("Temperature (K)##light", &temperature, 1000.0f, 10000.0f)) {
@@ -3951,23 +3953,23 @@ void ShowInspector(EditorState& editor_state) {
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Color temperature in Kelvin\n1000K=Fire | 3000K=Warm | 6500K=Daylight | 9000K=Cool");
                     }
-                    
+
                     // Light-specific properties
                     if (light_comp->GetType() != schizo::scene::LightType::Directional) {
                         ImGui::Separator();
                         ImGui::Text("Range");
-                        
+
                         float range = light_comp->GetRange();
                         if (ImGui::SliderFloat("Range##light", &range, 0.1f, 100.0f)) {
                             light_comp->SetRange(range);
                             editor_state.editor_scene->MarkModified();
                         }
                     }
-                    
+
                     if (light_comp->GetType() == schizo::scene::LightType::Spot) {
                         ImGui::Separator();
                         ImGui::Text("Spot Light");
-                        
+
                         glm::vec2 angles = light_comp->GetSpotAngles();
                         if (ImGui::SliderFloat("Inner Angle##spot", &angles.x, 0.0f, 90.0f)) {
                             light_comp->SetSpotAngles(angles.x, angles.y);
@@ -3977,7 +3979,7 @@ void ShowInspector(EditorState& editor_state) {
                             light_comp->SetSpotAngles(angles.x, angles.y);
                             editor_state.editor_scene->MarkModified();
                         }
-                        
+
                         float falloff = light_comp->GetSpotFalloff();
                         if (ImGui::SliderFloat("Falloff##spot", &falloff, 0.1f, 10.0f)) {
                             light_comp->SetSpotFalloff(falloff);
@@ -4026,7 +4028,7 @@ void ShowInspector(EditorState& editor_state) {
                         }
                         ImGui::TextDisabled("Emits along the entity's forward (-Z);\norient it with the Transform rotation.");
                     }
-                    
+
                     // Shadows section
                     ImGui::Separator();
                     if (ImGui::TreeNode("Shadows##light")) {
@@ -4035,14 +4037,14 @@ void ShowInspector(EditorState& editor_state) {
                             light_comp->SetCastShadow(cast_shadow);
                             editor_state.editor_scene->MarkModified();
                         }
-                        
+
                         if (cast_shadow) {
                             // Shadow quality
                             static const char* shadow_quality_names[] = {
                                 "None", "Low (512x512)", "Medium (1024x1024)", "High (2048x2048)", "Ultra (4096x4096)"
                             };
                             static int shadow_quality_idx = 2;  // Default: Medium
-                            
+
                         if (light_comp->GetShadowQuality() == schizo::scene::ShadowQuality::None) {
                             shadow_quality_idx = 0;
                         } else if (light_comp->GetShadowQuality() == schizo::scene::ShadowQuality::Low) {
@@ -4054,7 +4056,7 @@ void ShowInspector(EditorState& editor_state) {
                         } else if (light_comp->GetShadowQuality() == schizo::scene::ShadowQuality::Ultra) {
                             shadow_quality_idx = 4;
                         }
-                        
+
                         if (ImGui::Combo("Resolution##shadow_quality", &shadow_quality_idx, shadow_quality_names, IM_ARRAYSIZE(shadow_quality_names))) {
                             schizo::scene::ShadowQuality qualities[] = {
                                 schizo::scene::ShadowQuality::None,
@@ -4066,10 +4068,10 @@ void ShowInspector(EditorState& editor_state) {
                             light_comp->SetShadowQuality(qualities[shadow_quality_idx]);
                             editor_state.editor_scene->MarkModified();
                         }
-                        
+
                         ImGui::Separator();
                         ImGui::Text("Shadow Parameters");
-                            
+
                             // Shadow bias
                             glm::vec2 shadow_bias = light_comp->GetShadowBias();
                             if (ImGui::SliderFloat("Bias##shadow", &shadow_bias.x, 0.0f, 0.1f)) {
@@ -4081,7 +4083,7 @@ void ShowInspector(EditorState& editor_state) {
                             if (ImGui::IsItemHovered()) {
                                 ImGui::SetTooltip("Reduces shadow acne artifacts");
                             }
-                            
+
                             // Shadow filter radius
                             float filter_radius = light_comp->GetShadowFilterRadius();
                             if (ImGui::SliderFloat("Filter Radius##shadow", &filter_radius, 0.5f, 4.0f)) {
@@ -4093,7 +4095,7 @@ void ShowInspector(EditorState& editor_state) {
                             if (ImGui::IsItemHovered()) {
                                 ImGui::SetTooltip("Softness of shadow edges (PCF)");
                             }
-                            
+
                             // Shadow planes
                             glm::vec2 shadow_planes = light_comp->GetShadowPlanes();
                             if (ImGui::SliderFloat("Near Plane##shadow", &shadow_planes.x, 0.01f, 10.0f)) {
@@ -4104,7 +4106,7 @@ void ShowInspector(EditorState& editor_state) {
                                 light_comp->SetShadowPlanes(shadow_planes.x, shadow_planes.y);
                                 editor_state.editor_scene->MarkModified();
                             }
-                            
+
                             // Cascade count for directional lights
                             if (light_comp->GetType() == schizo::scene::LightType::Directional) {
                                 uint32_t cascade_count = light_comp->GetCascadeCount();
@@ -4115,10 +4117,10 @@ void ShowInspector(EditorState& editor_state) {
                                 }
                             }
                         }
-                        
+
                         ImGui::TreePop();
                     }
-                    
+
                     // Advanced features
                     ImGui::Separator();
                     if (ImGui::TreeNode("Advanced##light")) {
@@ -4132,10 +4134,10 @@ void ShowInspector(EditorState& editor_state) {
                         if (ImGui::IsItemHovered()) {
                             ImGui::SetTooltip("God rays / Light shafts intensity");
                         }
-                        
+
                         ImGui::TreePop();
                     }
-                
+
                 ImGui::TreePop();
             }
         }
@@ -4359,64 +4361,64 @@ void ShowInspector(EditorState& editor_state) {
             if (ImGui::Checkbox("Enable Physics##phys", &use_physics)) {
                 editor_state.editor_scene->MarkModified();
             }
-            
+
             if (use_physics) {
                 ImGui::Separator();
                 ImGui::Text("Rigidbody:");
                 static float mass = 1.0f;
                 static bool gravity = true;
-                
+
                 if (ImGui::DragFloat("Mass##phys", &mass, 0.1f, 0.01f, 100.0f)) {
                     editor_state.editor_scene->MarkModified();
                 }
-                
+
                 if (ImGui::Checkbox("Use Gravity##phys", &gravity)) {
                     editor_state.editor_scene->MarkModified();
                 }
-                
+
                 ImGui::Separator();
                 ImGui::Text("Collider:");
                 static int collider_type = 0;
                 const char* collider_types[] = { "None", "Box", "Sphere", "Capsule", "Mesh" };
-                
+
                 if (ImGui::Combo("Collider Type##phys", &collider_type, collider_types, IM_ARRAYSIZE(collider_types))) {
                     editor_state.editor_scene->MarkModified();
                     spdlog::info("Set collider type to: {}", collider_types[collider_type]);
                 }
-                
+
                 if (collider_type > 0) {
                     static glm::vec3 collider_scale(1.0f, 1.0f, 1.0f);
                     static bool is_trigger = false;
-                    
+
                     ImGui::DragFloat3("Collider Scale##phys", &collider_scale[0], 0.1f);
                     ImGui::Checkbox("Is Trigger##phys", &is_trigger);
                 }
             }
-            
+
             ImGui::TreePop();
         }
-        
+
         // Gizmo Controls Section
         ImGui::Separator();
         if (ImGui::TreeNode("Gizmo")) {
             const char* gizmo_modes[] = { "None", "Translate", "Rotate", "Scale" };
             int current_mode = static_cast<int>(editor_state.transform_gizmo.GetMode());
-            
+
             if (ImGui::Combo("Gizmo Mode##insp", &current_mode, gizmo_modes, IM_ARRAYSIZE(gizmo_modes))) {
                 editor_state.transform_gizmo.SetMode(static_cast<schizo::editor::GizmoMode>(current_mode));
             }
-            
+
             ImGui::Text("Hint: Use T/R/S keys in viewport to toggle modes");
             ImGui::Text("Drag to transform, right-click to cancel");
             ImGui::TreePop();
         }
-        
+
         ImGui::Separator();
-        
+
         if (ImGui::Button("Delete Entity", ImVec2(-1, 0))) {
             PushDeleteEntityCommand(editor_state, scene, selected_entity);
         }
-        
+
         ImGui::End();
     }
 }
@@ -4439,7 +4441,7 @@ void ShowAssetBrowser(EditorState& editor_state) {
 
 void ShowViewport(EditorState& editor_state) {
     if (!editor_state.show_viewport) return;
-    
+
     ImGui::Begin("Viewport", &editor_state.show_viewport, ImGuiWindowFlags_NoMove);  // docked window = child; End() must always run
     {
         ImVec2 content_area = ImGui::GetContentRegionAvail();
@@ -4471,7 +4473,7 @@ void ShowViewport(EditorState& editor_state) {
             else                  BeginPlayMode(editor_state, scene);
         }
         ImGui::SameLine();
-        
+
         if (ImGui::Button("Reset Camera")) {
             editor_state.viewport_camera.Reset();
         }
@@ -4485,39 +4487,39 @@ void ShowViewport(EditorState& editor_state) {
         if (normalized_yaw < 0.0f) normalized_yaw += 360.0f;
         ImGui::Text("Rotation: Yaw %.1f° Pitch %.1f°", normalized_yaw, editor_state.viewport_camera.GetPitch());
         ImGui::Text("Entities: %zu", scene ? scene->GetEntityCount() : 0);
-        
+
         ImGui::Separator();
         ImGui::TextWrapped("Middle Mouse: Rotate | Scroll: Zoom | Right Drag: Pan");
-        
+
         // Gizmo controls
         ImGui::Separator();
         ImGui::Checkbox("Show Gizmo", &editor_state.show_gizmo);
         ImGui::SameLine();
-        
+
         const char* gizmo_modes[] = { "None", "Translate (T)", "Rotate (R)", "Scale (S)" };
         int gizmo_mode = static_cast<int>(editor_state.transform_gizmo.GetMode());
         if (ImGui::Combo("Gizmo Mode", &gizmo_mode, gizmo_modes, IM_ARRAYSIZE(gizmo_modes))) {
             editor_state.transform_gizmo.SetMode(static_cast<schizo::editor::GizmoMode>(gizmo_mode));
         }
-        
+
         ImGui::Separator();
         ImGui::Checkbox("Wireframe Mode", &editor_state.wireframe_mode);
-        
+
         ImGui::Separator();
-        
+
         // Prepare view and projection matrices
         ImVec2 viewport_size = ImGui::GetContentRegionAvail();
         float aspect = viewport_size.x > 0 ? viewport_size.x / viewport_size.y : 1.0f;
         if (viewport_size.x > 50.0f && viewport_size.y > 50.0f)
             editor_state.viewport_panel_size = {viewport_size.x, viewport_size.y};
-        
+
         glm::mat4 view_matrix;
         glm::mat4 proj_matrix;
-        
+
         // Use playback camera if scene is playing
         if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
             auto playback_camera = editor_state.scene_playback_manager->GetPlaybackCamera();
-            
+
             if (!playback_camera) {
                 spdlog::warn("⚠️ IsPlaying=true but GetPlaybackCamera() returned nullptr!");
                 view_matrix = editor_state.viewport_camera.GetViewMatrix();
@@ -4547,7 +4549,7 @@ void ShowViewport(EditorState& editor_state) {
             view_matrix = editor_state.viewport_camera.GetViewMatrix();
             proj_matrix = editor_state.viewport_camera.GetProjectionMatrix(aspect);
         }
-        
+
         // Display deferred pipeline output as viewport background
         ImVec2 image_min(0, 0), image_max(0, 0);
         bool image_drawn = false;
@@ -4899,13 +4901,13 @@ void ShowViewport(EditorState& editor_state) {
                 // Clamp to viewport bounds
                 viewport_x = std::max(0.0f, std::min(viewport_x, viewport_size.x));
                 viewport_y = std::max(0.0f, std::min(viewport_y, viewport_size.y));
-                
+
                 if (viewport_x >= 0 && viewport_y >= 0 && viewport_x < viewport_size.x && viewport_y < viewport_size.y) {
                     // Get picking ray
                     auto [ray_origin, ray_direction] = editor_state.viewport_camera.GetPickingRay(
                         viewport_x, viewport_y, viewport_size.x, viewport_size.y
                     );
-                    
+
                     // First check if gizmo is visible and try to hit an axis (only in edit mode, not during play)
                     bool play_mode_check = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying();
                     if (editor_state.show_gizmo && editor_state.selected_entity_id != 0 && !play_mode_check) {
@@ -4916,33 +4918,33 @@ void ShowViewport(EditorState& editor_state) {
                             const float gizmo_render_scale = 3.5f;  // Matches rendering scale
                             const float gizmo_axis_length = 1.0f;   // Base axis length in mesh
                             const float gizmo_size = gizmo_render_scale * gizmo_axis_length;  // Actual visible size
-                            
+
                             // Check intersection with X axis (red)
                             glm::vec3 x_start = selected_pos;
                             glm::vec3 x_end = selected_pos + glm::vec3(gizmo_size, 0.0f, 0.0f);
                             float x_dist = schizo::editor::ViewportCamera::RayLineDistanceSq(
                                 ray_origin, ray_direction, x_start, x_end
                             );
-                            
+
                             // Check intersection with Y axis (green)
                             glm::vec3 y_start = selected_pos;
                             glm::vec3 y_end = selected_pos + glm::vec3(0.0f, gizmo_size, 0.0f);
                             float y_dist = schizo::editor::ViewportCamera::RayLineDistanceSq(
                                 ray_origin, ray_direction, y_start, y_end
                             );
-                            
+
                             // Check intersection with Z axis (blue)
                             glm::vec3 z_start = selected_pos;
                             glm::vec3 z_end = selected_pos + glm::vec3(0.0f, 0.0f, gizmo_size);
                             float z_dist = schizo::editor::ViewportCamera::RayLineDistanceSq(
                                 ray_origin, ray_direction, z_start, z_end
                             );
-                            
+
                             // Determine which axis was hit (closest)
                             // Select the closest axis within threshold
                             float hit_threshold = 2.0f;  // Generous hit zone
                             float min_dist = std::min({x_dist, y_dist, z_dist});
-                            
+
                             if (min_dist < hit_threshold) {
                                 editor_state.gizmo_dragging = true;
                                 editor_state.gizmo_drag_start = glm::vec2(mouse_pos.x, mouse_pos.y);
@@ -4959,7 +4961,7 @@ void ShowViewport(EditorState& editor_state) {
                                         }
                                     }
                                 }
-                                
+
                                 // Select the closest axis
                                 if (x_dist == min_dist) {
                                     editor_state.gizmo_axis = 'x';
@@ -5006,16 +5008,16 @@ void ShowViewport(EditorState& editor_state) {
                     }
                 }
             }
-            
+
             // Handle gizmo dragging
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && editor_state.gizmo_dragging && scene) {
                 ImVec2 current_mouse = io.MousePos;
                 glm::vec2 current_mouse_glm(current_mouse.x, current_mouse.y);
-                
+
                 auto selected_entity = scene->GetEntityById(editor_state.selected_entity_id);
                 if (selected_entity) {
                     auto selected_transform = selected_entity->GetTransform();
-                    
+
                     // Determine axis from gizmo_axis character
                     schizo::editor::GizmoAxis axis = schizo::editor::GizmoAxis::None;
                     if (editor_state.gizmo_axis == 'x') {
@@ -5025,14 +5027,14 @@ void ShowViewport(EditorState& editor_state) {
                     } else if (editor_state.gizmo_axis == 'z') {
                         axis = schizo::editor::GizmoAxis::Z;
                     }
-                    
+
                     // Begin drag on first frame
                     if (!editor_state.transform_gizmo.IsDragging()) {
                         editor_state.transform_gizmo.BeginDrag(axis, editor_state.gizmo_drag_start);
                         editor_state.gizmo_drag_origin =
                             selected_transform->GetLocalPosition();
                     }
-                    
+
                     // Get mode-specific updates
                     auto gmode = editor_state.transform_gizmo.GetMode();
                     if (gmode == schizo::editor::GizmoMode::Translate) {
@@ -5102,7 +5104,7 @@ void ShowViewport(EditorState& editor_state) {
                 editor_state.gizmo_dragging = false;
                 editor_state.gizmo_axis = 0;
             }
-            
+
             // Middle mouse drag to rotate (disabled during scene playback)
             bool is_scene_playing = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying();
             if (ImGui::IsMouseDown(ImGuiMouseButton_Middle) && !is_scene_playing) {
@@ -5118,13 +5120,13 @@ void ShowViewport(EditorState& editor_state) {
             } else {
                 editor_state.viewport_camera_rotating = false;
             }
-            
+
             // Scroll to zoom (only if not dragging gizmo, and not during scene playback)
             bool is_scene_playing_zoom = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying();
             if (io.MouseWheel != 0.0f && !editor_state.gizmo_dragging && !is_scene_playing_zoom) {
                 editor_state.viewport_camera.Zoom(io.MouseWheel);
             }
-            
+
             // Arrow key camera movement (camera speed = 1.0)
             // Only when viewport is focused (active window) and not dragging gizmo, and scene is not playing
             bool scene_playing = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying();
@@ -5145,7 +5147,7 @@ void ShowViewport(EditorState& editor_state) {
                     spdlog::debug("[ARROW] Right key - pan right");
                     editor_state.viewport_camera.Pan(1.0f, 0.0f);   // Right
                 }
-                
+
                 // Vertical camera movement (Q/E keys for intuitive up/down)
                 if (ImGui::IsKeyDown(ImGuiKey_Q)) {
                     spdlog::debug("[Q] Move camera up");
@@ -5156,7 +5158,7 @@ void ShowViewport(EditorState& editor_state) {
                     editor_state.viewport_camera.MoveLocal(0.0f, 0.0f, -1.0f);  // Down
                 }
             }
-            
+
             // Right mouse drag to pan (only if not dragging gizmo, and not during scene playback)
             bool is_scene_playing_pan = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying();
             if (ImGui::IsMouseDown(ImGuiMouseButton_Right) && !editor_state.gizmo_dragging && !is_scene_playing_pan) {
@@ -5167,9 +5169,9 @@ void ShowViewport(EditorState& editor_state) {
                 );
                 editor_state.viewport_camera.Pan(-delta.x * 10.0f, delta.y * 10.0f);
             }
-            
+
             // Gizmo drag handling
-            
+
             // DROP TARGET - the viewport applies an asset to the object UNDER
             // THE CURSOR, not to the current selection. A drag is aimed with the
             // mouse; applying it to whatever happened to be selected is the one
@@ -5198,12 +5200,12 @@ void ShowViewport(EditorState& editor_state) {
 
 void ShowPreferences(EditorState& editor_state) {
     if (!editor_state.show_preferences) return;
-    
+
     ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove;  // Fixed position
     if (editor_state.gizmo_dragging) {
         flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
     }
-    
+
     ImGui::Begin("Preferences", &editor_state.show_preferences, flags);  // docked window = child; End() must always run
     {
         ImGui::Text("Editor Settings");
@@ -5212,11 +5214,11 @@ void ShowPreferences(EditorState& editor_state) {
         ImGui::Checkbox("Show Grid", nullptr);
         ImGui::SliderFloat("Grid Size", nullptr, 0.1f, 10.0f);
         ImGui::Separator();
-        
+
         if (ImGui::Button("Close")) {
             editor_state.show_preferences = false;
         }
-        
+
         ImGui::End();
     }
 }
@@ -5227,29 +5229,29 @@ void ShowPreferences(EditorState& editor_state) {
 
 void ShowPlaybackControls(EditorState& editor_state) {
     if (!editor_state.show_playback_controls) return;
-    
+
     // Playback controls in toolbar style
     ImGui::SetNextWindowPos(ImVec2(10, 40), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(400, 80), ImGuiCond_FirstUseEver);
-    
+
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
     ImGui::Begin("Scene Playback", &editor_state.show_playback_controls, flags);  // docked window = child; End() must always run
     {
         ImGui::TextUnformatted("Scene Playback Controls:");
         ImGui::Separator();
-        
+
         auto scene = editor_state.editor_scene->GetScene();
         bool can_play = scene && !editor_state.scene_playback_manager->IsPlaying();
-        
+
         // Play button
         ImGui::BeginDisabled(!can_play);
         if (ImGui::Button("Play (F5)##playback", ImVec2(80, 0))) {
             BeginPlayMode(editor_state, scene);
         }
         ImGui::EndDisabled();
-        
+
         ImGui::SameLine();
-        
+
         // Pause button
         ImGui::BeginDisabled(!editor_state.scene_playback_manager->IsPlaying());
         if (ImGui::Button("Pause##playback", ImVec2(80, 0))) {
@@ -5258,16 +5260,16 @@ void ShowPlaybackControls(EditorState& editor_state) {
             spdlog::info(is_paused ? "Resumed playback" : "Paused playback");
         }
         ImGui::EndDisabled();
-        
+
         ImGui::SameLine();
-        
+
         // Stop button
         ImGui::BeginDisabled(!editor_state.scene_playback_manager->IsPlaying());
         if (ImGui::Button("Stop##playback", ImVec2(80, 0))) {
             EndPlayMode(editor_state, scene);
         }
         ImGui::EndDisabled();
-        
+
         // Status display
         ImGui::Spacing();
         if (editor_state.scene_playback_manager->IsPlaying()) {
@@ -5277,7 +5279,7 @@ void ShowPlaybackControls(EditorState& editor_state) {
         } else {
             ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1), "Status: Stopped");
         }
-        
+
         ImGui::End();
     }
 }
@@ -5657,38 +5659,38 @@ void ShowPerformanceOverlay(EditorState& editor_state) {
 
 void ShowDebugPanels(EditorState& editor_state) {
     if (!editor_state.show_debug_panels) return;
-    
+
     ImGui::SetNextWindowPos(ImVec2(1500, 40), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(400, 800), ImGuiCond_FirstUseEver);
-    
+
     ImGui::Begin("Debug Systems", &editor_state.show_debug_panels);  // docked window = child; End() must always run
     {
         ImGui::TextUnformatted("Phase 6 System Debug Tools:");
         ImGui::Separator();
         ImGui::TextDisabled("Debug panels temporarily disabled due to ImGui state issues.");
         ImGui::TextDisabled("These will be re-enabled after refactoring the panel hierarchy.");
-        
+
         // TODO: Character Controller Panel - currently disabled due to Begin/End mismatch
         // if (editor_state.character_panel) {
         //     if (ImGui::CollapsingHeader("Character Controller##debug", ImGuiTreeNodeFlags_DefaultOpen)) {
         //         editor_state.character_panel->Render(editor_state.selected_character_controller);
         //     }
         // }
-        
-        // TODO: Ability System Panel - currently disabled due to Begin/End mismatch  
+
+        // TODO: Ability System Panel - currently disabled due to Begin/End mismatch
         // if (editor_state.ability_panel) {
         //     if (ImGui::CollapsingHeader("Ability System##debug", ImGuiTreeNodeFlags_DefaultOpen)) {
         //         editor_state.ability_panel->Render(editor_state.selected_ability_system);
         //     }
         // }
-        
+
         // TODO: Network System Panel - currently disabled due to Begin/End mismatch
         // if (editor_state.network_panel) {
         //     if (ImGui::CollapsingHeader("Network System##debug", ImGuiTreeNodeFlags_DefaultOpen)) {
         //         editor_state.network_panel->Render(editor_state.network_manager);
         //     }
         // }
-        
+
         ImGui::End();
     }
 }
@@ -9387,7 +9389,7 @@ int main(int argc, char** argv) {
             float vp_h = editor_state.viewport_panel_size.y;
             float aspect = (vp_h > 0.0f) ? vp_w / vp_h
                                           : static_cast<float>(kW) / static_cast<float>(kH);
-            
+
             // Use playback camera if scene is playing, otherwise use editor viewport camera
             if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
                 auto playback_camera = editor_state.scene_playback_manager->GetPlaybackCamera();
@@ -9447,7 +9449,7 @@ int main(int argc, char** argv) {
                 cam.view = editor_state.viewport_camera.GetViewMatrix();
                 cam.proj = editor_state.viewport_camera.GetProjectionMatrix(aspect);
             }
-            
+
             cam.proj[1][1] *= -1.0f;  // GL → Vulkan Y flip
             graph->set_camera(cam);
             // The lighting pass now needs view+proj so the in-shader sky
@@ -9640,7 +9642,7 @@ int main(int argc, char** argv) {
                 device.wait_idle();
                 continue;
             }
-            
+
             std::vector<gws::renderer::gpu::DrawItem> opaque_draws, transparent_draws;
             // Run the ECS transform system FIRST so its world matrices are
             // ready, then feed them to the draw-list builder (authoritative:
@@ -10412,7 +10414,7 @@ int main(int argc, char** argv) {
             if (g_cp.total_ms() >= 100.0)
                 spdlog::warn("[frame-gap] frame {:.1f} ms | worst: {}",
                              g_cp.total_ms(), g_cp.worst_gap());
-            
+
             if (delta_time * 1000.0f >= 100.0f)
                 spdlog::warn("[frame-gap] worst: {}", g_cp.worst_gap());
             gws::diag::record_frame_ms(double(delta_time) * 1000.0);
