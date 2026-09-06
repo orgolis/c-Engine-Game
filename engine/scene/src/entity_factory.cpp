@@ -3,6 +3,7 @@
 #include "mesh_renderer_component.h"
 #include "light_component.h"
 #include "collider_component.h"
+#include "camera_component.h"
 #include <spdlog/spdlog.h>
 
 namespace schizo::scene {
@@ -197,6 +198,7 @@ std::shared_ptr<Entity> EntityFactory::CreatePlayer(
             t->SetLocalPosition(glm::vec3(0.0f, 0.81f, 0.0f));
             t->SetLocalScale(glm::vec3(1.0f));
         }
+        first_person->AddComponent<CameraComponent>();
         first_person->SetTag("Camera");
         ++created;
     }
@@ -207,6 +209,7 @@ std::shared_ptr<Entity> EntityFactory::CreatePlayer(
             t->SetLocalPosition(glm::vec3(0.0f, 1.26f, 4.8f));
             t->SetLocalScale(glm::vec3(1.0f));
         }
+        third_person->AddComponent<CameraComponent>();
         third_person->SetTag("Camera");
         ++created;
     }
@@ -231,7 +234,10 @@ std::shared_ptr<Entity> EntityFactory::CreateCamera(
         
         // Use LookAt to orient the camera
         entity->GetTransform()->LookAt(look_at);
-        
+
+        // A camera factory should create an actual camera component, not just
+        // a yellow helper mesh with a "Camera" tag.
+        entity->AddComponent<CameraComponent>();
         entity->SetTag("Camera");
     }
     
