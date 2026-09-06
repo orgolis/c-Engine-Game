@@ -211,7 +211,12 @@ bool ShaderCompileService::init(const std::string& exe_dir) {
         candidates.push_back(fs::path(exe_dir) / "tools" / name);
     }
     if (const char* sdk = std::getenv("VULKAN_SDK"))
-        candidates.push_back(fs::path(sdk) / "Bin" / name);
+        candidates.push_back(fs::path(sdk) /
+#ifdef _WIN32
+                             "Bin" / name);
+#else
+                             "bin" / name);
+#endif
 
     for (const fs::path& c : candidates) {
         std::error_code ec;
@@ -272,8 +277,16 @@ ShaderCompileResult ShaderCompileService::compile_material(const std::string& bo
     // 2>&1 so diagnostics come back through the same pipe; glslang writes them
     // to stdout anyway, but a compiler that changed its mind would otherwise
     // produce a silent failure.
-    const std::string cmd = "\"\"" + compiler_ + "\" --target-env vulkan1.2 -S frag -o \"" +
-                            spv.string() + "\" \"" + src.string() + "\" 2>&1\"";
+    const std::string cmd =
+#ifdef _WIN32
+        // cmd.exe removes the outer pair before interpreting the quoted tool
+        // and file paths.
+        "\"\"" + compiler_ + "\" --target-env vulkan1.2 -S frag -o \"" +
+        spv.string() + "\" \"" + src.string() + "\" 2>&1\"";
+#else
+        "\"" + compiler_ + "\" --target-env vulkan1.2 -S frag -o \"" +
+        spv.string() + "\" \"" + src.string() + "\" 2>&1";
+#endif
     std::string output;
     const bool rc = run_capture(cmd, output);
     ++compiles_;

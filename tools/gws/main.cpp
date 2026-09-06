@@ -41,6 +41,14 @@ namespace {
 
 fs::path g_exe_dir;   // directory holding gws.exe — sibling tools live here too
 
+fs::path sibling_tool(const std::string& name) {
+#ifdef _WIN32
+    return g_exe_dir / (name + ".exe");
+#else
+    return g_exe_dir / name;
+#endif
+}
+
 std::string json_escape(const std::string& s) {
     std::string o;
     o.reserve(s.size() + 8);
@@ -180,7 +188,7 @@ int cmd_test(int argc, char** argv) {
             r.skipped = true; r.summary = "needs a Vulkan device (pass --gpu to run anyway)";
             ++skip;
         } else {
-            const fs::path exe = g_exe_dir / (name + ".exe");
+            const fs::path exe = sibling_tool(name);
             std::string out;
             r.rc = run_capture("\"" + exe.string() + "\"", out);
             r.summary = last_line(out);
@@ -219,7 +227,7 @@ int cmd_cook(int argc, char** argv) {
     const std::string src = argc > 2 && argv[2][0] != '-' ? argv[2] : "assets/models";
     const std::string out = argc > 3 && argv[3][0] != '-' ? argv[3] : "cooked";
 
-    const fs::path cooker = g_exe_dir / "assetcook.exe";
+    const fs::path cooker = sibling_tool("assetcook");
     if (!fs::exists(cooker)) {
         std::fprintf(stderr, "gws cook: assetcook not found next to gws (build it first)\n");
         return 1;
@@ -332,7 +340,12 @@ int cmd_shaders(int argc, char** argv) {
     fs::path glslang;
     if (const char* sdk = std::getenv("VULKAN_SDK")) {
         std::error_code ec;
-        const fs::path c = fs::path(sdk) / "Bin" / "glslangValidator.exe";
+        const fs::path c = fs::path(sdk) /
+#ifdef _WIN32
+            "Bin" / "glslangValidator.exe";
+#else
+            "bin" / "glslangValidator";
+#endif
         if (fs::exists(c, ec)) glslang = c;
     }
     if (glslang.empty()) {
@@ -428,7 +441,7 @@ int cmd_shaders(int argc, char** argv) {
 
 int cmd_docs(int argc, char** argv) {
     const char* out = opt_value(argc, argv, "--out");
-    const fs::path gen = g_exe_dir / "docgen.exe";
+    const fs::path gen = sibling_tool("docgen");
     if (!fs::exists(gen)) {
         std::fprintf(stderr, "gws docs: docgen not found next to gws (build it first)\n");
         return 1;
@@ -641,7 +654,7 @@ int cmd_crash(int argc, char** argv) {
 // Read/modify gameplay state from outside the editor — the agent-facing
 // surface. Separate binary because it links the ECS.
 int cmd_project(int argc, char** argv) {
-    const fs::path exe = g_exe_dir / "projectctl.exe";
+    const fs::path exe = sibling_tool("projectctl");
     if (!fs::exists(exe)) {
         std::fprintf(stderr, "gws project: projectctl not found next to gws (build it first)\n");
         return 1;
@@ -663,7 +676,7 @@ int cmd_project(int argc, char** argv) {
 // Headless simulation. Separate binary because it must LINK the ECS; gws itself
 // deliberately links nothing and drives sibling tools.
 int cmd_run(int argc, char** argv) {
-    const fs::path exe = g_exe_dir / "headless.exe";
+    const fs::path exe = sibling_tool("headless");
     if (!fs::exists(exe)) {
         std::fprintf(stderr, "gws run: headless not found next to gws (build it first)\n");
         return 1;
