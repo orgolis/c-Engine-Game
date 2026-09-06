@@ -2,6 +2,7 @@
 
 #include "entity.h"
 #include "mesh_renderer_component.h"
+#include "collider_component.h"
 #include <memory>
 #include <glm/glm.hpp>
 
