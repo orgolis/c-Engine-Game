@@ -32,7 +32,7 @@ namespace schizo::editor {
  * - Play/pause/stop scene execution
  * - Player entity detection and setup
  * - Character controller attachment
- * - Camera following player
+ * - One player camera with first-/third-person view modes
  * - Game loop time management
  */
 class ScenePlaybackManager {
@@ -97,7 +97,7 @@ public:
      *   - the restore snapshot, so pressing Stop teleports the scene back to
      *     where it was before the rebase;
      *   - the water volumes, so buoyancy and swimming trigger over dry ground;
-     *   - the follow camera, which lurches by the full shift in one frame.
+     *   - the cached camera world position.
      * Only ROOT entities are shifted by a rebase, so only their snapshots are.
      */
     void ApplyOriginShift(const glm::vec3& shift);
@@ -160,17 +160,20 @@ public:
     float GetPlaybackTime() const { return playback_time_; }
     
     /**
-     * Get the active camera for playback (usually player's camera)
+     * Get the single active player camera for playback.
      */
     schizo::scene::Entity* GetPlaybackCamera() const { return playback_camera_.get(); }
 
     /**
-     * Camera-view selection. The first-person child is the default; these
-     * helpers swap the active playback camera to the player's other child.
+     * Camera-view selection. The player owns one PlayerCamera entity; these
+     * helpers move that same camera between the first-person head offset and
+     * the third-person chase offset. FOV/clip/settings therefore have one
+     * source of truth instead of being duplicated across two cameras.
      */
     void SwitchToFirstPerson();
     void SwitchToThirdPerson();
     void ToggleCameraView();
+    bool IsThirdPersonView() const { return third_person_view_; }
 
     /**
      * Cursor capture state. While captured, main.cpp hides the OS cursor
@@ -197,13 +200,14 @@ private:
 
     std::shared_ptr<schizo::scene::Scene> scene_;
     std::shared_ptr<schizo::scene::Entity> player_entity_;
-    std::shared_ptr<schizo::scene::Entity> playback_camera_;  // Camera being used during playback
+    std::shared_ptr<schizo::scene::Entity> playback_camera_;  // the one PlayerCamera
     std::shared_ptr<engine::character::CharacterController> player_controller_;
     
     bool is_playing_ = false;
     bool is_paused_ = false;
     bool is_cursor_captured_ = false;  // True while the host should hide+lock the OS cursor
     bool net_client_mode_ = false;     // Props follow net-set transforms, no local sim
+    bool third_person_view_ = false;   // false=head/first-person, true=chase/third-person
     float playback_time_ = 0.0f;
 
     // Mouse delta accumulated by the host between Update() calls (raw GLFW)
@@ -238,13 +242,8 @@ private:
     std::vector<WaterVolume>               water_volumes_;        // physical water (play-time)
     uint32_t                               player_char_id_ = 0xFFFFFFFFu;
     
-    // Camera state
-    glm::vec3 camera_position_ = glm::vec3(0.0f);  // Current camera world position
-    glm::vec3 camera_target_position_ = glm::vec3(0.0f);  // Target camera position for smooth following
-    float camera_distance_ = 3.0f;  // Distance behind player
-    float camera_height_ = 1.5f;  // Height above player
-    float camera_smoothing_ = 0.15f;  // Smoothing factor for camera follow (0.0-1.0)
-    bool should_hide_cursor_ = true;  // Whether to hide mouse cursor during playback
+    // Cached world position of the one playback camera (profiling/rebase use).
+    glm::vec3 camera_position_ = glm::vec3(0.0f);
     
     // Helper methods
     bool FindAndSetupPlayer();
