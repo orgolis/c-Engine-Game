@@ -17,6 +17,7 @@
 #include "scene_serializer.h"
 
 #include "camera_component.h"
+#include "collider_component.h"
 #include "entity.h"
 #include "entity_factory.h"
 #include "npc_agent_component.h"
