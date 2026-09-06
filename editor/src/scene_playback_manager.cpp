@@ -32,13 +32,6 @@ namespace schizo::editor {
 
 namespace {
 
-// One physical camera, two authored view offsets. The camera remains a child of
-// Player in both modes, so yaw comes from the player root and pitch stays on the
-// camera itself. Keeping one entity also means FOV/clip/post settings cannot
-// silently diverge between first- and third-person views.
-const glm::vec3 kFirstPersonCameraOffset(0.0f, 0.81f, 0.0f);
-const glm::vec3 kThirdPersonCameraOffset(0.0f, 1.26f, 4.8f);
-
 // ----------------------------------------------------------------------------
 // Triangle loader for Mesh colliders.
 // Output: flat 3N-vertex list, every three consecutive vertices form one
@@ -283,8 +276,8 @@ bool ScenePlaybackManager::StartPlayback(std::shared_ptr<schizo::scene::Scene> s
         return false;
     }
 
-    // Setup the one player camera. New projects already contain PlayerCamera;
-    // older scenes are accepted through the legacy-name fallback below.
+    // Resolve the authored camera used for playback. Playback does not choose
+    // first-person, third-person, top-down, etc.; that is game code.
     SetupPlaybackCamera();
     if (!playback_camera_) {
         auto logger = spdlog::get("editor");
@@ -347,7 +340,6 @@ void ScenePlaybackManager::StopPlayback() {
     mouse_delta_y_ = 0.0f;
     playback_time_ = 0.0f;
     is_on_ground_ = false;
-    third_person_view_ = false;
     player_entity_ = nullptr;
     playback_camera_ = nullptr;
     player_controller_ = nullptr;
@@ -417,8 +409,8 @@ bool ScenePlaybackManager::AttachCharacterController() {
 void ScenePlaybackManager::UpdateCamera() {
     if (!playback_camera_) return;
     if (auto camera_transform = playback_camera_->GetTransform()) {
-        // The same camera is parented to Player in both modes. Switching view
-        // changes only its local offset; the hierarchy supplies world movement.
+        // Playback observes the camera transform; it does not impose a camera
+        // mode or move the camera to a hard-coded gameplay offset.
         camera_position_ = camera_transform->GetWorldPosition();
     }
 }
@@ -602,12 +594,12 @@ void ScenePlaybackManager::SetupPlaybackCamera() {
         return nullptr;
     };
 
-    // New scenes use one PlayerCamera. Legacy names are accepted so old projects
-    // still enter Play; only the chosen entity is used from then on.
+    // New scenes use one PlayerCamera. Legacy names are accepted only so old
+    // projects remain loadable; no gameplay meaning is assigned to the names.
     playback_camera_ = find_child("PlayerCamera");
+    if (!playback_camera_) playback_camera_ = find_child("Camera");
     if (!playback_camera_) playback_camera_ = find_child("FirstPersonCamera");
     if (!playback_camera_) playback_camera_ = find_child("ThirdPersonCamera");
-    if (!playback_camera_) playback_camera_ = find_child("Camera");
 
     if (!playback_camera_) {
         playback_camera_ = scene_->CreateEntity("PlayerCamera");
@@ -617,44 +609,21 @@ void ScenePlaybackManager::SetupPlaybackCamera() {
         if (logger) logger->info("Playback camera: created PlayerCamera");
     }
 
-    // A legacy camera may have been only a transform/name marker. Normalize the
-    // selected camera to the current contract before Play starts.
+    // Preserve the authored transform exactly. Playback only ensures that the
+    // selected camera really is a camera; camera rigs/modes belong to game code.
     if (!playback_camera_->GetComponent<schizo::scene::CameraComponent>())
         playback_camera_->AddComponent<schizo::scene::CameraComponent>();
-    if (auto t = playback_camera_->GetTransform()) {
-        t->SetLocalPosition(kFirstPersonCameraOffset);
-        t->SetLocalScale(glm::vec3(1.0f));
-    }
-    third_person_view_ = false;
-    if (logger) logger->info("Playback camera: '{}' using single-camera first-person mode",
+
+    if (logger) logger->info("Playback camera: '{}' (authored transform preserved)",
                              playback_camera_->GetName());
 }
 
-void ScenePlaybackManager::SwitchToFirstPerson() {
-    if (!playback_camera_) return;
-    if (auto t = playback_camera_->GetTransform()) {
-        t->SetLocalPosition(kFirstPersonCameraOffset);
-        camera_position_ = t->GetWorldPosition();
-    }
-    third_person_view_ = false;
-    if (auto logger = spdlog::get("editor"))
-        logger->info("Camera view: first person (same PlayerCamera)");
-}
-
-void ScenePlaybackManager::SwitchToThirdPerson() {
-    if (!playback_camera_) return;
-    if (auto t = playback_camera_->GetTransform()) {
-        t->SetLocalPosition(kThirdPersonCameraOffset);
-        camera_position_ = t->GetWorldPosition();
-    }
-    third_person_view_ = true;
-    if (auto logger = spdlog::get("editor"))
-        logger->info("Camera view: third person (same PlayerCamera)");
-}
-
 void ScenePlaybackManager::ToggleCameraView() {
-    if (third_person_view_) SwitchToFirstPerson();
-    else                    SwitchToThirdPerson();
+    // Intentionally no-op. main.cpp still contains a legacy V-key hook, but the
+    // engine must not decide that a game has first-/third-person camera modes.
+    // A game can move/rotate its CameraComponent from C++, C# or Python instead.
+    if (auto logger = spdlog::get("editor"))
+        logger->debug("Camera mode switching is game-defined; playback left the camera unchanged");
 }
 
 // Local-space triangle soup from a terrain heightmap (every 3 verts = 1 tri),
