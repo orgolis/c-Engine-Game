@@ -1,0 +1,177 @@
+GameWorldshaper Engine License
+Version 1.0, 2026-09-06
+
+Copyright (c) 2026 orgolis <orgolis123@gmail.com> ("the Licensor").
+All rights reserved except as expressly granted below.
+
+This is a SOURCE-AVAILABLE license, not an open-source license. The source is
+public and you may read, build, modify and ship products with it, but
+commercial use above a revenue threshold carries a royalty, and the Engine
+itself may not be resold. If you need an OSI-approved open-source license,
+this software is not offered under one.
+
+
+1. DEFINITIONS
+
+   "Engine" means the GameWorldshaper engine, editor, tools and accompanying
+   source code and assets distributed under this License, in source or binary
+   form, including any modification you make to them.
+
+   "Product" means a game, application or other work that you create using the
+   Engine, and that is distributed in a form intended for end users rather than
+   as an engine, framework, editor or development tool.
+
+   "Gross Revenue" means all money and other consideration you receive in
+   connection with a Product, before deducting taxes, platform fees, refunds,
+   costs or any other amount, and including sales, in-app purchases,
+   subscriptions, advertising revenue and paid downloadable content.
+
+   "Threshold" means EUR 250,000 of lifetime Gross Revenue, counted per Product.
+   Revenue received in another currency is converted to euro at the European
+   Central Bank reference rate on the last day of the quarter in which it was
+   received.
+
+
+2. GRANT
+
+   Subject to your compliance with this License, the Licensor grants you a
+   worldwide, non-exclusive, royalty-free (except as stated in section 4)
+   license to:
+
+   (a) use, copy, compile and run the Engine, for any purpose including
+       commercial purposes;
+   (b) modify the Engine and create derivative works of it, for use in your own
+       Products;
+   (c) distribute Products you create with the Engine, including Products that
+       embed the Engine in compiled form;
+   (d) distribute the Engine's source code, modified or unmodified, provided
+       every copy retains this License and the notices required by section 3.
+
+
+3. ATTRIBUTION
+
+   Every Product distributed publicly, whether or not it is commercial, must
+   credit the Engine and its original developer. This is a condition of the
+   grant, not a request.
+
+   (a) The text "Made with GameWorldshaper" together with "Engine by orgolis"
+       must appear in at least one of: a splash or title screen, an in-product
+       credits screen, or an "About" dialog reachable from the Product's main
+       interface.
+   (b) Any documentation, store page or website for the Product that lists the
+       technology used must name GameWorldshaper.
+   (c) You may not remove, obscure or alter any copyright, attribution or
+       license notice in the Engine's source or binaries.
+
+   You may not state or imply that the Licensor endorses, sponsors or is
+   affiliated with your Product.
+
+
+4. ROYALTY ON COMMERCIAL PRODUCTS
+
+   (a) No royalty is owed on any Product whose lifetime Gross Revenue is at or
+       below the Threshold. Non-commercial, educational, research, hobby,
+       evaluation and internal use are always free of royalty.
+
+   (b) For a Product whose lifetime Gross Revenue exceeds the Threshold, you
+       owe the Licensor 3% of the Gross Revenue ABOVE the Threshold. The first
+       EUR 250,000 per Product is never subject to royalty, and is not clawed
+       back once the Threshold is passed.
+
+   (c) Royalties are reported and paid quarterly, within 45 days of the end of
+       each calendar quarter in which the Threshold was exceeded, using the
+       contact address in section 11.
+
+   (d) You must keep records sufficient to determine the amounts owed and
+       retain them for three years. The Licensor may request a written
+       statement of Gross Revenue for a Product no more than once per year.
+
+   (e) The Licensor may waive or reduce the royalty for any Product in writing.
+       If you believe your case warrants a different arrangement, ask before
+       shipping rather than after.
+
+
+5. RESTRICTIONS
+
+   You may NOT:
+
+   (a) sell, license, sublicense or otherwise distribute the Engine, or a
+       derivative work of the Engine, AS an engine, framework, editor,
+       development tool or software-development service, whether on its own or
+       as the principal component of an offering. Shipping a Product that
+       embeds the Engine is permitted; shipping the Engine itself as the thing
+       being sold is not;
+   (b) use the name "GameWorldshaper", the Licensor's name, or any confusingly
+       similar name, as the name of your own engine, tool or fork, or in a way
+       that suggests it is the official Engine;
+   (c) remove or circumvent section 3 or section 4.
+
+
+6. THIRD-PARTY COMPONENTS
+
+   The Engine incorporates third-party software distributed under its own
+   licenses, including the MIT License, the Apache License 2.0, the zlib/libpng
+   license and public-domain dedications. Those components remain governed by
+   their own terms, which are reproduced in THIRD_PARTY_NOTICES.md. Nothing in
+   this License limits the rights you have in those components under their own
+   licenses, and nothing in this License is intended to conflict with them.
+
+   When you distribute the Engine or a Product that embeds it, you must also
+   carry THIRD_PARTY_NOTICES.md or an equivalent reproduction of those notices.
+
+
+7. NO WARRANTY
+
+   THE ENGINE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+
+8. LIMITATION OF LIABILITY
+
+   TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE
+   LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+   ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+   WITH THE ENGINE OR THE USE OR OTHER DEALINGS IN THE ENGINE.
+
+
+9. TERM, TERMINATION AND ASSIGNMENT
+
+   (a) This License applies for as long as you use the Engine.
+   (b) It terminates automatically if you materially breach it and do not cure
+       the breach within 30 days of being notified. Products you distributed in
+       compliance before termination may continue to be distributed.
+   (c) The Licensor may assign this License and the rights under it to a
+       successor entity, including a company later formed by the Licensor.
+   (d) Contributions to the Engine are governed by section 10. Any version of
+       the Engine already released remains available under the License it was
+       released with.
+
+10. CONTRIBUTORS
+
+   Contributing costs you nothing and takes nothing away from you.
+
+   (a) A contributor holds every right this License grants anyone else. You may
+       use and modify the Engine, build your own Products with it, and publish
+       and sell those Products, on exactly the same terms as any other
+       licensee. Contributing never narrows those rights, and it creates no
+       obligation to contribute again.
+   (b) You retain the copyright in your contribution.
+   (c) You grant the Licensor a perpetual, worldwide, irrevocable, royalty-free
+       license to use, modify, sublicense and distribute your contribution as
+       part of the Engine, including under future versions of this License or
+       under different terms. This is what allows the Engine to be relicensed
+       as a whole without tracing every past contributor.
+   (d) Section 4 applies to a contributor's own Products exactly as it applies
+       to everyone else's — contributing neither waives the royalty nor
+       increases it.
+
+11. CONTACT
+
+   Royalty reporting, waiver requests and licensing questions:
+   orgolis123@gmail.com
+
+12. GOVERNING LAW
+
+   This License is governed by the laws of the Licensor's place of residence,
+   without regard to conflict-of-law rules.
