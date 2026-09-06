@@ -27,26 +27,26 @@ namespace schizo::editor {
 /**
  * @class ScenePlaybackManager
  * @brief Manages scene playback with character controller integration
- * 
+ *
  * Features:
  * - Play/pause/stop scene execution
  * - Player entity detection and setup
  * - Character controller attachment
- * - One player camera with first-/third-person view modes
+ * - Uses the authored player camera without imposing a camera mode
  * - Game loop time management
  */
 class ScenePlaybackManager {
 public:
     ScenePlaybackManager();
     ~ScenePlaybackManager();
-    
+
     /**
      * Start playing the scene
      * @param scene Scene to play
      * @return true if playback started successfully
      */
     bool StartPlayback(std::shared_ptr<schizo::scene::Scene> scene);
-    
+
     /**
      * Stop playing the scene
      */
@@ -63,7 +63,7 @@ public:
     size_t LastMeshCollidersFromAsset() const { return last_mesh_from_asset_; }
     size_t LastMeshCollidersFromDisk()  const { return last_mesh_from_disk_; }
     size_t LastMeshCollidersFromMemo()  const { return last_mesh_from_memo_; }
-    
+
     /**
      * Pause/resume playback
      */
@@ -132,48 +132,43 @@ public:
      * @param delta_time Time elapsed since last update
      */
     void Update(float delta_time);
-    
+
     /**
      * Check if scene is currently playing
      */
     bool IsPlaying() const { return is_playing_; }
-    
+
     /**
      * Check if scene is paused
      */
     bool IsPaused() const { return is_paused_; }
-    
+
     /**
      * Get the player entity (if any)
      */
     schizo::scene::Entity* GetPlayerEntity() const { return player_entity_.get(); }
-    
+
     /**
      * Get the character controller for the player
      */
-    engine::character::CharacterController* GetPlayerController() const 
+    engine::character::CharacterController* GetPlayerController() const
     { return player_controller_.get(); }
-    
+
     /**
      * Get total playback time
      */
     float GetPlaybackTime() const { return playback_time_; }
-    
+
     /**
-     * Get the single active player camera for playback.
+     * Get the authored camera used by playback.
      */
     schizo::scene::Entity* GetPlaybackCamera() const { return playback_camera_.get(); }
 
     /**
-     * Camera-view selection. The player owns one PlayerCamera entity; these
-     * helpers move that same camera between the first-person head offset and
-     * the third-person chase offset. FOV/clip/settings therefore have one
-     * source of truth instead of being duplicated across two cameras.
+     * Legacy editor hook. Intentionally does not change the camera.
+     * Camera rigs and view-mode switching belong to the game/project code.
      */
-    void SwitchToFirstPerson();
-    void SwitchToThirdPerson();
     void ToggleCameraView();
-    bool IsThirdPersonView() const { return third_person_view_; }
 
     /**
      * Cursor capture state. While captured, main.cpp hides the OS cursor
@@ -200,14 +195,13 @@ private:
 
     std::shared_ptr<schizo::scene::Scene> scene_;
     std::shared_ptr<schizo::scene::Entity> player_entity_;
-    std::shared_ptr<schizo::scene::Entity> playback_camera_;  // the one PlayerCamera
+    std::shared_ptr<schizo::scene::Entity> playback_camera_;  // authored camera used by Play
     std::shared_ptr<engine::character::CharacterController> player_controller_;
-    
+
     bool is_playing_ = false;
     bool is_paused_ = false;
     bool is_cursor_captured_ = false;  // True while the host should hide+lock the OS cursor
     bool net_client_mode_ = false;     // Props follow net-set transforms, no local sim
-    bool third_person_view_ = false;   // false=head/first-person, true=chase/third-person
     float playback_time_ = 0.0f;
 
     // Mouse delta accumulated by the host between Update() calls (raw GLFW)
@@ -241,10 +235,10 @@ private:
     std::vector<uint32_t>                  remote_player_bodies_; // ghost kinematic capsules (BodyIds)
     std::vector<WaterVolume>               water_volumes_;        // physical water (play-time)
     uint32_t                               player_char_id_ = 0xFFFFFFFFu;
-    
-    // Cached world position of the one playback camera (profiling/rebase use).
+
+    // Cached world position of the playback camera (profiling/rebase use).
     glm::vec3 camera_position_ = glm::vec3(0.0f);
-    
+
     // Helper methods
     bool FindAndSetupPlayer();
     bool AttachCharacterController();
