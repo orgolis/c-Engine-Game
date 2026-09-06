@@ -90,7 +90,7 @@ static std::string trim(const std::string& s) {
     return s.substr(a, b - a + 1);
 }
 
-// A new project should be playable immediately.  The old launcher only wrote
+// A new project should be playable immediately. The old launcher only wrote
 // project.schizo and left scenes/main.scene missing, so Play inevitably failed
 // until the user knew to create an entity named exactly "Player" by hand.
 // Build the starter through the same factories + serializer the editor uses so
@@ -99,7 +99,7 @@ static bool create_starter_scene(const fs::path& filepath, const std::string& pr
     auto scene = std::make_shared<schizo::scene::Scene>(project_name + " Main");
 
     // A bounded floor gives the character something to stand on as soon as F5
-    // is pressed.  EntityFactory also gives it the matching static collider.
+    // is pressed. EntityFactory also gives it the matching static collider.
     auto ground = schizo::scene::EntityFactory::CreatePlane(
         scene, "Ground", 20.0f, 20.0f, glm::vec4(0.35f, 0.38f, 0.42f, 1.0f));
     if (!ground) {
@@ -107,9 +107,10 @@ static bool create_starter_scene(const fs::path& filepath, const std::string& pr
         return false;
     }
 
-    // CreatePlayer owns the contract expected by ScenePlaybackManager: an
-    // entity named Player, its capsule collider, and first-/third-person camera
-    // children. Spawn the capsule just above the floor so Jolt settles it cleanly.
+    // CreatePlayer supplies the minimal starter entities expected by the
+    // current Play path: a Player, its collider and one ordinary CameraComponent.
+    // The engine assigns no first-person/third-person meaning to that camera;
+    // project code is free to move, reparent or replace it.
     auto player = schizo::scene::EntityFactory::CreatePlayer(
         scene, "Player", glm::vec3(0.0f, 1.0f, 3.0f));
     if (!player) {
@@ -128,7 +129,7 @@ static bool create_starter_scene(const fs::path& filepath, const std::string& pr
         return false;
     }
 
-    spdlog::info("[project] starter scene created with Player, cameras, Ground and Sun");
+    spdlog::info("[project] starter scene created with Player, PlayerCamera, Ground and Sun");
     return true;
 }
 
