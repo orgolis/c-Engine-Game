@@ -156,7 +156,7 @@ std::shared_ptr<Entity> EntityFactory::CreatePlayer(
     entity->SetTag("Player");
 
     // Visual capsule on a child so its non-uniform scale never reaches
-    // the camera children. The numbers match the old CreateCapsule call
+    // the camera child. The numbers match the old CreateCapsule call
     // (radius 0.4, height 1.8 -> scale 0.8 x 1.8 x 0.8).
     if (auto visual = scene->CreateEntity("PlayerMesh")) {
         visual->SetParent(entity);
@@ -179,42 +179,24 @@ std::shared_ptr<Entity> EntityFactory::CreatePlayer(
         col->SetDynamic(false);
     }
 
-    // ------------------------------------------------------------------
-    // Camera children created up-front (NOT lazily on play). Order matters:
-    // the hierarchy panel orders children by scene-creation order, so
-    // FirstPersonCamera is created first and therefore listed above
-    // ThirdPersonCamera. ScenePlaybackManager picks FirstPersonCamera as
-    // the default playback view.
-    //
-    // Local positions are in world units now that the player root scale
-    // is identity: 0.81 = previous (0.45 * 1.8), 1.26 = (0.7 * 1.8),
-    // 4.8 = (6.0 * 0.8). These keep the camera in the same world spot
-    // as before the visual-mesh refactor.
-    // ------------------------------------------------------------------
-    int created = 0;
-    if (auto first_person = scene->CreateEntity("FirstPersonCamera")) {
-        first_person->SetParent(entity);
-        if (auto t = first_person->GetTransform()) {
+    // One real player camera. First/third person is a VIEW MODE of this camera,
+    // not two independent cameras with duplicated FOV/clip/settings. Play mode
+    // moves this same transform between the head offset and the chase offset.
+    if (auto camera = scene->CreateEntity("PlayerCamera")) {
+        camera->SetParent(entity);
+        if (auto t = camera->GetTransform()) {
+            // Default to first-person; ScenePlaybackManager moves the same
+            // camera to (0, 1.26, 4.8) for third-person.
             t->SetLocalPosition(glm::vec3(0.0f, 0.81f, 0.0f));
             t->SetLocalScale(glm::vec3(1.0f));
         }
-        first_person->AddComponent<CameraComponent>();
-        first_person->SetTag("Camera");
-        ++created;
+        camera->AddComponent<CameraComponent>();
+        camera->SetTag("Camera");
+        spdlog::info("CreatePlayer: spawned single PlayerCamera");
+    } else {
+        spdlog::error("CreatePlayer: failed to create PlayerCamera");
     }
 
-    if (auto third_person = scene->CreateEntity("ThirdPersonCamera")) {
-        third_person->SetParent(entity);
-        if (auto t = third_person->GetTransform()) {
-            t->SetLocalPosition(glm::vec3(0.0f, 1.26f, 4.8f));
-            t->SetLocalScale(glm::vec3(1.0f));
-        }
-        third_person->AddComponent<CameraComponent>();
-        third_person->SetTag("Camera");
-        ++created;
-    }
-
-    spdlog::info("CreatePlayer: spawned {} camera children (FirstPersonCamera, ThirdPersonCamera)", created);
     return entity;
 }
 
