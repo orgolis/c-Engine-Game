@@ -618,14 +618,6 @@ void ScenePlaybackManager::SetupPlaybackCamera() {
                              playback_camera_->GetName());
 }
 
-void ScenePlaybackManager::ToggleCameraView() {
-    // Intentionally no-op. main.cpp still contains a legacy V-key hook, but the
-    // engine must not decide that a game has first-/third-person camera modes.
-    // A game can move/rotate its CameraComponent from C++, C# or Python instead.
-    if (auto logger = spdlog::get("editor"))
-        logger->debug("Camera mode switching is game-defined; playback left the camera unchanged");
-}
-
 // Local-space triangle soup from a terrain heightmap (every 3 verts = 1 tri),
 // for a static Jolt mesh collider. Mirrors build_terrain_mesh's grid.
 static void BuildTerrainTriangles(const schizo::scene::TerrainComponent& tc,

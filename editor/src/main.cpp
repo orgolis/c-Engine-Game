@@ -8136,19 +8136,6 @@ int main(int argc, char** argv) {
             }
             } // !game_window_mode (editor hotkeys)
 
-            // V toggles first-/third-person view while playing. Edge-detected
-            // so a held key only fires once.
-            {
-                static bool prev_v = false;
-                bool cur_v = key(GLFW_KEY_V);
-                if (cur_v && !prev_v &&
-                    editor_state.scene_playback_manager &&
-                    editor_state.scene_playback_manager->IsPlaying()) {
-                    editor_state.scene_playback_manager->ToggleCameraView();
-                }
-                prev_v = cur_v;
-            }
-
             // Delete key removes the selected entity. Edge-detected so a held
             // key fires once; suppressed while ImGui has a text field focused
             // so it doesn't conflict with the rename dialog. Disabled in game

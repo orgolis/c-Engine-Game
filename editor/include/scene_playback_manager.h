@@ -165,12 +165,6 @@ public:
     schizo::scene::Entity* GetPlaybackCamera() const { return playback_camera_.get(); }
 
     /**
-     * Legacy editor hook. Intentionally does not change the camera.
-     * Camera rigs and view-mode switching belong to the game/project code.
-     */
-    void ToggleCameraView();
-
-    /**
      * Cursor capture state. While captured, main.cpp hides the OS cursor
      * (GLFW_CURSOR_DISABLED) and tells ImGui to ignore mouse input so the
      * player cannot hover/click editor panels. The game can release the
