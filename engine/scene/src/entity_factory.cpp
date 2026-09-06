@@ -148,7 +148,7 @@ std::shared_ptr<Entity> EntityFactory::CreatePlayer(
     // between the player's yaw and the camera child's pitch in the world
     // matrix, which makes Transform::GetWorldRotation extract a skewed
     // (non-orthogonal) basis from the camera child and breaks vertical
-    // mouse look in first-person play mode.
+    // mouse look in play mode.
     auto entity = scene->CreateEntity(name);
     if (!entity) return nullptr;
 
@@ -179,20 +179,19 @@ std::shared_ptr<Entity> EntityFactory::CreatePlayer(
         col->SetDynamic(false);
     }
 
-    // One real player camera. First/third person is a VIEW MODE of this camera,
-    // not two independent cameras with duplicated FOV/clip/settings. Play mode
-    // moves this same transform between the head offset and the chase offset.
+    // One ordinary authored camera. The engine does not attach a first-person
+    // or third-person mode to it and never moves it between hard-coded offsets.
+    // This starter placement is only a useful initial transform; project code
+    // is free to move, reparent or replace the camera entirely.
     if (auto camera = scene->CreateEntity("PlayerCamera")) {
         camera->SetParent(entity);
         if (auto t = camera->GetTransform()) {
-            // Default to first-person; ScenePlaybackManager moves the same
-            // camera to (0, 1.26, 4.8) for third-person.
             t->SetLocalPosition(glm::vec3(0.0f, 0.81f, 0.0f));
             t->SetLocalScale(glm::vec3(1.0f));
         }
         camera->AddComponent<CameraComponent>();
         camera->SetTag("Camera");
-        spdlog::info("CreatePlayer: spawned single PlayerCamera");
+        spdlog::info("CreatePlayer: spawned authored PlayerCamera");
     } else {
         spdlog::error("CreatePlayer: failed to create PlayerCamera");
     }
