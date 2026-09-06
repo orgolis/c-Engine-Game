@@ -26,7 +26,10 @@ this software is not offered under one.
    costs or any other amount, and including sales, in-app purchases,
    subscriptions, advertising revenue and paid downloadable content.
 
-   "Threshold" means USD 100,000 of lifetime Gross Revenue, counted per Product.
+   "Threshold" means EUR 250,000 of lifetime Gross Revenue, counted per Product.
+   Revenue received in another currency is converted to euro at the European
+   Central Bank reference rate on the last day of the quarter in which it was
+   received.
 
 
 2. GRANT
@@ -71,12 +74,13 @@ this software is not offered under one.
        evaluation and internal use are always free of royalty.
 
    (b) For a Product whose lifetime Gross Revenue exceeds the Threshold, you
-       owe the Licensor 5% of the Gross Revenue ABOVE the Threshold. The first
-       USD 100,000 per Product is never subject to royalty.
+       owe the Licensor 3% of the Gross Revenue ABOVE the Threshold. The first
+       EUR 250,000 per Product is never subject to royalty, and is not clawed
+       back once the Threshold is passed.
 
    (c) Royalties are reported and paid quarterly, within 45 days of the end of
        each calendar quarter in which the Threshold was exceeded, using the
-       contact address in section 9.
+       contact address in section 11.
 
    (d) You must keep records sufficient to determine the amounts owed and
        retain them for three years. The Licensor may request a written
@@ -139,17 +143,35 @@ this software is not offered under one.
        compliance before termination may continue to be distributed.
    (c) The Licensor may assign this License and the rights under it to a
        successor entity, including a company later formed by the Licensor.
-   (d) Contributions submitted to the Engine are licensed to the Licensor under
-       the same terms, and the Licensor may relicense the Engine, including
-       under different terms for future versions. Any version already released
-       remains available under the license it was released with.
+   (d) Contributions to the Engine are governed by section 10. Any version of
+       the Engine already released remains available under the License it was
+       released with.
 
-10. CONTACT
+10. CONTRIBUTORS
+
+   Contributing costs you nothing and takes nothing away from you.
+
+   (a) A contributor holds every right this License grants anyone else. You may
+       use and modify the Engine, build your own Products with it, and publish
+       and sell those Products, on exactly the same terms as any other
+       licensee. Contributing never narrows those rights, and it creates no
+       obligation to contribute again.
+   (b) You retain the copyright in your contribution.
+   (c) You grant the Licensor a perpetual, worldwide, irrevocable, royalty-free
+       license to use, modify, sublicense and distribute your contribution as
+       part of the Engine, including under future versions of this License or
+       under different terms. This is what allows the Engine to be relicensed
+       as a whole without tracing every past contributor.
+   (d) Section 4 applies to a contributor's own Products exactly as it applies
+       to everyone else's — contributing neither waives the royalty nor
+       increases it.
+
+11. CONTACT
 
    Royalty reporting, waiver requests and licensing questions:
    orgolis123@gmail.com
 
-11. GOVERNING LAW
+12. GOVERNING LAW
 
    This License is governed by the laws of the Licensor's place of residence,
    without regard to conflict-of-law rules.

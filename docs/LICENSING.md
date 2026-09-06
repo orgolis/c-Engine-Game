@@ -13,7 +13,7 @@ you live and where your users do. Before relying on it:
 
 - **Have it reviewed.** A few hundred currency units of an IP lawyer's time is cheap
   against a clause that turns out unenforceable the first time it matters.
-- **Settle the governing-law clause.** Section 11 currently says "the Licensor's place
+- **Settle the governing-law clause.** Section 12 currently says "the Licensor's place
   of residence", which is vague on purpose because the jurisdiction was not known when
   it was written. Name the country.
 - **Decide the copyright holder.** It currently reads `orgolis <orgolis123@gmail.com>`,
@@ -51,11 +51,16 @@ Alternatives considered and rejected:
 
 ## Why these specific numbers
 
-- **5% above USD 100,000 lifetime per product** mirrors Unreal's structure closely
-  enough to be immediately legible to game developers, who already know that shape.
-- The threshold is **per product, lifetime, and permanent** — the first $100k is never
+- **3% above EUR 250,000 lifetime per product.** The shape mirrors Unreal's, which
+  game developers already recognise, but both numbers are deliberately gentler:
+  Unreal charges 5% above USD 1,000,000. A lower rate over a lower threshold trades
+  headline revenue for a much larger band of projects that owe something at all.
+- The threshold is **per product, lifetime, and permanent** — the first €250k is never
   clawed back. A hobbyist or a small commercial release owes nothing, ever, which
   keeps adoption unobstructed while the engine is unknown.
+- **Euro, not dollars**, because the Licensor is in the euro area and a royalty
+  denominated in a foreign currency makes the amount owed depend on the exchange rate
+  on an unspecified day. The licence names the ECB reference rate and the day.
 - **Gross revenue, not profit.** Profit is arguable and auditable only with access to
   someone's books; gross is a number a store dashboard shows.
 
@@ -73,10 +78,27 @@ explicitly fine; shipping *the engine* is not.
 
 ---
 
+## Why contributors are called out explicitly
+
+Section 10 exists because the obvious worry about a royalty-bearing licence is *"if I
+contribute, am I signing something away?"* Left unanswered, that question costs
+contributions. The answer is written into the licence rather than a CONTRIBUTING file:
+a contributor keeps the copyright in their work and keeps every right the licence
+grants anyone else, and the only thing granted back is permission to ship the
+contribution as part of the Engine under present and future licence versions.
+
+That last part is not incidental. Without it, relicensing the Engine later would
+require tracing and getting agreement from every past contributor, which in practice
+means it can never be done.
+
+Note what section 10 does **not** say: contributing does not waive the royalty on a
+contributor's own products. That would create an incentive to contribute trivially in
+order to ship commercially free of charge.
+
 ## Open items
 
 1. **Legal review** — see above.
-2. **Governing law** — name the jurisdiction in section 11.
+2. **Governing law** — name the jurisdiction in section 12.
 3. **Copyright holder** — legal name or entity in place of the handle.
 4. **Vendored licence texts.** `stb`, `vma`, `glad`, `meshoptimizer`, `pocketpy`,
    `tinygltf` and `glslang` are vendored as bare sources with **no upstream `LICENSE`

@@ -7,7 +7,7 @@ you can extend in Python, C++ or C# without rebuilding it. Projects are launched
 kept up to date through the [GameWorldshaper Hub](https://github.com/orgolis/WorldShaper-Hub).
 
 > **Licence:** source-available, not open source. Free to use, learn from and ship
-> with; attribution required; a 5% royalty applies only above USD 100,000 lifetime
+> with; attribution required; a 3% royalty applies only above EUR 250,000 lifetime
 > revenue per product. See [Licence](#licence).
 
 ---
@@ -140,9 +140,13 @@ hot-reloads when you save it. The same works in C++ and C#. Use
 
 ## Contributing
 
-Issues and pull requests are welcome. Contributions are licensed to the Licensor
-under the terms in [LICENSE](LICENSE) section 9(d) — read it before submitting, since
-this is not an open-source project and that clause matters.
+Issues and pull requests are welcome. [LICENSE](LICENSE) section 10 covers
+contributions, and the short version is that **contributing costs you nothing**: you
+keep the copyright in what you write, and you keep every right the licence grants
+anyone else — use, modify, and publish and sell your own products on the same terms.
+What you grant back is permission for the Licensor to ship your contribution as part
+of the Engine, including under future licence versions, which is what makes the
+Engine relicensable as a whole without tracing every past contributor.
 
 Two conventions worth knowing:
 
@@ -162,8 +166,10 @@ Two conventions worth knowing:
 - Free to read, build, modify and ship products with, commercially or otherwise.
 - **Attribution required** — "Made with GameWorldshaper" and "Engine by orgolis" in a
   splash, credits or About screen of any publicly distributed product.
-- **5% royalty** on gross revenue **above USD 100,000 lifetime, per product**. The
-  first $100,000 is always free, and non-commercial use always is.
+- **3% royalty** on gross revenue **above EUR 250,000 lifetime, per product**. The
+  first €250,000 is always free and is never clawed back; non-commercial use always is.
+- **Contributors keep every right everyone else has** — contributing costs you nothing
+  and does not narrow what you may build, publish or sell (licence section 10).
 - You may not sell the Engine itself, or a fork of it, as an engine or tool.
 
 Third-party components keep their own licences —
