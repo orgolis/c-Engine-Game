@@ -16,7 +16,9 @@
 // ============================================================================
 #include "scene_serializer.h"
 
+#include "camera_component.h"
 #include "entity.h"
+#include "entity_factory.h"
 #include "npc_agent_component.h"
 #include "particle_emitter_component.h"
 #include "scene.h"
@@ -108,6 +110,28 @@ int main() {
         mrc->SetUvScale(glm::vec2(3.0f, 7.0f));
         mrc->SetUvOffset(glm::vec2(-0.25f, 0.5f));
 
+        // The default-project contract: CreatePlayer must produce the exact
+        // hierarchy Play mode expects, and the camera children must be real
+        // CameraComponents rather than name-only markers. New projects are
+        // generated through this same factory.
+        auto player = scene::EntityFactory::CreatePlayer(
+            scn, "Player", glm::vec3(0.0f, 1.0f, 3.0f));
+        check(player != nullptr, "CreatePlayer produces a starter player");
+        if (player) {
+            check(player->GetComponent<scene::ColliderComponent>() != nullptr,
+                  "the starter player has its playback collider");
+            auto fp = scn->GetEntityByName("FirstPersonCamera");
+            auto tp = scn->GetEntityByName("ThirdPersonCamera");
+            check(fp && fp->GetParent() == player,
+                  "the first-person camera is parented to Player");
+            check(tp && tp->GetParent() == player,
+                  "the third-person camera is parented to Player");
+            check(fp && fp->GetComponent<scene::CameraComponent>() != nullptr,
+                  "the first-person camera is a real CameraComponent");
+            check(tp && tp->GetComponent<scene::CameraComponent>() != nullptr,
+                  "the third-person camera is a real CameraComponent");
+        }
+
         check(editor::SceneSerializer::SaveScene(path, scn), "the scene saves");
     }
 
@@ -117,6 +141,27 @@ int main() {
     if (!loaded) {
         std::printf("\n%d passed, %d failed\nFAIL sceneio_check\n", g_pass, g_fail + 1);
         return 1;
+    }
+
+    // ---- starter player + cameras -------------------------------------------
+    // This is the bit that matters for a fresh project: saving main.scene must
+    // not strip the hierarchy or the camera components before the user ever
+    // gets a chance to press Play.
+    {
+        auto player = loaded->GetEntityByName("Player");
+        auto fp     = loaded->GetEntityByName("FirstPersonCamera");
+        auto tp     = loaded->GetEntityByName("ThirdPersonCamera");
+        check(player != nullptr, "Player survives the scene round trip");
+        check(player && player->GetComponent<scene::ColliderComponent>() != nullptr,
+              "and keeps the collider Play mode needs");
+        check(fp && player && fp->GetParent() == player,
+              "FirstPersonCamera keeps its Player parent");
+        check(tp && player && tp->GetParent() == player,
+              "ThirdPersonCamera keeps its Player parent");
+        check(fp && fp->GetComponent<scene::CameraComponent>() != nullptr,
+              "FirstPersonCamera keeps its CameraComponent");
+        check(tp && tp->GetComponent<scene::CameraComponent>() != nullptr,
+              "ThirdPersonCamera keeps its CameraComponent");
     }
 
     // ---- terrain per-layer surface -----------------------------------------
