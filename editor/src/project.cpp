@@ -1,4 +1,7 @@
 #include "project.h"
+#include "entity_factory.h"
+#include "scene.h"
+#include "scene_serializer.h"
 
 #include <spdlog/spdlog.h>
 
@@ -6,7 +9,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
+
+#include <glm/glm.hpp>
 
 namespace fs = std::filesystem;
 
@@ -82,6 +88,48 @@ static std::string trim(const std::string& s) {
     if (a == std::string::npos) return {};
     size_t b = s.find_last_not_of(" \t\r\n");
     return s.substr(a, b - a + 1);
+}
+
+// A new project should be playable immediately.  The old launcher only wrote
+// project.schizo and left scenes/main.scene missing, so Play inevitably failed
+// until the user knew to create an entity named exactly "Player" by hand.
+// Build the starter through the same factories + serializer the editor uses so
+// the template cannot drift from the normal scene format.
+static bool create_starter_scene(const fs::path& filepath, const std::string& project_name) {
+    auto scene = std::make_shared<schizo::scene::Scene>(project_name + " Main");
+
+    // A bounded floor gives the character something to stand on as soon as F5
+    // is pressed.  EntityFactory also gives it the matching static collider.
+    auto ground = schizo::scene::EntityFactory::CreatePlane(
+        scene, "Ground", 20.0f, 20.0f, glm::vec4(0.35f, 0.38f, 0.42f, 1.0f));
+    if (!ground) {
+        spdlog::error("[project] failed to create starter ground");
+        return false;
+    }
+
+    // CreatePlayer owns the contract expected by ScenePlaybackManager: an
+    // entity named Player, its capsule collider, and first-/third-person camera
+    // children. Spawn the capsule just above the floor so Jolt settles it cleanly.
+    auto player = schizo::scene::EntityFactory::CreatePlayer(
+        scene, "Player", glm::vec3(0.0f, 1.0f, 3.0f));
+    if (!player) {
+        spdlog::error("[project] failed to create starter player");
+        return false;
+    }
+
+    // Give the empty project useful lighting instead of making the first Play
+    // session look broken simply because the scene is dark.
+    schizo::scene::EntityFactory::CreateDirectionalLight(
+        scene, "Sun", glm::vec3(-0.35f, -1.0f, -0.25f),
+        glm::vec3(1.0f), 2.0f);
+
+    if (!schizo::editor::SceneSerializer::SaveScene(filepath.string(), scene)) {
+        spdlog::error("[project] failed to write starter scene: {}", filepath.string());
+        return false;
+    }
+
+    spdlog::info("[project] starter scene created with Player, cameras, Ground and Sun");
+    return true;
 }
 
 // ============================================================================
@@ -193,6 +241,11 @@ bool create_project(const std::string& parent_dir,
     m.project_dir   = root.string();
     if (!engine_version.empty()) m.engine_version = engine_version;
 
+    // The manifest points at this file, so creating a project must create it as
+    // part of the same operation. New projects now open into a scene that can be
+    // played immediately on Windows or Linux.
+    if (!create_starter_scene(root / m.default_scene, name)) return false;
+
     std::string manifest_path = (root / kManifestFilename).string();
     if (!ProjectManifest::save(manifest_path, m)) return false;
 
@@ -207,14 +260,20 @@ bool create_project(const std::string& parent_dir,
 static fs::path config_dir() {
     if (const char* appdata = std::getenv("APPDATA"))
         return fs::path(appdata) / "GameWorldshaper";
+    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"))
+        return fs::path(xdg) / "gameworldshaper";
     if (const char* home = std::getenv("USERPROFILE"))
         return fs::path(home) / ".gameworldshaper";
+    if (const char* home = std::getenv("HOME"))
+        return fs::path(home) / ".config" / "gameworldshaper";
     return fs::path(".") / ".gameworldshaper";
 }
 
 std::string default_projects_dir() {
     fs::path base;
     if (const char* home = std::getenv("USERPROFILE"))
+        base = fs::path(home) / "GameWorldshaper Projects";
+    else if (const char* home = std::getenv("HOME"))
         base = fs::path(home) / "GameWorldshaper Projects";
     else
         base = fs::path(".") / "GameWorldshaper Projects";
