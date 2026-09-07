@@ -203,7 +203,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             build-essential cmake pkg-config \
-            libvulkan-dev glslang-tools \
+            libvulkan-dev glslang-tools glslc \
             libgl1-mesa-dev \
             libwayland-dev wayland-protocols libxkbcommon-dev \
             xorg-dev libx11-xcb-dev
@@ -213,6 +213,7 @@ jobs:
           g++ --version | head -1
           cmake --version | head -1
           glslangValidator --version | head -1
+          glslc --version | head -1
 
       - name: Configure with the supported Linux preset
         run: cmake --preset linux-debug
