@@ -251,6 +251,7 @@ set(FLOATING_POINT_EXCEPTIONS_ENABLED OFF CACHE BOOL "" FORCE)
 set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
 set(PROFILER_IN_DEBUG_AND_RELEASE    OFF CACHE BOOL "" FORCE)
 set(JPH_USE_DX12                     OFF CACHE BOOL "" FORCE)
+set(JPH_USE_VK                       OFF CACHE BOOL "" FORCE)
 set(USE_ASSERTS                      OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/JoltPhysics/Build)
 
