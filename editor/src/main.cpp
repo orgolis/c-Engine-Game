@@ -188,6 +188,12 @@ struct EditorState {
     bool show_output = true;            // editor log output console panel
     bool show_audio_mixer = false;      // Audio Mixer panel (Phase 4.9)
 
+    // Set only when Escape releases play-mode mouse capture. Keeping this
+    // separate from the playback manager's generic capture flag means a game
+    // can still release the cursor for its own UI without the editor treating
+    // the next click as a request to jump back into mouse-look.
+    bool play_cursor_released_by_escape = false;
+
     // Transient status line shown over the viewport (mesh apply/import result etc).
     std::string status_message;
     double      status_message_time = 0.0;   // ImGui::GetTime() when last set
@@ -529,6 +535,7 @@ struct EditorState {
 // ============================================================================
 static void BeginPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::Scene>& scene) {
     if (!st.scene_playback_manager || !scene) return;
+    st.play_cursor_released_by_escape = false;
     st.play_changes.Capture(scene, st.ecs_bridge);        // baseline BEFORE play mutates anything
     if (!st.scene_playback_manager->StartPlayback(scene)) {
         spdlog::warn("Failed to start scene playback (no entity named 'Player'?)");
@@ -538,6 +545,7 @@ static void BeginPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::
 
 static void EndPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::Scene>& scene) {
     if (!st.scene_playback_manager) return;
+    st.play_cursor_released_by_escape = false;
     // Diff BEFORE stopping: StopPlayback restores the authored transforms, so
     // after it runs the play-end values are gone.
     if (st.play_changes.has_baseline() && scene)
@@ -4604,6 +4612,34 @@ void ShowViewport(EditorState& editor_state) {
                 image_max = ImGui::GetItemRectMax();
                 image_drawn = true;
                 editor_state.viewport_image_min = glm::vec2(image_min.x, image_min.y);
+
+                // Escape deliberately releases mouse-look without ending play.
+                // A click on the running image is the explicit way back in.
+                const bool waiting_for_recapture =
+                    viewport_playing && editor_state.play_cursor_released_by_escape &&
+                    !editor_state.scene_playback_manager->IsCursorCaptured();
+                if (waiting_for_recapture && ImGui::IsItemHovered() &&
+                    ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    editor_state.scene_playback_manager->SetCursorCaptured(true);
+                    editor_state.play_cursor_released_by_escape = false;
+                    editor_state.set_status("Play input captured — Esc releases the mouse");
+                    spdlog::info("Viewport click — recaptured play-mode cursor");
+                } else if (waiting_for_recapture) {
+                    const char* hint = "Click viewport to resume input";
+                    const ImVec2 text_size = ImGui::CalcTextSize(hint);
+                    const ImVec2 center((image_min.x + image_max.x) * 0.5f,
+                                        (image_min.y + image_max.y) * 0.5f);
+                    const ImVec2 box_min(center.x - text_size.x * 0.5f - 14.0f,
+                                         center.y - text_size.y * 0.5f - 9.0f);
+                    const ImVec2 box_max(center.x + text_size.x * 0.5f + 14.0f,
+                                         center.y + text_size.y * 0.5f + 9.0f);
+                    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                    draw_list->AddRectFilled(box_min, box_max, IM_COL32(12, 18, 28, 220), 6.0f);
+                    draw_list->AddRect(box_min, box_max, IM_COL32(76, 168, 255, 230), 6.0f);
+                    draw_list->AddText(ImVec2(center.x - text_size.x * 0.5f,
+                                              center.y - text_size.y * 0.5f),
+                                       IM_COL32(235, 244, 255, 255), hint);
+                }
             } else {
                 ImGui::TextDisabled("Vulkan viewport initializing...");
                 ImGui::Text("Scene: %zu entities", scene ? scene->GetEntityCount() : 0);
@@ -4933,7 +4969,8 @@ void ShowViewport(EditorState& editor_state) {
 
             // Handle entity selection through picking and gizmo interaction
             // (suppressed while sculpting/painting so a click edits terrain, not selection).
-            if (!editor_state.terrain_sculpt_active && !editor_state.terrain_paint_active &&
+            if (!viewport_playing &&
+                !editor_state.terrain_sculpt_active && !editor_state.terrain_paint_active &&
                 ImGui::IsMouseClicked(ImGuiMouseButton_Left) && scene && image_drawn) {
                 ImVec2 mouse_pos = io.MousePos;
                 // Use the image's actual rect (captured immediately after
@@ -7627,6 +7664,7 @@ int main(int argc, char** argv) {
         // cursor) and onto ImGui (NoMouse = ignore mouse on panels) so the
         // player can't accidentally hover or click editor UI while playing.
         bool prev_cursor_captured = false;
+        bool prev_left_mouse_down = false;
         double last_cursor_x = 0.0;
         double last_cursor_y = 0.0;
         bool cursor_delta_primed = false;
@@ -8086,38 +8124,35 @@ int main(int argc, char** argv) {
                 cursor_delta_primed = false;
             }
 
-            // ESC progressively de-escalates while playing:
-            //   captured cursor → release cursor
-            //   released cursor → stop playback
-            // Outside play, ESC still exits the editor (matches old behaviour).
+            // Escape has exactly one play-mode responsibility: release a
+            // captured cursor. It never stops playback and never closes either
+            // the editor or a standalone game window. The user can re-enter by
+            // clicking the running viewport (or anywhere in a game window).
             {
                 static bool prev_esc = false;
-                bool cur_esc = key(GLFW_KEY_ESCAPE);
-                if (cur_esc && !prev_esc) {
-                    if (game_window_mode) {
-                        // Game windows: first ESC releases the cursor, second
-                        // quits (stopping playback would just strand a blank
-                        // window — there's no editor UI to fall back to).
-                        if (playing &&
-                            editor_state.scene_playback_manager->IsCursorCaptured()) {
-                            editor_state.scene_playback_manager->SetCursorCaptured(false);
-                        } else {
-                            spdlog::info("ESC — closing game window");
-                            glfwSetWindowShouldClose(glfw_window, GLFW_TRUE);
-                        }
-                    } else if (playing) {
-                        if (editor_state.scene_playback_manager->IsCursorCaptured()) {
-                            editor_state.scene_playback_manager->SetCursorCaptured(false);
-                        } else {
-                            EndPlayMode(editor_state, editor_state.editor_scene->GetScene());
-                        }
-                    } else {
-                        spdlog::info("ESC — exiting editor");
-                        prev_esc = cur_esc;
-                        break;
-                    }
+                const bool cur_esc = key(GLFW_KEY_ESCAPE);
+                if (cur_esc && !prev_esc && playing &&
+                    editor_state.scene_playback_manager->IsCursorCaptured()) {
+                    editor_state.scene_playback_manager->SetCursorCaptured(false);
+                    editor_state.play_cursor_released_by_escape = true;
+                    editor_state.set_status("Play input released — click the viewport to resume");
+                    spdlog::info("ESC — released play-mode cursor");
                 }
                 prev_esc = cur_esc;
+            }
+
+            // Standalone game windows do not render ShowViewport, so their
+            // equivalent re-entry gesture is a click anywhere in the window.
+            {
+                const bool left_mouse_down =
+                    glfwGetMouseButton(glfw_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                if (game_window_mode && left_mouse_down && !prev_left_mouse_down && playing &&
+                    editor_state.play_cursor_released_by_escape) {
+                    editor_state.scene_playback_manager->SetCursorCaptured(true);
+                    editor_state.play_cursor_released_by_escape = false;
+                    spdlog::info("Game-window click — recaptured play-mode cursor");
+                }
+                prev_left_mouse_down = left_mouse_down;
             }
             if (!game_window_mode) {
             if (key(GLFW_KEY_LEFT_CONTROL) && key(GLFW_KEY_Z)) {
@@ -8164,16 +8199,17 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // F5 toggles play/stop. Edge-detected so a held key fires once.
+            // F5 is the only keyboard shortcut that toggles play/stop.
+            // Edge-detected so a held key fires once.
             {
                 static bool prev_f5 = false;
                 bool cur_f5 = key(GLFW_KEY_F5);
                 if (cur_f5 && !prev_f5 && editor_state.scene_playback_manager) {
                     if (editor_state.scene_playback_manager->IsPlaying()) {
-                        editor_state.scene_playback_manager->StopPlayback();
+                        EndPlayMode(editor_state, editor_state.editor_scene->GetScene());
                     } else {
                         auto sc = editor_state.editor_scene->GetScene();
-                        if (sc) editor_state.scene_playback_manager->StartPlayback(sc);
+                        if (sc) BeginPlayMode(editor_state, sc);
                     }
                 }
                 prev_f5 = cur_f5;
@@ -8396,9 +8432,11 @@ int main(int argc, char** argv) {
                                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                                  ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs);
-                    ImGui::Text("MULTIPLAYER  %s  |  players: %zu  |  ESC quits",
+                    ImGui::Text("MULTIPLAYER  %s  |  players: %zu  |  ESC releases mouse",
                                 nst.connected ? "connected" : "connecting...",
                                 nst.avatars + 1);
+                    if (editor_state.play_cursor_released_by_escape)
+                        ImGui::TextUnformatted("Click anywhere to resume input");
                     ImGui::End();
                 }
             } else if (editor_state.in_launcher) {
