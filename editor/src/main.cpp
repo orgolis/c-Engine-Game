@@ -164,6 +164,7 @@
 #include <cstdio>
 #include <cfloat>
 #include <cmath>
+#include <stdexcept>
 #include <system_error>
 
 // GLM headers
@@ -5855,6 +5856,8 @@ int main(int argc, char** argv) {
     //   --scene <path>          load this scene before connecting
     //   --net-game              game window: viewport-only fullscreen UI (no
     //                           editor panels) — used for spawned client windows
+    //   --game                  exported single-player runtime: load the project,
+    //                           start its default scene and show only the game
     //   --project <path>        open this project (its manifest) directly,
     //                           bypassing the in-editor launcher (the Hub uses
     //                           this to open a project in its bound engine).
@@ -5864,6 +5867,7 @@ int main(int argc, char** argv) {
     uint16_t    startup_join_port = 0;
     uint16_t    startup_host_port = 0;
     bool        game_window_mode  = false;
+    bool        standalone_game_mode = false;
     bool        startup_probe     = false;   // --startup-probe: time init, then exit
     int         frame_limit       = 0;       // --frames N: render N frames, then exit
     bool        probe_inner_loop  = false;   // --probe-inner-loop: time the budgeted rows
@@ -5929,6 +5933,9 @@ int main(int argc, char** argv) {
             startup_project = argv[++i];
         } else if (a == "--net-game") {
             game_window_mode = true;
+        } else if (a == "--game") {
+            game_window_mode = true;
+            standalone_game_mode = true;
         } else if (a == "--frames" && i + 1 < argc) {
             // Render N frames and exit. Unlike --startup-probe this actually
             // DRAWS, so it exercises the paths that only run once something is
@@ -5977,6 +5984,11 @@ int main(int argc, char** argv) {
             // number can only be eyeballed with a stopwatch.
             startup_probe = true;
         }
+    }
+
+    if (standalone_game_mode && startup_project.empty()) {
+        std::cerr << "--game requires --project <project.schizo>\n";
+        return 2;
     }
 
     const auto gws_startup_t0 = std::chrono::steady_clock::now();
@@ -7470,6 +7482,24 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Exported games reuse the proven renderer/playback path but skip every
+        // editor surface. The manifest selects the default scene above; starting
+        // playback here makes the packaged executable immediately playable.
+        if (standalone_game_mode) {
+            if (!editor_state.project_loaded)
+                throw std::runtime_error("standalone game could not load project manifest");
+            auto game_scene = editor_state.editor_scene->GetScene();
+            if (!game_scene ||
+                !editor_state.scene_playback_manager->StartPlayback(game_scene)) {
+                throw std::runtime_error(
+                    "standalone game could not start playback (is there a Player and Camera?)");
+            }
+            glfwSetWindowTitle(glfw_window, editor_state.project.name.c_str());
+            spdlog::info("[game] started exported project '{}' with scene '{}'",
+                         editor_state.project.name,
+                         editor_state.editor_scene->GetSceneFilepath());
+        }
+
         // Net-spawned / game-window instances skip the launcher and run with
         // every feature on (they load the shared scene above or from CLI args).
         // A normal launch starts in the launcher (in_launcher defaults true).
@@ -8375,7 +8405,7 @@ int main(int argc, char** argv) {
             // (was connected, now isn't), close instead of idling at a dead
             // "connecting..." screen — stale windows from a previous session
             // otherwise pile up next to the new one.
-            if (game_window_mode) {
+            if (game_window_mode && !standalone_game_mode) {
                 static bool ever_connected = false;
                 if (editor_state.net_session.status().connected) {
                     ever_connected = true;
@@ -8423,8 +8453,9 @@ int main(int argc, char** argv) {
                         (ImTextureID)(void*)editor_state.viewport_texture_id,
                         ImVec2(0.0f, 0.0f), gio.DisplaySize);
                 }
-                // Minimal session HUD.
-                {
+                // Multiplayer session HUD. A standalone export stays clean and
+                // only shows help after Escape releases its input focus.
+                if (!standalone_game_mode) {
                     const auto& nst = editor_state.net_session.status();
                     ImGui::SetNextWindowPos(ImVec2(8.0f, 8.0f), ImGuiCond_Always);
                     ImGui::SetNextWindowBgAlpha(0.45f);
@@ -8437,6 +8468,20 @@ int main(int argc, char** argv) {
                                 nst.avatars + 1);
                     if (editor_state.play_cursor_released_by_escape)
                         ImGui::TextUnformatted("Click anywhere to resume input");
+                    ImGui::End();
+                } else if (editor_state.play_cursor_released_by_escape) {
+                    const char* hint = "Click to resume input";
+                    const ImVec2 text_size = ImGui::CalcTextSize(hint);
+                    const ImVec2 center(gio.DisplaySize.x * 0.5f, gio.DisplaySize.y * 0.5f);
+                    ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+                    ImGui::SetNextWindowBgAlpha(0.82f);
+                    ImGui::Begin("##game_input_hint", nullptr,
+                                 ImGuiWindowFlags_NoDecoration |
+                                 ImGuiWindowFlags_AlwaysAutoResize |
+                                 ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_NoInputs);
+                    ImGui::Dummy(ImVec2(text_size.x, 0.0f));
+                    ImGui::TextUnformatted(hint);
                     ImGui::End();
                 }
             } else if (editor_state.in_launcher) {
