@@ -56,7 +56,11 @@ fi
 
 if [[ -f "$gws_repo_root/CMakeLists.txt" && -f "$gws_repo_root/CMakePresets.json" ]]; then
     echo "[1/6] Configuring the optimized Linux build"
-    cmake --preset linux-release -S "$gws_repo_root"
+    # CMake resolves CMakePresets.json from its working directory, not from
+    # -S. The editor deliberately runs inside the open project directory, so
+    # enter the engine repository before using its build preset.
+    cd -- "$gws_repo_root"
+    cmake --preset linux-release
 
     echo "[2/6] Building the runtime"
     # Leave CPU/GPU headroom for the editor that launched this background task.

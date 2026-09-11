@@ -51,13 +51,20 @@ if (Test-Path -LiteralPath $archivePath) {
 
 if ((Test-Path -LiteralPath (Join-Path $repositoryRoot "CMakeLists.txt")) -and
     (Test-Path -LiteralPath (Join-Path $repositoryRoot "CMakePresets.json"))) {
-    Write-Output "[1/5] Configuring the optimized Windows build"
-    & cmake --preset windows-release -S $repositoryRoot
-    if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE" }
+    # CMake resolves CMakePresets.json from the process working directory. The
+    # editor runs inside the open project, so temporarily enter the engine root.
+    Push-Location -LiteralPath $repositoryRoot
+    try {
+        Write-Output "[1/5] Configuring the optimized Windows build"
+        & cmake --preset windows-release
+        if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE" }
 
-    Write-Output "[2/5] Building the Windows runtime"
-    & cmake --build --preset windows-release --target editor --parallel 4
-    if ($LASTEXITCODE -ne 0) { throw "Runtime build failed with exit code $LASTEXITCODE" }
+        Write-Output "[2/5] Building the Windows runtime"
+        & cmake --build --preset windows-release --target editor --parallel 4
+        if ($LASTEXITCODE -ne 0) { throw "Runtime build failed with exit code $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+    }
     $runtimePath = Join-Path $repositoryRoot "build/windows-release/bin/editor.exe"
 } else {
     Write-Output "[1/5] Using the installed Windows engine"
