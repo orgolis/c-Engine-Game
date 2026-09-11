@@ -165,10 +165,11 @@ public:
     schizo::scene::Entity* GetPlaybackCamera() const { return playback_camera_.get(); }
 
     /**
-     * Cursor capture state. While captured, main.cpp hides the OS cursor
-     * (GLFW_CURSOR_DISABLED) and tells ImGui to ignore mouse input so the
-     * player cannot hover/click editor panels. The game can release the
-     * cursor when an in-game GUI opens by calling SetCursorCaptured(false).
+     * Play-input focus and cursor capture state. While captured, main.cpp hides
+     * the OS cursor (GLFW_CURSOR_DISABLED), mouse-look receives raw deltas, and
+     * keyboard movement controls the character. While released, the simulation
+     * continues but mouse-look and movement input are ignored. The game can
+     * release the cursor for an in-game GUI with SetCursorCaptured(false).
      */
     bool IsCursorCaptured() const { return is_cursor_captured_; }
     void SetCursorCaptured(bool captured) { is_cursor_captured_ = captured; }

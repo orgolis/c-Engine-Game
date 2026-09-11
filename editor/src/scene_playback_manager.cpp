@@ -465,18 +465,23 @@ void ScenePlaybackManager::DriveCharacterController(float delta_time) {
     player_controller_->SetGrounded(is_on_ground_);
 
     // 2. Build the input action from the keyboard and hand it to the
-    //    controller. Calling ProcessInput directly bypasses the input buffer,
-    //    which is fine for editor playback — the buffer is for network sync.
+    //    controller. Cursor capture is also the play-input focus: after Escape
+    //    releases it, the simulation keeps ticking but WASD/Shift/Space cannot
+    //    control the character until the user clicks back into the scene.
+    //    Calling ProcessInput directly bypasses the input buffer, which is fine
+    //    for editor playback — the buffer is for network sync.
     engine::character::InputAction input;
-    if (ImGui::IsKeyDown(ImGuiKey_W)) input.forward += 1.0f;
-    if (ImGui::IsKeyDown(ImGuiKey_S)) input.forward -= 1.0f;
-    if (ImGui::IsKeyDown(ImGuiKey_D)) input.lateral += 1.0f;
-    if (ImGui::IsKeyDown(ImGuiKey_A)) input.lateral -= 1.0f;
-    if (ImGui::IsKeyDown(ImGuiKey_LeftShift) ||
-        ImGui::IsKeyDown(ImGuiKey_RightShift)) {
-        input.sprint = true;
+    if (is_cursor_captured_) {
+        if (ImGui::IsKeyDown(ImGuiKey_W)) input.forward += 1.0f;
+        if (ImGui::IsKeyDown(ImGuiKey_S)) input.forward -= 1.0f;
+        if (ImGui::IsKeyDown(ImGuiKey_D)) input.lateral += 1.0f;
+        if (ImGui::IsKeyDown(ImGuiKey_A)) input.lateral -= 1.0f;
+        if (ImGui::IsKeyDown(ImGuiKey_LeftShift) ||
+            ImGui::IsKeyDown(ImGuiKey_RightShift)) {
+            input.sprint = true;
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_Space)) input.jump = true;
     }
-    if (ImGui::IsKeyPressed(ImGuiKey_Space)) input.jump = true;
     player_controller_->ProcessInput(input);
 
     // 3. Tick the controller: state machine, gravity-or-clamp, stamina, dash.
@@ -501,7 +506,8 @@ void ScenePlaybackManager::DriveCharacterController(float delta_time) {
             world_velocity.x *= 0.6f;
             world_velocity.z *= 0.6f;
             float vy = glm::clamp(world_velocity.y, -8.0f, 8.0f) * 0.35f - 0.4f;
-            if (ImGui::IsKeyDown(ImGuiKey_Space)) vy = 3.0f;          // swim up
+            if (is_cursor_captured_ && ImGui::IsKeyDown(ImGuiKey_Space))
+                vy = 3.0f;                                           // swim up
             world_velocity.y = vy;
         }
     }
