@@ -22,6 +22,14 @@ current `ScenePlaybackManager` requires both when it starts.
 
 ## 2. Run the exporter
 
+In the editor, open `Project > Export Linux Game...`, choose a destination
+folder and leave the editor open while the background task is running. The
+editor saves the current scene first and makes it the project's start scene.
+On completion it shows the full path to the generated executable `.run` file.
+
+The command-line form below performs the same operation and is useful for
+automation or debugging.
+
 From the engine repository:
 
 ```bash
@@ -52,7 +60,8 @@ mistyped path recoverable instead of deleting an older build.
 worldshaper-runtime --game --project project/project.schizo
 ```
 
-7. Produces both a runnable directory and a `.tar.gz` archive.
+7. Produces a runnable directory, a `.tar.gz` archive and one self-extracting
+   `.run` file.
 
 The resulting layout is intentionally simple:
 
@@ -86,6 +95,19 @@ Send `linux.tar.gz` to another Linux computer, extract it and run `./MyGame`.
 The target computer still needs a Vulkan-capable driver and the standard Linux
 desktop libraries used by GLFW. This is a portable folder build, not yet an
 AppImage or Flatpak.
+
+For a literal single-file export, send `MyGame-linux-x86_64.run`. Make it
+executable once after downloading, then start it directly:
+
+```bash
+chmod +x MyGame-linux-x86_64.run
+./MyGame-linux-x86_64.run
+```
+
+The `.run` file contains the same compressed game package after a short shell
+launcher. At startup it extracts into a temporary directory, launches `MyGame`
+and removes the temporary files when the game closes. It is one distributable
+file, but still relies on a compatible x86-64 Linux system and Vulkan driver.
 
 During play, `ESC` releases gameplay input without stopping the simulation.
 Click the game window to capture input again. Close the OS window to quit.

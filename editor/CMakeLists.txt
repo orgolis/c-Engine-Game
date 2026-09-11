@@ -160,6 +160,10 @@ install(DIRECTORY
             ${CMAKE_SOURCE_DIR}/assets/skies
             ${CMAKE_SOURCE_DIR}/assets/scripts
         DESTINATION "${GWS_ENGINE_DEST}/assets" COMPONENT engine OPTIONAL)
+if(UNIX AND NOT APPLE)
+    install(PROGRAMS ${CMAKE_SOURCE_DIR}/tools/export_game_linux.sh
+            DESTINATION "${GWS_ENGINE_DEST}/tools" COMPONENT engine)
+endif()
 
 # ---------------------------------------------------------------------------
 # Header self-containment. See cmake/HeaderSelfContain.cmake for why a full

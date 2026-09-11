@@ -47,13 +47,26 @@ if [[ -e "$gws_output" ]]; then
     exit 2
 fi
 
-echo "[1/5] Configuring the optimized Linux build"
-cmake --preset linux-release -S "$gws_repo_root"
+gws_single_file="$(dirname -- "$gws_output")/${gws_game_name}-linux-x86_64.run"
+if [[ -e "$gws_single_file" ]]; then
+    echo "Single-file export already exists: $gws_single_file" >&2
+    echo "Choose another output directory or remove the old export intentionally." >&2
+    exit 2
+fi
 
-echo "[2/5] Building the runtime"
-cmake --build --preset linux-release --target editor --parallel
+if [[ -f "$gws_repo_root/CMakeLists.txt" && -f "$gws_repo_root/CMakePresets.json" ]]; then
+    echo "[1/6] Configuring the optimized Linux build"
+    cmake --preset linux-release -S "$gws_repo_root"
 
-gws_runtime="$gws_repo_root/build/linux-release/bin/editor"
+    echo "[2/6] Building the runtime"
+    cmake --build --preset linux-release --target editor --parallel
+    gws_runtime="$gws_repo_root/build/linux-release/bin/editor"
+else
+    # Hub-installed engines contain a ready release runtime instead of source.
+    echo "[1/6] Using the installed Linux engine"
+    echo "[2/6] Reusing its release runtime"
+    gws_runtime="$gws_repo_root/editor"
+fi
 if [[ ! -x "$gws_runtime" ]]; then
     echo "Runtime build missing: $gws_runtime" >&2
     exit 1
@@ -63,7 +76,7 @@ gws_stage="$(mktemp -d /tmp/gameworldshaper-export.XXXXXX)"
 trap 'rm -rf -- "$gws_stage"' EXIT
 mkdir -p "$gws_stage/bin" "$gws_stage/project" "$gws_stage/assets"
 
-echo "[3/5] Copying the saved project and runtime content"
+echo "[3/6] Copying the saved project and runtime content"
 tar -C "$gws_project_dir" \
     --exclude='./dist' \
     --exclude='./cache' \
@@ -87,12 +100,15 @@ if [[ -d "$gws_repo_root/assets/scripts" ]]; then
     cp -an "$gws_repo_root/assets/scripts/." "$gws_stage/project/assets/scripts/"
 fi
 
-if [[ -x "$gws_repo_root/build/linux-release/bin/glslangValidator" ]]; then
-    install -m 755 "$gws_repo_root/build/linux-release/bin/glslangValidator" \
-        "$gws_stage/bin/glslangValidator"
+gws_shader_compiler="$gws_repo_root/build/linux-release/bin/glslangValidator"
+if [[ ! -x "$gws_shader_compiler" ]]; then
+    gws_shader_compiler="$gws_repo_root/glslangValidator"
+fi
+if [[ -x "$gws_shader_compiler" ]]; then
+    install -m 755 "$gws_shader_compiler" "$gws_stage/bin/glslangValidator"
 fi
 
-echo "[4/5] Creating the game launcher"
+echo "[4/6] Creating the game launcher"
 printf '%s\n' \
     '#!/bin/sh' \
     'gws_game_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)' \
@@ -108,14 +124,36 @@ printf '%s\n' \
     "ESC releases input; click the game to resume. Close the window to quit." \
     > "$gws_stage/README.txt"
 
-echo "[5/5] Publishing the export"
+echo "[5/6] Publishing the folder and archive"
 mkdir -p "$(dirname -- "$gws_output")"
 mv -- "$gws_stage" "$gws_output"
 trap - EXIT
 tar -C "$(dirname -- "$gws_output")" -czf "$gws_output.tar.gz" \
     "$(basename -- "$gws_output")"
 
+echo "[6/6] Creating the self-extracting single-file game"
+{
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'set -euo pipefail' \
+        "gws_launcher=$(printf '%q' "$gws_game_name")" \
+        'gws_payload_line="$(awk '\''/^__GWS_PAYLOAD__$/ { print NR + 1; exit }'\'' "$0")"' \
+        'gws_temp_dir="$(mktemp -d /tmp/gameworldshaper-game.XXXXXX)"' \
+        'gws_cleanup() { rm -rf -- "$gws_temp_dir"; }' \
+        'trap gws_cleanup EXIT' \
+        'tail -n +"$gws_payload_line" "$0" | tar -xz -C "$gws_temp_dir"' \
+        'set +e' \
+        '"$gws_temp_dir/$gws_launcher" "$@"' \
+        'gws_exit_code=$?' \
+        'set -e' \
+        'exit "$gws_exit_code"' \
+        '__GWS_PAYLOAD__'
+    tar -C "$gws_output" -czf - .
+} > "$gws_single_file"
+chmod 755 "$gws_single_file"
+
 echo
 echo "Export complete: $gws_output"
 echo "Archive:         $gws_output.tar.gz"
+echo "Single file:     $gws_single_file"
 echo "Start with:      $gws_output/$gws_game_name"
