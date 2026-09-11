@@ -1561,6 +1561,14 @@ static void BuildEditorDockLayout(ImGuiID dockspace_id, ImVec2 size) {
 
 void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
     if (ImGui::BeginMainMenuBar()) {
+        // Product identity anchors the otherwise tool-heavy menu row. Keeping it
+        // in the native menu bar costs no viewport space and makes multiple game
+        // editor windows immediately distinguishable from generic debug tools.
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.16f, 0.78f, 0.91f, 1.0f));
+        ImGui::TextUnformatted("WORLD SHAPER");
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0.0f, 16.0f);
+
         // File menu
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New Scene", "Ctrl+N")) {
@@ -1808,6 +1816,42 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
                 spdlog::info("About");
             }
             ImGui::EndMenu();
+        }
+
+        // Persistent context at the far right: project/scene and play state are
+        // the two things a user most needs to confirm before editing.  This used
+        // to be scattered across panel content (or missing entirely), which made
+        // similarly named scenes in two editor windows easy to confuse.
+        if (ImGui::GetContentRegionAvail().x > 260.0f) {
+            const bool playing = editor_state.scene_playback_manager &&
+                                 editor_state.scene_playback_manager->IsPlaying();
+            const bool paused  = playing && editor_state.scene_playback_manager->IsPaused();
+            const char* mode   = playing ? (paused ? "PAUSED" : "PLAY") : "EDIT";
+            const ImVec4 mode_color = playing
+                ? (paused ? ImVec4(0.98f, 0.70f, 0.25f, 1.0f)
+                          : ImVec4(0.30f, 0.86f, 0.54f, 1.0f))
+                : ImVec4(0.52f, 0.59f, 0.67f, 1.0f);
+
+            std::string context = editor_state.project_loaded
+                ? editor_state.project.name : std::string("No project");
+            if (editor_state.editor_scene) {
+                const std::string& scene_path = editor_state.editor_scene->GetSceneFilepath();
+                if (!scene_path.empty())
+                    context += "  /  " + std::filesystem::path(scene_path).filename().string();
+                if (editor_state.editor_scene->HasUnsavedChanges()) context += "  *";
+            }
+
+            const float total_w = ImGui::CalcTextSize(mode).x +
+                                  ImGui::CalcTextSize(context.c_str()).x + 28.0f;
+            const float right_x = ImGui::GetWindowWidth() - total_w - 12.0f;
+            if (right_x > ImGui::GetCursorPosX() + 12.0f)
+                ImGui::SetCursorPosX(right_x);
+            ImGui::TextColored(mode_color, "%s", mode);
+            ImGui::SameLine(0.0f, 12.0f);
+            if (editor_state.editor_scene && editor_state.editor_scene->HasUnsavedChanges())
+                ImGui::TextColored(ImVec4(0.98f, 0.70f, 0.25f, 1.0f), "%s", context.c_str());
+            else
+                ImGui::TextDisabled("%s", context.c_str());
         }
 
         ImGui::EndMainMenuBar();
@@ -8390,6 +8434,27 @@ int main(int argc, char** argv) {
                 if (launcher_quit)
                     glfwSetWindowShouldClose(glfw_window, GLFW_TRUE);
             } else {
+            // Keep the OS title useful in the taskbar/window switcher as well as
+            // inside the editor. Update only when it changes to avoid needless
+            // platform calls on every rendered frame.
+            {
+                std::string scene_name = "Untitled";
+                if (editor_state.editor_scene) {
+                    const std::string& scene_path = editor_state.editor_scene->GetSceneFilepath();
+                    if (!scene_path.empty())
+                        scene_name = std::filesystem::path(scene_path).filename().string();
+                    if (editor_state.editor_scene->HasUnsavedChanges()) scene_name += " *";
+                }
+                const std::string project_name = editor_state.project_loaded
+                    ? editor_state.project.name : std::string("No project");
+                const std::string window_title = project_name + " / " + scene_name +
+                                                 " - World Shaper";
+                static std::string previous_window_title;
+                if (window_title != previous_window_title) {
+                    glfwSetWindowTitle(glfw_window, window_title.c_str());
+                    previous_window_title = window_title;
+                }
+            }
             // ------------------------------------------------------------
             // Unity-style docked workspace. The main menu bar is emitted
             // first so it reserves the top strip (reducing the viewport work

@@ -12,9 +12,137 @@
 #include <imgui_impl_vulkan.h>
 #include <imgui_impl_glfw.h>
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <cstdint>
+#include <filesystem>
 
 namespace gws::renderer::gpu {
+
+namespace {
+
+// A calm, high-contrast editor theme shared by the launcher and every docked
+// tool.  Dear ImGui's stock dark theme is intentionally generic; in a large
+// editor it makes panels, fields and selected rows blend into one grey sheet.
+// The blue/cyan accent is reserved for focus and primary actions, while warm
+// colours remain available for warnings and destructive actions inside panels.
+void apply_worldshaper_theme(GLFWwindow* window) {
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowPadding     = ImVec2(12.0f, 10.0f);
+    style.FramePadding      = ImVec2(9.0f, 6.0f);
+    style.CellPadding       = ImVec2(8.0f, 5.0f);
+    style.ItemSpacing       = ImVec2(8.0f, 7.0f);
+    style.ItemInnerSpacing  = ImVec2(6.0f, 5.0f);
+    style.TouchExtraPadding = ImVec2(1.0f, 1.0f);
+    style.IndentSpacing     = 18.0f;
+    style.ScrollbarSize     = 13.0f;
+    style.GrabMinSize       = 10.0f;
+
+    style.WindowBorderSize = 1.0f;
+    style.ChildBorderSize  = 1.0f;
+    style.PopupBorderSize  = 1.0f;
+    style.FrameBorderSize  = 0.0f;
+    style.TabBorderSize    = 0.0f;
+
+    style.WindowRounding    = 7.0f;
+    style.ChildRounding     = 6.0f;
+    style.FrameRounding     = 5.0f;
+    style.PopupRounding     = 6.0f;
+    style.ScrollbarRounding = 8.0f;
+    style.GrabRounding      = 5.0f;
+    style.TabRounding       = 5.0f;
+
+    constexpr ImVec4 text       {0.91f, 0.94f, 0.97f, 1.00f};
+    constexpr ImVec4 text_dim   {0.52f, 0.59f, 0.67f, 1.00f};
+    constexpr ImVec4 canvas     {0.035f, 0.047f, 0.066f, 1.00f};
+    constexpr ImVec4 panel      {0.055f, 0.071f, 0.096f, 1.00f};
+    constexpr ImVec4 raised     {0.078f, 0.102f, 0.137f, 1.00f};
+    constexpr ImVec4 border     {0.15f, 0.20f, 0.27f, 1.00f};
+    constexpr ImVec4 accent     {0.10f, 0.68f, 0.82f, 1.00f};
+    constexpr ImVec4 accent_hot {0.16f, 0.78f, 0.91f, 1.00f};
+
+    ImVec4* c = style.Colors;
+    c[ImGuiCol_Text]                  = text;
+    c[ImGuiCol_TextDisabled]          = text_dim;
+    c[ImGuiCol_WindowBg]              = canvas;
+    c[ImGuiCol_ChildBg]               = panel;
+    c[ImGuiCol_PopupBg]               = ImVec4(0.045f, 0.060f, 0.083f, 0.98f);
+    c[ImGuiCol_Border]                = border;
+    c[ImGuiCol_BorderShadow]          = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_FrameBg]               = raised;
+    c[ImGuiCol_FrameBgHovered]        = ImVec4(0.11f, 0.17f, 0.22f, 1.00f);
+    c[ImGuiCol_FrameBgActive]         = ImVec4(0.12f, 0.22f, 0.28f, 1.00f);
+    c[ImGuiCol_TitleBg]               = panel;
+    c[ImGuiCol_TitleBgActive]         = ImVec4(0.065f, 0.088f, 0.120f, 1.00f);
+    c[ImGuiCol_TitleBgCollapsed]      = panel;
+    c[ImGuiCol_MenuBarBg]             = ImVec4(0.047f, 0.063f, 0.086f, 1.00f);
+    c[ImGuiCol_ScrollbarBg]           = ImVec4(0.025f, 0.034f, 0.048f, 0.75f);
+    c[ImGuiCol_ScrollbarGrab]         = ImVec4(0.20f, 0.26f, 0.33f, 1.00f);
+    c[ImGuiCol_ScrollbarGrabHovered]  = ImVec4(0.27f, 0.35f, 0.43f, 1.00f);
+    c[ImGuiCol_ScrollbarGrabActive]   = ImVec4(0.34f, 0.44f, 0.52f, 1.00f);
+    c[ImGuiCol_CheckMark]             = accent_hot;
+    c[ImGuiCol_SliderGrab]            = accent;
+    c[ImGuiCol_SliderGrabActive]      = accent_hot;
+    c[ImGuiCol_Button]                = ImVec4(0.09f, 0.35f, 0.43f, 1.00f);
+    c[ImGuiCol_ButtonHovered]         = ImVec4(0.10f, 0.53f, 0.64f, 1.00f);
+    c[ImGuiCol_ButtonActive]          = ImVec4(0.08f, 0.62f, 0.74f, 1.00f);
+    c[ImGuiCol_Header]                = ImVec4(0.09f, 0.31f, 0.38f, 0.82f);
+    c[ImGuiCol_HeaderHovered]         = ImVec4(0.11f, 0.43f, 0.52f, 0.92f);
+    c[ImGuiCol_HeaderActive]          = ImVec4(0.10f, 0.55f, 0.66f, 1.00f);
+    c[ImGuiCol_Separator]             = border;
+    c[ImGuiCol_SeparatorHovered]      = accent;
+    c[ImGuiCol_SeparatorActive]       = accent_hot;
+    c[ImGuiCol_ResizeGrip]            = ImVec4(accent.x, accent.y, accent.z, 0.20f);
+    c[ImGuiCol_ResizeGripHovered]     = ImVec4(accent.x, accent.y, accent.z, 0.67f);
+    c[ImGuiCol_ResizeGripActive]      = accent_hot;
+    c[ImGuiCol_Tab]                   = raised;
+    c[ImGuiCol_TabHovered]            = ImVec4(0.10f, 0.42f, 0.51f, 1.00f);
+    c[ImGuiCol_TabSelected]           = ImVec4(0.08f, 0.30f, 0.37f, 1.00f);
+    c[ImGuiCol_TabSelectedOverline]   = accent_hot;
+    c[ImGuiCol_TabDimmed]             = panel;
+    c[ImGuiCol_TabDimmedSelected]     = raised;
+    c[ImGuiCol_DockingPreview]        = ImVec4(accent.x, accent.y, accent.z, 0.55f);
+    c[ImGuiCol_DockingEmptyBg]        = canvas;
+    c[ImGuiCol_PlotLines]             = ImVec4(0.35f, 0.69f, 0.78f, 1.00f);
+    c[ImGuiCol_PlotHistogram]         = ImVec4(0.97f, 0.70f, 0.28f, 1.00f);
+    c[ImGuiCol_TableHeaderBg]         = raised;
+    c[ImGuiCol_TableBorderStrong]     = border;
+    c[ImGuiCol_TableBorderLight]      = ImVec4(0.11f, 0.15f, 0.20f, 1.00f);
+    c[ImGuiCol_TableRowBgAlt]         = ImVec4(1, 1, 1, 0.018f);
+    c[ImGuiCol_TextSelectedBg]        = ImVec4(accent.x, accent.y, accent.z, 0.34f);
+    c[ImGuiCol_DragDropTarget]        = ImVec4(0.99f, 0.77f, 0.24f, 0.95f);
+    c[ImGuiCol_NavCursor]             = accent_hot;
+    c[ImGuiCol_ModalWindowDimBg]      = ImVec4(0.01f, 0.02f, 0.03f, 0.72f);
+
+    float xscale = 1.0f, yscale = 1.0f;
+    glfwGetWindowContentScale(window, &xscale, &yscale);
+    const float ui_scale = std::clamp(std::max(xscale, yscale), 1.0f, 1.75f);
+    if (ui_scale > 1.01f) style.ScaleAllSizes(ui_scale);
+
+    // The built-in Proggy font is useful for samples, but looks pixelated in a
+    // full desktop editor. Prefer the native UI font on Windows and a common
+    // sans-serif on Linux; if neither exists ImGui keeps its safe default.
+    ImGuiIO& io = ImGui::GetIO();
+    const char* font_candidates[] = {
+#ifdef _WIN32
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+#else
+        "/usr/share/fonts/TTF/Inter-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+#endif
+    };
+    for (const char* candidate : font_candidates) {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(candidate, ec)) continue;
+        if (ImFont* font = io.Fonts->AddFontFromFileTTF(candidate, 15.5f * ui_scale)) {
+            io.FontDefault = font;
+            break;
+        }
+    }
+}
+
+}  // namespace
 
 struct ImGuiVulkan::Impl {
     VulkanDevice* device = nullptr;
@@ -68,6 +196,7 @@ std::unique_ptr<ImGuiVulkan> ImGuiVulkan::create(VulkanDevice* device,
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
     ImGui::StyleColorsDark();
+    apply_worldshaper_theme(static_cast<GLFWwindow*>(window));
 
     // Initialize ImGui platform backend (GLFW)
     if (!ImGui_ImplGlfw_InitForVulkan(static_cast<GLFWwindow*>(window), true)) {

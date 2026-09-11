@@ -103,19 +103,37 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
 
     ImGui::Begin("##launcher", nullptr, flags);
 
-    ImGui::SetWindowFontScale(1.7f);
-    ImGui::TextUnformatted("GameWorldshaper");
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.16f, 0.78f, 0.91f, 1.0f));
+    ImGui::SetWindowFontScale(1.75f);
+    ImGui::TextUnformatted("WORLD SHAPER");
     ImGui::SetWindowFontScale(1.0f);
-    ImGui::TextDisabled("Project Launcher");
+    ImGui::PopStyleColor();
+    ImGui::TextDisabled("Choose a workspace and start shaping your world.");
+    ImGui::SameLine();
+    const std::string project_count = std::to_string(registry.items().size()) +
+                                      (registry.items().size() == 1 ? " recent project" : " recent projects");
+    const float count_width = ImGui::CalcTextSize(project_count.c_str()).x;
+    const float count_x = ImGui::GetWindowWidth() - count_width - ImGui::GetStyle().WindowPadding.x;
+    if (count_x > ImGui::GetCursorPosX()) ImGui::SetCursorPosX(count_x);
+    ImGui::TextColored(ImVec4(0.38f, 0.72f, 0.80f, 1.0f), "%s", project_count.c_str());
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::Dummy(ImVec2(0, 10));
 
     if (ImGui::BeginTabBar("launcher_tabs")) {
         if (ImGui::BeginTabItem("Recent Projects")) {
             error_msg.clear();
             if (registry.items().empty()) {
-                ImGui::Dummy(ImVec2(0, 8));
-                ImGui::TextDisabled("No recent projects. Create one in the \"New Project\" tab.");
+                ImGui::Dummy(ImVec2(0, 18));
+                const char* empty_title = "No projects here yet";
+                const float title_x = (ImGui::GetContentRegionAvail().x -
+                                       ImGui::CalcTextSize(empty_title).x) * 0.5f;
+                if (title_x > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + title_x);
+                ImGui::TextUnformatted(empty_title);
+                const char* empty_hint = "Create a new project or open an existing project.schizo folder.";
+                const float hint_x = (ImGui::GetContentRegionAvail().x -
+                                      ImGui::CalcTextSize(empty_hint).x) * 0.5f;
+                if (hint_x > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + hint_x);
+                ImGui::TextDisabled("%s", empty_hint);
             } else {
                 ImGui::TextDisabled("Double-click a project to open it.");
                 ImGui::Dummy(ImVec2(0, 4));
