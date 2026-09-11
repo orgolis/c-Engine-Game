@@ -9753,8 +9753,14 @@ int main(int argc, char** argv) {
                 if (logic_playing) {
                     ecs_bridge.logic_tick(delta_time);   // On Tick / On Flag
                     static bool logic_prev_key[128] = {false};
+                    const bool logic_input_focused =
+                        editor_state.scene_playback_manager->IsCursorCaptured();
                     for (int k = 32; k < 97; ++k) {   // space..'`' (letters/digits/common)
-                        const bool down = glfwGetKey(glfw_window, k) == GLFW_PRESS;
+                        // Treat focus loss like releasing every gameplay key.
+                        // This stops held-key actions immediately and prevents
+                        // any new OnKey event until the scene is clicked again.
+                        const bool down = logic_input_focused &&
+                                          glfwGetKey(glfw_window, k) == GLFW_PRESS;
                         if (down && !logic_prev_key[k]) ecs_bridge.logic_on_key(k);      // On Key
                         if (!down && logic_prev_key[k]) ecs_bridge.logic_on_key_up(k);   // On Key Up
                         logic_prev_key[k] = down;
