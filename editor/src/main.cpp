@@ -453,13 +453,15 @@ struct EditorState {
     schizo::project::FeatureSet  features = schizo::project::FeatureSet::all();
     bool                        show_project_settings = false;
 
-    // Linux game export is dispatched through the background task runner so a
+    // Game export is dispatched through the background task runner so a
     // release build never freezes the editor. These fields only carry the
     // small amount of state needed by the Project menu and its result dialog.
-    bool        linux_export_running = false;
-    bool        show_linux_export_result = false;
-    bool        linux_export_succeeded = false;
-    std::string linux_export_result;
+    bool        game_export_running = false;
+    bool        show_game_export_dialog = false;
+    bool        game_export_succeeded = false;
+    uint64_t    game_export_task_id = 0;
+    std::string game_export_platform;
+    std::string game_export_result;
 
     bool feature_on(schizo::project::Feature f) const { return features.has(f); }
 
@@ -1577,8 +1579,16 @@ static void BuildEditorDockLayout(ImGuiID dockspace_id, ImVec2 size) {
 // Menu Functions
 // ============================================================================
 
-#if defined(__linux__)
 static std::string ShellQuoteForExport(const std::string& text) {
+#if defined(_WIN32)
+    std::string quoted = "\"";
+    for (const char ch : text) {
+        if (ch == '\"') quoted += "\\\"";
+        else            quoted += ch;
+    }
+    quoted += "\"";
+    return quoted;
+#else
     std::string quoted = "'";
     for (const char ch : text) {
         if (ch == '\'') quoted += "'\\''";
@@ -1586,9 +1596,10 @@ static std::string ShellQuoteForExport(const std::string& text) {
     }
     quoted += "'";
     return quoted;
+#endif
 }
 
-static std::string LinuxExportGameName(const std::string& project_name) {
+static std::string ExportGameName(const std::string& project_name) {
     std::string sanitized;
     sanitized.reserve(project_name.size());
     for (const char ch : project_name) {
@@ -1634,41 +1645,68 @@ static bool PrepareCurrentSceneForExport(EditorState& editor_state,
     return true;
 }
 
-static void StartLinuxGameExport(EditorState& editor_state,
-                                 const std::filesystem::path& destination) {
+static void StartGameExport(EditorState& editor_state,
+                            const std::filesystem::path& destination) {
     namespace fs = std::filesystem;
+#if defined(_WIN32)
+    constexpr const char* platform_name = "Windows";
+    const fs::path script = schizo::editor::base_dir() / "tools" / "export_game_windows.ps1";
+#else
+    constexpr const char* platform_name = "Linux";
     const fs::path script = schizo::editor::base_dir() / "tools" / "export_game_linux.sh";
+#endif
     if (!fs::is_regular_file(script)) {
-        editor_state.linux_export_succeeded = false;
-        editor_state.linux_export_result =
-            "The Linux exporter is missing from this engine installation:\n" + script.string();
-        editor_state.show_linux_export_result = true;
+        editor_state.game_export_succeeded = false;
+        editor_state.game_export_result =
+            std::string("The ") + platform_name +
+            " exporter is missing from this engine installation:\n" + script.string();
+        editor_state.show_game_export_dialog = true;
         return;
     }
 
     const fs::path manifest = fs::path(editor_state.project.project_dir) /
                               schizo::project::kManifestFilename;
-    const std::string game_name = LinuxExportGameName(editor_state.project.name);
+    const std::string game_name = ExportGameName(editor_state.project.name);
+#if defined(_WIN32)
+    const std::string package_name = game_name + "-windows-x86_64.zip";
+    const fs::path output_dir = destination / (game_name + "-windows");
+    const fs::path package_file = destination / package_name;
+    const std::string command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File " +
+                                ShellQuoteForExport(script.string()) + " -ProjectManifest " +
+                                ShellQuoteForExport(manifest.string()) + " -OutputDirectory " +
+                                ShellQuoteForExport(output_dir.string()) + " 2>&1";
+#else
     const std::string single_name = game_name + "-linux-x86_64.run";
     const fs::path output_dir = destination / (game_name + "-linux");
-    const fs::path single_file = destination / single_name;
+    const fs::path package_file = destination / single_name;
     const std::string command = ShellQuoteForExport(script.string()) + " " +
                                 ShellQuoteForExport(manifest.string()) + " " +
                                 ShellQuoteForExport(output_dir.string()) + " 2>&1";
+#endif
 
-    editor_state.linux_export_running = true;
+    editor_state.game_export_running = true;
+    editor_state.game_export_succeeded = false;
+    editor_state.game_export_platform = platform_name;
+    editor_state.game_export_result.clear();
+    editor_state.show_game_export_dialog = true;
     editor_state.show_task_panel = true;
-    editor_state.set_status("Linux game export started in the background");
+    editor_state.set_status(std::string(platform_name) + " game export started");
 
     const uint64_t task_id = editor_state.tasks.submit(
-        "Export Linux game",
+        std::string("Export game for ") + platform_name,
         [command](gws::tasks::TaskContext& ctx) {
             ctx.set_progress(0.0f, "Starting exporter...");
+#if defined(_WIN32)
+            FILE* pipe = _popen(command.c_str(), "r");
+#else
             FILE* pipe = popen(command.c_str(), "r");
-            if (!pipe) throw std::runtime_error("Could not start the Linux exporter.");
+#endif
+            if (!pipe) throw std::runtime_error("Could not start the game exporter.");
 
             std::string output;
             float progress = 0.0f;
+            int active_step = 1;
+            int total_steps = 1;
             char line[1024];
             while (std::fgets(line, sizeof(line), pipe)) {
                 output += line;
@@ -1677,44 +1715,69 @@ static void StartLinuxGameExport(EditorState& editor_state,
                 int step = 0;
                 int total = 0;
                 if (std::sscanf(line, "[%d/%d]", &step, &total) == 2 && total > 0) {
-                    progress = static_cast<float>(step - 1) / static_cast<float>(total);
+                    active_step = step;
+                    total_steps = total;
+                    progress = static_cast<float>(active_step - 1) /
+                               static_cast<float>(total_steps);
+                } else {
+                    int build_percent = 0;
+                    if (std::sscanf(line, "[ %d%%]", &build_percent) == 1 &&
+                        build_percent >= 0 && build_percent <= 100) {
+                        progress = (static_cast<float>(active_step - 1) +
+                                    static_cast<float>(build_percent) / 100.0f) /
+                                   static_cast<float>(total_steps);
+                    }
                 }
-                ctx.set_progress(progress, line);
+                std::string status = line;
+                while (!status.empty() && (status.back() == '\r' || status.back() == '\n'))
+                    status.pop_back();
+                if (status.size() > 180) status = status.substr(0, 177) + "...";
+                ctx.set_progress(progress, std::move(status));
             }
+#if defined(_WIN32)
+            const int result = _pclose(pipe);
+#else
             const int result = pclose(pipe);
+#endif
             if (result != 0) {
-                constexpr size_t kMaxErrorCharacters = 4000;
+                constexpr size_t kMaxErrorCharacters = 2400;
                 if (output.size() > kMaxErrorCharacters)
                     output = "...\n" + output.substr(output.size() - kMaxErrorCharacters);
                 throw std::runtime_error(output.empty() ?
-                    "The Linux exporter failed without producing output." : output);
+                    "The game exporter failed without producing output." : output);
             }
             ctx.set_progress(1.0f, "Export complete");
         },
-        [&editor_state, single_file](const gws::tasks::TaskInfo& info) {
-            editor_state.linux_export_running = false;
-            editor_state.linux_export_succeeded =
+        [&editor_state, package_file, output_dir, game_name](const gws::tasks::TaskInfo& info) {
+            editor_state.game_export_running = false;
+            editor_state.game_export_succeeded =
                 info.state == gws::tasks::TaskState::Succeeded;
-            if (editor_state.linux_export_succeeded) {
-                editor_state.linux_export_result = single_file.string();
-                editor_state.set_status("Linux game exported: " + single_file.string());
+            if (editor_state.game_export_succeeded) {
+#if defined(_WIN32)
+                editor_state.game_export_result =
+                    "Portable archive:\n" + package_file.string() +
+                    "\n\nPlayable file after extracting:\n" +
+                    (output_dir / (game_name + ".exe")).string();
+#else
+                editor_state.game_export_result = package_file.string();
+#endif
+                editor_state.set_status("Game exported: " + package_file.string());
             } else {
-                editor_state.linux_export_result = info.error.empty()
-                    ? "The Linux game export was cancelled."
+                editor_state.game_export_result = info.error.empty()
+                    ? "The game export was cancelled."
                     : info.error;
-                editor_state.set_status("Linux game export failed");
+                editor_state.set_status("Game export failed");
             }
-            editor_state.show_linux_export_result = true;
         });
 
     if (task_id == 0) {
-        editor_state.linux_export_running = false;
-        editor_state.linux_export_succeeded = false;
-        editor_state.linux_export_result = "The background export task could not be created.";
-        editor_state.show_linux_export_result = true;
+        editor_state.game_export_running = false;
+        editor_state.game_export_succeeded = false;
+        editor_state.game_export_result = "The background export task could not be created.";
+    } else {
+        editor_state.game_export_task_id = task_id;
     }
 }
-#endif
 
 void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
     if (ImGui::BeginMainMenuBar()) {
@@ -1783,25 +1846,25 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
                                 editor_state.project_loaded)) {
                 editor_state.show_project_settings = true;
             }
-#if defined(__linux__)
             const bool playing = editor_state.scene_playback_manager &&
                                  editor_state.scene_playback_manager->IsPlaying();
             const bool can_export = editor_state.project_loaded &&
-                                    !editor_state.linux_export_running && !playing;
-            if (ImGui::MenuItem(editor_state.linux_export_running
-                                    ? "Exporting Linux Game..."
-                                    : "Export Linux Game...",
+                                    !editor_state.game_export_running && !playing;
+            if (ImGui::MenuItem(editor_state.game_export_running
+                                    ? "Exporting Game..."
+                                    : "Export Game...",
                                 nullptr, false, can_export)) {
                 const std::string picked = gws::platform::browse_folder(
-                    "Choose where to export the Linux game");
+                    "Choose where to export the game");
                 if (!picked.empty()) {
                     std::string error;
                     if (!PrepareCurrentSceneForExport(editor_state, error)) {
-                        editor_state.linux_export_succeeded = false;
-                        editor_state.linux_export_result = std::move(error);
-                        editor_state.show_linux_export_result = true;
+                        editor_state.game_export_succeeded = false;
+                        editor_state.game_export_result = std::move(error);
+                        editor_state.game_export_platform.clear();
+                        editor_state.show_game_export_dialog = true;
                     } else {
-                        StartLinuxGameExport(editor_state, picked);
+                        StartGameExport(editor_state, picked);
                     }
                 }
             }
@@ -1810,16 +1873,13 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
                     ImGui::SetTooltip("Open a project before exporting.");
                 else if (playing)
                     ImGui::SetTooltip("Stop Play Mode before exporting.");
-                else if (editor_state.linux_export_running)
-                    ImGui::SetTooltip("The Linux export is already running.");
+                else if (editor_state.game_export_running)
+                    ImGui::SetTooltip("The game export is already running.");
                 else
                     ImGui::SetTooltip("Save the current scene and choose an export folder.");
             }
-#else
-            ImGui::MenuItem("Export Linux Game...", nullptr, false, false);
-#endif
             if (ImGui::MenuItem("Close Project (back to Launcher)", nullptr, false,
-                                editor_state.project_loaded && !editor_state.linux_export_running)) {
+                                editor_state.project_loaded && !editor_state.game_export_running)) {
                 editor_state.in_launcher = true;
             }
             ImGui::EndMenu();
@@ -2049,27 +2109,55 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
         ImGui::EndMainMenuBar();
     }
 
-    if (editor_state.show_linux_export_result) {
-        ImGui::OpenPopup("Linux Game Export");
-        editor_state.show_linux_export_result = false;
+    if (editor_state.show_game_export_dialog) {
+        ImGui::OpenPopup("Export Game");
+        editor_state.show_game_export_dialog = false;
     }
-    ImGui::SetNextWindowSize(ImVec2(680.0f, 330.0f), ImGuiCond_Appearing);
-    if (ImGui::BeginPopupModal("Linux Game Export", nullptr)) {
-        if (editor_state.linux_export_succeeded) {
+    ImGui::SetNextWindowSize(ImVec2(640.0f, 280.0f), ImGuiCond_Always);
+    if (ImGui::BeginPopupModal("Export Game", nullptr, ImGuiWindowFlags_NoResize)) {
+        if (editor_state.game_export_running) {
+            gws::tasks::TaskInfo export_task;
+            bool task_found = false;
+            for (const auto& task : editor_state.tasks.snapshot()) {
+                if (task.id == editor_state.game_export_task_id) {
+                    export_task = task;
+                    task_found = true;
+                    break;
+                }
+            }
+            const float progress = task_found ? export_task.progress : 0.0f;
+            const int percent = static_cast<int>(std::clamp(progress, 0.0f, 1.0f) * 100.0f);
+            const std::string heading = "Building " + editor_state.game_export_platform + " game";
+            ImGui::TextUnformatted(heading.c_str());
+            ImGui::Dummy(ImVec2(0.0f, 8.0f));
+            const std::string overlay = std::to_string(percent) + "%";
+            ImGui::ProgressBar(std::clamp(progress, 0.0f, 1.0f),
+                               ImVec2(-1.0f, 24.0f), overlay.c_str());
+            ImGui::Dummy(ImVec2(0.0f, 8.0f));
+            if (task_found && !export_task.status.empty())
+                ImGui::TextWrapped("%s", export_task.status.c_str());
+            else
+                ImGui::TextDisabled("Preparing export...");
+            ImGui::TextDisabled("Keep the editor open until the export is complete.");
+        } else if (editor_state.game_export_succeeded) {
             ImGui::TextColored(ImVec4(0.30f, 0.86f, 0.55f, 1.0f),
                                "Export completed successfully");
-            ImGui::TextUnformatted("Executable file:");
+            ImGui::ProgressBar(1.0f, ImVec2(-1.0f, 24.0f), "100%");
+            ImGui::TextUnformatted("Exported package:");
         } else {
             ImGui::TextColored(ImVec4(0.95f, 0.42f, 0.38f, 1.0f),
                                "Export failed");
+            ImGui::ProgressBar(0.0f, ImVec2(-1.0f, 24.0f), "Failed");
         }
-        ImGui::BeginChild("##linux_export_result", ImVec2(0.0f, -42.0f), true);
-        ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextWrapped("%s", editor_state.linux_export_result.c_str());
-        ImGui::PopTextWrapPos();
-        ImGui::EndChild();
-        ImGui::Separator();
-        if (ImGui::Button("OK", ImVec2(110.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        if (!editor_state.game_export_running) {
+            ImGui::BeginChild("##game_export_result", ImVec2(0.0f, -42.0f), true);
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextWrapped("%s", editor_state.game_export_result.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::EndChild();
+            ImGui::Separator();
+            if (ImGui::Button("OK", ImVec2(110.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        }
         ImGui::EndPopup();
     }
 }
@@ -6190,6 +6278,24 @@ int main(int argc, char** argv) {
             // a budgeted inner-loop row — measurable at all; without it the
             // number can only be eyeballed with a stopwatch.
             startup_probe = true;
+        }
+    }
+
+    // A packaged Windows build is normally launched by double-clicking
+    // MyGame.exe, so there is no explicit --game/--project pair to identify it
+    // as a game. The marker makes that intent explicit and keeps an ordinary
+    // editor launch unchanged (while still allowing diagnostic args such as
+    // --frames 1).
+    if (!standalone_game_mode && startup_project.empty()) {
+        const std::filesystem::path package_root = schizo::editor::executable_dir();
+        const std::filesystem::path packaged_manifest =
+            package_root / "project" / schizo::project::kManifestFilename;
+        std::error_code package_ec;
+        if (std::filesystem::exists(package_root / "game-export.marker", package_ec) &&
+            std::filesystem::is_regular_file(packaged_manifest, package_ec)) {
+            startup_project = packaged_manifest.string();
+            game_window_mode = true;
+            standalone_game_mode = true;
         }
     }
 

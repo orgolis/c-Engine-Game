@@ -59,7 +59,8 @@ if [[ -f "$gws_repo_root/CMakeLists.txt" && -f "$gws_repo_root/CMakePresets.json
     cmake --preset linux-release -S "$gws_repo_root"
 
     echo "[2/6] Building the runtime"
-    cmake --build --preset linux-release --target editor --parallel
+    # Leave CPU/GPU headroom for the editor that launched this background task.
+    cmake --build --preset linux-release --target editor --parallel 4
     gws_runtime="$gws_repo_root/build/linux-release/bin/editor"
 else
     # Hub-installed engines contain a ready release runtime instead of source.

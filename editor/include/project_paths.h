@@ -26,6 +26,11 @@ void init_base_dir();
 // The engine content base (where bundled `assets/` live). Absolute.
 const std::filesystem::path& base_dir();
 
+// Directory containing the running editor/runtime executable. This is used by
+// exported games to find their marker and bundled project regardless of the
+// process working directory.
+std::filesystem::path executable_dir();
+
 // Open a project: make `project_dir` the working directory (so all content is
 // project-scoped) and ensure the standard subfolders exist. Returns false if
 // the directory can't be entered.

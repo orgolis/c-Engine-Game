@@ -163,6 +163,9 @@ install(DIRECTORY
 if(UNIX AND NOT APPLE)
     install(PROGRAMS ${CMAKE_SOURCE_DIR}/tools/export_game_linux.sh
             DESTINATION "${GWS_ENGINE_DEST}/tools" COMPONENT engine)
+elseif(WIN32)
+    install(FILES ${CMAKE_SOURCE_DIR}/tools/export_game_windows.ps1
+            DESTINATION "${GWS_ENGINE_DEST}/tools" COMPONENT engine)
 endif()
 
 # ---------------------------------------------------------------------------
