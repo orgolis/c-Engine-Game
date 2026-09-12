@@ -107,9 +107,8 @@ target_sources(editor
         ${CMAKE_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_vulkan.cpp
 )
 
-# The embedded terminal is implemented with Windows ConPTY. Keep that full
-# implementation on Windows and provide a small non-Windows panel stub so the
-# rest of the editor can build while a POSIX PTY backend is still pending.
+# Each platform gets its native embedded shell backend: Windows uses ConPTY;
+# Linux keeps one persistent /bin/bash process connected through pipes.
 if(WIN32)
     target_sources(editor PRIVATE src/terminal_panel.cpp)
 else()

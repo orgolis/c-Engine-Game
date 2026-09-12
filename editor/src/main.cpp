@@ -155,6 +155,8 @@
   #include <commdlg.h>
   #define GLFW_EXPOSE_NATIVE_WIN32
   #include <GLFW/glfw3native.h>
+#elif defined(__linux__)
+  #include <unistd.h>
 #endif
 #include <algorithm>
 #include <vector>
@@ -664,10 +666,20 @@ static std::string OpenModelDialogNative(GLFWwindow* window) {
     return GetOpenFileNameA(&ofn) ? std::string(buf) : std::string();
 }
 #else
-static std::string OpenSceneDialogNative(GLFWwindow*) { return {}; }
-static std::string SaveSceneDialogNative(GLFWwindow*) { return {}; }
-static std::string OpenAudioDialogNative() { return {}; }
-static std::string OpenModelDialogNative(GLFWwindow*) { return {}; }
+static std::string OpenSceneDialogNative(GLFWwindow*) {
+    return gws::platform::browse_file("Open Scene");
+}
+static std::string SaveSceneDialogNative(GLFWwindow*) {
+    std::string path = gws::platform::save_file("Save Scene As", "scenes/scene.scene");
+    if (!path.empty() && std::filesystem::path(path).extension() != ".scene") path += ".scene";
+    return path;
+}
+static std::string OpenAudioDialogNative() {
+    return gws::platform::browse_file("Select Audio Clip");
+}
+static std::string OpenModelDialogNative(GLFWwindow*) {
+    return gws::platform::browse_file("Import Skinned Model");
+}
 #endif
 
 // Stable content GUID from a path — mirrors schizo::assets::asset_id_from_path
@@ -5834,8 +5846,33 @@ static void LaunchMultiplayerSession(EditorState& editor_state, int n_clients, u
         }
     }
 #else
-    (void)editor_state; (void)n_clients; (void)port;
-    spdlog::warn("[net] multiplayer launcher is Windows-only");
+    const std::filesystem::path shared_scene =
+        std::filesystem::current_path() / "__mp_session.scene";
+    const bool saved = editor_state.editor_scene &&
+                       editor_state.editor_scene->SaveScene(shared_scene.string());
+    if (!saved) {
+        spdlog::error("[net] launcher: failed to save shared scene to {}",
+                      shared_scene.string());
+        return;
+    }
+    if (!editor_state.net_session.active()) editor_state.net_session.host(port);
+    editor_state.show_network_window = true;
+
+    const std::filesystem::path executable = schizo::editor::executable_dir() / "editor";
+    const std::string endpoint = "127.0.0.1:" + std::to_string(port);
+    for (int i = 0; i < n_clients; ++i) {
+        const pid_t child = fork();
+        if (child == 0) {
+            execl(executable.c_str(), executable.c_str(), "--net-join", endpoint.c_str(),
+                  "--scene", shared_scene.c_str(), "--net-game",
+                  static_cast<char*>(nullptr));
+            _exit(127);
+        }
+        if (child > 0)
+            spdlog::info("[net] launched Linux client {} -> {}", i + 1, endpoint);
+        else
+            spdlog::error("[net] launcher: fork failed");
+    }
 #endif
 }
 
@@ -8033,14 +8070,7 @@ int main(int argc, char** argv) {
             // that would have found nothing at all: material graphs would have
             // silently degraded to uncompilable for exactly the people the
             // bundling exists to serve.
-            std::string exe_dir;
-#ifdef _WIN32
-            {
-                char buf[MAX_PATH]{};
-                if (GetModuleFileNameA(nullptr, buf, MAX_PATH) != 0)
-                    exe_dir = std::filesystem::path(buf).parent_path().string();
-            }
-#endif
+            std::string exe_dir = schizo::editor::executable_dir().string();
             if (exe_dir.empty()) {
                 std::error_code ec;
                 exe_dir = std::filesystem::current_path(ec).string();

@@ -8,6 +8,7 @@
 // ============================================================================
 
 #include "editor_extensions.h"
+#include "asset_browser_panel.h"
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>
@@ -67,10 +68,7 @@ void ShowExtensionsPanel(bool* open, ExtensionSystem& sys, CommandRegistry& cmds
     if (ImGui::Button("Open Folder")) {
         std::error_code ec;
         fs::create_directories(sys.dir(), ec);
-#ifdef _WIN32
-        const std::string cmd = "explorer \"" + sys.dir().string() + "\"";
-        std::system(cmd.c_str());
-#endif
+        AssetBrowserPanel::OsOpen(sys.dir().string());
     }
 
     ImGui::Separator();
@@ -135,9 +133,7 @@ void ShowExtensionsPanel(bool* open, ExtensionSystem& sys, CommandRegistry& cmds
         ImGui::Separator();
         if (ImGui::Button("Open the existing file", ImVec2(190, 0))) {
             const fs::path p = sys.dir() / "my_extension.py";
-#ifdef _WIN32
-            std::system(("start \"\" \"" + p.string() + "\"").c_str());
-#endif
+            AssetBrowserPanel::OsOpen(p.string());
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();

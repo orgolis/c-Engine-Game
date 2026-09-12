@@ -73,4 +73,18 @@ std::string browse_file(const char* title) {
     return {};
 }
 
+std::string save_file(const char* title, const char* default_filename) {
+    const std::string quoted_title = shell_quote(title ? title : "Save file");
+    const std::string quoted_name = shell_quote(default_filename ? default_filename : "");
+
+    if (command_exists("zenity")) {
+        return run_picker("zenity --file-selection --save --confirm-overwrite --title=" +
+                          quoted_title + " --filename=" + quoted_name);
+    }
+    if (command_exists("kdialog")) {
+        return run_picker("kdialog --getsavefilename " + quoted_name + " --title " + quoted_title);
+    }
+    return {};
+}
+
 } // namespace gws::platform
