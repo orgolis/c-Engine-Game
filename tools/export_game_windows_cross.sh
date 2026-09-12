@@ -118,6 +118,11 @@ tar -C "$gws_project_dir" --exclude='./dist' --exclude='./cache' \
     tar -C "$gws_stage/project" -xf -
 
 echo "[6/8] Adding the Windows runtime and engine assets"
+# MyGame.exe contains the engine program, but not the user's scene/assets and
+# not the portable compiler runtime. Windows loads the DLLs from beside the EXE,
+# while the engine loads project.schizo, scenes and assets at runtime. Keeping
+# this complete folder together is therefore required; the ZIP is simply the
+# one convenient file used to transport that folder without losing its layout.
 install -m 755 "$gws_runtime" "$gws_stage/$gws_game_name.exe"
 for gws_dll in libc++.dll libunwind.dll; do
     install -m 755 "$gws_build/bin/$gws_dll" "$gws_stage/$gws_dll"
@@ -135,6 +140,8 @@ printf '%s\n' "$gws_project_name - Windows export" "Start: $gws_game_name.exe" \
 
 echo "[7/8] Creating the portable Windows archive"
 mkdir -p "$gws_output_parent"
+# Unlike Linux, Windows has no native equivalent of our shell-based .run
+# launcher, so we preserve the complete playable folder inside one ZIP.
 (cd -- "$gws_stage" && cmake -E tar cf "$gws_archive" --format=zip .)
 
 echo "[8/8] Windows export complete"

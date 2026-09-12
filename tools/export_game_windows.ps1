@@ -91,6 +91,9 @@ try {
             Copy-Item -LiteralPath $_.FullName -Destination $projectStage -Recurse -Force
         }
 
+    # The EXE is the engine program. The project, assets and compiler DLLs are
+    # loaded beside it at runtime, so they must remain together after export.
+    # The ZIP below turns that complete playable folder into one transport file.
     Copy-Item -LiteralPath $runtimePath -Destination (Join-Path $stagePath "$gameName.exe")
     $runtimeDirectory = Split-Path -Parent $runtimePath
     Get-ChildItem -LiteralPath $runtimeDirectory -Filter "*.dll" -File -ErrorAction SilentlyContinue |

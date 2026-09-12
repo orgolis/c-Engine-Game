@@ -125,6 +125,11 @@ printf '%s\n' \
 
 echo "[5/5] Creating the self-extracting single-file game"
 mkdir -p "$(dirname -- "$gws_single_file")"
+# A .run is two files joined into one:
+#   1. this small shell program, which Linux can execute directly;
+#   2. the compressed game folder appended after __GWS_PAYLOAD__.
+# At startup the shell finds that marker, extracts everything after it into a
+# temporary folder, starts the real engine binary, then removes the folder.
 {
     printf '%s\n' \
         '#!/usr/bin/env bash' \
@@ -141,6 +146,7 @@ mkdir -p "$(dirname -- "$gws_single_file")"
         'set -e' \
         'exit "$gws_exit_code"' \
         '__GWS_PAYLOAD__'
+    # This archive becomes the binary payload at the end of the .run file.
     tar -C "$gws_stage" -czf - .
 } > "$gws_single_file"
 chmod 755 "$gws_single_file"

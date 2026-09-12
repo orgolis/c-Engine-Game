@@ -2151,7 +2151,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
         ImGui::OpenPopup("Export Game - Choose Target");
         editor_state.show_game_export_options = false;
     }
-    ImGui::SetNextWindowSize(ImVec2(480.0f, 245.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(620.0f, 320.0f), ImGuiCond_Always);
     if (ImGui::BeginPopupModal("Export Game - Choose Target", nullptr,
                               ImGuiWindowFlags_NoResize)) {
         ImGui::TextUnformatted("Which game files do you want to create?");
