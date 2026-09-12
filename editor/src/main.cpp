@@ -8599,6 +8599,12 @@ int main(int argc, char** argv) {
                 glfwGetWindowAttrib(glfw_window, GLFW_FOCUSED) == GLFW_TRUE;
             const bool scene_has_input_focus = app_has_input_focus &&
                 (game_window_mode || editor_state.viewport_input_focused);
+            const bool terminal_has_input_focus =
+                editor_state.show_terminal && editor_state.terminal &&
+                editor_state.terminal->HasInputFocus();
+            const bool editor_shortcuts_allowed =
+                app_has_input_focus && !terminal_has_input_focus &&
+                !ImGui::GetIO().WantTextInput;
             if (editor_state.scene_playback_manager)
                 editor_state.scene_playback_manager->SetInputFocused(scene_has_input_focus);
 
@@ -8671,11 +8677,13 @@ int main(int argc, char** argv) {
                 prev_left_mouse_down = left_mouse_down;
             }
             if (!game_window_mode) {
-            if (scene_has_input_focus && key(GLFW_KEY_LEFT_CONTROL) && key(GLFW_KEY_Z)) {
+            if (editor_shortcuts_allowed && ImGui::IsKeyChordPressed(
+                    static_cast<ImGuiKeyChord>(ImGuiMod_Ctrl | ImGuiKey_Z))) {
                 if (editor_state.undo_redo_manager.CanUndo())
                     editor_state.undo_redo_manager.Undo();
             }
-            if (scene_has_input_focus && key(GLFW_KEY_LEFT_CONTROL) && key(GLFW_KEY_Y)) {
+            if (editor_shortcuts_allowed && ImGui::IsKeyChordPressed(
+                    static_cast<ImGuiKeyChord>(ImGuiMod_Ctrl | ImGuiKey_Y))) {
                 if (editor_state.undo_redo_manager.CanRedo())
                     editor_state.undo_redo_manager.Redo();
             }

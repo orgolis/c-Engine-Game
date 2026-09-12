@@ -128,6 +128,7 @@ struct TerminalPanel::Impl {
     std::string working_directory;
     unsigned short pty_columns = 0;
     unsigned short pty_rows = 0;
+    bool input_focused = false;
 
     ~Impl() { stop(); }
 
@@ -463,8 +464,15 @@ TerminalPanel::TerminalPanel() : impl_(std::make_unique<Impl>()) {
 
 TerminalPanel::~TerminalPanel() = default;
 
+bool TerminalPanel::HasInputFocus() const {
+    return impl_ && impl_->input_focused;
+}
+
 void TerminalPanel::Render(bool* open) {
-    if (!open || !*open) return;
+    if (!open || !*open) {
+        impl_->input_focused = false;
+        return;
+    }
     Impl& terminal = *impl_;
     terminal.drain();
 
@@ -527,6 +535,7 @@ void TerminalPanel::Render(bool* open) {
     draw_line(coalesce(terminal.current_line));
 
     const bool terminal_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    terminal.input_focused = terminal_focused;
     if (terminal_focused && !terminal.child_exited.load() &&
         std::fmod(ImGui::GetTime(), 1.0) < 0.62) {
         std::string before_cursor;

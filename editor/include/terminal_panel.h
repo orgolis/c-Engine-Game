@@ -9,7 +9,7 @@ namespace schizo::editor {
  * @brief A VS Code-style embedded OS shell terminal docked in the editor.
  *
  * Spawns the platform shell (PowerShell/cmd through ConPTY on Windows,
- * persistent /bin/bash on Linux), streams its output into a dockable ImGui
+ * an interactive $SHELL through a PTY on Linux), streams its output into a dockable ImGui
  * window, and sends typed commands back to it. Run git, builds and normal
  * shell commands without leaving the editor.
  *
@@ -30,6 +30,10 @@ public:
     /// window's close button writes through it). Safe to call every frame even
     /// when the window is an inactive dock tab.
     void Render(bool* open);
+
+    /// True while terminal keystrokes belong to the shell. Used to prevent
+    /// editor-wide shortcuts from also firing for the same key press.
+    bool HasInputFocus() const;
 
     // pimpl — declared public only so the free ImGui input-history callback in
     // the .cpp can name the type; the instance pointer stays private.
