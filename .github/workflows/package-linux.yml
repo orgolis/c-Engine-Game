@@ -98,9 +98,9 @@ jobs:
               (glslangValidator on PATH).
             - Optional: zenity or kdialog, for the folder picker.
 
-          Not yet on Linux: C++ and C# scripting (Python works), the built-in
-          terminal panel, crash-report stack traces, and installing this
-          package through the Hub. Extract it anywhere and run ./editor.
+          Not yet on Linux: C++ and C# scripting (Python works), crash-report
+          stack traces, and installing this package through the Hub. Extract
+          it anywhere and run ./editor.
 
           Your files go to ~/.config/gameworldshaper (settings),
           ~/.cache/gameworldshaper (shader pipeline cache) and

@@ -159,9 +159,6 @@ particular), and distributions other than Ubuntu. Reports are welcome.
 
 - **C++ and C# scripting.** Python scripts and editor extensions work everywhere;
   the C++ host builds a DLL and the C# host loads .NET from `Program Files`.
-- **The embedded terminal panel** uses Windows ConPTY; on Linux it shows a
-  placeholder. A native Linux PTY terminal is in review in
-  [#71](https://github.com/orgolis/c-Engine-Game/pull/71).
 - **Crash reports** are written, but without a stack trace or minidump.
 - **Installing through the Hub.** Releases from 0.8.5 on carry a Linux package, but
   the Linux Hub cannot download it yet; extract it by hand.
