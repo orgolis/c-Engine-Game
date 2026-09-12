@@ -1,0 +1,185 @@
+# ============================================================================
+# Build the Linux engine package: engine-<tag>-linux-x86_64.tar.gz
+#
+# A reusable workflow with two callers:
+#   * release-engine.yml builds a release tag and attaches the package to that
+#     release (on every new tag, or by hand for an existing one);
+#   * ci.yml builds and smoke-tests it on every push, and uploads nothing.
+#     Packaging breaks where ordinary builds do not: the Windows release once
+#     failed at package time because only a from-scratch build exposed a gap.
+#
+# The steps are inline rather than in a repo script on purpose. The release
+# workflow can build an OLDER tag, and that tag's tree does not contain
+# scripts added after it.
+#
+# Contents: `cmake --install --component engine --strip` of a Release build,
+# i.e. exactly what the Windows zip carries (editor, gws, headless, projectctl,
+# docgen, assetcook, assets/skies, assets/scripts, the Linux game exporter),
+# plus LICENSE and THIRD_PARTY_NOTICES.md. CPack is not used: its archive name
+# is hardcoded to -win64. A .tar.gz rather than a .zip because zip does not
+# reliably carry the executable bit, and an editor that extracts without it
+# cannot start.
+#
+# Built on Ubuntu 24.04, so it needs glibc 2.39 or newer (Ubuntu 24.04+,
+# Debian 13+, Fedora 40+, Arch). An older base would widen that, but 24.04 is
+# the base the Linux CI job already proves.
+# ============================================================================
+name: Package Linux engine
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to build (a tag for releases, a commit for CI)
+        required: true
+        type: string
+      version_label:
+        description: Label in the file name, e.g. v0.8.5
+        required: true
+        type: string
+      upload_tag:
+        description: Release to attach the package to. Empty means do not upload.
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout ${{ inputs.ref }} (with submodules)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential cmake pkg-config \
+            libvulkan-dev glslang-tools \
+            libgl1-mesa-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev \
+            xorg-dev libx11-xcb-dev
+
+      - name: Configure (Release)
+        run: cmake --preset linux-release -DBUILD_TESTS=OFF
+
+      - name: Build what the package installs
+        run: >-
+          cmake --build --preset linux-release --parallel
+          --target editor gws headless projectctl docgen assetcook
+
+      - name: Stage the engine component
+        id: stage
+        run: |
+          NAME="GameWorldshaper-Engine-${{ inputs.version_label }}-linux-x86_64"
+          cmake --install build/linux-release --component engine --strip --prefix "stage/$NAME"
+          # Licence section 6: the notices travel with the Engine. Trees from
+          # after v0.8.5 install these themselves; older tags need the copy.
+          for f in LICENSE THIRD_PARTY_NOTICES.md; do
+            [ -f "stage/$NAME/$f" ] || cp "$f" "stage/$NAME/"
+          done
+          cat > "stage/$NAME/README-LINUX.txt" <<'EOF'
+          GameWorldshaper engine for Linux (x86-64)
+
+            Editor:        ./editor
+            Command line:  ./gws        (lists the commands)
+
+          Requirements
+            - glibc 2.39 or newer: Ubuntu 24.04+, Debian 13+, Fedora 40+, Arch.
+              The package is built on Ubuntu 24.04.
+            - A Vulkan 1.3 driver and loader. On Ubuntu and Debian: libvulkan1,
+              plus mesa-vulkan-drivers (Intel, AMD) or NVIDIA's driver.
+            - Optional: glslang-tools, so material graphs can compile
+              (glslangValidator on PATH).
+            - Optional: zenity or kdialog, for the folder picker.
+
+          Not yet on Linux: C++ and C# scripting (Python works), the built-in
+          terminal panel, crash-report stack traces, and installing this
+          package through the Hub. Extract it anywhere and run ./editor.
+
+          Your files go to ~/.config/gameworldshaper (settings),
+          ~/.cache/gameworldshaper (shader pipeline cache) and
+          ~/.local/state/gameworldshaper/diagnostics (logs, crash reports).
+
+          Licence: LICENSE. Third-party notices: THIRD_PARTY_NOTICES.md.
+          EOF
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          ls -la "stage/$NAME"
+
+      - name: Smoke-test the staged package
+        working-directory: stage/${{ steps.stage.outputs.name }}
+        run: |
+          set -o pipefail
+          # Every library the editor links must resolve on a stock system.
+          # (GLFW loads X11 and Wayland with dlopen, so they do not appear here.)
+          ldd ./editor | tee "$RUNNER_TEMP/ldd-editor.txt"
+          if grep -q "not found" "$RUNNER_TEMP/ldd-editor.txt"; then
+            echo "::error::the packaged editor links a library that is not installed"; exit 1
+          fi
+          # The executable bit survived staging.
+          for exe in editor gws headless projectctl docgen assetcook tools/export_game_linux.sh; do
+            [ -x "$exe" ] || { echo "::error::$exe is not executable"; exit 1; }
+          done
+          # The binary reports the version it is released under.
+          reported=$(./gws version | awk '{print $NF}')
+          echo "gws version: $reported"
+          if [ -n "${{ inputs.upload_tag }}" ] && [ "v$reported" != "${{ inputs.upload_tag }}" ]; then
+            echo "::error::package reports $reported but is being attached to ${{ inputs.upload_tag }}"; exit 1
+          fi
+          # The simulation runs from the package, with no GPU.
+          ./headless --demo --frames 60
+          {
+            echo "### Linux package: $(basename "$PWD")"
+            echo ""
+            echo "gws version: \`$reported\`"
+            echo ""
+            echo "Shared libraries the editor needs:"
+            echo '```'
+            awk '{print $1}' "$RUNNER_TEMP/ldd-editor.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Start the packaged editor on a software GPU (informational)
+        # Lavapipe (Mesa's CPU Vulkan driver) under a virtual X server: the only
+        # way a runner with no GPU can open the real editor. It proves the
+        # package starts, creates a device and draws; a lavapipe-only feature
+        # gap should not block a release, so this step reports, not gates.
+        continue-on-error: true
+        working-directory: stage/${{ steps.stage.outputs.name }}
+        run: |
+          sudo apt-get install --no-install-recommends -y mesa-vulkan-drivers xvfb xauth
+          rc=0
+          timeout 300 xvfb-run -a -s "-screen 0 1280x720x24" ./editor --frames 30 \
+            > "$RUNNER_TEMP/editor-smoke.txt" 2>&1 || rc=$?
+          tail -60 "$RUNNER_TEMP/editor-smoke.txt"
+          if grep -q 'exit\] clean' "$RUNNER_TEMP/editor-smoke.txt"; then verdict="clean exit"; else verdict="did NOT exit clean (rc=$rc)"; fi
+          echo "editor --frames 30 on lavapipe: $verdict" >> "$GITHUB_STEP_SUMMARY"
+          [ "$verdict" = "clean exit" ]
+
+      - name: Archive
+        run: |
+          mkdir -p dist
+          tar -C stage -czf "dist/engine-${{ inputs.version_label }}-linux-x86_64.tar.gz" \
+            "${{ steps.stage.outputs.name }}"
+          ls -la dist
+
+      - name: Keep the CI build as a workflow artifact
+        if: inputs.upload_tag == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-linux-x86_64
+          path: dist/*.tar.gz
+          retention-days: 7
+
+      - name: Attach to the GitHub Release ${{ inputs.upload_tag }}
+        if: inputs.upload_tag != ''
+        uses: softprops/action-gh-release@v2   # NOTE: no `shell:` — it's invalid on a `uses:` step
+        with:
+          tag_name: ${{ inputs.upload_tag }}
+          files: dist/engine-*-linux-x86_64.tar.gz
+          fail_on_unmatched_files: true

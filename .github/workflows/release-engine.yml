@@ -7,10 +7,14 @@
 # it as an asset on the GitHub Release for the tag. The Hub's "Check for Updates"
 # reads these releases and installs the asset.
 #
-# NOTE: this is the correct SHAPE of the pipeline, but the engine's native build
-# is toolchain-sensitive (Jolt / tinyusdz / glslang, plus MinGW-specific
-# tweaks). Expect to validate/iterate the toolchain + Vulkan-SDK steps on the
-# first real run — CI has never built this tree.
+# LINUX: a second job builds engine-<tag>-linux-x86_64.tar.gz through
+# package-linux.yml. On a tag push both jobs run. A manual run (Actions tab ->
+# Release Engine -> Run workflow, with an existing tag such as v0.8.5) builds
+# ONLY the Linux package from that tag's source and attaches it to that
+# release. The Windows job never runs by hand: rebuilding it would replace a
+# zip people are already installing with a different binary under the same
+# version. The Hub is unaffected either way: it selects "-win64.zip", which
+# the Linux asset does not contain.
 # ============================================================================
 name: Release Engine
 
@@ -18,13 +22,26 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch: {}   # allow manual runs from the Actions tab
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build the Linux package for (e.g. v0.8.5)"
+        required: true
+        type: string
 
 permissions:
   contents: write          # needed to create/attach release assets
 
 jobs:
+  linux:
+    uses: ./.github/workflows/package-linux.yml
+    with:
+      ref:           ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+      version_label: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+      upload_tag:    ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+
   build-and-release:
+    if: github.event_name == 'push'
     runs-on: windows-latest
     defaults:
       run:
