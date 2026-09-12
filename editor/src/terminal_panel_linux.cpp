@@ -8,6 +8,7 @@
 #include <csignal>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -39,10 +40,14 @@ struct TerminalPanel::Impl {
     std::vector<std::string> history;
     int history_pos = -1;
     bool focus_input = true;
+    std::string working_directory;
 
     ~Impl() { stop(); }
 
     bool start() {
+        std::error_code path_error;
+        working_directory = std::filesystem::current_path(path_error).string();
+        if (path_error) working_directory = ".";
         int to_shell[2] = {-1, -1};
         int from_shell[2] = {-1, -1};
         if (pipe(to_shell) != 0 || pipe(from_shell) != 0) {
@@ -53,6 +58,7 @@ struct TerminalPanel::Impl {
         shell_pid = fork();
         if (shell_pid == 0) {
             setpgid(0, 0);
+            if (chdir(working_directory.c_str()) != 0) _exit(126);
             dup2(to_shell[0], STDIN_FILENO);
             dup2(from_shell[1], STDOUT_FILENO);
             dup2(from_shell[1], STDERR_FILENO);
@@ -146,7 +152,7 @@ void TerminalPanel::Render(bool* open) {
     terminal.drain();
 
     ImGui::Begin("Terminal", open);
-    ImGui::TextUnformatted("/bin/bash");
+    ImGui::TextDisabled("%s  -  bash", terminal.working_directory.c_str());
     ImGui::SameLine();
     if (ImGui::Button("Restart")) {
         terminal.stop();
@@ -164,7 +170,9 @@ void TerminalPanel::Render(bool* open) {
     }
     ImGui::Separator();
 
-    const float footer = ImGui::GetFrameHeightWithSpacing();
+    // Reserve enough room for the separator AND the command line. Reserving
+    // only one frame let the scroll area push the input below the docked panel.
+    const float footer = ImGui::GetFrameHeightWithSpacing() * 2.0f;
     ImGui::BeginChild("##linux_terminal_scroll", ImVec2(0, -footer), false,
                       ImGuiWindowFlags_HorizontalScrollbar);
     ImGuiListClipper clipper;
@@ -179,7 +187,7 @@ void TerminalPanel::Render(bool* open) {
     ImGui::EndChild();
 
     ImGui::Separator();
-    ImGui::TextUnformatted(">");
+    ImGui::TextUnformatted("$");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-1.0f);
     if (terminal.focus_input) { ImGui::SetKeyboardFocusHere(); terminal.focus_input = false; }
