@@ -76,3 +76,12 @@ final_build.txt
 # Editor/runtime artifacts
 editor.ini
 script_cache/
+
+# Per-user files that land in the working directory only when no home
+# directory is known (see engine/platform/src/user_dirs.cpp). Before that
+# resolver existed they always did on Linux, and five were committed from the
+# repo root. Anchored so a project's own cache/ or diagnostics/ is unaffected.
+/cache/
+/diagnostics/
+/.gameworldshaper/
+/render_settings.txt

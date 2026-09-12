@@ -18,6 +18,8 @@
 //   * no subcommand lies about what it did — anything unimplemented says so and
 //     exits non-zero rather than silently succeeding
 // ============================================================================
+#include "gws/platform/user_dirs.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -553,9 +555,9 @@ bool parse_crash_report(const fs::path& p, CrashReport& out) {
 
 fs::path crash_dir(int argc, char** argv) {
     if (const char* d = opt_value(argc, argv, "--dir")) return d;
-    if (const char* la = std::getenv("LOCALAPPDATA"))
-        return fs::path(la) / "GameWorldshaper" / "diagnostics";
-    return fs::path(".");
+    // The same function the editor writes through, so the two cannot disagree.
+    const fs::path d = gws::platform::user_dir(gws::platform::UserDir::Diagnostics);
+    return d.empty() ? fs::path("diagnostics") : d;
 }
 
 int cmd_crash(int argc, char** argv) {

@@ -1,5 +1,8 @@
 add_library(gws_platform STATIC)
 
+# Portable: resolves both OSes' rules from the environment, no OS headers.
+target_sources(gws_platform PRIVATE src/user_dirs.cpp)
+
 target_include_directories(gws_platform
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include

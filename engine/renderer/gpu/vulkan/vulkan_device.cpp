@@ -31,6 +31,7 @@
 #include <fstream>
 #include <vector>
 #include <GLFW/glfw3.h>
+#include "gws/platform/user_dirs.h"
 
 namespace gws::renderer::gpu {
 
@@ -157,18 +158,15 @@ void VulkanDevice::shutdown() {
 }
 
 namespace {
-// %LOCALAPPDATA%/GameWorldshaper/cache/vulkan_pipeline_cache.bin — same
-// %LOCALAPPDATA%/GameWorldshaper convention as the diagnostics directory
-// (editor/src/main.cpp), so both live under one user-data root.
+// %LOCALAPPDATA%/GameWorldshaper/cache on Windows, ~/.cache/gameworldshaper on
+// Linux. Before the Linux port this read %LOCALAPPDATA% only, so on Linux the
+// cache landed in the working directory and was committed from the repo root.
 std::string pipeline_cache_path() {
-    std::string dir;
-    if (const char* la = std::getenv("LOCALAPPDATA"))
-        dir = std::string(la) + "\\GameWorldshaper\\cache";
-    else
-        dir = "cache";
+    std::filesystem::path dir = gws::platform::user_dir(gws::platform::UserDir::Cache);
+    if (dir.empty()) dir = "cache";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    return dir + "/vulkan_pipeline_cache.bin";
+    return (dir / "vulkan_pipeline_cache.bin").string();
 }
 }  // namespace
 

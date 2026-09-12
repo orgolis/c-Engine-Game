@@ -636,11 +636,27 @@ endif()
 # visuals or yields a render scale of 0.
 add_executable(rendersettings_check
     rendersettings_check/main.cpp
-    ${CMAKE_SOURCE_DIR}/editor/src/render_settings.cpp)
-target_include_directories(rendersettings_check PRIVATE ${CMAKE_SOURCE_DIR}/editor/include)
+    ${CMAKE_SOURCE_DIR}/editor/src/render_settings.cpp
+    ${CMAKE_SOURCE_DIR}/engine/platform/src/user_dirs.cpp)
+target_include_directories(rendersettings_check PRIVATE
+    ${CMAKE_SOURCE_DIR}/editor/include
+    ${CMAKE_SOURCE_DIR}/engine/platform/include)
 target_compile_features(rendersettings_check PRIVATE cxx_std_20)
 if(MINGW)
     target_link_options(rendersettings_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
+# userdirs_check: where per-user files live. Before it, every one of them
+# resolved only %APPDATA%/%LOCALAPPDATA%, so on Linux settings, the pipeline
+# cache and crash reports landed in the working directory (the repo root).
+# Pure: resolves both OSes' rules on either host, so Windows CI checks Linux too.
+add_executable(userdirs_check
+    userdirs_check/main.cpp
+    ${CMAKE_SOURCE_DIR}/engine/platform/src/user_dirs.cpp)
+target_include_directories(userdirs_check PRIVATE ${CMAKE_SOURCE_DIR}/engine/platform/include)
+target_compile_features(userdirs_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(userdirs_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
 # profiler_check: Stage 14 verification — N4 network-profiler (Transport
@@ -750,6 +766,7 @@ target_compile_features(crash_check PRIVATE cxx_std_20)
 # validation, builds — with --json on every command so CI, scripts and external
 # agents are first-class callers. Links nothing: it drives the sibling tools.
 add_executable(gws gws/main.cpp)
+target_link_libraries(gws PRIVATE gws_platform)   # diagnostics dir, shared with the editor
 target_compile_features(gws PRIVATE cxx_std_20)
 target_compile_definitions(gws PRIVATE GWS_ENGINE_VERSION="${PROJECT_VERSION}")
 if(MINGW)

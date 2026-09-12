@@ -97,6 +97,7 @@
 #include "project_launcher.h"  // first-run project launcher UI
 #include "project_paths.h"     // per-project content sandbox (working-dir scoping)
 #include "gws/platform/file_dialog.h" // project export destination picker
+#include "gws/platform/user_dirs.h"   // diagnostics directory
 #include "scene.h"
 #include "entity_factory.h"
 #include "transform_component.h"
@@ -6314,13 +6315,13 @@ int main(int argc, char** argv) {
         spdlog::flush_on(spdlog::level::info);
 
         // ---- Diagnostics: persistent logging + crash handler (install EARLY) ----
-        // Reports/dumps/logs go to %LOCALAPPDATA%/GameWorldshaper/diagnostics so
-        // they survive the process and are easy to find (and send) after a crash.
-        std::string diag_dir;
-        if (const char* la = std::getenv("LOCALAPPDATA"))
-            diag_dir = std::string(la) + "\\GameWorldshaper\\diagnostics";
-        else
-            diag_dir = "diagnostics";
+        // Reports/dumps/logs go to %LOCALAPPDATA%/GameWorldshaper/diagnostics
+        // (~/.local/state/gameworldshaper/diagnostics on Linux) so they survive
+        // the process and are easy to find (and send) after a crash. `gws crash`
+        // reads the same directory through the same function.
+        std::string diag_dir =
+            gws::platform::user_dir(gws::platform::UserDir::Diagnostics).string();
+        if (diag_dir.empty()) diag_dir = "diagnostics";
         gws::diag::init_logging(diag_dir, "editor");
         {
             gws::diag::CrashConfig cc;
