@@ -329,6 +329,10 @@ struct EditorState {
     // Keyboard/mouse movement belongs exclusively to the scene viewport. This
     // prevents typing in Terminal or editing another panel from moving things.
     bool viewport_input_focused = false;
+    // Keep secondary viewport controls out of the way by default. The rendered
+    // scene can then use almost the entire dock tile and still grows/shrinks
+    // with it; the controls remain one click away.
+    bool viewport_tools_expanded = false;
     // Screen-space top-left of the rendered viewport image, so synthetic input
     // (--stress-viewport-click) can aim at it.
     glm::vec2 viewport_image_min  = glm::vec2(0.0f);
@@ -4899,7 +4903,6 @@ void ShowViewport(EditorState& editor_state) {
     {
         editor_state.viewport_input_focused =
             ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-        ImVec2 content_area = ImGui::GetContentRegionAvail();
         auto scene = editor_state.editor_scene->GetScene();
 
         // Play mode indicator and controls — all play UI must drive
@@ -4932,37 +4935,41 @@ void ShowViewport(EditorState& editor_state) {
         if (ImGui::Button("Reset Camera")) {
             editor_state.viewport_camera.Reset();
         }
-        ImGui::Separator();
-
-        // Display viewport info
-        ImGui::Text("Viewport: %.0f x %.0f", content_area.x, content_area.y);
-        auto cam_pos = editor_state.viewport_camera.GetPosition();
-        ImGui::Text("Camera: (%.1f, %.1f, %.1f)", cam_pos.x, cam_pos.y, cam_pos.z);
-        float normalized_yaw = fmod(editor_state.viewport_camera.GetYaw(), 360.0f);
-        if (normalized_yaw < 0.0f) normalized_yaw += 360.0f;
-        ImGui::Text("Rotation: Yaw %.1f° Pitch %.1f°", normalized_yaw, editor_state.viewport_camera.GetPitch());
-        ImGui::Text("Entities: %zu", scene ? scene->GetEntityCount() : 0);
-
-        ImGui::Separator();
-        ImGui::TextWrapped("Middle Mouse: Rotate | Scroll: Zoom | Right Drag: Pan");
-
-        // Gizmo controls
-        ImGui::Separator();
-        ImGui::Checkbox("Show Gizmo", &editor_state.show_gizmo);
         ImGui::SameLine();
+        if (ImGui::Button(editor_state.viewport_tools_expanded ? "Hide Tools" : "Tools"))
+            editor_state.viewport_tools_expanded = !editor_state.viewport_tools_expanded;
 
-        const char* gizmo_modes[] = { "None", "Translate (T)", "Rotate (R)", "Scale (S)" };
-        int gizmo_mode = static_cast<int>(editor_state.transform_gizmo.GetMode());
-        if (ImGui::Combo("Gizmo Mode", &gizmo_mode, gizmo_modes, IM_ARRAYSIZE(gizmo_modes))) {
-            editor_state.transform_gizmo.SetMode(static_cast<schizo::editor::GizmoMode>(gizmo_mode));
+        // Less frequently used controls are collapsible so they do not take a
+        // permanent bite out of the scene image. Dock resizing remains native
+        // ImGui behavior: drag any border between the Viewport and its neighbor.
+        if (editor_state.viewport_tools_expanded) {
+            auto cam_pos = editor_state.viewport_camera.GetPosition();
+            float normalized_yaw = fmod(editor_state.viewport_camera.GetYaw(), 360.0f);
+            if (normalized_yaw < 0.0f) normalized_yaw += 360.0f;
+            ImGui::Text("Camera (%.1f, %.1f, %.1f) | Yaw %.1f° | Pitch %.1f° | Entities %u",
+                        cam_pos.x, cam_pos.y, cam_pos.z, normalized_yaw,
+                        editor_state.viewport_camera.GetPitch(),
+                        scene ? scene->GetEntityCount() : 0);
+            ImGui::TextDisabled("Middle Mouse: Rotate | Scroll: Zoom | Right Drag: Pan");
+
+            ImGui::Checkbox("Show Gizmo", &editor_state.show_gizmo);
+            ImGui::SameLine();
+            const char* gizmo_modes[] = { "None", "Translate (T)", "Rotate (R)", "Scale (S)" };
+            int gizmo_mode = static_cast<int>(editor_state.transform_gizmo.GetMode());
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::Combo("Gizmo Mode", &gizmo_mode, gizmo_modes, IM_ARRAYSIZE(gizmo_modes))) {
+                editor_state.transform_gizmo.SetMode(static_cast<schizo::editor::GizmoMode>(gizmo_mode));
+            }
+            ImGui::SameLine();
+            ImGui::Checkbox("Wireframe", &editor_state.wireframe_mode);
         }
-
-        ImGui::Separator();
-        ImGui::Checkbox("Wireframe Mode", &editor_state.wireframe_mode);
 
         ImGui::Separator();
 
         // Prepare view and projection matrices
+        // Measure here, after the toolbar. This exact size is used both by the
+        // image and by picking/projection, so every dock resize is reflected on
+        // the very next frame without stretching stale input coordinates.
         ImVec2 viewport_size = ImGui::GetContentRegionAvail();
         float aspect = viewport_size.x > 0 ? viewport_size.x / viewport_size.y : 1.0f;
         if (viewport_size.x > 50.0f && viewport_size.y > 50.0f)
