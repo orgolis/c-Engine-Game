@@ -13,8 +13,9 @@ REPO="orgolis/c-Engine-Game"
 command -v gh >/dev/null 2>&1 || { echo "gh not found"; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "Run: gh auth login"; exit 1; }
 
-# Two halves, separately runnable. Creating issues is additive; closing four is
-# visible to everyone on the tracker, so it is opt-in rather than bundled.
+# Two halves, separately runnable. Creating issues and posting status comments
+# is additive; closing four is visible to everyone on the tracker, so it is
+# opt-in rather than bundled.
 #   sh tools/team_issues.sh              -> create only (default)
 #   sh tools/team_issues.sh --close-only -> close the shipped Phase 4 issues
 #   sh tools/team_issues.sh --all        -> both
@@ -29,7 +30,7 @@ esac
 
 
 if [ "$DO_CREATE" = "1" ]; then
-echo "=== creating 4 issue(s) ==="
+echo "=== creating 5 issue(s) ==="
 
 gh issue create --repo "$REPO" \
   --title "Replay as a regression test: replay a session against a new build and diff world state" \
@@ -191,6 +192,75 @@ Four copies of the starter extension were present. v0.8.4 changed "New Extension
 duplicates, so the configuration is now harder to reach by accident — but that is not a fix, and the crash
 should be assumed live until symbolized.
 ISSUE_BODY_EOF
+  )"
+
+gh issue create --repo "$REPO" \
+  --title "Present semaphores are reused before the swapchain releases them (validation warning every run)" \
+  --label "bug,runtime" \
+  --body "$(cat <<'ISSUE_BODY_EOF'
+Every editor run with validation enabled logs this from the first frames:
+
+```
+vkQueueSubmit(): pSubmits[0].pSignalSemaphores[0] (VkSemaphore ...) is being signaled by VkQueue ...,
+but it may still be in use by VkSwapchainKHR ...
+Swapchain image 1 was presented but was not re-acquired, so VkSemaphore ... may still be in use and
+cannot be safely reused with image index 2.
+```
+
+Found on an RTX 3060 while verifying PR #70. It **predates that merge**; #70 touched no semaphore code.
+
+### Cause
+
+`editor/src/main.cpp` signals `render_sems[current_frame]`, one render-finished semaphore per **frame in
+flight**, and hands it to present. The presentation engine holds that semaphore until the *image* is
+re-acquired, not until the frame's fence signals. With 3 swapchain images, a semaphore can be signalled again
+while presentation may still be waiting on it.
+
+### Why it matters
+
+It is a real synchronisation hazard, not a noisy warning. The spec gives no guarantee the semaphore is free,
+and what happens is up to the driver: nothing on most, sporadic corruption or device loss on others. That is
+the worst kind of bug to meet on a user's machine rather than a developer's.
+
+### Fix
+
+The standard one, per https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html: one render-finished
+semaphore **per swapchain image**, indexed by the acquired image index. Acquire semaphores stay per frame in
+flight. Recreate the per-image set whenever the swapchain is recreated, because the image count can change.
+
+### Done when
+
+A validation-enabled `editor --frames 300` logs no swapchain-semaphore warnings, including across a window
+resize.
+ISSUE_BODY_EOF
+  )"
+
+echo "=== posting 2 status comment(s) ==="
+
+gh issue comment 61 --repo "$REPO" --body "$(cat <<'COMMENT_EOF'
+Status after PR #70 (merged 2026-09-12, ships in v0.8.5).
+
+**Done and verified**
+- The editor, `gws`, `dedicated_server` and the whole check suite build on Linux. CI runs them headlessly on Ubuntu 24.04 on every push, next to the Windows job.
+- The editor has run on Intel Iris Xe under Mesa.
+- Per-user files (settings, pipeline cache, crash reports) go to XDG directories instead of the working directory (`userdirs_check`).
+
+**Remaining**
+- [ ] C++ script host: returns nullptr on non-Windows
+- [ ] C# script host: loads hostfxr.dll from Program Files
+- [ ] Embedded terminal: a native PTY is in review in #71
+- [ ] Crash reports carry no stack trace or minidump on Linux
+- [ ] A Linux release package (the release workflow builds win64 only), and Hub support for it
+- [ ] The headless dedicated server as a deployable artifact: it builds, but nothing packages it
+- [ ] Verification on NVIDIA's proprietary driver and on AMD
+COMMENT_EOF
+  )"
+
+gh issue comment 63 --repo "$REPO" --body "$(cat <<'COMMENT_EOF'
+This just bit. PR #70 made Vulkan instance creation take its surface extensions from GLFW, which returns nothing when GLFW is not initialised. `texture_check`, `skinning_check` and `model_check` create a headless device and never initialise GLFW, so all three failed on any machine with a GPU, while both CI jobs stayed green because runners have no GPU and the checks skip. It was found locally with `gws test --gpu` and fixed in v0.8.5.
+
+Until this lands, the cheapest mitigation is procedural: run `gws test --gpu` locally before merging anything that touches the renderer or device setup. The README now says so.
+COMMENT_EOF
   )"
 
 fi

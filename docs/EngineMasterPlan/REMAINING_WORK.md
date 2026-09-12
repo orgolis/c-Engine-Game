@@ -208,7 +208,12 @@ The cross-cutting integration debt specifically:
   ships) and `terrainmat_check` (one UBO-size assertion). Both predate v0.8.0 and are **open**.
 - **Stage 12 — Scripting** 🟢 done — **exceeds plan**: Python + C++ + C# backends all built + verified (`script_check`)
   with hot reload (plan only asked for Lua).
-- **Stage 13 — Platform** 🔴 Windows-only. **Remaining:** Linux (+ the headless server), consoles, mobile.
+- **Stage 13 — Platform** 🟡 Windows + Linux desktop. Linux landed in PR #70 (v0.8.5): the editor, `gws`,
+  `dedicated_server` and the whole check suite build and pass headlessly on Ubuntu 24.04 in CI on every push,
+  and the editor has run on Intel Iris Xe under Mesa. Per-user files resolve to XDG directories through
+  `gws::platform::user_dir()` (`userdirs_check`). **Remaining on Linux:** C++ and C# script hosts (Windows-only),
+  the embedded terminal (ConPTY; a placeholder on Linux), crash-report stack traces, a Hub/release package, and
+  any GPU other than Intel/Mesa. **Remaining beyond:** consoles, mobile, web.
 - **Stage 14 — Performance infrastructure** 🟢 all 5 pillars built + in the unified overlay (`profiler_check`).
   **Remaining:** captured-baseline regression gating in CI.
 - **Stage 15 — Modern AAA** 🔴 mostly not started. DDGI is a step toward Lumen; **remaining:** Nanite-like virtual geometry,
