@@ -156,6 +156,8 @@
   #include <commdlg.h>
   #define GLFW_EXPOSE_NATIVE_WIN32
   #include <GLFW/glfw3native.h>
+#elif defined(__linux__)
+  #include <unistd.h>
 #endif
 #include <algorithm>
 #include <vector>
@@ -176,6 +178,8 @@
 using namespace gws::renderer::gpu;
 
 // Editor state
+enum class GameExportTarget { Linux, Windows, Both };
+
 struct EditorState {
     schizo::editor::EditorScene* editor_scene = nullptr;
 
@@ -319,6 +323,9 @@ struct EditorState {
 
     // Actual viewport panel size (updated each frame by ShowViewport)
     glm::vec2 viewport_panel_size = glm::vec2(1920.0f, 1080.0f);
+    // Keyboard/mouse movement belongs exclusively to the scene viewport. This
+    // prevents typing in Terminal or editing another panel from moving things.
+    bool viewport_input_focused = false;
     // Screen-space top-left of the rendered viewport image, so synthetic input
     // (--stress-viewport-click) can aim at it.
     glm::vec2 viewport_image_min  = glm::vec2(0.0f);
@@ -458,11 +465,18 @@ struct EditorState {
     // release build never freezes the editor. These fields only carry the
     // small amount of state needed by the Project menu and its result dialog.
     bool        game_export_running = false;
+    bool        show_game_export_options = false;
     bool        show_game_export_dialog = false;
     bool        game_export_succeeded = false;
     uint64_t    game_export_task_id = 0;
     std::string game_export_platform;
     std::string game_export_result;
+    GameExportTarget game_export_target =
+#if defined(_WIN32)
+        GameExportTarget::Windows;
+#else
+        GameExportTarget::Linux;
+#endif
 
     bool feature_on(schizo::project::Feature f) const { return features.has(f); }
 
@@ -656,10 +670,20 @@ static std::string OpenModelDialogNative(GLFWwindow* window) {
     return GetOpenFileNameA(&ofn) ? std::string(buf) : std::string();
 }
 #else
-static std::string OpenSceneDialogNative(GLFWwindow*) { return {}; }
-static std::string SaveSceneDialogNative(GLFWwindow*) { return {}; }
-static std::string OpenAudioDialogNative() { return {}; }
-static std::string OpenModelDialogNative(GLFWwindow*) { return {}; }
+static std::string OpenSceneDialogNative(GLFWwindow*) {
+    return gws::platform::browse_file("Open Scene");
+}
+static std::string SaveSceneDialogNative(GLFWwindow*) {
+    std::string path = gws::platform::save_file("Save Scene As", "scenes/scene.scene");
+    if (!path.empty() && std::filesystem::path(path).extension() != ".scene") path += ".scene";
+    return path;
+}
+static std::string OpenAudioDialogNative() {
+    return gws::platform::browse_file("Select Audio Clip");
+}
+static std::string OpenModelDialogNative(GLFWwindow*) {
+    return gws::platform::browse_file("Import Skinned Model");
+}
 #endif
 
 // Stable content GUID from a path — mirrors schizo::assets::asset_id_from_path
@@ -1266,10 +1290,15 @@ void ShowTaskPanel(EditorState& editor_state) {
     if (tasks.empty()) return;
 
     bool anything_worth_showing = false;
-    for (const auto& t : tasks)
+    for (const auto& t : tasks) {
+        // Game export owns a dedicated fixed-size progress dialog. Showing the
+        // same task here created a second auto-resizing progress window whose
+        // changing CMake status text made it grow throughout the build.
+        if (t.id == editor_state.game_export_task_id) continue;
         if (t.state == gws::tasks::TaskState::Pending ||
             t.state == gws::tasks::TaskState::Running ||
             t.state == gws::tasks::TaskState::Failed) { anything_worth_showing = true; break; }
+    }
     if (!anything_worth_showing) return;
 
     ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_FirstUseEver);
@@ -1281,6 +1310,7 @@ void ShowTaskPanel(EditorState& editor_state) {
 
     for (const auto& t : tasks) {
         using S = gws::tasks::TaskState;
+        if (t.id == editor_state.game_export_task_id) continue;
         if (t.state == S::Succeeded || t.state == S::Cancelled) continue;
 
         ImGui::PushID(static_cast<int>(t.id));
@@ -1647,56 +1677,89 @@ static bool PrepareCurrentSceneForExport(EditorState& editor_state,
 }
 
 static void StartGameExport(EditorState& editor_state,
-                            const std::filesystem::path& destination) {
+                            const std::filesystem::path& destination,
+                            GameExportTarget target) {
     namespace fs = std::filesystem;
-#if defined(_WIN32)
-    constexpr const char* platform_name = "Windows";
-    const fs::path script = schizo::editor::base_dir() / "tools" / "export_game_windows.ps1";
-#else
-    constexpr const char* platform_name = "Linux";
-    const fs::path script = schizo::editor::base_dir() / "tools" / "export_game_linux.sh";
-#endif
-    if (!fs::is_regular_file(script)) {
-        editor_state.game_export_succeeded = false;
-        editor_state.game_export_result =
-            std::string("The ") + platform_name +
-            " exporter is missing from this engine installation:\n" + script.string();
-        editor_state.show_game_export_dialog = true;
-        return;
-    }
-
     const fs::path manifest = fs::path(editor_state.project.project_dir) /
                               schizo::project::kManifestFilename;
     const std::string game_name = ExportGameName(editor_state.project.name);
+    std::vector<std::string> commands;
+    std::vector<fs::path> package_files;
+    std::string platform_name;
+
+    const auto missing_script = [&editor_state](const fs::path& script) {
+        editor_state.game_export_succeeded = false;
+        editor_state.game_export_result =
+            "The exporter is missing from this engine installation:\n" + script.string();
+        editor_state.show_game_export_dialog = true;
+    };
+
 #if defined(_WIN32)
-    const std::string package_name = game_name + "-windows-x86_64.zip";
+    if (target != GameExportTarget::Windows) {
+        editor_state.game_export_succeeded = false;
+        editor_state.game_export_result =
+            "Linux export is available from the Linux editor. Windows can export Windows games.";
+        editor_state.show_game_export_dialog = true;
+        return;
+    }
+    platform_name = "Windows";
+    const fs::path script = schizo::editor::base_dir() / "tools" / "export_game_windows.ps1";
+    if (!fs::is_regular_file(script)) { missing_script(script); return; }
     const fs::path output_dir = destination / (game_name + "-windows");
-    const fs::path package_file = destination / package_name;
-    const std::string command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File " +
-                                ShellQuoteForExport(script.string()) + " -ProjectManifest " +
-                                ShellQuoteForExport(manifest.string()) + " -OutputDirectory " +
-                                ShellQuoteForExport(output_dir.string()) + " 2>&1";
+    package_files.push_back(destination / (game_name + "-windows-x86_64.zip"));
+    commands.push_back("powershell.exe -NoProfile -ExecutionPolicy Bypass -File " +
+                       ShellQuoteForExport(script.string()) + " -ProjectManifest " +
+                       ShellQuoteForExport(manifest.string()) + " -OutputDirectory " +
+                       ShellQuoteForExport(output_dir.string()) + " 2>&1");
 #else
-    const std::string single_name = game_name + "-linux-x86_64.run";
-    const fs::path output_dir = destination / (game_name + "-linux");
-    const fs::path package_file = destination / single_name;
-    const std::string command = ShellQuoteForExport(script.string()) + " " +
-                                ShellQuoteForExport(manifest.string()) + " " +
-                                ShellQuoteForExport(output_dir.string()) + " 2>&1";
+    const bool export_linux = target == GameExportTarget::Linux || target == GameExportTarget::Both;
+    const bool export_windows = target == GameExportTarget::Windows || target == GameExportTarget::Both;
+    platform_name = target == GameExportTarget::Both ? "Linux + Windows" :
+                    (target == GameExportTarget::Windows ? "Windows" : "Linux");
+    if (export_linux) {
+        const fs::path script = schizo::editor::base_dir() / "tools" / "export_game_linux.sh";
+        if (!fs::is_regular_file(script)) { missing_script(script); return; }
+        const fs::path output_dir = destination / (game_name + "-linux");
+        package_files.push_back(destination / (game_name + "-linux-x86_64.run"));
+        commands.push_back(ShellQuoteForExport(script.string()) + " " +
+                           ShellQuoteForExport(manifest.string()) + " " +
+                           ShellQuoteForExport(output_dir.string()) + " 2>&1");
+    }
+    if (export_windows) {
+        const fs::path script = schizo::editor::base_dir() / "tools" / "export_game_windows_cross.sh";
+        if (!fs::is_regular_file(script)) { missing_script(script); return; }
+        const fs::path output_dir = destination / (game_name + "-windows");
+        package_files.push_back(destination / (game_name + "-windows-x86_64.zip"));
+        commands.push_back(ShellQuoteForExport(script.string()) + " " +
+                           ShellQuoteForExport(manifest.string()) + " " +
+                           ShellQuoteForExport(output_dir.string()) + " 2>&1");
+    }
 #endif
+
+    for (const fs::path& package : package_files) {
+        if (fs::exists(package)) {
+            editor_state.game_export_succeeded = false;
+            editor_state.game_export_result =
+                "Export file already exists. Choose another folder or rename it first:\n" +
+                package.string();
+            editor_state.show_game_export_dialog = true;
+            return;
+        }
+    }
 
     editor_state.game_export_running = true;
     editor_state.game_export_succeeded = false;
     editor_state.game_export_platform = platform_name;
     editor_state.game_export_result.clear();
     editor_state.show_game_export_dialog = true;
-    editor_state.show_task_panel = true;
     editor_state.set_status(std::string(platform_name) + " game export started");
 
     const uint64_t task_id = editor_state.tasks.submit(
         std::string("Export game for ") + platform_name,
-        [command](gws::tasks::TaskContext& ctx) {
+        [commands](gws::tasks::TaskContext& ctx) {
             ctx.set_progress(0.0f, "Starting exporter...");
+            for (size_t command_index = 0; command_index < commands.size(); ++command_index) {
+            const std::string& command = commands[command_index];
 #if defined(_WIN32)
             FILE* pipe = _popen(command.c_str(), "r");
 #else
@@ -1733,7 +1796,10 @@ static void StartGameExport(EditorState& editor_state,
                 while (!status.empty() && (status.back() == '\r' || status.back() == '\n'))
                     status.pop_back();
                 if (status.size() > 180) status = status.substr(0, 177) + "...";
-                ctx.set_progress(progress, std::move(status));
+                const float combined_progress =
+                    (static_cast<float>(command_index) + progress) /
+                    static_cast<float>(commands.size());
+                ctx.set_progress(combined_progress, std::move(status));
             }
 #if defined(_WIN32)
             const int result = _pclose(pipe);
@@ -1747,22 +1813,21 @@ static void StartGameExport(EditorState& editor_state,
                 throw std::runtime_error(output.empty() ?
                     "The game exporter failed without producing output." : output);
             }
+            }
             ctx.set_progress(1.0f, "Export complete");
         },
-        [&editor_state, package_file, output_dir, game_name](const gws::tasks::TaskInfo& info) {
+        [&editor_state, package_files](const gws::tasks::TaskInfo& info) {
             editor_state.game_export_running = false;
             editor_state.game_export_succeeded =
                 info.state == gws::tasks::TaskState::Succeeded;
             if (editor_state.game_export_succeeded) {
-#if defined(_WIN32)
-                editor_state.game_export_result =
-                    "Portable archive:\n" + package_file.string() +
-                    "\n\nPlayable file after extracting:\n" +
-                    (output_dir / (game_name + ".exe")).string();
-#else
-                editor_state.game_export_result = package_file.string();
-#endif
-                editor_state.set_status("Game exported: " + package_file.string());
+                editor_state.game_export_result.clear();
+                for (const fs::path& package : package_files) {
+                    if (!editor_state.game_export_result.empty())
+                        editor_state.game_export_result += "\n";
+                    editor_state.game_export_result += package.string();
+                }
+                editor_state.set_status("Game export completed");
             } else {
                 editor_state.game_export_result = info.error.empty()
                     ? "The game export was cancelled."
@@ -1855,19 +1920,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
                                     ? "Exporting Game..."
                                     : "Export Game...",
                                 nullptr, false, can_export)) {
-                const std::string picked = gws::platform::browse_folder(
-                    "Choose where to export the game");
-                if (!picked.empty()) {
-                    std::string error;
-                    if (!PrepareCurrentSceneForExport(editor_state, error)) {
-                        editor_state.game_export_succeeded = false;
-                        editor_state.game_export_result = std::move(error);
-                        editor_state.game_export_platform.clear();
-                        editor_state.show_game_export_dialog = true;
-                    } else {
-                        StartGameExport(editor_state, picked);
-                    }
-                }
+                editor_state.show_game_export_options = true;
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
                 if (!editor_state.project_loaded)
@@ -2108,6 +2161,53 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
         }
 
         ImGui::EndMainMenuBar();
+    }
+
+    if (editor_state.show_game_export_options) {
+        ImGui::OpenPopup("Export Game - Choose Target");
+        editor_state.show_game_export_options = false;
+    }
+    ImGui::SetNextWindowSize(ImVec2(620.0f, 320.0f), ImGuiCond_Always);
+    if (ImGui::BeginPopupModal("Export Game - Choose Target", nullptr,
+                              ImGuiWindowFlags_NoResize)) {
+        ImGui::TextUnformatted("Which game files do you want to create?");
+        ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        int selected = static_cast<int>(editor_state.game_export_target);
+        ImGui::RadioButton("Linux (.run)", &selected,
+                           static_cast<int>(GameExportTarget::Linux));
+        ImGui::RadioButton("Windows (.zip)", &selected,
+                           static_cast<int>(GameExportTarget::Windows));
+        ImGui::RadioButton("Linux + Windows", &selected,
+                           static_cast<int>(GameExportTarget::Both));
+#if defined(_WIN32)
+        if (selected != static_cast<int>(GameExportTarget::Windows)) {
+            selected = static_cast<int>(GameExportTarget::Windows);
+            ImGui::TextDisabled("The Windows editor exports Windows games.");
+        }
+#else
+        ImGui::TextDisabled("The first Windows export downloads the portable compiler once.");
+#endif
+        editor_state.game_export_target = static_cast<GameExportTarget>(selected);
+        ImGui::Dummy(ImVec2(0.0f, 10.0f));
+        if (ImGui::Button("Choose Location...", ImVec2(170.0f, 0.0f))) {
+            const std::string picked = gws::platform::browse_folder(
+                "Choose where to export the game");
+            if (!picked.empty()) {
+                std::string error;
+                if (!PrepareCurrentSceneForExport(editor_state, error)) {
+                    editor_state.game_export_succeeded = false;
+                    editor_state.game_export_result = std::move(error);
+                    editor_state.game_export_platform.clear();
+                    editor_state.show_game_export_dialog = true;
+                } else {
+                    StartGameExport(editor_state, picked, editor_state.game_export_target);
+                }
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
     }
 
     if (editor_state.show_game_export_dialog) {
@@ -4789,10 +4889,15 @@ void ShowAssetBrowser(EditorState& editor_state) {
 }
 
 void ShowViewport(EditorState& editor_state) {
-    if (!editor_state.show_viewport) return;
+    if (!editor_state.show_viewport) {
+        editor_state.viewport_input_focused = false;
+        return;
+    }
 
     ImGui::Begin("Viewport", &editor_state.show_viewport, ImGuiWindowFlags_NoMove);  // docked window = child; End() must always run
     {
+        editor_state.viewport_input_focused =
+            ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
         ImVec2 content_area = ImGui::GetContentRegionAvail();
         auto scene = editor_state.editor_scene->GetScene();
 
@@ -5297,23 +5402,36 @@ void ShowViewport(EditorState& editor_state) {
                             const float gizmo_axis_length = 1.0f;   // Base axis length in mesh
                             const float gizmo_size = gizmo_render_scale * gizmo_axis_length;  // Actual visible size
 
+                            // These must be the same axes that the overlay draws.
+                            // Scale is local-axis based; translate/rotate are world based.
+                            glm::vec3 x_axis(1.0f, 0.0f, 0.0f);
+                            glm::vec3 y_axis(0.0f, 1.0f, 0.0f);
+                            glm::vec3 z_axis(0.0f, 0.0f, 1.0f);
+                            if (editor_state.transform_gizmo.GetMode() ==
+                                schizo::editor::GizmoMode::Scale) {
+                                const glm::quat rotation = selected_transform->GetWorldRotation();
+                                x_axis = rotation * x_axis;
+                                y_axis = rotation * y_axis;
+                                z_axis = rotation * z_axis;
+                            }
+
                             // Check intersection with X axis (red)
                             glm::vec3 x_start = selected_pos;
-                            glm::vec3 x_end = selected_pos + glm::vec3(gizmo_size, 0.0f, 0.0f);
+                            glm::vec3 x_end = selected_pos + x_axis * gizmo_size;
                             float x_dist = schizo::editor::ViewportCamera::RayLineDistanceSq(
                                 ray_origin, ray_direction, x_start, x_end
                             );
 
                             // Check intersection with Y axis (green)
                             glm::vec3 y_start = selected_pos;
-                            glm::vec3 y_end = selected_pos + glm::vec3(0.0f, gizmo_size, 0.0f);
+                            glm::vec3 y_end = selected_pos + y_axis * gizmo_size;
                             float y_dist = schizo::editor::ViewportCamera::RayLineDistanceSq(
                                 ray_origin, ray_direction, y_start, y_end
                             );
 
                             // Check intersection with Z axis (blue)
                             glm::vec3 z_start = selected_pos;
-                            glm::vec3 z_end = selected_pos + glm::vec3(0.0f, 0.0f, gizmo_size);
+                            glm::vec3 z_end = selected_pos + z_axis * gizmo_size;
                             float z_dist = schizo::editor::ViewportCamera::RayLineDistanceSq(
                                 ray_origin, ray_direction, z_start, z_end
                             );
@@ -5408,15 +5526,46 @@ void ShowViewport(EditorState& editor_state) {
 
                     // Begin drag on first frame
                     if (!editor_state.transform_gizmo.IsDragging()) {
-                        editor_state.transform_gizmo.BeginDrag(axis, editor_state.gizmo_drag_start);
+                        const glm::vec3 selected_world_position =
+                            selected_transform->GetWorldPosition();
+                        glm::vec3 positive_world_axis(1.0f, 0.0f, 0.0f);
+                        if (axis == schizo::editor::GizmoAxis::Y)
+                            positive_world_axis = glm::vec3(0.0f, 1.0f, 0.0f);
+                        else if (axis == schizo::editor::GizmoAxis::Z)
+                            positive_world_axis = glm::vec3(0.0f, 0.0f, 1.0f);
+
+                        if (editor_state.transform_gizmo.GetMode() ==
+                            schizo::editor::GizmoMode::Scale) {
+                            positive_world_axis =
+                                selected_transform->GetWorldRotation() * positive_world_axis;
+                        }
+
+                        auto project_to_viewport = [&](const glm::vec3& world) {
+                            glm::mat4 projection = proj_matrix;
+                            projection[1][1] *= -1.0f;
+                            glm::vec4 clip = projection * view_matrix * glm::vec4(world, 1.0f);
+                            if (std::abs(clip.w) < 0.0001f) return glm::vec2(0.0f);
+                            const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                            return glm::vec2((ndc.x * 0.5f + 0.5f) * viewport_size.x,
+                                             (ndc.y * 0.5f + 0.5f) * viewport_size.y);
+                        };
+                        const glm::vec2 positive_axis_on_screen =
+                            project_to_viewport(selected_world_position +
+                                                positive_world_axis * 3.5f) -
+                            project_to_viewport(selected_world_position);
+
+                        editor_state.transform_gizmo.BeginDrag(
+                            axis, editor_state.gizmo_drag_start, positive_axis_on_screen);
                         editor_state.gizmo_drag_origin =
-                            selected_transform->GetLocalPosition();
+                            selected_transform->GetWorldPosition();
                     }
 
                     // Get mode-specific updates
                     auto gmode = editor_state.transform_gizmo.GetMode();
                     if (gmode == schizo::editor::GizmoMode::Translate) {
-                        glm::vec3 current_pos = selected_transform->GetLocalPosition();
+                        // Translate gizmo axes are world-aligned, so update a
+                        // world position even when the entity has a parent.
+                        glm::vec3 current_pos = selected_transform->GetWorldPosition();
                         glm::vec3 new_pos = editor_state.transform_gizmo.UpdateDrag(current_mouse_glm, current_pos);
 
                         // Snapping (4.7). Ctrl enables it for this drag even
@@ -5431,7 +5580,7 @@ void ShowViewport(EditorState& editor_state) {
                                       new_pos, editor_state.gizmo_drag_origin, step)
                                 : schizo::editor::snap_position(new_pos, step);
                         }
-                        selected_transform->SetLocalPosition(new_pos);
+                        selected_transform->SetWorldPosition(new_pos);
                     } else if (gmode == schizo::editor::GizmoMode::Rotate) {
                         // Mouse delta along its dominant axis drives a
                         // rotation around the selected gizmo axis. ~0.5°/pixel.
@@ -5445,11 +5594,11 @@ void ShowViewport(EditorState& editor_state) {
                         if (editor_state.gizmo_axis == 'z') axis = glm::vec3(0, 0, 1);
                         if (axis != glm::vec3(0.0f) && std::abs(angle) > 1e-6f) {
                             glm::quat q = glm::angleAxis(angle, axis);
-                            glm::quat out = q * selected_transform->GetLocalRotation();
+                            glm::quat out = q * selected_transform->GetWorldRotation();
                             if (editor_state.snap.enabled || ImGui::GetIO().KeyCtrl)
                                 out = schizo::editor::snap_rotation(
                                     out, editor_state.snap.rotate_deg);
-                            selected_transform->SetLocalRotation(out);
+                            selected_transform->SetWorldRotation(out);
                         }
                     } else if (gmode == schizo::editor::GizmoMode::Scale) {
                         glm::vec3 current_scale = selected_transform->GetLocalScale();
@@ -5750,8 +5899,33 @@ static void LaunchMultiplayerSession(EditorState& editor_state, int n_clients, u
         }
     }
 #else
-    (void)editor_state; (void)n_clients; (void)port;
-    spdlog::warn("[net] multiplayer launcher is Windows-only");
+    const std::filesystem::path shared_scene =
+        std::filesystem::current_path() / "__mp_session.scene";
+    const bool saved = editor_state.editor_scene &&
+                       editor_state.editor_scene->SaveScene(shared_scene.string());
+    if (!saved) {
+        spdlog::error("[net] launcher: failed to save shared scene to {}",
+                      shared_scene.string());
+        return;
+    }
+    if (!editor_state.net_session.active()) editor_state.net_session.host(port);
+    editor_state.show_network_window = true;
+
+    const std::filesystem::path executable = schizo::editor::executable_dir() / "editor";
+    const std::string endpoint = "127.0.0.1:" + std::to_string(port);
+    for (int i = 0; i < n_clients; ++i) {
+        const pid_t child = fork();
+        if (child == 0) {
+            execl(executable.c_str(), executable.c_str(), "--net-join", endpoint.c_str(),
+                  "--scene", shared_scene.c_str(), "--net-game",
+                  static_cast<char*>(nullptr));
+            _exit(127);
+        }
+        if (child > 0)
+            spdlog::info("[net] launched Linux client {} -> {}", i + 1, endpoint);
+        else
+            spdlog::error("[net] launcher: fork failed");
+    }
 #endif
 }
 
@@ -7949,14 +8123,7 @@ int main(int argc, char** argv) {
             // that would have found nothing at all: material graphs would have
             // silently degraded to uncompilable for exactly the people the
             // bundling exists to serve.
-            std::string exe_dir;
-#ifdef _WIN32
-            {
-                char buf[MAX_PATH]{};
-                if (GetModuleFileNameA(nullptr, buf, MAX_PATH) != 0)
-                    exe_dir = std::filesystem::path(buf).parent_path().string();
-            }
-#endif
+            std::string exe_dir = schizo::editor::executable_dir().string();
             if (exe_dir.empty()) {
                 std::error_code ec;
                 exe_dir = std::filesystem::current_path(ec).string();
@@ -8429,6 +8596,18 @@ int main(int argc, char** argv) {
             g_cp.mark("pre_input");
             // Key input
             auto key = [&](int k) { return glfwGetKey(glfw_window, k) == GLFW_PRESS; };
+            const bool app_has_input_focus =
+                glfwGetWindowAttrib(glfw_window, GLFW_FOCUSED) == GLFW_TRUE;
+            const bool scene_has_input_focus = app_has_input_focus &&
+                (game_window_mode || editor_state.viewport_input_focused);
+            const bool terminal_has_input_focus =
+                editor_state.show_terminal && editor_state.terminal &&
+                editor_state.terminal->HasInputFocus();
+            const bool editor_shortcuts_allowed =
+                app_has_input_focus && !terminal_has_input_focus &&
+                !ImGui::GetIO().WantTextInput;
+            if (editor_state.scene_playback_manager)
+                editor_state.scene_playback_manager->SetInputFocused(scene_has_input_focus);
 
             // ----------------------------------------------------------------
             // Play-mode cursor pipeline. Gated tightly on IsPlaying() so it is
@@ -8441,7 +8620,7 @@ int main(int argc, char** argv) {
                                  editor_state.scene_playback_manager->IsPlaying();
             if (playing) {
                 const bool want_capture =
-                    editor_state.scene_playback_manager->IsCursorCaptured();
+                    editor_state.scene_playback_manager->HasInputFocus();
                 if (want_capture != prev_cursor_captured) {
                     glfwSetInputMode(glfw_window, GLFW_CURSOR,
                                      want_capture ? GLFW_CURSOR_DISABLED
@@ -8499,11 +8678,13 @@ int main(int argc, char** argv) {
                 prev_left_mouse_down = left_mouse_down;
             }
             if (!game_window_mode) {
-            if (key(GLFW_KEY_LEFT_CONTROL) && key(GLFW_KEY_Z)) {
+            if (editor_shortcuts_allowed && ImGui::IsKeyChordPressed(
+                    static_cast<ImGuiKeyChord>(ImGuiMod_Ctrl | ImGuiKey_Z))) {
                 if (editor_state.undo_redo_manager.CanUndo())
                     editor_state.undo_redo_manager.Undo();
             }
-            if (key(GLFW_KEY_LEFT_CONTROL) && key(GLFW_KEY_Y)) {
+            if (editor_shortcuts_allowed && ImGui::IsKeyChordPressed(
+                    static_cast<ImGuiKeyChord>(ImGuiMod_Ctrl | ImGuiKey_Y))) {
                 if (editor_state.undo_redo_manager.CanRedo())
                     editor_state.undo_redo_manager.Redo();
             }
@@ -8567,7 +8748,7 @@ int main(int argc, char** argv) {
             if (!game_window_mode) {
                 static bool prev_delete = false;
                 bool cur_delete = key(GLFW_KEY_DELETE);
-                if (cur_delete && !prev_delete &&
+                if (cur_delete && !prev_delete && scene_has_input_focus &&
                     !ImGui::GetIO().WantTextInput &&
                     editor_state.selected_entity_id != 0) {
                     auto sc = editor_state.editor_scene->GetScene();
@@ -8585,7 +8766,7 @@ int main(int argc, char** argv) {
             float cam_spd = 0.1f;
             const bool playing_now_cam = editor_state.scene_playback_manager &&
                                          editor_state.scene_playback_manager->IsPlaying();
-            if (!playing_now_cam) {
+            if (!playing_now_cam && scene_has_input_focus) {
                 if (key(GLFW_KEY_W))     editor_state.viewport_camera.MoveLocal( cam_spd, 0.f, 0.f);
                 if (key(GLFW_KEY_S))     editor_state.viewport_camera.MoveLocal(-cam_spd, 0.f, 0.f);
                 if (key(GLFW_KEY_A))     editor_state.viewport_camera.MoveLocal(0.f, -cam_spd, 0.f);
@@ -10113,7 +10294,7 @@ int main(int argc, char** argv) {
                     ecs_bridge.logic_tick(delta_time);   // On Tick / On Flag
                     static bool logic_prev_key[128] = {false};
                     const bool logic_input_focused =
-                        editor_state.scene_playback_manager->IsCursorCaptured();
+                        editor_state.scene_playback_manager->HasInputFocus();
                     for (int k = 32; k < 97; ++k) {   // space..'`' (letters/digits/common)
                         // Treat focus loss like releasing every gameplay key.
                         // This stops held-key actions immediately and prevents

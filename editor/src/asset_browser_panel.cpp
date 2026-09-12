@@ -8,6 +8,7 @@
 #include "scene.h"
 #include "material_desc.h"
 #include "texture_gen.h"     // New > Texture: a fresh project has no texture to apply   // New > Material writes a default .mat through the format's own writer
+#include "gws/platform/file_dialog.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>   // BeginDragDropTargetCustom: a pane-wide drop target
@@ -25,6 +26,8 @@
 #include <shellapi.h>
 #include <commdlg.h>
 #include <cstdint>
+#elif defined(__linux__)
+#include <unistd.h>
 #endif
 
 namespace schizo::editor {
@@ -81,7 +84,11 @@ void os_open(const std::string& abs) {
 #ifdef _WIN32
     ShellExecuteA(nullptr, "open", abs.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #else
-    (void)abs;
+    const pid_t child = fork();
+    if (child == 0) {
+        execlp("xdg-open", "xdg-open", abs.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
 #endif
 }
 
@@ -90,7 +97,12 @@ void os_reveal(const std::string& abs) {
     const std::string args = "/select,\"" + abs + "\"";
     ShellExecuteA(nullptr, "open", "explorer", args.c_str(), nullptr, SW_SHOWNORMAL);
 #else
-    (void)abs;
+    const fs::path folder = fs::is_directory(abs) ? fs::path(abs) : fs::path(abs).parent_path();
+    const pid_t child = fork();
+    if (child == 0) {
+        execlp("xdg-open", "xdg-open", folder.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
 #endif
 }
 
@@ -434,21 +446,12 @@ void AssetBrowserPanel::render_toolbar() {
     if (ImGui::SmallButton("Refresh")) dirty_ = true;
     ImGui::SameLine();
     if (ImGui::SmallButton("Import...")) {
-#ifdef _WIN32
-        char file_buf[MAX_PATH] = {0};
-        OPENFILENAMEA ofn = {};
-        ofn.lStructSize = sizeof(ofn);
-        ofn.lpstrFile   = file_buf;
-        ofn.nMaxFile    = sizeof(file_buf);
-        ofn.lpstrFilter = "All Files (*.*)\0*.*\0"
-                          "3D Models (*.obj;*.gltf;*.glb;*.fbx)\0*.obj;*.gltf;*.glb;*.fbx\0"
-                          "Textures (*.png;*.jpg;*.jpeg;*.tga;*.hdr)\0*.png;*.jpg;*.jpeg;*.tga;*.hdr\0"
-                          "Audio (*.wav;*.mp3;*.flac;*.ogg)\0*.wav;*.mp3;*.flac;*.ogg\0";
-        ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-        if (GetOpenFileNameA(&ofn) && file_buf[0]) {
-            const fs::path src(file_buf);
+        const std::string picked = gws::platform::browse_file("Import asset");
+        if (!picked.empty()) {
+            const fs::path src(picked);
             const fs::path dst = current_ / src.filename();
-            // Stream copy (fs::copy_file overwrite is unreliable on MinGW).
+            // The stream copy behaves the same on Linux and MinGW and replaces
+            // an older asset with the same name intentionally.
             std::ifstream in(src, std::ios::binary);
             std::ofstream out(dst, std::ios::binary | std::ios::trunc);
             if (in.is_open() && out.is_open()) {
@@ -460,7 +463,6 @@ void AssetBrowserPanel::render_toolbar() {
                 spdlog::warn("[AssetBrowser] import failed for '{}'", src.string());
             }
         }
-#endif
     }
 
     // Search row.

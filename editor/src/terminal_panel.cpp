@@ -130,6 +130,7 @@ struct TerminalPanel::Impl {
     std::vector<std::string> history;
     int   history_pos = -1;         // -1 = editing fresh line
     bool  focus_input = true;
+    bool  input_focused = false;
     int   shell_choice = 0;         // 0 = PowerShell, 1 = cmd
     COORD pty_size{0, 0};
 
@@ -415,11 +416,16 @@ TerminalPanel::TerminalPanel() : impl_(std::make_unique<Impl>()) {
 
 TerminalPanel::~TerminalPanel() = default;
 
+bool TerminalPanel::HasInputFocus() const {
+    return impl_ && impl_->input_focused;
+}
+
 void TerminalPanel::Render(bool* open) {
     Impl& t = *impl_;
     t.drain();
 
     ImGui::Begin("Terminal", open);   // docked window = child; always End() below
+    t.input_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     {
         // ---- toolbar ----
         ImGui::SetNextItemWidth(120.0f);

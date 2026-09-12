@@ -107,9 +107,9 @@ target_sources(editor
         ${CMAKE_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_vulkan.cpp
 )
 
-# The embedded terminal is implemented with Windows ConPTY. Keep that full
-# implementation on Windows and provide a small non-Windows panel stub so the
-# rest of the editor can build while a POSIX PTY backend is still pending.
+# Each platform gets its native embedded shell backend: Windows uses ConPTY;
+# Linux uses forkpty so the configured interactive shell behaves exactly like
+# it does in a normal terminal (prompt, colours, history and line editing).
 if(WIN32)
     target_sources(editor PRIVATE src/terminal_panel.cpp)
 else()
@@ -139,6 +139,9 @@ if(WIN32)
     # comdlg32: GetOpenFileName/GetSaveFileName (scene dialogs).
     # shell32 + ole32: other remaining native shell integrations.
     target_link_libraries(editor PRIVATE comdlg32 shell32 ole32)
+elseif(UNIX AND NOT APPLE)
+    # forkpty() is provided by libutil on Linux.
+    target_link_libraries(editor PRIVATE util)
 endif()
 
 # --- Install / packaging: the editor is packaged (component "engine") as the
@@ -161,7 +164,9 @@ install(DIRECTORY
             ${CMAKE_SOURCE_DIR}/assets/scripts
         DESTINATION "${GWS_ENGINE_DEST}/assets" COMPONENT engine OPTIONAL)
 if(UNIX AND NOT APPLE)
-    install(PROGRAMS ${CMAKE_SOURCE_DIR}/tools/export_game_linux.sh
+    install(PROGRAMS
+            ${CMAKE_SOURCE_DIR}/tools/export_game_linux.sh
+            ${CMAKE_SOURCE_DIR}/tools/export_game_windows_cross.sh
             DESTINATION "${GWS_ENGINE_DEST}/tools" COMPONENT engine)
 elseif(WIN32)
     install(FILES ${CMAKE_SOURCE_DIR}/tools/export_game_windows.ps1

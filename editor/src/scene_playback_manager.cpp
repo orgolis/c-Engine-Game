@@ -297,6 +297,7 @@ bool ScenePlaybackManager::StartPlayback(std::shared_ptr<schizo::scene::Scene> s
     is_playing_ = true;
     is_paused_ = false;
     is_cursor_captured_ = true;  // Host will hide+lock the OS cursor
+    is_input_focused_ = false;   // Host enables this only for the focused scene surface
     mouse_delta_x_ = 0.0f;
     mouse_delta_y_ = 0.0f;
     playback_time_ = 0.0f;
@@ -336,6 +337,7 @@ void ScenePlaybackManager::StopPlayback() {
     is_playing_ = false;
     is_paused_ = false;
     is_cursor_captured_ = false;  // Host will restore the OS cursor
+    is_input_focused_ = false;
     mouse_delta_x_ = 0.0f;
     mouse_delta_y_ = 0.0f;
     playback_time_ = 0.0f;
@@ -424,7 +426,7 @@ void ScenePlaybackManager::UpdateMouseLook() {
     // through OnMouseDelta() — ImGui's NoMouse flag zeros io.MousePos so we
     // cannot read it here. Yaw is applied to the player body; pitch is applied
     // to the one player camera for up/down look.
-    if (is_cursor_captured_) {
+    if (HasInputFocus()) {
         const float MOUSE_SENSITIVITY = 0.0025f;  // radians per pixel
 
         if (std::abs(mouse_delta_x_) > 0.0f) {
@@ -471,7 +473,7 @@ void ScenePlaybackManager::DriveCharacterController(float delta_time) {
     //    Calling ProcessInput directly bypasses the input buffer, which is fine
     //    for editor playback — the buffer is for network sync.
     engine::character::InputAction input;
-    if (is_cursor_captured_) {
+    if (HasInputFocus()) {
         if (ImGui::IsKeyDown(ImGuiKey_W)) input.forward += 1.0f;
         if (ImGui::IsKeyDown(ImGuiKey_S)) input.forward -= 1.0f;
         if (ImGui::IsKeyDown(ImGuiKey_D)) input.lateral += 1.0f;
@@ -506,7 +508,7 @@ void ScenePlaybackManager::DriveCharacterController(float delta_time) {
             world_velocity.x *= 0.6f;
             world_velocity.z *= 0.6f;
             float vy = glm::clamp(world_velocity.y, -8.0f, 8.0f) * 0.35f - 0.4f;
-            if (is_cursor_captured_ && ImGui::IsKeyDown(ImGuiKey_Space))
+            if (HasInputFocus() && ImGui::IsKeyDown(ImGuiKey_Space))
                 vy = 3.0f;                                           // swim up
             world_velocity.y = vy;
         }

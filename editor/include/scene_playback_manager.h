@@ -165,15 +165,15 @@ public:
     schizo::scene::Entity* GetPlaybackCamera() const { return playback_camera_.get(); }
 
     /**
-     * Play-input focus and cursor capture state. While captured, main.cpp hides
-     * the OS cursor (GLFW_CURSOR_DISABLED), mouse-look receives raw deltas, and
-     * keyboard movement controls the character. While released, the simulation
-     * continues but mouse-look and movement input are ignored. The game can
-     * release the cursor for an in-game GUI with SetCursorCaptured(false).
+     * Cursor capture is the game's intent to own input. HasInputFocus() also
+     * requires the scene/game surface to be the focused window, so another
+     * editor panel can never leak keyboard input into gameplay.
      */
     bool IsCursorCaptured() const { return is_cursor_captured_; }
     void SetCursorCaptured(bool captured) { is_cursor_captured_ = captured; }
     void ToggleCursorCaptured() { is_cursor_captured_ = !is_cursor_captured_; }
+    bool HasInputFocus() const { return is_cursor_captured_ && is_input_focused_; }
+    void SetInputFocused(bool focused) { is_input_focused_ = focused; }
 
     /**
      * Mouse delta from the editor host. While the cursor is captured, ImGui
@@ -196,6 +196,7 @@ private:
     bool is_playing_ = false;
     bool is_paused_ = false;
     bool is_cursor_captured_ = false;  // True while the host should hide+lock the OS cursor
+    bool is_input_focused_ = false;    // True only while the scene/game surface owns input
     bool net_client_mode_ = false;     // Props follow net-set transforms, no local sim
     float playback_time_ = 0.0f;
 

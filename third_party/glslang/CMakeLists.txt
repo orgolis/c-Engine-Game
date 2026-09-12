@@ -2,8 +2,15 @@
 # Note: glslang is typically included with Vulkan SDK
 # This target provides a clean interface for shader compilation
 
-# Try to find glslang package (usually part of Vulkan SDK)
-find_package(glslang QUIET)
+# Cross builds must not accidentally discover and link the host machine's
+# glslang libraries. Exported runtimes use precompiled SPIR-V, so this optional
+# editor-side compiler can be disabled without changing game rendering.
+option(GWS_ENABLE_GLSLANG_RUNTIME "Link glslang for runtime GLSL compilation" ON)
+if(GWS_ENABLE_GLSLANG_RUNTIME)
+    find_package(glslang QUIET)
+else()
+    set(glslang_FOUND FALSE)
+endif()
 
 if(glslang_FOUND)
     message(STATUS "glslang found (Vulkan SDK)")

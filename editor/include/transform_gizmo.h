@@ -56,7 +56,8 @@ public:
     /**
      * Start dragging on an axis
      */
-    void BeginDrag(GizmoAxis axis, const glm::vec2& mouse_pos);
+    void BeginDrag(GizmoAxis axis, const glm::vec2& mouse_pos,
+                   const glm::vec2& positive_axis_screen_direction);
     
     /**
      * Update drag
@@ -112,6 +113,7 @@ private:
     GizmoAxis hovered_axis_ = GizmoAxis::None;
     bool is_dragging_ = false;
     glm::vec2 last_mouse_pos_;
+    glm::vec2 drag_screen_direction_ = glm::vec2(1.0f, 0.0f);
     glm::vec3 delta_value_;
     float drag_sensitivity_ = 0.01f;
 };

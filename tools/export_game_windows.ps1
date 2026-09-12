@@ -42,9 +42,6 @@ $outputPath = [IO.Path]::GetFullPath($OutputDirectory)
 $outputParent = Split-Path -Parent $outputPath
 $archivePath = Join-Path $outputParent "$gameName-windows-x86_64.zip"
 
-if (Test-Path -LiteralPath $outputPath) {
-    throw "Output already exists: $outputPath"
-}
 if (Test-Path -LiteralPath $archivePath) {
     throw "Export archive already exists: $archivePath"
 }
@@ -94,6 +91,9 @@ try {
             Copy-Item -LiteralPath $_.FullName -Destination $projectStage -Recurse -Force
         }
 
+    # The EXE is the engine program. The project, assets and compiler DLLs are
+    # loaded beside it at runtime, so they must remain together after export.
+    # The ZIP below turns that complete playable folder into one transport file.
     Copy-Item -LiteralPath $runtimePath -Destination (Join-Path $stagePath "$gameName.exe")
     $runtimeDirectory = Split-Path -Parent $runtimePath
     Get-ChildItem -LiteralPath $runtimeDirectory -Filter "*.dll" -File -ErrorAction SilentlyContinue |
@@ -125,12 +125,11 @@ try {
         "ESC releases input; click the game to resume. Close the window to quit."
     ) | Set-Content -LiteralPath (Join-Path $stagePath "README.txt") -Encoding UTF8
 
-    Write-Output "[4/5] Publishing the playable Windows folder"
+    Write-Output "[4/5] Preparing the portable Windows package"
     New-Item -ItemType Directory -Path $outputParent -Force | Out-Null
-    Move-Item -LiteralPath $stagePath -Destination $outputPath
 
     Write-Output "[5/5] Creating the portable Windows archive"
-    Compress-Archive -Path (Join-Path $outputPath "*") -DestinationPath $archivePath -CompressionLevel Optimal
+    Compress-Archive -Path (Join-Path $stagePath "*") -DestinationPath $archivePath -CompressionLevel Optimal
 } finally {
     if (Test-Path -LiteralPath $stagePath) {
         Remove-Item -LiteralPath $stagePath -Recurse -Force
@@ -138,6 +137,4 @@ try {
 }
 
 Write-Output ""
-Write-Output "Export complete: $outputPath"
-Write-Output "Archive:         $archivePath"
-Write-Output "Start with:      $(Join-Path $outputPath "$gameName.exe")"
+Write-Output "Export complete: $archivePath"

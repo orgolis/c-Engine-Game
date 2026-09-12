@@ -24,11 +24,21 @@ void TransformGizmo::CycleMode() {
     }
 }
 
-void TransformGizmo::BeginDrag(GizmoAxis axis, const glm::vec2& mouse_pos) {
+void TransformGizmo::BeginDrag(GizmoAxis axis, const glm::vec2& mouse_pos,
+                               const glm::vec2& positive_axis_screen_direction) {
     is_dragging_ = true;
     selected_axis_ = axis;
     last_mouse_pos_ = mouse_pos;
     delta_value_ = glm::vec3(0.0f);
+
+    // Drag in the direction in which the positive world/local axis is really
+    // drawn. A fixed mouse-X/mouse-Y mapping reverses as soon as the camera
+    // views an axis from the other side.
+    const float screen_length = glm::length(positive_axis_screen_direction);
+    if (screen_length > 0.0001f)
+        drag_screen_direction_ = positive_axis_screen_direction / screen_length;
+    else
+        drag_screen_direction_ = glm::vec2(1.0f, 0.0f);
 }
 
 glm::vec3 TransformGizmo::UpdateDrag(const glm::vec2& mouse_pos, const glm::vec3& current_value) {
@@ -37,27 +47,22 @@ glm::vec3 TransformGizmo::UpdateDrag(const glm::vec2& mouse_pos, const glm::vec3
     glm::vec2 delta = mouse_pos - last_mouse_pos_;
     glm::vec3 new_value = current_value;
     
-    // Use appropriate mouse axis based on gizmo axis being dragged
-    // X-axis: use horizontal mouse movement
-    // Y-axis: use vertical mouse movement (inverted, since screen Y increases downward)
-    // Z-axis: use horizontal mouse movement (depth typically represented horizontally)
+    // Project the mouse movement onto the positive axis as it appears on
+    // screen. The sign therefore stays correct at every camera angle.
+    const float delta_distance =
+        glm::dot(delta, drag_screen_direction_) * drag_sensitivity_;
     switch (selected_axis_) {
         case GizmoAxis::X: {
-            float delta_distance = delta.x * drag_sensitivity_;
             delta_value_ = glm::vec3(delta_distance, 0.0f, 0.0f);
             new_value.x += delta_distance;
             break;
         }
         case GizmoAxis::Y: {
-            float delta_distance = -delta.y * drag_sensitivity_;  // Invert Y (screen coordinates)
             delta_value_ = glm::vec3(0.0f, delta_distance, 0.0f);
             new_value.y += delta_distance;
             break;
         }
         case GizmoAxis::Z: {
-            // For Z axis, use X mouse movement with shift to disambiguate from X-axis
-            // Without modifier, use horizontal movement; this gives intuitive depth control
-            float delta_distance = delta.x * drag_sensitivity_;
             delta_value_ = glm::vec3(0.0f, 0.0f, delta_distance);
             new_value.z += delta_distance;
             break;

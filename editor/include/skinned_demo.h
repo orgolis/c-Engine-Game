@@ -165,7 +165,7 @@ private:
         auto C = [base](int e, int s, int u) {
             return base + static_cast<uint32_t>((e << 2) | ((s > 0) << 1) | (u > 0));
         };
-        const int quads[6][4] = {
+        const uint32_t quads[6][4] = {
             {C(0,-1,-1),C(0,1,-1),C(0,1,1),C(0,-1,1)},   // p0 cap
             {C(1,-1,-1),C(1,1,-1),C(1,1,1),C(1,-1,1)},   // p1 cap
             {C(0,-1,-1),C(1,-1,-1),C(1,-1,1),C(0,-1,1)}, // -side

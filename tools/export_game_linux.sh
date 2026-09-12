@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Export one GameWorldshaper project as a directly launchable Linux folder.
+# Export one GameWorldshaper project as one self-extracting Linux file.
 # Usage: tools/export_game_linux.sh /path/to/project.schizo [output-directory]
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
@@ -41,12 +41,6 @@ fi
 gws_game_name="$(printf '%s' "$gws_project_name" | tr -cs 'A-Za-z0-9._-' '_')"
 gws_output="${2:-$gws_project_dir/dist/linux}"
 gws_output="$(realpath -m -- "$gws_output")"
-if [[ -e "$gws_output" ]]; then
-    echo "Output already exists: $gws_output" >&2
-    echo "Choose a new output directory or remove the old export intentionally." >&2
-    exit 2
-fi
-
 gws_single_file="$(dirname -- "$gws_output")/${gws_game_name}-linux-x86_64.run"
 if [[ -e "$gws_single_file" ]]; then
     echo "Single-file export already exists: $gws_single_file" >&2
@@ -55,21 +49,21 @@ if [[ -e "$gws_single_file" ]]; then
 fi
 
 if [[ -f "$gws_repo_root/CMakeLists.txt" && -f "$gws_repo_root/CMakePresets.json" ]]; then
-    echo "[1/6] Configuring the optimized Linux build"
+    echo "[1/5] Configuring the optimized Linux build"
     # CMake resolves CMakePresets.json from its working directory, not from
     # -S. The editor deliberately runs inside the open project directory, so
     # enter the engine repository before using its build preset.
     cd -- "$gws_repo_root"
     cmake --preset linux-release
 
-    echo "[2/6] Building the runtime"
+    echo "[2/5] Building the runtime"
     # Leave CPU/GPU headroom for the editor that launched this background task.
     cmake --build --preset linux-release --target editor --parallel 4
     gws_runtime="$gws_repo_root/build/linux-release/bin/editor"
 else
     # Hub-installed engines contain a ready release runtime instead of source.
-    echo "[1/6] Using the installed Linux engine"
-    echo "[2/6] Reusing its release runtime"
+    echo "[1/5] Using the installed Linux engine"
+    echo "[2/5] Reusing its release runtime"
     gws_runtime="$gws_repo_root/editor"
 fi
 if [[ ! -x "$gws_runtime" ]]; then
@@ -81,7 +75,7 @@ gws_stage="$(mktemp -d /tmp/gameworldshaper-export.XXXXXX)"
 trap 'rm -rf -- "$gws_stage"' EXIT
 mkdir -p "$gws_stage/bin" "$gws_stage/project" "$gws_stage/assets"
 
-echo "[3/6] Copying the saved project and runtime content"
+echo "[3/5] Copying the saved project and runtime content"
 tar -C "$gws_project_dir" \
     --exclude='./dist' \
     --exclude='./cache' \
@@ -113,7 +107,7 @@ if [[ -x "$gws_shader_compiler" ]]; then
     install -m 755 "$gws_shader_compiler" "$gws_stage/bin/glslangValidator"
 fi
 
-echo "[4/6] Creating the game launcher"
+echo "[4/5] Creating the game launcher"
 printf '%s\n' \
     '#!/bin/sh' \
     'gws_game_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)' \
@@ -129,14 +123,13 @@ printf '%s\n' \
     "ESC releases input; click the game to resume. Close the window to quit." \
     > "$gws_stage/README.txt"
 
-echo "[5/6] Publishing the folder and archive"
-mkdir -p "$(dirname -- "$gws_output")"
-mv -- "$gws_stage" "$gws_output"
-trap - EXIT
-tar -C "$(dirname -- "$gws_output")" -czf "$gws_output.tar.gz" \
-    "$(basename -- "$gws_output")"
-
-echo "[6/6] Creating the self-extracting single-file game"
+echo "[5/5] Creating the self-extracting single-file game"
+mkdir -p "$(dirname -- "$gws_single_file")"
+# A .run is two files joined into one:
+#   1. this small shell program, which Linux can execute directly;
+#   2. the compressed game folder appended after __GWS_PAYLOAD__.
+# At startup the shell finds that marker, extracts everything after it into a
+# temporary folder, starts the real engine binary, then removes the folder.
 {
     printf '%s\n' \
         '#!/usr/bin/env bash' \
@@ -153,12 +146,10 @@ echo "[6/6] Creating the self-extracting single-file game"
         'set -e' \
         'exit "$gws_exit_code"' \
         '__GWS_PAYLOAD__'
-    tar -C "$gws_output" -czf - .
+    # This archive becomes the binary payload at the end of the .run file.
+    tar -C "$gws_stage" -czf - .
 } > "$gws_single_file"
 chmod 755 "$gws_single_file"
 
 echo
-echo "Export complete: $gws_output"
-echo "Archive:         $gws_output.tar.gz"
-echo "Single file:     $gws_single_file"
-echo "Start with:      $gws_output/$gws_game_name"
+echo "Export complete: $gws_single_file"
