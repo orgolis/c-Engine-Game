@@ -1265,10 +1265,15 @@ void ShowTaskPanel(EditorState& editor_state) {
     if (tasks.empty()) return;
 
     bool anything_worth_showing = false;
-    for (const auto& t : tasks)
+    for (const auto& t : tasks) {
+        // Game export owns a dedicated fixed-size progress dialog. Showing the
+        // same task here created a second auto-resizing progress window whose
+        // changing CMake status text made it grow throughout the build.
+        if (t.id == editor_state.game_export_task_id) continue;
         if (t.state == gws::tasks::TaskState::Pending ||
             t.state == gws::tasks::TaskState::Running ||
             t.state == gws::tasks::TaskState::Failed) { anything_worth_showing = true; break; }
+    }
     if (!anything_worth_showing) return;
 
     ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_FirstUseEver);
@@ -1280,6 +1285,7 @@ void ShowTaskPanel(EditorState& editor_state) {
 
     for (const auto& t : tasks) {
         using S = gws::tasks::TaskState;
+        if (t.id == editor_state.game_export_task_id) continue;
         if (t.state == S::Succeeded || t.state == S::Cancelled) continue;
 
         ImGui::PushID(static_cast<int>(t.id));
@@ -1689,7 +1695,6 @@ static void StartGameExport(EditorState& editor_state,
     editor_state.game_export_platform = platform_name;
     editor_state.game_export_result.clear();
     editor_state.show_game_export_dialog = true;
-    editor_state.show_task_panel = true;
     editor_state.set_status(std::string(platform_name) + " game export started");
 
     const uint64_t task_id = editor_state.tasks.submit(
