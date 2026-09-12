@@ -672,7 +672,7 @@ Only worth starting once there are users. Building a marketplace before a commun
 | # | Item | Repo | Notes |
 |---|---|---|---|
 | 9.1 | Platform abstraction layer | engine | Windows assumptions are spread through the tree |
-| 9.2 | **Linux** (+ the headless dedicated server) | engine | Where dedicated servers actually deploy; the server binary already exists |
+| 9.2 | **Linux** (+ the headless dedicated server) | engine | 🟡 **Desktop landed early, in PR #70 (v0.8.5)** — editor, `dedicated_server` and all checks build and pass on Ubuntu CI. Remaining: C++/C# script hosts, terminal, crash stacks, a release package; see REMAINING_WORK Stage 13 |
 | 9.3 | Web export | engine | Highest-reach target after Linux, and no NDA |
 | 9.4 | XR (OpenXR) | engine | Discrete and well-bounded; the Vulkan renderer is ready |
 | 9.5 | Mobile / touch | engine | |

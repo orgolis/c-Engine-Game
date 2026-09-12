@@ -31,6 +31,7 @@
 #include <fstream>
 #include <vector>
 #include <GLFW/glfw3.h>
+#include "gws/platform/user_dirs.h"
 
 namespace gws::renderer::gpu {
 
@@ -157,18 +158,15 @@ void VulkanDevice::shutdown() {
 }
 
 namespace {
-// %LOCALAPPDATA%/GameWorldshaper/cache/vulkan_pipeline_cache.bin — same
-// %LOCALAPPDATA%/GameWorldshaper convention as the diagnostics directory
-// (editor/src/main.cpp), so both live under one user-data root.
+// %LOCALAPPDATA%/GameWorldshaper/cache on Windows, ~/.cache/gameworldshaper on
+// Linux. Before the Linux port this read %LOCALAPPDATA% only, so on Linux the
+// cache landed in the working directory and was committed from the repo root.
 std::string pipeline_cache_path() {
-    std::string dir;
-    if (const char* la = std::getenv("LOCALAPPDATA"))
-        dir = std::string(la) + "\\GameWorldshaper\\cache";
-    else
-        dir = "cache";
+    std::filesystem::path dir = gws::platform::user_dir(gws::platform::UserDir::Cache);
+    if (dir.empty()) dir = "cache";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    return dir + "/vulkan_pipeline_cache.bin";
+    return (dir / "vulkan_pipeline_cache.bin").string();
 }
 }  // namespace
 
@@ -638,19 +636,27 @@ void VulkanDevice::create_instance(RenderConfig& config) {
     app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
     app_info.apiVersion = VK_API_VERSION_1_3;
 
-    // Required extensions
+    // Surface extensions come from GLFW, which knows the window system in use
+    // (Win32, X11 or Wayland). Hardcoding the Win32 one is what kept Linux out.
+    //
+    // Headless callers are legitimate: texture_check, skinning_check and
+    // model_check create a device and never open a window, so they never call
+    // glfwInit() and GLFW answers with no list. A device with no surface needs
+    // no surface extensions. Only when GLFW IS initialised and still has
+    // nothing (no Vulkan loader it can find) is this an error worth throwing.
+    std::vector<const char*> extensions;
+    glfwGetError(nullptr);  // clear any stale error so the check below is about this call
     uint32_t glfw_extension_count = 0;
     const char** glfw_extensions =
         glfwGetRequiredInstanceExtensions(&glfw_extension_count);
-
-    if (!glfw_extensions || glfw_extension_count == 0) {
+    if (glfw_extensions) {
+        extensions.assign(glfw_extensions, glfw_extensions + glfw_extension_count);
+    } else if (glfwGetError(nullptr) == GLFW_NOT_INITIALIZED) {
+        GWS_LOG_INFO("No window system initialised: creating a headless Vulkan instance");
+    } else {
         throw std::runtime_error(
             "GLFW did not provide required Vulkan instance extensions");
     }
-
-    std::vector<const char*> extensions(
-        glfw_extensions,
-        glfw_extensions + glfw_extension_count);
 
     // Validation layers — ONLY enable when requested AND actually installed. On a
     // machine without the Vulkan SDK the layer is absent; requesting it anyway

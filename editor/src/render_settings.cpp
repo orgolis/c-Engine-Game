@@ -1,5 +1,7 @@
 #include "render_settings.h"
 
+#include "gws/platform/user_dirs.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -15,11 +17,8 @@ namespace {
 fs::path settings_path() {
     // Per-machine, beside the Hub's own config. This describes the hardware in
     // front of the user, not the project they happen to have open.
-    if (const char* ad = std::getenv("APPDATA"))
-        return fs::path(ad) / "GameWorldshaper" / "render_settings.txt";
-    if (const char* hp = std::getenv("USERPROFILE"))
-        return fs::path(hp) / ".gameworldshaper" / "render_settings.txt";
-    return fs::path(".") / "render_settings.txt";
+    const fs::path dir = gws::platform::user_dir(gws::platform::UserDir::Config);
+    return (dir.empty() ? fs::path(".") : dir) / "render_settings.txt";
 }
 
 std::string trim(const std::string& s) {
