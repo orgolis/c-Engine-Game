@@ -3,12 +3,12 @@
 A Vulkan game engine and editor for Windows and Linux, written in C++20.
 
 ```bash
-cmake --build build/linux-debug --target editor --parallel &&
-./build/linux-debug/bin/editor
+cmake --build build/linux-debug --target editor --parallel && ./build/linux-debug/bin/editor
+```
 Deferred renderer, ECS gameplay layer, Jolt physics, spatial audio, and an editor
 you can extend in Python, C++ or C# without rebuilding it. Projects are launched and
 kept up to date through the [GameWorldshaper Hub](https://github.com/orgolis/WorldShaper-Hub).
-```
+
 > **Licence:** source-available, not open source. Free to use, learn from and ship
 > with; attribution required; a 3% royalty applies only above EUR 250,000 lifetime
 > revenue per product. See [Licence](#licence).
