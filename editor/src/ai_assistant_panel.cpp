@@ -568,7 +568,8 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(AiProvider provi
                        " exec "
                        "--ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules "
                        "--sandbox read-only --output-schema /work/response-schema.json "
-                       "-C /work -o /work/response.json - < /work/request.txt "
+                       "-C /work -o /work/response.json - < " +
+                       shell_quote(prompt_path.string()) + " "
                        "> /dev/null 2>&1";
         } else
 #endif
