@@ -22,8 +22,22 @@
 #include "project_paths.h"
 #include "secure_credential_store.h"
 
-#ifndef _WIN32
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <poll.h>
+#include <pthread.h>
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <cerrno>
 #endif
@@ -50,6 +64,290 @@ bool write_file(const fs::path& path, const std::string& value) {
     out.write(value.data(), static_cast<std::streamsize>(value.size()));
     return static_cast<bool>(out);
 }
+
+struct CodexMetadataConversation {
+    std::string jsonl;
+    std::string pending;
+    bool initialized = false;
+    bool model_replied = false;
+    bool usage_replied = false;
+
+    void accept(const char* bytes, size_t size) {
+        pending.append(bytes, size);
+        size_t newline = 0;
+        while ((newline = pending.find('\n')) != std::string::npos) {
+            std::string line = pending.substr(0, newline);
+            pending.erase(0, newline + 1);
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            if (line.empty())
+                continue;
+
+            jsonl += line;
+            jsonl.push_back('\n');
+            const json message = json::parse(line, nullptr, false);
+            if (message.is_discarded() || !message.is_object() || !message.contains("id"))
+                continue;
+            const int id = message.value("id", -1);
+            if (id == 0 && message.contains("result"))
+                initialized = true;
+            else if (id == 1)
+                model_replied = true;
+            else if (id == 2)
+                usage_replied = true;
+        }
+    }
+
+    bool complete() const { return model_replied && usage_replied; }
+};
+
+constexpr const char* kCodexInitializeRequest =
+    "{\"id\":0,\"method\":\"initialize\",\"params\":{\"clientInfo\":"
+    "{\"name\":\"gameworldshaper\",\"title\":\"GameWorldshaper\",\"version\":\"0.8.5\"}}}\n";
+constexpr const char* kCodexMetadataRequests =
+    "{\"method\":\"initialized\",\"params\":{}}\n"
+    "{\"id\":1,\"method\":\"model/list\",\"params\":{\"limit\":100,\"includeHidden\":false}}\n"
+    "{\"id\":2,\"method\":\"account/rateLimits/read\"}\n";
+
+#ifdef _WIN32
+bool write_pipe(HANDLE pipe, const char* bytes, size_t size) {
+    while (size > 0) {
+        const DWORD chunk = static_cast<DWORD>(std::min<size_t>(size, 1u << 20));
+        DWORD written = 0;
+        if (!WriteFile(pipe, bytes, chunk, &written, nullptr) || written == 0)
+            return false;
+        bytes += written;
+        size -= written;
+    }
+    return true;
+}
+
+std::string query_codex_metadata(const fs::path& executable, const fs::path& working_directory) {
+    SECURITY_ATTRIBUTES security{};
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+
+    HANDLE input_read = nullptr;
+    HANDLE input_write = nullptr;
+    HANDLE output_read = nullptr;
+    HANDLE output_write = nullptr;
+    if (!CreatePipe(&input_read, &input_write, &security, 0) ||
+        !CreatePipe(&output_read, &output_write, &security, 0)) {
+        if (input_read)
+            CloseHandle(input_read);
+        if (input_write)
+            CloseHandle(input_write);
+        if (output_read)
+            CloseHandle(output_read);
+        if (output_write)
+            CloseHandle(output_write);
+        return {};
+    }
+    if (!SetHandleInformation(input_write, HANDLE_FLAG_INHERIT, 0) ||
+        !SetHandleInformation(output_read, HANDLE_FLAG_INHERIT, 0)) {
+        CloseHandle(input_read);
+        CloseHandle(input_write);
+        CloseHandle(output_read);
+        CloseHandle(output_write);
+        return {};
+    }
+
+    HANDLE null_error = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &security,
+                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = input_read;
+    startup.hStdOutput = output_write;
+    startup.hStdError = null_error == INVALID_HANDLE_VALUE ? output_write : null_error;
+
+    const std::wstring executable_wide = executable.wstring();
+    std::wstring command = L"\"" + executable_wide +
+                           L"\" -c cli_auth_credentials_store=keyring app-server --listen stdio://";
+    std::vector<wchar_t> command_buffer(command.begin(), command.end());
+    command_buffer.push_back(L'\0');
+    const std::wstring directory_wide = working_directory.wstring();
+    PROCESS_INFORMATION process{};
+    const BOOL started = CreateProcessW(executable_wide.c_str(), command_buffer.data(), nullptr, nullptr, TRUE,
+                                        CREATE_NO_WINDOW, nullptr, directory_wide.c_str(), &startup, &process);
+    CloseHandle(input_read);
+    CloseHandle(output_write);
+    if (null_error != INVALID_HANDLE_VALUE)
+        CloseHandle(null_error);
+    if (!started) {
+        CloseHandle(input_write);
+        CloseHandle(output_read);
+        return {};
+    }
+
+    CodexMetadataConversation conversation;
+    bool sent_metadata_requests = false;
+    write_pipe(input_write, kCodexInitializeRequest, std::char_traits<char>::length(kCodexInitializeRequest));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (std::chrono::steady_clock::now() < deadline && !conversation.complete()) {
+        DWORD available = 0;
+        if (!PeekNamedPipe(output_read, nullptr, 0, nullptr, &available, nullptr))
+            break;
+        if (available > 0) {
+            char buffer[8192];
+            const DWORD wanted = std::min<DWORD>(available, static_cast<DWORD>(sizeof(buffer)));
+            DWORD received = 0;
+            if (!ReadFile(output_read, buffer, wanted, &received, nullptr) || received == 0)
+                break;
+            conversation.accept(buffer, received);
+        } else if (WaitForSingleObject(process.hProcess, 0) != WAIT_TIMEOUT) {
+            break;
+        } else {
+            Sleep(10);
+        }
+
+        if (conversation.initialized && !sent_metadata_requests) {
+            sent_metadata_requests = write_pipe(input_write, kCodexMetadataRequests,
+                                                std::char_traits<char>::length(kCodexMetadataRequests));
+            if (!sent_metadata_requests)
+                break;
+        }
+    }
+
+    CloseHandle(input_write);
+    if (WaitForSingleObject(process.hProcess, 500) == WAIT_TIMEOUT) {
+        TerminateProcess(process.hProcess, 0);
+        WaitForSingleObject(process.hProcess, 1000);
+    }
+    CloseHandle(output_read);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return conversation.jsonl;
+}
+#else
+bool write_pipe(int pipe, const char* bytes, size_t size) {
+    // A runtime that exits between fork and the first write must not terminate
+    // the editor with SIGPIPE. Block it only for this worker thread and consume
+    // only the signal generated by this write attempt.
+    sigset_t blocked_signals;
+    sigset_t previous_signals;
+    ::sigemptyset(&blocked_signals);
+    ::sigaddset(&blocked_signals, SIGPIPE);
+    if (::pthread_sigmask(SIG_BLOCK, &blocked_signals, &previous_signals) != 0)
+        return false;
+    sigset_t pending_signals;
+    ::sigpending(&pending_signals);
+    const bool pipe_was_pending = ::sigismember(&pending_signals, SIGPIPE) == 1;
+
+    bool success = true;
+    while (size > 0) {
+        const ssize_t written = ::write(pipe, bytes, size);
+        if (written < 0 && errno == EINTR)
+            continue;
+        if (written <= 0) {
+            success = false;
+            break;
+        }
+        bytes += written;
+        size -= static_cast<size_t>(written);
+    }
+    if (!success && !pipe_was_pending) {
+        timespec no_wait{};
+        ::sigtimedwait(&blocked_signals, nullptr, &no_wait);
+    }
+    ::pthread_sigmask(SIG_SETMASK, &previous_signals, nullptr);
+    return success;
+}
+
+std::string query_codex_metadata(const fs::path& executable, const fs::path& working_directory) {
+    int input_pipe[2] = {-1, -1};
+    int output_pipe[2] = {-1, -1};
+    if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0) {
+        if (input_pipe[0] >= 0)
+            ::close(input_pipe[0]);
+        if (input_pipe[1] >= 0)
+            ::close(input_pipe[1]);
+        if (output_pipe[0] >= 0)
+            ::close(output_pipe[0]);
+        if (output_pipe[1] >= 0)
+            ::close(output_pipe[1]);
+        return {};
+    }
+
+    pid_t child = ::fork();
+    if (child == 0) {
+        ::chdir(working_directory.c_str());
+        ::dup2(input_pipe[0], STDIN_FILENO);
+        ::dup2(output_pipe[1], STDOUT_FILENO);
+        const int null_error = ::open("/dev/null", O_WRONLY);
+        if (null_error >= 0) {
+            ::dup2(null_error, STDERR_FILENO);
+            ::close(null_error);
+        }
+        ::close(input_pipe[0]);
+        ::close(input_pipe[1]);
+        ::close(output_pipe[0]);
+        ::close(output_pipe[1]);
+        ::execl(executable.c_str(), executable.c_str(), "-c", "cli_auth_credentials_store=keyring", "app-server",
+                "--listen", "stdio://", static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+
+    ::close(input_pipe[0]);
+    ::close(output_pipe[1]);
+    if (child < 0) {
+        ::close(input_pipe[1]);
+        ::close(output_pipe[0]);
+        return {};
+    }
+
+    CodexMetadataConversation conversation;
+    bool sent_metadata_requests = false;
+    write_pipe(input_pipe[1], kCodexInitializeRequest, std::char_traits<char>::length(kCodexInitializeRequest));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    bool child_reaped = false;
+    while (std::chrono::steady_clock::now() < deadline && !conversation.complete()) {
+        pollfd descriptor{output_pipe[0], POLLIN, 0};
+        const int ready = ::poll(&descriptor, 1, 50);
+        if (ready > 0 && (descriptor.revents & (POLLIN | POLLHUP))) {
+            char buffer[8192];
+            const ssize_t received = ::read(output_pipe[0], buffer, sizeof(buffer));
+            if (received > 0)
+                conversation.accept(buffer, static_cast<size_t>(received));
+            else if (received == 0)
+                break;
+        } else if (ready < 0 && errno != EINTR) {
+            break;
+        }
+
+        if (conversation.initialized && !sent_metadata_requests) {
+            sent_metadata_requests = write_pipe(input_pipe[1], kCodexMetadataRequests,
+                                                std::char_traits<char>::length(kCodexMetadataRequests));
+            if (!sent_metadata_requests)
+                break;
+        }
+
+        int status = 0;
+        if (::waitpid(child, &status, WNOHANG) == child) {
+            child_reaped = true;
+            break;
+        }
+    }
+
+    ::close(input_pipe[1]);
+    ::close(output_pipe[0]);
+    if (!child_reaped) {
+        for (int attempt = 0; attempt < 50; ++attempt) {
+            int status = 0;
+            if (::waitpid(child, &status, WNOHANG) == child) {
+                child_reaped = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    if (!child_reaped) {
+        ::kill(child, SIGTERM);
+        ::waitpid(child, nullptr, 0);
+    }
+    return conversation.jsonl;
+}
+#endif
 
 std::string shell_quote(const std::string& value) {
 #ifdef _WIN32
@@ -410,96 +708,76 @@ AiAssistantPanel::AuthResult AiAssistantPanel::run_auth_command(AiProvider provi
                                      : "Not connected, or encrypted OS credential storage is unavailable.";
 
     if (result.signed_in) {
-        // The official local app-server exposes the account's available model
-        // catalog and allowance windows. Its JSON response stays in the
-        // owner-only request folder and account identifiers are never retained.
-        const fs::path request_path = run_dir / "account-request.jsonl";
-        const fs::path response_path = run_dir / "account-response.jsonl";
-        const std::string requests =
-            "{\"id\":0,\"method\":\"initialize\",\"params\":{\"clientInfo\":"
-            "{\"name\":\"gameworldshaper\",\"title\":\"GameWorldshaper\","
-            "\"version\":\"0.8.5\"}}}\n"
-            "{\"method\":\"initialized\"}\n"
-            "{\"id\":1,\"method\":\"model/list\",\"params\":{\"limit\":100}}\n"
-            "{\"id\":2,\"method\":\"account/rateLimits/read\"}\n";
-        if (write_file(request_path, requests)) {
-#ifdef _WIN32
-            constexpr const char* null_device = "NUL";
-#else
-            constexpr const char* null_device = "/dev/null";
-#endif
-            const std::string metadata_command =
-                "cd " + shell_quote(run_dir.string()) + " && " + shell_quote(executable.string()) +
-                " -c cli_auth_credentials_store=keyring app-server --listen stdio:// < " +
-                shell_quote(request_path.string()) + " > " + shell_quote(response_path.string()) + " 2> " +
-                shell_quote(null_device);
-            if (std::system(metadata_command.c_str()) == 0) {
-                std::istringstream lines(read_file(response_path));
-                std::string line;
-                while (std::getline(lines, line)) {
-                    try {
-                        const json message = json::parse(line, nullptr, false);
-                        if (message.is_discarded() || !message.is_object() || !message.contains("id") ||
-                            !message.contains("result"))
-                            continue;
-                        const int id = message.value("id", -1);
-                        const json& payload = message["result"];
-                        if (id == 1 && payload.contains("data") && payload["data"].is_array()) {
-                            for (const json& item : payload["data"]) {
-                                if (item.value("hidden", true))
-                                    continue;
-                                ModelOption option;
-                                option.id = item.value("model", std::string{});
-                                option.label = item.value("displayName", option.id);
-                                if (!option.id.empty())
-                                    result.models.push_back(std::move(option));
-                            }
-                        } else if (id == 2 && payload.contains("rateLimits")) {
-                            const auto add_snapshot = [&](const json& snapshot, const std::string& fallback_name) {
-                                const std::string name = snapshot.value("limitName", fallback_name);
-                                if (result.plan.empty() && snapshot.contains("planType") &&
-                                    snapshot["planType"].is_string())
-                                    result.plan = snapshot["planType"].get<std::string>();
-                                if (result.credit_balance.empty() && snapshot.contains("credits") &&
-                                    snapshot["credits"].is_object()) {
-                                    const json& credits = snapshot["credits"];
-                                    if (credits.value("unlimited", false))
-                                        result.credit_balance = "Unlimited";
-                                    else if (credits.contains("balance") && credits["balance"].is_string())
-                                        result.credit_balance = credits["balance"].get<std::string>();
-                                }
-                                const auto add_window = [&](const char* key, const char* suffix) {
-                                    if (!snapshot.contains(key) || !snapshot[key].is_object())
-                                        return;
-                                    const json& window = snapshot[key];
-                                    UsageWindow value;
-                                    const int64_t minutes = window.value("windowDurationMins", int64_t{0});
-                                    std::string duration = suffix;
-                                    if (minutes > 0 && minutes % (24 * 60) == 0)
-                                        duration = std::to_string(minutes / (24 * 60)) + "d";
-                                    else if (minutes > 0 && minutes % 60 == 0)
-                                        duration = std::to_string(minutes / 60) + "h";
-                                    value.label = name.empty() ? duration : name + " (" + duration + ")";
-                                    value.used_percent = window.value("usedPercent", -1);
-                                    value.resets_at = window.value("resetsAt", int64_t{0});
-                                    if (value.used_percent >= 0)
-                                        result.usage_windows.push_back(std::move(value));
-                                };
-                                add_window("primary", "short window");
-                                add_window("secondary", "long window");
-                            };
-
-                            if (payload.contains("rateLimitsByLimitId") && payload["rateLimitsByLimitId"].is_object()) {
-                                for (auto it = payload["rateLimitsByLimitId"].begin();
-                                     it != payload["rateLimitsByLimitId"].end(); ++it)
-                                    add_snapshot(it.value(), it.key());
-                            } else {
-                                add_snapshot(payload["rateLimits"], "Codex");
-                            }
+        // app-server requires a real handshake: wait for initialize's reply,
+        // acknowledge it, and only then request models and allowance windows.
+        // The exchange remains in memory; account metadata is never persisted.
+        const std::string metadata = query_codex_metadata(executable, run_dir);
+        if (!metadata.empty()) {
+            std::istringstream lines(metadata);
+            std::string line;
+            while (std::getline(lines, line)) {
+                try {
+                    const json message = json::parse(line, nullptr, false);
+                    if (message.is_discarded() || !message.is_object() || !message.contains("id") ||
+                        !message.contains("result"))
+                        continue;
+                    const int id = message.value("id", -1);
+                    const json& payload = message["result"];
+                    if (id == 1 && payload.contains("data") && payload["data"].is_array()) {
+                        for (const json& item : payload["data"]) {
+                            if (item.value("hidden", false))
+                                continue;
+                            ModelOption option;
+                            option.id = item.value("model", std::string{});
+                            option.label = item.value("displayName", option.id);
+                            if (!option.id.empty())
+                                result.models.push_back(std::move(option));
                         }
-                    } catch (const json::exception&) {
-                        // Ignore one malformed metadata line and keep the login valid.
+                    } else if (id == 2) {
+                        const auto add_snapshot = [&](const json& snapshot, const std::string& fallback_name) {
+                            const std::string name = snapshot.value("limitName", fallback_name);
+                            if (result.plan.empty() && snapshot.contains("planType") &&
+                                snapshot["planType"].is_string())
+                                result.plan = snapshot["planType"].get<std::string>();
+                            if (result.credit_balance.empty() && snapshot.contains("credits") &&
+                                snapshot["credits"].is_object()) {
+                                const json& credits = snapshot["credits"];
+                                if (credits.value("unlimited", false))
+                                    result.credit_balance = "Unlimited";
+                                else if (credits.contains("balance") && credits["balance"].is_string())
+                                    result.credit_balance = credits["balance"].get<std::string>();
+                            }
+                            const auto add_window = [&](const char* key, const char* suffix) {
+                                if (!snapshot.contains(key) || !snapshot[key].is_object())
+                                    return;
+                                const json& window = snapshot[key];
+                                UsageWindow value;
+                                const int64_t minutes = window.value("windowDurationMins", int64_t{0});
+                                std::string duration = suffix;
+                                if (minutes > 0 && minutes % (24 * 60) == 0)
+                                    duration = std::to_string(minutes / (24 * 60)) + "d";
+                                else if (minutes > 0 && minutes % 60 == 0)
+                                    duration = std::to_string(minutes / 60) + "h";
+                                value.label = name.empty() ? duration : name + " (" + duration + ")";
+                                value.used_percent = window.value("usedPercent", -1);
+                                value.resets_at = window.value("resetsAt", int64_t{0});
+                                if (value.used_percent >= 0)
+                                    result.usage_windows.push_back(std::move(value));
+                            };
+                            add_window("primary", "short window");
+                            add_window("secondary", "long window");
+                        };
+
+                        if (payload.contains("rateLimitsByLimitId") && payload["rateLimitsByLimitId"].is_object()) {
+                            for (auto it = payload["rateLimitsByLimitId"].begin();
+                                 it != payload["rateLimitsByLimitId"].end(); ++it)
+                                add_snapshot(it.value(), it.key());
+                        } else if (payload.contains("rateLimits") && payload["rateLimits"].is_object()) {
+                            add_snapshot(payload["rateLimits"], "Codex");
+                        }
                     }
+                } catch (const json::exception&) {
+                    // Ignore one malformed metadata line and keep the login valid.
                 }
             }
         }
@@ -667,17 +945,20 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
     }
 
     if (provider_ == AiProvider::Codex) {
-        ImGui::BeginDisabled(auth_running_ || runtime_installing_ || !auth_.cli_available ||
-                             !auth_.secure_store_available);
-        if (ImGui::Button("Sign in with ChatGPT / Google"))
-            start_login();
-        ImGui::EndDisabled();
-        ImGui::SameLine();
+        if (!auth_.signed_in) {
+            ImGui::BeginDisabled(auth_running_ || runtime_installing_ || !auth_.cli_available ||
+                                 !auth_.secure_store_available);
+            if (ImGui::Button("Sign in with ChatGPT"))
+                start_login();
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+        }
         ImGui::BeginDisabled(auth_running_ || runtime_installing_);
         if (ImGui::SmallButton("Refresh"))
             start_auth_check();
         ImGui::EndDisabled();
-        ImGui::TextDisabled("ChatGPT login uses your plan allowance. Credentials stay in the encrypted OS keyring.");
+        ImGui::TextDisabled(auth_.signed_in ? "ChatGPT plan  -  encrypted OS keyring"
+                                           : "Uses your ChatGPT plan; credentials stay in the encrypted OS keyring.");
     } else {
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::InputTextWithHint("##anthropic_api_key", "Anthropic Console API key", anthropic_api_key_,
@@ -722,7 +1003,7 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
         ImGui::EndDisabled();
         ImGui::TextDisabled("Saved only in Windows Credential Manager, macOS Keychain, or Linux Secret Service.");
     }
-    if (auth_checked_ && !auth_.detail.empty())
+    if (auth_checked_ && !auth_.signed_in && !auth_.detail.empty())
         ImGui::TextDisabled("%s", auth_.detail.c_str());
 
     ImGui::Spacing();
