@@ -346,10 +346,11 @@ std::string EngineAgentOutputSchemaJson() {
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["type", "entity_id", "name", "primitive", "path", "content", "position", "rotation_deg", "scale"],
+        "required": ["type", "entity_id", "target_name", "name", "primitive", "path", "content", "position", "rotation_deg", "scale"],
         "properties": {
           "type": {"type": "string", "enum": ["create_entity", "set_transform", "rename_entity", "delete_entity", "set_tag", "write_script", "attach_script", "write_model_obj", "set_mesh", "select_entity"]},
           "entity_id": {"type": "integer", "minimum": 0},
+          "target_name": {"type": "string"},
           "name": {"type": "string"},
           "primitive": {"type": "string", "enum": ["", "empty", "cube", "sphere", "plane", "capsule", "cylinder", "camera", "directional_light", "global_light", "asset"]},
           "path": {"type": "string"},
@@ -376,14 +377,19 @@ std::string BuildEngineAgentPrompt(const std::string& user_request,
         << "- set_transform: entity_id must be from the snapshot. Supply the complete LOCAL position, Euler XYZ rotation in degrees, and scale.\n"
         << "- rename_entity/delete_entity/set_tag/select_entity: entity_id must be from the snapshot.\n"
         << "- write_script: only assets/scripts/ai_generated/*.py. PocketPy has the engine module but no OS/file access. Define on_start(e) or on_update(e, dt).\n"
-        << "- attach_script: path must be an AI-generated Python path.\n"
+        << "- attach_script: path must be an AI-generated Python path. For an existing entity use entity_id. For an entity created earlier in THIS plan use entity_id 0 and its exact unique target_name.\n"
         << "- write_model_obj: only assets/generated/models/*.obj. Produce a small self-contained Wavefront OBJ using v/vt/vn/f/o/g/s/usemtl only; never mtllib.\n"
         << "- set_mesh: path must be a supported mesh below assets/.\n"
         << "- If a field is irrelevant use 0, empty string, position [0,0,0], rotation_deg [0,0,0], scale [1,1,1].\n"
-        << "- A newly created entity cannot be targeted by a later action in the same plan; include its final transform/path in create_entity.\n"
-        << "- Prefer the fewest actions. Explain the proposed result briefly in message.\n\n"
-        << "AVAILABLE SAFE PYTHON API\n"
-        << "import engine; engine.log, dt, time, find, get_position, set_position, get_rotation, set_rotation, get_scale, set_scale, key_down, mouse_down, mouse_delta, spawn_cube, spawn_sphere, destroy, set_velocity, add_impulse, raycast, set_color, set_emissive, audio_play, audio_stop, get_attribute, set_attribute, adjust_attribute, has_tag, add_tag, remove_tag, emit_event, distance, translate, get_forward.\n\n"
+        << "- Make the requested result functional, not merely decorative. Use a gameplay script when behavior is requested. A typical new scripted object needs: write_script, create_entity, attach_script(target_name=created name).\n"
+        << "- Prefer the fewest actions that COMPLETELY implement the request. Check ids/names and Python call arity before answering. Explain the playable result briefly in message.\n\n"
+        << "SAFE PYTHON API (exact signatures; import engine first)\n"
+        << "Lifecycle: def on_start(e); def on_update(e, dt). Persist state in module globals.\n"
+        << "Scene: find(name)->id; get_position(id)->(x,y,z); set_position(id,x,y,z); get_rotation(id)->(x,y,z); set_rotation(id,x,y,z); get_scale(id)->(x,y,z); set_scale(id,x,y,z); distance(a,b)->float; translate(id,dx,dy,dz); get_forward(id)->(x,y,z); destroy(id).\n"
+        << "Input: key_down(key)->bool; mouse_down(button)->bool; mouse_delta()->(dx,dy). Constants include KEY_W/A/S/D/SPACE and MOUSE_LEFT/RIGHT.\n"
+        << "Spawn/physics: spawn_cube(x,y,z,size,r,g,b,dynamic)->id; spawn_sphere(x,y,z,size,r,g,b,dynamic)->id; set_velocity(id,x,y,z); add_impulse(id,x,y,z); raycast(ox,oy,oz,dx,dy,dz,max_dist)->(hit,x,y,z,entity_id).\n"
+        << "Gameplay: get_attribute(id,name)->float; set_attribute(id,name,value); adjust_attribute(id,name,delta); apply_damage(id,amount,type)->float; apply_heal(id,attribute,amount); has_tag/add_tag/remove_tag; emit_event(name).\n"
+        << "Visuals: set_color(id,r,g,b,a); set_emissive(id,r,g,b,intensity). Never import any module except engine.\n\n"
         << "CURRENT SCENE SNAPSHOT\n" << scene_snapshot << "\n\n"
         << "USER REQUEST\n" << user_request << '\n';
     return out.str();
@@ -406,6 +412,7 @@ bool ParseEngineAgentPlan(const std::string& provider_output,
             EngineAgentAction a;
             a.type = item.value("type", "");
             a.entity_id = item.value("entity_id", 0u);
+            a.target_name = item.value("target_name", "");
             a.name = item.value("name", "");
             a.primitive = item.value("primitive", "");
             a.path = item.value("path", "");
@@ -449,6 +456,7 @@ bool ValidateEngineAgentPlan(const EngineAgentPlan& plan,
 
     std::unordered_set<uint32_t> deleted;
     std::set<std::string> planned_files;
+    std::set<std::string> planned_entity_names;
     for (size_t i = 0; i < plan.actions.size(); ++i) {
         const EngineAgentAction& a = plan.actions[i];
         const std::string prefix = "Action " + std::to_string(i + 1) + ": ";
@@ -467,9 +475,15 @@ bool ValidateEngineAgentPlan(const EngineAgentPlan& plan,
         const bool targets_entity = a.type == "set_transform" || a.type == "rename_entity" ||
             a.type == "delete_entity" || a.type == "set_tag" || a.type == "attach_script" ||
             a.type == "set_mesh" || a.type == "select_entity";
-        if (targets_entity && (!a.entity_id || !context.scene->GetEntityById(a.entity_id))) {
-            error = prefix + "entity id does not exist in the current scene.";
-            return false;
+        if (targets_entity) {
+            const bool existing_target = a.entity_id && context.scene->GetEntityById(a.entity_id);
+            const bool newly_created_script_target = a.type == "attach_script" && !a.entity_id &&
+                !a.target_name.empty() && planned_entity_names.count(a.target_name);
+            if (!existing_target && !newly_created_script_target) {
+                error = prefix + "target must be an existing entity id, or attach_script must name "
+                                 "an entity created earlier in this plan.";
+                return false;
+            }
         }
         if (targets_entity && deleted.count(a.entity_id)) {
             error = prefix + "targets an entity deleted earlier in the plan.";
@@ -482,6 +496,10 @@ bool ValidateEngineAgentPlan(const EngineAgentPlan& plan,
                 error = prefix + "invalid entity name or primitive.";
                 return false;
             }
+            if (context.scene->GetEntityByName(a.name) || planned_entity_names.count(a.name)) {
+                error = prefix + "created entity names must be unique so later actions target safely.";
+                return false;
+            }
             if (lower(a.primitive) == "asset") {
                 auto p = resolve_existing_mesh(context, a.path, error);
                 if (!p || (!fs::is_regular_file(*p) && !planned_files.count(path_key(*p)))) {
@@ -489,6 +507,7 @@ bool ValidateEngineAgentPlan(const EngineAgentPlan& plan,
                     return false;
                 }
             }
+            planned_entity_names.insert(a.name);
         } else if (a.type == "rename_entity" && (a.name.empty() || a.name.size() > 128)) {
             error = prefix + "entity names must contain 1 to 128 characters.";
             return false;
@@ -612,24 +631,41 @@ bool ApplyEngineAgentPlan(const EngineAgentPlan& plan,
             transaction->Add(file_write_command(*path, a.content,
                                                 "AI: write OBJ model", context.refresh_assets));
         } else if (a.type == "attach_script") {
-            auto entity = context.scene->GetEntityById(a.entity_id);
-            auto previous = entity->GetComponent<schizo::scene::ScriptComponent>();
-            const bool created = !previous;
-            if (!previous) previous = std::make_shared<schizo::scene::ScriptComponent>();
-            const std::string before = previous->GetScriptPath();
+            // A generated entity does not have an id until the create command
+            // immediately before this one executes. Resolve it lazily by its
+            // validator-guaranteed unique name, while retaining the entity for
+            // a deterministic undo/redo cycle.
+            struct AttachState {
+                std::shared_ptr<schizo::scene::Entity> entity;
+                std::string previous_path;
+                bool component_was_created = false;
+                bool initialized = false;
+            };
+            auto state = std::make_shared<AttachState>();
+            if (a.entity_id) state->entity = context.scene->GetEntityById(a.entity_id);
+            const auto scene = context.scene;
             transaction->Add(std::make_unique<FunctionCommand>(
-                [entity, previous, path = a.path, created, mark]() {
-                    if (created && !entity->GetComponent<schizo::scene::ScriptComponent>())
-                        entity->AddComponent<schizo::scene::ScriptComponent>(*previous);
-                    auto current = entity->GetComponent<schizo::scene::ScriptComponent>();
+                [scene, state, target_name = a.target_name, path = a.path, mark]() {
+                    if (!state->entity && !target_name.empty())
+                        state->entity = scene->GetEntityByName(target_name);
+                    if (!state->entity) return;  // validation makes this unreachable
+                    auto current = state->entity->GetComponent<schizo::scene::ScriptComponent>();
+                    if (!state->initialized) {
+                        state->component_was_created = !current;
+                        state->previous_path = current ? current->GetScriptPath() : std::string{};
+                        state->initialized = true;
+                    }
+                    if (!current)
+                        current = state->entity->AddComponent<schizo::scene::ScriptComponent>();
                     if (current) current->SetScriptPath(path);
                     if (mark) mark();
                 },
-                [entity, before, created, mark]() {
-                    auto current = entity->GetComponent<schizo::scene::ScriptComponent>();
+                [state, mark]() {
+                    if (!state->entity) return;
+                    auto current = state->entity->GetComponent<schizo::scene::ScriptComponent>();
                     if (current) {
-                        if (created) entity->RemoveComponent(current);
-                        else current->SetScriptPath(before);
+                        if (state->component_was_created) state->entity->RemoveComponent(current);
+                        else current->SetScriptPath(state->previous_path);
                     }
                     if (mark) mark();
                 },
@@ -666,7 +702,11 @@ std::string DescribeEngineAgentAction(const EngineAgentAction& a) {
     if (a.type == "delete_entity") return "Delete entity " + std::to_string(a.entity_id);
     if (a.type == "set_tag") return "Set tag of entity " + std::to_string(a.entity_id) + " to '" + a.name + "'";
     if (a.type == "write_script") return "Write safe Python script " + a.path;
-    if (a.type == "attach_script") return "Attach " + a.path + " to entity " + std::to_string(a.entity_id);
+    if (a.type == "attach_script") {
+        const std::string target = a.entity_id ? "entity " + std::to_string(a.entity_id)
+                                               : "new entity '" + a.target_name + "'";
+        return "Attach " + a.path + " to " + target;
+    }
     if (a.type == "write_model_obj") return "Generate OBJ model " + a.path;
     if (a.type == "set_mesh") return "Set mesh of entity " + std::to_string(a.entity_id) + " to " + a.path;
     if (a.type == "select_entity") return "Select entity " + std::to_string(a.entity_id);

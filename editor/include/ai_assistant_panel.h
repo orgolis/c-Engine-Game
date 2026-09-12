@@ -69,7 +69,9 @@ private:
     void poll_auth();
     void start_runtime_install();
     void poll_runtime_install();
-    static ProviderResult run_provider(AiProvider provider, const std::string& model, const std::string& prompt);
+    static ProviderResult run_provider(AiProvider provider, const std::string& model,
+                                       const std::string& reasoning_effort,
+                                       const std::string& prompt);
     static AuthResult run_auth_command(AiProvider provider, bool login);
 
     AiProvider provider_ = AiProvider::Codex;
@@ -85,7 +87,11 @@ private:
     bool runtime_installing_ = false;
     std::future<AiRuntimeInstallResult> runtime_future_;
     std::string codex_model_;
+    // Explicitly use a capable reasoning level instead of silently inheriting
+    // whichever (possibly low) default the CLI happens to have.
+    std::string codex_reasoning_effort_ = "high";
     std::string claude_model_ = "sonnet";
+    std::string active_request_description_;
     uint64_t session_input_tokens_ = 0;
     uint64_t session_output_tokens_ = 0;
     double session_cost_usd_ = 0.0;

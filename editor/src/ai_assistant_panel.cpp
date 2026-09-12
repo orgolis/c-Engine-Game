@@ -482,6 +482,7 @@ AiAssistantPanel::~AiAssistantPanel() {
 }
 
 AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(AiProvider provider, const std::string& model,
+                                                                const std::string& reasoning_effort,
                                                                 const std::string& prompt) {
     ProviderResult result;
     fs::path executable = FindAiRuntime(runtime_provider(provider));
@@ -563,9 +564,11 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(AiProvider provi
                        shell_quote(executable.filename().string()) +
                        " "
                        "-c cli_auth_credentials_store=keyring "
-                       "--ask-for-approval never" +
+                       "--ask-for-approval never exec" +
                        (model.empty() ? std::string{} : " --model " + shell_quote(model)) +
-                       " exec "
+                       (reasoning_effort.empty() ? std::string{} :
+                           " -c model_reasoning_effort=" + shell_quote(reasoning_effort)) +
+                       " "
                        "--ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules "
                        "--sandbox read-only --output-schema /work/response-schema.json "
                        "-C /work -o /work/response.json - < " +
@@ -575,9 +578,11 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(AiProvider provi
 #endif
         {
             command += shell_quote(executable.string()) +
-                       " -c cli_auth_credentials_store=keyring --ask-for-approval never" +
+                       " -c cli_auth_credentials_store=keyring --ask-for-approval never exec" +
                        (model.empty() ? std::string{} : " --model " + shell_quote(model)) +
-                       " exec --ephemeral --skip-git-repo-check --ignore-user-config "
+                       (reasoning_effort.empty() ? std::string{} :
+                           " -c model_reasoning_effort=" + shell_quote(reasoning_effort)) +
+                       " --ephemeral --skip-git-repo-check --ignore-user-config "
                        "--ignore-rules --sandbox read-only "
                        "--output-schema " +
                        shell_quote(schema_path.string()) + " -C " + shell_quote(run_dir.string()) + " -o " +
@@ -877,10 +882,16 @@ void AiAssistantPanel::start_request(const std::shared_ptr<schizo::scene::Scene>
     const std::string full_prompt = BuildEngineAgentPrompt(prompt_, outgoing_scene_summary_);
     const AiProvider selected_provider = provider_;
     const std::string selected_model = provider_ == AiProvider::Codex ? codex_model_ : claude_model_;
+    const std::string selected_effort = provider_ == AiProvider::Codex ? codex_reasoning_effort_ : std::string{};
+    const std::string shown_model = selected_model.empty() ? "account default" : selected_model;
+    active_request_description_ = provider_ == AiProvider::Codex
+        ? shown_model + " / " + selected_effort + " reasoning"
+        : shown_model;
     running_ = true;
-    status_ = std::string(provider_name(provider_)) + " is preparing a proposal...";
-    future_ = std::async(std::launch::async, [selected_provider, selected_model, full_prompt] {
-        return run_provider(selected_provider, selected_model, full_prompt);
+    status_ = std::string(provider_name(provider_)) + " is preparing with " +
+              active_request_description_ + "...";
+    future_ = std::async(std::launch::async, [selected_provider, selected_model, selected_effort, full_prompt] {
+        return run_provider(selected_provider, selected_model, selected_effort, full_prompt);
     });
 }
 
@@ -907,7 +918,7 @@ void AiAssistantPanel::poll_request() {
         error_ = parse_error;
         return;
     }
-    status_ = "Proposal ready. Review it before applying.";
+    status_ = "Proposal ready from " + active_request_description_ + ". Review it before applying.";
     pending_plan_ = std::move(plan);
 }
 
@@ -1032,7 +1043,7 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
         for (const ModelOption& option : auth_.models)
             if (option.id == codex_model_)
                 preview = option.label.c_str();
-        ImGui::BeginDisabled(!auth_.cli_available || runtime_installing_);
+        ImGui::BeginDisabled(!auth_.cli_available || runtime_installing_ || running_);
         ImGui::SetNextItemWidth(-1.0f);
         if (ImGui::BeginCombo("##codex_model", preview)) {
             if (ImGui::Selectable("Default (account recommended)", codex_model_.empty()))
@@ -1047,6 +1058,24 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
             ImGui::EndCombo();
         }
         ImGui::EndDisabled();
+
+        const char* effort_labels[] = {"Standard", "Strong", "Maximum"};
+        const char* effort_ids[] = {"medium", "high", "xhigh"};
+        int effort_index = 1;
+        for (int i = 0; i < 3; ++i)
+            if (codex_reasoning_effort_ == effort_ids[i]) effort_index = i;
+        ImGui::TextUnformatted("Reasoning");
+        ImGui::BeginDisabled(running_);
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::Combo("##codex_reasoning", &effort_index, effort_labels, 3))
+            codex_reasoning_effort_ = effort_ids[effort_index];
+        ImGui::EndDisabled();
+
+        const char* selected_label = "Account default";
+        for (const ModelOption& option : auth_.models)
+            if (option.id == codex_model_) selected_label = option.label.c_str();
+        ImGui::TextColored(ImVec4(0.35f, 0.75f, 0.95f, 1.0f), "Will use: %s (%s reasoning)",
+                           selected_label, codex_reasoning_effort_.c_str());
 
         if (!auth_.usage_windows.empty()) {
             if (auth_.plan.empty())

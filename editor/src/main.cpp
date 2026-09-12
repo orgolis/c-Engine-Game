@@ -8187,8 +8187,6 @@ int main(int argc, char** argv) {
         // player can't accidentally hover or click editor UI while playing.
         bool prev_cursor_captured = false;
         bool prev_left_mouse_down = false;
-        double last_cursor_x = 0.0;
-        double last_cursor_y = 0.0;
         bool cursor_delta_primed = false;
 
         // Variable timestep clock. Previously the loop passed a constant
@@ -8623,9 +8621,10 @@ int main(int argc, char** argv) {
             // ----------------------------------------------------------------
             // Play-mode cursor pipeline. Gated tightly on IsPlaying() so it is
             // a no-op outside play. No ImGui ConfigFlags manipulation here —
-            // we only toggle GLFW's cursor mode and feed raw deltas. Editor
-            // panels remain hoverable, but the OS cursor is hidden and locked
-            // so the player can't move it onto a panel by accident.
+            // we toggle GLFW's cursor mode and feed center-relative deltas.
+            // GLFW_CURSOR_DISABLED alone keeps an unbounded invisible virtual
+            // position; explicitly re-centering every frame makes the cursor's
+            // real anchor deterministic until Stop or Escape releases it.
             // ----------------------------------------------------------------
             const bool playing = editor_state.scene_playback_manager &&
                                  editor_state.scene_playback_manager->IsPlaying();
@@ -8636,23 +8635,40 @@ int main(int argc, char** argv) {
                     glfwSetInputMode(glfw_window, GLFW_CURSOR,
                                      want_capture ? GLFW_CURSOR_DISABLED
                                                   : GLFW_CURSOR_NORMAL);
+                    if (glfwRawMouseMotionSupported())
+                        glfwSetInputMode(glfw_window, GLFW_RAW_MOUSE_MOTION,
+                                         want_capture ? GLFW_TRUE : GLFW_FALSE);
                     cursor_delta_primed = false;
                     prev_cursor_captured = want_capture;
+
+                    if (want_capture) {
+                        int window_width = 0, window_height = 0;
+                        glfwGetWindowSize(glfw_window, &window_width, &window_height);
+                        glfwSetCursorPos(glfw_window, window_width * 0.5, window_height * 0.5);
+                    }
                 }
                 if (want_capture) {
+                    int window_width = 0, window_height = 0;
+                    glfwGetWindowSize(glfw_window, &window_width, &window_height);
+                    const double center_x = window_width * 0.5;
+                    const double center_y = window_height * 0.5;
                     double cx = 0.0, cy = 0.0;
                     glfwGetCursorPos(glfw_window, &cx, &cy);
                     if (cursor_delta_primed) {
                         editor_state.scene_playback_manager->OnMouseDelta(
-                            static_cast<float>(cx - last_cursor_x),
-                            static_cast<float>(cy - last_cursor_y));
+                            static_cast<float>(cx - center_x),
+                            static_cast<float>(cy - center_y));
                     }
-                    last_cursor_x = cx;
-                    last_cursor_y = cy;
+                    // Keep both GLFW's hidden virtual cursor and the position
+                    // restored on release at the center, instead of letting an
+                    // invisible pointer drift across the desktop.
+                    glfwSetCursorPos(glfw_window, center_x, center_y);
                     cursor_delta_primed = true;
                 }
             } else if (prev_cursor_captured) {
                 // Exited play mode — restore the OS cursor we hid earlier.
+                if (glfwRawMouseMotionSupported())
+                    glfwSetInputMode(glfw_window, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
                 glfwSetInputMode(glfw_window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
                 prev_cursor_captured = false;
                 cursor_delta_primed = false;

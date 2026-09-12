@@ -33,6 +33,9 @@ struct EngineAgentAction {
     std::string type;
 
     uint32_t entity_id = 0;
+    // For attach_script, this may identify an entity created earlier in the
+    // same plan. Existing scene entities continue to use the stable numeric id.
+    std::string target_name;
     std::string name;
     std::string primitive;   // empty/cube/sphere/plane/capsule/cylinder/...
     std::string path;        // always project-relative
