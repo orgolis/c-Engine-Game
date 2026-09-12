@@ -1,4 +1,6 @@
 #include "ai_assistant_panel.h"
+#include "project_paths.h"
+#include "secure_credential_store.h"
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>
@@ -12,6 +14,12 @@
 #include <sstream>
 #include <system_error>
 #include <thread>
+#include <utility>
+
+#ifndef _WIN32
+#include <cerrno>
+#include <sys/stat.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -58,17 +66,42 @@ fs::path make_run_directory() {
         const fs::path candidate = fs::temp_directory_path() /
             ("worldshaper-agent-" + std::to_string(stamp) + "-" +
              std::to_string(random()) + "-" + std::to_string(attempt));
+#ifdef _WIN32
         std::error_code ec;
         if (fs::create_directory(candidate, ec)) return candidate;
+#else
+        // Create atomically as owner-only. This folder briefly contains the
+        // reduced scene request and provider answer, but never credentials.
+        if (::mkdir(candidate.c_str(), S_IRWXU) == 0) return candidate;
+        if (errno != EEXIST) return {};
+#endif
     }
     return {};
 }
 
-std::string clipped(std::string value, size_t limit = 5000) {
-    if (value.size() <= limit) return value;
-    value.resize(limit);
-    value += "\n... output shortened ...";
-    return value;
+std::string json_string(const std::string& value) {
+    std::string result = "\"";
+    for (const unsigned char c : value) {
+        switch (c) {
+            case '\"': result += "\\\""; break;
+            case '\\': result += "\\\\"; break;
+            case '\b': result += "\\b"; break;
+            case '\f': result += "\\f"; break;
+            case '\n': result += "\\n"; break;
+            case '\r': result += "\\r"; break;
+            case '\t': result += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    constexpr char hex[] = "0123456789abcdef";
+                    result += "\\u00";
+                    result += hex[(c >> 4) & 0x0f];
+                    result += hex[c & 0x0f];
+                } else {
+                    result += static_cast<char>(c);
+                }
+        }
+    }
+    return result + "\"";
 }
 
 const char* provider_name(AiProvider provider) {
@@ -98,6 +131,14 @@ fs::path find_executable(const std::string& name) {
     return {};
 }
 
+fs::path credential_helper_path() {
+    fs::path path = executable_dir() / "worldshaper-credential-helper";
+#ifdef _WIN32
+    path += ".exe";
+#endif
+    return path;
+}
+
 void readonly_text(const char* id, const std::string& text, float height) {
     ImGui::InputTextMultiline(id, const_cast<char*>(text.c_str()), text.size() + 1,
                               ImVec2(-1.0f, height), ImGuiInputTextFlags_ReadOnly);
@@ -110,7 +151,9 @@ AiAssistantPanel::AiAssistantPanel() {
                   "Build a small playable area around the selected entity.");
 }
 
-AiAssistantPanel::~AiAssistantPanel() = default;
+AiAssistantPanel::~AiAssistantPanel() {
+    secure_credentials::Erase(anthropic_api_key_, sizeof(anthropic_api_key_));
+}
 
 AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(
     AiProvider provider, const std::string& prompt) {
@@ -124,7 +167,6 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(
     const fs::path prompt_path = run_dir / "request.txt";
     const fs::path schema_path = run_dir / "response-schema.json";
     const fs::path response_path = run_dir / "response.json";
-    const fs::path log_path = run_dir / "provider.log";
     const std::string schema = EngineAgentOutputSchemaJson();
     if (!write_file(prompt_path, prompt) || !write_file(schema_path, schema)) {
         result.error = "Could not prepare the isolated provider request.";
@@ -143,62 +185,92 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(
         // this engine checkout) and clears inherited environment secrets. The
         // only writable/visible workspace is this one-request temp folder.
         if (fs::is_regular_file("/usr/bin/bwrap")) {
-            fs::path codex_home;
-            if (const char* configured = std::getenv("CODEX_HOME"))
-                codex_home = configured;
-            else if (const char* home = std::getenv("HOME"))
-                codex_home = fs::path(home) / ".codex";
-            const fs::path auth = codex_home / "auth.json";
+            const char* runtime_dir = std::getenv("XDG_RUNTIME_DIR");
+            const char* session_bus = std::getenv("DBUS_SESSION_BUS_ADDRESS");
+            if (!runtime_dir || !session_bus) {
+                result.error =
+                    "The encrypted OS credential vault is unavailable in the sandbox.";
+                std::error_code ec;
+                fs::remove_all(run_dir, ec);
+                return result;
+            }
 
             command +=
                 "/usr/bin/bwrap --die-with-parent --new-session --unshare-pid "
                 "--ro-bind /usr /usr --ro-bind /etc /etc --ro-bind /run /run "
                 "--proc /proc --dev /dev --tmpfs /home --tmpfs /tmp "
                 "--dir /home/agent --dir /home/agent/.codex ";
-            if (fs::is_regular_file(auth))
-                command += "--ro-bind " + shell_quote(auth.string()) +
-                           " /home/agent/.codex/auth.json ";
             command +=
                 "--bind " + shell_quote(run_dir.string()) + " /work --chdir /work "
                 "--clearenv --setenv PATH /usr/bin:/usr/lib/chatgpt/resources "
                 "--setenv HOME /home/agent --setenv CODEX_HOME /home/agent/.codex "
-                "--setenv LANG C.UTF-8 codex --ask-for-approval never exec "
+                "--setenv XDG_RUNTIME_DIR " + shell_quote(runtime_dir) + " "
+                "--setenv DBUS_SESSION_BUS_ADDRESS " + shell_quote(session_bus) + " "
+                "--setenv LANG C.UTF-8 codex "
+                "-c cli_auth_credentials_store=keyring "
+                "--ask-for-approval never exec "
                 "--ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules "
                 "--sandbox read-only --output-schema /work/response-schema.json "
                 "-C /work -o /work/response.json - < /work/request.txt "
-                "> /work/provider.log 2>&1";
+                "> /dev/null 2>&1";
         } else
 #endif
         {
         command +=
-            "codex --ask-for-approval never exec --ephemeral --skip-git-repo-check --ignore-user-config "
+            "codex -c cli_auth_credentials_store=keyring "
+            "--ask-for-approval never exec --ephemeral --skip-git-repo-check --ignore-user-config "
             "--ignore-rules --sandbox read-only "
             "--output-schema " + shell_quote(schema_path.string()) +
             " -C " + shell_quote(run_dir.string()) +
             " -o " + shell_quote(response_path.string()) +
             " - < " + shell_quote(prompt_path.string()) +
-            " > " + shell_quote(log_path.string()) + " 2>&1";
+            " > " + shell_quote(
+#ifdef _WIN32
+                "NUL"
+#else
+                "/dev/null"
+#endif
+            ) + " 2>&1";
         }
     } else {
-        // Claude gets no tools and no MCP servers. Plan mode is an additional
-        // safety layer; the JSON schema keeps its result provider-neutral.
+        const fs::path helper = credential_helper_path();
+        if (!fs::is_regular_file(helper)) {
+            result.error = "The encrypted credential helper is missing.";
+            std::error_code ec;
+            fs::remove_all(run_dir, ec);
+            return result;
+        }
+
+        // --bare prevents Claude from loading OAuth credentials, settings,
+        // hooks, skills, or MCP configuration from the user's home/project.
+        // apiKeyHelper retrieves the API key from the OS vault directly into
+        // Claude's stdin pipe; the key is never in argv, env, or a file.
+        const std::string helper_command =
+            shell_quote(helper.string()) + " anthropic";
+        const std::string settings =
+            "{\"apiKeyHelper\":" + json_string(helper_command) + "}";
         command +=
-            "claude -p --no-session-persistence --disable-slash-commands "
+            "claude --bare -p --no-session-persistence --disable-slash-commands "
             "--no-chrome --strict-mcp-config --mcp-config " + shell_quote("{}") +
+            " --settings " + shell_quote(settings) +
             " --tools \"\" --permission-mode plan --output-format json "
             "--json-schema " + shell_quote(schema) +
             " < " + shell_quote(prompt_path.string()) +
             " > " + shell_quote(response_path.string()) +
-            " 2> " + shell_quote(log_path.string());
+            " 2> " + shell_quote(
+#ifdef _WIN32
+                "NUL"
+#else
+                "/dev/null"
+#endif
+            );
     }
 
     const int exit_code = std::system(command.c_str());
     result.output = read_file(response_path);
-    const std::string log = clipped(read_file(log_path));
     if (exit_code != 0 || result.output.empty()) {
         result.error = std::string(provider_name(provider)) +
-            " could not create a plan. Make sure its CLI is installed and signed in.";
-        if (!log.empty()) result.error += "\n\n" + log;
+            " could not create a plan. Check the CLI and encrypted account connection.";
     } else {
         result.ok = true;
     }
@@ -219,58 +291,62 @@ AiAssistantPanel::AuthResult AiAssistantPanel::run_auth_command(
     }
     result.cli_available = true;
 
+    if (provider == AiProvider::Claude) {
+        result.secure_store_available = secure_credentials::Available();
+        result.signed_in = result.secure_store_available &&
+                           secure_credentials::HasAnthropicApiKey();
+        if (!result.secure_store_available) {
+            result.detail = "The encrypted OS credential vault is unavailable.";
+        } else if (result.signed_in) {
+            result.detail = "Connected using encrypted OS credential storage.";
+        } else {
+            result.detail = "No encrypted Anthropic API key is stored.";
+        }
+        return result;
+    }
+
+    // Codex is always forced to the native keyring. Unlike "auto", this
+    // fails closed instead of falling back to a plaintext credential file.
+    result.secure_store_available = true;
+
     const fs::path run_dir = make_run_directory();
     if (run_dir.empty()) {
         result.detail = "Could not create a temporary login workspace.";
         return result;
     }
-    const fs::path log_path = run_dir / "auth.log";
-
     auto run = [&](const std::string& arguments) {
 #ifdef _WIN32
         std::string command = "cd /d " + shell_quote(run_dir.string()) + " && ";
+        constexpr const char* null_device = "NUL";
 #else
         std::string command = "cd " + shell_quote(run_dir.string()) + " && ";
+        constexpr const char* null_device = "/dev/null";
 #endif
         command += shell_quote(executable.string()) + arguments +
-                   " > " + shell_quote(log_path.string()) + " 2>&1";
-        const int exit_code = std::system(command.c_str());
-        return std::pair<int, std::string>{exit_code, clipped(read_file(log_path))};
+                   " > " + shell_quote(null_device) + " 2>&1";
+        return std::system(command.c_str());
     };
 
     if (login) {
-        // We never receive a password or token. The official CLI owns the
-        // browser flow and stores its own credential. Codex is forced to the
-        // file credential store because the Linux inference sandbox can mount
-        // that one file without exposing the user's home directory.
-        const std::string login_args = provider == AiProvider::Codex
-            ? " -c cli_auth_credentials_store=file login"
-            : " auth login --console";
-        auto [exit_code, output] = run(login_args);
+        // The official Codex browser flow receives the account credentials;
+        // the editor never sees them. Only the OS keyring may persist them.
+        const int exit_code =
+            run(" -c cli_auth_credentials_store=keyring login");
         if (exit_code != 0) {
-            result.detail = output.empty()
-                ? "The browser sign-in did not complete."
-                : std::move(output);
+            result.detail =
+                "The secure browser sign-in did not complete. No credential was saved.";
             std::error_code ec;
             fs::remove_all(run_dir, ec);
             return result;
         }
     }
 
-    const std::string status_args = provider == AiProvider::Codex
-        ? " login status"
-        : " auth status --text";
-    auto [status_code, status_output] = run(status_args);
+    const int status_code =
+        run(" -c cli_auth_credentials_store=keyring login status");
     result.signed_in = status_code == 0;
-    if (!result.signed_in) {
-        result.detail = status_output.empty()
-            ? "Not signed in."
-            : std::move(status_output);
-    } else {
-        result.detail = status_output.empty()
-            ? "Connected."
-            : std::move(status_output);
-    }
+    result.detail = result.signed_in
+        ? "Connected using encrypted OS credential storage."
+        : "Not connected, or encrypted OS credential storage is unavailable.";
 
     std::error_code ec;
     fs::remove_all(run_dir, ec);
@@ -289,7 +365,7 @@ void AiAssistantPanel::start_auth_check() {
 }
 
 void AiAssistantPanel::start_login() {
-    if (auth_running_) return;
+    if (auth_running_ || provider_ != AiProvider::Codex) return;
     const AiProvider selected_provider = provider_;
     auth_running_ = true;
     auth_login_running_ = true;
@@ -369,6 +445,7 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context,
     const char* providers[] = {"Codex (OpenAI)", "Claude (Anthropic Console)"};
     ImGui::SetNextItemWidth(250.0f);
     if (ImGui::Combo("##ai_provider", &provider_index, providers, 2)) {
+        secure_credentials::Erase(anthropic_api_key_, sizeof(anthropic_api_key_));
         provider_ = provider_index == 0 ? AiProvider::Codex : AiProvider::Claude;
         auth_ = {};
         auth_checked_ = false;
@@ -380,7 +457,9 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context,
 
     if (!auth_checked_ && !auth_running_) start_auth_check();
 
-    ImGui::BeginChild("##ai_account", ImVec2(0.0f, 92.0f), true);
+    const float account_height =
+        provider_ == AiProvider::Codex ? 104.0f : 164.0f;
+    ImGui::BeginChild("##ai_account", ImVec2(0.0f, account_height), true);
     if (auth_running_) {
         ImGui::TextColored(ImVec4(0.35f, 0.75f, 0.95f, 1.0f), "%s",
                            auth_login_running_
@@ -388,35 +467,73 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context,
                                : "Checking account...");
     } else if (auth_.signed_in) {
         ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.48f, 1.0f), "Connected");
+    } else if (auth_.cli_available && !auth_.secure_store_available) {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f),
+                           "Encrypted credential vault unavailable");
     } else {
         ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
                            auth_.cli_available ? "Not connected" : "CLI not installed");
     }
 
-    ImGui::BeginDisabled(auth_running_ || !auth_.cli_available);
-    const char* login_label = provider_ == AiProvider::Codex
-        ? "Sign in with ChatGPT / Google"
-        : "Sign in with Anthropic Console";
-    if (ImGui::Button(login_label)) start_login();
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(auth_running_);
-    if (ImGui::SmallButton("Refresh")) start_auth_check();
-    ImGui::EndDisabled();
-
     if (provider_ == AiProvider::Codex) {
+        ImGui::BeginDisabled(auth_running_ || !auth_.cli_available ||
+                             !auth_.secure_store_available);
+        if (ImGui::Button("Sign in with ChatGPT / Google")) start_login();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(auth_running_);
+        if (ImGui::SmallButton("Refresh")) start_auth_check();
+        ImGui::EndDisabled();
         ImGui::TextDisabled(
-            "The official browser page lets you use your ChatGPT/OpenAI login, including Google.");
+            "The official browser handles sign-in. Storage is forced to the encrypted OS keyring.");
     } else {
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint(
+            "##anthropic_api_key", "Anthropic Console API key",
+            anthropic_api_key_, sizeof(anthropic_api_key_),
+            ImGuiInputTextFlags_Password);
+
+        ImGui::BeginDisabled(auth_running_ || !auth_.secure_store_available ||
+                             anthropic_api_key_[0] == '\0');
+        if (ImGui::Button("Store encrypted")) {
+            std::string secret(anthropic_api_key_);
+            std::string store_error;
+            if (secure_credentials::StoreAnthropicApiKey(secret, store_error)) {
+                status_ = "Anthropic API key stored in the encrypted OS vault.";
+                error_.clear();
+            } else {
+                error_ = std::move(store_error);
+            }
+            secure_credentials::Erase(secret);
+            secure_credentials::Erase(
+                anthropic_api_key_, sizeof(anthropic_api_key_));
+            start_auth_check();
+        }
+        ImGui::EndDisabled();
+
+        if (auth_.signed_in) {
+            ImGui::SameLine();
+            ImGui::BeginDisabled(auth_running_);
+            if (ImGui::Button("Remove stored key")) {
+                std::string remove_error;
+                if (secure_credentials::RemoveAnthropicApiKey(remove_error)) {
+                    status_ = "Anthropic API key removed from the OS vault.";
+                    error_.clear();
+                } else {
+                    error_ = std::move(remove_error);
+                }
+                start_auth_check();
+            }
+            ImGui::EndDisabled();
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(auth_running_);
+        if (ImGui::SmallButton("Refresh")) start_auth_check();
+        ImGui::EndDisabled();
         ImGui::TextDisabled(
-            "Uses Anthropic Console usage billing; passwords and tokens never pass through the editor.");
+            "Saved only in Windows Credential Manager, macOS Keychain, or Linux Secret Service.");
     }
     ImGui::EndChild();
-
-    if (!auth_running_ && !auth_.detail.empty() &&
-        ImGui::CollapsingHeader("Account details")) {
-        ImGui::TextWrapped("%s", auth_.detail.c_str());
-    }
 
     ImGui::SeparatorText("2. Describe");
 

@@ -41,6 +41,7 @@ private:
 
     struct AuthResult {
         bool cli_available = false;
+        bool secure_store_available = false;
         bool signed_in = false;
         std::string detail;
     };
@@ -57,6 +58,7 @@ private:
 
     AiProvider provider_ = AiProvider::Codex;
     char prompt_[4096]{};
+    char anthropic_api_key_[513]{};
     bool running_ = false;
     std::future<ProviderResult> future_;
     bool auth_running_ = false;

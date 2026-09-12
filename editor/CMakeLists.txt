@@ -1,6 +1,20 @@
 # Editor executable
 add_executable(editor)
 
+# The editor and the tiny Claude apiKeyHelper share one credential backend.
+# It deliberately supports only native OS credential vaults and has no file
+# fallback, so provider secrets can never be written into a project/package.
+add_library(worldshaper_secure_credentials STATIC
+    src/secure_credential_store.cpp)
+target_include_directories(worldshaper_secure_credentials PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_executable(worldshaper-credential-helper
+    src/credential_helper_main.cpp)
+target_link_libraries(worldshaper-credential-helper PRIVATE
+    worldshaper_secure_credentials)
+add_dependencies(editor worldshaper-credential-helper)
+
 # Include directories
 target_include_directories(editor
     PRIVATE
@@ -41,6 +55,7 @@ target_link_libraries(editor
         gws_vfx            # CPU particles + billboards (Phase 3.9)
         gws_ui             # runtime game-UI framework (HUD/menus) — Game-UI pillar
         gws_diagnostics    # crash handler + persistent/ring-buffer logging
+        worldshaper_secure_credentials
 )
 
 # Engine version string, for the crash-report header / diagnostics.
@@ -142,6 +157,11 @@ if(WIN32)
     # comdlg32: GetOpenFileName/GetSaveFileName (scene dialogs).
     # shell32 + ole32: other remaining native shell integrations.
     target_link_libraries(editor PRIVATE comdlg32 shell32 ole32)
+    target_link_libraries(worldshaper_secure_credentials PRIVATE advapi32)
+elseif(APPLE)
+    find_library(GWS_SECURITY_FRAMEWORK Security REQUIRED)
+    target_link_libraries(worldshaper_secure_credentials PRIVATE
+        ${GWS_SECURITY_FRAMEWORK})
 elseif(UNIX AND NOT APPLE)
     # forkpty() is provided by libutil on Linux.
     target_link_libraries(editor PRIVATE util)
@@ -155,7 +175,8 @@ endif()
 if(WIN32)
     gws_bundle_runtime(editor "${GWS_ENGINE_DEST}")   # runtime DLLs (COMPONENT engine)
 endif()
-install(TARGETS editor RUNTIME DESTINATION "${GWS_ENGINE_DEST}" COMPONENT engine)
+install(TARGETS editor worldshaper-credential-helper
+        RUNTIME DESTINATION "${GWS_ENGINE_DEST}" COMPONENT engine)
 
 # Ship the shader compiler beside the editor so material graphs (4.1) can be
 # compiled on a machine without the Vulkan SDK.
