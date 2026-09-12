@@ -48,10 +48,23 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # ============================================================================
 if(MINGW)
     get_filename_component(GWS_MINGW_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
-    set(GWS_RUNTIME_DLLS
-        "${GWS_MINGW_BIN}/libgcc_s_seh-1.dll"
-        "${GWS_MINGW_BIN}/libstdc++-6.dll"
-        "${GWS_MINGW_BIN}/libwinpthread-1.dll")
+    if(EXISTS "${GWS_MINGW_BIN}/libgcc_s_seh-1.dll")
+        set(GWS_RUNTIME_DLLS
+            "${GWS_MINGW_BIN}/libgcc_s_seh-1.dll"
+            "${GWS_MINGW_BIN}/libstdc++-6.dll"
+            "${GWS_MINGW_BIN}/libwinpthread-1.dll")
+    else()
+        # Portable llvm-mingw keeps the target runtime below its sysroot and
+        # uses libc++/libunwind instead of GCC's three runtime DLLs.
+        get_filename_component(GWS_LLVM_MINGW_ROOT "${GWS_MINGW_BIN}" DIRECTORY)
+        set(GWS_LLVM_MINGW_RUNTIME
+            "${GWS_LLVM_MINGW_ROOT}/x86_64-w64-mingw32/bin")
+        if(EXISTS "${GWS_LLVM_MINGW_RUNTIME}/libc++.dll")
+            set(GWS_RUNTIME_DLLS
+                "${GWS_LLVM_MINGW_RUNTIME}/libc++.dll"
+                "${GWS_LLVM_MINGW_RUNTIME}/libunwind.dll")
+        endif()
+    endif()
 endif()
 
 # Copy the runtime DLLs next to a target after build, and install() them to

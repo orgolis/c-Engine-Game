@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+
 // ============================================================================
 // Reflection for the plain-struct scene components — the tractable half of 3.7.
 //
@@ -84,7 +86,17 @@ GWS_REFLECT_END()
 // field" tripwire, not an ABI guarantee. If it fires after a compiler change,
 // register any new fields and update the number.
 // ---------------------------------------------------------------------------
-static_assert(sizeof(schizo::scene::SkinnedMeshComponent) == 64,
+#if defined(_LIBCPP_VERSION)
+inline constexpr std::size_t kExpectedSkinnedMeshComponentSize = 56;
+inline constexpr std::size_t kExpectedParticleEmitterComponentSize = 80;
+inline constexpr std::size_t kExpectedNpcAgentComponentSize = 56;
+#else
+inline constexpr std::size_t kExpectedSkinnedMeshComponentSize = 64;
+inline constexpr std::size_t kExpectedParticleEmitterComponentSize = 88;
+inline constexpr std::size_t kExpectedNpcAgentComponentSize = 64;
+#endif
+
+static_assert(sizeof(schizo::scene::SkinnedMeshComponent) == kExpectedSkinnedMeshComponentSize,
     "SkinnedMeshComponent changed size. If you added a field, register it above "
     "or it will silently fail to save, then update this number.");
 
@@ -93,10 +105,10 @@ static_assert(sizeof(schizo::scene::SkinnedMeshComponent) == 64,
 // be -- offset reflection needs trivially copyable data -- so the scene
 // serializer writes EMITTER_VFX_PATH by hand, the same way it already handles
 // MeshComponent::mesh_path and NpcAgentComponent::target_name.
-static_assert(sizeof(schizo::scene::ParticleEmitterComponent) == 88,
+static_assert(sizeof(schizo::scene::ParticleEmitterComponent) == kExpectedParticleEmitterComponentSize,
     "ParticleEmitterComponent changed size. If you added a field, register it "
     "above or it will silently fail to save, then update this number.");
 
-static_assert(sizeof(schizo::scene::NpcAgentComponent) == 64,
+static_assert(sizeof(schizo::scene::NpcAgentComponent) == kExpectedNpcAgentComponentSize,
     "NpcAgentComponent changed size. If you added a field, register it above "
     "or it will silently fail to save, then update this number.");

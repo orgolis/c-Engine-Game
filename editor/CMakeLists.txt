@@ -161,7 +161,9 @@ install(DIRECTORY
             ${CMAKE_SOURCE_DIR}/assets/scripts
         DESTINATION "${GWS_ENGINE_DEST}/assets" COMPONENT engine OPTIONAL)
 if(UNIX AND NOT APPLE)
-    install(PROGRAMS ${CMAKE_SOURCE_DIR}/tools/export_game_linux.sh
+    install(PROGRAMS
+            ${CMAKE_SOURCE_DIR}/tools/export_game_linux.sh
+            ${CMAKE_SOURCE_DIR}/tools/export_game_windows_cross.sh
             DESTINATION "${GWS_ENGINE_DEST}/tools" COMPONENT engine)
 elseif(WIN32)
     install(FILES ${CMAKE_SOURCE_DIR}/tools/export_game_windows.ps1

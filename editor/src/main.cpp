@@ -175,6 +175,8 @@
 using namespace gws::renderer::gpu;
 
 // Editor state
+enum class GameExportTarget { Linux, Windows, Both };
+
 struct EditorState {
     schizo::editor::EditorScene* editor_scene = nullptr;
 
@@ -457,11 +459,18 @@ struct EditorState {
     // release build never freezes the editor. These fields only carry the
     // small amount of state needed by the Project menu and its result dialog.
     bool        game_export_running = false;
+    bool        show_game_export_options = false;
     bool        show_game_export_dialog = false;
     bool        game_export_succeeded = false;
     uint64_t    game_export_task_id = 0;
     std::string game_export_platform;
     std::string game_export_result;
+    GameExportTarget game_export_target =
+#if defined(_WIN32)
+        GameExportTarget::Windows;
+#else
+        GameExportTarget::Linux;
+#endif
 
     bool feature_on(schizo::project::Feature f) const { return features.has(f); }
 
@@ -1652,43 +1661,75 @@ static bool PrepareCurrentSceneForExport(EditorState& editor_state,
 }
 
 static void StartGameExport(EditorState& editor_state,
-                            const std::filesystem::path& destination) {
+                            const std::filesystem::path& destination,
+                            GameExportTarget target) {
     namespace fs = std::filesystem;
-#if defined(_WIN32)
-    constexpr const char* platform_name = "Windows";
-    const fs::path script = schizo::editor::base_dir() / "tools" / "export_game_windows.ps1";
-#else
-    constexpr const char* platform_name = "Linux";
-    const fs::path script = schizo::editor::base_dir() / "tools" / "export_game_linux.sh";
-#endif
-    if (!fs::is_regular_file(script)) {
-        editor_state.game_export_succeeded = false;
-        editor_state.game_export_result =
-            std::string("The ") + platform_name +
-            " exporter is missing from this engine installation:\n" + script.string();
-        editor_state.show_game_export_dialog = true;
-        return;
-    }
-
     const fs::path manifest = fs::path(editor_state.project.project_dir) /
                               schizo::project::kManifestFilename;
     const std::string game_name = ExportGameName(editor_state.project.name);
+    std::vector<std::string> commands;
+    std::vector<fs::path> package_files;
+    std::string platform_name;
+
+    const auto missing_script = [&editor_state](const fs::path& script) {
+        editor_state.game_export_succeeded = false;
+        editor_state.game_export_result =
+            "The exporter is missing from this engine installation:\n" + script.string();
+        editor_state.show_game_export_dialog = true;
+    };
+
 #if defined(_WIN32)
-    const std::string package_name = game_name + "-windows-x86_64.zip";
+    if (target != GameExportTarget::Windows) {
+        editor_state.game_export_succeeded = false;
+        editor_state.game_export_result =
+            "Linux export is available from the Linux editor. Windows can export Windows games.";
+        editor_state.show_game_export_dialog = true;
+        return;
+    }
+    platform_name = "Windows";
+    const fs::path script = schizo::editor::base_dir() / "tools" / "export_game_windows.ps1";
+    if (!fs::is_regular_file(script)) { missing_script(script); return; }
     const fs::path output_dir = destination / (game_name + "-windows");
-    const fs::path package_file = destination / package_name;
-    const std::string command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File " +
-                                ShellQuoteForExport(script.string()) + " -ProjectManifest " +
-                                ShellQuoteForExport(manifest.string()) + " -OutputDirectory " +
-                                ShellQuoteForExport(output_dir.string()) + " 2>&1";
+    package_files.push_back(destination / (game_name + "-windows-x86_64.zip"));
+    commands.push_back("powershell.exe -NoProfile -ExecutionPolicy Bypass -File " +
+                       ShellQuoteForExport(script.string()) + " -ProjectManifest " +
+                       ShellQuoteForExport(manifest.string()) + " -OutputDirectory " +
+                       ShellQuoteForExport(output_dir.string()) + " 2>&1");
 #else
-    const std::string single_name = game_name + "-linux-x86_64.run";
-    const fs::path output_dir = destination / (game_name + "-linux");
-    const fs::path package_file = destination / single_name;
-    const std::string command = ShellQuoteForExport(script.string()) + " " +
-                                ShellQuoteForExport(manifest.string()) + " " +
-                                ShellQuoteForExport(output_dir.string()) + " 2>&1";
+    const bool export_linux = target == GameExportTarget::Linux || target == GameExportTarget::Both;
+    const bool export_windows = target == GameExportTarget::Windows || target == GameExportTarget::Both;
+    platform_name = target == GameExportTarget::Both ? "Linux + Windows" :
+                    (target == GameExportTarget::Windows ? "Windows" : "Linux");
+    if (export_linux) {
+        const fs::path script = schizo::editor::base_dir() / "tools" / "export_game_linux.sh";
+        if (!fs::is_regular_file(script)) { missing_script(script); return; }
+        const fs::path output_dir = destination / (game_name + "-linux");
+        package_files.push_back(destination / (game_name + "-linux-x86_64.run"));
+        commands.push_back(ShellQuoteForExport(script.string()) + " " +
+                           ShellQuoteForExport(manifest.string()) + " " +
+                           ShellQuoteForExport(output_dir.string()) + " 2>&1");
+    }
+    if (export_windows) {
+        const fs::path script = schizo::editor::base_dir() / "tools" / "export_game_windows_cross.sh";
+        if (!fs::is_regular_file(script)) { missing_script(script); return; }
+        const fs::path output_dir = destination / (game_name + "-windows");
+        package_files.push_back(destination / (game_name + "-windows-x86_64.zip"));
+        commands.push_back(ShellQuoteForExport(script.string()) + " " +
+                           ShellQuoteForExport(manifest.string()) + " " +
+                           ShellQuoteForExport(output_dir.string()) + " 2>&1");
+    }
 #endif
+
+    for (const fs::path& package : package_files) {
+        if (fs::exists(package)) {
+            editor_state.game_export_succeeded = false;
+            editor_state.game_export_result =
+                "Export file already exists. Choose another folder or rename it first:\n" +
+                package.string();
+            editor_state.show_game_export_dialog = true;
+            return;
+        }
+    }
 
     editor_state.game_export_running = true;
     editor_state.game_export_succeeded = false;
@@ -1699,8 +1740,10 @@ static void StartGameExport(EditorState& editor_state,
 
     const uint64_t task_id = editor_state.tasks.submit(
         std::string("Export game for ") + platform_name,
-        [command](gws::tasks::TaskContext& ctx) {
+        [commands](gws::tasks::TaskContext& ctx) {
             ctx.set_progress(0.0f, "Starting exporter...");
+            for (size_t command_index = 0; command_index < commands.size(); ++command_index) {
+            const std::string& command = commands[command_index];
 #if defined(_WIN32)
             FILE* pipe = _popen(command.c_str(), "r");
 #else
@@ -1737,7 +1780,10 @@ static void StartGameExport(EditorState& editor_state,
                 while (!status.empty() && (status.back() == '\r' || status.back() == '\n'))
                     status.pop_back();
                 if (status.size() > 180) status = status.substr(0, 177) + "...";
-                ctx.set_progress(progress, std::move(status));
+                const float combined_progress =
+                    (static_cast<float>(command_index) + progress) /
+                    static_cast<float>(commands.size());
+                ctx.set_progress(combined_progress, std::move(status));
             }
 #if defined(_WIN32)
             const int result = _pclose(pipe);
@@ -1751,22 +1797,21 @@ static void StartGameExport(EditorState& editor_state,
                 throw std::runtime_error(output.empty() ?
                     "The game exporter failed without producing output." : output);
             }
+            }
             ctx.set_progress(1.0f, "Export complete");
         },
-        [&editor_state, package_file, output_dir, game_name](const gws::tasks::TaskInfo& info) {
+        [&editor_state, package_files](const gws::tasks::TaskInfo& info) {
             editor_state.game_export_running = false;
             editor_state.game_export_succeeded =
                 info.state == gws::tasks::TaskState::Succeeded;
             if (editor_state.game_export_succeeded) {
-#if defined(_WIN32)
-                editor_state.game_export_result =
-                    "Portable archive:\n" + package_file.string() +
-                    "\n\nPlayable file after extracting:\n" +
-                    (output_dir / (game_name + ".exe")).string();
-#else
-                editor_state.game_export_result = package_file.string();
-#endif
-                editor_state.set_status("Game exported: " + package_file.string());
+                editor_state.game_export_result.clear();
+                for (const fs::path& package : package_files) {
+                    if (!editor_state.game_export_result.empty())
+                        editor_state.game_export_result += "\n";
+                    editor_state.game_export_result += package.string();
+                }
+                editor_state.set_status("Game export completed");
             } else {
                 editor_state.game_export_result = info.error.empty()
                     ? "The game export was cancelled."
@@ -1859,19 +1904,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
                                     ? "Exporting Game..."
                                     : "Export Game...",
                                 nullptr, false, can_export)) {
-                const std::string picked = gws::platform::browse_folder(
-                    "Choose where to export the game");
-                if (!picked.empty()) {
-                    std::string error;
-                    if (!PrepareCurrentSceneForExport(editor_state, error)) {
-                        editor_state.game_export_succeeded = false;
-                        editor_state.game_export_result = std::move(error);
-                        editor_state.game_export_platform.clear();
-                        editor_state.show_game_export_dialog = true;
-                    } else {
-                        StartGameExport(editor_state, picked);
-                    }
-                }
+                editor_state.show_game_export_options = true;
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
                 if (!editor_state.project_loaded)
@@ -2112,6 +2145,53 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
         }
 
         ImGui::EndMainMenuBar();
+    }
+
+    if (editor_state.show_game_export_options) {
+        ImGui::OpenPopup("Export Game - Choose Target");
+        editor_state.show_game_export_options = false;
+    }
+    ImGui::SetNextWindowSize(ImVec2(480.0f, 245.0f), ImGuiCond_Always);
+    if (ImGui::BeginPopupModal("Export Game - Choose Target", nullptr,
+                              ImGuiWindowFlags_NoResize)) {
+        ImGui::TextUnformatted("Which game files do you want to create?");
+        ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        int selected = static_cast<int>(editor_state.game_export_target);
+        ImGui::RadioButton("Linux (.run)", &selected,
+                           static_cast<int>(GameExportTarget::Linux));
+        ImGui::RadioButton("Windows (.zip)", &selected,
+                           static_cast<int>(GameExportTarget::Windows));
+        ImGui::RadioButton("Linux + Windows", &selected,
+                           static_cast<int>(GameExportTarget::Both));
+#if defined(_WIN32)
+        if (selected != static_cast<int>(GameExportTarget::Windows)) {
+            selected = static_cast<int>(GameExportTarget::Windows);
+            ImGui::TextDisabled("The Windows editor exports Windows games.");
+        }
+#else
+        ImGui::TextDisabled("The first Windows export downloads the portable compiler once.");
+#endif
+        editor_state.game_export_target = static_cast<GameExportTarget>(selected);
+        ImGui::Dummy(ImVec2(0.0f, 10.0f));
+        if (ImGui::Button("Choose Location...", ImVec2(170.0f, 0.0f))) {
+            const std::string picked = gws::platform::browse_folder(
+                "Choose where to export the game");
+            if (!picked.empty()) {
+                std::string error;
+                if (!PrepareCurrentSceneForExport(editor_state, error)) {
+                    editor_state.game_export_succeeded = false;
+                    editor_state.game_export_result = std::move(error);
+                    editor_state.game_export_platform.clear();
+                    editor_state.show_game_export_dialog = true;
+                } else {
+                    StartGameExport(editor_state, picked, editor_state.game_export_target);
+                }
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
     }
 
     if (editor_state.show_game_export_dialog) {
