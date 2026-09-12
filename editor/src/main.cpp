@@ -1566,12 +1566,12 @@ void ShowRenameDialog(EditorState& editor_state) {
 }
 
 // ============================================================================
-// Dock Layout (Unity-style fixed/tiled workspace)
+// Dock Layout (Unity-style movable/tabbed workspace)
 // ============================================================================
 
 // Bump when the docked-panel set changes so an existing editor.ini layout
 // (which predates a new panel) is rebuilt once into the default arrangement.
-static constexpr int kEditorDockLayoutVersion = 3;   // 3 = added AI Assistant
+static constexpr int kEditorDockLayoutVersion = 4;   // 4 = movable tabs + detached windows
 
 // Build the default docked layout into `dockspace_id`: a Unity-classic
 // arrangement — Hierarchy (left), Viewport (center), Inspector (right), and a
@@ -1601,11 +1601,6 @@ static void BuildEditorDockLayout(ImGuiID dockspace_id, ImVec2 size) {
     ImGui::DockBuilderDockWindow("Output",               bottom);
     ImGui::DockBuilderDockWindow("Terminal",             bottom);
     ImGui::DockBuilderDockWindow("AI Assistant",         bottom);
-
-    // The central viewport reads cleaner without a tab bar (it holds only the
-    // 3D scene), matching Unity's Scene view.
-    if (ImGuiDockNode* c = ImGui::DockBuilderGetNode(center))
-        c->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
 
     ImGui::DockBuilderFinish(dockspace_id);
 }
@@ -2468,7 +2463,7 @@ void apply_asset_drop(EditorState& editor_state,
 void ShowSceneHierarchy(EditorState& editor_state) {
     if (!editor_state.show_scene_hierarchy) return;
 
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove;  // Fixed position
+    ImGuiWindowFlags flags = ImGuiWindowFlags_None;
     if (editor_state.gizmo_dragging) {
         flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
     }
@@ -3122,7 +3117,7 @@ void DrawAssetInspector(EditorState& editor_state) {
 void ShowInspector(EditorState& editor_state) {
     if (!editor_state.show_inspector) return;
 
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove;  // Fixed position
+    ImGuiWindowFlags flags = ImGuiWindowFlags_None;
     if (editor_state.gizmo_dragging) {
         flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
     }
@@ -4900,7 +4895,7 @@ void ShowViewport(EditorState& editor_state) {
         return;
     }
 
-    ImGui::Begin("Viewport", &editor_state.show_viewport, ImGuiWindowFlags_NoMove);  // docked window = child; End() must always run
+    ImGui::Begin("Viewport", &editor_state.show_viewport);  // freely dockable; End() must always run
     {
         editor_state.viewport_input_focused =
             ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
@@ -5734,7 +5729,7 @@ void ShowViewport(EditorState& editor_state) {
 void ShowPreferences(EditorState& editor_state) {
     if (!editor_state.show_preferences) return;
 
-    ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove;  // Fixed position
+    ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize;
     if (editor_state.gizmo_dragging) {
         flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
     }
@@ -5767,7 +5762,7 @@ void ShowPlaybackControls(EditorState& editor_state) {
     ImGui::SetNextWindowPos(ImVec2(10, 40), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(400, 80), ImGuiCond_FirstUseEver);
 
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
+    ImGuiWindowFlags flags = ImGuiWindowFlags_None;
     ImGui::Begin("Scene Playback", &editor_state.show_playback_controls, flags);  // docked window = child; End() must always run
     {
         ImGui::TextUnformatted("Scene Playback Controls:");
@@ -9046,10 +9041,9 @@ int main(int argc, char** argv) {
             // Unity-style docked workspace. The main menu bar is emitted
             // first so it reserves the top strip (reducing the viewport work
             // area); the dockspace then fills the rest of the window. Every
-            // panel docks into this one space and tiles it — no free-floating
-            // overlap. The dockspace is LOCKED (NoUndocking | NoDockingSplit)
-            // so the user can only resize splitters or close panels; closing
-            // a panel makes its neighbours expand to refill the window.
+            // panel starts in this space, then remains freely movable: drag a
+            // tab onto another panel to stack it, onto an edge to split it, or
+            // outside the main window to create a detached native window.
             // ------------------------------------------------------------
             ShowMainMenuBar(editor_state, glfw_window);
             {
@@ -9072,7 +9066,7 @@ int main(int argc, char** argv) {
                 }
                 ImGui::DockSpaceOverViewport(
                     dockspace_id, ImGui::GetMainViewport(),
-                    ImGuiDockNodeFlags_NoUndocking | ImGuiDockNodeFlags_NoDockingSplit);
+                    ImGuiDockNodeFlags_None);
             }
 
             // Consume OS-dropped files (filled by GLFW DropCallback). Copies
@@ -11012,6 +11006,9 @@ int main(int argc, char** argv) {
             g_cp.mark("pre_present");
             { GWS_PROFILE_ZONE("present");
               swapchain->present_image(image_index, render_sems[current_frame]); }
+            // Detached editor tabs own separate GLFW/Vulkan swapchains. ImGui's
+            // platform backends create, update and present those windows here.
+            imgui->render_platform_windows();
             current_frame = (current_frame + 1) % kMaxFrames;
             ++frame_count;
 

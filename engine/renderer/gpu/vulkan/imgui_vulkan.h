@@ -77,6 +77,10 @@ public:
     /// Call after ImGui::Render() (automatically called by ImGui).
     void end_frame(VkCommandBuffer cmd);
 
+    /// Create/update and render detached ImGui panels as native OS windows.
+    /// Call after the main swapchain image has been presented.
+    void render_platform_windows();
+
     /// Resize internal render targets (called when window resizes).
     void resize(uint32_t width, uint32_t height);
 

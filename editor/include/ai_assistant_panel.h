@@ -39,16 +39,31 @@ private:
         std::string error;
     };
 
+    struct AuthResult {
+        bool cli_available = false;
+        bool signed_in = false;
+        std::string detail;
+    };
+
     void start_request(const std::shared_ptr<schizo::scene::Scene>& scene,
                        uint32_t selected_entity_id);
     void poll_request();
+    void start_auth_check();
+    void start_login();
+    void poll_auth();
     static ProviderResult run_provider(AiProvider provider,
                                        const std::string& prompt);
+    static AuthResult run_auth_command(AiProvider provider, bool login);
 
     AiProvider provider_ = AiProvider::Codex;
     char prompt_[4096]{};
     bool running_ = false;
     std::future<ProviderResult> future_;
+    bool auth_running_ = false;
+    bool auth_checked_ = false;
+    bool auth_login_running_ = false;
+    std::future<AuthResult> auth_future_;
+    AuthResult auth_;
     std::optional<EngineAgentPlan> pending_plan_;
     std::string planned_scene_fingerprint_;
     std::string outgoing_scene_summary_;

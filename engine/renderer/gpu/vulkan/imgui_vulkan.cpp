@@ -187,16 +187,20 @@ std::unique_ptr<ImGuiVulkan> ImGuiVulkan::create(VulkanDevice* device,
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    // Docking enables the Unity-style tiled editor layout (a DockSpace fills
-    // the window; panels tile it, resize via splitters, and refill on close).
-    // The vendored imgui is the docking branch, so the flag is available.
-    // NOTE: we deliberately do NOT enable ImGuiConfigFlags_ViewportsEnable —
-    // that would spawn OS child windows needing a multi-window platform render
-    // loop; the editor renders a single Vulkan swapchain.
+    // Docking provides Unity-style tab stacks and split regions. Viewports let
+    // a tab be dragged out of the main window into its own native OS window.
+    // Both the vendored GLFW and Vulkan backends provide viewport support.
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
     ImGui::StyleColorsDark();
     apply_worldshaper_theme(static_cast<GLFWwindow*>(window));
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        // Detached windows should visually match the main editor window.
+        ImGuiStyle& style = ImGui::GetStyle();
+        style.WindowRounding = 0.0f;
+        style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+    }
 
     // Initialize ImGui platform backend (GLFW)
     if (!ImGui_ImplGlfw_InitForVulkan(static_cast<GLFWwindow*>(window), true)) {
@@ -280,6 +284,13 @@ void ImGuiVulkan::end_frame(VkCommandBuffer cmd) {
 
     ImGui::Render();
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+}
+
+void ImGuiVulkan::render_platform_windows() {
+    if (!impl_ || !impl_->initialized) return;
+    if (!(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)) return;
+    ImGui::UpdatePlatformWindows();
+    ImGui::RenderPlatformWindowsDefault();
 }
 
 void ImGuiVulkan::resize(uint32_t width, uint32_t height) {
