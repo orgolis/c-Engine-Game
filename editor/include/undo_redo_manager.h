@@ -4,6 +4,7 @@
 #include <vector>
 #include <functional>
 #include <string>
+#include <utility>
 
 namespace schizo::editor {
 
@@ -50,6 +51,42 @@ private:
     std::function<void()> execute_fn_;
     std::function<void()> undo_fn_;
     std::string description_;
+};
+
+/**
+ * @brief Treat several editor changes as one atomic undo/redo step.
+ *
+ * AI plans use this so "create an enemy, move it, attach a script" is one
+ * history entry. Execute runs front-to-back; Undo deliberately runs in reverse
+ * order so dependencies are unwound safely (detach the script before removing
+ * the entity, for example).
+ */
+class CompositeCommand : public EditorCommand {
+public:
+    explicit CompositeCommand(std::string description)
+        : description_(std::move(description)) {}
+
+    void Add(std::unique_ptr<EditorCommand> command) {
+        if (command) commands_.push_back(std::move(command));
+    }
+
+    bool Empty() const { return commands_.empty(); }
+    size_t Size() const { return commands_.size(); }
+
+    void Execute() override {
+        for (auto& command : commands_) command->Execute();
+    }
+
+    void Undo() override {
+        for (auto it = commands_.rbegin(); it != commands_.rend(); ++it)
+            (*it)->Undo();
+    }
+
+    std::string GetDescription() const override { return description_; }
+
+private:
+    std::string description_;
+    std::vector<std::unique_ptr<EditorCommand>> commands_;
 };
 
 /**

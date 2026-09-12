@@ -15,7 +15,10 @@
 #include "script_system.h"
 
 #include <spdlog/spdlog.h>
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -42,6 +45,17 @@ namespace {
 
 const ScriptApi* g_api = nullptr;   // published around every VM entry
 std::string      g_py_err;          // collects the VM's stderr (error reports)
+
+bool is_ai_generated_script(const std::string& source_path) {
+    std::string path = std::filesystem::path(source_path)
+                           .lexically_normal().generic_string();
+    std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    constexpr std::string_view folder = "assets/scripts/ai_generated/";
+    return path.rfind(folder, 0) == 0 ||
+           path.find("/" + std::string(folder)) != std::string::npos;
+}
 
 void stderr_hook(const char* buf, int size) {
     g_py_err.append(buf, static_cast<size_t>(size));
@@ -592,7 +606,14 @@ public:
         std::stringstream ss; ss << f.rdbuf();
         const std::string source = ss.str();
 
-        auto vm = std::make_unique<pkpy::VM>();
+        // Scripts produced by the AI gateway get the gameplay API but not
+        // PocketPy's os module. Match by lexical project path and fail closed:
+        // a symlink or missing file must never upgrade an AI script's rights.
+        const bool ai_generated = is_ai_generated_script(source_path);
+        auto vm = std::make_unique<pkpy::VM>(!ai_generated);
+        if (ai_generated)
+            spdlog::info("[script] AI-generated Python runs without OS/file modules: {}",
+                         source_path);
         vm->_stderr = &stderr_hook;
         build_engine_module(vm.get());
 

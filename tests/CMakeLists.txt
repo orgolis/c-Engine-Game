@@ -14,6 +14,9 @@ add_executable(gws_tests
     test_ability_integration.cpp
     test_network_integration.cpp
     deferred_rendering_test.cpp
+    test_engine_agent_gateway.cpp
+    ../editor/src/engine_agent_gateway.cpp
+    ../editor/src/undo_redo_manager.cpp
     # test_physics_integration.cpp  # TODO: Fix circular dependency with scene module
     # test_animation_integration.cpp  # TODO: Fix circular dependency with renderer
 )
@@ -28,6 +31,7 @@ target_link_libraries(gws_tests PRIVATE
     ability
     network
     renderer
+    scene
     imgui
     Catch2::Catch2WithMain
 )
@@ -39,6 +43,8 @@ target_link_libraries(gws_tests PRIVATE
 target_include_directories(gws_tests PRIVATE
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/engine
+    ${CMAKE_SOURCE_DIR}/editor/include
+    ${CMAKE_SOURCE_DIR}/third_party/tinyusdz/src/external/jsonhpp
 )
 
 # Register tests with CTest.

@@ -82,6 +82,7 @@
 #include "curve_editor.h"                     // curve + gradient widgets (4.5)
 #include "vfx_stack_panel.h"                 // VFX module stack editor (4.3)
 #include "command_palette.h"                 // Ctrl+P: one entry point for every action (4.2)
+#include "ai_assistant_panel.h"              // safe Codex / Claude project authoring
 #include "component_inspector.h"  // generic reflection-driven ECS component authoring (F2)
 
 // ImGui headers
@@ -193,6 +194,7 @@ struct EditorState {
     bool show_post_processing = true;   // closable Post-Processing dock panel
     bool show_terminal = true;          // embedded OS shell terminal panel
     bool show_output = true;            // editor log output console panel
+    bool show_ai_assistant = true;      // validated Codex / Claude authoring panel
     bool show_audio_mixer = false;      // Audio Mixer panel (Phase 4.9)
 
     // Set only when Escape releases play-mode mouse capture. Keeping this
@@ -315,6 +317,7 @@ struct EditorState {
 
     schizo::editor::CommandRegistry commands;
     bool show_command_palette = false;
+    schizo::editor::AiAssistantPanel ai_assistant;
 
     // Viewport camera + input state
     schizo::editor::ViewportCamera viewport_camera;
@@ -1568,7 +1571,7 @@ void ShowRenameDialog(EditorState& editor_state) {
 
 // Bump when the docked-panel set changes so an existing editor.ini layout
 // (which predates a new panel) is rebuilt once into the default arrangement.
-static constexpr int kEditorDockLayoutVersion = 2;   // 2 = added Output + Terminal
+static constexpr int kEditorDockLayoutVersion = 3;   // 3 = added AI Assistant
 
 // Build the default docked layout into `dockspace_id`: a Unity-classic
 // arrangement — Hierarchy (left), Viewport (center), Inspector (right), and a
@@ -1597,6 +1600,7 @@ static void BuildEditorDockLayout(ImGuiID dockspace_id, ImVec2 size) {
     ImGui::DockBuilderDockWindow("Scene Playback",       bottom);
     ImGui::DockBuilderDockWindow("Output",               bottom);
     ImGui::DockBuilderDockWindow("Terminal",             bottom);
+    ImGui::DockBuilderDockWindow("AI Assistant",         bottom);
 
     // The central viewport reads cleaner without a tab bar (it holds only the
     // 3D scene), matching Unity's Scene view.
@@ -1981,6 +1985,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             ImGui::MenuItem("Post-Processing", nullptr, &editor_state.show_post_processing);
             ImGui::MenuItem("Output (Log)", nullptr, &editor_state.show_output);
             ImGui::MenuItem("Terminal", nullptr, &editor_state.show_terminal);
+            ImGui::MenuItem("AI Assistant", nullptr, &editor_state.show_ai_assistant);
             if (editor_state.feature_on(schizo::project::Feature::Networking))
                 ImGui::MenuItem("Multiplayer (Network)", nullptr, &editor_state.show_network_window);
             ImGui::Separator();
@@ -1999,6 +2004,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
                 editor_state.show_post_processing = true;
                 editor_state.show_terminal        = true;
                 editor_state.show_output          = true;
+                editor_state.show_ai_assistant    = true;
                 spdlog::info("Reset editor dock layout to default");
             }
             ImGui::EndMenu();
@@ -8065,6 +8071,9 @@ int main(int argc, char** argv) {
             cmds.add("Toggle Extensions", "Window", "", [&st] {
                 st.show_extensions = !st.show_extensions;
             });
+            cmds.add("Toggle AI Assistant", "Window", "", [&st] {
+                st.show_ai_assistant = !st.show_ai_assistant;
+            });
             cmds.add("Reload Editor Extensions", "Script", "", [&st] {
                 st.extensions.reload_all(st.commands, st.extension_api);
                 st.set_status("Reloaded " + std::to_string(st.extensions.extensions().size()) +
@@ -9237,6 +9246,27 @@ int main(int argc, char** argv) {
                     editor_state.terminal =
                         std::make_unique<schizo::editor::TerminalPanel>();
                 editor_state.terminal->Render(&editor_state.show_terminal);
+            }
+            if (editor_state.show_ai_assistant) {
+                schizo::editor::EngineAgentApplyContext ai_context;
+                ai_context.scene = editor_state.project_loaded
+                    ? editor_state.editor_scene->GetScene()
+                    : nullptr;
+                ai_context.project_root = schizo::editor::project_root();
+                ai_context.undo = &editor_state.undo_redo_manager;
+                ai_context.mark_scene_modified = [&editor_state] {
+                    editor_state.editor_scene->MarkModified();
+                };
+                ai_context.select_entity = [&editor_state](uint32_t id) {
+                    editor_state.selected_entity_id = id;
+                };
+                ai_context.refresh_assets = [&editor_state] {
+                    if (editor_state.asset_browser)
+                        editor_state.asset_browser->RefreshAssets();
+                };
+                editor_state.ai_assistant.Render(
+                    ai_context, editor_state.selected_entity_id,
+                    &editor_state.show_ai_assistant);
             }
             if (editor_state.asset_import_dialog &&
                 editor_state.asset_import_dialog->IsOpen())

@@ -14,6 +14,7 @@ target_include_directories(editor
         ${CMAKE_SOURCE_DIR}/third_party/imgui/backends
         ${CMAKE_SOURCE_DIR}/third_party/glfw/include
         ${CMAKE_SOURCE_DIR}/third_party/pocketpy   # Python script backend (Stage 12)
+        ${CMAKE_SOURCE_DIR}/third_party/tinyusdz/src/external/jsonhpp # strict AI action schema
         ${CMAKE_SOURCE_DIR}/engine/core/shadergraph  # material graph model (4.1)
 )
 
@@ -58,6 +59,8 @@ target_sources(editor
         src/edit_coalescer.cpp
         src/logic_graph_panel.cpp
         src/command_palette.cpp
+        src/engine_agent_gateway.cpp
+        src/ai_assistant_panel.cpp
         src/curve_editor.cpp
         src/node_canvas.cpp
         src/anim_graph.cpp
