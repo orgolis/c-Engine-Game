@@ -523,25 +523,36 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(AiProvider provi
         if (fs::is_regular_file("/usr/bin/bwrap")) {
             const char* runtime_dir = std::getenv("XDG_RUNTIME_DIR");
             const char* session_bus = std::getenv("DBUS_SESSION_BUS_ADDRESS");
-            if (!runtime_dir || !session_bus) {
+            const char* home_value = std::getenv("HOME");
+            const fs::path sandbox_home = home_value ? fs::path(home_value).lexically_normal() : fs::path{};
+            // Codex includes its home path in the native-keyring identity. Keep
+            // that path string, but mount a fresh empty /home so neither the
+            // provider nor its tools can see the user's actual home contents.
+            if (!runtime_dir || !session_bus || !sandbox_home.is_absolute() || sandbox_home == "/home" ||
+                sandbox_home.parent_path() != "/home") {
                 result.error = "The encrypted OS credential vault is unavailable in the sandbox.";
                 std::error_code ec;
                 fs::remove_all(run_dir, ec);
                 return result;
             }
+            const fs::path sandbox_codex_home = sandbox_home / ".codex";
 
             command +=
                 "/usr/bin/bwrap --die-with-parent --new-session --unshare-pid "
                 "--ro-bind /usr /usr --ro-bind /etc /etc --ro-bind /run /run "
                 "--proc /proc --dev /dev --tmpfs /home --tmpfs /tmp "
-                "--dir /home/agent --dir /home/agent/.codex --dir /runtime ";
+                "--dir " +
+                shell_quote(sandbox_home.string()) + " --dir " + shell_quote(sandbox_codex_home.string()) +
+                " --dir /runtime ";
             command += "--ro-bind " + shell_quote(executable.parent_path().string()) +
                        " /runtime "
                        "--bind " +
                        shell_quote(run_dir.string()) +
                        " /work --chdir /work "
                        "--clearenv --setenv PATH /usr/bin "
-                       "--setenv HOME /home/agent --setenv CODEX_HOME /home/agent/.codex "
+                       "--setenv HOME " +
+                       shell_quote(sandbox_home.string()) + " --setenv CODEX_HOME " +
+                       shell_quote(sandbox_codex_home.string()) + " "
                        "--setenv XDG_RUNTIME_DIR " +
                        shell_quote(runtime_dir) +
                        " "
