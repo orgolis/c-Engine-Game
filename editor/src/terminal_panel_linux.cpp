@@ -111,7 +111,11 @@ struct TerminalPanel::Impl {
 
     void write_command(const std::string& command) {
         if (input_fd < 0) return;
-        std::string line = command + "\n";
+        // The marker reports bash's real directory after every command. It is
+        // consumed by drain() instead of rendered, which keeps `cd` reflected
+        // in the next prompt without trying to interpret shell syntax here.
+        std::string line = command +
+            "\nprintf '__GWS_TERM_PWD__=%s\\n' \"$PWD\"\n";
         size_t sent = 0;
         while (sent < line.size()) {
             const ssize_t count = write(input_fd, line.data() + sent, line.size() - sent);
@@ -129,9 +133,14 @@ struct TerminalPanel::Impl {
         for (char ch : data) {
             if (ch == '\n') {
                 if (!partial.empty() && partial.back() == '\r') partial.pop_back();
-                lines.push_back(std::move(partial));
+                constexpr const char* marker = "__GWS_TERM_PWD__=";
+                if (partial.rfind(marker, 0) == 0) {
+                    working_directory = partial.substr(std::strlen(marker));
+                } else {
+                    lines.push_back(std::move(partial));
+                    while (lines.size() > kMaxLines) lines.pop_front();
+                }
                 partial.clear();
-                while (lines.size() > kMaxLines) lines.pop_front();
             } else if (ch == '\r') {
                 partial.clear();
             } else if (static_cast<unsigned char>(ch) >= 0x20 || ch == '\t') {
@@ -141,6 +150,12 @@ struct TerminalPanel::Impl {
     }
 
     void clear() { lines.clear(); partial.clear(); }
+
+    std::string prompt() const {
+        const std::filesystem::path path(working_directory);
+        const std::string folder = path.filename().string();
+        return (folder.empty() ? working_directory : folder) + " $";
+    }
 };
 
 TerminalPanel::TerminalPanel() : impl_(std::make_unique<Impl>()) { impl_->start(); }
@@ -152,17 +167,27 @@ void TerminalPanel::Render(bool* open) {
     terminal.drain();
 
     ImGui::Begin("Terminal", open);
-    ImGui::TextDisabled("%s  -  bash", terminal.working_directory.c_str());
+    // Compact header like VS Code: shell identity on the left, controls on the
+    // right. The full current path remains visible without occupying a row of
+    // large buttons.
+    ImGui::TextUnformatted("bash");
     ImGui::SameLine();
-    if (ImGui::Button("Restart")) {
+    ImGui::TextDisabled("%s", terminal.working_directory.c_str());
+    const float controls_width = 168.0f;
+    if (ImGui::GetContentRegionAvail().x > controls_width) {
+        ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - controls_width);
+    } else {
+        ImGui::SameLine();
+    }
+    if (ImGui::SmallButton("Restart")) {
         terminal.stop();
         terminal.clear();
         terminal.start();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Clear")) terminal.clear();
+    if (ImGui::SmallButton("Clear")) terminal.clear();
     ImGui::SameLine();
-    if (ImGui::Button("Ctrl+C") && terminal.shell_pid > 0)
+    if (ImGui::SmallButton("Ctrl+C") && terminal.shell_pid > 0)
         kill(-terminal.shell_pid, SIGINT);
     if (terminal.child_exited.load()) {
         ImGui::SameLine();
@@ -170,9 +195,8 @@ void TerminalPanel::Render(bool* open) {
     }
     ImGui::Separator();
 
-    // Reserve enough room for the separator AND the command line. Reserving
-    // only one frame let the scroll area push the input below the docked panel.
-    const float footer = ImGui::GetFrameHeightWithSpacing() * 2.0f;
+    const float footer = ImGui::GetFrameHeightWithSpacing() + 5.0f;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.055f, 0.060f, 0.070f, 1.0f));
     ImGui::BeginChild("##linux_terminal_scroll", ImVec2(0, -footer), false,
                       ImGuiWindowFlags_HorizontalScrollbar);
     ImGuiListClipper clipper;
@@ -185,17 +209,28 @@ void TerminalPanel::Render(bool* open) {
     if (!terminal.partial.empty()) ImGui::TextUnformatted(terminal.partial.c_str());
     if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f) ImGui::SetScrollHereY(1.0f);
     ImGui::EndChild();
+    ImGui::PopStyleColor();
 
-    ImGui::Separator();
-    ImGui::TextUnformatted("$");
+    // Prompt and input share one dark row, instead of looking like a form
+    // field below the terminal. This is the interaction model used by VS Code.
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.055f, 0.060f, 0.070f, 1.0f));
+    ImGui::BeginChild("##linux_terminal_prompt", ImVec2(0, ImGui::GetFrameHeight()), false);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.82f, 0.58f, 1.0f));
+    ImGui::TextUnformatted(terminal.prompt().c_str());
+    ImGui::PopStyleColor();
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-1.0f);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.055f, 0.060f, 0.070f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.0f, 0.0f));
     if (terminal.focus_input) { ImGui::SetKeyboardFocusHere(); terminal.focus_input = false; }
     const ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue |
                                       ImGuiInputTextFlags_CallbackHistory;
     if (ImGui::InputText("##linux_terminal_command", terminal.input,
                          sizeof(terminal.input), flags, InputHistoryCallback, &terminal)) {
         const std::string command = terminal.input;
+        terminal.lines.push_back(terminal.prompt() + " " + command);
+        while (terminal.lines.size() > kMaxLines) terminal.lines.pop_front();
         terminal.write_command(command);
         if (!command.empty() && (terminal.history.empty() || terminal.history.back() != command))
             terminal.history.push_back(command);
@@ -203,6 +238,10 @@ void TerminalPanel::Render(bool* open) {
         terminal.input[0] = '\0';
         terminal.focus_input = true;
     }
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
     ImGui::End();
 }
 
