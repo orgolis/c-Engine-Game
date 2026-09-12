@@ -61,4 +61,16 @@ std::string browse_folder(const char* title) {
     return {};
 }
 
+std::string browse_file(const char* title) {
+    const std::string quoted_title = shell_quote(title ? title : "Choose file");
+
+    if (command_exists("zenity")) {
+        return run_picker("zenity --file-selection --title=" + quoted_title);
+    }
+    if (command_exists("kdialog")) {
+        return run_picker("kdialog --getopenfilename \"$HOME\" --title " + quoted_title);
+    }
+    return {};
+}
+
 } // namespace gws::platform

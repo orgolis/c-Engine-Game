@@ -8,4 +8,8 @@ namespace gws::platform {
 // Returns an empty string when the user cancels or no picker is available.
 std::string browse_folder(const char* title);
 
+// Opens the native file picker for importing one existing file.
+// Returns an empty string when the user cancels or no picker is available.
+std::string browse_file(const char* title);
+
 } // namespace gws::platform
