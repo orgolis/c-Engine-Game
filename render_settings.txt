@@ -1,0 +1,12 @@
+# GameWorldshaper render settings (per machine)
+PRESET=Low
+RENDER_SCALE=0.5
+SSAO=0
+SSR=0
+CLOUDS=0
+VOLUMETRIC=0
+FROXEL=0
+DDGI=0
+RAY_TRACING=0
+SHADOW_RAYS=1
+VSYNC=1

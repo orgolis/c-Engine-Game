@@ -27,26 +27,26 @@ namespace schizo::editor {
 /**
  * @class ScenePlaybackManager
  * @brief Manages scene playback with character controller integration
- * 
+ *
  * Features:
  * - Play/pause/stop scene execution
  * - Player entity detection and setup
  * - Character controller attachment
- * - Camera following player
+ * - Uses the authored player camera without imposing a camera mode
  * - Game loop time management
  */
 class ScenePlaybackManager {
 public:
     ScenePlaybackManager();
     ~ScenePlaybackManager();
-    
+
     /**
      * Start playing the scene
      * @param scene Scene to play
      * @return true if playback started successfully
      */
     bool StartPlayback(std::shared_ptr<schizo::scene::Scene> scene);
-    
+
     /**
      * Stop playing the scene
      */
@@ -63,7 +63,7 @@ public:
     size_t LastMeshCollidersFromAsset() const { return last_mesh_from_asset_; }
     size_t LastMeshCollidersFromDisk()  const { return last_mesh_from_disk_; }
     size_t LastMeshCollidersFromMemo()  const { return last_mesh_from_memo_; }
-    
+
     /**
      * Pause/resume playback
      */
@@ -97,7 +97,7 @@ public:
      *   - the restore snapshot, so pressing Stop teleports the scene back to
      *     where it was before the rebase;
      *   - the water volumes, so buoyancy and swimming trigger over dry ground;
-     *   - the follow camera, which lurches by the full shift in one frame.
+     *   - the cached camera world position.
      * Only ROOT entities are shifted by a rebase, so only their snapshots are.
      */
     void ApplyOriginShift(const glm::vec3& shift);
@@ -132,51 +132,44 @@ public:
      * @param delta_time Time elapsed since last update
      */
     void Update(float delta_time);
-    
+
     /**
      * Check if scene is currently playing
      */
     bool IsPlaying() const { return is_playing_; }
-    
+
     /**
      * Check if scene is paused
      */
     bool IsPaused() const { return is_paused_; }
-    
+
     /**
      * Get the player entity (if any)
      */
     schizo::scene::Entity* GetPlayerEntity() const { return player_entity_.get(); }
-    
+
     /**
      * Get the character controller for the player
      */
-    engine::character::CharacterController* GetPlayerController() const 
+    engine::character::CharacterController* GetPlayerController() const
     { return player_controller_.get(); }
-    
+
     /**
      * Get total playback time
      */
     float GetPlaybackTime() const { return playback_time_; }
-    
+
     /**
-     * Get the active camera for playback (usually player's camera)
+     * Get the authored camera used by playback.
      */
     schizo::scene::Entity* GetPlaybackCamera() const { return playback_camera_.get(); }
 
     /**
-     * Camera-view selection. The first-person child is the default; these
-     * helpers swap the active playback camera to the player's other child.
-     */
-    void SwitchToFirstPerson();
-    void SwitchToThirdPerson();
-    void ToggleCameraView();
-
-    /**
-     * Cursor capture state. While captured, main.cpp hides the OS cursor
-     * (GLFW_CURSOR_DISABLED) and tells ImGui to ignore mouse input so the
-     * player cannot hover/click editor panels. The game can release the
-     * cursor when an in-game GUI opens by calling SetCursorCaptured(false).
+     * Play-input focus and cursor capture state. While captured, main.cpp hides
+     * the OS cursor (GLFW_CURSOR_DISABLED), mouse-look receives raw deltas, and
+     * keyboard movement controls the character. While released, the simulation
+     * continues but mouse-look and movement input are ignored. The game can
+     * release the cursor for an in-game GUI with SetCursorCaptured(false).
      */
     bool IsCursorCaptured() const { return is_cursor_captured_; }
     void SetCursorCaptured(bool captured) { is_cursor_captured_ = captured; }
@@ -197,9 +190,9 @@ private:
 
     std::shared_ptr<schizo::scene::Scene> scene_;
     std::shared_ptr<schizo::scene::Entity> player_entity_;
-    std::shared_ptr<schizo::scene::Entity> playback_camera_;  // Camera being used during playback
+    std::shared_ptr<schizo::scene::Entity> playback_camera_;  // authored camera used by Play
     std::shared_ptr<engine::character::CharacterController> player_controller_;
-    
+
     bool is_playing_ = false;
     bool is_paused_ = false;
     bool is_cursor_captured_ = false;  // True while the host should hide+lock the OS cursor
@@ -237,15 +230,10 @@ private:
     std::vector<uint32_t>                  remote_player_bodies_; // ghost kinematic capsules (BodyIds)
     std::vector<WaterVolume>               water_volumes_;        // physical water (play-time)
     uint32_t                               player_char_id_ = 0xFFFFFFFFu;
-    
-    // Camera state
-    glm::vec3 camera_position_ = glm::vec3(0.0f);  // Current camera world position
-    glm::vec3 camera_target_position_ = glm::vec3(0.0f);  // Target camera position for smooth following
-    float camera_distance_ = 3.0f;  // Distance behind player
-    float camera_height_ = 1.5f;  // Height above player
-    float camera_smoothing_ = 0.15f;  // Smoothing factor for camera follow (0.0-1.0)
-    bool should_hide_cursor_ = true;  // Whether to hide mouse cursor during playback
-    
+
+    // Cached world position of the playback camera (profiling/rebase use).
+    glm::vec3 camera_position_ = glm::vec3(0.0f);
+
     // Helper methods
     bool FindAndSetupPlayer();
     bool AttachCharacterController();

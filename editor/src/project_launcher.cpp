@@ -1,4 +1,5 @@
 #include "project_launcher.h"
+#include "gws/platform/file_dialog.h"
 
 #include <imgui.h>
 
@@ -6,36 +7,9 @@
 #include <filesystem>
 #include <string>
 
-#ifdef _WIN32
-#include <windows.h>
-#include <shlobj.h>
-#endif
-
 namespace fs = std::filesystem;
 
 namespace schizo::project {
-
-// ----------------------------------------------------------------------------
-// Native "pick a folder" dialog (Windows). Returns "" if cancelled/unsupported.
-// ----------------------------------------------------------------------------
-static std::string browse_folder(const char* title) {
-#ifdef _WIN32
-    char path[MAX_PATH] = {0};
-    BROWSEINFOA bi{};
-    bi.lpszTitle = title;
-    bi.ulFlags   = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-    LPITEMIDLIST pidl = SHBrowseForFolderA(&bi);
-    if (pidl) {
-        SHGetPathFromIDListA(pidl, path);
-        CoTaskMemFree(pidl);
-        return std::string(path);
-    }
-    return {};
-#else
-    (void)title;
-    return {};
-#endif
-}
 
 // ----------------------------------------------------------------------------
 // Feature checkboxes with dependency handling. A feature required by an enabled
@@ -44,7 +18,6 @@ static std::string browse_folder(const char* title) {
 static bool draw_feature_checkboxes(FeatureSet& features) {
     bool changed = false;
     for (const auto& fi : feature_table()) {
-        // Is this feature forced on because an enabled feature depends on it?
         const char* forcer = nullptr;
         for (const auto& g : feature_table()) {
             if (g.depends_on == fi.id && features.has(g.id)) { forcer = g.name; break; }
@@ -83,7 +56,6 @@ static bool draw_feature_checkboxes(FeatureSet& features) {
     return changed;
 }
 
-// Load a manifest, register it as recent, and persist the registry.
 static bool open_manifest(const std::string& manifest_path,
                           ProjectsRegistry& registry,
                           ProjectManifest& out,
@@ -104,9 +76,6 @@ static bool open_manifest(const std::string& manifest_path,
     return true;
 }
 
-// ----------------------------------------------------------------------------
-// The launcher
-// ----------------------------------------------------------------------------
 bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit) {
     quit = false;
     bool chosen = false;
@@ -134,26 +103,41 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
 
     ImGui::Begin("##launcher", nullptr, flags);
 
-    // ---- Header ----
-    ImGui::SetWindowFontScale(1.7f);
-    ImGui::TextUnformatted("GameWorldshaper");
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.16f, 0.78f, 0.91f, 1.0f));
+    ImGui::SetWindowFontScale(1.75f);
+    ImGui::TextUnformatted("WORLD SHAPER");
     ImGui::SetWindowFontScale(1.0f);
-    ImGui::TextDisabled("Project Launcher");
+    ImGui::PopStyleColor();
+    ImGui::TextDisabled("Choose a workspace and start shaping your world.");
+    ImGui::SameLine();
+    const std::string project_count = std::to_string(registry.items().size()) +
+                                      (registry.items().size() == 1 ? " recent project" : " recent projects");
+    const float count_width = ImGui::CalcTextSize(project_count.c_str()).x;
+    const float count_x = ImGui::GetWindowWidth() - count_width - ImGui::GetStyle().WindowPadding.x;
+    if (count_x > ImGui::GetCursorPosX()) ImGui::SetCursorPosX(count_x);
+    ImGui::TextColored(ImVec4(0.38f, 0.72f, 0.80f, 1.0f), "%s", project_count.c_str());
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::Dummy(ImVec2(0, 10));
 
     if (ImGui::BeginTabBar("launcher_tabs")) {
-
-        // ================= Recent =================
         if (ImGui::BeginTabItem("Recent Projects")) {
             error_msg.clear();
             if (registry.items().empty()) {
-                ImGui::Dummy(ImVec2(0, 8));
-                ImGui::TextDisabled("No recent projects. Create one in the \"New Project\" tab.");
+                ImGui::Dummy(ImVec2(0, 18));
+                const char* empty_title = "No projects here yet";
+                const float title_x = (ImGui::GetContentRegionAvail().x -
+                                       ImGui::CalcTextSize(empty_title).x) * 0.5f;
+                if (title_x > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + title_x);
+                ImGui::TextUnformatted(empty_title);
+                const char* empty_hint = "Create a new project or open an existing project.schizo folder.";
+                const float hint_x = (ImGui::GetContentRegionAvail().x -
+                                      ImGui::CalcTextSize(empty_hint).x) * 0.5f;
+                if (hint_x > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + hint_x);
+                ImGui::TextDisabled("%s", empty_hint);
             } else {
                 ImGui::TextDisabled("Double-click a project to open it.");
                 ImGui::Dummy(ImVec2(0, 4));
-                ImGui::BeginChild("recent_list", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 1.4f), true);
+                ImGui::BeginChild("recent_list", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 3.0f), true);
                 const auto& items = registry.items();
                 for (int i = 0; i < static_cast<int>(items.size()); ++i) {
                     const auto& it = items[i];
@@ -195,7 +179,6 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
             ImGui::EndTabItem();
         }
 
-        // ================= New =================
         if (ImGui::BeginTabItem("New Project")) {
             ImGui::Dummy(ImVec2(0, 4));
             ImGui::TextUnformatted("Name");
@@ -207,7 +190,7 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
             ImGui::InputText("##loc", new_loc, sizeof(new_loc));
             ImGui::SameLine();
             if (ImGui::Button("Browse...##loc")) {
-                std::string picked = browse_folder("Choose where to create the project");
+                std::string picked = gws::platform::browse_folder("Choose where to create the project");
                 if (!picked.empty()) std::snprintf(new_loc, sizeof(new_loc), "%s", picked.c_str());
             }
 
@@ -215,7 +198,7 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
             ImGui::TextUnformatted("Features");
             ImGui::TextDisabled("Core systems (Rendering, ECS, Assets, Editor) are always included.");
             ImGui::Dummy(ImVec2(0, 2));
-            ImGui::BeginChild("new_features", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 1.8f), true);
+            ImGui::BeginChild("new_features", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 3.0f), true);
             draw_feature_checkboxes(new_features);
             ImGui::EndChild();
 
@@ -235,7 +218,6 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
             ImGui::EndTabItem();
         }
 
-        // ================= Open =================
         if (ImGui::BeginTabItem("Open Project")) {
             ImGui::Dummy(ImVec2(0, 4));
             ImGui::TextUnformatted("Project folder (or a project.schizo path)");
@@ -243,7 +225,7 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
             ImGui::InputText("##openpath", open_path, sizeof(open_path));
             ImGui::SameLine();
             if (ImGui::Button("Browse...##open")) {
-                std::string picked = browse_folder("Choose a project folder");
+                std::string picked = gws::platform::browse_folder("Choose a project folder");
                 if (!picked.empty()) std::snprintf(open_path, sizeof(open_path), "%s", picked.c_str());
             }
             ImGui::Dummy(ImVec2(0, 6));
@@ -261,22 +243,25 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
         ImGui::EndTabBar();
     }
 
-    // ---- Error line + Quit ----
     if (!error_msg.empty()) {
         ImGui::Dummy(ImVec2(0, 4));
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", error_msg.c_str());
+        ImGui::TextColored(
+            ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+            "%s",
+            error_msg.c_str()
+        );
     }
 
-    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - ImGui::GetFrameHeightWithSpacing() - 8.0f);
-    if (ImGui::Button("Quit", ImVec2(100, 0))) quit = true;
+    ImGui::Dummy(ImVec2(0, 8));
+
+    if (ImGui::Button("Quit", ImVec2(100, 0))) {
+        quit = true;
+    }
 
     ImGui::End();
     return chosen;
 }
 
-// ----------------------------------------------------------------------------
-// In-editor Project Settings > Features (add / remove features later).
-// ----------------------------------------------------------------------------
 bool draw_feature_settings(FeatureSet& features, bool* p_open) {
     bool changed = false;
     ImGui::SetNextWindowSize(ImVec2(420, 460), ImGuiCond_FirstUseEver);

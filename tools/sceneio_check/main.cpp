@@ -16,7 +16,10 @@
 // ============================================================================
 #include "scene_serializer.h"
 
+#include "camera_component.h"
+#include "collider_component.h"
 #include "entity.h"
+#include "entity_factory.h"
 #include "npc_agent_component.h"
 #include "particle_emitter_component.h"
 #include "scene.h"
@@ -108,6 +111,30 @@ int main() {
         mrc->SetUvScale(glm::vec2(3.0f, 7.0f));
         mrc->SetUvOffset(glm::vec2(-0.25f, 0.5f));
 
+        // The default-project contract: one Player root, one PlayerCamera.
+        // First/third person is a playback mode that moves this SAME camera;
+        // it must not be represented as two separately configurable cameras.
+        auto player = scene::EntityFactory::CreatePlayer(
+            scn, "Player", glm::vec3(0.0f, 1.0f, 3.0f));
+        check(player != nullptr, "CreatePlayer produces a starter player");
+        if (player) {
+            check(player->GetComponent<scene::ColliderComponent>() != nullptr,
+                  "the starter player has its playback collider");
+            auto camera = scn->GetEntityByName("PlayerCamera");
+            check(camera && camera->GetParent() == player,
+                  "the single PlayerCamera is parented to Player");
+            check(camera && camera->GetComponent<scene::CameraComponent>() != nullptr,
+                  "PlayerCamera is a real CameraComponent");
+            check(!scn->GetEntityByName("FirstPersonCamera") &&
+                  !scn->GetEntityByName("ThirdPersonCamera"),
+                  "CreatePlayer does not duplicate first/third-person cameras");
+
+            int camera_children = 0;
+            for (const auto& child : player->GetChildren())
+                if (child && child->GetComponent<scene::CameraComponent>()) ++camera_children;
+            check(camera_children == 1, "Player has exactly one camera child");
+        }
+
         check(editor::SceneSerializer::SaveScene(path, scn), "the scene saves");
     }
 
@@ -117,6 +144,31 @@ int main() {
     if (!loaded) {
         std::printf("\n%d passed, %d failed\nFAIL sceneio_check\n", g_pass, g_fail + 1);
         return 1;
+    }
+
+    // ---- starter player + single camera -------------------------------------
+    // This is the bit that matters for a fresh project: saving main.scene must
+    // preserve the one-camera contract before the user ever presses Play.
+    {
+        auto player = loaded->GetEntityByName("Player");
+        auto camera = loaded->GetEntityByName("PlayerCamera");
+        check(player != nullptr, "Player survives the scene round trip");
+        check(player && player->GetComponent<scene::ColliderComponent>() != nullptr,
+              "and keeps the collider Play mode needs");
+        check(camera && player && camera->GetParent() == player,
+              "PlayerCamera keeps its Player parent");
+        check(camera && camera->GetComponent<scene::CameraComponent>() != nullptr,
+              "PlayerCamera keeps its CameraComponent");
+        check(!loaded->GetEntityByName("FirstPersonCamera") &&
+              !loaded->GetEntityByName("ThirdPersonCamera"),
+              "the scene round trip does not invent a second camera");
+
+        int camera_children = 0;
+        if (player) {
+            for (const auto& child : player->GetChildren())
+                if (child && child->GetComponent<scene::CameraComponent>()) ++camera_children;
+        }
+        check(camera_children == 1, "exactly one player camera survives the round trip");
     }
 
     // ---- terrain per-layer surface -----------------------------------------

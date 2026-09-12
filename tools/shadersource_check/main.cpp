@@ -101,7 +101,12 @@ std::vector<uint32_t> read_spv(const fs::path& p) {
 fs::path find_glslang() {
     if (const char* sdk = std::getenv("VULKAN_SDK")) {
         std::error_code ec;
-        const fs::path c = fs::path(sdk) / "Bin" / "glslangValidator.exe";
+        const fs::path c = fs::path(sdk) /
+#ifdef _WIN32
+            "Bin" / "glslangValidator.exe";
+#else
+            "bin" / "glslangValidator";
+#endif
         if (fs::exists(c, ec)) return c;
     }
     return {};

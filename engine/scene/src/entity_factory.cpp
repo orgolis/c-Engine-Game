@@ -3,6 +3,7 @@
 #include "mesh_renderer_component.h"
 #include "light_component.h"
 #include "collider_component.h"
+#include "camera_component.h"
 #include <spdlog/spdlog.h>
 
 namespace schizo::scene {
@@ -147,7 +148,7 @@ std::shared_ptr<Entity> EntityFactory::CreatePlayer(
     // between the player's yaw and the camera child's pitch in the world
     // matrix, which makes Transform::GetWorldRotation extract a skewed
     // (non-orthogonal) basis from the camera child and breaks vertical
-    // mouse look in first-person play mode.
+    // mouse look in play mode.
     auto entity = scene->CreateEntity(name);
     if (!entity) return nullptr;
 
@@ -155,7 +156,7 @@ std::shared_ptr<Entity> EntityFactory::CreatePlayer(
     entity->SetTag("Player");
 
     // Visual capsule on a child so its non-uniform scale never reaches
-    // the camera children. The numbers match the old CreateCapsule call
+    // the camera child. The numbers match the old CreateCapsule call
     // (radius 0.4, height 1.8 -> scale 0.8 x 1.8 x 0.8).
     if (auto visual = scene->CreateEntity("PlayerMesh")) {
         visual->SetParent(entity);
@@ -178,40 +179,23 @@ std::shared_ptr<Entity> EntityFactory::CreatePlayer(
         col->SetDynamic(false);
     }
 
-    // ------------------------------------------------------------------
-    // Camera children created up-front (NOT lazily on play). Order matters:
-    // the hierarchy panel orders children by scene-creation order, so
-    // FirstPersonCamera is created first and therefore listed above
-    // ThirdPersonCamera. ScenePlaybackManager picks FirstPersonCamera as
-    // the default playback view.
-    //
-    // Local positions are in world units now that the player root scale
-    // is identity: 0.81 = previous (0.45 * 1.8), 1.26 = (0.7 * 1.8),
-    // 4.8 = (6.0 * 0.8). These keep the camera in the same world spot
-    // as before the visual-mesh refactor.
-    // ------------------------------------------------------------------
-    int created = 0;
-    if (auto first_person = scene->CreateEntity("FirstPersonCamera")) {
-        first_person->SetParent(entity);
-        if (auto t = first_person->GetTransform()) {
+    // One ordinary authored camera. The engine does not attach a first-person
+    // or third-person mode to it and never moves it between hard-coded offsets.
+    // This starter placement is only a useful initial transform; project code
+    // is free to move, reparent or replace the camera entirely.
+    if (auto camera = scene->CreateEntity("PlayerCamera")) {
+        camera->SetParent(entity);
+        if (auto t = camera->GetTransform()) {
             t->SetLocalPosition(glm::vec3(0.0f, 0.81f, 0.0f));
             t->SetLocalScale(glm::vec3(1.0f));
         }
-        first_person->SetTag("Camera");
-        ++created;
+        camera->AddComponent<CameraComponent>();
+        camera->SetTag("Camera");
+        spdlog::info("CreatePlayer: spawned authored PlayerCamera");
+    } else {
+        spdlog::error("CreatePlayer: failed to create PlayerCamera");
     }
 
-    if (auto third_person = scene->CreateEntity("ThirdPersonCamera")) {
-        third_person->SetParent(entity);
-        if (auto t = third_person->GetTransform()) {
-            t->SetLocalPosition(glm::vec3(0.0f, 1.26f, 4.8f));
-            t->SetLocalScale(glm::vec3(1.0f));
-        }
-        third_person->SetTag("Camera");
-        ++created;
-    }
-
-    spdlog::info("CreatePlayer: spawned {} camera children (FirstPersonCamera, ThirdPersonCamera)", created);
     return entity;
 }
 
@@ -231,7 +215,10 @@ std::shared_ptr<Entity> EntityFactory::CreateCamera(
         
         // Use LookAt to orient the camera
         entity->GetTransform()->LookAt(look_at);
-        
+
+        // A camera factory should create an actual camera component, not just
+        // a yellow helper mesh with a "Camera" tag.
+        entity->AddComponent<CameraComponent>();
         entity->SetTag("Camera");
     }
     

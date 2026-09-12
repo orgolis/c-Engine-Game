@@ -46,7 +46,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # (so dev builds run without the toolchain on PATH) and install() them so the
 # packaged product is self-contained. vulkan-1.dll is a system DLL (GPU drivers).
 # ============================================================================
-if(MINGW OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+if(MINGW)
     get_filename_component(GWS_MINGW_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
     set(GWS_RUNTIME_DLLS
         "${GWS_MINGW_BIN}/libgcc_s_seh-1.dll"
@@ -251,6 +251,7 @@ set(FLOATING_POINT_EXCEPTIONS_ENABLED OFF CACHE BOOL "" FORCE)
 set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
 set(PROFILER_IN_DEBUG_AND_RELEASE    OFF CACHE BOOL "" FORCE)
 set(JPH_USE_DX12                     OFF CACHE BOOL "" FORCE)
+set(JPH_USE_VK                       OFF CACHE BOOL "" FORCE)
 set(USE_ASSERTS                      OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/JoltPhysics/Build)
 

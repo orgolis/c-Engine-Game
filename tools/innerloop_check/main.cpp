@@ -44,6 +44,14 @@ namespace {
 
 fs::path g_exe_dir;
 
+fs::path sibling_tool(const std::string& name) {
+#ifdef _WIN32
+    return g_exe_dir / (name + ".exe");
+#else
+    return g_exe_dir / name;
+#endif
+}
+
 bool flag(int argc, char** argv, const char* n) {
     for (int i = 1; i < argc; ++i) if (std::strcmp(argv[i], n) == 0) return true;
     return false;
@@ -98,7 +106,7 @@ int main(int argc, char** argv) {
     // A proxy for "how long before the engine's tooling responds at all". It
     // bounds every scripted workflow and every agent round-trip.
     {
-        const fs::path gws = g_exe_dir / "gws.exe";
+        const fs::path gws = sibling_tool("gws");
         if (fs::exists(gws)) {
             run_quiet("\"" + gws.string() + "\" version");          // warm the cache
             const auto t0 = clk::now();
@@ -115,7 +123,7 @@ int main(int argc, char** argv) {
     // measurable stand-in for play-mode responsiveness, and unlike the editor
     // rows it needs no GPU.
     {
-        const fs::path hl = g_exe_dir / "headless.exe";
+        const fs::path hl = sibling_tool("headless");
         if (fs::exists(hl)) {
             run_quiet("\"" + hl.string() + "\" --demo --frames 60");   // warm
             const auto t0 = clk::now();
@@ -140,7 +148,7 @@ int main(int argc, char** argv) {
     // creeps past a couple of minutes people stop running them locally, and the
     // suite stops being part of the inner loop at all.
     {
-        const fs::path gws = g_exe_dir / "gws.exe";
+        const fs::path gws = sibling_tool("gws");
         if (fs::exists(gws)) {
             const auto t0 = clk::now();
             run_quiet("\"" + gws.string() + "\" test --filter world");
@@ -156,7 +164,7 @@ int main(int argc, char** argv) {
     // a developer's machine — and honestly unmeasured where one does not, which
     // is every CI runner. Better to measure it somewhere than nowhere.
     {
-        const fs::path ed = g_exe_dir / "editor.exe";
+        const fs::path ed = sibling_tool("editor");
         if (fs::exists(ed)) {
             const fs::path out = fs::temp_directory_path() / "gws_innerloop_probe.json";
             std::error_code ec;
@@ -199,7 +207,7 @@ int main(int argc, char** argv) {
     for (const auto& m : metrics)
         if (m.name == "editor_cold_start") editor_cold_ms = m.ms;
     {
-        const fs::path ed = g_exe_dir / "editor.exe";
+        const fs::path ed = sibling_tool("editor");
         double play_ms = -1.0, asset_ms = -1.0;
         if (fs::exists(ed)) {
             const fs::path out = fs::temp_directory_path() / "gws_innerloop_probe2.json";
@@ -250,7 +258,12 @@ int main(int argc, char** argv) {
         fs::path glslang;
         if (const char* sdk = std::getenv("VULKAN_SDK")) {
             std::error_code ec;
-            const fs::path c = fs::path(sdk) / "Bin" / "glslangValidator.exe";
+            const fs::path c = fs::path(sdk) /
+#ifdef _WIN32
+                "Bin" / "glslangValidator.exe";
+#else
+                "bin" / "glslangValidator";
+#endif
             if (fs::exists(c, ec)) glslang = c;
         }
         fs::path shader;

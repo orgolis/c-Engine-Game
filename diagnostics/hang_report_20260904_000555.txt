@@ -1,0 +1,299 @@
+=== editor HANG report ===
+time:    2026-09-04 00:05:55
+app:     editor 0.8.4
+reason:  main loop stopped ticking for 5.04464s
+
+NOTE: this is a FREEZE, not a crash. Nothing threw and nothing
+signalled, so no crash report exists for it.
+
+--- app context ---
+project: (none / launcher)
+gpu:     Intel(R) Iris(R) Xe Graphics (ADL GT2)
+driver:  26.2.1 (raw 0x06802001), Vulkan API 1.4.354
+
+(stack sampling is Windows-only)
+
+--- frame times, most recent last (ms) ---
+count 155, mean 16.40ms (61 fps), worst 50.00ms
+   1.97  50.00   2.19   2.47  10.55   2.64  30.36   2.14   5.71  13.74  17.59  16.70
+  14.70  18.38  15.62  16.92  15.81  16.29  16.97  16.99  16.26  16.78  16.67  16.66
+  16.88  16.65  16.07  17.81  16.27  16.72  16.41  17.66  16.25  16.38  16.36  16.46
+  17.02  16.70  16.67  16.58  16.51  17.06  16.39  16.69  18.42  14.99  16.74  16.80
+  16.36  16.74  16.76  16.77  16.39  17.06  17.25  16.83  16.58  15.81  16.70  16.89
+  16.62  16.79  16.59  16.94  16.39  16.87  16.93  16.32  16.66  16.88  17.00  16.02
+  17.11  16.27  17.20  16.92  20.95  11.81  16.37  16.94  16.88  16.92  16.15  16.54
+  17.15  16.27  16.57  16.88  17.09  16.39  16.30  16.69  16.92  16.63  16.68  16.36
+  16.68  17.07  16.22  17.05  16.95  16.31  16.75  17.28  16.03  16.75  16.77  17.23
+  16.07  16.61  16.65  16.97  16.44  16.86  16.33  17.26  16.53  16.22  16.70  16.57
+  17.15  17.49  15.75  16.64  16.50  16.65  18.60  17.06  16.01  18.18  16.79  14.36
+  16.48  17.99  17.22  17.50  17.66  14.66  14.41  16.83  16.56  19.14  16.93  16.94
+  17.15  17.41  15.53  14.18  17.88  15.72  18.45  17.14  15.08  17.54  17.46
+
+--- breadcrumbs (newest last) ---
+(none recorded)
+
+--- system ---
+os:  (non-Windows)
+
+--- recent log (newest last) ---
+[2026-09-04 00:05:47.257] [info] [diag] crash handler installed (reports -> diagnostics)
+[2026-09-04 00:05:47.257] [info] [hang] watchdog armed — reports a stack if a frame takes over 5.0s
+[2026-09-04 00:05:47.257] [info] === Project Schizo Editor (Vulkan) v0.8.4 ===
+[2026-09-04 00:05:47.257] [info] [paths] engine content base: /home/elrasap/programmieren/c-Engine-Game
+[2026-09-04 00:05:47.450] [info] GLFW window created (1920x1080), framebuffer 1920x1080
+[2026-09-04 00:05:47.450] [info] [perf] render targets 960x540 (scale 0.50) -- was a hardcoded 1920x1080
+[2026-09-04 00:05:47.450] [info] [vk] validation layers ON
+[2026-09-04 00:05:47.450] [info] Initializing Vulkan device: ProjectSchizoEditor
+[2026-09-04 00:05:47.598] [info] Vulkan validation layers enabled
+[2026-09-04 00:05:47.627] [info] ✅ Vulkan instance created
+[2026-09-04 00:05:47.627] [info] ✅ Debug messenger enabled
+[2026-09-04 00:05:47.627] [info] [Vulkan] Copying old device 0 into new device 0
+[2026-09-04 00:05:47.627] [info] [Vulkan] Copying old device 0 into new device 0
+[2026-09-04 00:05:47.631] [info] [Vulkan] Copying old device 0 into new device 0
+[2026-09-04 00:05:47.631] [info] [Vulkan] Copying old device 0 into new device 0
+[2026-09-04 00:05:47.635] [info] ✅ Selected GPU: Intel(R) Iris(R) Xe Graphics (ADL GT2)
+[2026-09-04 00:05:47.636] [info] ✅ Bindless textures supported — 4096 slots (device max 201326592)
+[2026-09-04 00:05:47.636] [info] Ray tracing extensions not available on this device — RT disabled
+[2026-09-04 00:05:47.639] [info] ✅ Logical device created
+[2026-09-04 00:05:47.639] [info] ✅ Command pool created
+[2026-09-04 00:05:47.640] [info] Vulkan pipeline cache: warm-started (29271 bytes loaded from cache/vulkan_pipeline_cache.bin)
+[2026-09-04 00:05:47.640] [info] ✅ Vulkan device initialized successfully
+[2026-09-04 00:05:47.640] [info]    GPU: Intel(R) Iris(R) Xe Graphics (ADL GT2)
+[2026-09-04 00:05:47.640] [info] [diag] gpu:     Intel(R) Iris(R) Xe Graphics (ADL GT2)
+driver:  26.2.1 (raw 0x06802001), Vulkan API 1.4.354
+
+[2026-09-04 00:05:47.640] [info] VulkanDevice initialized: Intel(R) Iris(R) Xe Graphics (ADL GT2)
+[2026-09-04 00:05:47.641] [info] [swapchain] present mode: FIFO (vsync on - frame rate capped to the refresh rate)
+[2026-09-04 00:05:47.642] [info] ✅ Swapchain created: 960x540 (4 images)
+[2026-09-04 00:05:47.642] [info] Swapchain: 960x540 (4 images)
+[2026-09-04 00:05:47.642] [info] VulkanBindlessTextures ready — 4096 slots
+[2026-09-04 00:05:47.648] [info] VulkanShaderRegistry initialized
+[2026-09-04 00:05:47.648] [info] [shaders] runtime GLSL compilation unavailable in this build; using precompiled SPIR-V (this is the normal path)
+[2026-09-04 00:05:47.650] [info] VulkanGBuffer created: 960x540 (scene pipeline: yes)
+[2026-09-04 00:05:47.650] [info] VulkanShaderRegistry initialized
+[2026-09-04 00:05:47.655] [info] VulkanLightingPass: LTC area-light LUTs uploaded (64x64 RGBA32F)
+[2026-09-04 00:05:47.656] [info] VulkanLightingPass: using the non-ray-traced fragment shader
+[2026-09-04 00:05:47.657] [info] VulkanLightingPass created with 128 max lights
+[2026-09-04 00:05:47.657] [info] VulkanShaderRegistry initialized
+[2026-09-04 00:05:47.658] [info] VulkanShadowMap created: 2048x2048, type=0
+[2026-09-04 00:05:47.658] [info] VulkanShaderRegistry initialized
+[2026-09-04 00:05:47.658] [info] VulkanPostProcessing created: 960x540
+[2026-09-04 00:05:47.659] [info] AutoExposure initialized
+[2026-09-04 00:05:47.659] [info] VulkanShaderRegistry initialized
+[2026-09-04 00:05:47.660] [warning] [Vulkan] vkCreateGraphicsPipelines(): pCreateInfos[0].pColorBlendState->pAttachments[1] is different than pAttachments[0] and independentBlend feature was not enabled.
+The Vulkan spec states: If the independentBlend feature is not enabled, all elements of pAttachments must be identical (https://docs.vulkan.org/spec/latest/chapters/framebuffer.html#VUID-VkPipelineColorBlendStateCreateInfo-pAttachments-00605)
+[2026-09-04 00:05:47.662] [info] VulkanTransparentPass[WBOIT] created (960x540)
+[2026-09-04 00:05:47.662] [info] VulkanShaderRegistry initialized
+[2026-09-04 00:05:47.662] [info] [Particles] GPU billboard pass ready (960x540)
+[2026-09-04 00:05:47.662] [info] [Indirect] draw buffer ready — 4096 commands, multiDrawIndirect ON
+[2026-09-04 00:05:47.726] [info] VulkanEnvironmentMap: procedural cubemap built (256^2 per face)
+[2026-09-04 00:05:47.852] [info] VulkanEnvironmentMap: IBL baked (irradiance=32^2, prefilter=256^2 x 5 mips, brdf_lut=256^2)
+[2026-09-04 00:05:47.853] [info] VulkanSsaoPass created (960x540, technique=3)
+[2026-09-04 00:05:47.854] [warning] [Vulkan] vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] shader [VK_SHADER_STAGE_FRAGMENT_BIT] uses descriptor [Set 0, Binding 0, variable "voxelTex"] (type VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) which is not marked with NonWritable, but fragmentStoresAndAtomics was not enabled.
+The Vulkan spec states: If the fragmentStoresAndAtomics feature is not enabled, then all storage image, storage texel buffer, storage tensor, and storage buffer variables in the fragment stage must be decorated with the NonWritable decoration (https://docs.vulkan.org/spec/latest/appendices/spirvenv.html#VUID-RuntimeSpirv-NonWritable-06340)
+[2026-09-04 00:05:47.854] [info] VulkanVxaoPass created (960x540, grid 128^3)
+[2026-09-04 00:05:47.855] [info] VulkanSsrPass created (960x540, screen-space)
+[2026-09-04 00:05:47.856] [info] VulkanVolumetricLightPass created (960x540, scatter 480x270)
+[2026-09-04 00:05:47.857] [info] VulkanFroxelFogPass created (960x540, froxels 160x90x64)
+[2026-09-04 00:05:47.863] [info] SkinnedMesh created (88 verts, 9 bones)
+[2026-09-04 00:05:47.866] [info] VulkanCloudPass created (960x540, cloud 480x270)
+[2026-09-04 00:05:47.866] [info] [perf] preset Low - ssao false ssr false clouds false volumetric false froxel false ddgi false
+[2026-09-04 00:05:47.866] [info] VulkanWaterPass created (960x540, grid 128x128)
+[2026-09-04 00:05:47.866] [info] Ray tracing not available on this GPU — raster path only
+[2026-09-04 00:05:47.866] [info] VulkanTransparentPass[WBOIT]: lighting resources wired (max_lights=128)
+[2026-09-04 00:05:47.866] [info] VulkanTransparentPass[WBOIT]: IBL textures wired (mips=5)
+[2026-09-04 00:05:47.866] [info] VulkanHzbCuller created (480x270 HZB, 9 mips, readback mip=4)
+[2026-09-04 00:05:47.866] [info] VulkanRenderGraph created at 960x540 (shadow=on, transparent=on, post=on)
+[2026-09-04 00:05:47.866] [info] Deferred pipeline + render graph ready (frustum culling ON)
+[2026-09-04 00:05:47.874] [info] Primitive meshes initialized (cube/plane/sphere/cylinder/capsule/pyramid)
+[2026-09-04 00:05:47.874] [info] ImGui render pass + framebuffers created
+[2026-09-04 00:05:47.877] [info] ImGuiVulkan: Initialized successfully
+[2026-09-04 00:05:47.877] [info] ImGuiVulkan initialized
+[2026-09-04 00:05:47.877] [info] Created scene: Default Scene
+[2026-09-04 00:05:47.877] [info] Created new scene: Default Scene
+[2026-09-04 00:05:47.877] [info] Editor state and panels initialized
+[2026-09-04 00:05:47.877] [info] [script] backends registered: .py (Python/pocketpy), .cpp/.cc (native C++ via g++), .cs (C#/.NET)
+[2026-09-04 00:05:47.877] [info] CreatePlayer: spawned 2 camera children (FirstPersonCamera, ThirdPersonCamera)
+[2026-09-04 00:05:47.877] [info] Default scene: 10 entities (player + 2 dynamic cubes + ground)
+[2026-09-04 00:05:47.882] [info] AssetManager initialized
+[2026-09-04 00:05:47.882] [info] Successfully loaded OBJ mesh: assets/models/../../assets/test_cooked/cube3d.obj (36 vertices, 36 indices)
+[2026-09-04 00:05:47.882] [info] Loaded mesh: ../../assets/test_cooked/cube3d.obj (36 vertices, 36 indices)
+[2026-09-04 00:05:47.896] [info] Stage 4 play-mode physics (Jolt) self-check: box y 4.00->0.54 (fell OK), MESH-collider y 5.50->0.55 (fell OK (convex hull))
+[2026-09-04 00:05:47.897] [info] Stage 2 cook->runtime: no cooked .pak found (run tools/assetcook) — skipping live load
+[2026-09-04 00:05:47.898] [info] Engine foundation online: 16 job workers, frame allocator 8 MiB x2 per worker
+[2026-09-04 00:05:47.898] [info] [gpu-zones] ready: up to 64 zones, 3 frames deep, 52.1 ns/tick
+[2026-09-04 00:05:47.910] [info] [audio] device started: 48000 Hz, 2 ch, 256 voices
+[2026-09-04 00:05:47.912] [info] parallel_for self-check: sum=4999950000 expected=4999950000 -> OK
+[2026-09-04 00:05:47.913] [info] [palette] 25 commands registered
+[2026-09-04 00:05:47.917] [info] [shadergraph] shader compiler: glslangValidator
+[2026-09-04 00:05:47.918] [info] Entering editor loop...
+[2026-09-04 00:05:47.919] [info] [swapchain] present mode: FIFO (vsync on - frame rate capped to the refresh rate)
+[2026-09-04 00:05:47.920] [info] ✅ Swapchain created: 1920x1080 (4 images)
+[2026-09-04 00:05:47.920] [info] Swapchain recreated: 1920x1080
+[2026-09-04 00:05:47.922] [info] [assets] resolved '../../assets/test_cooked/cube3d.obj' -> 'assets/test_cooked/cube3d.obj' (dropped stale leading ../)
+[2026-09-04 00:05:47.922] [info] ECS shadow live: 10 entities synced, 10 LocalToWorld computed (parallel TRS + hierarchy), 10/10 matrices match OOP world -> OK
+[2026-09-04 00:05:47.922] [info] ECS snapshot self-check: 10 entities -> 2036 bytes -> reloaded 10 -> OK
+[2026-09-04 00:05:48.184] [info] ECS draw submission: scene 5 draws (0.023 ms); benchmark 100000 entities -> 100000 draws in one parallel pass (16.504 ms) -> OK (unoptimized build; ~3.7ms at -O2)
+[2026-09-04 00:05:48.185] [warning] [Vulkan] vkCmdDraw(): the combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"] VkImageViewType is VK_IMAGE_VIEW_TYPE_2D but the OpTypeImage has (Dim = 2D) and (Arrayed = 1).
+Either fix in the shader or update the VkImageViewType to VK_IMAGE_VIEW_TYPE_2D_ARRAY
+Hint: With VK_KHR_maintenance11 there is VK_IMAGE_CREATE_ALIAS_SINGLE_LAYER_DESCRIPTOR_BIT_KHR which would make this legal.
+The Vulkan spec states: If a VkImageView is accessed as a result of this command, then the image view's viewType must match the Dim operand of the OpTypeImage as described in Compatibility Between SPIR-V Image Dimensions and Vulkan ImageView Types (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-viewType-07752)
+[2026-09-04 00:05:48.185] [warning] [Vulkan] vkCmdDraw(): Cannot use VkImage 0x730000000073 (layer 0, mip 0) with specific layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (specified by combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"]) that doesn't match the previous known layout VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+The Vulkan spec states: If an image descriptor is accessed by a shader, the VkImageLayout must match the subresource accessible from the VkImageView as defined by the image layout matching rules (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-imageLayout-00344)
+[2026-09-04 00:05:48.185] [warning] [Vulkan] vkCmdDraw(): Cannot use VkImage 0x330000000033 (layer 0, mip 0) with specific layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (specified by combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 4, Index 0, variable "depthTex"]) that doesn't match the previous known layout VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+The Vulkan spec states: If an image descriptor is accessed by a shader, the VkImageLayout must match the subresource accessible from the VkImageView as defined by the image layout matching rules (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-imageLayout-00344)
+[2026-09-04 00:05:48.186] [info] [Transparent/WBOIT] 0 draw item(s) this frame
+[2026-09-04 00:05:48.187] [info] FXAA initialized
+[2026-09-04 00:05:48.187] [warning] [Vulkan] vkCmdPipelineBarrier(): pImageMemoryBarriers[0].newLayout (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) is not compatible with VkImage 0x7e000000007e usage flags VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR.
+The Vulkan spec states: If layouts are not ignored, oldLayout or newLayout is VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL then image must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-VkImageMemoryBarrier-oldLayout-01212)
+[2026-09-04 00:05:48.187] [warning] [Vulkan] vkCmdCopyImage(): srcImage (VkImage 0x7e000000007e) was created with VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR but requires VK_IMAGE_USAGE_2_TRANSFER_SRC_BIT_KHR.
+The Vulkan spec states: If the aspect member of any element of pRegions includes any flag other than VK_IMAGE_ASPECT_STENCIL_BIT or srcImage was not created with separate stencil usage, srcImage must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/copies.html#VUID-vkCmdCopyImage-aspect-06662)
+[2026-09-04 00:05:48.187] [warning] [Vulkan] vkCmdPipelineBarrier(): pImageMemoryBarriers[0].oldLayout (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) is not compatible with VkImage 0x7e000000007e usage flags VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR.
+The Vulkan spec states: If layouts are not ignored, oldLayout or newLayout is VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL then image must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-VkImageMemoryBarrier-oldLayout-01212)
+[2026-09-04 00:05:48.187] [warning] [Vulkan] vkGetQueryPoolResults(): queryPool VkQueryPool 0x2310000000231 and query 0: query not reset. After query pool creation, each query must be reset before it is used. Queries must also be reset between uses.
+The Vulkan spec states: All queries used by the command must not be uninitialized (https://docs.vulkan.org/spec/latest/chapters/queries.html#VUID-vkGetQueryPoolResults-None-09401)
+[2026-09-04 00:05:48.187] [warning] [Vulkan] vkGetQueryPoolResults(): queryPool VkQueryPool 0x2310000000231 and query 2: query not reset. After query pool creation, each query must be reset before it is used. Queries must also be reset between uses.
+The Vulkan spec states: All queries used by the command must not be uninitialized (https://docs.vulkan.org/spec/latest/chapters/queries.html#VUID-vkGetQueryPoolResults-None-09401)
+[2026-09-04 00:05:48.187] [warning] [Vulkan] vkGetQueryPoolResults(): queryPool VkQueryPool 0x2310000000231 and query 4: query not reset. After query pool creation, each query must be reset before it is used. Queries must also be reset between uses.
+The Vulkan spec states: All queries used by the command must not be uninitialized (https://docs.vulkan.org/spec/latest/chapters/queries.html#VUID-vkGetQueryPoolResults-None-09401)
+[2026-09-04 00:05:48.187] [warning] [Vulkan] vkGetQueryPoolResults(): queryPool VkQueryPool 0x2310000000231 and query 6: query not reset. After query pool creation, each query must be reset before it is used. Queries must also be reset between uses.
+The Vulkan spec states: All queries used by the command must not be uninitialized (https://docs.vulkan.org/spec/latest/chapters/queries.html#VUID-vkGetQueryPoolResults-None-09401)
+[2026-09-04 00:05:48.187] [warning] [Vulkan] vkGetQueryPoolResults(): queryPool VkQueryPool 0x2310000000231 and query 8: query not reset. After query pool creation, each query must be reset before it is used. Queries must also be reset between uses.
+The Vulkan spec states: All queries used by the command must not be uninitialized (https://docs.vulkan.org/spec/latest/chapters/queries.html#VUID-vkGetQueryPoolResults-None-09401)
+[2026-09-04 00:05:48.187] [warning] [Vulkan] vkGetQueryPoolResults(): queryPool VkQueryPool 0x2310000000231 and query 10: query not reset. After query pool creation, each query must be reset before it is used. Queries must also be reset between uses.
+The Vulkan spec states: All queries used by the command must not be uninitialized (https://docs.vulkan.org/spec/latest/chapters/queries.html#VUID-vkGetQueryPoolResults-None-09401)
+[2026-09-04 00:05:48.193] [warning] [Vulkan] vkQueueSubmit(): pSubmits[0] command buffer VkCommandBuffer 0x5593bd8fdae0 expects VkImage 0xff00000000ff (subresource: aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, mipLevel = 0, arrayLayer = 0) to be in layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_UNDEFINED.
+The Vulkan spec states: If a descriptor with type equal to any of VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, or VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT is accessed as a result of this command, all image subresources identified by that descriptor must be in the image layout identified when the descriptor was written (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-09600)
+[2026-09-04 00:05:48.193] [warning] [slow-frame] frame 273.182ms | stage_post 1.513ms x1 (max 1.513ms) | stage_geometry 0.662ms x1 (max 0.662ms) | ecs_sync 0.453ms x1 (max 0.453ms) | build_draw_items 0.422ms x1 (max 0.422ms) | stage_lighting 0.150ms x1 (max 0.150ms) | present 0.057ms x1 (max 0.057ms) | hzb_cull 0.028ms x1 (max 0.028ms) | wait_prev_frame_fence 0.021ms x1 (max 0.021ms) | poll_events 0.017ms x1 (max 0.017ms) | draw_sort 0.012ms x1 (max 0.012ms)
+[2026-09-04 00:05:48.193] [warning] [frame-gap] frame 273.2 ms | worst: pre_skinning -> pre_present = 272.0 ms
+[2026-09-04 00:05:48.209] [info] [AssetMeshCache] 'assets/test_cooked/cube3d.obj': winding MIXED or unknown (0 agree / 0 disagree) — drawn double-sided
+[2026-09-04 00:05:48.209] [info] [AssetMeshCache] 'assets/test_cooked/cube3d.obj': 1 submesh(es), 1 material(s), 0 textured
+[2026-09-04 00:05:48.209] [info] [AssetMeshCache] Loaded ../../assets/test_cooked/cube3d.obj (async): 1 draw items, 1 meshes
+[2026-09-04 00:05:48.210] [info] ECS persistent handles: 10 reused, 0 created, 0 destroyed this frame -> stable identity across frames
+[2026-09-04 00:05:48.211] [warning] [Vulkan] vkCmdDraw(): the combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"] VkImageViewType is VK_IMAGE_VIEW_TYPE_2D but the OpTypeImage has (Dim = 2D) and (Arrayed = 1).
+Either fix in the shader or update the VkImageViewType to VK_IMAGE_VIEW_TYPE_2D_ARRAY
+Hint: With VK_KHR_maintenance11 there is VK_IMAGE_CREATE_ALIAS_SINGLE_LAYER_DESCRIPTOR_BIT_KHR which would make this legal.
+The Vulkan spec states: If a VkImageView is accessed as a result of this command, then the image view's viewType must match the Dim operand of the OpTypeImage as described in Compatibility Between SPIR-V Image Dimensions and Vulkan ImageView Types (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-viewType-07752)
+[2026-09-04 00:05:48.211] [warning] [Vulkan] vkCmdDraw(): Cannot use VkImage 0x730000000073 (layer 0, mip 0) with specific layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (specified by combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"]) that doesn't match the previous known layout VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+The Vulkan spec states: If an image descriptor is accessed by a shader, the VkImageLayout must match the subresource accessible from the VkImageView as defined by the image layout matching rules (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-imageLayout-00344)
+[2026-09-04 00:05:48.211] [warning] [Vulkan] vkCmdDraw(): Cannot use VkImage 0x330000000033 (layer 0, mip 0) with specific layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (specified by combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 4, Index 0, variable "depthTex"]) that doesn't match the previous known layout VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+The Vulkan spec states: If an image descriptor is accessed by a shader, the VkImageLayout must match the subresource accessible from the VkImageView as defined by the image layout matching rules (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-imageLayout-00344)
+[2026-09-04 00:05:48.211] [warning] [Vulkan] vkCmdPipelineBarrier(): pImageMemoryBarriers[0].newLayout (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) is not compatible with VkImage 0x7e000000007e usage flags VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR.
+The Vulkan spec states: If layouts are not ignored, oldLayout or newLayout is VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL then image must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-VkImageMemoryBarrier-oldLayout-01212)
+[2026-09-04 00:05:48.211] [warning] [Vulkan] vkCmdCopyImage(): srcImage (VkImage 0x7e000000007e) was created with VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR but requires VK_IMAGE_USAGE_2_TRANSFER_SRC_BIT_KHR.
+The Vulkan spec states: If the aspect member of any element of pRegions includes any flag other than VK_IMAGE_ASPECT_STENCIL_BIT or srcImage was not created with separate stencil usage, srcImage must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/copies.html#VUID-vkCmdCopyImage-aspect-06662)
+[2026-09-04 00:05:48.211] [warning] [Vulkan] vkCmdPipelineBarrier(): pImageMemoryBarriers[0].oldLayout (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) is not compatible with VkImage 0x7e000000007e usage flags VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR.
+The Vulkan spec states: If layouts are not ignored, oldLayout or newLayout is VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL then image must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-VkImageMemoryBarrier-oldLayout-01212)
+[2026-09-04 00:05:48.211] [warning] [Vulkan] vkGetQueryPoolResults(): queryPool VkQueryPool 0x2310000000231 and query 128: query not reset. After query pool creation, each query must be reset before it is used. Queries must also be reset between uses.
+The Vulkan spec states: All queries used by the command must not be uninitialized (https://docs.vulkan.org/spec/latest/chapters/queries.html#VUID-vkGetQueryPoolResults-None-09401)
+[2026-09-04 00:05:48.211] [warning] [Vulkan] vkGetQueryPoolResults(): queryPool VkQueryPool 0x2310000000231 and query 130: query not reset. After query pool creation, each query must be reset before it is used. Queries must also be reset between uses.
+The Vulkan spec states: All queries used by the command must not be uninitialized (https://docs.vulkan.org/spec/latest/chapters/queries.html#VUID-vkGetQueryPoolResults-None-09401)
+[2026-09-04 00:05:48.211] [warning] [Vulkan] vkGetQueryPoolResults(): queryPool VkQueryPool 0x2310000000231 and query 132: query not reset. After query pool creation, each query must be reset before it is used. Queries must also be reset between uses.
+The Vulkan spec states: All queries used by the command must not be uninitialized (https://docs.vulkan.org/spec/latest/chapters/queries.html#VUID-vkGetQueryPoolResults-None-09401)
+[2026-09-04 00:05:48.211] [warning] [Vulkan] (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkGetQueryPoolResults(): queryPool VkQueryPool 0x2310000000231 and query 134: query not reset. After query pool creation, each query must be reset before it is used. Queries must also be reset between uses.
+The Vulkan spec states: All queries used by the command must not be uninitialized (https://docs.vulkan.org/spec/latest/chapters/queries.html#VUID-vkGetQueryPoolResults-None-09401)
+[2026-09-04 00:05:48.211] [warning] [Vulkan] vkQueueSubmit(): pSubmits[0] command buffer VkCommandBuffer 0x5593be308ff0 expects VkImage 0xff00000000ff (subresource: aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, mipLevel = 0, arrayLayer = 0) to be in layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_UNDEFINED.
+The Vulkan spec states: If a descriptor with type equal to any of VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, or VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT is accessed as a result of this command, all image subresources identified by that descriptor must be in the image layout identified when the descriptor was written (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-09600)
+[2026-09-04 00:05:48.213] [warning] [Vulkan] vkCmdDraw(): the combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"] VkImageViewType is VK_IMAGE_VIEW_TYPE_2D but the OpTypeImage has (Dim = 2D) and (Arrayed = 1).
+Either fix in the shader or update the VkImageViewType to VK_IMAGE_VIEW_TYPE_2D_ARRAY
+Hint: With VK_KHR_maintenance11 there is VK_IMAGE_CREATE_ALIAS_SINGLE_LAYER_DESCRIPTOR_BIT_KHR which would make this legal.
+The Vulkan spec states: If a VkImageView is accessed as a result of this command, then the image view's viewType must match the Dim operand of the OpTypeImage as described in Compatibility Between SPIR-V Image Dimensions and Vulkan ImageView Types (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-viewType-07752)
+[2026-09-04 00:05:48.213] [warning] [Vulkan] vkCmdDraw(): Cannot use VkImage 0x730000000073 (layer 0, mip 0) with specific layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (specified by combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"]) that doesn't match the previous known layout VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+The Vulkan spec states: If an image descriptor is accessed by a shader, the VkImageLayout must match the subresource accessible from the VkImageView as defined by the image layout matching rules (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-imageLayout-00344)
+[2026-09-04 00:05:48.213] [warning] [Vulkan] vkCmdDraw(): Cannot use VkImage 0x330000000033 (layer 0, mip 0) with specific layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (specified by combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 4, Index 0, variable "depthTex"]) that doesn't match the previous known layout VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+The Vulkan spec states: If an image descriptor is accessed by a shader, the VkImageLayout must match the subresource accessible from the VkImageView as defined by the image layout matching rules (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-imageLayout-00344)
+[2026-09-04 00:05:48.213] [warning] [Vulkan] vkCmdPipelineBarrier(): pImageMemoryBarriers[0].newLayout (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) is not compatible with VkImage 0x7e000000007e usage flags VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR.
+The Vulkan spec states: If layouts are not ignored, oldLayout or newLayout is VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL then image must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-VkImageMemoryBarrier-oldLayout-01212)
+[2026-09-04 00:05:48.213] [warning] [Vulkan] vkCmdCopyImage(): srcImage (VkImage 0x7e000000007e) was created with VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR but requires VK_IMAGE_USAGE_2_TRANSFER_SRC_BIT_KHR.
+The Vulkan spec states: If the aspect member of any element of pRegions includes any flag other than VK_IMAGE_ASPECT_STENCIL_BIT or srcImage was not created with separate stencil usage, srcImage must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/copies.html#VUID-vkCmdCopyImage-aspect-06662)
+[2026-09-04 00:05:48.213] [warning] [Vulkan] vkCmdPipelineBarrier(): pImageMemoryBarriers[0].oldLayout (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) is not compatible with VkImage 0x7e000000007e usage flags VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR.
+The Vulkan spec states: If layouts are not ignored, oldLayout or newLayout is VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL then image must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-VkImageMemoryBarrier-oldLayout-01212)
+[2026-09-04 00:05:48.214] [warning] [Vulkan] vkQueueSubmit(): pSubmits[0] command buffer VkCommandBuffer 0x5593bd8fdae0 expects VkImage 0xff00000000ff (subresource: aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, mipLevel = 0, arrayLayer = 0) to be in layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_UNDEFINED.
+The Vulkan spec states: If a descriptor with type equal to any of VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, or VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT is accessed as a result of this command, all image subresources identified by that descriptor must be in the image layout identified when the descriptor was written (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-09600)
+[2026-09-04 00:05:48.218] [warning] [Vulkan] vkCmdDraw(): the combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"] VkImageViewType is VK_IMAGE_VIEW_TYPE_2D but the OpTypeImage has (Dim = 2D) and (Arrayed = 1).
+Either fix in the shader or update the VkImageViewType to VK_IMAGE_VIEW_TYPE_2D_ARRAY
+Hint: With VK_KHR_maintenance11 there is VK_IMAGE_CREATE_ALIAS_SINGLE_LAYER_DESCRIPTOR_BIT_KHR which would make this legal.
+The Vulkan spec states: If a VkImageView is accessed as a result of this command, then the image view's viewType must match the Dim operand of the OpTypeImage as described in Compatibility Between SPIR-V Image Dimensions and Vulkan ImageView Types (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-viewType-07752)
+[2026-09-04 00:05:48.218] [warning] [Vulkan] vkCmdDraw(): Cannot use VkImage 0x730000000073 (layer 0, mip 0) with specific layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (specified by combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"]) that doesn't match the previous known layout VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+The Vulkan spec states: If an image descriptor is accessed by a shader, the VkImageLayout must match the subresource accessible from the VkImageView as defined by the image layout matching rules (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-imageLayout-00344)
+[2026-09-04 00:05:48.218] [warning] [Vulkan] vkCmdDraw(): Cannot use VkImage 0x330000000033 (layer 0, mip 0) with specific layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (specified by combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 4, Index 0, variable "depthTex"]) that doesn't match the previous known layout VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+The Vulkan spec states: If an image descriptor is accessed by a shader, the VkImageLayout must match the subresource accessible from the VkImageView as defined by the image layout matching rules (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-imageLayout-00344)
+[2026-09-04 00:05:48.218] [warning] [Vulkan] vkCmdPipelineBarrier(): pImageMemoryBarriers[0].newLayout (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) is not compatible with VkImage 0x7e000000007e usage flags VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR.
+The Vulkan spec states: If layouts are not ignored, oldLayout or newLayout is VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL then image must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-VkImageMemoryBarrier-oldLayout-01212)
+[2026-09-04 00:05:48.218] [warning] [Vulkan] vkCmdCopyImage(): srcImage (VkImage 0x7e000000007e) was created with VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR but requires VK_IMAGE_USAGE_2_TRANSFER_SRC_BIT_KHR.
+The Vulkan spec states: If the aspect member of any element of pRegions includes any flag other than VK_IMAGE_ASPECT_STENCIL_BIT or srcImage was not created with separate stencil usage, srcImage must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/copies.html#VUID-vkCmdCopyImage-aspect-06662)
+[2026-09-04 00:05:48.218] [warning] [Vulkan] vkCmdPipelineBarrier(): pImageMemoryBarriers[0].oldLayout (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) is not compatible with VkImage 0x7e000000007e usage flags VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR.
+The Vulkan spec states: If layouts are not ignored, oldLayout or newLayout is VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL then image must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-VkImageMemoryBarrier-oldLayout-01212)
+[2026-09-04 00:05:48.218] [warning] [Vulkan] vkQueueSubmit(): pSubmits[0].pSignalSemaphores[0] (VkSemaphore 0x22e000000022e) is being signaled by VkQueue 0x5593bd6c1ab0, but it may still be in use by VkSwapchainKHR 0x2320000000232.
+Most recently acquired image indices: 0, [1], 2, 3.
+(Brackets mark the last use of VkSemaphore 0x22e000000022e in a presentation operation.)
+Swapchain image 1 was presented but was not re-acquired, so VkSemaphore 0x22e000000022e may still be in use and cannot be safely reused with image index 3.
+Hint: See https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html for details on swapchain semaphore reuse. Examples of possible approaches:
+   a) Use a separate semaphore per swapchain image. Index these semaphores using the index of the acquired image.
+   b) Consider the VK_KHR_swapchain_maintenance1 extension. It allows using a VkFence with the presentation operation.
+The Vulkan spec states: Each binary semaphore element of the pSignalSemaphores member of any element of pSubmits must be unsignaled when the semaphore signal operation it defines is executed on the device (https://docs.vulkan.org/spec/latest/chapters/cmdbuffers.html#VUID-vkQueueSubmit-pSignalSemaphores-00067)
+[2026-09-04 00:05:48.224] [warning] [Vulkan] vkQueueSubmit(): pSubmits[0] command buffer VkCommandBuffer 0x5593be308ff0 expects VkImage 0xff00000000ff (subresource: aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, mipLevel = 0, arrayLayer = 0) to be in layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_UNDEFINED.
+The Vulkan spec states: If a descriptor with type equal to any of VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, or VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT is accessed as a result of this command, all image subresources identified by that descriptor must be in the image layout identified when the descriptor was written (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-09600)
+[2026-09-04 00:05:48.226] [warning] [Vulkan] vkCmdDraw(): the combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"] VkImageViewType is VK_IMAGE_VIEW_TYPE_2D but the OpTypeImage has (Dim = 2D) and (Arrayed = 1).
+Either fix in the shader or update the VkImageViewType to VK_IMAGE_VIEW_TYPE_2D_ARRAY
+Hint: With VK_KHR_maintenance11 there is VK_IMAGE_CREATE_ALIAS_SINGLE_LAYER_DESCRIPTOR_BIT_KHR which would make this legal.
+The Vulkan spec states: If a VkImageView is accessed as a result of this command, then the image view's viewType must match the Dim operand of the OpTypeImage as described in Compatibility Between SPIR-V Image Dimensions and Vulkan ImageView Types (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-viewType-07752)
+[2026-09-04 00:05:48.226] [warning] [Vulkan] vkCmdDraw(): Cannot use VkImage 0x730000000073 (layer 0, mip 0) with specific layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (specified by combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"]) that doesn't match the previous known layout VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+The Vulkan spec states: If an image descriptor is accessed by a shader, the VkImageLayout must match the subresource accessible from the VkImageView as defined by the image layout matching rules (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-imageLayout-00344)
+[2026-09-04 00:05:48.226] [warning] [Vulkan] (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCmdDraw(): Cannot use VkImage 0x330000000033 (layer 0, mip 0) with specific layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (specified by combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 4, Index 0, variable "depthTex"]) that doesn't match the previous known layout VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+The Vulkan spec states: If an image descriptor is accessed by a shader, the VkImageLayout must match the subresource accessible from the VkImageView as defined by the image layout matching rules (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-imageLayout-00344)
+[2026-09-04 00:05:48.227] [warning] [Vulkan] vkCmdPipelineBarrier(): pImageMemoryBarriers[0].newLayout (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) is not compatible with VkImage 0x7e000000007e usage flags VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR.
+The Vulkan spec states: If layouts are not ignored, oldLayout or newLayout is VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL then image must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-VkImageMemoryBarrier-oldLayout-01212)
+[2026-09-04 00:05:48.227] [warning] [Vulkan] vkCmdCopyImage(): srcImage (VkImage 0x7e000000007e) was created with VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR but requires VK_IMAGE_USAGE_2_TRANSFER_SRC_BIT_KHR.
+The Vulkan spec states: If the aspect member of any element of pRegions includes any flag other than VK_IMAGE_ASPECT_STENCIL_BIT or srcImage was not created with separate stencil usage, srcImage must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/copies.html#VUID-vkCmdCopyImage-aspect-06662)
+[2026-09-04 00:05:48.227] [warning] [Vulkan] (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCmdPipelineBarrier(): pImageMemoryBarriers[0].oldLayout (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) is not compatible with VkImage 0x7e000000007e usage flags VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR.
+The Vulkan spec states: If layouts are not ignored, oldLayout or newLayout is VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL then image must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-VkImageMemoryBarrier-oldLayout-01212)
+[2026-09-04 00:05:48.227] [warning] [Vulkan] vkQueueSubmit(): pSubmits[0] command buffer VkCommandBuffer 0x5593bd8fdae0 expects VkImage 0xff00000000ff (subresource: aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, mipLevel = 0, arrayLayer = 0) to be in layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_UNDEFINED.
+The Vulkan spec states: If a descriptor with type equal to any of VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, or VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT is accessed as a result of this command, all image subresources identified by that descriptor must be in the image layout identified when the descriptor was written (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-09600)
+[2026-09-04 00:05:48.234] [warning] [Vulkan] vkCmdDraw(): the combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"] VkImageViewType is VK_IMAGE_VIEW_TYPE_2D but the OpTypeImage has (Dim = 2D) and (Arrayed = 1).
+Either fix in the shader or update the VkImageViewType to VK_IMAGE_VIEW_TYPE_2D_ARRAY
+Hint: With VK_KHR_maintenance11 there is VK_IMAGE_CREATE_ALIAS_SINGLE_LAYER_DESCRIPTOR_BIT_KHR which would make this legal.
+The Vulkan spec states: If a VkImageView is accessed as a result of this command, then the image view's viewType must match the Dim operand of the OpTypeImage as described in Compatibility Between SPIR-V Image Dimensions and Vulkan ImageView Types (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-viewType-07752)
+[2026-09-04 00:05:48.235] [warning] [Vulkan] vkCmdCopyImage(): srcImage (VkImage 0x7e000000007e) was created with VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR but requires VK_IMAGE_USAGE_2_TRANSFER_SRC_BIT_KHR.
+The Vulkan spec states: If the aspect member of any element of pRegions includes any flag other than VK_IMAGE_ASPECT_STENCIL_BIT or srcImage was not created with separate stencil usage, srcImage must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/copies.html#VUID-vkCmdCopyImage-aspect-06662)
+[2026-09-04 00:05:48.235] [warning] [Vulkan] vkQueueSubmit(): pSubmits[0] command buffer VkCommandBuffer 0x5593be308ff0 expects VkImage 0xff00000000ff (subresource: aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, mipLevel = 0, arrayLayer = 0) to be in layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_UNDEFINED.
+The Vulkan spec states: If a descriptor with type equal to any of VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, or VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT is accessed as a result of this command, all image subresources identified by that descriptor must be in the image layout identified when the descriptor was written (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-09600)
+[2026-09-04 00:05:48.259] [warning] [Vulkan] vkCmdDraw(): the combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"] VkImageViewType is VK_IMAGE_VIEW_TYPE_2D but the OpTypeImage has (Dim = 2D) and (Arrayed = 1).
+Either fix in the shader or update the VkImageViewType to VK_IMAGE_VIEW_TYPE_2D_ARRAY
+Hint: With VK_KHR_maintenance11 there is VK_IMAGE_CREATE_ALIAS_SINGLE_LAYER_DESCRIPTOR_BIT_KHR which would make this legal.
+The Vulkan spec states: If a VkImageView is accessed as a result of this command, then the image view's viewType must match the Dim operand of the OpTypeImage as described in Compatibility Between SPIR-V Image Dimensions and Vulkan ImageView Types (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-viewType-07752)
+[2026-09-04 00:05:48.259] [warning] [Vulkan] vkCmdCopyImage(): srcImage (VkImage 0x7e000000007e) was created with VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR but requires VK_IMAGE_USAGE_2_TRANSFER_SRC_BIT_KHR.
+The Vulkan spec states: If the aspect member of any element of pRegions includes any flag other than VK_IMAGE_ASPECT_STENCIL_BIT or srcImage was not created with separate stencil usage, srcImage must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/copies.html#VUID-vkCmdCopyImage-aspect-06662)
+[2026-09-04 00:05:48.260] [warning] [Vulkan] vkQueueSubmit(): pSubmits[0] command buffer VkCommandBuffer 0x5593bd8fdae0 expects VkImage 0xff00000000ff (subresource: aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, mipLevel = 0, arrayLayer = 0) to be in layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_UNDEFINED.
+The Vulkan spec states: If a descriptor with type equal to any of VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, or VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT is accessed as a result of this command, all image subresources identified by that descriptor must be in the image layout identified when the descriptor was written (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-09600)
+[2026-09-04 00:05:48.264] [warning] [Vulkan] vkCmdDraw(): the combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"] VkImageViewType is VK_IMAGE_VIEW_TYPE_2D but the OpTypeImage has (Dim = 2D) and (Arrayed = 1).
+Either fix in the shader or update the VkImageViewType to VK_IMAGE_VIEW_TYPE_2D_ARRAY
+Hint: With VK_KHR_maintenance11 there is VK_IMAGE_CREATE_ALIAS_SINGLE_LAYER_DESCRIPTOR_BIT_KHR which would make this legal.
+The Vulkan spec states: If a VkImageView is accessed as a result of this command, then the image view's viewType must match the Dim operand of the OpTypeImage as described in Compatibility Between SPIR-V Image Dimensions and Vulkan ImageView Types (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-viewType-07752)
+[2026-09-04 00:05:48.265] [warning] [Vulkan] vkCmdCopyImage(): srcImage (VkImage 0x7e000000007e) was created with VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR but requires VK_IMAGE_USAGE_2_TRANSFER_SRC_BIT_KHR.
+The Vulkan spec states: If the aspect member of any element of pRegions includes any flag other than VK_IMAGE_ASPECT_STENCIL_BIT or srcImage was not created with separate stencil usage, srcImage must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/copies.html#VUID-vkCmdCopyImage-aspect-06662)
+[2026-09-04 00:05:48.265] [warning] [Vulkan] vkQueueSubmit(): pSubmits[0] command buffer VkCommandBuffer 0x5593be308ff0 expects VkImage 0xff00000000ff (subresource: aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, mipLevel = 0, arrayLayer = 0) to be in layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_UNDEFINED.
+The Vulkan spec states: If a descriptor with type equal to any of VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, or VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT is accessed as a result of this command, all image subresources identified by that descriptor must be in the image layout identified when the descriptor was written (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-09600)
+[2026-09-04 00:05:48.279] [warning] [Vulkan] vkCmdDraw(): the combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"] VkImageViewType is VK_IMAGE_VIEW_TYPE_2D but the OpTypeImage has (Dim = 2D) and (Arrayed = 1).
+Either fix in the shader or update the VkImageViewType to VK_IMAGE_VIEW_TYPE_2D_ARRAY
+Hint: With VK_KHR_maintenance11 there is VK_IMAGE_CREATE_ALIAS_SINGLE_LAYER_DESCRIPTOR_BIT_KHR which would make this legal.
+The Vulkan spec states: If a VkImageView is accessed as a result of this command, then the image view's viewType must match the Dim operand of the OpTypeImage as described in Compatibility Between SPIR-V Image Dimensions and Vulkan ImageView Types (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-viewType-07752)
+[2026-09-04 00:05:48.279] [warning] [Vulkan] vkCmdCopyImage(): srcImage (VkImage 0x7e000000007e) was created with VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR but requires VK_IMAGE_USAGE_2_TRANSFER_SRC_BIT_KHR.
+The Vulkan spec states: If the aspect member of any element of pRegions includes any flag other than VK_IMAGE_ASPECT_STENCIL_BIT or srcImage was not created with separate stencil usage, srcImage must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/copies.html#VUID-vkCmdCopyImage-aspect-06662)
+[2026-09-04 00:05:48.279] [warning] [Vulkan] vkQueueSubmit(): pSubmits[0] command buffer VkCommandBuffer 0x5593bd8fdae0 expects VkImage 0xff00000000ff (subresource: aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, mipLevel = 0, arrayLayer = 0) to be in layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_UNDEFINED.
+The Vulkan spec states: If a descriptor with type equal to any of VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, or VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT is accessed as a result of this command, all image subresources identified by that descriptor must be in the image layout identified when the descriptor was written (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-09600)
+[2026-09-04 00:05:48.296] [warning] [Vulkan] (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCmdDraw(): the combined image sampler descriptor [VkDescriptorSet 0x520000000052, Set 0, Binding 5, Index 0, variable "shadowMap"] VkImageViewType is VK_IMAGE_VIEW_TYPE_2D but the OpTypeImage has (Dim = 2D) and (Arrayed = 1).
+Either fix in the shader or update the VkImageViewType to VK_IMAGE_VIEW_TYPE_2D_ARRAY
+Hint: With VK_KHR_maintenance11 there is VK_IMAGE_CREATE_ALIAS_SINGLE_LAYER_DESCRIPTOR_BIT_KHR which would make this legal.
+The Vulkan spec states: If a VkImageView is accessed as a result of this command, then the image view's viewType must match the Dim operand of the OpTypeImage as described in Compatibility Between SPIR-V Image Dimensions and Vulkan ImageView Types (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-viewType-07752)
+[2026-09-04 00:05:48.296] [warning] [Vulkan] (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCmdCopyImage(): srcImage (VkImage 0x7e000000007e) was created with VK_IMAGE_USAGE_2_TRANSFER_DST_BIT_KHR|VK_IMAGE_USAGE_2_SAMPLED_BIT_KHR|VK_IMAGE_USAGE_2_COLOR_ATTACHMENT_BIT_KHR but requires VK_IMAGE_USAGE_2_TRANSFER_SRC_BIT_KHR.
+The Vulkan spec states: If the aspect member of any element of pRegions includes any flag other than VK_IMAGE_ASPECT_STENCIL_BIT or srcImage was not created with separate stencil usage, srcImage must have been created with the VK_IMAGE_USAGE_TRANSFER_SRC_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/copies.html#VUID-vkCmdCopyImage-aspect-06662)
+[2026-09-04 00:05:48.297] [warning] [Vulkan] (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkQueueSubmit(): pSubmits[0] command buffer VkCommandBuffer 0x5593be308ff0 expects VkImage 0xff00000000ff (subresource: aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, mipLevel = 0, arrayLayer = 0) to be in layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_UNDEFINED.
+The Vulkan spec states: If a descriptor with type equal to any of VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, or VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT is accessed as a result of this command, all image subresources identified by that descriptor must be in the image layout identified when the descriptor was written (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-09600)
+[2026-09-04 00:05:55.761] [critical] [hang] main loop stalled 5.0s — sampling stacks...

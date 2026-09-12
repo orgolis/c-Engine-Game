@@ -1,0 +1,2 @@
+# GameWorldshaper recent projects (name<TAB>path)
+MyGame	/home/elrasap/Documents/MyGame/project.schizo

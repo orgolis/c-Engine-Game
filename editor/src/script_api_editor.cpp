@@ -103,16 +103,31 @@ void api_set_scale(void* ctx, uint32_t e, const float s[3]) {
 }
 
 // ---- input ----
+bool accepts_gameplay_input(const EditorScriptCtx* c) {
+    if (!c || !c->window) return false;
+    // Editor extensions may use input outside Play mode. During Play, however,
+    // cursor capture is the single source of truth for gameplay focus: Escape
+    // releases it and every script sees neutral input until the scene is clicked.
+    return !c->playback || !c->playback->IsPlaying() ||
+           c->playback->IsCursorCaptured();
+}
+
 bool api_key_down(void* ctx, int key) {
     auto* c = C(ctx);
-    return c->window && glfwGetKey(c->window, key) == GLFW_PRESS;
+    return accepts_gameplay_input(c) && glfwGetKey(c->window, key) == GLFW_PRESS;
 }
 bool api_mouse_down(void* ctx, int button) {
     auto* c = C(ctx);
-    return c->window && glfwGetMouseButton(c->window, button) == GLFW_PRESS;
+    return accepts_gameplay_input(c) &&
+           glfwGetMouseButton(c->window, button) == GLFW_PRESS;
 }
 void api_mouse_delta(void* ctx, float out[2]) {
     auto* c = C(ctx);
+    if (!accepts_gameplay_input(c)) {
+        out[0] = 0.0f;
+        out[1] = 0.0f;
+        return;
+    }
     out[0] = c->mouse_dx; out[1] = c->mouse_dy;
 }
 

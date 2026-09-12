@@ -4,6 +4,9 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__linux__)
+#include <limits.h>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -25,11 +28,15 @@ fs::path find_assets_root(const fs::path& start, int levels = 8) {
     return {};
 }
 
-fs::path executable_dir() {
+fs::path detect_executable_dir() {
 #ifdef _WIN32
     char buf[MAX_PATH] = {0};
     DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
     if (n > 0) return fs::path(std::string(buf, n)).parent_path();
+#elif defined(__linux__)
+    char buf[PATH_MAX] = {0};
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) return fs::path(std::string(buf, static_cast<size_t>(n))).parent_path();
 #endif
     return {};
 }
@@ -42,7 +49,7 @@ void init_base_dir() {
     // Prefer a CWD (or ancestor) that holds assets/ — dev builds are launched
     // from the repo root, or from the Hub with the exe's dir as CWD.
     fs::path base = find_assets_root(cwd);
-    if (base.empty()) base = find_assets_root(executable_dir());
+    if (base.empty()) base = find_assets_root(detect_executable_dir());
     if (base.empty()) base = cwd;  // best effort
 
     if (base != cwd) {
@@ -54,6 +61,8 @@ void init_base_dir() {
 }
 
 const fs::path& base_dir() { return g_base_dir; }
+
+fs::path executable_dir() { return detect_executable_dir(); }
 
 bool set_project_root(const fs::path& project_dir) {
     std::error_code ec;
