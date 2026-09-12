@@ -108,7 +108,8 @@ target_sources(editor
 )
 
 # Each platform gets its native embedded shell backend: Windows uses ConPTY;
-# Linux keeps one persistent /bin/bash process connected through pipes.
+# Linux uses forkpty so the configured interactive shell behaves exactly like
+# it does in a normal terminal (prompt, colours, history and line editing).
 if(WIN32)
     target_sources(editor PRIVATE src/terminal_panel.cpp)
 else()
@@ -138,6 +139,9 @@ if(WIN32)
     # comdlg32: GetOpenFileName/GetSaveFileName (scene dialogs).
     # shell32 + ole32: other remaining native shell integrations.
     target_link_libraries(editor PRIVATE comdlg32 shell32 ole32)
+elseif(UNIX AND NOT APPLE)
+    # forkpty() is provided by libutil on Linux.
+    target_link_libraries(editor PRIVATE util)
 endif()
 
 # --- Install / packaging: the editor is packaged (component "engine") as the
