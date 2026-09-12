@@ -76,6 +76,7 @@ target_sources(editor
         src/command_palette.cpp
         src/engine_agent_gateway.cpp
         src/ai_assistant_panel.cpp
+        src/ai_runtime_manager.cpp
         src/curve_editor.cpp
         src/node_canvas.cpp
         src/anim_graph.cpp
