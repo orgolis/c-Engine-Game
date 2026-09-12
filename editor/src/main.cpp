@@ -322,6 +322,9 @@ struct EditorState {
 
     // Actual viewport panel size (updated each frame by ShowViewport)
     glm::vec2 viewport_panel_size = glm::vec2(1920.0f, 1080.0f);
+    // Keyboard/mouse movement belongs exclusively to the scene viewport. This
+    // prevents typing in Terminal or editing another panel from moving things.
+    bool viewport_input_focused = false;
     // Screen-space top-left of the rendered viewport image, so synthetic input
     // (--stress-viewport-click) can aim at it.
     glm::vec2 viewport_image_min  = glm::vec2(0.0f);
@@ -4885,10 +4888,15 @@ void ShowAssetBrowser(EditorState& editor_state) {
 }
 
 void ShowViewport(EditorState& editor_state) {
-    if (!editor_state.show_viewport) return;
+    if (!editor_state.show_viewport) {
+        editor_state.viewport_input_focused = false;
+        return;
+    }
 
     ImGui::Begin("Viewport", &editor_state.show_viewport, ImGuiWindowFlags_NoMove);  // docked window = child; End() must always run
     {
+        editor_state.viewport_input_focused =
+            ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
         ImVec2 content_area = ImGui::GetContentRegionAvail();
         auto scene = editor_state.editor_scene->GetScene();
 
@@ -5393,23 +5401,36 @@ void ShowViewport(EditorState& editor_state) {
                             const float gizmo_axis_length = 1.0f;   // Base axis length in mesh
                             const float gizmo_size = gizmo_render_scale * gizmo_axis_length;  // Actual visible size
 
+                            // These must be the same axes that the overlay draws.
+                            // Scale is local-axis based; translate/rotate are world based.
+                            glm::vec3 x_axis(1.0f, 0.0f, 0.0f);
+                            glm::vec3 y_axis(0.0f, 1.0f, 0.0f);
+                            glm::vec3 z_axis(0.0f, 0.0f, 1.0f);
+                            if (editor_state.transform_gizmo.GetMode() ==
+                                schizo::editor::GizmoMode::Scale) {
+                                const glm::quat rotation = selected_transform->GetWorldRotation();
+                                x_axis = rotation * x_axis;
+                                y_axis = rotation * y_axis;
+                                z_axis = rotation * z_axis;
+                            }
+
                             // Check intersection with X axis (red)
                             glm::vec3 x_start = selected_pos;
-                            glm::vec3 x_end = selected_pos + glm::vec3(gizmo_size, 0.0f, 0.0f);
+                            glm::vec3 x_end = selected_pos + x_axis * gizmo_size;
                             float x_dist = schizo::editor::ViewportCamera::RayLineDistanceSq(
                                 ray_origin, ray_direction, x_start, x_end
                             );
 
                             // Check intersection with Y axis (green)
                             glm::vec3 y_start = selected_pos;
-                            glm::vec3 y_end = selected_pos + glm::vec3(0.0f, gizmo_size, 0.0f);
+                            glm::vec3 y_end = selected_pos + y_axis * gizmo_size;
                             float y_dist = schizo::editor::ViewportCamera::RayLineDistanceSq(
                                 ray_origin, ray_direction, y_start, y_end
                             );
 
                             // Check intersection with Z axis (blue)
                             glm::vec3 z_start = selected_pos;
-                            glm::vec3 z_end = selected_pos + glm::vec3(0.0f, 0.0f, gizmo_size);
+                            glm::vec3 z_end = selected_pos + z_axis * gizmo_size;
                             float z_dist = schizo::editor::ViewportCamera::RayLineDistanceSq(
                                 ray_origin, ray_direction, z_start, z_end
                             );
@@ -5504,15 +5525,46 @@ void ShowViewport(EditorState& editor_state) {
 
                     // Begin drag on first frame
                     if (!editor_state.transform_gizmo.IsDragging()) {
-                        editor_state.transform_gizmo.BeginDrag(axis, editor_state.gizmo_drag_start);
+                        const glm::vec3 selected_world_position =
+                            selected_transform->GetWorldPosition();
+                        glm::vec3 positive_world_axis(1.0f, 0.0f, 0.0f);
+                        if (axis == schizo::editor::GizmoAxis::Y)
+                            positive_world_axis = glm::vec3(0.0f, 1.0f, 0.0f);
+                        else if (axis == schizo::editor::GizmoAxis::Z)
+                            positive_world_axis = glm::vec3(0.0f, 0.0f, 1.0f);
+
+                        if (editor_state.transform_gizmo.GetMode() ==
+                            schizo::editor::GizmoMode::Scale) {
+                            positive_world_axis =
+                                selected_transform->GetWorldRotation() * positive_world_axis;
+                        }
+
+                        auto project_to_viewport = [&](const glm::vec3& world) {
+                            glm::mat4 projection = proj_matrix;
+                            projection[1][1] *= -1.0f;
+                            glm::vec4 clip = projection * view_matrix * glm::vec4(world, 1.0f);
+                            if (std::abs(clip.w) < 0.0001f) return glm::vec2(0.0f);
+                            const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                            return glm::vec2((ndc.x * 0.5f + 0.5f) * viewport_size.x,
+                                             (ndc.y * 0.5f + 0.5f) * viewport_size.y);
+                        };
+                        const glm::vec2 positive_axis_on_screen =
+                            project_to_viewport(selected_world_position +
+                                                positive_world_axis * 3.5f) -
+                            project_to_viewport(selected_world_position);
+
+                        editor_state.transform_gizmo.BeginDrag(
+                            axis, editor_state.gizmo_drag_start, positive_axis_on_screen);
                         editor_state.gizmo_drag_origin =
-                            selected_transform->GetLocalPosition();
+                            selected_transform->GetWorldPosition();
                     }
 
                     // Get mode-specific updates
                     auto gmode = editor_state.transform_gizmo.GetMode();
                     if (gmode == schizo::editor::GizmoMode::Translate) {
-                        glm::vec3 current_pos = selected_transform->GetLocalPosition();
+                        // Translate gizmo axes are world-aligned, so update a
+                        // world position even when the entity has a parent.
+                        glm::vec3 current_pos = selected_transform->GetWorldPosition();
                         glm::vec3 new_pos = editor_state.transform_gizmo.UpdateDrag(current_mouse_glm, current_pos);
 
                         // Snapping (4.7). Ctrl enables it for this drag even
@@ -5527,7 +5579,7 @@ void ShowViewport(EditorState& editor_state) {
                                       new_pos, editor_state.gizmo_drag_origin, step)
                                 : schizo::editor::snap_position(new_pos, step);
                         }
-                        selected_transform->SetLocalPosition(new_pos);
+                        selected_transform->SetWorldPosition(new_pos);
                     } else if (gmode == schizo::editor::GizmoMode::Rotate) {
                         // Mouse delta along its dominant axis drives a
                         // rotation around the selected gizmo axis. ~0.5°/pixel.
@@ -5541,11 +5593,11 @@ void ShowViewport(EditorState& editor_state) {
                         if (editor_state.gizmo_axis == 'z') axis = glm::vec3(0, 0, 1);
                         if (axis != glm::vec3(0.0f) && std::abs(angle) > 1e-6f) {
                             glm::quat q = glm::angleAxis(angle, axis);
-                            glm::quat out = q * selected_transform->GetLocalRotation();
+                            glm::quat out = q * selected_transform->GetWorldRotation();
                             if (editor_state.snap.enabled || ImGui::GetIO().KeyCtrl)
                                 out = schizo::editor::snap_rotation(
                                     out, editor_state.snap.rotate_deg);
-                            selected_transform->SetLocalRotation(out);
+                            selected_transform->SetWorldRotation(out);
                         }
                     } else if (gmode == schizo::editor::GizmoMode::Scale) {
                         glm::vec3 current_scale = selected_transform->GetLocalScale();
@@ -8543,6 +8595,12 @@ int main(int argc, char** argv) {
             g_cp.mark("pre_input");
             // Key input
             auto key = [&](int k) { return glfwGetKey(glfw_window, k) == GLFW_PRESS; };
+            const bool app_has_input_focus =
+                glfwGetWindowAttrib(glfw_window, GLFW_FOCUSED) == GLFW_TRUE;
+            const bool scene_has_input_focus = app_has_input_focus &&
+                (game_window_mode || editor_state.viewport_input_focused);
+            if (editor_state.scene_playback_manager)
+                editor_state.scene_playback_manager->SetInputFocused(scene_has_input_focus);
 
             // ----------------------------------------------------------------
             // Play-mode cursor pipeline. Gated tightly on IsPlaying() so it is
@@ -8555,7 +8613,7 @@ int main(int argc, char** argv) {
                                  editor_state.scene_playback_manager->IsPlaying();
             if (playing) {
                 const bool want_capture =
-                    editor_state.scene_playback_manager->IsCursorCaptured();
+                    editor_state.scene_playback_manager->HasInputFocus();
                 if (want_capture != prev_cursor_captured) {
                     glfwSetInputMode(glfw_window, GLFW_CURSOR,
                                      want_capture ? GLFW_CURSOR_DISABLED
@@ -8613,11 +8671,11 @@ int main(int argc, char** argv) {
                 prev_left_mouse_down = left_mouse_down;
             }
             if (!game_window_mode) {
-            if (key(GLFW_KEY_LEFT_CONTROL) && key(GLFW_KEY_Z)) {
+            if (scene_has_input_focus && key(GLFW_KEY_LEFT_CONTROL) && key(GLFW_KEY_Z)) {
                 if (editor_state.undo_redo_manager.CanUndo())
                     editor_state.undo_redo_manager.Undo();
             }
-            if (key(GLFW_KEY_LEFT_CONTROL) && key(GLFW_KEY_Y)) {
+            if (scene_has_input_focus && key(GLFW_KEY_LEFT_CONTROL) && key(GLFW_KEY_Y)) {
                 if (editor_state.undo_redo_manager.CanRedo())
                     editor_state.undo_redo_manager.Redo();
             }
@@ -8681,7 +8739,7 @@ int main(int argc, char** argv) {
             if (!game_window_mode) {
                 static bool prev_delete = false;
                 bool cur_delete = key(GLFW_KEY_DELETE);
-                if (cur_delete && !prev_delete &&
+                if (cur_delete && !prev_delete && scene_has_input_focus &&
                     !ImGui::GetIO().WantTextInput &&
                     editor_state.selected_entity_id != 0) {
                     auto sc = editor_state.editor_scene->GetScene();
@@ -8699,7 +8757,7 @@ int main(int argc, char** argv) {
             float cam_spd = 0.1f;
             const bool playing_now_cam = editor_state.scene_playback_manager &&
                                          editor_state.scene_playback_manager->IsPlaying();
-            if (!playing_now_cam) {
+            if (!playing_now_cam && scene_has_input_focus) {
                 if (key(GLFW_KEY_W))     editor_state.viewport_camera.MoveLocal( cam_spd, 0.f, 0.f);
                 if (key(GLFW_KEY_S))     editor_state.viewport_camera.MoveLocal(-cam_spd, 0.f, 0.f);
                 if (key(GLFW_KEY_A))     editor_state.viewport_camera.MoveLocal(0.f, -cam_spd, 0.f);
@@ -10227,7 +10285,7 @@ int main(int argc, char** argv) {
                     ecs_bridge.logic_tick(delta_time);   // On Tick / On Flag
                     static bool logic_prev_key[128] = {false};
                     const bool logic_input_focused =
-                        editor_state.scene_playback_manager->IsCursorCaptured();
+                        editor_state.scene_playback_manager->HasInputFocus();
                     for (int k = 32; k < 97; ++k) {   // space..'`' (letters/digits/common)
                         // Treat focus loss like releasing every gameplay key.
                         // This stops held-key actions immediately and prevents

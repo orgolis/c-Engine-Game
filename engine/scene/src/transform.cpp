@@ -74,14 +74,12 @@ glm::vec3 Transform::GetWorldScale() const {
 
 void Transform::SetWorldPosition(const glm::vec3& position) {
     if (parent_) {
-        glm::vec3 parent_world_pos = parent_->GetWorldPosition();
-        glm::quat parent_world_rot = parent_->GetWorldRotation();
-        
-        // Transform position to parent local space
-        glm::vec3 relative_pos = position - parent_world_pos;
-        relative_pos = glm::rotate(glm::inverse(parent_world_rot), relative_pos);
-        
-        SetLocalPosition(relative_pos);
+        // A world point must be transformed through the complete inverse
+        // parent matrix. Subtracting position and undoing rotation alone loses
+        // the parent's scale (and reverses movement for a negative scale).
+        const glm::vec4 local =
+            glm::inverse(parent_->GetWorldMatrix()) * glm::vec4(position, 1.0f);
+        SetLocalPosition(glm::vec3(local));
     } else {
         SetLocalPosition(position);
     }
