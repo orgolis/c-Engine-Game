@@ -942,8 +942,6 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
     if (!auth_checked_ && !auth_running_ && !runtime_installing_)
         start_auth_check();
 
-    const float account_height = provider_ == AiProvider::Codex ? 260.0f : 250.0f;
-    ImGui::BeginChild("##ai_account", ImVec2(0.0f, account_height), true);
     if (runtime_installing_) {
         ImGui::TextColored(ImVec4(0.35f, 0.75f, 0.95f, 1.0f), "Downloading and installing official runtime...");
     } else if (auth_running_) {
@@ -1087,8 +1085,6 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
                             static_cast<unsigned long long>(session_input_tokens_),
                             static_cast<unsigned long long>(session_output_tokens_), session_cost_usd_);
     }
-    ImGui::EndChild();
-
     ImGui::SeparatorText("2. Describe");
 
     if (context.scene) {
