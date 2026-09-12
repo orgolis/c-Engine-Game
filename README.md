@@ -3,5 +3,6 @@
 ## Build & Start
 
 ```bash
-cmake --preset linux-debug && cmake --build build/linux-debug --target editor && ./build/linux-debug/bin/editor
+cmake --build build/linux-debug --target editor --parallel &&
+./build/linux-debug/bin/editor
 
