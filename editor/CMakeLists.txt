@@ -163,6 +163,11 @@ install(DIRECTORY
             ${CMAKE_SOURCE_DIR}/assets/skies
             ${CMAKE_SOURCE_DIR}/assets/scripts
         DESTINATION "${GWS_ENGINE_DEST}/assets" COMPONENT engine OPTIONAL)
+# The licence and the third-party notices travel with every engine package.
+# LICENSE section 6 requires it, and so do the MIT/BSD components themselves;
+# before 0.8.6 no package carried either file.
+install(FILES ${CMAKE_SOURCE_DIR}/LICENSE ${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES.md
+        DESTINATION "${GWS_ENGINE_DEST}" COMPONENT engine)
 if(UNIX AND NOT APPLE)
     install(PROGRAMS
             ${CMAKE_SOURCE_DIR}/tools/export_game_linux.sh

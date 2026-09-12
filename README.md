@@ -21,7 +21,7 @@ kept up to date through the [GameWorldshaper Hub](https://github.com/orgolis/Wor
 
 | | |
 |---|---|
-| Platforms | Windows (installable through the Hub) · Linux (build from source — see [Linux](#linux)) |
+| Platforms | Windows (installable through the Hub) · Linux (release package or source — see [Linux](#linux)) |
 | Renderer | Vulkan 1.3, deferred, PBR, optional hardware ray tracing |
 | Physics | Jolt |
 | Audio | miniaudio, spatialised, with a mix-bus mixer |
@@ -69,8 +69,14 @@ published debug symbols.
 
 Install the [Hub](https://github.com/orgolis/WorldShaper-Hub), then
 **Engine Versions → Check for Updates**. It downloads a release, manages versions and
-launches the editor. You do not need to build anything. (Windows only for now — on
-Linux, build from source.)
+launches the editor. You do not need to build anything.
+
+On Linux the Hub cannot download engines yet. Take
+`engine-vX.Y.Z-linux-x86_64.tar.gz` from a
+[release](https://github.com/orgolis/c-Engine-Game/releases) instead, extract it
+anywhere and run `./editor`. Its `README-LINUX.txt` lists the requirements
+(glibc 2.39 or newer, which means Ubuntu 24.04, Debian 13, Fedora 40, Arch or later,
+plus a Vulkan driver).
 
 ### Building from source on Windows
 
@@ -140,8 +146,11 @@ Run the checks with `./build/linux-debug/bin/gws test`, from the repository root
 Linux support is real but younger than Windows. Precisely:
 
 **Verified** — every push builds the editor, `gws` and the full check suite on
-Ubuntu 24.04 and runs them headlessly, alongside the Windows job. The editor itself
-has been run on Intel Iris Xe under Mesa.
+Ubuntu 24.04 and runs them headlessly, alongside the Windows job. It also builds the
+release package and smoke-tests it: every linked library resolves, the binaries
+keep their executable bit, the headless runtime runs from the package, and the
+packaged editor is started on Mesa's software Vulkan driver. The editor itself has
+been run on Intel Iris Xe under Mesa.
 
 **Not verified yet** — other GPUs and drivers (NVIDIA's proprietary driver in
 particular), and distributions other than Ubuntu. Reports are welcome.
@@ -154,7 +163,8 @@ particular), and distributions other than Ubuntu. Reports are welcome.
   placeholder. A native Linux PTY terminal is in review in
   [#71](https://github.com/orgolis/c-Engine-Game/pull/71).
 - **Crash reports** are written, but without a stack trace or minidump.
-- **The Hub and prebuilt releases.** Build from source.
+- **Installing through the Hub.** Releases from 0.8.5 on carry a Linux package, but
+  the Linux Hub cannot download it yet; extract it by hand.
 
 The folder picker uses `zenity`, falling back to `kdialog`; with neither installed it
 does nothing.
