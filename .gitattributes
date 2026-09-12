@@ -1,3 +1,16 @@
+# Line endings: the repository stores LF, and every checkout gets LF, on every
+# platform. Without this rule, whatever an editor wrote was committed as is.
+# On 2026-09-12 a one-line version bump stored CMakeLists.txt with CRLF while a
+# branch still had it as LF; the next merge saw every line in conflict, and
+# "accept both" left main unbuildable with the whole file in it twice.
+# With this rule git normalises on commit, so that cannot recur.
+* text=auto eol=lf
+
+# Windows batch files are the one kind that must be CRLF on disk.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Large build artefacts go through Git LFS.
 *.ilk filter=lfs diff=lfs merge=lfs -text
 *.pdb filter=lfs diff=lfs merge=lfs -text
 *.lib filter=lfs diff=lfs merge=lfs -text

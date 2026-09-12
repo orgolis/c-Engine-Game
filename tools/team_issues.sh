@@ -238,19 +238,20 @@ ISSUE_BODY_EOF
 echo "=== posting 2 status comment(s) ==="
 
 gh issue comment 61 --repo "$REPO" --body "$(cat <<'COMMENT_EOF'
-Status after PR #70 (merged 2026-09-12, ships in v0.8.5).
+Status after PRs #70 and #71 (merged 2026-09-12).
 
 **Done and verified**
 - The editor, `gws`, `dedicated_server` and the whole check suite build on Linux. CI runs them headlessly on Ubuntu 24.04 on every push, next to the Windows job.
 - The editor has run on Intel Iris Xe under Mesa.
 - Per-user files (settings, pipeline cache, crash reports) go to XDG directories instead of the working directory (`userdirs_check`).
+- Native PTY terminal and Linux dialogs (#71).
+- Releases carry `engine-<tag>-linux-x86_64.tar.gz` from 0.8.5 on. `package-linux.yml` builds it and smoke-tests it (libraries resolve, executable bits, version matches the tag, headless runs, the editor starts on lavapipe), on every push as well as on release.
 
 **Remaining**
 - [ ] C++ script host: returns nullptr on non-Windows
 - [ ] C# script host: loads hostfxr.dll from Program Files
-- [ ] Embedded terminal: a native PTY is in review in #71
 - [ ] Crash reports carry no stack trace or minidump on Linux
-- [ ] A Linux release package (the release workflow builds win64 only), and Hub support for it
+- [ ] Installing the Linux package through the Hub: the Hub's HTTP client and archive extraction are Windows-only
 - [ ] The headless dedicated server as a deployable artifact: it builds, but nothing packages it
 - [ ] Verification on NVIDIA's proprietary driver and on AMD
 COMMENT_EOF
