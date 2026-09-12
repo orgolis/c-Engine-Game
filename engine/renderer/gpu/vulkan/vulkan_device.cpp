@@ -638,19 +638,27 @@ void VulkanDevice::create_instance(RenderConfig& config) {
     app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
     app_info.apiVersion = VK_API_VERSION_1_3;
 
-    // Required extensions
+    // Surface extensions come from GLFW, which knows the window system in use
+    // (Win32, X11 or Wayland). Hardcoding the Win32 one is what kept Linux out.
+    //
+    // Headless callers are legitimate: texture_check, skinning_check and
+    // model_check create a device and never open a window, so they never call
+    // glfwInit() and GLFW answers with no list. A device with no surface needs
+    // no surface extensions. Only when GLFW IS initialised and still has
+    // nothing (no Vulkan loader it can find) is this an error worth throwing.
+    std::vector<const char*> extensions;
+    glfwGetError(nullptr);  // clear any stale error so the check below is about this call
     uint32_t glfw_extension_count = 0;
     const char** glfw_extensions =
         glfwGetRequiredInstanceExtensions(&glfw_extension_count);
-
-    if (!glfw_extensions || glfw_extension_count == 0) {
+    if (glfw_extensions) {
+        extensions.assign(glfw_extensions, glfw_extensions + glfw_extension_count);
+    } else if (glfwGetError(nullptr) == GLFW_NOT_INITIALIZED) {
+        GWS_LOG_INFO("No window system initialised: creating a headless Vulkan instance");
+    } else {
         throw std::runtime_error(
             "GLFW did not provide required Vulkan instance extensions");
     }
-
-    std::vector<const char*> extensions(
-        glfw_extensions,
-        glfw_extensions + glfw_extension_count);
 
     // Validation layers — ONLY enable when requested AND actually installed. On a
     // machine without the Vulkan SDK the layer is absent; requesting it anyway
