@@ -163,7 +163,8 @@ std::string query_codex_metadata(const fs::path& executable, const fs::path& wor
 
     const std::wstring executable_wide = executable.wstring();
     std::wstring command = L"\"" + executable_wide +
-                           L"\" -c cli_auth_credentials_store=keyring app-server --listen stdio://";
+                           L"\" -c cli_auth_credentials_store=keyring "
+                           L"-c forced_login_method=chatgpt app-server --listen stdio://";
     std::vector<wchar_t> command_buffer(command.begin(), command.end());
     command_buffer.push_back(L'\0');
     const std::wstring directory_wide = working_directory.wstring();
@@ -283,8 +284,9 @@ std::string query_codex_metadata(const fs::path& executable, const fs::path& wor
         ::close(input_pipe[1]);
         ::close(output_pipe[0]);
         ::close(output_pipe[1]);
-        ::execl(executable.c_str(), executable.c_str(), "-c", "cli_auth_credentials_store=keyring", "app-server",
-                "--listen", "stdio://", static_cast<char*>(nullptr));
+        ::execl(executable.c_str(), executable.c_str(), "-c", "cli_auth_credentials_store=keyring",
+                "-c", "forced_login_method=chatgpt", "app-server", "--listen", "stdio://",
+                static_cast<char*>(nullptr));
         ::_exit(127);
     }
 
@@ -471,6 +473,33 @@ void readonly_text(const char* id, const std::string& text, float height) {
                               ImGuiInputTextFlags_ReadOnly);
 }
 
+std::string concise_provider_error(std::string text) {
+    // Provider diagnostics can contain terminal color escapes and long retry
+    // histories. Keep the useful tail readable in the editor without ever
+    // persisting it after the private request directory is removed.
+    std::string clean;
+    clean.reserve(text.size());
+    bool escape = false;
+    for (char ch : text) {
+        if (!escape && ch == '\x1b') {
+            escape = true;
+            continue;
+        }
+        if (escape) {
+            if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'))
+                escape = false;
+            continue;
+        }
+        clean.push_back(ch);
+    }
+    constexpr size_t kMaxShownBytes = 2400;
+    if (clean.size() > kMaxShownBytes)
+        clean = "...\n" + clean.substr(clean.size() - kMaxShownBytes);
+    while (!clean.empty() && (clean.back() == '\n' || clean.back() == '\r' || clean.back() == ' '))
+        clean.pop_back();
+    return clean;
+}
+
 }  // namespace
 
 AiAssistantPanel::AiAssistantPanel() {
@@ -504,6 +533,7 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(AiProvider provi
     const fs::path prompt_path = run_dir / "request.txt";
     const fs::path schema_path = run_dir / "response-schema.json";
     const fs::path response_path = run_dir / "response.json";
+    const fs::path diagnostic_path = run_dir / "provider-error.txt";
     const std::string schema = EngineAgentOutputSchemaJson();
     if (!write_file(prompt_path, prompt) || !write_file(schema_path, schema)) {
         result.error = "Could not prepare the isolated provider request.";
@@ -563,8 +593,8 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(AiProvider provi
                        "--setenv LANG C.UTF-8 /runtime/" +
                        shell_quote(executable.filename().string()) +
                        " "
-                       "-c cli_auth_credentials_store=keyring "
-                       "--ask-for-approval never exec" +
+                       "--ask-for-approval never exec "
+                       "-c cli_auth_credentials_store=keyring -c forced_login_method=chatgpt" +
                        (model.empty() ? std::string{} : " --model " + shell_quote(model)) +
                        (reasoning_effort.empty() ? std::string{} :
                            " -c model_reasoning_effort=" + shell_quote(reasoning_effort)) +
@@ -572,13 +602,14 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(AiProvider provi
                        "--ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules "
                        "--sandbox read-only --output-schema /work/response-schema.json "
                        "-C /work -o /work/response.json - < " +
-                       shell_quote(prompt_path.string()) + " "
-                       "> /dev/null 2>&1";
+                       shell_quote(prompt_path.string()) + " > /dev/null 2> " +
+                       shell_quote(diagnostic_path.string());
         } else
 #endif
         {
             command += shell_quote(executable.string()) +
-                       " -c cli_auth_credentials_store=keyring --ask-for-approval never exec" +
+                       " --ask-for-approval never exec "
+                       "-c cli_auth_credentials_store=keyring -c forced_login_method=chatgpt" +
                        (model.empty() ? std::string{} : " --model " + shell_quote(model)) +
                        (reasoning_effort.empty() ? std::string{} :
                            " -c model_reasoning_effort=" + shell_quote(reasoning_effort)) +
@@ -594,7 +625,7 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(AiProvider provi
                            "/dev/null"
 #endif
                            ) +
-                       " 2>&1";
+                       " 2> " + shell_quote(diagnostic_path.string());
         }
     } else {
         const fs::path helper = credential_helper_path();
@@ -618,14 +649,7 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(AiProvider provi
                    " --tools \"\" --permission-mode plan --output-format json "
                    "--json-schema " +
                    shell_quote(schema) + " < " + shell_quote(prompt_path.string()) + " > " +
-                   shell_quote(response_path.string()) + " 2> " +
-                   shell_quote(
-#ifdef _WIN32
-                       "NUL"
-#else
-                       "/dev/null"
-#endif
-                   );
+                   shell_quote(response_path.string()) + " 2> " + shell_quote(diagnostic_path.string());
     }
 
     const int exit_code = std::system(command.c_str());
@@ -633,6 +657,8 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(AiProvider provi
     if (exit_code != 0 || result.output.empty()) {
         result.error = std::string(provider_name(provider)) +
                        " could not create a plan. Check the CLI and encrypted account connection.";
+        const std::string diagnostic = concise_provider_error(read_file(diagnostic_path));
+        if (!diagnostic.empty()) result.error += "\n\nProvider details:\n" + diagnostic;
     } else {
         result.ok = true;
         if (provider == AiProvider::Claude) {
@@ -710,7 +736,8 @@ AiAssistantPanel::AuthResult AiAssistantPanel::run_auth_command(AiProvider provi
     if (login) {
         // The official Codex browser flow receives the account credentials;
         // the editor never sees them. Only the OS keyring may persist them.
-        const int exit_code = run(" -c cli_auth_credentials_store=keyring login");
+        const int exit_code = run(" -c cli_auth_credentials_store=keyring "
+                                  "-c forced_login_method=chatgpt login");
         if (exit_code != 0) {
             result.detail = "The secure browser sign-in did not complete. No credential was saved.";
             std::error_code ec;
@@ -719,7 +746,8 @@ AiAssistantPanel::AuthResult AiAssistantPanel::run_auth_command(AiProvider provi
         }
     }
 
-    const int status_code = run(" -c cli_auth_credentials_store=keyring login status");
+    const int status_code = run(" -c cli_auth_credentials_store=keyring "
+                                "-c forced_login_method=chatgpt login status");
     result.signed_in = status_code == 0;
     result.detail = result.signed_in ? "Connected using encrypted OS credential storage."
                                      : "Not connected, or encrypted OS credential storage is unavailable.";
@@ -747,6 +775,16 @@ AiAssistantPanel::AuthResult AiAssistantPanel::run_auth_command(AiProvider provi
                             ModelOption option;
                             option.id = item.value("model", std::string{});
                             option.label = item.value("displayName", option.id);
+                            option.default_reasoning_effort =
+                                item.value("defaultReasoningEffort", std::string{});
+                            option.is_default = item.value("isDefault", false);
+                            if (item.contains("supportedReasoningEfforts") &&
+                                item["supportedReasoningEfforts"].is_array()) {
+                                for (const json& effort : item["supportedReasoningEfforts"]) {
+                                    const std::string id = effort.value("reasoningEffort", std::string{});
+                                    if (!id.empty()) option.reasoning_efforts.push_back(id);
+                                }
+                            }
                             if (!option.id.empty())
                                 result.models.push_back(std::move(option));
                         }
@@ -883,7 +921,14 @@ void AiAssistantPanel::start_request(const std::shared_ptr<schizo::scene::Scene>
     const AiProvider selected_provider = provider_;
     const std::string selected_model = provider_ == AiProvider::Codex ? codex_model_ : claude_model_;
     const std::string selected_effort = provider_ == AiProvider::Codex ? codex_reasoning_effort_ : std::string{};
-    const std::string shown_model = selected_model.empty() ? "account default" : selected_model;
+    std::string shown_model = selected_model.empty() ? "account default" : selected_model;
+    for (const ModelOption& option : auth_.models) {
+        if ((!selected_model.empty() && option.id == selected_model) ||
+            (selected_model.empty() && option.is_default)) {
+            shown_model = option.label + " [" + option.id + "]";
+            break;
+        }
+    }
     active_request_description_ = provider_ == AiProvider::Codex
         ? shown_model + " / " + selected_effort + " reasoning"
         : shown_model;
@@ -1039,14 +1084,28 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
     ImGui::Spacing();
     ImGui::TextUnformatted("Model");
     if (provider_ == AiProvider::Codex) {
-        const char* preview = "Default (account recommended)";
+        const ModelOption* default_model = nullptr;
+        const ModelOption* selected_model = nullptr;
+        for (const ModelOption& option : auth_.models) {
+            if (option.is_default) default_model = &option;
+            if (!codex_model_.empty() && option.id == codex_model_) selected_model = &option;
+        }
+        if (!default_model && !auth_.models.empty()) default_model = &auth_.models.front();
+        if (codex_model_.empty()) selected_model = default_model;
+
+        std::string preview_text = default_model
+            ? "Default (" + default_model->label + ")"
+            : "Default (account recommended)";
         for (const ModelOption& option : auth_.models)
             if (option.id == codex_model_)
-                preview = option.label.c_str();
+                preview_text = option.label;
         ImGui::BeginDisabled(!auth_.cli_available || runtime_installing_ || running_);
         ImGui::SetNextItemWidth(-1.0f);
-        if (ImGui::BeginCombo("##codex_model", preview)) {
-            if (ImGui::Selectable("Default (account recommended)", codex_model_.empty()))
+        if (ImGui::BeginCombo("##codex_model", preview_text.c_str())) {
+            const std::string default_label = default_model
+                ? "Default (" + default_model->label + ")"
+                : "Default (account recommended)";
+            if (ImGui::Selectable(default_label.c_str(), codex_model_.empty()))
                 codex_model_.clear();
             for (const ModelOption& option : auth_.models) {
                 const bool selected = codex_model_ == option.id;
@@ -1059,21 +1118,54 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
         }
         ImGui::EndDisabled();
 
-        const char* effort_labels[] = {"Standard", "Strong", "Maximum"};
-        const char* effort_ids[] = {"medium", "high", "xhigh"};
-        int effort_index = 1;
-        for (int i = 0; i < 3; ++i)
-            if (codex_reasoning_effort_ == effort_ids[i]) effort_index = i;
+        // Resolve again because the user may just have changed the model.
+        selected_model = nullptr;
+        for (const ModelOption& option : auth_.models) {
+            if ((!codex_model_.empty() && option.id == codex_model_) ||
+                (codex_model_.empty() && option.is_default)) {
+                selected_model = &option;
+                break;
+            }
+        }
+        if (!selected_model && codex_model_.empty()) selected_model = default_model;
+        if (selected_model && !selected_model->reasoning_efforts.empty() &&
+            std::find(selected_model->reasoning_efforts.begin(), selected_model->reasoning_efforts.end(),
+                      codex_reasoning_effort_) == selected_model->reasoning_efforts.end()) {
+            codex_reasoning_effort_ = selected_model->default_reasoning_effort.empty()
+                ? selected_model->reasoning_efforts.front()
+                : selected_model->default_reasoning_effort;
+        }
+
+        const auto effort_label = [](const std::string& id) {
+            if (id == "none") return std::string("None");
+            if (id == "minimal") return std::string("Minimal");
+            if (id == "low") return std::string("Low");
+            if (id == "medium") return std::string("Medium");
+            if (id == "high") return std::string("High");
+            if (id == "xhigh") return std::string("Extra High");
+            if (id == "max") return std::string("Max");
+            if (id == "ultra") return std::string("Ultra");
+            return id;
+        };
         ImGui::TextUnformatted("Reasoning");
-        ImGui::BeginDisabled(running_);
+        ImGui::BeginDisabled(running_ || !selected_model || selected_model->reasoning_efforts.empty());
         ImGui::SetNextItemWidth(-1.0f);
-        if (ImGui::Combo("##codex_reasoning", &effort_index, effort_labels, 3))
-            codex_reasoning_effort_ = effort_ids[effort_index];
+        const std::string reasoning_preview = effort_label(codex_reasoning_effort_);
+        if (ImGui::BeginCombo("##codex_reasoning", reasoning_preview.c_str())) {
+            if (selected_model) {
+                for (const std::string& effort : selected_model->reasoning_efforts) {
+                    const bool selected = effort == codex_reasoning_effort_;
+                    const std::string label = effort_label(effort);
+                    if (ImGui::Selectable(label.c_str(), selected))
+                        codex_reasoning_effort_ = effort;
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
         ImGui::EndDisabled();
 
-        const char* selected_label = "Account default";
-        for (const ModelOption& option : auth_.models)
-            if (option.id == codex_model_) selected_label = option.label.c_str();
+        const char* selected_label = selected_model ? selected_model->label.c_str() : "Account default";
         ImGui::TextColored(ImVec4(0.35f, 0.75f, 0.95f, 1.0f), "Will use: %s (%s reasoning)",
                            selected_label, codex_reasoning_effort_.c_str());
 

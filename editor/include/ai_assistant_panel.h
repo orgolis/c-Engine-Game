@@ -43,6 +43,9 @@ private:
     struct ModelOption {
         std::string id;
         std::string label;
+        std::vector<std::string> reasoning_efforts;
+        std::string default_reasoning_effort;
+        bool is_default = false;
     };
 
     struct UsageWindow {
