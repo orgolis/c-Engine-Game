@@ -735,7 +735,16 @@ AiAssistantPanel::AuthResult AiAssistantPanel::run_auth_command(AiProvider provi
                         }
                     } else if (id == 2) {
                         const auto add_snapshot = [&](const json& snapshot, const std::string& fallback_name) {
-                            const std::string name = snapshot.value("limitName", fallback_name);
+                            // limitName is optional and is commonly JSON null.
+                            // json::value<string>() throws for null and used to
+                            // discard the complete, otherwise valid response.
+                            std::string name;
+                            if (snapshot.contains("limitName") && snapshot["limitName"].is_string())
+                                name = snapshot["limitName"].get<std::string>();
+                            if (name.empty() && fallback_name == "codex")
+                                name = "Codex";
+                            else if (name == "codex_other" || (name.empty() && fallback_name == "codex_other"))
+                                name = "Other models";
                             if (result.plan.empty() && snapshot.contains("planType") &&
                                 snapshot["planType"].is_string())
                                 result.plan = snapshot["planType"].get<std::string>();
@@ -1039,8 +1048,9 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
                 ImGui::TextDisabled("- Credits: %s", auth_.credit_balance.c_str());
             }
             for (const UsageWindow& window : auth_.usage_windows) {
-                const int remaining = std::max(0, 100 - window.used_percent);
-                std::string overlay = std::to_string(remaining) + "% remaining";
+                const int used = std::clamp(window.used_percent, 0, 100);
+                const int remaining = 100 - used;
+                std::string overlay = std::to_string(used) + "% used  -  " + std::to_string(remaining) + "% left";
                 const std::string reset = reset_time_text(window.resets_at);
                 if (!reset.empty())
                     overlay += " - resets " + reset;
