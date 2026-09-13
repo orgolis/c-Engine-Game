@@ -211,9 +211,11 @@ The cross-cutting integration debt specifically:
 - **Stage 13 — Platform** 🟡 Windows + Linux desktop. Linux landed in PR #70 (v0.8.5): the editor, `gws`,
   `dedicated_server` and the whole check suite build and pass headlessly on Ubuntu 24.04 in CI on every push,
   and the editor has run on Intel Iris Xe under Mesa. Per-user files resolve to XDG directories through
-  `gws::platform::user_dir()` (`userdirs_check`). **Remaining on Linux:** C++ and C# script hosts (Windows-only),
-  the embedded terminal (ConPTY; a placeholder on Linux), crash-report stack traces, a Hub/release package, and
-  any GPU other than Intel/Mesa. **Remaining beyond:** consoles, mobile, web.
+  `gws::platform::user_dir()` (`userdirs_check`). PR #71 added a native PTY terminal and Linux dialogs. Releases
+  carry `engine-<tag>-linux-x86_64.tar.gz` from 0.8.5 on, built and smoke-tested by `package-linux.yml` (also on
+  every push). **Remaining on Linux:** C++ and C# script hosts (Windows-only), crash-report stack traces, installing
+  the package through the Hub (its HTTP client is Windows-only), and any GPU other than Intel/Mesa.
+  **Remaining beyond:** consoles, mobile, web.
 - **Stage 14 — Performance infrastructure** 🟢 all 5 pillars built + in the unified overlay (`profiler_check`).
   **Remaining:** captured-baseline regression gating in CI.
 - **Stage 15 — Modern AAA** 🔴 mostly not started. DDGI is a step toward Lumen; **remaining:** Nanite-like virtual geometry,

@@ -105,10 +105,13 @@ order to ship commercially free of charge.
    file beside them**. MIT and BSD both require the notice to travel with the code.
    `THIRD_PARTY_NOTICES.md` currently carries that obligation alone, which is thin —
    place each upstream licence file next to its source.
-5. **Release archives should include `THIRD_PARTY_NOTICES.md` and `LICENSE`.** They
-   currently ship neither, so every binary release is distributing MIT-licensed code
-   without its notice. This is the most concrete of these items and the cheapest to
-   fix: add both files to the CPack/release packaging.
+5. ~~**Release archives should include `THIRD_PARTY_NOTICES.md` and `LICENSE`.**~~
+   **Fixed for new releases.** Both files are part of the engine install component,
+   so every package from 0.8.6 on carries them, Windows and Linux; the Linux package
+   adds them itself even when built from an older tag, so 0.8.5's has them too.
+   Windows packages up to 0.8.5 shipped without them and cannot be changed after
+   the fact. **Still open:** exported games (`tools/export_game_*`) do not copy them,
+   and a Product that embeds the Engine has the same obligation (licence section 6).
 6. **Attribution enforcement is honour-based** and that is fine, but the engine could
    make compliance the path of least resistance — a built-in "Made with
    GameWorldshaper" splash that a product gets for free unless it opts out.

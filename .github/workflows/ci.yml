@@ -291,3 +291,13 @@ jobs:
             innerloop.txt
           if-no-files-found: ignore
           retention-days: 7
+
+  # The Linux release package, built and smoke-tested exactly as a release
+  # builds it, but uploaded only as a 7-day workflow artifact. Packaging fails
+  # in ways ordinary builds cannot show (a missing install rule, a lost
+  # executable bit), and finding that at release time means a broken release.
+  linux-package:
+    uses: ./.github/workflows/package-linux.yml
+    with:
+      ref: ${{ github.sha }}
+      version_label: ci
