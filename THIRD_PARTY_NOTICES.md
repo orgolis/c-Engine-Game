@@ -60,7 +60,9 @@ That is thin. **The correct fix is to place each upstream `LICENSE` file next to
 vendored source**, which is tracked as follow-up work — see the licensing note in
 `docs/`.
 
-The binary release archives do not currently include this file either. They should.
+Engine packages carry this file from 0.8.6 on (Windows and Linux; the 0.8.5
+Linux package too). Windows packages up to 0.8.5 did not. Exported games do not
+copy it yet, and they need to.
 
 ---
 
