@@ -249,6 +249,18 @@ if(MINGW)
     target_link_options(curve_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# gbuffer_reconstruct_check: the world-position-from-depth formula used to
+# remove tools/lighting_pass.frag's read of the G-buffer position
+# attachment (F5, phase 1). Proven here, on the host, because no `gws test
+# --gpu` check reads back a rendered pixel (issue #64) -- a wrong depth
+# convention in the shader would otherwise ship silently.
+add_executable(gbuffer_reconstruct_check gbuffer_reconstruct_check/main.cpp)
+target_link_libraries(gbuffer_reconstruct_check PRIVATE glm)
+target_compile_features(gbuffer_reconstruct_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(gbuffer_reconstruct_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # palette_check: the command palette RANKS the way a person expects. A palette
 # that finds the right command but puts it fourth is one people stop using --
 # the whole value is that the first hit is the one you meant. These assert
