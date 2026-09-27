@@ -136,6 +136,16 @@ recorded prior failure repeating verbatim: the same shape as gating ray-traced r
 
 ### F5 — The G-buffer is 28 bytes per pixel, 8 of them redundant 🟠
 
+**Phase 1 shipped in v0.8.6:** the lighting pass (94% of frame per F0, and the only one of the 14
+consumers that already had both a depth binding and an invViewProj available) no longer reads the
+position attachment — reconstructs from depth instead. `gbuffer_reconstruct_check` proves the formula.
+The attachment itself is not yet removed: the other 13 consumers still read it, and 12 of them have no
+camera matrix bound at all today (only `water.frag` does), so converting them needs new per-pass
+UBO/push-constant plumbing, not just a shader math swap — a materially bigger task, scoped separately.
+A useful side-finding while proving the formula: reconstruction from a float32 depth buffer is measurably
+*more* precise than the original RGBA16F position texture at typical scene distances (one float32 depth
+value beats three float16 position components) — this is not a precision trade-off, just a bandwidth one.
+
 `vulkan_g_buffer.cpp:250-280`:
 
 | Attachment | Format | Bytes/px |
@@ -314,18 +324,23 @@ Aimed using whatever v0.8.2 reports.
 **Release gate:** on the low-end machine, Low + 0.5 render scale produces a
 *measured, reported* improvement. Not "feels faster".
 
-### v0.8.4 — bandwidth
+### ~~v0.8.4~~ — bandwidth (renumbered: v0.8.4 shipped as a profiler-regression fix + VSync toggle instead)
 
-| # | Item | Done when |
-|---|---|---|
-| 5 | **F5 — drop the G-buffer position attachment** | Reconstructed from depth in all 14 consumers; G-buffer is 20 B/px; output visually unchanged against captured references; Geometry and Lighting measurably cheaper. |
+| # | Item | Done when | Actually shipped |
+|---|---|---|---|
+| 5 | **F5 — drop the G-buffer position attachment** | Reconstructed from depth in all 14 consumers; G-buffer is 20 B/px; output visually unchanged against captured references; Geometry and Lighting measurably cheaper. | **1 of 14 in v0.8.6** (the lighting pass — see F5 above). The other 13 are a separate, bigger task: unlike the lighting pass, 12 of them have no camera matrix bound today. |
 
-### v0.8.5 — footprint
+### ~~v0.8.5~~ v0.8.7+ — footprint (renumbered: v0.8.5 shipped as the Linux-support release instead)
 
 | # | Item | Done when |
 |---|---|---|
 | 6 | **F9 — suballocator** | Texture and mesh uploads draw from pooled blocks; `maxMemoryAllocationCount` queried and headroom logged. |
 | 7 | **F10 — alias transient render targets** | Peak render-target footprint measurably below the naive sum, reported in the Memory (N3) panel. |
+
+**F5 is a prerequisite in practice, not just in the recommended order** — the position attachment can
+only be dropped (needed for both F5's own "20 B/px" target and for F10's aliasing to consider a smaller
+set of targets) once all 14 consumers stop reading it. v0.8.6 converted 1 of 14 (see F5 above); the
+remaining 13 are unscoped past "which shaders" and belong in their own plan before this row is started.
 
 ### Deliberately not in the plan yet
 
