@@ -69,6 +69,17 @@ layout(push_constant) uniform Constants {
     vec4  cloudParams;     // x=center.x, y=center.z, z=half_extent, w=persistence
 } pc;
 
+// Reconstructs world-space position from a screen UV and this pixel's
+// Vulkan depth-buffer value. Vulkan's depth range is [0,1] (not OpenGL's
+// [-1,1]), so depthNdc needs no remap -- only the screen UV does.
+// Proven against tools/gbuffer_reconstruct_check; do not "fix" the
+// missing depth remap without reading that check first.
+vec3 worldPosFromDepth(vec2 uv, float depthNdc) {
+    vec2 ndc = uv * 2.0 - 1.0;
+    vec4 worldH = pc.invViewProj * vec4(ndc, depthNdc, 1.0);
+    return worldH.xyz / worldH.w;
+}
+
 bool flagSet(int bit) { return (int(pc.flags) & (1 << bit)) != 0; }
 
 // Soft-shadow cone rays, packed into bits 8-11 of the same float.
@@ -343,9 +354,10 @@ float contactShadow(vec3 worldPos, vec3 N, vec3 Ldir) {
         if (clip.w <= 0.0) break;
         vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
-        vec4 sp = texture(positionTex, uv);
-        if (sp.w < 0.5) continue;                       // sky pixel
-        float sceneDist  = length(sp.xyz - pc.cameraPos);
+        float sampleDepth = texture(depthTex, uv).r;
+        if (sampleDepth >= 1.0 - 1e-5) continue;        // sky pixel (same test main() uses)
+        vec3 scenePos = worldPosFromDepth(uv, sampleDepth);
+        float sceneDist  = length(scenePos - pc.cameraPos);
         float sampleDist = length(p - pc.cameraPos);
         // Occluded when the scene surface is in front of the march point but
         // within a plausible thickness (avoids darkening from far background).
@@ -598,7 +610,7 @@ void main() {
     vec4 normalSample   = texture(normalTex,   inTexCoord);
     vec4 albedoSample   = texture(albedoTex,   inTexCoord);
     vec4 materialSample = texture(materialTex, inTexCoord);
-    vec3 worldPos = texture(positionTex, inTexCoord).xyz;
+    vec3 worldPos = worldPosFromDepth(inTexCoord, gbufferDepth);
     vec3 N        = normalize(normalSample.xyz);
     float roughness = normalSample.a;
     vec3 albedo   = albedoSample.rgb;
