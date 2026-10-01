@@ -5,6 +5,11 @@ cmake-build-debug/
 cmake-build-release/
 cmake-build-*/
 
+# Isolated per-task git worktrees (see docs/superpowers/plans/ + the
+# using-git-worktrees skill). Each is its own checkout; none of this belongs
+# in the tree that lives inside it.
+/.worktrees/
+
 # IDE files
 .vs/
 .vscode/
