@@ -6548,6 +6548,55 @@ int main(int argc, char** argv) {
         schizo::editor::RenderSettings render_settings;
         const bool had_settings = schizo::editor::load_render_settings(render_settings);
 
+        // First launch: decide the preset HERE, before anything below reads
+        // render_settings -- not after device.initialize(), which the code
+        // used to do. Two settings this struct carries can only take effect
+        // if they are correct before something else runs on their current
+        // (default) value:
+        //   - render_scale sizes the offscreen targets a few lines down;
+        //     deciding it later meant the chosen scale "applied next launch",
+        //     a limitation that was at least documented.
+        //   - ray_tracing is read into RenderConfig and handed to
+        //     device.initialize() below, which enables (or does not enable)
+        //     the ray-tracing device extension ONCE, at logical-device
+        //     creation. That decision cannot be revisited afterward without
+        //     recreating the device: a pipeline rebuilt later with a
+        //     different setting changes the shadow RAY COUNT (a push
+        //     constant) but not which shader variant was compiled in, since
+        //     has_ray_tracing() still reports whatever initialize() baked
+        //     in. This half was NOT documented, and was not caught until a
+        //     real first-launch measurement showed a brand-new install
+        //     running 4+ RT shadow rays at ~4.4ms despite correctly writing
+        //     "ray tracing off" to the settings file it saved for next time.
+        //     Every new user's first session -- the one forming their first
+        //     impression -- paid a cost the engine had already decided,
+        //     elsewhere in the same function, that their hardware shouldn't.
+        //
+        // probe_best_physical_device() exists because this decision needs a
+        // physical device's properties before a real one exists: creating
+        // the actual VulkanDevice this early would mean initializing it
+        // twice, once to ask and once for real.
+        if (!had_settings) {
+            bool integrated = false;
+            uint64_t vram = 0;
+            if (gws::renderer::gpu::probe_best_physical_device(integrated, vram)) {
+                const auto picked = schizo::editor::preset_for_device(integrated, vram);
+                render_settings.apply_preset(picked);
+                schizo::editor::save_render_settings(render_settings);
+                spdlog::info("[perf] first launch ({}, {:.1f} GB device-local) -> preset {}",
+                             integrated ? "integrated" : "discrete",
+                             static_cast<double>(vram) / (1024.0 * 1024.0 * 1024.0),
+                             schizo::editor::quality_preset_name(picked));
+            } else {
+                // No Vulkan device at all -- device.initialize() below will
+                // fail and report it properly. Leave render_settings at its
+                // struct defaults (High) rather than guess; there is nothing
+                // here to make a decision from.
+                spdlog::warn("[perf] first launch: no Vulkan device found while probing for a "
+                             "quality preset; falling back to default settings");
+            }
+        }
+
         // The window used to be created at a hardcoded 1920x1080 -- larger than
         // the whole display on a 1366x768 laptop, which then rendered more
         // pixels than it could ever show. Fit it to the monitor's WORK area
@@ -6589,8 +6638,6 @@ int main(int argc, char** argv) {
         spdlog::info("GLFW window created ({}x{}), framebuffer {}x{}", win_w, win_h, fbw, fbh);
         spdlog::info("[perf] render targets {}x{} (scale {:.2f}) -- was a hardcoded 1920x1080",
                      kW, kH, rscale);
-        if (!had_settings)
-            spdlog::info("[perf] no saved graphics settings; using defaults until a preset is chosen");
 
         // ----------------------------------------------------------------
         // Vulkan device + surface + swapchain
@@ -7072,32 +7119,12 @@ int main(int argc, char** argv) {
             if (lighting)         lighting->set_shadow_ray_count(rs.shadow_rays);
         };
 
-        if (!had_settings) {
-            // First launch: choose from the device rather than making someone
-            // discover the settings menu to get a usable frame rate.
-            VkPhysicalDeviceProperties dp{};
-            vkGetPhysicalDeviceProperties(device.get_physical_device(), &dp);
-            VkPhysicalDeviceMemoryProperties mp{};
-            vkGetPhysicalDeviceMemoryProperties(device.get_physical_device(), &mp);
-            uint64_t vram = 0;
-            for (uint32_t i = 0; i < mp.memoryHeapCount; ++i)
-                if (mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
-                    vram = std::max<uint64_t>(vram, mp.memoryHeaps[i].size);
-            const bool integrated = dp.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
-
-            const auto picked = schizo::editor::preset_for_device(integrated, vram);
-            render_settings.apply_preset(picked);
-            schizo::editor::save_render_settings(render_settings);
-            spdlog::info("[perf] first launch on {} ({}, {:.1f} GB device-local) -> preset {}",
-                         dp.deviceName, integrated ? "integrated" : "discrete",
-                         static_cast<double>(vram) / (1024.0 * 1024.0 * 1024.0),
-                         schizo::editor::quality_preset_name(picked));
-            // The scale the preset just chose cannot apply to targets already
-            // created at this size; it takes effect next launch. Said out loud
-            // rather than left to look like the setting did nothing.
-            spdlog::info("[perf] render scale {:.2f} applies on next launch",
-                         render_settings.render_scale);
-        }
+        // The first-launch DECISION (which preset, from which device) was
+        // made earlier, right after load_render_settings() -- before
+        // anything below here existed, so it could still reach the render
+        // targets' size and the device's ray-tracing extension. This just
+        // applies whatever render_settings now holds, same as any other
+        // launch.
         apply_render_settings(render_settings);
         spdlog::info("[perf] preset {} - ssao {} ssr {} clouds {} volumetric {} froxel {} ddgi {}",
                      schizo::editor::quality_preset_name(render_settings.preset),

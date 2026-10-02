@@ -302,4 +302,20 @@ public:
 /// Supported types: "vulkan", "opengl"
 std::unique_ptr<RenderDevice> create_render_device(const std::string& type);
 
+/// Reports whether the best available GPU is integrated, and its device-local
+/// VRAM, WITHOUT creating a real device — needed because some settings (the
+/// default quality preset, whether ray tracing is enabled) must be decided
+/// BEFORE create_render_device()/RenderDevice::initialize() runs. Ray tracing
+/// in particular can only be turned on or off at logical-device creation (the
+/// extension is enabled once, there, and nowhere else), so a decision made
+/// after initialize() has already missed its only window — recreating the
+/// pipeline afterward changes the ray COUNT but not which shader variant was
+/// built, which is most of the cost.
+///
+/// Picks the same device initialize() will later pick (discrete over
+/// integrated), so a decision made from this probe's answer is guaranteed to
+/// describe the GPU the real device ends up using. Returns false if no
+/// Vulkan-capable device is present at all (out params left untouched).
+bool probe_best_physical_device(bool& out_is_integrated, uint64_t& out_vram_bytes);
+
 }  // namespace gws::renderer::gpu

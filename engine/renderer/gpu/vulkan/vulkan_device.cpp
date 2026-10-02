@@ -1137,4 +1137,72 @@ std::unique_ptr<RenderDevice> create_render_device(const std::string& type) {
     return nullptr;
 }
 
+bool probe_best_physical_device(bool& out_is_integrated, uint64_t& out_vram_bytes) {
+    // Deliberately minimal: no validation, no extensions, no window/surface.
+    // This instance only ever enumerates and queries properties, then is
+    // destroyed -- the real device (created moments later, once the caller
+    // has decided settings from this answer) does the actual work.
+    VkApplicationInfo app_info{};
+    app_info.sType         = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app_info.pApplicationName = "gws-device-probe";
+    app_info.apiVersion    = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo instance_info{};
+    instance_info.sType            = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    instance_info.pApplicationInfo = &app_info;
+
+    VkInstance instance = VK_NULL_HANDLE;
+    if (vkCreateInstance(&instance_info, nullptr, &instance) != VK_SUCCESS) {
+        return false;
+    }
+
+    uint32_t device_count = 0;
+    vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
+    if (device_count == 0) {
+        vkDestroyInstance(instance, nullptr);
+        return false;
+    }
+    std::vector<VkPhysicalDevice> devices(device_count);
+    vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
+
+    // Identical scoring to VulkanDevice::pick_physical_device() -- this probe
+    // and the real pick must never be able to disagree about which GPU is
+    // "best", or a decision made from one would describe the wrong device.
+    VkPhysicalDevice best = VK_NULL_HANDLE;
+    VkPhysicalDeviceProperties best_props{};
+    int best_score = -1;
+    for (const auto& dev : devices) {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(dev, &props);
+        int score = 0;
+        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+            score += 1000;
+        } else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+            score += 100;
+        }
+        if (score > best_score) {
+            best_score = score;
+            best       = dev;
+            best_props = props;
+        }
+    }
+    if (best == VK_NULL_HANDLE) {
+        vkDestroyInstance(instance, nullptr);
+        return false;
+    }
+
+    VkPhysicalDeviceMemoryProperties mem_props{};
+    vkGetPhysicalDeviceMemoryProperties(best, &mem_props);
+    uint64_t vram = 0;
+    for (uint32_t i = 0; i < mem_props.memoryHeapCount; ++i) {
+        if (mem_props.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+            vram = std::max<uint64_t>(vram, mem_props.memoryHeaps[i].size);
+        }
+    }
+
+    out_is_integrated = best_props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+    out_vram_bytes    = vram;
+    vkDestroyInstance(instance, nullptr);
+    return true;
+}
+
 }  // namespace gws::renderer::gpu
