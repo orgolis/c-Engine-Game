@@ -158,8 +158,19 @@ int main() {
                                               preset_for_device(true, 16 * kGiB) == QualityPreset::Low);
         check("a small discrete card starts Medium",
                                               preset_for_device(false, 2 * kGiB) == QualityPreset::Medium);
-        check("a large discrete card starts High",
-                                              preset_for_device(false, 8 * kGiB) == QualityPreset::High);
+        // A large VRAM figure used to auto-select High, which turns ray tracing
+        // ON at 8 shadow rays per pixel per light. Measured live on an RTX 3060
+        // (12 GiB, comfortably clears any VRAM bar) on a real 30-draw project:
+        // the lighting pass alone cost 8.7-9ms of a ~15ms frame -- 55-65% of it,
+        // for a scene with nothing unusual in it. VRAM capacity says nothing
+        // about ray-tracing throughput, and this engine has no query that does,
+        // so auto-detection must not gamble a new user's first impression on
+        // that correlation. High stays reachable -- a person who picks it
+        // manually has made an informed trade, which auto-detection cannot.
+        check("a large discrete card ALSO starts Medium, not High -- ray tracing is never auto-enabled",
+                                              preset_for_device(false, 8 * kGiB) == QualityPreset::Medium);
+        check("even an implausibly large VRAM figure does not imply RT throughput",
+                                              preset_for_device(false, 64 * kGiB) == QualityPreset::Medium);
     }
 
     std::printf("\n[group] preset names round-trip\n");
