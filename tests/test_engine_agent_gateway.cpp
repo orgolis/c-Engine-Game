@@ -7,6 +7,7 @@
 #include "undo_redo_manager.h"
 
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <nlohmann/json.hpp>
@@ -27,6 +28,52 @@ schizo::editor::EngineAgentApplyContext make_context(
 }
 
 }  // namespace
+
+TEST_CASE("AI reloads attached generated scripts after restart and rejects aliases",
+          "[editor][engine-agent][ai-context][security]") {
+    auto scene = std::make_shared<schizo::scene::Scene>("Reload context test");
+    schizo::editor::UndoRedoManager undo;
+    const fs::path root = fs::temp_directory_path() / "gws-agent-reload-context-test";
+    std::error_code ec;
+    fs::create_directories(root / "assets/scripts/ai_generated", ec);
+    auto context = make_context(scene, root, undo);
+    schizo::editor::EngineAgentPlan plan;
+    schizo::editor::EngineAgentAction write;
+    write.type = "write_script";
+    write.path = "assets/scripts/ai_generated/combat.py";
+    write.content = "import engine\ndef on_update(e, dt):\n    engine.translate(e, 0, 0, dt)\n";
+    plan.actions.push_back(write);
+    schizo::editor::EngineAgentAction create;
+    create.type = "create_entity";
+    create.name = "Combat controller";
+    create.primitive = "empty";
+    plan.actions.push_back(create);
+    schizo::editor::EngineAgentAction attach;
+    attach.type = "attach_script";
+    attach.target_name = create.name;
+    attach.path = write.path;
+    plan.actions.push_back(attach);
+    std::string error;
+    REQUIRE(schizo::editor::ApplyEngineAgentPlan(plan, context, error));
+    // Loading uses only the saved scene and project, no panel/session state.
+    auto loaded = schizo::editor::LoadEngineAgentGeneratedScripts(context, error);
+    REQUIRE(error.empty());
+    REQUIRE(loaded.actions.size() == 1);
+    REQUIRE(loaded.actions[0].content == write.content);
+    auto outside = std::make_shared<schizo::scene::Entity>("User script");
+    outside->AddComponent<schizo::scene::ScriptComponent>()->SetScriptPath("assets/scripts/player.py");
+    scene->AddEntity(outside);
+    REQUIRE(schizo::editor::LoadEngineAgentGeneratedScripts(context, error).actions.size() == 1);
+    fs::create_symlink(root / write.path, root / "assets/scripts/ai_generated/alias.py", ec);
+    if (!ec) {
+        auto alias = std::make_shared<schizo::scene::Entity>("Alias");
+        alias->AddComponent<schizo::scene::ScriptComponent>()->SetScriptPath("assets/scripts/ai_generated/alias.py");
+        scene->AddEntity(alias);
+        REQUIRE(schizo::editor::LoadEngineAgentGeneratedScripts(context, error).actions.size() == 1);
+        REQUIRE_FALSE(error.empty());
+    }
+    fs::remove_all(root, ec);
+}
 
 TEST_CASE("AI prompt describes actual script semantics rather than silent no-ops",
           "[editor][engine-agent][ai-prompt]") {

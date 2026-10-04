@@ -76,6 +76,10 @@ std::string BuildEngineAgentPrompt(const std::string& user_request,
 std::string BuildEngineAgentRepairPrompt(const std::string& original_prompt,
                                          const std::string& validation_error);
 std::string EngineAgentOutputSchemaJson();
+// Only Python scripts attached to this scene and inside the protected
+// ai_generated folder. No recursive project scan or engine source access.
+EngineAgentPlan LoadEngineAgentGeneratedScripts(const EngineAgentApplyContext& context,
+                                                std::string& warning);
 
 bool ParseEngineAgentPlan(const std::string& provider_output,
                           EngineAgentPlan& out,

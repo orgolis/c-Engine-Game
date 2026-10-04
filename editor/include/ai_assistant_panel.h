@@ -64,7 +64,7 @@ private:
         std::vector<UsageWindow> usage_windows;
     };
 
-    void start_request(const std::shared_ptr<schizo::scene::Scene>& scene, uint32_t selected_entity_id);
+    void start_request(const EngineAgentApplyContext& context, uint32_t selected_entity_id);
     void poll_request(const EngineAgentApplyContext& context);
     void start_auth_check();
     void start_login();
@@ -103,8 +103,8 @@ private:
     std::string active_prompt_;
     bool repair_attempted_ = false;
     EngineAgentPlan session_generated_scripts_;
-    std::weak_ptr<schizo::scene::Scene> script_context_scene_;
     std::string outgoing_script_context_;
+    std::string script_context_warning_;
     bool include_generated_script_context_ = true;
     uint64_t session_input_tokens_ = 0;
     uint64_t session_output_tokens_ = 0;

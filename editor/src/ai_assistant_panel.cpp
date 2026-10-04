@@ -940,12 +940,16 @@ void AiAssistantPanel::poll_runtime_install() {
     }
 }
 
-void AiAssistantPanel::start_request(const std::shared_ptr<schizo::scene::Scene>& scene, uint32_t selected_entity_id) {
+void AiAssistantPanel::start_request(const EngineAgentApplyContext& context, uint32_t selected_entity_id) {
+    const auto& scene = context.scene;
     pending_plan_.reset();
     error_.clear();
     outgoing_scene_summary_ = BuildEngineAgentSceneSnapshot(scene, selected_entity_id);
     planned_scene_fingerprint_ = BuildEngineAgentSceneSnapshot(scene, 0);
-    if (script_context_scene_.lock() != scene) session_generated_scripts_.actions.clear();
+    session_generated_scripts_.actions.clear();
+    script_context_warning_.clear();
+    if (include_generated_script_context_)
+        session_generated_scripts_ = LoadEngineAgentGeneratedScripts(context, script_context_warning_);
     outgoing_script_context_.clear();
     if (include_generated_script_context_) {
         for (const auto& action : session_generated_scripts_.actions)
@@ -1287,7 +1291,7 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
     }
     ImGui::SeparatorText("2. Describe");
     ImGui::BeginDisabled(running_);
-    ui::Checkbox("Use previous AI-generated scripts for follow-up edits (session memory only)",
+    ui::Checkbox("Include attached AI-generated scripts for follow-up edits",
                  &include_generated_script_context_);
     ImGui::EndDisabled();
 
@@ -1307,7 +1311,7 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
                              (provider_ != AiProvider::Codex || FindAiModel(auth_.models, codex_model_));
     ImGui::BeginDisabled(!can_request);
     if (ui::Button("Create proposal", ImVec2(150.0f, 0.0f)))
-        start_request(context.scene, selected_entity_id);
+        start_request(context, selected_entity_id);
     ImGui::EndDisabled();
     if (running_) {
         ui::SameLineIfFits();
@@ -1355,23 +1359,6 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
         if (ui::Button("Apply Changes", ImVec2(140.0f, 0.0f))) {
             std::string apply_error;
             if (ApplyEngineAgentPlan(*pending_plan_, context, apply_error)) {
-                if (script_context_scene_.lock() != context.scene)
-                    session_generated_scripts_.actions.clear();
-                script_context_scene_ = context.scene;
-                auto& scripts = session_generated_scripts_.actions;
-                for (const auto& action : pending_plan_->actions) {
-                    if (action.type != "write_script") continue;
-                    scripts.erase(std::remove_if(scripts.begin(), scripts.end(), [&](const auto& old) {
-                        return old.path == action.path;
-                    }), scripts.end());
-                    scripts.push_back(action);
-                }
-                size_t script_bytes = 0;
-                for (const auto& script : scripts) script_bytes += script.content.size();
-                while (script_bytes > 64 * 1024 && !scripts.empty()) {
-                    script_bytes -= scripts.front().content.size();
-                    scripts.erase(scripts.begin());
-                }
                 status_ = "Changes applied as one Ctrl+Z undo step.";
                 pending_plan_.reset();
                 error_.clear();
@@ -1393,7 +1380,9 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
     }
 
     if (!outgoing_scene_summary_.empty() && ImGui::CollapsingHeader("Data sent to the provider")) {
-        ui::TextDisabledWrapped("Your request and this scene snapshot. Previous AI-generated scripts may be included via the follow-up checkbox and are listed below (session memory only). No engine code, other project files or credentials are sent.");
+        ui::TextDisabledWrapped("Your request and this scene snapshot. Attached Python scripts from assets/scripts/ai_generated may be included via the checkbox and are listed below. No engine code, other project files or credentials are sent.");
+        if (!script_context_warning_.empty())
+            ImGui::TextWrapped("%s", script_context_warning_.c_str());
         readonly_text("##sent_snapshot", outgoing_scene_summary_, 150.0f);
         if (!outgoing_script_context_.empty()) {
             ui::TextDisabledWrapped("Previously AI-generated scripts sent as context:");
