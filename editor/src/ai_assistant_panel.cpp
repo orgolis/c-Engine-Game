@@ -20,6 +20,7 @@
 #include <utility>
 
 #include "ai_runtime_manager.h"
+#include "ai_provider_errors.h"
 #include "project_paths.h"
 #include "secure_credential_store.h"
 
@@ -475,30 +476,7 @@ void readonly_text(const char* id, const std::string& text, float height) {
 }
 
 std::string concise_provider_error(std::string text) {
-    // Provider diagnostics can contain terminal color escapes and long retry
-    // histories. Keep the useful tail readable in the editor without ever
-    // persisting it after the private request directory is removed.
-    std::string clean;
-    clean.reserve(text.size());
-    bool escape = false;
-    for (char ch : text) {
-        if (!escape && ch == '\x1b') {
-            escape = true;
-            continue;
-        }
-        if (escape) {
-            if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'))
-                escape = false;
-            continue;
-        }
-        clean.push_back(ch);
-    }
-    constexpr size_t kMaxShownBytes = 2400;
-    if (clean.size() > kMaxShownBytes)
-        clean = "...\n" + clean.substr(clean.size() - kMaxShownBytes);
-    while (!clean.empty() && (clean.back() == '\n' || clean.back() == '\r' || clean.back() == ' '))
-        clean.pop_back();
-    return clean;
+    return AiProviderFailureMessage(text);
 }
 
 }  // namespace
@@ -656,10 +634,8 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(AiProvider provi
     const int exit_code = std::system(command.c_str());
     result.output = read_file(response_path);
     if (exit_code != 0 || result.output.empty()) {
-        result.error = std::string(provider_name(provider)) +
-                       " could not create a plan. Check the CLI and encrypted account connection.";
-        const std::string diagnostic = concise_provider_error(read_file(diagnostic_path));
-        if (!diagnostic.empty()) result.error += "\n\nProvider details:\n" + diagnostic;
+        result.error = std::string(provider_name(provider)) + ": " +
+                       concise_provider_error(read_file(diagnostic_path));
     } else {
         result.ok = true;
         if (provider == AiProvider::Claude) {
@@ -1329,6 +1305,9 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "Needs attention");
         ImGui::TextWrapped("%s", error_.c_str());
+        if (error_.find("temporarily at capacity") != std::string::npos &&
+            ui::Button("Choose another model"))
+            ImGui::SetScrollY(0.0f);
     }
 
     ImGui::SeparatorText("3. Review");
