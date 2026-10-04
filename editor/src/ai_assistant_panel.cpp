@@ -163,8 +163,8 @@ std::string query_codex_metadata(const fs::path& executable, const fs::path& wor
 
     const std::wstring executable_wide = executable.wstring();
     std::wstring command = L"\"" + executable_wide +
-                           L"\" -c cli_auth_credentials_store=keyring "
-                           L"-c forced_login_method=chatgpt app-server --listen stdio://";
+                           L"\" app-server --listen stdio:// "
+                           L"-c cli_auth_credentials_store=keyring -c forced_login_method=chatgpt";
     std::vector<wchar_t> command_buffer(command.begin(), command.end());
     command_buffer.push_back(L'\0');
     const std::wstring directory_wide = working_directory.wstring();
@@ -284,8 +284,8 @@ std::string query_codex_metadata(const fs::path& executable, const fs::path& wor
         ::close(input_pipe[1]);
         ::close(output_pipe[0]);
         ::close(output_pipe[1]);
-        ::execl(executable.c_str(), executable.c_str(), "-c", "cli_auth_credentials_store=keyring",
-                "-c", "forced_login_method=chatgpt", "app-server", "--listen", "stdio://",
+        ::execl(executable.c_str(), executable.c_str(), "app-server", "--listen", "stdio://",
+                "-c", "cli_auth_credentials_store=keyring", "-c", "forced_login_method=chatgpt",
                 static_cast<char*>(nullptr));
         ::_exit(127);
     }
@@ -687,6 +687,11 @@ AiAssistantPanel::ProviderResult AiAssistantPanel::run_provider(AiProvider provi
 
 AiAssistantPanel::AuthResult AiAssistantPanel::run_auth_command(AiProvider provider, bool login) {
     AuthResult result;
+    if (provider == AiProvider::Codex && !login) {
+        const AiRuntimeInstallResult update = UpdateManagedAiRuntimeIfDue(AiRuntimeProvider::Codex);
+        if (!update.ok)
+            result.runtime_update_detail = "Runtime update unavailable; using the installed version. Will retry.";
+    }
     const fs::path executable = FindAiRuntime(runtime_provider(provider));
     result.cli_available = !executable.empty();
 
@@ -769,6 +774,7 @@ AiAssistantPanel::AuthResult AiAssistantPanel::run_auth_command(AiProvider provi
                     const int id = message.value("id", -1);
                     const json& payload = message["result"];
                     if (id == 1 && payload.contains("data") && payload["data"].is_array()) {
+                        result.models_loaded = true;
                         for (const json& item : payload["data"]) {
                             if (item.value("hidden", false))
                                 continue;
@@ -789,6 +795,8 @@ AiAssistantPanel::AuthResult AiAssistantPanel::run_auth_command(AiProvider provi
                                 result.models.push_back(std::move(option));
                         }
                     } else if (id == 2) {
+                        result.usage_loaded = payload.is_object() &&
+                            (payload.contains("rateLimitsByLimitId") || payload.contains("rateLimits"));
                         const auto add_snapshot = [&](const json& snapshot, const std::string& fallback_name) {
                             // limitName is optional and is commonly JSON null.
                             // json::value<string>() throws for null and used to
@@ -853,12 +861,11 @@ AiAssistantPanel::AuthResult AiAssistantPanel::run_auth_command(AiProvider provi
 }
 
 void AiAssistantPanel::start_auth_check() {
-    if (auth_running_)
+    if (auth_running_ || running_ || runtime_installing_)
         return;
     const AiProvider selected_provider = provider_;
     auth_running_ = true;
     auth_login_running_ = false;
-    auth_checked_ = false;
     auth_future_ =
         std::async(std::launch::async, [selected_provider] { return run_auth_command(selected_provider, false); });
 }
@@ -878,7 +885,27 @@ void AiAssistantPanel::poll_auth() {
     if (!auth_running_ || !auth_future_.valid() ||
         auth_future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
         return;
-    auth_ = auth_future_.get();
+    AuthResult refreshed = auth_future_.get();
+    const auto now = std::chrono::steady_clock::now();
+    if (refreshed.signed_in && auth_.signed_in && !auth_login_running_) {
+        // An unavailable metadata endpoint must not erase a working picker.
+        if (!refreshed.models_loaded) refreshed.models = std::move(auth_.models);
+        if (!refreshed.usage_loaded) {
+            refreshed.usage_windows = std::move(auth_.usage_windows);
+            refreshed.plan = std::move(auth_.plan);
+            refreshed.credit_balance = std::move(auth_.credit_balance);
+        }
+    }
+    if (refreshed.models_loaded) {
+        last_model_refresh_ = now;
+        if (!codex_model_.empty() && !FindAiModel(refreshed.models, codex_model_)) {
+            codex_model_.clear();
+            model_notice_ = "The previous model is no longer listed. Using the current account recommendation.";
+        }
+    }
+    auth_ = std::move(refreshed);
+    next_auth_check_ = now + (auth_.signed_in && !auth_.models_loaded && provider_ == AiProvider::Codex
+        ? std::chrono::minutes(1) : std::chrono::minutes(5));
     auth_running_ = false;
     auth_login_running_ = false;
     auth_checked_ = true;
@@ -919,8 +946,13 @@ void AiAssistantPanel::start_request(const std::shared_ptr<schizo::scene::Scene>
     planned_scene_fingerprint_ = BuildEngineAgentSceneSnapshot(scene, 0);
     const std::string full_prompt = BuildEngineAgentPrompt(prompt_, outgoing_scene_summary_);
     const AiProvider selected_provider = provider_;
-    const std::string selected_model = provider_ == AiProvider::Codex ? codex_model_ : claude_model_;
-    const std::string selected_effort = provider_ == AiProvider::Codex ? codex_reasoning_effort_ : std::string{};
+    const ModelOption* resolved_model = FindAiModel(auth_.models, codex_model_);
+    // Pass the exact catalog recommendation for Automatic, rather than letting
+    // exec pick a potentially different default from its bundled catalog.
+    const std::string selected_model = provider_ == AiProvider::Codex
+        ? (resolved_model ? resolved_model->id : codex_model_) : claude_model_;
+    const std::string selected_effort = provider_ == AiProvider::Codex
+        ? SupportedAiReasoningEffort(resolved_model, codex_reasoning_effort_) : std::string{};
     std::string shown_model = selected_model.empty() ? "account default" : selected_model;
     for (const ModelOption& option : auth_.models) {
         if ((!selected_model.empty() && option.id == selected_model) ||
@@ -946,6 +978,8 @@ void AiAssistantPanel::poll_request() {
 
     running_ = false;
     ProviderResult result = future_.get();
+    // Refresh the allowance and catalog after a completed request as well.
+    next_auth_check_ = std::chrono::steady_clock::now();
     if (!result.ok) {
         status_.clear();
         error_ = std::move(result.error);
@@ -971,6 +1005,10 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
     poll_request();
     poll_auth();
     poll_runtime_install();
+    // Keep an already-open assistant fresh even when another docked tab is
+    // visible. The first check still waits until the assistant is shown.
+    if (auth_checked_ && std::chrono::steady_clock::now() >= next_auth_check_)
+        start_auth_check();
     if (!ImGui::Begin("AI Assistant", open)) {
         ImGui::End();
         return;
@@ -989,20 +1027,24 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
         provider_ = provider_index == 0 ? AiProvider::Codex : AiProvider::Claude;
         auth_ = {};
         auth_checked_ = false;
+        last_model_refresh_ = {};
+        model_notice_.clear();
         pending_plan_.reset();
         status_.clear();
         error_.clear();
     }
     ImGui::EndDisabled();
 
-    if (!auth_checked_ && !auth_running_ && !runtime_installing_)
+    if ((!auth_checked_ || std::chrono::steady_clock::now() >= next_auth_check_) &&
+        !auth_running_ && !runtime_installing_ && !running_)
         start_auth_check();
 
     if (runtime_installing_) {
         ImGui::TextColored(ImVec4(0.35f, 0.75f, 0.95f, 1.0f), "Downloading and installing official runtime...");
     } else if (auth_running_) {
         ImGui::TextColored(ImVec4(0.35f, 0.75f, 0.95f, 1.0f), "%s",
-                           auth_login_running_ ? "Complete the sign-in in your browser..." : "Checking account...");
+                           auth_login_running_ ? "Complete the sign-in in your browser..."
+                           : "Updating runtime, models and usage in the background...");
     } else if (auth_.signed_in) {
         ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.48f, 1.0f), "Connected");
     } else if (auth_.cli_available && !auth_.secure_store_available) {
@@ -1028,7 +1070,7 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
             ImGui::EndDisabled();
             ImGui::SameLine();
         }
-        ImGui::BeginDisabled(auth_running_ || runtime_installing_);
+        ImGui::BeginDisabled(auth_running_ || runtime_installing_ || running_);
         if (ImGui::SmallButton("Refresh"))
             start_auth_check();
         ImGui::EndDisabled();
@@ -1084,33 +1126,31 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
     ImGui::Spacing();
     ImGui::TextUnformatted("Model");
     if (provider_ == AiProvider::Codex) {
-        const ModelOption* default_model = nullptr;
-        const ModelOption* selected_model = nullptr;
-        for (const ModelOption& option : auth_.models) {
-            if (option.is_default) default_model = &option;
-            if (!codex_model_.empty() && option.id == codex_model_) selected_model = &option;
-        }
-        if (!default_model && !auth_.models.empty()) default_model = &auth_.models.front();
-        if (codex_model_.empty()) selected_model = default_model;
+        const ModelOption* default_model = RecommendedAiModel(auth_.models);
+        const ModelOption* selected_model = FindAiModel(auth_.models, codex_model_);
 
         std::string preview_text = default_model
-            ? "Default (" + default_model->label + ")"
-            : "Default (account recommended)";
+            ? "Automatic (" + default_model->label + ")"
+            : "Automatic (account recommended)";
         for (const ModelOption& option : auth_.models)
             if (option.id == codex_model_)
                 preview_text = option.label;
-        ImGui::BeginDisabled(!auth_.cli_available || runtime_installing_ || running_);
+        ImGui::BeginDisabled(!auth_.cli_available || runtime_installing_ || running_ || auth_running_);
         ImGui::SetNextItemWidth(-1.0f);
         if (ImGui::BeginCombo("##codex_model", preview_text.c_str())) {
             const std::string default_label = default_model
-                ? "Default (" + default_model->label + ")"
-                : "Default (account recommended)";
-            if (ImGui::Selectable(default_label.c_str(), codex_model_.empty()))
+                ? "Automatic (" + default_model->label + ")"
+                : "Automatic (account recommended)";
+            if (ImGui::Selectable(default_label.c_str(), codex_model_.empty())) {
                 codex_model_.clear();
+                model_notice_.clear();
+            }
             for (const ModelOption& option : auth_.models) {
                 const bool selected = codex_model_ == option.id;
-                if (ImGui::Selectable(option.label.c_str(), selected))
+                if (ImGui::Selectable(option.label.c_str(), selected)) {
                     codex_model_ = option.id;
+                    model_notice_.clear();
+                }
                 if (selected)
                     ImGui::SetItemDefaultFocus();
             }
@@ -1119,22 +1159,9 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
         ImGui::EndDisabled();
 
         // Resolve again because the user may just have changed the model.
-        selected_model = nullptr;
-        for (const ModelOption& option : auth_.models) {
-            if ((!codex_model_.empty() && option.id == codex_model_) ||
-                (codex_model_.empty() && option.is_default)) {
-                selected_model = &option;
-                break;
-            }
-        }
-        if (!selected_model && codex_model_.empty()) selected_model = default_model;
-        if (selected_model && !selected_model->reasoning_efforts.empty() &&
-            std::find(selected_model->reasoning_efforts.begin(), selected_model->reasoning_efforts.end(),
-                      codex_reasoning_effort_) == selected_model->reasoning_efforts.end()) {
-            codex_reasoning_effort_ = selected_model->default_reasoning_effort.empty()
-                ? selected_model->reasoning_efforts.front()
-                : selected_model->default_reasoning_effort;
-        }
+        selected_model = FindAiModel(auth_.models, codex_model_);
+        if (selected_model)
+            codex_reasoning_effort_ = SupportedAiReasoningEffort(selected_model, codex_reasoning_effort_);
 
         const auto effort_label = [](const std::string& id) {
             if (id == "none") return std::string("None");
@@ -1148,7 +1175,7 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
             return id;
         };
         ImGui::TextUnformatted("Reasoning");
-        ImGui::BeginDisabled(running_ || !selected_model || selected_model->reasoning_efforts.empty());
+        ImGui::BeginDisabled(running_ || auth_running_ || !selected_model || selected_model->reasoning_efforts.empty());
         ImGui::SetNextItemWidth(-1.0f);
         const std::string reasoning_preview = effort_label(codex_reasoning_effort_);
         if (ImGui::BeginCombo("##codex_reasoning", reasoning_preview.c_str())) {
@@ -1168,6 +1195,17 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
         const char* selected_label = selected_model ? selected_model->label.c_str() : "Account default";
         ImGui::TextColored(ImVec4(0.35f, 0.75f, 0.95f, 1.0f), "Will use: %s (%s reasoning)",
                            selected_label, codex_reasoning_effort_.c_str());
+        if (last_model_refresh_ != std::chrono::steady_clock::time_point{}) {
+            const auto age = std::chrono::duration_cast<std::chrono::minutes>(
+                std::chrono::steady_clock::now() - last_model_refresh_).count();
+            ImGui::TextDisabled("Models refresh automatically every 5 minutes - last refresh %lld min ago.",
+                                static_cast<long long>(age));
+        }
+        if (!auth_.runtime_update_detail.empty())
+            ImGui::TextDisabled("%s", auth_.runtime_update_detail.c_str());
+        if (!auth_.models_loaded && !auth_running_ && auth_.signed_in)
+            ImGui::TextDisabled("Model refresh unavailable; retrying automatically. Showing the last loaded list.");
+        if (!model_notice_.empty()) ImGui::TextWrapped("%s", model_notice_.c_str());
 
         if (!auth_.usage_windows.empty()) {
             if (auth_.plan.empty())
@@ -1220,7 +1258,8 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
 
     const bool can_request = context.scene && context.undo && !context.project_root.empty() && prompt_[0] != '\0' &&
                              auth_checked_ && auth_.cli_available && auth_.signed_in && !running_ &&
-                             !runtime_installing_;
+                             !runtime_installing_ && !auth_running_ &&
+                             (provider_ != AiProvider::Codex || FindAiModel(auth_.models, codex_model_));
     ImGui::BeginDisabled(!can_request);
     if (ImGui::Button("Create proposal", ImVec2(150.0f, 0.0f)))
         start_request(context.scene, selected_entity_id);

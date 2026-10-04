@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <future>
 #include <optional>
@@ -7,6 +8,7 @@
 #include <vector>
 
 #include "ai_runtime_manager.h"
+#include "ai_model_catalog.h"
 #include "engine_agent_gateway.h"
 
 namespace schizo::editor {
@@ -40,13 +42,7 @@ private:
         double cost_usd = 0.0;
     };
 
-    struct ModelOption {
-        std::string id;
-        std::string label;
-        std::vector<std::string> reasoning_efforts;
-        std::string default_reasoning_effort;
-        bool is_default = false;
-    };
+    using ModelOption = AiModelOption;
 
     struct UsageWindow {
         std::string label;
@@ -61,6 +57,9 @@ private:
         std::string detail;
         std::string plan;
         std::string credit_balance;
+        bool models_loaded = false;
+        bool usage_loaded = false;
+        std::string runtime_update_detail;
         std::vector<ModelOption> models;
         std::vector<UsageWindow> usage_windows;
     };
@@ -87,6 +86,9 @@ private:
     bool auth_login_running_ = false;
     std::future<AuthResult> auth_future_;
     AuthResult auth_;
+    std::chrono::steady_clock::time_point next_auth_check_{};
+    std::chrono::steady_clock::time_point last_model_refresh_{};
+    std::string model_notice_;
     bool runtime_installing_ = false;
     std::future<AiRuntimeInstallResult> runtime_future_;
     std::string codex_model_;

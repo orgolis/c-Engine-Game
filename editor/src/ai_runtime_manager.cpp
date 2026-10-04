@@ -1,6 +1,7 @@
 #include "ai_runtime_manager.h"
 
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -137,6 +138,7 @@ std::string powershell_quote(const std::string& value) {
     }
     return result + "'";
 }
+#endif
 
 fs::path make_private_temp_directory() {
     std::random_device random;
@@ -159,6 +161,7 @@ fs::path make_private_temp_directory() {
     return {};
 }
 
+#ifdef _WIN32
 bool write_file(const fs::path& path, const std::string& contents) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     if (!output)
@@ -266,11 +269,25 @@ AiRuntimeInstallResult InstallAiRuntime(AiRuntimeProvider provider) {
         return result;
     }
 
-    std::string command;
+    const fs::path temp = make_private_temp_directory();
+    if (temp.empty()) {
+        result.error = "Could not create the private runtime download directory.";
+        return result;
+    }
+    // Download before executing: a failed curl in a pipe otherwise looks like
+    // a successful empty shell script and incorrectly marks the update done.
+    const fs::path installer = temp / "install.sh";
+    const std::string url = provider == AiRuntimeProvider::Codex
+        ? "https://chatgpt.com/codex/install.sh" : "https://claude.ai/install.sh";
+    std::string command = shell_quote(curl.string()) +
+        " -fsSL --connect-timeout 10 --max-time 90 " + shell_quote(url) +
+        " -o " + shell_quote(installer.string()) + " && ";
     if (provider == AiRuntimeProvider::Codex) {
         const fs::path managed_root = managed_runtime_root();
         if (managed_root.empty()) {
             result.error = "Could not find the per-user data directory.";
+            std::error_code ec;
+            fs::remove_all(temp, ec);
             return result;
         }
         const fs::path root = managed_root / "codex";
@@ -278,22 +295,28 @@ AiRuntimeInstallResult InstallAiRuntime(AiRuntimeProvider provider) {
         const fs::path state = root / "state";
         if (!create_private_directory(bin) || !create_private_directory(state)) {
             result.error = "Could not create the private AI runtime directory.";
+            std::error_code ec;
+            fs::remove_all(temp, ec);
             return result;
         }
-        command = shell_quote(curl.string()) +
-                  " -fsSL https://chatgpt.com/codex/install.sh | "
-                  "env CODEX_NON_INTERACTIVE=1 CODEX_INSTALL_DIR=" +
-                  shell_quote(bin.string()) + " CODEX_HOME=" + shell_quote(state.string()) + " /bin/sh";
+        command += "env CODEX_NON_INTERACTIVE=1 CODEX_INSTALL_DIR=" +
+                   shell_quote(bin.string()) + " CODEX_HOME=" + shell_quote(state.string()) +
+                   " /bin/sh " + shell_quote(installer.string());
     } else {
         const fs::path bash = fs::is_regular_file("/bin/bash") ? "/bin/bash" : executable_on_path("bash");
         if (bash.empty()) {
             result.error = "The shell required by the official Claude installer is unavailable.";
+            std::error_code ec;
+            fs::remove_all(temp, ec);
             return result;
         }
-        command = shell_quote(curl.string()) + " -fsSL https://claude.ai/install.sh | " + shell_quote(bash.string());
+        command += shell_quote(bash.string()) + " " + shell_quote(installer.string());
     }
     command = "(" + command + ") > /dev/null 2>&1";
-    if (std::system(command.c_str()) != 0) {
+    const int exit_code = std::system(command.c_str());
+    std::error_code cleanup_error;
+    fs::remove_all(temp, cleanup_error);
+    if (exit_code != 0) {
         result.error = "The official runtime download or installation failed.";
         return result;
     }
@@ -304,7 +327,34 @@ AiRuntimeInstallResult InstallAiRuntime(AiRuntimeProvider provider) {
         return result;
     }
     result.ok = true;
+    if (provider == AiRuntimeProvider::Codex) {
+        const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        std::ofstream stamp(managed_runtime_root() / "codex" / "last-update-check.txt", std::ios::trunc);
+        stamp << now;
+    }
     return result;
+}
+
+AiRuntimeInstallResult UpdateManagedAiRuntimeIfDue(AiRuntimeProvider provider) {
+    AiRuntimeInstallResult result;
+    result.ok = true;
+    std::error_code ec;
+    if (provider != AiRuntimeProvider::Codex || !fs::is_regular_file(managed_codex_path(), ec))
+        return result;
+
+    // This marker contains only a timestamp, never account metadata or tokens.
+    const fs::path marker = managed_runtime_root() / "codex" / "last-update-check.txt";
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    int64_t last_check = 0;
+    std::ifstream previous(marker);
+    previous >> last_check;
+    constexpr int64_t interval = 24 * 60 * 60;
+    if (last_check > 0 && now >= last_check && now - last_check < interval)
+        return result;
+
+    return InstallAiRuntime(provider);
 }
 
 }  // namespace schizo::editor

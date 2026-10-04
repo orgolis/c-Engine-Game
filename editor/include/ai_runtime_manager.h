@@ -21,4 +21,8 @@ std::filesystem::path FindAiRuntime(AiRuntimeProvider provider);
 // per-user location because that installer does not expose a custom directory.
 AiRuntimeInstallResult InstallAiRuntime(AiRuntimeProvider provider);
 
+// Checks once per day, across editor restarts. Only the engine-managed Codex
+// installation is updated; credentials remain in the OS keyring.
+AiRuntimeInstallResult UpdateManagedAiRuntimeIfDue(AiRuntimeProvider provider);
+
 }  // namespace schizo::editor
