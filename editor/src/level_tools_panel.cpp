@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 // ============================================================================
 // level_tools_panel — arrays, scatter, splines and greybox in the editor (4.7).
 //
@@ -117,12 +118,12 @@ void draw_level_tools_panel(bool& open,
 
     auto src = scene ? scene->GetEntityById(selected_entity_id) : nullptr;
     if (!src) {
-        ImGui::TextDisabled("Select an entity to array, scatter or distribute it.");
+        ui::TextDisabledWrapped("Select an entity to array, scatter or distribute it.");
     } else {
         ImGui::Text("Source: %s", src->GetName().c_str());
     }
     if (snap.enabled)
-        ImGui::TextDisabled("snapping on — placements land on the %.2f grid", snap.translate);
+        ui::TextDisabledWrapped("snapping on — placements land on the %.2f grid", snap.translate);
     ImGui::Separator();
 
     int created = 0;
@@ -130,33 +131,33 @@ void draw_level_tools_panel(bool& open,
     // ---- array -------------------------------------------------------------
     if (ImGui::CollapsingHeader("Array", ImGuiTreeNodeFlags_DefaultOpen)) {
         static ArrayParams p;
-        ImGui::DragInt3("count x/y/z", &p.count_x, 0.1f, 1, 256);
-        ImGui::DragFloat3("step", &p.step.x, 0.05f);
-        ImGui::Checkbox("centre on source", &p.center);
-        if (ImGui::Button("Build array") && src) {
+        ui::DragInt3("count x/y/z", &p.count_x, 0.1f, 1, 256);
+        ui::DragFloat3("step", &p.step.x, 0.05f);
+        ui::Checkbox("centre on source", &p.center);
+        if (ui::Button("Build array") && src) {
             const auto places = build_array(src->GetTransform()->GetLocalPosition(), p);
             // skip_first: placement 0 IS the source, and cloning it would leave
             // a duplicate exactly on top of the original.
             apply(scene, src, places, snap, /*skip_first=*/!p.center, created);
         }
-        ImGui::SameLine();
-        ImGui::TextDisabled("%d x %d x %d", p.count_x, p.count_y, p.count_z);
+        ui::SameLineIfFits();
+        ui::TextDisabledWrapped("%d x %d x %d", p.count_x, p.count_y, p.count_z);
     }
 
     // ---- scatter -----------------------------------------------------------
     if (ImGui::CollapsingHeader("Scatter")) {
         static ScatterParams p;
-        ImGui::DragInt("count", &p.count, 0.2f, 1, 2000);
-        ImGui::DragFloat("radius", &p.radius, 0.1f, 0.1f, 1000.0f);
-        ImGui::DragFloat("min distance", &p.min_distance, 0.05f, 0.0f, 100.0f);
-        ImGui::Checkbox("random yaw", &p.random_yaw);
-        ImGui::DragFloatRange2("scale", &p.scale_min, &p.scale_max, 0.01f, 0.01f, 10.0f);
+        ui::DragInt("count", &p.count, 0.2f, 1, 2000);
+        ui::DragFloat("radius", &p.radius, 0.1f, 0.1f, 1000.0f);
+        ui::DragFloat("min distance", &p.min_distance, 0.05f, 0.0f, 100.0f);
+        ui::Checkbox("random yaw", &p.random_yaw);
+        ui::DragFloatRange2("scale", &p.scale_min, &p.scale_max, 0.01f, 0.01f, 10.0f);
         int seed = static_cast<int>(p.seed);
-        if (ImGui::DragInt("seed", &seed, 1.0f, 0, 1000000))
+        if (ui::DragInt("seed", &seed, 1.0f, 0, 1000000))
             p.seed = static_cast<uint32_t>(seed < 0 ? 0 : seed);
-        ImGui::TextDisabled("the same seed always gives the same layout");
+        ui::TextDisabledWrapped("the same seed always gives the same layout");
 
-        if (ImGui::Button("Scatter") && src) {
+        if (ui::Button("Scatter") && src) {
             const auto places = build_scatter(src->GetTransform()->GetLocalPosition(), p);
             apply(scene, src, places, snap, /*skip_first=*/false, created);
             if (static_cast<int>(places.size()) < p.count)
@@ -168,32 +169,32 @@ void draw_level_tools_panel(bool& open,
     // ---- spline ------------------------------------------------------------
     if (ImGui::CollapsingHeader("Spline")) {
         ImGui::Text("%zu control point(s)", spline.size());
-        if (ImGui::Button("Add point at selection") && src)
+        if (ui::Button("Add point at selection") && src)
             spline.add_point(src->GetTransform()->GetLocalPosition());
-        ImGui::SameLine();
-        if (ImGui::Button("Clear")) spline.clear();
+        ui::SameLineIfFits("Clear");
+        if (ui::Button("Clear")) spline.clear();
 
         for (size_t i = 0; i < spline.points().size(); ++i) {
             ImGui::PushID(static_cast<int>(i));
-            ImGui::DragFloat3("##pt", &spline.points()[i].x, 0.05f);
+            ui::DragFloat3("##pt", &spline.points()[i].x, 0.05f);
             ImGui::PopID();
         }
 
         static int  count = 10;
         static bool align = true;
-        ImGui::DragInt("instances", &count, 0.2f, 1, 500);
-        ImGui::Checkbox("face along the path", &align);
+        ui::DragInt("instances", &count, 0.2f, 1, 500);
+        ui::Checkbox("face along the path", &align);
         if (spline.size() >= 2)
-            ImGui::TextDisabled("length ~%.1f units, evenly spaced by arc length",
+            ui::TextDisabledWrapped("length ~%.1f units, evenly spaced by arc length",
                                 spline.length());
-        if (ImGui::Button("Distribute along spline") && src && spline.size() >= 2)
+        if (ui::Button("Distribute along spline") && src && spline.size() >= 2)
             apply(scene, src, spline.distribute(count, align), snap,
                   /*skip_first=*/false, created);
     }
 
     // ---- greybox -----------------------------------------------------------
     if (ImGui::CollapsingHeader("Greybox", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::TextDisabled("blockout shapes, placed at the origin");
+        ui::TextDisabledWrapped("blockout shapes, placed at the origin");
         struct Prim { const char* label; scene::MeshType type; glm::vec3 scale; };
         static const Prim kPrims[] = {
             {"Floor",  scene::MeshType::Cube,     {8.0f, 0.25f, 8.0f}},
@@ -203,8 +204,8 @@ void draw_level_tools_panel(bool& open,
             {"Sphere", scene::MeshType::Sphere,   {1.0f, 1.0f, 1.0f}},
         };
         for (size_t i = 0; i < sizeof kPrims / sizeof kPrims[0]; ++i) {
-            if (i) ImGui::SameLine();
-            if (ImGui::Button(kPrims[i].label) && scene) {
+            if (i) ui::SameLineIfFits();
+            if (ui::Button(kPrims[i].label) && scene) {
                 auto e = scene->CreateEntity(kPrims[i].label);
                 if (e) {
                     // A mid-grey unlit-looking block: greybox geometry should

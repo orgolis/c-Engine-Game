@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 #include "component_inspector.h"
 
 #include "ecs_bridge.h"
@@ -58,13 +59,13 @@ bool draw_field(const gws::reflect::FieldInfo& f, void* p) {
 
     if (f.type_id == TID_FLOAT) {
         float* v = static_cast<float*>(p);
-        if (f.attr.has_range) return ImGui::SliderFloat(label, v, f.attr.range_min, f.attr.range_max);
-        return ImGui::DragFloat(label, v, 0.1f);
+        if (f.attr.has_range) return ui::SliderFloat(label, v, f.attr.range_min, f.attr.range_max);
+        return ui::DragFloat(label, v, 0.1f);
     }
-    if (f.type_id == TID_I32) return ImGui::DragInt(label, static_cast<int*>(p));
+    if (f.type_id == TID_I32) return ui::DragInt(label, static_cast<int*>(p));
     if (f.type_id == TID_U32) {
         int t = static_cast<int>(*static_cast<uint32_t*>(p));
-        if (ImGui::DragInt(label, &t, 1.0f, 0, 0)) {
+        if (ui::DragInt(label, &t, 1.0f, 0, 0)) {
             *static_cast<uint32_t*>(p) = static_cast<uint32_t>(t < 0 ? 0 : t);
             return true;
         }
@@ -74,12 +75,12 @@ bool draw_field(const gws::reflect::FieldInfo& f, void* p) {
         ImGui::Text("%s: %llu", label, static_cast<unsigned long long>(*static_cast<uint64_t*>(p)));
         return false;
     }
-    if (f.type_id == TID_BOOL) return ImGui::Checkbox(label, static_cast<bool*>(p));
-    if (f.type_id == TID_VEC3) return ImGui::DragFloat3(label, glm::value_ptr(*static_cast<glm::vec3*>(p)), 0.1f);
-    if (f.type_id == TID_VEC4) return ImGui::DragFloat4(label, glm::value_ptr(*static_cast<glm::vec4*>(p)), 0.1f);
-    if (f.type_id == TID_QUAT) return ImGui::DragFloat4(label, glm::value_ptr(*static_cast<glm::quat*>(p)), 0.05f);
+    if (f.type_id == TID_BOOL) return ui::Checkbox(label, static_cast<bool*>(p));
+    if (f.type_id == TID_VEC3) return ui::DragFloat3(label, glm::value_ptr(*static_cast<glm::vec3*>(p)), 0.1f);
+    if (f.type_id == TID_VEC4) return ui::DragFloat4(label, glm::value_ptr(*static_cast<glm::vec4*>(p)), 0.1f);
+    if (f.type_id == TID_QUAT) return ui::DragFloat4(label, glm::value_ptr(*static_cast<glm::quat*>(p)), 0.05f);
 
-    ImGui::TextDisabled("%s: (unsupported field type)", label);
+    ui::TextDisabledWrapped("%s: (unsupported field type)", label);
     return false;
 }
 
@@ -93,11 +94,11 @@ bool draw_attribute_set(void* comp) {
         auto& a = s.attributes[i];
         ImGui::PushID(static_cast<int>(i));
         char buf[64]; std::snprintf(buf, sizeof(buf), "%s", a.name.c_str());
-        if (ImGui::InputText("name", buf, sizeof(buf))) { a.name = buf; changed = true; }
-        if (ImGui::SliderFloat("current", &a.current, a.min, a.max)) changed = true;
-        if (ImGui::DragFloat("base", &a.base, 0.5f)) changed = true;
-        if (ImGui::DragFloat("min", &a.min, 0.5f))   changed = true;
-        if (ImGui::DragFloat("max", &a.max, 0.5f))   changed = true;
+        if (ui::InputText("name", buf, sizeof(buf))) { a.name = buf; changed = true; }
+        if (ui::SliderFloat("current", &a.current, a.min, a.max)) changed = true;
+        if (ui::DragFloat("base", &a.base, 0.5f)) changed = true;
+        if (ui::DragFloat("min", &a.min, 0.5f))   changed = true;
+        if (ui::DragFloat("max", &a.max, 0.5f))   changed = true;
         if (ImGui::SmallButton("Remove attribute")) remove_idx = static_cast<int>(i);
         ImGui::Separator();
         ImGui::PopID();
@@ -105,9 +106,9 @@ bool draw_attribute_set(void* comp) {
     if (remove_idx >= 0) { s.attributes.erase(s.attributes.begin() + remove_idx); changed = true; }
 
     static char new_name[64] = "Health";
-    ImGui::SetNextItemWidth(160);
-    ImGui::InputText("##newattr", new_name, sizeof(new_name));
-    ImGui::SameLine();
+    ui::SetNextItemWidth(160);
+    ui::InputText("##newattr", new_name, sizeof(new_name));
+    ui::SameLineIfFits("Add attribute");
     if (ImGui::SmallButton("Add attribute") && new_name[0]) {
         s.define(new_name, 100.0f, 0.0f, 100.0f);
         changed = true;
@@ -123,16 +124,16 @@ bool draw_gameplay_tags(void* comp) {
     for (size_t i = 0; i < g.tags.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
         ImGui::BulletText("%s", g.tags[i].c_str());
-        ImGui::SameLine();
+        ui::SameLineIfFits("x");
         if (ImGui::SmallButton("x")) remove_idx = static_cast<int>(i);
         ImGui::PopID();
     }
     if (remove_idx >= 0) { g.tags.erase(g.tags.begin() + remove_idx); changed = true; }
 
     static char new_tag[96] = "state.stunned";
-    ImGui::SetNextItemWidth(200);
-    ImGui::InputText("##newtag", new_tag, sizeof(new_tag));
-    ImGui::SameLine();
+    ui::SetNextItemWidth(200);
+    ui::InputText("##newtag", new_tag, sizeof(new_tag));
+    ui::SameLineIfFits("Add tag");
     if (ImGui::SmallButton("Add tag") && new_tag[0]) { g.add(new_tag); changed = true; }
     return changed;
 }
@@ -145,23 +146,23 @@ bool draw_trigger_volume(void* comp) {
 
     int shape = static_cast<int>(v.shape);
     if (ImGui::RadioButton("Box", &shape, 0)) changed = true;      // radios, not a combo
-    ImGui::SameLine();
+    ui::SameLineIfFits("Sphere");
     if (ImGui::RadioButton("Sphere", &shape, 1)) changed = true;
     v.shape = static_cast<uint32_t>(shape);
 
     if (v.shape == 1) {
-        if (ImGui::DragFloat("radius", &v.radius, 0.1f, 0.0f, 0.0f)) changed = true;
+        if (ui::DragFloat("radius", &v.radius, 0.1f, 0.0f, 0.0f)) changed = true;
     } else {
-        if (ImGui::DragFloat3("half extents", glm::value_ptr(v.half_extents), 0.1f)) changed = true;
+        if (ui::DragFloat3("half extents", glm::value_ptr(v.half_extents), 0.1f)) changed = true;
     }
 
     char enter[96]; std::snprintf(enter, sizeof(enter), "%s", v.enter_event.c_str());
-    if (ImGui::InputText("enter event", enter, sizeof(enter))) { v.enter_event = enter; changed = true; }
+    if (ui::InputText("enter event", enter, sizeof(enter))) { v.enter_event = enter; changed = true; }
     char exit[96]; std::snprintf(exit, sizeof(exit), "%s", v.exit_event.c_str());
-    if (ImGui::InputText("exit event", exit, sizeof(exit))) { v.exit_event = exit; changed = true; }
+    if (ui::InputText("exit event", exit, sizeof(exit))) { v.exit_event = exit; changed = true; }
 
-    if (ImGui::Checkbox("fire enter once", &v.once)) changed = true;
-    ImGui::TextDisabled("currently inside: %d", static_cast<int>(v.inside.size()));
+    if (ui::Checkbox("fire enter once", &v.once)) changed = true;
+    ui::TextDisabledWrapped("currently inside: %d", static_cast<int>(v.inside.size()));
     return changed;
 }
 
@@ -172,7 +173,7 @@ bool draw_state_machine(ecs::World& w, ecs::Entity e, void* comp) {
     bool changed = false;
 
     ImGui::Text("Current: %s", sm.current.empty() ? "(not started)" : sm.current.c_str());
-    ImGui::SameLine(); ImGui::TextDisabled("(%.1fs in state)", sm.time_in_state);
+    ui::SameLineIfFits(); ui::TextDisabledWrapped("(%.1fs in state)", sm.time_in_state);
 
     if (ImGui::TreeNode("States")) {
         for (const auto& s : sm.states) {
@@ -191,9 +192,9 @@ bool draw_state_machine(ecs::World& w, ecs::Entity e, void* comp) {
     }
 
     static char ev[64] = "hit";
-    ImGui::SetNextItemWidth(160);
-    ImGui::InputText("##smevent", ev, sizeof(ev));
-    ImGui::SameLine();
+    ui::SetNextItemWidth(160);
+    ui::InputText("##smevent", ev, sizeof(ev));
+    ui::SameLineIfFits("Send event");
     if (ImGui::SmallButton("Send event") && ev[0])
         if (ecs::send_state_event(w, e, sm, ev)) changed = true;
     return changed;
@@ -205,11 +206,11 @@ bool draw_combat_actor(void* comp) {
     auto& a = *static_cast<ecs::CombatActor*>(comp);
     bool changed = false;
 
-    if (ImGui::DragFloat("max poise", &a.max_poise, 1.0f, 0.0f, 0.0f))   changed = true;
-    if (ImGui::DragFloat("hurt radius", &a.hurt_radius, 0.05f, 0.0f, 0.0f)) changed = true;
-    if (ImGui::DragFloat("hurt height", &a.hurt_height, 0.05f, 0.0f, 0.0f)) changed = true;
+    if (ui::DragFloat("max poise", &a.max_poise, 1.0f, 0.0f, 0.0f))   changed = true;
+    if (ui::DragFloat("hurt radius", &a.hurt_radius, 0.05f, 0.0f, 0.0f)) changed = true;
+    if (ui::DragFloat("hurt height", &a.hurt_height, 0.05f, 0.0f, 0.0f)) changed = true;
     char dt[48]; std::snprintf(dt, sizeof(dt), "%s", a.damage_type.c_str());
-    if (ImGui::InputText("damage type", dt, sizeof(dt))) { a.damage_type = dt; changed = true; }
+    if (ui::InputText("damage type", dt, sizeof(dt))) { a.damage_type = dt; changed = true; }
 
     const char* st = "Idle";
     switch (a.state) {
@@ -220,8 +221,8 @@ bool draw_combat_actor(void* comp) {
         default: break;
     }
     ImGui::Text("state: %s  frame: %d  poise: %.0f", st, a.frame, a.poise);
-    if (a.iframe_left > 0) { ImGui::SameLine(); ImGui::TextColored(ImVec4(0.4f,0.8f,1,1), "[i-frames]"); }
-    if (a.parry_left  > 0) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1,0.9f,0.3f,1), "[parry]"); }
+    if (a.iframe_left > 0) { ui::SameLineIfFits(); ImGui::TextColored(ImVec4(0.4f,0.8f,1,1), "[i-frames]"); }
+    if (a.parry_left  > 0) { ui::SameLineIfFits(); ImGui::TextColored(ImVec4(1,0.9f,0.3f,1), "[parry]"); }
 
     if (ImGui::SmallButton("Test attack")) {
         ecs::AttackFrameData atk;   // default light attack
@@ -236,8 +237,8 @@ bool draw_progression(ecs::World& w, ecs::Entity e, void* comp) {
     bool changed = false;
     ImGui::Text("Level %d   XP %.0f / %.0f   Points %d",
                 p.level, p.xp, p.curve.threshold(p.level + 1), p.skill_points);
-    if (ImGui::DragInt("points / level", &p.points_per_level, 0.1f, 0, 20)) changed = true;
-    ImGui::TextDisabled("curve: %.0f + %.0f*n + %.0f*n^2", p.curve.base, p.curve.linear, p.curve.quadratic);
+    if (ui::DragInt("points / level", &p.points_per_level, 0.1f, 0, 20)) changed = true;
+    ui::TextDisabledWrapped("curve: %.0f + %.0f*n + %.0f*n^2", p.curve.base, p.curve.linear, p.curve.quadratic);
     if (ImGui::SmallButton("Grant 100 XP")) { ecs::grant_xp(w, e, 100.0f); changed = true; }
     return changed;
 }
@@ -250,11 +251,11 @@ bool draw_regeneration(void* comp) {
     for (size_t i = 0; i < r.entries.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
         char nm[48]; std::snprintf(nm, sizeof(nm), "%s", r.entries[i].attribute.c_str());
-        ImGui::SetNextItemWidth(120);
-        if (ImGui::InputText("attr", nm, sizeof(nm))) { r.entries[i].attribute = nm; changed = true; }
-        ImGui::SameLine(); ImGui::SetNextItemWidth(90);
-        if (ImGui::DragFloat("/s", &r.entries[i].per_second, 0.1f)) changed = true;
-        ImGui::SameLine(); if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+        ui::SetNextItemWidth(120);
+        if (ui::InputText("attr", nm, sizeof(nm))) { r.entries[i].attribute = nm; changed = true; }
+        ui::SameLineIfFits(); ui::SetNextItemWidth(90);
+        if (ui::DragFloat("/s", &r.entries[i].per_second, 0.1f)) changed = true;
+        ui::SameLineIfFits("x"); if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
         ImGui::PopID();
     }
     if (remove >= 0) { r.entries.erase(r.entries.begin() + remove); changed = true; }
@@ -286,7 +287,7 @@ bool draw_skill_tree(ecs::World& w, ecs::Entity e, void* comp) {
             ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1), "[x] %s (%d)", n.name.c_str(), n.cost);
         } else {
             ImGui::Text("[ ] %s (%d)", n.name.c_str(), n.cost);
-            ImGui::SameLine();
+            ui::SameLineIfFits();
             const bool ok = ecs::can_unlock(w, e, n.id);
             if (!ok) ImGui::BeginDisabled();
             if (ImGui::SmallButton("Unlock") && ecs::unlock_skill(w, e, n.id)) changed = true;
@@ -314,9 +315,9 @@ bool draw_inventory(ecs::World& w, ecs::Entity e, void* comp) {
         ImGui::PushID(static_cast<int>(i));
         ImGui::BulletText("%s x%d%s", d ? d->name.c_str() : it.def_id.c_str(), it.quantity,
                           it.affixes.empty() ? "" : "  (rolled)");
-        if (d && d->kind == ecs::ItemKind::Consumable) { ImGui::SameLine(); if (ImGui::SmallButton("Use")) use = static_cast<int>(i); }
-        if (d && !d->equip_slot.empty()) { ImGui::SameLine(); if (ImGui::SmallButton("Equip")) equip = static_cast<int>(i); }
-        ImGui::SameLine(); if (ImGui::SmallButton("Drop")) drop = static_cast<int>(i);
+        if (d && d->kind == ecs::ItemKind::Consumable) { ui::SameLineIfFits("Use"); if (ImGui::SmallButton("Use")) use = static_cast<int>(i); }
+        if (d && !d->equip_slot.empty()) { ui::SameLineIfFits("Equip"); if (ImGui::SmallButton("Equip")) equip = static_cast<int>(i); }
+        ui::SameLineIfFits("Drop"); if (ImGui::SmallButton("Drop")) drop = static_cast<int>(i);
         ImGui::PopID();
     }
     if (equip >= 0) { ecs::equip_item(w, e, inv.items[equip]); ecs::inventory_remove(inv, inv.items[equip].def_id, 1); changed = true; }
@@ -334,11 +335,11 @@ bool draw_equipment(ecs::World& w, ecs::Entity e, void* comp) {
         const ecs::ItemDef* d = ecs::find_item(eq.slots[i].item.def_id);
         ImGui::PushID(static_cast<int>(i));
         ImGui::BulletText("%s: %s", eq.slots[i].slot.c_str(), d ? d->name.c_str() : eq.slots[i].item.def_id.c_str());
-        ImGui::SameLine(); if (ImGui::SmallButton("Unequip")) unequip = static_cast<int>(i);
+        ui::SameLineIfFits("Unequip"); if (ImGui::SmallButton("Unequip")) unequip = static_cast<int>(i);
         ImGui::PopID();
     }
     if (unequip >= 0) { ecs::unequip_slot(w, e, eq.slots[unequip].slot); changed = true; }
-    ImGui::TextDisabled("applied: %d modifiers, %d tags",
+    ui::TextDisabledWrapped("applied: %d modifiers, %d tags",
                         static_cast<int>(eq.applied.size()), static_cast<int>(eq.applied_tags.size()));
     return changed;
 }
@@ -352,20 +353,20 @@ bool draw_vendor(void* comp) {
         auto& en = v.entries[i];
         ImGui::PushID(static_cast<int>(i));
         char id[64]; std::snprintf(id, sizeof(id), "%s", en.item_id.c_str());
-        ImGui::SetNextItemWidth(140);
-        if (ImGui::InputText("item", id, sizeof(id))) { en.item_id = id; changed = true; }
-        ImGui::SameLine(); ImGui::SetNextItemWidth(80);
-        if (ImGui::DragFloat("price", &en.price, 1.0f, 0.0f, 0.0f)) changed = true;
-        ImGui::SameLine(); ImGui::SetNextItemWidth(80);
-        if (ImGui::DragInt("stock", &en.stock, 1.0f, -1, 0)) changed = true;   // -1 = unlimited
-        ImGui::SameLine(); if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+        ui::SetNextItemWidth(140);
+        if (ui::InputText("item", id, sizeof(id))) { en.item_id = id; changed = true; }
+        ui::SameLineIfFits(); ui::SetNextItemWidth(80);
+        if (ui::DragFloat("price", &en.price, 1.0f, 0.0f, 0.0f)) changed = true;
+        ui::SameLineIfFits(); ui::SetNextItemWidth(80);
+        if (ui::DragInt("stock", &en.stock, 1.0f, -1, 0)) changed = true;   // -1 = unlimited
+        ui::SameLineIfFits("x"); if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
         ImGui::PopID();
     }
     if (remove >= 0) { v.entries.erase(v.entries.begin() + remove); changed = true; }
     if (ImGui::SmallButton("Add stock item")) { v.entries.push_back({"potion_hp", 20.0f, -1}); changed = true; }
-    if (ImGui::DragFloat("sell ratio", &v.sell_ratio, 0.01f, 0.0f, 1.0f)) changed = true;
+    if (ui::DragFloat("sell ratio", &v.sell_ratio, 0.01f, 0.0f, 1.0f)) changed = true;
     char cur[32]; std::snprintf(cur, sizeof(cur), "%s", v.currency.c_str());
-    if (ImGui::InputText("currency", cur, sizeof(cur))) { v.currency = cur; changed = true; }
+    if (ui::InputText("currency", cur, sizeof(cur))) { v.currency = cur; changed = true; }
     return changed;
 }
 
@@ -374,12 +375,12 @@ bool draw_harvest_node(void* comp) {
     auto& h = *static_cast<ecs::HarvestNode*>(comp);
     bool changed = false;
     char id[64]; std::snprintf(id, sizeof(id), "%s", h.item_id.c_str());
-    if (ImGui::InputText("yields item", id, sizeof(id))) { h.item_id = id; changed = true; }
-    if (ImGui::DragInt("min qty", &h.min_qty, 0.1f, 0, 999)) changed = true;
-    if (ImGui::DragInt("max qty", &h.max_qty, 0.1f, 0, 999)) changed = true;
-    if (ImGui::DragFloat("respawn (s)", &h.respawn, 0.1f, 0.0f, 0.0f)) changed = true;
-    if (h.cooldown > 0.0f) ImGui::TextDisabled("depleted (%.1fs to respawn)", h.cooldown);
-    else                   ImGui::TextDisabled("ready");
+    if (ui::InputText("yields item", id, sizeof(id))) { h.item_id = id; changed = true; }
+    if (ui::DragInt("min qty", &h.min_qty, 0.1f, 0, 999)) changed = true;
+    if (ui::DragInt("max qty", &h.max_qty, 0.1f, 0, 999)) changed = true;
+    if (ui::DragFloat("respawn (s)", &h.respawn, 0.1f, 0.0f, 0.0f)) changed = true;
+    if (h.cooldown > 0.0f) ui::TextDisabledWrapped("depleted (%.1fs to respawn)", h.cooldown);
+    else                   ui::TextDisabledWrapped("ready");
     return changed;
 }
 
@@ -388,13 +389,13 @@ bool draw_interactable(void* comp) {
     auto& it = *static_cast<ecs::Interactable*>(comp);
     bool changed = false;
     char pr[96]; std::snprintf(pr, sizeof(pr), "%s", it.prompt.c_str());
-    if (ImGui::InputText("prompt", pr, sizeof(pr))) { it.prompt = pr; changed = true; }
+    if (ui::InputText("prompt", pr, sizeof(pr))) { it.prompt = pr; changed = true; }
     char ev[96]; std::snprintf(ev, sizeof(ev), "%s", it.event.c_str());
-    if (ImGui::InputText("event", ev, sizeof(ev))) { it.event = ev; changed = true; }
-    if (ImGui::DragFloat("range", &it.range, 0.1f, 0.0f, 0.0f)) changed = true;
-    if (ImGui::Checkbox("enabled", &it.enabled)) changed = true;
-    ImGui::SameLine();
-    if (ImGui::Checkbox("consume on use", &it.consume_on_use)) changed = true;
+    if (ui::InputText("event", ev, sizeof(ev))) { it.event = ev; changed = true; }
+    if (ui::DragFloat("range", &it.range, 0.1f, 0.0f, 0.0f)) changed = true;
+    if (ui::Checkbox("enabled", &it.enabled)) changed = true;
+    ui::SameLineIfFits("consume on use");
+    if (ui::Checkbox("consume on use", &it.consume_on_use)) changed = true;
     return changed;
 }
 
@@ -403,15 +404,15 @@ bool draw_pickup(void* comp) {
     auto& p = *static_cast<ecs::Pickup*>(comp);
     bool changed = false;
     char id[64]; std::snprintf(id, sizeof(id), "%s", p.item_id.c_str());
-    if (ImGui::InputText("item id", id, sizeof(id))) { p.item_id = id; changed = true; }
-    if (ImGui::DragInt("quantity", &p.quantity, 0.1f, 1, 999)) changed = true;
+    if (ui::InputText("item id", id, sizeof(id))) { p.item_id = id; changed = true; }
+    if (ui::DragInt("quantity", &p.quantity, 0.1f, 1, 999)) changed = true;
     return changed;
 }
 
 // G6 · Quest Log: read-only journal (active quests + stage/objective counts).
 bool draw_quest_log(void* comp) {
     const auto& log = *static_cast<ecs::QuestLog*>(comp);
-    if (log.active.empty() && log.completed.empty()) { ImGui::TextDisabled("(no quests)"); return false; }
+    if (log.active.empty() && log.completed.empty()) { ui::TextDisabledWrapped("(no quests)"); return false; }
     for (const auto& q : log.active) {
         const ecs::QuestDef* d = ecs::find_quest(q.quest_id);
         ImGui::BulletText("%s  (stage %d/%d)", d ? d->name.c_str() : q.quest_id.c_str(),
@@ -429,15 +430,15 @@ bool draw_quest_log(void* comp) {
 bool draw_faction(void* comp) {
     auto& f = *static_cast<ecs::Faction*>(comp);
     char b[64]; std::snprintf(b, sizeof(b), "%s", f.faction.c_str());
-    if (ImGui::InputText("faction", b, sizeof(b))) { f.faction = b; return true; }
+    if (ui::InputText("faction", b, sizeof(b))) { f.faction = b; return true; }
     return false;
 }
 // G8 · Aggro: leash + live target/threat readout.
 bool draw_aggro(void* comp) {
     auto& a = *static_cast<ecs::Aggro*>(comp);
-    bool changed = ImGui::DragFloat("leash", &a.leash, 0.5f, 0.0f, 0.0f);
-    if (a.target != 0xFFFFFFFFu) ImGui::TextDisabled("target: entity %u  (%d threats)", a.target, static_cast<int>(a.table.size()));
-    else                         ImGui::TextDisabled("no target  (%d threats)", static_cast<int>(a.table.size()));
+    bool changed = ui::DragFloat("leash", &a.leash, 0.5f, 0.0f, 0.0f);
+    if (a.target != 0xFFFFFFFFu) ui::TextDisabledWrapped("target: entity %u  (%d threats)", a.target, static_cast<int>(a.table.size()));
+    else                         ui::TextDisabledWrapped("no target  (%d threats)", static_cast<int>(a.table.size()));
     return changed;
 }
 // G8 · Spawner: what/how-many/how-often + live count.
@@ -445,11 +446,11 @@ bool draw_spawner(void* comp) {
     auto& s = *static_cast<ecs::Spawner*>(comp);
     bool changed = false;
     char id[64]; std::snprintf(id, sizeof(id), "%s", s.spawn_id.c_str());
-    if (ImGui::InputText("spawn id", id, sizeof(id))) { s.spawn_id = id; changed = true; }
-    if (ImGui::DragInt("max alive", &s.max_alive, 0.1f, 0, 999)) changed = true;
-    if (ImGui::DragFloat("interval (s)", &s.interval, 0.1f, 0.0f, 0.0f)) changed = true;
-    if (ImGui::DragFloat("radius", &s.radius, 0.1f, 0.0f, 0.0f)) changed = true;
-    ImGui::TextDisabled("alive: %d", s.alive);
+    if (ui::InputText("spawn id", id, sizeof(id))) { s.spawn_id = id; changed = true; }
+    if (ui::DragInt("max alive", &s.max_alive, 0.1f, 0, 999)) changed = true;
+    if (ui::DragFloat("interval (s)", &s.interval, 0.1f, 0.0f, 0.0f)) changed = true;
+    if (ui::DragFloat("radius", &s.radius, 0.1f, 0.0f, 0.0f)) changed = true;
+    ui::TextDisabledWrapped("alive: %d", s.alive);
     return changed;
 }
 // G9 · World Flags: key -> int store (chests opened, bosses killed, …).
@@ -460,11 +461,11 @@ bool draw_world_flags(void* comp) {
     for (size_t i = 0; i < wf.flags.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
         char k[64]; std::snprintf(k, sizeof(k), "%s", wf.flags[i].first.c_str());
-        ImGui::SetNextItemWidth(160);
-        if (ImGui::InputText("key", k, sizeof(k))) { wf.flags[i].first = k; changed = true; }
-        ImGui::SameLine(); ImGui::SetNextItemWidth(80);
-        if (ImGui::DragInt("val", &wf.flags[i].second)) changed = true;
-        ImGui::SameLine(); if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+        ui::SetNextItemWidth(160);
+        if (ui::InputText("key", k, sizeof(k))) { wf.flags[i].first = k; changed = true; }
+        ui::SameLineIfFits(); ui::SetNextItemWidth(80);
+        if (ui::DragInt("val", &wf.flags[i].second)) changed = true;
+        ui::SameLineIfFits("x"); if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
         ImGui::PopID();
     }
     if (remove >= 0) { wf.flags.erase(wf.flags.begin() + remove); changed = true; }
@@ -477,20 +478,20 @@ bool draw_weapon(void* comp) {
     auto& ws = *static_cast<ecs::WeaponState*>(comp);
     bool changed = false;
     const ecs::WeaponDef* cur = ecs::find_weapon(ws.weapon_id);
-    if (ImGui::BeginCombo("weapon", cur ? cur->name.c_str() : ws.weapon_id.c_str())) {
+    if (ui::BeginCombo("weapon", cur ? cur->name.c_str() : ws.weapon_id.c_str())) {
         for (const auto& d : ecs::weapon_registry())
             if (ImGui::Selectable(d.name.c_str(), d.id == ws.weapon_id)) {
                 ws.weapon_id = d.id; ws.ammo_in_mag = d.mag_size; changed = true;
             }
         ImGui::EndCombo();
     }
-    if (ImGui::DragInt("ammo in mag", &ws.ammo_in_mag, 0.2f, 0, 999)) changed = true;
-    if (ImGui::DragInt("reserve", &ws.reserve, 0.2f, 0, 9999)) changed = true;
-    if (cur) ImGui::TextDisabled("%.0f dmg %s  |  %.0f rpm  |  mag %d%s",
+    if (ui::DragInt("ammo in mag", &ws.ammo_in_mag, 0.2f, 0, 999)) changed = true;
+    if (ui::DragInt("reserve", &ws.reserve, 0.2f, 0, 9999)) changed = true;
+    if (cur) ui::TextDisabledWrapped("%.0f dmg %s  |  %.0f rpm  |  mag %d%s",
                                  cur->damage, cur->damage_type.c_str(), cur->rpm, cur->mag_size,
                                  cur->projectile_speed > 0 ? "  (projectile)" : "  (hitscan)");
     if (ws.reloading > 0.0f) ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "reloading %.1fs", ws.reloading);
-    else if (ws.cooldown > 0.0f) ImGui::TextDisabled("cooldown %.2fs", ws.cooldown);
+    else if (ws.cooldown > 0.0f) ui::TextDisabledWrapped("cooldown %.2fs", ws.cooldown);
     return changed;
 }
 
@@ -499,13 +500,13 @@ bool draw_vehicle(void* comp) {
     auto& v = *static_cast<ecs::Vehicle*>(comp);
     bool changed = false;
     const ecs::VehicleDef* cur = ecs::find_vehicle(v.vehicle_id);
-    if (ImGui::BeginCombo("vehicle", cur ? cur->name.c_str() : v.vehicle_id.c_str())) {
+    if (ui::BeginCombo("vehicle", cur ? cur->name.c_str() : v.vehicle_id.c_str())) {
         for (const auto& d : ecs::vehicle_registry())
             if (ImGui::Selectable(d.name.c_str(), d.id == v.vehicle_id)) { v.vehicle_id = d.id; changed = true; }
         ImGui::EndCombo();
     }
-    if (ImGui::DragFloat("max boost", &v.max_boost, 1.0f, 0.0f, 0.0f)) changed = true;
-    ImGui::TextDisabled("speed %.1f m/s  heading %.0f deg  boost %.0f",
+    if (ui::DragFloat("max boost", &v.max_boost, 1.0f, 0.0f, 0.0f)) changed = true;
+    ui::TextDisabledWrapped("speed %.1f m/s  heading %.0f deg  boost %.0f",
                         v.speed, v.heading * 57.2958f, v.boost);
     return changed;
 }
@@ -514,11 +515,11 @@ bool draw_race_progress(void* comp) {
     auto& rp = *static_cast<ecs::RaceProgress*>(comp);
     bool changed = false;
     char id[64]; std::snprintf(id, sizeof(id), "%s", rp.track_id.c_str());
-    if (ImGui::InputText("track id", id, sizeof(id))) { rp.track_id = id; changed = true; }
+    if (ui::InputText("track id", id, sizeof(id))) { rp.track_id = id; changed = true; }
     const ecs::RaceTrack* trk = ecs::find_track(rp.track_id);
     ImGui::Text("Lap %d/%d  checkpoint %d%s", rp.lap, trk ? trk->laps : 0, rp.next_checkpoint,
                 rp.finished ? "  [FINISHED]" : "");
-    ImGui::TextDisabled("total %.1fs  lap %.1fs  best %.1fs", rp.time, rp.lap_time, rp.best_lap);
+    ui::TextDisabledWrapped("total %.1fs  lap %.1fs  best %.1fs", rp.time, rp.lap_time, rp.best_lap);
     return changed;
 }
 
@@ -527,35 +528,35 @@ bool draw_extractor(void* comp) {
     auto& x = *static_cast<ecs::Extractor*>(comp);
     bool changed = false;
     char id[64]; std::snprintf(id, sizeof(id), "%s", x.item_id.c_str());
-    if (ImGui::InputText("mines item", id, sizeof(id))) { x.item_id = id; changed = true; }
-    if (ImGui::DragFloat("rate (/s)", &x.rate, 0.1f, 0.0f, 0.0f)) changed = true;
+    if (ui::InputText("mines item", id, sizeof(id))) { x.item_id = id; changed = true; }
+    if (ui::DragFloat("rate (/s)", &x.rate, 0.1f, 0.0f, 0.0f)) changed = true;
     return changed;
 }
 bool draw_machine(void* comp) {
     auto& m = *static_cast<ecs::Machine*>(comp);
     bool changed = false;
     const ecs::MachineRecipe* r = ecs::find_machine_recipe(m.recipe_id);
-    if (ImGui::BeginCombo("recipe", m.recipe_id.empty() ? "(none)" : m.recipe_id.c_str())) {
+    if (ui::BeginCombo("recipe", m.recipe_id.empty() ? "(none)" : m.recipe_id.c_str())) {
         for (const auto& mr : ecs::machine_recipe_registry())
             if (ImGui::Selectable(mr.id.c_str(), mr.id == m.recipe_id)) { m.recipe_id = mr.id; changed = true; }
         ImGui::EndCombo();
     }
-    if (ImGui::DragInt("power use", &m.power_use, 0.2f, 0, 999)) changed = true;
-    if (m.crafting && r) ImGui::TextDisabled("crafting %.0f%%", 100.0f * m.progress / (r->time > 0 ? r->time : 1));
-    else                 ImGui::TextDisabled("idle");
+    if (ui::DragInt("power use", &m.power_use, 0.2f, 0, 999)) changed = true;
+    if (m.crafting && r) ui::TextDisabledWrapped("crafting %.0f%%", 100.0f * m.progress / (r->time > 0 ? r->time : 1));
+    else                 ui::TextDisabledWrapped("idle");
     return changed;
 }
 bool draw_generator(void* comp) {
     auto& g = *static_cast<ecs::Generator*>(comp);
-    return ImGui::DragInt("power", &g.power, 0.5f, 0, 99999);
+    return ui::DragInt("power", &g.power, 0.5f, 0, 99999);
 }
 bool draw_conveyor(void* comp) {
     auto& c = *static_cast<ecs::Conveyor*>(comp);
     bool changed = false;
     char id[64]; std::snprintf(id, sizeof(id), "%s", c.item_id.c_str());
-    if (ImGui::InputText("moves item", id, sizeof(id))) { c.item_id = id; changed = true; }
-    if (ImGui::DragFloat("rate (/s)", &c.rate, 0.1f, 0.0f, 0.0f)) changed = true;
-    ImGui::TextDisabled("from entity %u -> %u (linked at runtime)", c.from, c.to);
+    if (ui::InputText("moves item", id, sizeof(id))) { c.item_id = id; changed = true; }
+    if (ui::DragFloat("rate (/s)", &c.rate, 0.1f, 0.0f, 0.0f)) changed = true;
+    ui::TextDisabledWrapped("from entity %u -> %u (linked at runtime)", c.from, c.to);
     return changed;
 }
 
@@ -568,13 +569,13 @@ bool draw_needs(void* comp) {
         auto& nd = n.needs[i];
         ImGui::PushID(static_cast<int>(i));
         char a[48]; std::snprintf(a, sizeof(a), "%s", nd.attribute.c_str());
-        ImGui::SetNextItemWidth(110);
-        if (ImGui::InputText("attr", a, sizeof(a))) { nd.attribute = a; changed = true; }
-        ImGui::SameLine(); ImGui::SetNextItemWidth(70);
-        if (ImGui::DragFloat("drain/s", &nd.rate, 0.05f)) changed = true;
-        ImGui::SameLine(); ImGui::SetNextItemWidth(70);
-        if (ImGui::DragFloat("crit", &nd.critical, 0.5f)) changed = true;
-        ImGui::SameLine(); if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+        ui::SetNextItemWidth(110);
+        if (ui::InputText("attr", a, sizeof(a))) { nd.attribute = a; changed = true; }
+        ui::SameLineIfFits(); ui::SetNextItemWidth(70);
+        if (ui::DragFloat("drain/s", &nd.rate, 0.05f)) changed = true;
+        ui::SameLineIfFits(); ui::SetNextItemWidth(70);
+        if (ui::DragFloat("crit", &nd.critical, 0.5f)) changed = true;
+        ui::SameLineIfFits("x"); if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
         ImGui::PopID();
     }
     if (remove >= 0) { n.needs.erase(n.needs.begin() + remove); changed = true; }
@@ -584,28 +585,28 @@ bool draw_needs(void* comp) {
 bool draw_sanity(void* comp) {
     auto& s = *static_cast<ecs::Sanity*>(comp);
     bool changed = false;
-    if (ImGui::SliderFloat("sanity", &s.value, 0.0f, s.max)) changed = true;
-    if (ImGui::DragFloat("max", &s.max, 1.0f, 1.0f, 0.0f)) changed = true;
-    if (ImGui::DragFloat("dark drain/s", &s.dark_drain, 0.1f)) changed = true;
-    if (ImGui::DragFloat("light regen/s", &s.light_regen, 0.1f)) changed = true;
+    if (ui::SliderFloat("sanity", &s.value, 0.0f, s.max)) changed = true;
+    if (ui::DragFloat("max", &s.max, 1.0f, 1.0f, 0.0f)) changed = true;
+    if (ui::DragFloat("dark drain/s", &s.dark_drain, 0.1f)) changed = true;
+    if (ui::DragFloat("light regen/s", &s.light_regen, 0.1f)) changed = true;
     if (s.low) ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "LOW SANITY");
     return changed;
 }
 bool draw_flashlight(void* comp) {
     auto& f = *static_cast<ecs::Flashlight*>(comp);
     bool changed = false;
-    if (ImGui::Checkbox("on", &f.on)) changed = true;
-    ImGui::SameLine(); ImGui::TextDisabled("battery %.0f/%.0f", f.battery, f.max_battery);
-    if (ImGui::DragFloat("max battery", &f.max_battery, 1.0f, 0.0f, 0.0f)) changed = true;
-    if (ImGui::DragFloat("drain/s", &f.drain, 0.1f)) changed = true;
-    if (ImGui::DragFloat("radius", &f.radius, 0.1f)) changed = true;
+    if (ui::Checkbox("on", &f.on)) changed = true;
+    ui::SameLineIfFits(); ui::TextDisabledWrapped("battery %.0f/%.0f", f.battery, f.max_battery);
+    if (ui::DragFloat("max battery", &f.max_battery, 1.0f, 0.0f, 0.0f)) changed = true;
+    if (ui::DragFloat("drain/s", &f.drain, 0.1f)) changed = true;
+    if (ui::DragFloat("radius", &f.radius, 0.1f)) changed = true;
     return changed;
 }
 bool draw_fearsource(void* comp) {
     auto& f = *static_cast<ecs::FearSource*>(comp);
     bool changed = false;
-    if (ImGui::DragFloat("radius", &f.radius, 0.1f)) changed = true;
-    if (ImGui::DragFloat("sanity drain/s", &f.drain, 0.5f)) changed = true;
+    if (ui::DragFloat("radius", &f.radius, 0.1f)) changed = true;
+    if (ui::DragFloat("sanity drain/s", &f.drain, 0.5f)) changed = true;
     return changed;
 }
 
@@ -613,8 +614,8 @@ bool draw_fearsource(void* comp) {
 bool draw_vision_cone(void* comp) {
     auto& v = *static_cast<ecs::VisionCone*>(comp);
     bool changed = false;
-    if (ImGui::DragFloat("FOV (deg)", &v.fov_deg, 1.0f, 1.0f, 360.0f)) changed = true;
-    if (ImGui::DragFloat("range", &v.range, 0.2f, 0.0f, 0.0f)) changed = true;
+    if (ui::DragFloat("FOV (deg)", &v.fov_deg, 1.0f, 1.0f, 360.0f)) changed = true;
+    if (ui::DragFloat("range", &v.range, 0.2f, 0.0f, 0.0f)) changed = true;
     return changed;
 }
 bool draw_awareness(void* comp) {
@@ -623,15 +624,15 @@ bool draw_awareness(void* comp) {
     const char* st = a.state == ecs::Alertness::Alert ? "ALERT"
                    : (a.state == ecs::Alertness::Suspicious ? "suspicious" : "unaware");
     ImGui::Text("state: %s   meter %.0f%%", st, a.level * 100.0f);
-    if (a.target != 0xFFFFFFFFu) { ImGui::SameLine(); ImGui::TextDisabled("(target %u)", a.target); }
-    if (ImGui::DragFloat("rise/s", &a.rise, 0.05f)) changed = true;
-    if (ImGui::DragFloat("decay/s", &a.decay, 0.05f)) changed = true;
+    if (a.target != 0xFFFFFFFFu) { ui::SameLineIfFits(); ui::TextDisabledWrapped("(target %u)", a.target); }
+    if (ui::DragFloat("rise/s", &a.rise, 0.05f)) changed = true;
+    if (ui::DragFloat("decay/s", &a.decay, 0.05f)) changed = true;
     return changed;
 }
 bool draw_stealth(void* comp) {
     auto& s = *static_cast<ecs::Stealth*>(comp);
-    if (ImGui::SliderFloat("detectability", &s.detectability, 0.0f, 2.0f)) return true;
-    ImGui::TextDisabled("< 1 = stealthier (crouch / cover)");
+    if (ui::SliderFloat("detectability", &s.detectability, 0.0f, 2.0f)) return true;
+    ui::TextDisabledWrapped("< 1 = stealthier (crouch / cover)");
     return false;
 }
 
@@ -667,7 +668,7 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
     if (!tf) return false;
     const uint32_t id = bridge.ecs_entity_id(tf);
     if (id == kNoEcsEntity) {
-        ImGui::TextDisabled("(ECS entity syncs next frame — components appear then)");
+        ui::TextDisabledWrapped("(ECS entity syncs next frame — components appear then)");
         return false;
     }
     ecs::World&  w = bridge.world();
@@ -716,7 +717,7 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_trigger_volume(comp)) changed = true;  // data-driven
                     } else if (std::strcmp(ct.name, "Trigger Actor") == 0) {
                         auto& a = *static_cast<ecs::TriggerActor*>(comp);
-                        if (ImGui::Checkbox("enabled (triggers volumes)", &a.enabled)) changed = true;
+                        if (ui::Checkbox("enabled (triggers volumes)", &a.enabled)) changed = true;
                     } else if (std::strcmp(ct.name, "State Machine") == 0) {
                         if (draw_state_machine(w, e, comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Combat Actor") == 0) {
@@ -731,7 +732,7 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_skill_tree(w, e, comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Unlocked Skills") == 0) {
                         const auto& un = *static_cast<ecs::UnlockedSkills*>(comp);
-                        ImGui::TextDisabled("%d unlocked", static_cast<int>(un.unlocked.size()));
+                        ui::TextDisabledWrapped("%d unlocked", static_cast<int>(un.unlocked.size()));
                     } else if (std::strcmp(ct.name, "Inventory") == 0) {
                         if (draw_inventory(w, e, comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Equipment") == 0) {
@@ -757,7 +758,7 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                     } else if (std::strcmp(ct.name, "Save Id") == 0) {
                         auto& s = *static_cast<ecs::SaveId*>(comp);
                         int v = static_cast<int>(s.value);
-                        if (ImGui::DragInt("save key", &v, 1.0f, 0, 0)) { s.value = static_cast<uint64_t>(v < 0 ? 0 : v); changed = true; }
+                        if (ui::DragInt("save key", &v, 1.0f, 0, 0)) { s.value = static_cast<uint64_t>(v < 0 ? 0 : v); changed = true; }
                     } else if (std::strcmp(ct.name, "Weapon") == 0) {
                         if (draw_weapon(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Vehicle") == 0) {
@@ -782,7 +783,7 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_fearsource(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Light Source") == 0) {
                         auto& l = *static_cast<ecs::LightSource*>(comp);
-                        if (ImGui::DragFloat("radius", &l.radius, 0.1f)) changed = true;
+                        if (ui::DragFloat("radius", &l.radius, 0.1f)) changed = true;
                     } else if (std::strcmp(ct.name, "Vision Cone") == 0) {
                         if (draw_vision_cone(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Awareness") == 0) {
@@ -791,9 +792,9 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_stealth(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Hearing") == 0) {
                         auto& h = *static_cast<ecs::Hearing*>(comp);
-                        if (ImGui::DragFloat("hearing radius", &h.radius, 0.2f)) changed = true;
+                        if (ui::DragFloat("hearing radius", &h.radius, 0.2f)) changed = true;
                     } else {
-                        ImGui::TextDisabled("(no inspector for this component)");
+                        ui::TextDisabledWrapped("(no inspector for this component)");
                     }
 
                     // One undo entry per gesture, not one per frame of a drag.
@@ -817,11 +818,11 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
 
     // Unity-style "Add Component" search popup (replaces the per-component Add buttons).
     ImGui::Dummy(ImVec2(0, 4));
-    if (ImGui::Button("Add Component", ImVec2(-1.0f, 0.0f))) ImGui::OpenPopup("##add_component");
+    if (ui::Button("Add Component", ImVec2(-1.0f, 0.0f))) ImGui::OpenPopup("##add_component");
     if (ImGui::BeginPopup("##add_component")) {
         static char comp_filter[64] = "";
-        ImGui::SetNextItemWidth(220);
-        ImGui::InputTextWithHint("##cf", "search components...", comp_filter, sizeof comp_filter);
+        ui::SetNextItemWidth(220);
+        ui::InputTextWithHint("##cf", "search components...", comp_filter, sizeof comp_filter);
         ImGui::Separator();
         std::string flt;
         for (const char* p = comp_filter; *p; ++p) flt += static_cast<char>(std::tolower(static_cast<unsigned char>(*p)));
@@ -843,7 +844,7 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
             }
             ++shown;
         }
-        if (shown == 0) ImGui::TextDisabled("(no matching components)");
+        if (shown == 0) ui::TextDisabledWrapped("(no matching components)");
         ImGui::EndPopup();
     }
 
@@ -900,7 +901,7 @@ void draw_inventory_ui(EcsSceneBridge& bridge) {
             ImGui::Separator();
 
             int use = -1, drop = -1, equip = -1;
-            if (inv.items.empty()) ImGui::TextDisabled("(empty)");
+            if (inv.items.empty()) ui::TextDisabledWrapped("(empty)");
             for (size_t i = 0; i < inv.items.size(); ++i) {
                 const ecs::ItemInstance& it = inv.items[i];
                 const ecs::ItemDef* d = ecs::find_item(it.def_id);
@@ -908,8 +909,8 @@ void draw_inventory_ui(EcsSceneBridge& bridge) {
                 ImGui::Text("%s  x%d%s", d ? d->name.c_str() : it.def_id.c_str(), it.quantity,
                             it.affixes.empty() ? "" : "  (rolled)");
                 ImGui::SameLine(200.0f);
-                if (d && d->kind == ecs::ItemKind::Consumable) { if (ImGui::SmallButton("Use")) use = static_cast<int>(i); ImGui::SameLine(); }
-                if (d && !d->equip_slot.empty())              { if (ImGui::SmallButton("Equip")) equip = static_cast<int>(i); ImGui::SameLine(); }
+                if (d && d->kind == ecs::ItemKind::Consumable) { if (ImGui::SmallButton("Use")) use = static_cast<int>(i); ui::SameLineIfFits(); }
+                if (d && !d->equip_slot.empty())              { if (ImGui::SmallButton("Equip")) equip = static_cast<int>(i); ui::SameLineIfFits(); }
                 if (ImGui::SmallButton("Drop")) drop = static_cast<int>(i);
                 ImGui::PopID();
             }
@@ -926,7 +927,7 @@ void draw_inventory_ui(EcsSceneBridge& bridge) {
                     ImGui::PushID(1000 + static_cast<int>(i));
                     ImGui::BulletText("%s: %s", eq->slots[i].slot.c_str(),
                                       d ? d->name.c_str() : eq->slots[i].item.def_id.c_str());
-                    ImGui::SameLine(); if (ImGui::SmallButton("Unequip")) unequip = static_cast<int>(i);
+                    ui::SameLineIfFits("Unequip"); if (ImGui::SmallButton("Unequip")) unequip = static_cast<int>(i);
                     ImGui::PopID();
                 }
                 if (unequip >= 0) ecs::unequip_slot(w, e, eq->slots[unequip].slot, &bridge.events());
@@ -938,7 +939,7 @@ void draw_inventory_ui(EcsSceneBridge& bridge) {
                             a->get("Health"), a->get("AttackPower"), a->get("Armor"));
             }
             ImGui::Separator();
-            if (ImGui::Button("Close")) open = false;
+            if (ui::Button("Close")) open = false;
         }
         ImGui::End();
         if (!open) tags->remove_exact("ui.inventory_open");   // window 'X' or Close button
@@ -952,7 +953,7 @@ void hud_bar(const char* label, float v, float max, ImU32 col) {
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, col);
     ImGui::ProgressBar(max > 0.0f ? v / max : 0.0f, ImVec2(150, 0), "");
     ImGui::PopStyleColor();
-    ImGui::SameLine(); ImGui::Text("%s %.0f/%.0f", label, v, max);
+    ui::SameLineIfFits(); ImGui::Text("%s %.0f/%.0f", label, v, max);
 }
 
 }  // namespace
@@ -1036,12 +1037,12 @@ void draw_gameplay_ui(EcsSceneBridge& bridge) {
         ImGui::SetNextWindowSize(ImVec2(340, 380), ImGuiCond_FirstUseEver);
         if (ImGui::Begin(id, &open)) {
             const auto& log = w.get<ecs::QuestLog>(e);
-            if (log.active.empty() && log.completed.empty()) ImGui::TextDisabled("(no quests)");
+            if (log.active.empty() && log.completed.empty()) ui::TextDisabledWrapped("(no quests)");
             for (const auto& q : log.active) {
                 const ecs::QuestDef* qd = ecs::find_quest(q.quest_id);
                 if (ImGui::CollapsingHeader(qd ? qd->name.c_str() : q.quest_id.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
                     if (qd) {
-                        ImGui::TextDisabled("%s", qd->description.c_str());
+                        ui::TextDisabledWrapped("%s", qd->description.c_str());
                         if (q.stage < static_cast<int>(qd->stages.size()))
                             for (size_t i = 0; i < qd->stages[q.stage].objectives.size() && i < q.counts.size(); ++i)
                                 ImGui::Text("  - %s  %d/%d", qd->stages[q.stage].objectives[i].description.c_str(),

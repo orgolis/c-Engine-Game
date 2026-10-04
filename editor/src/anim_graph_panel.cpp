@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 // ============================================================================
 // anim_graph_panel — the animation state machine on the generic canvas (4.6).
 //
@@ -53,7 +54,7 @@ void draw_anim_graph_panel(bool& open, AnimGraph& graph, NodeCanvas& canvas,
     // never does the thing. A toast would be gone before it was read.
     const auto problems = graph.validate();
     if (problems.empty()) {
-        ImGui::TextDisabled("%zu state(s), %zu transition(s) — no problems",
+        ui::TextDisabledWrapped("%zu state(s), %zu transition(s) — no problems",
                             graph.states().size(), graph.transitions().size());
     } else {
         for (const std::string& p : problems)
@@ -110,18 +111,18 @@ void draw_anim_graph_panel(bool& open, AnimGraph& graph, NodeCanvas& canvas,
     if (AnimGraphState* s = graph.state(canvas.selected_node())) {
         char buf[64];
         std::snprintf(buf, sizeof buf, "%s", s->name.c_str());
-        if (ImGui::InputText("name", buf, sizeof buf)) { s->name = buf; out_modified = true; }
-        if (ImGui::DragInt("clip", &s->clip_index, 0.2f, 0, 64)) out_modified = true;
-        if (ImGui::DragFloat("speed", &s->speed, 0.02f, -4.0f, 4.0f)) out_modified = true;
-        if (ImGui::Checkbox("loop", &s->loop)) out_modified = true;
-        ImGui::SameLine();
-        if (ImGui::Checkbox("root motion", &s->apply_root_motion)) out_modified = true;
-        if (s->id != graph.entry_state() && ImGui::Button("Make entry state")) {
+        if (ui::InputText("name", buf, sizeof buf)) { s->name = buf; out_modified = true; }
+        if (ui::DragInt("clip", &s->clip_index, 0.2f, 0, 64)) out_modified = true;
+        if (ui::DragFloat("speed", &s->speed, 0.02f, -4.0f, 4.0f)) out_modified = true;
+        if (ui::Checkbox("loop", &s->loop)) out_modified = true;
+        ui::SameLineIfFits();
+        if (ui::Checkbox("root motion", &s->apply_root_motion)) out_modified = true;
+        if (s->id != graph.entry_state() && ui::Button("Make entry state")) {
             graph.set_entry_state(s->id);
             out_modified = true;
         }
     } else {
-        ImGui::TextDisabled("Right-click the canvas to add a state. "
+        ui::TextDisabledWrapped("Right-click the canvas to add a state. "
                             "Drag from a state's right pin to another's left pin "
                             "to make a transition.");
     }
@@ -143,12 +144,12 @@ void draw_anim_graph_panel(bool& open, AnimGraph& graph, NodeCanvas& canvas,
                 "  ->  " + (to ? to->name : "?");
 
             if (ImGui::TreeNode(label.c_str())) {
-                if (ImGui::DragFloat("blend", &t.blend_duration, 0.01f, 0.0f, 4.0f))
+                if (ui::DragFloat("blend", &t.blend_duration, 0.01f, 0.0f, 4.0f))
                     out_modified = true;
-                if (ImGui::Checkbox("has exit time", &t.has_exit_time)) out_modified = true;
+                if (ui::Checkbox("has exit time", &t.has_exit_time)) out_modified = true;
                 if (t.has_exit_time) {
-                    ImGui::SameLine();
-                    if (ImGui::DragFloat("exit", &t.exit_time, 0.01f, 0.0f, 1.0f))
+                    ui::SameLineIfFits();
+                    if (ui::DragFloat("exit", &t.exit_time, 0.01f, 0.0f, 1.0f))
                         out_modified = true;
                 }
 
@@ -157,28 +158,28 @@ void draw_anim_graph_panel(bool& open, AnimGraph& graph, NodeCanvas& canvas,
                     ImGui::PushID(static_cast<int>(c));
                     char pbuf[48];
                     std::snprintf(pbuf, sizeof pbuf, "%s", cond.param.c_str());
-                    ImGui::SetNextItemWidth(110.0f);
-                    if (ImGui::InputText("##param", pbuf, sizeof pbuf)) {
+                    ui::SetNextItemWidth(110.0f);
+                    if (ui::InputText("##param", pbuf, sizeof pbuf)) {
                         cond.param = pbuf; out_modified = true;
                     }
-                    ImGui::SameLine();
+                    ui::SameLineIfFits();
                     int op = static_cast<int>(cond.op);
                     const char* ops[] = {">", ">=", "<", "<=", "==", "!=",
                                          "is true", "is false", "triggered"};
-                    ImGui::SetNextItemWidth(90.0f);
-                    if (ImGui::Combo("##op", &op, ops, IM_ARRAYSIZE(ops))) {
+                    ui::SetNextItemWidth(90.0f);
+                    if (ui::Combo("##op", &op, ops, IM_ARRAYSIZE(ops))) {
                         cond.op = static_cast<AnimGraphCondOp>(op); out_modified = true;
                     }
                     // The threshold box only appears for operators that use
                     // one; otherwise it invites setting a number that does
                     // nothing.
                     if (cond_uses_threshold(cond.op)) {
-                        ImGui::SameLine();
-                        ImGui::SetNextItemWidth(70.0f);
-                        if (ImGui::DragFloat("##thr", &cond.threshold, 0.02f))
+                        ui::SameLineIfFits();
+                        ui::SetNextItemWidth(70.0f);
+                        if (ui::DragFloat("##thr", &cond.threshold, 0.02f))
                             out_modified = true;
                     }
-                    ImGui::SameLine();
+                    ui::SameLineIfFits();
                     if (ImGui::SmallButton("x")) {
                         t.conditions.erase(t.conditions.begin() + static_cast<long>(c));
                         out_modified = true;
@@ -192,7 +193,7 @@ void draw_anim_graph_panel(bool& open, AnimGraph& graph, NodeCanvas& canvas,
                     t.conditions.push_back({"speed", AnimGraphCondOp::Greater, 0.1f});
                     out_modified = true;
                 }
-                ImGui::SameLine();
+                ui::SameLineIfFits();
                 if (ImGui::SmallButton("delete transition")) remove = static_cast<int>(i);
                 ImGui::TreePop();
             }

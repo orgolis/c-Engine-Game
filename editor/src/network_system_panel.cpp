@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 #include "network_system_panel.h"
 #include "../core/network/include/network_manager.h"
 #include "../core/network/include/deterministic_simulation.h"
@@ -49,10 +50,10 @@ void NetworkSystemPanel::Render(engine::network::NetworkManager* network_manager
     
     ImGui::Separator();
     ImGui::TextUnformatted("Debug Visualization:");
-    ImGui::Checkbox("Show Tick Info##net", &state_.show_tick_info);
-    ImGui::Checkbox("Show Network Stats##net", &state_.show_network_stats);
-    ImGui::Checkbox("Show Rollback Info##net", &state_.show_rollback_info);
-    ImGui::Checkbox("Show Reconciliation Visual##net", &state_.show_reconciliation_visual);
+    ui::Checkbox("Show Tick Info##net", &state_.show_tick_info);
+    ui::Checkbox("Show Network Stats##net", &state_.show_network_stats);
+    ui::Checkbox("Show Rollback Info##net", &state_.show_rollback_info);
+    ui::Checkbox("Show Reconciliation Visual##net", &state_.show_reconciliation_visual);
     
     if (state_.show_latency_graph || state_.show_bandwidth_graph) {
         ImGui::Separator();
@@ -73,7 +74,7 @@ void NetworkSystemPanel::Render(engine::network::NetworkManager* network_manager
             ImGui::Separator();
             RenderNetworkPacketInspection(network_manager);
         } else {
-            ImGui::TextDisabled("No network manager loaded for debug tools");
+            ui::TextDisabledWrapped("No network manager loaded for debug tools");
         }
         
         ImGui::Unindent();
@@ -124,12 +125,12 @@ void NetworkSystemPanel::RenderNetworkStats(engine::network::NetworkManager* net
     ImGui::Separator();
     ImGui::TextUnformatted("Input Buffer Status:");
     ImGui::ProgressBar(0.5f, ImVec2(-1, 0));
-    ImGui::SameLine();
+    ui::SameLineIfFits();
     ImGui::Text("60/120 inputs buffered");
     
     ImGui::TextUnformatted("State History:");
     ImGui::ProgressBar(0.67f, ImVec2(-1, 0));
-    ImGui::SameLine();
+    ui::SameLineIfFits();
     ImGui::Text("8/12 snapshots stored");
     
     ImGui::Unindent();
@@ -159,7 +160,7 @@ void NetworkSystemPanel::RenderInputBufferStatus(engine::network::NetworkManager
     
     for (int i = 0; i < 6; ++i) {
         ImGui::ProgressBar(0.3f, ImVec2(20, 0), "");
-        ImGui::SameLine();
+        ui::SameLineIfFits();
     }
     ImGui::Text(" 60/180 inputs pending");
 }
@@ -224,7 +225,7 @@ void NetworkSystemPanel::RenderStateHistoryVisualization() {
     // Draw timeline of saved states
     for (int i = 0; i < 12; ++i) {
         ImGui::ProgressBar(0.2f, ImVec2(30, 0), "");
-        ImGui::SameLine();
+        ui::SameLineIfFits();
     }
     ImGui::NewLine();
     ImGui::Text("12 snapshots stored (60ms total buffer)");
@@ -236,8 +237,8 @@ void NetworkSystemPanel::RenderNetworkSimulationControls(engine::network::Networ
     
     // Latency injection
     static float injected_latency = 0.0f;
-    ImGui::SliderFloat("Inject Latency (ms)##net", &injected_latency, 0.0f, 200.0f);
-    if (ImGui::Button("Apply Latency##net", ImVec2(-1, 0))) {
+    ui::SliderFloat("Inject Latency (ms)##net", &injected_latency, 0.0f, 200.0f);
+    if (ui::Button("Apply Latency##net", ImVec2(-1, 0))) {
         // network_manager->InjectLatency(injected_latency)
     }
     
@@ -245,15 +246,15 @@ void NetworkSystemPanel::RenderNetworkSimulationControls(engine::network::Networ
     
     // Packet loss simulation
     static float packet_loss_percent = 0.0f;
-    ImGui::SliderFloat("Packet Loss (%%)##net", &packet_loss_percent, 0.0f, 100.0f);
-    if (ImGui::Button("Apply Packet Loss##net", ImVec2(-1, 0))) {
+    ui::SliderFloat("Packet Loss (%%)##net", &packet_loss_percent, 0.0f, 100.0f);
+    if (ui::Button("Apply Packet Loss##net", ImVec2(-1, 0))) {
         // network_manager->SimulatePacketLoss(packet_loss_percent / 100.0f)
     }
     
     ImGui::Spacing();
     ImGui::TextUnformatted("Simulation Actions:");
     
-    if (ImGui::Button("Simulate Rollback##net", ImVec2(-1, 0))) {
+    if (ui::Button("Simulate Rollback##net", ImVec2(-1, 0))) {
         // network_manager->ForceRollback(5)  // Force 5-tick rollback
         ImGui::OpenPopup("Rollback Simulated##popup");
     }
@@ -261,26 +262,26 @@ void NetworkSystemPanel::RenderNetworkSimulationControls(engine::network::Networ
     if (ImGui::BeginPopupModal("Rollback Simulated##popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextColored(ImVec4(1, 1, 0, 1), "✓ Rollback simulated: Rolled back 5 ticks");
         ImGui::Spacing();
-        if (ImGui::Button("OK##rollback", ImVec2(100, 0))) {
+        if (ui::Button("OK##rollback", ImVec2(100, 0))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
     }
     
-    if (ImGui::Button("Simulate Lost Packet##net", ImVec2(-1, 0))) {
+    if (ui::Button("Simulate Lost Packet##net", ImVec2(-1, 0))) {
         // network_manager->SimulateLostPacket()
     }
     
     ImGui::Spacing();
     ImGui::TextUnformatted("Test Tools:");
     
-    if (ImGui::Button("Reset Network State##net", ImVec2(-1, 0))) {
+    if (ui::Button("Reset Network State##net", ImVec2(-1, 0))) {
         // Reset all network simulation conditions
         injected_latency = 0.0f;
         packet_loss_percent = 0.0f;
     }
     
-    if (ImGui::Button("Disconnect & Reconnect##net", ImVec2(-1, 0))) {
+    if (ui::Button("Disconnect & Reconnect##net", ImVec2(-1, 0))) {
         // Simulate connection loss and recovery
     }
 }
@@ -313,9 +314,9 @@ void NetworkSystemPanel::RenderNetworkPacketInspection(engine::network::NetworkM
     ImGui::TextUnformatted("Inspection Tools:");
     
     static int selected_packet = 0;
-    ImGui::SliderInt("Select Packet Index##net", &selected_packet, 0, 100);
+    ui::SliderInt("Select Packet Index##net", &selected_packet, 0, 100);
     
-    if (ImGui::Button("Inspect Selected##net", ImVec2(-1, 0))) {
+    if (ui::Button("Inspect Selected##net", ImVec2(-1, 0))) {
         ImGui::OpenPopup("Packet Details##popup");
     }
     
@@ -330,7 +331,7 @@ void NetworkSystemPanel::RenderNetworkPacketInspection(engine::network::NetworkM
         ImGui::Text("Latency: 45.3ms");
         
         ImGui::Spacing();
-        if (ImGui::Button("Close##packet", ImVec2(100, 0))) {
+        if (ui::Button("Close##packet", ImVec2(100, 0))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

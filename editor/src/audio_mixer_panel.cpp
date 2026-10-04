@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 #include "audio_mixer_panel.h"
 
 #include "project_paths.h"
@@ -177,7 +178,7 @@ void ShowAudioMixer(bool* open, gws::audio::AudioEngine& audio) {
     if (bg.any_solo()) {
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f),
                            "SOLO active - buses that are not soloed are silent");
-        ImGui::SameLine();
+        ui::SameLineIfFits();
         if (ImGui::SmallButton("Clear solo")) {
             for (size_t i = 0; i < bg.count(); ++i) {
                 Bus* b = bg.bus(static_cast<BusId>(i));
@@ -202,13 +203,13 @@ void ShowAudioMixer(bool* open, gws::audio::AudioEngine& audio) {
         // parent problem and the panel should not make you guess the tree.
         if (id != kMasterBus) {
             const Bus* parent = bg.bus(b->parent);
-            ImGui::TextDisabled("-> %s", parent ? parent->name.c_str() : "?");
+            ui::TextDisabledWrapped("-> %s", parent ? parent->name.c_str() : "?");
         } else {
-            ImGui::TextDisabled("output");
+            ui::TextDisabledWrapped("output");
         }
 
         draw_meter(g_meter[i]);
-        ImGui::SameLine();
+        ui::SameLineIfFits(24.0f);
         if (ImGui::VSliderFloat("##gain", ImVec2(24, 120), &b->gain, 0.0f, 2.0f, "")) {
             b->gain = std::max(0.0f, b->gain);
             commit(audio, id, *b);          // audible immediately...
@@ -222,7 +223,7 @@ void ShowAudioMixer(bool* open, gws::audio::AudioEngine& audio) {
         if (muted) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.20f, 0.20f, 1.0f));
         if (ImGui::SmallButton("M")) { b->mute = !b->mute; commit(audio, id, *b); value_dirty = true; }
         if (muted) ImGui::PopStyleColor();
-        ImGui::SameLine();
+        ui::SameLineIfFits();
         const bool soloed = b->solo;
         if (soloed) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.65f, 0.20f, 1.0f));
         if (ImGui::SmallButton("S")) { b->solo = !b->solo; commit(audio, id, *b); value_dirty = true; }
@@ -230,9 +231,9 @@ void ShowAudioMixer(bool* open, gws::audio::AudioEngine& audio) {
 
         // Master has no parent to choose and must not be re-rooted.
         if (id != kMasterBus) {
-            ImGui::SetNextItemWidth(70);
+            ui::SetNextItemWidth(70);
             const Bus* cur = bg.bus(b->parent);
-            if (ImGui::BeginCombo("##parent", cur ? cur->name.c_str() : "?", ImGuiComboFlags_HeightSmall)) {
+            if (ui::BeginCombo("##parent", cur ? cur->name.c_str() : "?", ImGuiComboFlags_HeightSmall)) {
                 for (size_t j = 0; j < n; ++j) {
                     if (j == i) continue;              // a bus cannot parent itself
                     const Bus* cand = bg.bus(static_cast<BusId>(j));
@@ -248,17 +249,17 @@ void ShowAudioMixer(bool* open, gws::audio::AudioEngine& audio) {
 
         ImGui::EndGroup();
         ImGui::PopID();
-        if (i + 1 < n) ImGui::SameLine(0.0f, 18.0f);
+        if (i + 1 < n) ui::SameLineIfFits(90.0f);
     }
 
     ImGui::Separator();
     static char new_name[48] = "";
-    ImGui::SetNextItemWidth(160);
-    ImGui::InputTextWithHint("##newbus", "new bus name", new_name, sizeof(new_name));
-    ImGui::SameLine();
+    ui::SetNextItemWidth(160);
+    ui::InputTextWithHint("##newbus", "new bus name", new_name, sizeof(new_name));
+    ui::SameLineIfFits();
     const bool can_add = new_name[0] != '\0' && bg.count() < kMaxBuses;
     ImGui::BeginDisabled(!can_add);
-    if (ImGui::Button("Add Bus") && can_add) {
+    if (ui::Button("Add Bus") && can_add) {
         if (bg.find(new_name) != kInvalidBus) {
             spdlog::warn("[audio] a bus named '{}' already exists", new_name);
         } else if (bg.add(new_name, kMasterBus) != kInvalidBus) {
@@ -268,8 +269,8 @@ void ShowAudioMixer(bool* open, gws::audio::AudioEngine& audio) {
     }
     ImGui::EndDisabled();
     if (bg.count() >= kMaxBuses) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(bus limit reached)");
+        ui::SameLineIfFits();
+        ui::TextDisabledWrapped("(bus limit reached)");
     }
 
     if (layout_dirty || value_dirty) {

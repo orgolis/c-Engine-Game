@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 #include "material_editor_panel.h"
 #include "material_asset_cache.h"
 #include "asset_browser_panel.h"   // drag-drop payload names
@@ -52,8 +53,9 @@ bool texture_slot(const char* label, const char* hint, std::string& path) {
 
     char buf[260];
     std::snprintf(buf, sizeof buf, "%s", path.c_str());
-    ImGui::SetNextItemWidth(-90.0f);
-    if (ImGui::InputText("##path", buf, sizeof buf)) { /* committed below */ }
+    ui::Label(label);
+    ui::SetNextItemWidthForAction("x");
+    if (ui::InputText("##path", buf, sizeof buf)) { /* committed below */ }
     if (ImGui::IsItemDeactivatedAfterEdit() && path != buf) {
         path = buf;
         changed = true;
@@ -66,12 +68,8 @@ bool texture_slot(const char* label, const char* hint, std::string& path) {
         }
         ImGui::EndDragDropTarget();
     }
-    ImGui::SameLine();
-    if (path.empty()) {
-        ImGui::TextDisabled("%s", label);
-    } else {
-        ImGui::Text("%s", label);
-        ImGui::SameLine();
+    if (!path.empty()) {
+        ui::SameLineIfFits("x");
         if (ImGui::SmallButton("x")) { path.clear(); changed = true; }
     }
     if (ImGui::IsItemHovered() || ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -86,10 +84,8 @@ void texture_slot_disabled(const char* label, const char* why) {
     ImGui::BeginDisabled();
     char empty[2] = {0};
     ImGui::PushID(label);
-    ImGui::SetNextItemWidth(-90.0f);
-    ImGui::InputText("##path", empty, sizeof empty, ImGuiInputTextFlags_ReadOnly);
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", label);
+    ui::Label(label);
+    ui::InputText("##path", empty, sizeof empty, ImGuiInputTextFlags_ReadOnly);
     ImGui::PopID();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -106,32 +102,32 @@ void pbr_controls(MaterialDesc& m, bool& live, bool& commit) {
         if (ImGui::IsItemDeactivatedAfterEdit())            commit = true;
     };
 
-    if (ImGui::ColorEdit4("Base Color", &m.base_color.r,
+    if (ui::ColorEdit4("Base Color", &m.base_color.r,
                           ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreview))
         live = true;
     note();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Multiplies the base-colour texture. White = the texture unchanged.");
 
-    if (ImGui::SliderFloat("Metallic", &m.metallic, 0.0f, 1.0f)) live = true;
+    if (ui::SliderFloat("Metallic", &m.metallic, 0.0f, 1.0f)) live = true;
     note();
-    if (ImGui::SliderFloat("Roughness", &m.roughness, 0.04f, 1.0f)) live = true;
+    if (ui::SliderFloat("Roughness", &m.roughness, 0.04f, 1.0f)) live = true;
     note();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("0.04 is a mirror, 1.0 is fully diffuse. It cannot reach 0:\n"
                           "the BRDF divides by roughness.");
-    if (ImGui::SliderFloat("Occlusion", &m.occlusion, 0.0f, 1.0f)) live = true;
+    if (ui::SliderFloat("Occlusion", &m.occlusion, 0.0f, 1.0f)) live = true;
     note();
-    if (ImGui::SliderFloat("Normal Scale", &m.normal_scale, 0.0f, 4.0f)) live = true;
+    if (ui::SliderFloat("Normal Scale", &m.normal_scale, 0.0f, 4.0f)) live = true;
     note();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Strength of the normal map. No effect without one bound.");
 
-    if (ImGui::ColorEdit3("Emissive", &m.emissive.r,
+    if (ui::ColorEdit3("Emissive", &m.emissive.r,
                           ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float))
         live = true;
     note();
-    if (ImGui::SliderFloat("Emissive Glow", &m.emissive_intensity, 0.0f, 10.0f)) live = true;
+    if (ui::SliderFloat("Emissive Glow", &m.emissive_intensity, 0.0f, 10.0f)) live = true;
     note();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("HDR multiplier on the emissive colour. Bloom kicks in around 1.0,\n"
@@ -147,17 +143,17 @@ bool MaterialEditorPanel::Render(const std::shared_ptr<Entity>& entity,
                                  MaterialAssetCache* materials,
                                  const std::shared_ptr<Scene>& scene) {
     if (!entity) {
-        ImGui::TextDisabled("No entity selected.");
+        ui::TextDisabledWrapped("No entity selected.");
         return false;
     }
     auto mr = entity->GetComponent<MeshRendererComponent>();
     if (!mr) {
-        ImGui::TextDisabled("This entity has no Mesh Renderer, so it has no surface\n"
+        ui::TextDisabledWrapped("This entity has no Mesh Renderer, so it has no surface\n"
                             "to give a material to. Add one from the Components list.");
         return false;
     }
     if (!materials) {
-        ImGui::TextDisabled("Material cache unavailable.");
+        ui::TextDisabledWrapped("Material cache unavailable.");
         return false;
     }
 
@@ -165,15 +161,15 @@ bool MaterialEditorPanel::Render(const std::shared_ptr<Entity>& entity,
 
     // ---- The material slot -------------------------------------------------
     ImGui::TextUnformatted("Material Asset");
-    ImGui::SameLine();
-    ImGui::TextDisabled("(drag a .mat here)");
+    ui::SameLineIfFits();
+    ui::TextDisabledWrapped("(drag a .mat here)");
 
     {
         char buf[260];
         std::snprintf(buf, sizeof buf, "%s",
                       mr->HasMaterial() ? mr->GetMaterialPath().c_str() : "");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputTextWithHint("##mat_slot", "none — using this object's inline material",
+        ui::SetNextItemWidth(-1.0f);
+        ui::InputTextWithHint("##mat_slot", "none — using this object's inline material",
                                  buf, sizeof buf);
         if (ImGui::IsItemDeactivatedAfterEdit() && mr->GetMaterialPath() != buf) {
             mr->SetMaterialPath(buf);
@@ -221,22 +217,22 @@ bool MaterialEditorPanel::Render(const std::shared_ptr<Entity>& entity,
     // what makes a shared material safe to attach to anything.
     ImGui::Separator();
     ImGui::TextUnformatted("Alpha Mode");
-    ImGui::SameLine();
-    ImGui::TextDisabled("(per object, not part of the material)");
+    ui::SameLineIfFits();
+    ui::TextDisabledWrapped("(per object, not part of the material)");
     int am = static_cast<int>(mr->GetAlphaMode());
     bool am_changed = false;
-    am_changed |= ImGui::RadioButton("Opaque##mr_am", &am, 0); ImGui::SameLine();
-    am_changed |= ImGui::RadioButton("Cutout##mr_am", &am, 1); ImGui::SameLine();
+    am_changed |= ImGui::RadioButton("Opaque##mr_am", &am, 0); ui::SameLineIfFits();
+    am_changed |= ImGui::RadioButton("Cutout##mr_am", &am, 1); ui::SameLineIfFits();
     am_changed |= ImGui::RadioButton("Blend##mr_am",  &am, 2);
     if (am_changed) {
         mr->SetAlphaMode(static_cast<AlphaMode>(am));
         changed = true;
     }
-    ImGui::TextDisabled("Opaque: no transparency.  Cutout: hard discard below cutoff.\n"
+    ui::TextDisabledWrapped("Opaque: no transparency.  Cutout: hard discard below cutoff.\n"
                         "Blend: real translucency (forward pass, after lighting).");
     if (mr->GetAlphaMode() == AlphaMode::Cutout) {
         float cutoff = mr->GetAlphaCutoff();
-        if (ImGui::SliderFloat("Alpha Cutoff##mr", &cutoff, 0.0f, 1.0f)) {
+        if (ui::SliderFloat("Alpha Cutoff##mr", &cutoff, 0.0f, 1.0f)) {
             mr->SetAlphaCutoff(cutoff);
             changed = true;
         }
@@ -250,7 +246,7 @@ bool MaterialEditorPanel::Render(const std::shared_ptr<Entity>& entity,
     if (mc && !mc->mesh_path.empty()) {
         ImGui::Separator();
         bool ov = mr->GetOverrideAssetMaterial();
-        if (ImGui::Checkbox("Override the model's own materials", &ov)) {
+        if (ui::Checkbox("Override the model's own materials", &ov)) {
             mr->SetOverrideAssetMaterial(ov);
             changed = true;
         }
@@ -261,7 +257,7 @@ bool MaterialEditorPanel::Render(const std::shared_ptr<Entity>& entity,
                 "On: the material above replaces them on EVERY submesh —\n"
                 "which is what you want for a model that arrived untextured.");
         if (ov)
-            ImGui::TextDisabled("Every submesh of this model uses the material above.");
+            ui::TextDisabledWrapped("Every submesh of this model uses the material above.");
     }
 
     return changed;
@@ -285,14 +281,14 @@ void MaterialEditorPanel::render_material_body(const std::string& path,
         if (ImGui::BeginTabItem("Surface")) {
             pbr_controls(edit_, live, commit);
             bool ds = edit_.double_sided;
-            if (ImGui::Checkbox("Double sided", &ds)) {
+            if (ui::Checkbox("Double sided", &ds)) {
                 edit_.double_sided = ds;
                 live = commit = true;
             }
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Textures")) {
-            ImGui::TextDisabled("Drag textures from the Asset Browser onto a slot.");
+            ui::TextDisabledWrapped("Drag textures from the Asset Browser onto a slot.");
             bool t = false;
             t |= texture_slot("Base Color", "Albedo / diffuse. Read as sRGB.",
                               edit_.albedo_map);
@@ -320,35 +316,35 @@ void MaterialEditorPanel::render_material_body(const std::string& path,
             t |= texture_slot("Detail Normal",
                               "Higher-frequency normal added to the base normal.",
                               edit_.detail_normal_map);
-            if (ImGui::DragFloat("Detail tiling", &edit_.detail_scale, 0.1f, 1.0f, 128.0f, "%.1fx"))
+            if (ui::DragFloat("Detail tiling", &edit_.detail_scale, 0.1f, 1.0f, 128.0f, "%.1fx"))
                 t = true;
-            if (ImGui::SliderFloat("Detail color strength", &edit_.detail_albedo_strength, 0.0f, 1.0f))
+            if (ui::SliderFloat("Detail color strength", &edit_.detail_albedo_strength, 0.0f, 1.0f))
                 t = true;
-            if (ImGui::SliderFloat("Detail normal strength", &edit_.detail_normal_strength, 0.0f, 2.0f))
+            if (ui::SliderFloat("Detail normal strength", &edit_.detail_normal_strength, 0.0f, 2.0f))
                 t = true;
             if (edit_.detail_albedo_map.empty() && edit_.detail_normal_map.empty())
-                ImGui::TextDisabled("  No detail maps - strengths have no effect.");
+                ui::TextDisabledWrapped("  No detail maps - strengths have no effect.");
 
             ImGui::SeparatorText("Parallax");
             t |= texture_slot("Height",
                               "Greyscale depth. White is the surface, black is deepest.",
                               edit_.height_map);
-            if (ImGui::SliderFloat("Parallax depth", &edit_.parallax_depth, 0.0f, 0.2f, "%.3f"))
+            if (ui::SliderFloat("Parallax depth", &edit_.parallax_depth, 0.0f, 0.2f, "%.3f"))
                 t = true;
             if (edit_.height_map.empty())
-                ImGui::TextDisabled("  No height map - parallax is off.");
+                ui::TextDisabledWrapped("  No height map - parallax is off.");
             else if (edit_.parallax_depth <= 0.0f)
-                ImGui::TextDisabled("  Depth 0 - the ray march is skipped entirely.");
+                ui::TextDisabledWrapped("  Depth 0 - the ray march is skipped entirely.");
 
             ImGui::SeparatorText("UV transform");
-            if (ImGui::DragFloat2("Tiling", &edit_.uv_scale.x, 0.01f, 0.01f, 256.0f, "%.2f")) {
+            if (ui::DragFloat2("Tiling", &edit_.uv_scale.x, 0.01f, 0.01f, 256.0f, "%.2f")) {
                 t = true;
             }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("How many times the maps repeat across the mesh's UVs.\n"
                                   "Lets a wall and a floor share one brick material at\n"
                                   "different densities instead of duplicating the .mat.");
-            if (ImGui::DragFloat2("Offset", &edit_.uv_offset.x, 0.005f, -16.0f, 16.0f, "%.3f")) {
+            if (ui::DragFloat2("Offset", &edit_.uv_offset.x, 0.005f, -16.0f, 16.0f, "%.3f")) {
                 t = true;
             }
             if (ImGui::IsItemHovered())
@@ -382,10 +378,10 @@ void MaterialEditorPanel::render_material_body(const std::string& path,
 
     ImGui::Separator();
     if (dirty_) {
-        if (ImGui::Button("Save##mat", ImVec2(-1, 0)))
+        if (ui::Button("Save##mat", ImVec2(-1, 0)))
             if (materials->save(path, edit_)) dirty_ = false;
     } else {
-        ImGui::TextDisabled("Saved to %s", path.c_str());
+        ui::TextDisabledWrapped("Saved to %s", path.c_str());
     }
 }
 
@@ -404,7 +400,7 @@ bool MaterialEditorPanel::render_asset_mode(const std::shared_ptr<Entity>& entit
                            "This material could not be loaded.");
         ImGui::TextWrapped("The object is rendering from its inline settings. Check the "
                            "path above, or detach the material to edit those settings here.");
-        if (ImGui::Button("Retry##mat_reload")) materials->invalidate(path);
+        if (ui::Button("Retry##mat_reload")) materials->invalidate(path);
         return false;
     }
 
@@ -452,12 +448,12 @@ bool MaterialEditorPanel::render_asset_mode(const std::shared_ptr<Entity>& entit
 
         if (ImGui::CollapsingHeader("This object overrides",
                                     ov ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-            ImGui::TextDisabled("Ticked fields use this object's value instead of\n"
+            ui::TextDisabledWrapped("Ticked fields use this object's value instead of\n"
                                 "the material's. Unticking restores the material's.");
 
             auto flag = [&](const char* label, uint32_t bit) {
                 bool on = mr->HasMaterialOverride(bit);
-                if (ImGui::Checkbox(label, &on)) {
+                if (ui::Checkbox(label, &on)) {
                     mr->SetMaterialOverride(bit, on);
                     changed = true;
                 }
@@ -466,38 +462,38 @@ bool MaterialEditorPanel::render_asset_mode(const std::shared_ptr<Entity>& entit
 
             if (flag("Tint##ovc", MR::kOverrideBaseColor)) {
                 glm::vec4 c = mr->GetColor();
-                ImGui::SameLine();
-                if (ImGui::ColorEdit4("##ovcv", &c.x, ImGuiColorEditFlags_NoInputs)) {
+                ui::SameLineIfFits();
+                if (ui::ColorEdit4("##ovcv", &c.x, ImGuiColorEditFlags_NoInputs)) {
                     mr->SetColor(c); changed = true;
                 }
             }
             if (flag("Metallic##ovm", MR::kOverrideMetallic)) {
                 float v = mr->GetMetallic();
-                ImGui::SameLine(); ImGui::SetNextItemWidth(-1.0f);
-                if (ImGui::SliderFloat("##ovmv", &v, 0.0f, 1.0f)) { mr->SetMetallic(v); changed = true; }
+                ui::SameLineIfFits(); ui::SetNextItemWidth(-1.0f);
+                if (ui::SliderFloat("##ovmv", &v, 0.0f, 1.0f)) { mr->SetMetallic(v); changed = true; }
             }
             if (flag("Roughness##ovr", MR::kOverrideRoughness)) {
                 float v = mr->GetRoughness();
-                ImGui::SameLine(); ImGui::SetNextItemWidth(-1.0f);
-                if (ImGui::SliderFloat("##ovrv", &v, 0.0f, 1.0f)) { mr->SetRoughness(v); changed = true; }
+                ui::SameLineIfFits(); ui::SetNextItemWidth(-1.0f);
+                if (ui::SliderFloat("##ovrv", &v, 0.0f, 1.0f)) { mr->SetRoughness(v); changed = true; }
             }
             if (flag("Emissive##ove", MR::kOverrideEmissive)) {
                 glm::vec3 e = mr->GetEmissive();
-                if (ImGui::ColorEdit3("##ovev", &e.x, ImGuiColorEditFlags_NoInputs)) {
+                if (ui::ColorEdit3("##ovev", &e.x, ImGuiColorEditFlags_NoInputs)) {
                     mr->SetEmissive(e); changed = true;
                 }
                 float gi = mr->GetEmissiveIntensity();
-                ImGui::SameLine(); ImGui::SetNextItemWidth(-1.0f);
-                if (ImGui::DragFloat("##ovegv", &gi, 0.05f, 0.0f, 64.0f, "glow %.2f")) {
+                ui::SameLineIfFits(); ui::SetNextItemWidth(-1.0f);
+                if (ui::DragFloat("##ovegv", &gi, 0.05f, 0.0f, 64.0f, "glow %.2f")) {
                     mr->SetEmissiveIntensity(gi); changed = true;
                 }
             }
             if (flag("UV tiling / offset##ovu", MR::kOverrideUv)) {
                 glm::vec2 sc = mr->GetUvScale(), of = mr->GetUvOffset();
-                if (ImGui::DragFloat2("Tiling##ovuv", &sc.x, 0.01f, 0.01f, 256.0f, "%.2f")) {
+                if (ui::DragFloat2("Tiling##ovuv", &sc.x, 0.01f, 0.01f, 256.0f, "%.2f")) {
                     mr->SetUvScale(sc); changed = true;
                 }
-                if (ImGui::DragFloat2("Offset##ovuo", &of.x, 0.005f, -16.0f, 16.0f, "%.3f")) {
+                if (ui::DragFloat2("Offset##ovuo", &of.x, 0.005f, -16.0f, 16.0f, "%.3f")) {
                     mr->SetUvOffset(of); changed = true;
                 }
             }
@@ -507,8 +503,8 @@ bool MaterialEditorPanel::render_asset_mode(const std::shared_ptr<Entity>& entit
                     mr->SetMaterialOverrides(0u);
                     changed = true;
                 }
-                ImGui::SameLine();
-                ImGui::TextDisabled("(back to the material exactly)");
+                ui::SameLineIfFits();
+                ui::TextDisabledWrapped("(back to the material exactly)");
             }
         }
         // Folded into the panel's return value, which is how every other edit
@@ -540,7 +536,7 @@ bool MaterialEditorPanel::RenderForPath(const std::string& path,
                            "reload -- the editor will not substitute a default, because a "
                            "material that quietly renders as white looks like a lighting "
                            "bug rather than a missing file.");
-        if (ImGui::Button("Reload##mat_path")) materials->invalidate(path);
+        if (ui::Button("Reload##mat_path")) materials->invalidate(path);
         return false;
     }
 
@@ -554,7 +550,7 @@ bool MaterialEditorPanel::RenderForPath(const std::string& path,
 
     ImGui::Text("%s%s", edit_.name.empty() ? "(unnamed)" : edit_.name.c_str(),
                 dirty_ ? "  *unsaved*" : "");
-    ImGui::TextDisabled("%s", path.c_str());
+    ui::TextDisabledWrapped("%s", path.c_str());
     ImGui::TextWrapped("Edits here change the ASSET, so every object and every terrain "
                        "layer using it changes with it.");
     ImGui::Separator();
@@ -569,7 +565,7 @@ bool MaterialEditorPanel::render_inline_mode(const std::shared_ptr<Entity>& enti
     auto mr = entity->GetComponent<MeshRendererComponent>();
     bool changed = false;
 
-    ImGui::TextDisabled("Inline material — these settings belong to this object alone.");
+    ui::TextDisabledWrapped("Inline material — these settings belong to this object alone.");
 
     // Read the component into a desc, edit it, write back what a component can
     // actually hold. Going through MaterialDesc keeps one set of controls for
@@ -629,10 +625,10 @@ bool MaterialEditorPanel::render_inline_mode(const std::shared_ptr<Entity>& enti
     if (new_path_buf_[0] == '\0')
         std::snprintf(new_path_buf_, sizeof new_path_buf_, "assets/materials/%s.mat",
                       entity->GetName().c_str());
-    ImGui::SetNextItemWidth(-90.0f);
-    ImGui::InputText("##new_mat_path", new_path_buf_, sizeof new_path_buf_);
-    ImGui::SameLine();
-    if (ImGui::Button("Create")) {
+    ui::SetNextItemWidthForAction("Create");
+    ui::InputText("##new_mat_path", new_path_buf_, sizeof new_path_buf_);
+    ui::SameLineIfFits("Create");
+    if (ui::Button("Create")) {
         std::string path = new_path_buf_;
         if (path.empty()) {
             spdlog::warn("[MaterialEditor] give the new material a path first");
@@ -652,14 +648,14 @@ bool MaterialEditorPanel::render_inline_mode(const std::shared_ptr<Entity>& enti
             }
         }
     }
-    ImGui::TextDisabled("The object switches to the new asset, and other objects\n"
+    ui::TextDisabledWrapped("The object switches to the new asset, and other objects\n"
                         "can then be pointed at the same file.");
 
     return changed;
 }
 
 bool MaterialEditorPanel::render_presets(MaterialDesc& target) {
-    ImGui::TextDisabled("Sets base colour, metallic and roughness. Textures are left alone.");
+    ui::TextDisabledWrapped("Sets base colour, metallic and roughness. Textures are left alone.");
     ImGui::Separator();
 
     bool applied = false;
@@ -674,7 +670,7 @@ bool MaterialEditorPanel::render_presets(MaterialDesc& target) {
             pos, ImVec2(pos.x + h * 1.6f, pos.y + h),
             ImGui::GetColorU32(ImVec4(p.albedo.r, p.albedo.g, p.albedo.b, 1.0f)), 2.0f);
         ImGui::Dummy(ImVec2(h * 1.6f, h));
-        ImGui::SameLine();
+        ui::SameLineIfFits();
 
         if (ImGui::Selectable(p.name)) {
             target.base_color = glm::vec4(p.albedo, target.base_color.a);

@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 // ============================================================================
 // vfx_stack_panel.cpp — see header.
 // ============================================================================
@@ -22,11 +23,11 @@ void VfxStackPanel::draw_module_params(VfxModule& m) {
         ParamValue& v = kv.second;
         ImGui::PushID(key.c_str());
         if (float* f = std::get_if<float>(&v)) {
-            if (ImGui::DragFloat(key.c_str(), f, 0.01f)) dirty_ = true;
+            if (ui::DragFloat(key.c_str(), f, 0.01f)) dirty_ = true;
         } else if (glm::vec3* p = std::get_if<glm::vec3>(&v)) {
-            if (ImGui::DragFloat3(key.c_str(), &p->x, 0.01f)) dirty_ = true;
+            if (ui::DragFloat3(key.c_str(), &p->x, 0.01f)) dirty_ = true;
         } else if (glm::vec4* p = std::get_if<glm::vec4>(&v)) {
-            if (ImGui::ColorEdit4(key.c_str(), &p->x)) dirty_ = true;
+            if (ui::ColorEdit4(key.c_str(), &p->x)) dirty_ = true;
         } else if (auto* c = std::get_if<gws::anim::Curve>(&v)) {
             // Drawn through 4.5's editor, which plots the REAL evaluate():
             // straight lines between keys would show a curve that eases
@@ -49,16 +50,16 @@ void VfxStackPanel::draw_stage(VfxStage stage, const char* label) {
                                             ImGuiTreeNodeFlags_DefaultOpen);
         // Explicit reorder controls: order is an edit that changes the motion,
         // and a drag whose drop target is ambiguous changes it by accident.
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 78.0f);
+        ui::SameLineIfFits(3.0f * (ui::ButtonWidth("x") + ImGui::GetStyle().ItemSpacing.x));
         bool removed = false;
         if (ImGui::SmallButton("^")) {
             if (i > 0) { graph_.move_module(stage, i, i - 1); dirty_ = true; }
         }
-        ImGui::SameLine();
+        ui::SameLineIfFits("v");
         if (ImGui::SmallButton("v")) {
             if (i + 1 < mods.size()) { graph_.move_module(stage, i, i + 1); dirty_ = true; }
         }
-        ImGui::SameLine();
+        ui::SameLineIfFits("x");
         if (ImGui::SmallButton("x")) { removed = true; }
 
         if (open) {
@@ -74,7 +75,7 @@ void VfxStackPanel::draw_stage(VfxStage stage, const char* label) {
     // frequency, which validate() would then have to report.
     const std::string btn = std::string("+ Add##") + label;
     const std::string pop = std::string("add_") + label;
-    if (ImGui::Button(btn.c_str())) ImGui::OpenPopup(pop.c_str());
+    if (ui::Button(btn.c_str())) ImGui::OpenPopup(pop.c_str());
     if (ImGui::BeginPopup(pop.c_str())) {
         for (int i = 0; i <= static_cast<int>(ModuleKind::VelocityOverLife); ++i) {
             const auto k = static_cast<ModuleKind>(i);
@@ -90,14 +91,14 @@ void VfxStackPanel::draw(bool* open) {
 
     char name[128];
     std::snprintf(name, sizeof(name), "%s", graph_.name.c_str());
-    if (ImGui::InputText("Name", name, sizeof(name))) { graph_.name = name; dirty_ = true; }
+    if (ui::InputText("Name", name, sizeof(name))) { graph_.name = name; dirty_ = true; }
 
     int maxp = static_cast<int>(graph_.max_particles);
-    if (ImGui::DragInt("Max particles", &maxp, 1.0f, 0, 1 << 20)) {
+    if (ui::DragInt("Max particles", &maxp, 1.0f, 0, 1 << 20)) {
         graph_.max_particles = static_cast<uint32_t>(maxp < 0 ? 0 : maxp);
         dirty_ = true;
     }
-    if (ImGui::Checkbox("World space", &graph_.world_space)) dirty_ = true;
+    if (ui::Checkbox("World space", &graph_.world_space)) dirty_ = true;
 
     draw_stage(VfxStage::Spawn,  "Spawn");
     draw_stage(VfxStage::Init,   "Initialize");
@@ -117,14 +118,14 @@ void VfxStackPanel::draw(bool* open) {
     ImGui::Separator();
     char pathbuf[512];
     std::snprintf(pathbuf, sizeof(pathbuf), "%s", path_.c_str());
-    if (ImGui::InputText("Asset path", pathbuf, sizeof(pathbuf))) path_ = pathbuf;
+    if (ui::InputText("Asset path", pathbuf, sizeof(pathbuf))) path_ = pathbuf;
 
     ImGui::BeginDisabled(path_.empty());
-    if (ImGui::Button("Save")) {
+    if (ui::Button("Save")) {
         if (schizo::vfx::save_vfx(path_, graph_)) dirty_ = false;
     }
     ImGui::EndDisabled();
-    if (dirty_) { ImGui::SameLine(); ImGui::TextUnformatted("(unsaved)"); }
+    if (dirty_) { ui::SameLineIfFits(); ImGui::TextUnformatted("(unsaved)"); }
 
     ImGui::End();
 }

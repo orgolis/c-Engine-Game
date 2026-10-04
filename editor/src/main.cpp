@@ -83,6 +83,7 @@
 #include "vfx_stack_panel.h"                 // VFX module stack editor (4.3)
 #include "command_palette.h"                 // Ctrl+P: one entry point for every action (4.2)
 #include "ai_assistant_panel.h"              // safe Codex / Claude project authoring
+#include "ui_layout.h"                      // responsive fields and wrapping toolbar rows
 #include "component_inspector.h"  // generic reflection-driven ECS component authoring (F2)
 
 // ImGui headers
@@ -1389,7 +1390,7 @@ void ShowPlayChangesDialog(EditorState& editor_state) {
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
                 ImGui::PushID(static_cast<int>(i));
-                ImGui::Checkbox("##keep", &c.keep);
+                schizo::editor::ui::Checkbox("##keep", &c.keep);
                 ImGui::PopID();
                 ImGui::TableSetColumnIndex(1);
                 ImGui::TextUnformatted(c.entity_name.c_str());
@@ -3038,20 +3039,20 @@ void DrawAssetInspector(EditorState& editor_state) {
     const auto& p = ai.properties();
 
     if (!p.valid) {
-        ImGui::TextDisabled("%s", ai.rel_path().c_str());
+        schizo::editor::ui::TextDisabledWrapped("%s", ai.rel_path().c_str());
         ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.35f, 1.0f), "This file no longer exists.");
-        if (ImGui::Button("Clear selection")) ai.Clear();
+        if (schizo::editor::ui::Button("Clear selection")) ai.Clear();
         return;
     }
 
     ImGui::TextUnformatted(p.name.c_str());
-    ImGui::TextDisabled("%s", p.type.c_str());
+    schizo::editor::ui::TextDisabledWrapped("%s", p.type.c_str());
     ImGui::Separator();
 
     if (ImGui::BeginTable("##asset_facts", 2, ImGuiTableFlags_SizingStretchProp)) {
         auto row = [](const char* k, const std::string& v) {
             ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("%s", k);
+            ImGui::TableSetColumnIndex(0); schizo::editor::ui::TextDisabledWrapped("%s", k);
             ImGui::TableSetColumnIndex(1); ImGui::TextWrapped("%s", v.c_str());
         };
         row("Path", ai.rel_path());
@@ -3074,11 +3075,11 @@ void DrawAssetInspector(EditorState& editor_state) {
         ImGui::Separator();
         editor_state.material_editor->RenderForPath(ai.rel_path(), editor_state.material_assets);
         ImGui::Separator();
-        if (ImGui::Button("Reveal")) schizo::editor::AssetBrowserPanel::OsReveal(ai.abs_path());
-        ImGui::SameLine();
-        if (ImGui::Button("Copy Path")) ImGui::SetClipboardText(ai.rel_path().c_str());
-        ImGui::SameLine();
-        ImGui::TextDisabled("Drag this onto an object or a terrain layer to use it.");
+        if (schizo::editor::ui::Button("Reveal")) schizo::editor::AssetBrowserPanel::OsReveal(ai.abs_path());
+        schizo::editor::ui::SameLineIfFits();
+        if (schizo::editor::ui::Button("Copy Path")) ImGui::SetClipboardText(ai.rel_path().c_str());
+        schizo::editor::ui::SameLineIfFits();
+        schizo::editor::ui::TextDisabledWrapped("Drag this onto an object or a terrain layer to use it.");
         return;
     }
 
@@ -3087,26 +3088,26 @@ void DrawAssetInspector(EditorState& editor_state) {
     // Actions. A .scene is the one asset type the editor can act on directly;
     // everything else hands off to the OS, which is honest about what exists.
     if (p.type == "Scene") {
-        if (ImGui::Button("Open Scene") && editor_state.editor_scene) {
+        if (schizo::editor::ui::Button("Open Scene") && editor_state.editor_scene) {
             if (!editor_state.editor_scene->LoadScene(ai.rel_path()))
                 spdlog::warn("[Inspector] failed to load scene '{}'", ai.rel_path());
         }
-        ImGui::SameLine();
+        schizo::editor::ui::SameLineIfFits();
     }
     if (!p.is_dir) {
-        if (ImGui::Button("Open Externally")) schizo::editor::AssetBrowserPanel::OsOpen(ai.abs_path());
-        ImGui::SameLine();
+        if (schizo::editor::ui::Button("Open Externally")) schizo::editor::AssetBrowserPanel::OsOpen(ai.abs_path());
+        schizo::editor::ui::SameLineIfFits();
     }
-    if (ImGui::Button("Reveal")) schizo::editor::AssetBrowserPanel::OsReveal(ai.abs_path());
-    ImGui::SameLine();
-    if (ImGui::Button("Copy Path")) ImGui::SetClipboardText(ai.rel_path().c_str());
+    if (schizo::editor::ui::Button("Reveal")) schizo::editor::AssetBrowserPanel::OsReveal(ai.abs_path());
+    schizo::editor::ui::SameLineIfFits();
+    if (schizo::editor::ui::Button("Copy Path")) ImGui::SetClipboardText(ai.rel_path().c_str());
 
     // Text preview. Text assets are the ones where the whole point is the
     // content -- a .mat or a .vfx is a handful of lines, and showing them saves
     // a round trip through an external editor just to check a value.
     if (ai.previewable()) {
         ImGui::Separator();
-        ImGui::TextDisabled("Contents%s", ai.preview_truncated() ? " (first 8 KB)" : "");
+        schizo::editor::ui::TextDisabledWrapped("Contents%s", ai.preview_truncated() ? " (first 8 KB)" : "");
         ImGui::InputTextMultiline("##asset_preview",
                                   const_cast<char*>(ai.preview().c_str()),
                                   ai.preview().size() + 1,
@@ -3114,7 +3115,7 @@ void DrawAssetInspector(EditorState& editor_state) {
                                   ImGuiInputTextFlags_ReadOnly);
     } else if (!p.is_dir) {
         ImGui::Separator();
-        ImGui::TextDisabled("No text preview (binary file).");
+        schizo::editor::ui::TextDisabledWrapped("No text preview (binary file).");
     }
 }
 
@@ -3126,7 +3127,10 @@ void ShowInspector(EditorState& editor_state) {
         flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
     }
 
-    ImGui::Begin("Inspector", &editor_state.show_inspector, flags);  // docked window = child; End() must always run
+    if (!ImGui::Begin("Inspector", &editor_state.show_inspector, flags)) {
+        ImGui::End();
+        return;
+    }
     {
         auto scene = editor_state.editor_scene->GetScene();
 
@@ -3155,20 +3159,20 @@ void ShowInspector(EditorState& editor_state) {
             prefab_guard.prev_unsaved  = editor_state.editor_scene->HasUnsavedChanges();
 
             ImGui::TextColored(ImVec4(0.55f, 0.78f, 1.0f, 1.0f), "Editing prefab");
-            ImGui::TextDisabled("%s", editor_state.prefab_edit_path.c_str());
+            schizo::editor::ui::TextDisabledWrapped("%s", editor_state.prefab_edit_path.c_str());
             ImGui::TextWrapped("Changes save to the asset, not to the scene. Objects already "
                                "placed from this prefab are separate copies and do not follow.");
             if (ImGui::SmallButton("Save now")) {
                 editor_state.prefab_dirty = true;
                 FlushPrefabEdits(editor_state);
             }
-            ImGui::SameLine();
+            schizo::editor::ui::SameLineIfFits("Reload");
             if (ImGui::SmallButton("Reload")) {
                 editor_state.prefab_edit_path.clear();   // forces a fresh load
                 editor_state.prefab_dirty = false;
             }
-            ImGui::SameLine();
-            ImGui::TextDisabled(editor_state.prefab_dirty ? "unsaved" : "saved");
+            schizo::editor::ui::SameLineIfFits();
+            schizo::editor::ui::TextDisabledWrapped(editor_state.prefab_dirty ? "unsaved" : "saved");
 
             // A prefab is a subtree, and the inspector shows one entity. Without
             // this, a prefab with children could only ever have its ROOT edited
@@ -3188,7 +3192,7 @@ void ShowInspector(EditorState& editor_state) {
                         for (const auto& c : e->GetChildren()) row(c, depth + 1);
                     };
                 if (!stage_root->GetChildren().empty()) {
-                    ImGui::TextDisabled("Parts");
+                    schizo::editor::ui::TextDisabledWrapped("Parts");
                     ImGui::BeginChild("##prefab_tree", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 5.0f), true);
                     row(stage_root, 0);
                     ImGui::EndChild();
@@ -3208,16 +3212,15 @@ void ShowInspector(EditorState& editor_state) {
             return;
         }
         if (!scene || inspect_id == 0) {
-            ImGui::TextDisabled("No entity selected.");
+            schizo::editor::ui::TextDisabledWrapped("No entity selected.");
             if (scene) {
                 // ---- Scene Environment (scene-bound sky) ----
                 ImGui::Separator();
                 ImGui::TextUnformatted("Scene Environment");
-                ImGui::TextDisabled("Each scene stores its own sky HDR.");
+                schizo::editor::ui::TextDisabledWrapped("Each scene stores its own sky HDR.");
 
                 char sky[260]; std::snprintf(sky, sizeof(sky), "%s", scene->GetSkyHdr().c_str());
-                ImGui::SetNextItemWidth(-90);
-                if (ImGui::InputText("Sky HDR", sky, sizeof(sky))) {
+                if (schizo::editor::ui::InputTextWithAction("Sky HDR", "Clear", sky, sizeof(sky))) {
                     scene->SetSkyHdr(sky); editor_state.editor_scene->MarkModified();
                 }
                 if (ImGui::BeginDragDropTarget()) {
@@ -3227,14 +3230,13 @@ void ShowInspector(EditorState& editor_state) {
                     }
                     ImGui::EndDragDropTarget();
                 }
-                ImGui::SameLine();
+                schizo::editor::ui::SameLineIfFits("Clear");
                 if (ImGui::SmallButton("Clear")) { scene->SetSkyHdr(""); editor_state.editor_scene->MarkModified(); }
-                if (scene->GetSkyHdr().empty()) ImGui::TextDisabled("(procedural gradient sky)");
-                ImGui::TextDisabled("Drag an .hdr here, or type a project-relative path.");
+                if (scene->GetSkyHdr().empty()) schizo::editor::ui::TextDisabledWrapped("(procedural gradient sky)");
+                schizo::editor::ui::TextDisabledWrapped("Drag an .hdr here, or type a project-relative path.");
 
                 float intensity = scene->GetSkyIntensity();
-                ImGui::SetNextItemWidth(-90);
-                if (ImGui::DragFloat("Sky Intensity", &intensity, 0.02f, 0.0f, 10.0f)) {
+                if (schizo::editor::ui::DragFloat("Sky Intensity", &intensity, 0.02f, 0.0f, 10.0f)) {
                     scene->SetSkyIntensity(intensity); editor_state.editor_scene->MarkModified();
                 }
                 ImGui::Dummy(ImVec2(0, 4));
@@ -3262,7 +3264,7 @@ void ShowInspector(EditorState& editor_state) {
         if (mesh_comp && !mesh_comp->mesh_path.empty()) {
             ImGui::Text("Model: %s", mesh_comp->mesh_path.c_str());
         } else {
-            ImGui::TextDisabled("Model: [default cube]");
+            schizo::editor::ui::TextDisabledWrapped("Model: [default cube]");
         }
         // Particle emitter (3.9) and NPC agent (3.5). Neither had ANY inspector
         // UI: both components existed, both were read every frame by their
@@ -3285,7 +3287,7 @@ void ShowInspector(EditorState& editor_state) {
                 // actually does. Over a checkerboard, a fade to transparent is
                 // finally distinguishable from a fade to black, which the raw
                 // DragFloat4s below cannot show at all.
-                ImGui::TextDisabled("Colour over life");
+                schizo::editor::ui::TextDisabledWrapped("Colour over life");
                 gws::anim::Gradient ramp =
                     gws::anim::Gradient::two_stop(pec->color_start, pec->color_end);
                 static int emitter_stop = 0;
@@ -3299,7 +3301,7 @@ void ShowInspector(EditorState& editor_state) {
                     editor_state.editor_scene->MarkModified();
                 }
                 if (ramp.size() > 2)
-                    ImGui::TextDisabled("(middle stops are preview only — the "
+                    schizo::editor::ui::TextDisabledWrapped("(middle stops are preview only — the "
                                         "component stores two colours)");
                 ImGui::Separator();
 
@@ -3321,7 +3323,7 @@ void ShowInspector(EditorState& editor_state) {
                 // rest of the section useless.
                 char buf[64];
                 std::snprintf(buf, sizeof buf, "%s", nac->target_name.c_str());
-                if (ImGui::InputText("target_name", buf, sizeof buf)) {
+                if (schizo::editor::ui::InputText("target_name", buf, sizeof buf)) {
                     nac->target_name = buf;
                     editor_state.editor_scene->MarkModified();
                 }
@@ -3340,19 +3342,19 @@ void ShowInspector(EditorState& editor_state) {
         // entity is one — an empty section on every rock and crate is noise.
         if (auto* smc = selected_entity->GetSkinnedMeshComponent(); smc && smc->active()) {
             if (ImGui::CollapsingHeader("Skinned Character", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::TextDisabled("%s", smc->gltf_path.c_str());
-                if (ImGui::Checkbox("Playing##skinned", &smc->playing))
+                schizo::editor::ui::TextDisabledWrapped("%s", smc->gltf_path.c_str());
+                if (schizo::editor::ui::Checkbox("Playing##skinned", &smc->playing))
                     editor_state.editor_scene->MarkModified();
-                if (ImGui::DragFloat("Speed##skinned", &smc->speed, 0.05f, -4.0f, 4.0f))
+                if (schizo::editor::ui::DragFloat("Speed##skinned", &smc->speed, 0.05f, -4.0f, 4.0f))
                     editor_state.editor_scene->MarkModified();
-                if (ImGui::DragInt("Clip##skinned", &smc->clip_index, 0.2f, 0, 64))
+                if (schizo::editor::ui::DragInt("Clip##skinned", &smc->clip_index, 0.2f, 0, 64))
                     editor_state.editor_scene->MarkModified();
                 if (ImGui::SmallButton("Clear rig")) {
                     *smc = schizo::scene::SkinnedMeshComponent{};
                     editor_state.editor_scene->MarkModified();
                 }
-                ImGui::SameLine();
-                ImGui::TextDisabled("(drop a rigged .gltf/.glb on the viewport to assign)");
+                schizo::editor::ui::SameLineIfFits();
+                schizo::editor::ui::TextDisabledWrapped("(drop a rigged .gltf/.glb on the viewport to assign)");
             }
             ImGui::Separator();
         }
@@ -3361,14 +3363,14 @@ void ShowInspector(EditorState& editor_state) {
 
         // Entity name editing
         static char entity_name_buf[256];
-        if (ImGui::InputText("Name", entity_name_buf, sizeof(entity_name_buf))) {
+        if (schizo::editor::ui::InputText("Name", entity_name_buf, sizeof(entity_name_buf))) {
             selected_entity->SetName(entity_name_buf);
             editor_state.editor_scene->MarkModified();
         }
 
         // Active toggle
         bool is_active = selected_entity->IsActive();
-        if (ImGui::Checkbox("Active", &is_active)) {
+        if (schizo::editor::ui::Checkbox("Active", &is_active)) {
             selected_entity->SetActive(is_active);
             editor_state.editor_scene->MarkModified();
         }
@@ -3387,7 +3389,7 @@ void ShowInspector(EditorState& editor_state) {
             if (mesh_comp && !mesh_comp->mesh_path.empty()) {
                 ImGui::Text("Model: %s", mesh_comp->mesh_path.c_str());
             } else {
-                ImGui::TextDisabled("[Default Cube]");
+                schizo::editor::ui::TextDisabledWrapped("[Default Cube]");
             }
 
             ImGui::EndChild();
@@ -3396,7 +3398,7 @@ void ShowInspector(EditorState& editor_state) {
             // Right column: controls
             ImGui::Text("Model Scale");
             static float mesh_scale = 1.0f;
-            if (ImGui::SliderFloat("Mesh Scale##separate", &mesh_scale, 0.1f, 5.0f)) {
+            if (schizo::editor::ui::SliderFloat("Mesh Scale##separate", &mesh_scale, 0.1f, 5.0f)) {
                 // This scale affects only the mesh rendering, not the entity transform
                 // Store in mesh component or as a separate property
                 editor_state.editor_scene->MarkModified();
@@ -3415,19 +3417,19 @@ void ShowInspector(EditorState& editor_state) {
         glm::vec3 rot = glm::degrees(glm::eulerAngles(transform->GetLocalRotation()));
         glm::vec3 scale = transform->GetLocalScale();
 
-        if (ImGui::DragFloat3("Position##local", &pos[0], 0.1f)) {
+        if (schizo::editor::ui::DragFloat3("Position##local", &pos[0], 0.1f)) {
             transform->SetLocalPosition(pos);
             editor_state.editor_scene->MarkModified();
         }
 
-        if (ImGui::DragFloat3("Rotation##local", &rot[0], 0.5f)) {
+        if (schizo::editor::ui::DragFloat3("Rotation##local", &rot[0], 0.5f)) {
             // Convert Euler angles back to quaternion
             glm::quat new_rot = glm::quat(glm::radians(rot));
             transform->SetLocalRotation(new_rot);
             editor_state.editor_scene->MarkModified();
         }
 
-        if (ImGui::DragFloat3("Scale##local", &scale[0], 0.1f, 0.1f)) {
+        if (schizo::editor::ui::DragFloat3("Scale##local", &scale[0], 0.1f, 0.1f)) {
             transform->SetLocalScale(scale);
             editor_state.editor_scene->MarkModified();
         }
@@ -3441,9 +3443,9 @@ void ShowInspector(EditorState& editor_state) {
             glm::vec3 world_rot = glm::degrees(glm::eulerAngles(transform->GetWorldRotation()));
             glm::vec3 world_scale = transform->GetWorldScale();
 
-            ImGui::DragFloat3("Position##world", &world_pos[0], 0.1f);
-            ImGui::DragFloat3("Rotation##world", &world_rot[0], 0.5f);
-            ImGui::DragFloat3("Scale##world", &world_scale[0], 0.1f);
+            schizo::editor::ui::DragFloat3("Position##world", &world_pos[0], 0.1f);
+            schizo::editor::ui::DragFloat3("Rotation##world", &world_rot[0], 0.5f);
+            schizo::editor::ui::DragFloat3("Scale##world", &world_scale[0], 0.1f);
 
             ImGui::PopStyleVar();
             ImGui::PopItemFlag();
@@ -3490,7 +3492,7 @@ void ShowInspector(EditorState& editor_state) {
 
             // Add component button
             ImGui::Separator();
-            if (ImGui::Button("+ Add Component", ImVec2(-1, 0))) {
+            if (schizo::editor::ui::Button("+ Add Component", ImVec2(-1, 0))) {
                 ImGui::OpenPopup("AddComponentMenu");
             }
 
@@ -3567,7 +3569,7 @@ void ShowInspector(EditorState& editor_state) {
                     ImGui::EndDisabled();
                     if (has_collider) {
                         ImGui::Separator();
-                        ImGui::TextDisabled("(already has a Collider)");
+                        schizo::editor::ui::TextDisabledWrapped("(already has a Collider)");
                     }
                     ImGui::EndMenu();
                 }
@@ -3587,7 +3589,7 @@ void ShowInspector(EditorState& editor_state) {
                     ImGui::EndDisabled();
                     if (has_camera) {
                         ImGui::Separator();
-                        ImGui::TextDisabled("(already has a Camera)");
+                        schizo::editor::ui::TextDisabledWrapped("(already has a Camera)");
                     }
                 }
 
@@ -3631,7 +3633,7 @@ void ShowInspector(EditorState& editor_state) {
                     ImGui::EndDisabled();
                     if (has_terrain) {
                         ImGui::Separator();
-                        ImGui::TextDisabled("(already has Terrain)");
+                        schizo::editor::ui::TextDisabledWrapped("(already has Terrain)");
                     }
                 }
 
@@ -3678,8 +3680,7 @@ void ShowInspector(EditorState& editor_state) {
                 // accepts an AUDIO_ASSET drag-drop from the Asset Browser.
                 char clip_buf[512];
                 std::snprintf(clip_buf, sizeof(clip_buf), "%s", audio_src->GetClipPath().c_str());
-                ImGui::SetNextItemWidth(-70.0f);
-                if (ImGui::InputText("Clip##audiosrc", clip_buf, sizeof(clip_buf))) {
+                if (schizo::editor::ui::InputTextWithAction("Clip##audiosrc", "...", clip_buf, sizeof(clip_buf))) {
                     audio_src->SetClipPath(clip_buf);
                     audio_src->SetClipGuid(clip_buf[0] ? AudioGuidFromPath(clip_buf) : 0);
                     editor_state.editor_scene->MarkModified();
@@ -3696,8 +3697,8 @@ void ShowInspector(EditorState& editor_state) {
                     }
                     ImGui::EndDragDropTarget();
                 }
-                ImGui::SameLine();
-                if (ImGui::Button("...##audiosrc")) {
+                schizo::editor::ui::SameLineIfFits();
+                if (schizo::editor::ui::Button("...##audiosrc")) {
                     std::string p = OpenAudioDialogNative();
                     if (!p.empty()) {
                         audio_src->SetClipPath(p);
@@ -3707,29 +3708,29 @@ void ShowInspector(EditorState& editor_state) {
                 }
 
                 float vol = audio_src->GetVolume();
-                if (ImGui::SliderFloat("Volume##audiosrc", &vol, 0.0f, 2.0f)) {
+                if (schizo::editor::ui::SliderFloat("Volume##audiosrc", &vol, 0.0f, 2.0f)) {
                     audio_src->SetVolume(vol); editor_state.editor_scene->MarkModified();
                 }
                 float pitch = audio_src->GetPitch();
-                if (ImGui::SliderFloat("Pitch##audiosrc", &pitch, 0.1f, 4.0f)) {
+                if (schizo::editor::ui::SliderFloat("Pitch##audiosrc", &pitch, 0.1f, 4.0f)) {
                     audio_src->SetPitch(pitch); editor_state.editor_scene->MarkModified();
                 }
                 float radius = audio_src->GetRadius();
-                if (ImGui::SliderFloat("Radius##audiosrc", &radius, 1.0f, 100.0f)) {
+                if (schizo::editor::ui::SliderFloat("Radius##audiosrc", &radius, 1.0f, 100.0f)) {
                     audio_src->SetRadius(radius); editor_state.editor_scene->MarkModified();
                 }
                 bool loop = audio_src->IsLooping();
-                if (ImGui::Checkbox("Loop##audiosrc", &loop)) {
+                if (schizo::editor::ui::Checkbox("Loop##audiosrc", &loop)) {
                     audio_src->SetLooping(loop); editor_state.editor_scene->MarkModified();
                 }
-                ImGui::SameLine();
+                schizo::editor::ui::SameLineIfFits();
                 bool spatial = audio_src->IsSpatial();
-                if (ImGui::Checkbox("Spatial##audiosrc", &spatial)) {
+                if (schizo::editor::ui::Checkbox("Spatial##audiosrc", &spatial)) {
                     audio_src->SetSpatial(spatial); editor_state.editor_scene->MarkModified();
                 }
-                ImGui::SameLine();
+                schizo::editor::ui::SameLineIfFits();
                 bool play_start = audio_src->PlayOnStart();
-                if (ImGui::Checkbox("Play on Start##audiosrc", &play_start)) {
+                if (schizo::editor::ui::Checkbox("Play on Start##audiosrc", &play_start)) {
                     audio_src->SetPlayOnStart(play_start); editor_state.editor_scene->MarkModified();
                 }
 
@@ -3739,7 +3740,7 @@ void ShowInspector(EditorState& editor_state) {
                 if (editor_state.audio) {
                     const gws::audio::BusGraph& bg = editor_state.audio->mixer().buses();
                     const std::string cur = audio_src->GetBus();
-                    if (ImGui::BeginCombo("Bus##audiosrc", cur.c_str())) {
+                    if (schizo::editor::ui::BeginCombo("Bus##audiosrc", cur.c_str())) {
                         for (size_t i = 0; i < bg.count(); ++i) {
                             const gws::audio::Bus* b = bg.bus(static_cast<gws::audio::BusId>(i));
                             if (!b) continue;
@@ -3763,14 +3764,14 @@ void ShowInspector(EditorState& editor_state) {
 
                 ImGui::Separator();
                 const bool playing = audio_src->IsPlaying();
-                if (ImGui::Button(playing ? "Stop Preview##audiosrc"
+                if (schizo::editor::ui::Button(playing ? "Stop Preview##audiosrc"
                                           : "Preview##audiosrc", ImVec2(130, 0)))
                     audio_src->SetPlaying(!playing);   // edit-mode audition
                 if (audio_src->GetClipPath().empty()) {
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(no clip assigned)");
+                    schizo::editor::ui::SameLineIfFits();
+                    schizo::editor::ui::TextDisabledWrapped("(no clip assigned)");
                 } else if (!audio_src->PlayOnStart() && !playing) {
-                    ImGui::SameLine();
+                    schizo::editor::ui::SameLineIfFits();
                     ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.3f, 1.0f),
                                        "silent in Play: 'Play on Start' is off");
                 }
@@ -3784,14 +3785,14 @@ void ShowInspector(EditorState& editor_state) {
         if (audio_listener) {
             if (ImGui::TreeNode("Audio Listener")) {
                 bool active = audio_listener->IsActive();
-                if (ImGui::Checkbox("Active##audiolisten", &active)) {
+                if (schizo::editor::ui::Checkbox("Active##audiolisten", &active)) {
                     audio_listener->SetActive(active); editor_state.editor_scene->MarkModified();
                 }
                 float gain = audio_listener->GetMasterGain();
-                if (ImGui::SliderFloat("Master Volume##audiolisten", &gain, 0.0f, 1.0f)) {
+                if (schizo::editor::ui::SliderFloat("Master Volume##audiolisten", &gain, 0.0f, 1.0f)) {
                     audio_listener->SetMasterGain(gain); editor_state.editor_scene->MarkModified();
                 }
-                ImGui::TextDisabled("The active listener (usually the camera or\n"
+                schizo::editor::ui::TextDisabledWrapped("The active listener (usually the camera or\n"
                                     "player) sets global pan & attenuation.");
                 ImGui::TreePop();
             }
@@ -3836,7 +3837,7 @@ void ShowInspector(EditorState& editor_state) {
                             terrain_comp->GetResolution(), terrain_comp->GetResolution(),
                             terrain_comp->GetSize());
 
-                ImGui::SliderInt("Resolution##terrain", &terr_pending_res, 8, 1024);
+                schizo::editor::ui::SliderInt("Resolution##terrain", &terr_pending_res, 8, 1024);
                 const bool res_commit = ImGui::IsItemDeactivatedAfterEdit();
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("Applied when you release the slider — a full re-mesh of a\n"
@@ -3845,7 +3846,7 @@ void ShowInspector(EditorState& editor_state) {
                                       "Changing resolution or size RESETS the heightmap to flat.\n"
                                       "Sculpting only rebuilds the chunks the brush touches.");
 
-                ImGui::SliderFloat("Size (m)##terrain", &terr_pending_size, 4.0f, 8000.0f,
+                schizo::editor::ui::SliderFloat("Size (m)##terrain", &terr_pending_size, 4.0f, 8000.0f,
                                    "%.0f", ImGuiSliderFlags_Logarithmic);
                 const bool size_commit = ImGui::IsItemDeactivatedAfterEdit();
 
@@ -3861,7 +3862,7 @@ void ShowInspector(EditorState& editor_state) {
                     }
                 }
 
-                ImGui::SliderFloat("Height Scale##terrain", &terr_pending_hs, 0.1f, 10.0f);
+                schizo::editor::ui::SliderFloat("Height Scale##terrain", &terr_pending_hs, 0.1f, 10.0f);
                 if (ImGui::IsItemDeactivatedAfterEdit() &&
                     std::abs(terr_pending_hs - terrain_comp->GetHeightScale()) > 1e-4f) {
                     terrain_comp->SetHeightScale(terr_pending_hs);
@@ -3879,50 +3880,50 @@ void ShowInspector(EditorState& editor_state) {
                     ImGui::TextColored(ImVec4(1.0f, 0.80f, 0.35f, 1.0f),
                                        "Pending — release the slider to apply.");
                 }
-                if (ImGui::Button("Flatten##terrain")) {
+                if (schizo::editor::ui::Button("Flatten##terrain")) {
                     terrain_comp->Flatten(0.0f);
                     editor_state.editor_scene->MarkModified();
                 }
 
                 ImGui::Separator();
-                if (ImGui::Checkbox("Sculpt Mode##terrain", &editor_state.terrain_sculpt_active)) {
+                if (schizo::editor::ui::Checkbox("Sculpt Mode##terrain", &editor_state.terrain_sculpt_active)) {
                     if (editor_state.terrain_sculpt_active) editor_state.terrain_paint_active = false;
                 }
-                ImGui::SameLine();
-                ImGui::TextDisabled("(Left-drag over terrain)");
+                schizo::editor::ui::SameLineIfFits();
+                schizo::editor::ui::TextDisabledWrapped("(Left-drag over terrain)");
                 const char* brushes[] = { "Raise", "Lower", "Smooth", "Flatten",
                                           "Dig Hole", "Fill Hole" };
-                ImGui::Combo("Brush##terrain", &editor_state.terrain_brush_mode, brushes, 6);
+                schizo::editor::ui::Combo("Brush##terrain", &editor_state.terrain_brush_mode, brushes, 6);
                 if (editor_state.terrain_brush_mode >= 4)
-                    ImGui::TextDisabled("Holes carve the surface + collision —\n"
+                    schizo::editor::ui::TextDisabledWrapped("Holes carve the surface + collision —\n"
                                         "build caves (or underwater entrances) through them.");
-                ImGui::SliderFloat("Radius##terrain",   &editor_state.terrain_brush_radius,   0.5f, 50.0f);
-                ImGui::SliderFloat("Strength##terrain", &editor_state.terrain_brush_strength, 0.01f, 5.0f);
-                ImGui::SliderFloat("Falloff##terrain",  &editor_state.terrain_brush_falloff,  0.0f, 1.0f);
+                schizo::editor::ui::SliderFloat("Radius##terrain",   &editor_state.terrain_brush_radius,   0.5f, 50.0f);
+                schizo::editor::ui::SliderFloat("Strength##terrain", &editor_state.terrain_brush_strength, 0.01f, 5.0f);
+                schizo::editor::ui::SliderFloat("Falloff##terrain",  &editor_state.terrain_brush_falloff,  0.0f, 1.0f);
 
                 // ── Texture splat painting (Phase C) ──
                 ImGui::Separator();
-                if (ImGui::Checkbox("Paint Mode##terrain", &editor_state.terrain_paint_active)) {
+                if (schizo::editor::ui::Checkbox("Paint Mode##terrain", &editor_state.terrain_paint_active)) {
                     if (editor_state.terrain_paint_active) editor_state.terrain_sculpt_active = false;
                 }
-                ImGui::SameLine();
-                ImGui::TextDisabled("(Left-drag paints active layer)");
+                schizo::editor::ui::SameLineIfFits();
+                schizo::editor::ui::TextDisabledWrapped("(Left-drag paints active layer)");
 
                 ImGui::Text("Active layer:");
-                ImGui::SameLine();
+                schizo::editor::ui::SameLineIfFits();
                 for (int i = 0; i < schizo::scene::kTerrainLayers; ++i) {
                     char rb[16]; std::snprintf(rb, sizeof rb, "%d##tpl", i);
-                    if (i) ImGui::SameLine();
+                    if (i) schizo::editor::ui::SameLineIfFits();
                     ImGui::RadioButton(rb, &editor_state.terrain_paint_layer, i);
                 }
-                ImGui::SliderFloat("Paint Strength##terrain", &editor_state.terrain_paint_strength, 0.01f, 1.0f);
-                ImGui::SliderFloat("Paint Radius##terrain",   &editor_state.terrain_brush_radius,   0.5f, 50.0f);
+                schizo::editor::ui::SliderFloat("Paint Strength##terrain", &editor_state.terrain_paint_strength, 0.01f, 1.0f);
+                schizo::editor::ui::SliderFloat("Paint Radius##terrain",   &editor_state.terrain_brush_radius,   0.5f, 50.0f);
 
                 // Triplanar. Sits above the per-layer list because it is a
                 // property of the terrain surface, not of any one layer.
                 {
                     bool tri = terrain_comp->GetTriplanar();
-                    if (ImGui::Checkbox("Triplanar projection##terr", &tri)) {
+                    if (schizo::editor::ui::Checkbox("Triplanar projection##terr", &tri)) {
                         terrain_comp->SetTriplanar(tri);
                         editor_state.editor_scene->MarkModified();
                     }
@@ -3938,13 +3939,11 @@ void ShowInspector(EditorState& editor_state) {
                     }
                     if (tri) {
                         float sh = terrain_comp->GetTriplanarSharpness();
-                        ImGui::SetNextItemWidth(-70.0f);
-                        if (ImGui::SliderFloat("##trisharp", &sh, 1.0f, 16.0f, "%.1f")) {
+                        schizo::editor::ui::Label("Blend sharpness");
+                        if (schizo::editor::ui::SliderFloat("##trisharp", &sh, 1.0f, 16.0f, "%.1f")) {
                             terrain_comp->SetTriplanarSharpness(sh);
                             editor_state.editor_scene->MarkModified();
                         }
-                        ImGui::SameLine();
-                        ImGui::TextDisabled("blend sharpness");
                     }
                     ImGui::Separator();
                 }
@@ -3964,7 +3963,7 @@ void ShowInspector(EditorState& editor_state) {
                 // to repeat 8 times across a 100 m terrain and 300 across a 4 km
                 // one, so putting it in the .mat would make a shared rock
                 // unusable on two terrains of different sizes.
-                ImGui::TextDisabled("Drop a .mat for full PBR, or a texture for a quick blockout.");
+                schizo::editor::ui::TextDisabledWrapped("Drop a .mat for full PBR, or a texture for a quick blockout.");
                 static uint32_t terr_synced_id = 0xFFFFFFFFu;
                 static char     terr_layer_buf[schizo::scene::kTerrainLayers][260];
                 static char     terr_mat_buf[schizo::scene::kTerrainLayers][260];
@@ -3985,8 +3984,9 @@ void ShowInspector(EditorState& editor_state) {
                                 i == editor_state.terrain_paint_layer ? "  (painting)" : "");
 
                     // Material slot.
-                    ImGui::SetNextItemWidth(-70.0f);
-                    ImGui::InputTextWithHint("##mat", "no material — using the texture below",
+                    schizo::editor::ui::Label("Material");
+                    schizo::editor::ui::SetNextItemWidthForAction("x");
+                    schizo::editor::ui::InputTextWithHint("##mat", "no material — using the texture below",
                                              terr_mat_buf[i], sizeof terr_mat_buf[i]);
                     if (ImGui::IsItemDeactivatedAfterEdit()) {
                         terrain_comp->SetLayerMaterial(i, terr_mat_buf[i]);
@@ -4004,10 +4004,8 @@ void ShowInspector(EditorState& editor_state) {
                         }
                         ImGui::EndDragDropTarget();
                     }
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("material");
                     if (terrain_comp->HasLayerMaterial(i)) {
-                        ImGui::SameLine();
+                        schizo::editor::ui::SameLineIfFits("x##clearmat");
                         if (ImGui::SmallButton("x##clearmat")) {
                             // Detach only. The .mat stays on disk; other layers
                             // and other objects may still be using it.
@@ -4022,8 +4020,8 @@ void ShowInspector(EditorState& editor_state) {
                     // that silently has no effect is worse than one that says so.
                     const bool has_mat = terrain_comp->HasLayerMaterial(i);
                     ImGui::BeginDisabled(has_mat);
-                    ImGui::SetNextItemWidth(-70.0f);
-                    ImGui::InputTextWithHint("##path", "albedo texture",
+                    schizo::editor::ui::Label("Texture");
+                    schizo::editor::ui::InputTextWithHint("##path", "albedo texture",
                                              terr_layer_buf[i], sizeof terr_layer_buf[i]);
                     if (!has_mat && ImGui::IsItemDeactivatedAfterEdit()) {
                         terrain_comp->SetLayerPath(i, terr_layer_buf[i]);
@@ -4041,22 +4039,18 @@ void ShowInspector(EditorState& editor_state) {
                         }
                         ImGui::EndDragDropTarget();
                     }
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("texture");
                     ImGui::EndDisabled();
                     if (has_mat && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                         ImGui::SetTooltip("The material above supplies this layer's surface.\n"
                                           "Clear it to go back to a single texture.");
 
                     float t = terrain_comp->GetTiling(i);
-                    ImGui::SetNextItemWidth(-70.0f);
-                    if (ImGui::SliderFloat("##tiling", &t, 1.0f, 512.0f, "%.0f",
+                    schizo::editor::ui::Label("Tiling");
+                    if (schizo::editor::ui::SliderFloat("##tiling", &t, 1.0f, 512.0f, "%.0f",
                                            ImGuiSliderFlags_Logarithmic)) {
                         terrain_comp->SetTiling(i, t);
                         editor_state.editor_scene->MarkModified();
                     }
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("tiling");
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("How many times this layer repeats across the whole\n"
                                           "terrain. Lives here, not in the material, so one rock\n"
@@ -4069,66 +4063,61 @@ void ShowInspector(EditorState& editor_state) {
                     if (has_mat) {
                         ImGui::BeginDisabled();
                         float dummy_m = 0.0f, dummy_r = 0.0f;
-                        ImGui::SetNextItemWidth(-70.0f);
-                        ImGui::SliderFloat("##metal_d", &dummy_m, 0.0f, 1.0f, "from material");
-                        ImGui::SameLine(); ImGui::TextDisabled("metallic");
-                        ImGui::SetNextItemWidth(-70.0f);
-                        ImGui::SliderFloat("##rough_d", &dummy_r, 0.0f, 1.0f, "from material");
-                        ImGui::SameLine(); ImGui::TextDisabled("roughness");
+                        schizo::editor::ui::Label("Metallic");
+                        schizo::editor::ui::SliderFloat("##metal_d", &dummy_m, 0.0f, 1.0f, "from material");
+                        schizo::editor::ui::Label("Roughness");
+                        schizo::editor::ui::SliderFloat("##rough_d", &dummy_r, 0.0f, 1.0f, "from material");
                         ImGui::EndDisabled();
                     } else {
                         float me = terrain_comp->GetLayerMetallic(i);
-                        ImGui::SetNextItemWidth(-70.0f);
-                        if (ImGui::SliderFloat("##metal", &me, 0.0f, 1.0f, "%.2f")) {
+                        schizo::editor::ui::Label("Metallic");
+                        if (schizo::editor::ui::SliderFloat("##metal", &me, 0.0f, 1.0f, "%.2f")) {
                             terrain_comp->SetLayerMetallic(i, me);
                             editor_state.editor_scene->MarkModified();
                         }
-                        ImGui::SameLine(); ImGui::TextDisabled("metallic");
                         if (ImGui::IsItemHovered())
                             ImGui::SetTooltip("0 = ordinary ground, 1 = bare metal.\n"
                                               "A metal reflects its own colour, so this is what\n"
                                               "makes terrain reflect anything at all.");
 
                         float ro = terrain_comp->GetLayerRoughness(i);
-                        ImGui::SetNextItemWidth(-70.0f);
-                        if (ImGui::SliderFloat("##rough", &ro, 0.02f, 1.0f, "%.2f")) {
+                        schizo::editor::ui::Label("Roughness");
+                        if (schizo::editor::ui::SliderFloat("##rough", &ro, 0.02f, 1.0f, "%.2f")) {
                             terrain_comp->SetLayerRoughness(i, ro);
                             editor_state.editor_scene->MarkModified();
                         }
-                        ImGui::SameLine(); ImGui::TextDisabled("roughness");
                         if (ImGui::IsItemHovered())
                             ImGui::SetTooltip("1 = dry and matte (the old fixed value), lower is\n"
                                               "glossier. Wet ground and polished stone live near 0.2.");
 
                         float ns = terrain_comp->GetLayerNormalScale(i);
-                        ImGui::SetNextItemWidth(-70.0f);
-                        if (ImGui::SliderFloat("##nscale", &ns, 0.0f, 4.0f, "%.2f")) {
+                        schizo::editor::ui::Label("Normal scale");
+                        if (schizo::editor::ui::SliderFloat("##nscale", &ns, 0.0f, 4.0f, "%.2f")) {
                             terrain_comp->SetLayerNormalScale(i, ns);
                             editor_state.editor_scene->MarkModified();
                         }
-                        ImGui::SameLine(); ImGui::TextDisabled("normal scale");
                     }
                     ImGui::PopID();
                 }
                 ImGui::Separator();
-                if (ImGui::Button("Clear Painting##terrain")) {
+                if (schizo::editor::ui::Button("Clear Painting##terrain")) {
                     terrain_comp->ResizeSplat(terrain_comp->SplatResolution());
                     editor_state.editor_scene->MarkModified();
                 }
-                ImGui::SameLine();
-                ImGui::TextDisabled("(resets to Layer 0)");
+                schizo::editor::ui::SameLineIfFits();
+                schizo::editor::ui::TextDisabledWrapped("(resets to Layer 0)");
 
                 // ── Integrated water (Unreal-style: part of the terrain) ──
                 ImGui::Separator();
                 bool twater = terrain_comp->IsWaterEnabled();
-                if (ImGui::Checkbox("Water##terrain", &twater)) {
+                if (schizo::editor::ui::Checkbox("Water##terrain", &twater)) {
                     terrain_comp->SetWaterEnabled(twater);
                     editor_state.editor_scene->MarkModified();
                 }
                 if (twater) {
-                    ImGui::SameLine();
+                    schizo::editor::ui::SameLineIfFits();
                     bool tphys = terrain_comp->IsWaterPhysical();
-                    if (ImGui::Checkbox("Physical##terrainwater", &tphys)) {
+                    if (schizo::editor::ui::Checkbox("Physical##terrainwater", &tphys)) {
                         terrain_comp->SetWaterPhysical(tphys);
                         editor_state.editor_scene->MarkModified();
                     }
@@ -4136,42 +4125,42 @@ void ShowInspector(EditorState& editor_state) {
                         ImGui::SetTooltip("Physical: buoyancy + swimming in Play mode.\n"
                                           "Unchecked: visual only.");
                     float tlvl = terrain_comp->GetWaterLevel();
-                    if (ImGui::SliderFloat("Water Level##terrain", &tlvl, -50.0f, 100.0f)) {
+                    if (schizo::editor::ui::SliderFloat("Water Level##terrain", &tlvl, -50.0f, 100.0f)) {
                         terrain_comp->SetWaterLevel(tlvl);
                         editor_state.editor_scene->MarkModified();
                     }
                     glm::vec3 tdc = terrain_comp->GetWaterDeepColor();
-                    if (ImGui::ColorEdit3("Deep##terrainwater", &tdc.x)) {
+                    if (schizo::editor::ui::ColorEdit3("Deep##terrainwater", &tdc.x)) {
                         terrain_comp->SetWaterDeepColor(tdc);
                         editor_state.editor_scene->MarkModified();
                     }
                     glm::vec3 tsc = terrain_comp->GetWaterShallowColor();
-                    if (ImGui::ColorEdit3("Shallow##terrainwater", &tsc.x)) {
+                    if (schizo::editor::ui::ColorEdit3("Shallow##terrainwater", &tsc.x)) {
                         terrain_comp->SetWaterShallowColor(tsc);
                         editor_state.editor_scene->MarkModified();
                     }
                     float twh = terrain_comp->GetWaterWaveHeight();
-                    if (ImGui::SliderFloat("Wave Height##terrainwater", &twh, 0.0f, 2.0f)) {
+                    if (schizo::editor::ui::SliderFloat("Wave Height##terrainwater", &twh, 0.0f, 2.0f)) {
                         terrain_comp->SetWaterWaveHeight(twh);
                         editor_state.editor_scene->MarkModified();
                     }
                     float tws = terrain_comp->GetWaterWaveSpeed();
-                    if (ImGui::SliderFloat("Wave Speed##terrainwater", &tws, 0.0f, 5.0f)) {
+                    if (schizo::editor::ui::SliderFloat("Wave Speed##terrainwater", &tws, 0.0f, 5.0f)) {
                         terrain_comp->SetWaterWaveSpeed(tws);
                         editor_state.editor_scene->MarkModified();
                     }
                     float twsc = terrain_comp->GetWaterWaveScale();
-                    if (ImGui::SliderFloat("Wave Length##terrainwater", &twsc, 0.5f, 100.0f)) {
+                    if (schizo::editor::ui::SliderFloat("Wave Length##terrainwater", &twsc, 0.5f, 100.0f)) {
                         terrain_comp->SetWaterWaveScale(twsc);
                         editor_state.editor_scene->MarkModified();
                     }
                     float tcl = terrain_comp->GetWaterClarity();
-                    if (ImGui::SliderFloat("Clarity (m)##terrainwater", &tcl, 0.05f, 20.0f)) {
+                    if (schizo::editor::ui::SliderFloat("Clarity (m)##terrainwater", &tcl, 0.05f, 20.0f)) {
                         terrain_comp->SetWaterClarity(tcl);
                         editor_state.editor_scene->MarkModified();
                     }
                     float trf = terrain_comp->GetWaterReflectivity();
-                    if (ImGui::SliderFloat("Reflectivity##terrainwater", &trf, 0.0f, 1.0f)) {
+                    if (schizo::editor::ui::SliderFloat("Reflectivity##terrainwater", &trf, 0.0f, 1.0f)) {
                         terrain_comp->SetWaterReflectivity(trf);
                         editor_state.editor_scene->MarkModified();
                     }
@@ -4193,7 +4182,7 @@ void ShowInspector(EditorState& editor_state) {
                                   script_comp->GetScriptPath().c_str());
                     scr_synced_id = selected_entity->GetId();
                 }
-                ImGui::InputText("Script File##script", scr_path_buf, sizeof scr_path_buf);
+                schizo::editor::ui::InputText("Script File##script", scr_path_buf, sizeof scr_path_buf);
                 if (ImGui::IsItemDeactivatedAfterEdit()) {
                     script_comp->SetScriptPath(scr_path_buf);
                     editor_state.script_system.force_reload(selected_entity->GetId());
@@ -4212,16 +4201,16 @@ void ShowInspector(EditorState& editor_state) {
                     }
                     ImGui::EndDragDropTarget();
                 }
-                ImGui::TextDisabled(".py = Python, .cpp = C++ (g++), .cs = C# (.NET)\n"
+                schizo::editor::ui::TextDisabledWrapped(".py = Python, .cpp = C++ (g++), .cs = C# (.NET)\n"
                                     "hooks: on_start(e), on_update(e, dt)");
 
                 bool s_enabled = script_comp->IsEnabled();
-                if (ImGui::Checkbox("Enabled##script", &s_enabled)) {
+                if (schizo::editor::ui::Checkbox("Enabled##script", &s_enabled)) {
                     script_comp->SetEnabled(s_enabled);
                     editor_state.editor_scene->MarkModified();
                 }
-                ImGui::SameLine();
-                if (ImGui::Button("Reload##script")) {
+                schizo::editor::ui::SameLineIfFits();
+                if (schizo::editor::ui::Button("Reload##script")) {
                     editor_state.script_system.force_reload(selected_entity->GetId());
                     script_comp->SetStatus("");
                 }
@@ -4234,7 +4223,7 @@ void ShowInspector(EditorState& editor_state) {
                                           : ImVec4(0.95f, 0.4f, 0.35f, 1.0f),
                                        "%s", st.c_str());
                 } else {
-                    ImGui::TextDisabled("(runs in Play mode; edits hot-reload live)");
+                    schizo::editor::ui::TextDisabledWrapped("(runs in Play mode; edits hot-reload live)");
                 }
 
                 // ── Public fields ──────────────────────────────────────────
@@ -4255,12 +4244,12 @@ void ShowInspector(EditorState& editor_state) {
                     if (file_ok) params = schizo::editor::scan_script_params(spath);
 
                     if (spath.empty()) {
-                        ImGui::TextDisabled("Assign a script file to expose its fields.");
+                        schizo::editor::ui::TextDisabledWrapped("Assign a script file to expose its fields.");
                     } else if (!file_ok) {
                         ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.35f, 1.0f),
                                            "Script not found (relative to project):\n  %s", spath.c_str());
                     } else if (params.empty()) {
-                        ImGui::TextDisabled("No public fields. Add a top-level variable\n"
+                        schizo::editor::ui::TextDisabledWrapped("No public fields. Add a top-level variable\n"
                                             "(e.g.  speed = 5.0 ), or  # @param name type default.");
                     } else {
                         for (const auto& pr : params) {
@@ -4270,26 +4259,26 @@ void ShowInspector(EditorState& editor_state) {
                                 (pr.label.empty() ? pr.name : pr.label) + "##fld_" + pr.name;
                             if (pr.type == "float") {
                                 float v = std::strtof(cur.c_str(), nullptr);
-                                if (ImGui::DragFloat(label.c_str(), &v, 0.1f)) {
+                                if (schizo::editor::ui::DragFloat(label.c_str(), &v, 0.1f)) {
                                     char b[64]; std::snprintf(b, sizeof b, "%g", v);
                                     script_comp->SetParam(pr.name, b);
                                     editor_state.editor_scene->MarkModified();
                                 }
                             } else if (pr.type == "int") {
                                 int v = std::atoi(cur.c_str());
-                                if (ImGui::DragInt(label.c_str(), &v)) {
+                                if (schizo::editor::ui::DragInt(label.c_str(), &v)) {
                                     script_comp->SetParam(pr.name, std::to_string(v));
                                     editor_state.editor_scene->MarkModified();
                                 }
                             } else if (pr.type == "bool") {
                                 bool v = (cur == "1" || cur == "true" || cur == "True");
-                                if (ImGui::Checkbox(label.c_str(), &v)) {
+                                if (schizo::editor::ui::Checkbox(label.c_str(), &v)) {
                                     script_comp->SetParam(pr.name, v ? "1" : "0");
                                     editor_state.editor_scene->MarkModified();
                                 }
                             } else {  // string
                                 char b[256]; std::snprintf(b, sizeof b, "%s", cur.c_str());
-                                if (ImGui::InputText(label.c_str(), b, sizeof b)) {
+                                if (schizo::editor::ui::InputText(label.c_str(), b, sizeof b)) {
                                     script_comp->SetParam(pr.name, b);
                                     editor_state.editor_scene->MarkModified();
                                 }
@@ -4310,45 +4299,45 @@ void ShowInspector(EditorState& editor_state) {
         auto water_comp = selected_entity->GetComponent<schizo::scene::WaterComponent>();
         if (water_comp) {
             if (ImGui::TreeNodeEx("Water", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::TextDisabled("Entity Y position = water level");
+                schizo::editor::ui::TextDisabledWrapped("Entity Y position = water level");
                 bool wphys = water_comp->IsPhysical();
-                if (ImGui::Checkbox("Physical##water", &wphys)) {
+                if (schizo::editor::ui::Checkbox("Physical##water", &wphys)) {
                     water_comp->SetPhysical(wphys);
                     editor_state.editor_scene->MarkModified();
                 }
-                ImGui::SameLine();
-                ImGui::TextDisabled(wphys ? "(buoyancy + swimming in Play)"
+                schizo::editor::ui::SameLineIfFits();
+                schizo::editor::ui::TextDisabledWrapped(wphys ? "(buoyancy + swimming in Play)"
                                           : "(visual only)");
                 glm::vec2 wsz = water_comp->GetSize();
-                if (ImGui::DragFloat2("Size (m)##water", &wsz.x, 1.0f, 1.0f, 4000.0f)) {
+                if (schizo::editor::ui::DragFloat2("Size (m)##water", &wsz.x, 1.0f, 1.0f, 4000.0f)) {
                     water_comp->SetSize(wsz); editor_state.editor_scene->MarkModified();
                 }
                 glm::vec3 dc = water_comp->GetDeepColor();
-                if (ImGui::ColorEdit3("Deep Color##water", &dc.x)) {
+                if (schizo::editor::ui::ColorEdit3("Deep Color##water", &dc.x)) {
                     water_comp->SetDeepColor(dc); editor_state.editor_scene->MarkModified();
                 }
                 glm::vec3 shc = water_comp->GetShallowColor();
-                if (ImGui::ColorEdit3("Shallow Color##water", &shc.x)) {
+                if (schizo::editor::ui::ColorEdit3("Shallow Color##water", &shc.x)) {
                     water_comp->SetShallowColor(shc); editor_state.editor_scene->MarkModified();
                 }
                 float wh = water_comp->GetWaveHeight();
-                if (ImGui::SliderFloat("Wave Height##water", &wh, 0.0f, 2.0f)) {
+                if (schizo::editor::ui::SliderFloat("Wave Height##water", &wh, 0.0f, 2.0f)) {
                     water_comp->SetWaveHeight(wh); editor_state.editor_scene->MarkModified();
                 }
                 float ws = water_comp->GetWaveSpeed();
-                if (ImGui::SliderFloat("Wave Speed##water", &ws, 0.0f, 5.0f)) {
+                if (schizo::editor::ui::SliderFloat("Wave Speed##water", &ws, 0.0f, 5.0f)) {
                     water_comp->SetWaveSpeed(ws); editor_state.editor_scene->MarkModified();
                 }
                 float wsc = water_comp->GetWaveScale();
-                if (ImGui::SliderFloat("Wave Length##water", &wsc, 0.5f, 100.0f)) {
+                if (schizo::editor::ui::SliderFloat("Wave Length##water", &wsc, 0.5f, 100.0f)) {
                     water_comp->SetWaveScale(wsc); editor_state.editor_scene->MarkModified();
                 }
                 float cl = water_comp->GetClarity();
-                if (ImGui::SliderFloat("Clarity (m)##water", &cl, 0.05f, 20.0f)) {
+                if (schizo::editor::ui::SliderFloat("Clarity (m)##water", &cl, 0.05f, 20.0f)) {
                     water_comp->SetClarity(cl); editor_state.editor_scene->MarkModified();
                 }
                 float rf = water_comp->GetReflectivity();
-                if (ImGui::SliderFloat("Reflectivity##water", &rf, 0.0f, 1.0f)) {
+                if (schizo::editor::ui::SliderFloat("Reflectivity##water", &rf, 0.0f, 1.0f)) {
                     water_comp->SetReflectivity(rf); editor_state.editor_scene->MarkModified();
                 }
                 ImGui::TreePop();
@@ -4373,7 +4362,7 @@ void ShowInspector(EditorState& editor_state) {
 
                 // Enable/Disable
                 bool enabled = light_comp->IsEnabled();
-                if (ImGui::Checkbox("Enabled##light", &enabled)) {
+                if (schizo::editor::ui::Checkbox("Enabled##light", &enabled)) {
                     light_comp->SetEnabled(enabled);
                     editor_state.editor_scene->MarkModified();
                 }
@@ -4384,26 +4373,26 @@ void ShowInspector(EditorState& editor_state) {
                     // Color picker
                     glm::vec3 color = light_comp->GetColor();
                     float color_arr[3] = {color.r, color.g, color.b};
-                    if (ImGui::ColorEdit3("Color##light", color_arr)) {
+                    if (schizo::editor::ui::ColorEdit3("Color##light", color_arr)) {
                         light_comp->SetColor(color_arr[0], color_arr[1], color_arr[2]);
                         editor_state.editor_scene->MarkModified();
                     }
 
                     // Intensity
                     float intensity = light_comp->GetIntensity();
-                    if (ImGui::SliderFloat("Intensity##light", &intensity, 0.0f, 5.0f)) {
+                    if (schizo::editor::ui::SliderFloat("Intensity##light", &intensity, 0.0f, 5.0f)) {
                         light_comp->SetIntensity(intensity);
                         editor_state.editor_scene->MarkModified();
                     }
 
                     // Temperature
                     float temperature = light_comp->GetTemperature();
-                    if (ImGui::SliderFloat("Temperature (K)##light", &temperature, 1000.0f, 10000.0f)) {
+                    if (schizo::editor::ui::SliderFloat("Temperature (K)##light", &temperature, 1000.0f, 10000.0f)) {
                         light_comp->SetTemperature(temperature);
                         editor_state.editor_scene->MarkModified();
                     }
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(?)");
+                    schizo::editor::ui::SameLineIfFits();
+                    schizo::editor::ui::TextDisabledWrapped("(?)");
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Color temperature in Kelvin\n1000K=Fire | 3000K=Warm | 6500K=Daylight | 9000K=Cool");
                     }
@@ -4414,7 +4403,7 @@ void ShowInspector(EditorState& editor_state) {
                         ImGui::Text("Range");
 
                         float range = light_comp->GetRange();
-                        if (ImGui::SliderFloat("Range##light", &range, 0.1f, 100.0f)) {
+                        if (schizo::editor::ui::SliderFloat("Range##light", &range, 0.1f, 100.0f)) {
                             light_comp->SetRange(range);
                             editor_state.editor_scene->MarkModified();
                         }
@@ -4425,17 +4414,17 @@ void ShowInspector(EditorState& editor_state) {
                         ImGui::Text("Spot Light");
 
                         glm::vec2 angles = light_comp->GetSpotAngles();
-                        if (ImGui::SliderFloat("Inner Angle##spot", &angles.x, 0.0f, 90.0f)) {
+                        if (schizo::editor::ui::SliderFloat("Inner Angle##spot", &angles.x, 0.0f, 90.0f)) {
                             light_comp->SetSpotAngles(angles.x, angles.y);
                             editor_state.editor_scene->MarkModified();
                         }
-                        if (ImGui::SliderFloat("Outer Angle##spot", &angles.y, 0.0f, 90.0f)) {
+                        if (schizo::editor::ui::SliderFloat("Outer Angle##spot", &angles.y, 0.0f, 90.0f)) {
                             light_comp->SetSpotAngles(angles.x, angles.y);
                             editor_state.editor_scene->MarkModified();
                         }
 
                         float falloff = light_comp->GetSpotFalloff();
-                        if (ImGui::SliderFloat("Falloff##spot", &falloff, 0.1f, 10.0f)) {
+                        if (schizo::editor::ui::SliderFloat("Falloff##spot", &falloff, 0.1f, 10.0f)) {
                             light_comp->SetSpotFalloff(falloff);
                             editor_state.editor_scene->MarkModified();
                         }
@@ -4444,8 +4433,8 @@ void ShowInspector(EditorState& editor_state) {
                         char ck_buf[512];
                         std::snprintf(ck_buf, sizeof(ck_buf), "%s",
                                       light_comp->GetCookiePath().c_str());
-                        ImGui::SetNextItemWidth(-1.0f);
-                        if (ImGui::InputTextWithHint("Cookie##spot", "texture path (drag from Asset Browser)",
+                        schizo::editor::ui::SetNextItemWidth(-1.0f);
+                        if (schizo::editor::ui::InputTextWithHint("Cookie##spot", "texture path (drag from Asset Browser)",
                                                      ck_buf, sizeof(ck_buf))) {
                             light_comp->SetCookiePath(ck_buf);
                             editor_state.editor_scene->MarkModified();
@@ -4471,23 +4460,23 @@ void ShowInspector(EditorState& editor_state) {
                         ImGui::Separator();
                         ImGui::Text("Area Light (rectangle)");
                         glm::vec2 sz = light_comp->GetAreaSize();
-                        if (ImGui::SliderFloat2("Size W,H##area", &sz.x, 0.1f, 20.0f)) {
+                        if (schizo::editor::ui::SliderFloat2("Size W,H##area", &sz.x, 0.1f, 20.0f)) {
                             light_comp->SetAreaSize(sz);
                             editor_state.editor_scene->MarkModified();
                         }
                         bool two = light_comp->IsTwoSided();
-                        if (ImGui::Checkbox("Two-sided##area", &two)) {
+                        if (schizo::editor::ui::Checkbox("Two-sided##area", &two)) {
                             light_comp->SetTwoSided(two);
                             editor_state.editor_scene->MarkModified();
                         }
-                        ImGui::TextDisabled("Emits along the entity's forward (-Z);\norient it with the Transform rotation.");
+                        schizo::editor::ui::TextDisabledWrapped("Emits along the entity's forward (-Z);\norient it with the Transform rotation.");
                     }
 
                     // Shadows section
                     ImGui::Separator();
                     if (ImGui::TreeNode("Shadows##light")) {
                         bool cast_shadow = light_comp->GetCastShadow();
-                        if (ImGui::Checkbox("Cast Shadows##light", &cast_shadow)) {
+                        if (schizo::editor::ui::Checkbox("Cast Shadows##light", &cast_shadow)) {
                             light_comp->SetCastShadow(cast_shadow);
                             editor_state.editor_scene->MarkModified();
                         }
@@ -4511,7 +4500,7 @@ void ShowInspector(EditorState& editor_state) {
                             shadow_quality_idx = 4;
                         }
 
-                        if (ImGui::Combo("Resolution##shadow_quality", &shadow_quality_idx, shadow_quality_names, IM_ARRAYSIZE(shadow_quality_names))) {
+                        if (schizo::editor::ui::Combo("Resolution##shadow_quality", &shadow_quality_idx, shadow_quality_names, IM_ARRAYSIZE(shadow_quality_names))) {
                             schizo::scene::ShadowQuality qualities[] = {
                                 schizo::scene::ShadowQuality::None,
                                 schizo::scene::ShadowQuality::Low,
@@ -4528,35 +4517,35 @@ void ShowInspector(EditorState& editor_state) {
 
                             // Shadow bias
                             glm::vec2 shadow_bias = light_comp->GetShadowBias();
-                            if (ImGui::SliderFloat("Bias##shadow", &shadow_bias.x, 0.0f, 0.1f)) {
+                            if (schizo::editor::ui::SliderFloat("Bias##shadow", &shadow_bias.x, 0.0f, 0.1f)) {
                                 light_comp->SetShadowBias(shadow_bias.x, shadow_bias.y);
                                 editor_state.editor_scene->MarkModified();
                             }
-                            ImGui::SameLine();
-                            ImGui::TextDisabled("(?)");
+                            schizo::editor::ui::SameLineIfFits();
+                            schizo::editor::ui::TextDisabledWrapped("(?)");
                             if (ImGui::IsItemHovered()) {
                                 ImGui::SetTooltip("Reduces shadow acne artifacts");
                             }
 
                             // Shadow filter radius
                             float filter_radius = light_comp->GetShadowFilterRadius();
-                            if (ImGui::SliderFloat("Filter Radius##shadow", &filter_radius, 0.5f, 4.0f)) {
+                            if (schizo::editor::ui::SliderFloat("Filter Radius##shadow", &filter_radius, 0.5f, 4.0f)) {
                                 light_comp->SetShadowFilterRadius(filter_radius);
                                 editor_state.editor_scene->MarkModified();
                             }
-                            ImGui::SameLine();
-                            ImGui::TextDisabled("(?)");
+                            schizo::editor::ui::SameLineIfFits();
+                            schizo::editor::ui::TextDisabledWrapped("(?)");
                             if (ImGui::IsItemHovered()) {
                                 ImGui::SetTooltip("Softness of shadow edges (PCF)");
                             }
 
                             // Shadow planes
                             glm::vec2 shadow_planes = light_comp->GetShadowPlanes();
-                            if (ImGui::SliderFloat("Near Plane##shadow", &shadow_planes.x, 0.01f, 10.0f)) {
+                            if (schizo::editor::ui::SliderFloat("Near Plane##shadow", &shadow_planes.x, 0.01f, 10.0f)) {
                                 light_comp->SetShadowPlanes(shadow_planes.x, shadow_planes.y);
                                 editor_state.editor_scene->MarkModified();
                             }
-                            if (ImGui::SliderFloat("Far Plane##shadow", &shadow_planes.y, 10.0f, 1000.0f)) {
+                            if (schizo::editor::ui::SliderFloat("Far Plane##shadow", &shadow_planes.y, 10.0f, 1000.0f)) {
                                 light_comp->SetShadowPlanes(shadow_planes.x, shadow_planes.y);
                                 editor_state.editor_scene->MarkModified();
                             }
@@ -4565,7 +4554,7 @@ void ShowInspector(EditorState& editor_state) {
                             if (light_comp->GetType() == schizo::scene::LightType::Directional) {
                                 uint32_t cascade_count = light_comp->GetCascadeCount();
                                 int cascade_idx = static_cast<int>(cascade_count);
-                                if (ImGui::SliderInt("Cascades##shadow", &cascade_idx, 1, 4)) {
+                                if (schizo::editor::ui::SliderInt("Cascades##shadow", &cascade_idx, 1, 4)) {
                                     light_comp->SetCascadeCount(static_cast<uint32_t>(cascade_idx));
                                     editor_state.editor_scene->MarkModified();
                                 }
@@ -4579,12 +4568,12 @@ void ShowInspector(EditorState& editor_state) {
                     ImGui::Separator();
                     if (ImGui::TreeNode("Advanced##light")) {
                         float volumetric = light_comp->GetVolumetricIntensity();
-                        if (ImGui::SliderFloat("Volumetric Intensity##light", &volumetric, 0.0f, 1.0f)) {
+                        if (schizo::editor::ui::SliderFloat("Volumetric Intensity##light", &volumetric, 0.0f, 1.0f)) {
                             light_comp->SetVolumetricIntensity(volumetric);
                             editor_state.editor_scene->MarkModified();
                         }
-                        ImGui::SameLine();
-                        ImGui::TextDisabled("(?)");
+                        schizo::editor::ui::SameLineIfFits();
+                        schizo::editor::ui::TextDisabledWrapped("(?)");
                         if (ImGui::IsItemHovered()) {
                             ImGui::SetTooltip("God rays / Light shafts intensity");
                         }
@@ -4605,7 +4594,7 @@ void ShowInspector(EditorState& editor_state) {
                 using schizo::scene::ColliderShape;
                 const char* shape_names[] = { "Box", "Sphere", "Plane", "Capsule", "Cylinder", "Mesh" };
                 int shape_idx = static_cast<int>(collider->GetShape());
-                if (ImGui::Combo("Shape##collider", &shape_idx, shape_names,
+                if (schizo::editor::ui::Combo("Shape##collider", &shape_idx, shape_names,
                                  IM_ARRAYSIZE(shape_names))) {
                     collider->SetShape(static_cast<ColliderShape>(shape_idx));
                     editor_state.editor_scene->MarkModified();
@@ -4616,31 +4605,31 @@ void ShowInspector(EditorState& editor_state) {
                 ColliderShape shape = collider->GetShape();
                 if (shape == ColliderShape::Box) {
                     glm::vec3 he = collider->GetHalfExtents();
-                    if (ImGui::DragFloat3("Half Extents##collider", &he.x, 0.05f, 0.01f, 1000.0f)) {
+                    if (schizo::editor::ui::DragFloat3("Half Extents##collider", &he.x, 0.05f, 0.01f, 1000.0f)) {
                         collider->SetHalfExtents(he);
                         editor_state.editor_scene->MarkModified();
                     }
                 } else if (shape == ColliderShape::Sphere) {
                     float r = collider->GetRadius();
-                    if (ImGui::DragFloat("Radius##collider", &r, 0.05f, 0.01f, 1000.0f)) {
+                    if (schizo::editor::ui::DragFloat("Radius##collider", &r, 0.05f, 0.01f, 1000.0f)) {
                         collider->SetRadius(r);
                         editor_state.editor_scene->MarkModified();
                     }
                 } else if (shape == ColliderShape::Capsule ||
                            shape == ColliderShape::Cylinder) {
                     float r = collider->GetRadius();
-                    if (ImGui::DragFloat("Radius##collider", &r, 0.05f, 0.01f, 1000.0f)) {
+                    if (schizo::editor::ui::DragFloat("Radius##collider", &r, 0.05f, 0.01f, 1000.0f)) {
                         collider->SetRadius(r);
                         editor_state.editor_scene->MarkModified();
                     }
                     float h = collider->GetHeight();
-                    if (ImGui::DragFloat("Height##collider", &h, 0.05f, 0.0f, 1000.0f)) {
+                    if (schizo::editor::ui::DragFloat("Height##collider", &h, 0.05f, 0.0f, 1000.0f)) {
                         collider->SetHeight(h);
                         editor_state.editor_scene->MarkModified();
                     }
                 } else if (shape == ColliderShape::Plane) {
                     glm::vec3 n = collider->GetPlaneNormal();
-                    if (ImGui::DragFloat3("Normal##collider", &n.x, 0.05f, -1.0f, 1.0f)) {
+                    if (schizo::editor::ui::DragFloat3("Normal##collider", &n.x, 0.05f, -1.0f, 1.0f)) {
                         collider->SetPlaneNormal(n);
                         editor_state.editor_scene->MarkModified();
                     }
@@ -4660,14 +4649,14 @@ void ShowInspector(EditorState& editor_state) {
                 }
 
                 glm::vec3 offset = collider->GetOffset();
-                if (ImGui::DragFloat3("Offset##collider", &offset.x, 0.05f)) {
+                if (schizo::editor::ui::DragFloat3("Offset##collider", &offset.x, 0.05f)) {
                     collider->SetOffset(offset);
                     editor_state.editor_scene->MarkModified();
                 }
 
                 ImGui::Separator();
                 bool dynamic = collider->IsDynamic();
-                if (ImGui::Checkbox("Dynamic (responds to gravity)##collider", &dynamic)) {
+                if (schizo::editor::ui::Checkbox("Dynamic (responds to gravity)##collider", &dynamic)) {
                     collider->SetDynamic(dynamic);
                     editor_state.editor_scene->MarkModified();
                 }
@@ -4678,14 +4667,14 @@ void ShowInspector(EditorState& editor_state) {
                 }
                 if (dynamic) {
                     float mass = collider->GetMass();
-                    if (ImGui::DragFloat("Mass (kg)##collider", &mass, 0.1f, 0.001f, 10000.0f)) {
+                    if (schizo::editor::ui::DragFloat("Mass (kg)##collider", &mass, 0.1f, 0.001f, 10000.0f)) {
                         collider->SetMass(mass);
                         editor_state.editor_scene->MarkModified();
                     }
                 }
 
                 bool is_trigger = collider->IsTrigger();
-                if (ImGui::Checkbox("Trigger (overlap, no resolve)##collider", &is_trigger)) {
+                if (schizo::editor::ui::Checkbox("Trigger (overlap, no resolve)##collider", &is_trigger)) {
                     collider->SetTrigger(is_trigger);
                     editor_state.editor_scene->MarkModified();
                 }
@@ -4698,14 +4687,14 @@ void ShowInspector(EditorState& editor_state) {
 
                 if (ImGui::TreeNode("Collision Filtering##collider")) {
                     int layer = static_cast<int>(collider->GetLayer());
-                    if (ImGui::DragInt("Layer (0-31)##collider", &layer, 0.1f, 0, 31)) {
+                    if (schizo::editor::ui::DragInt("Layer (0-31)##collider", &layer, 0.1f, 0, 31)) {
                         collider->SetLayer(static_cast<uint8_t>(layer));
                         editor_state.editor_scene->MarkModified();
                     }
                     uint32_t mask = collider->GetMask();
                     bool changed = false;
                     if (ImGui::SmallButton("All##mask"))   { mask = 0xFFFFFFFFu; changed = true; }
-                    ImGui::SameLine();
+                    schizo::editor::ui::SameLineIfFits("None##mask");
                     if (ImGui::SmallButton("None##mask"))  { mask = 0u;          changed = true; }
                     // 8 columns × 4 rows of layer-bit toggles.
                     for (int row = 0; row < 4; ++row) {
@@ -4714,11 +4703,11 @@ void ShowInspector(EditorState& editor_state) {
                             bool on = (mask >> bit) & 1u;
                             char label[16];
                             std::snprintf(label, sizeof(label), "L%d##m", bit);
-                            if (ImGui::Checkbox(label, &on)) {
+                            if (schizo::editor::ui::Checkbox(label, &on)) {
                                 mask = on ? (mask | (1u << bit)) : (mask & ~(1u << bit));
                                 changed = true;
                             }
-                            if (col < 7) ImGui::SameLine();
+                            if (col < 7) schizo::editor::ui::SameLineIfFits();
                         }
                     }
                     if (changed) {
@@ -4729,7 +4718,7 @@ void ShowInspector(EditorState& editor_state) {
                 }
 
                 ImGui::Separator();
-                if (ImGui::Button("Remove Collider##collider")) {
+                if (schizo::editor::ui::Button("Remove Collider##collider")) {
                     selected_entity->RemoveComponent(collider);
                     editor_state.editor_scene->MarkModified();
                 }
@@ -4749,7 +4738,7 @@ void ShowInspector(EditorState& editor_state) {
                         editor_state.editor_scene->GetScene()))
                     editor_state.editor_scene->MarkModified();
             } else {
-                ImGui::TextDisabled("Material editor not initialized");
+                schizo::editor::ui::TextDisabledWrapped("Material editor not initialized");
             }
             ImGui::TreePop();
         }
@@ -4763,9 +4752,9 @@ void ShowInspector(EditorState& editor_state) {
                 ImGui::Text("Projection:");
                 int proj = static_cast<int>(cam->GetProjection());
                 bool changed = false;
-                ImGui::SameLine();
+                schizo::editor::ui::SameLineIfFits();
                 changed |= ImGui::RadioButton("Perspective##cam_proj",  &proj, 0);
-                ImGui::SameLine();
+                schizo::editor::ui::SameLineIfFits();
                 changed |= ImGui::RadioButton("Orthographic##cam_proj", &proj, 1);
                 if (changed) {
                     cam->SetProjection(static_cast<schizo::scene::CameraProjection>(proj));
@@ -4774,31 +4763,31 @@ void ShowInspector(EditorState& editor_state) {
 
                 if (cam->GetProjection() == schizo::scene::CameraProjection::Perspective) {
                     float fov = cam->GetFOV();
-                    if (ImGui::SliderFloat("FOV (deg)##cam", &fov, 10.0f, 120.0f)) {
+                    if (schizo::editor::ui::SliderFloat("FOV (deg)##cam", &fov, 10.0f, 120.0f)) {
                         cam->SetFOV(fov);
                         editor_state.editor_scene->MarkModified();
                     }
                 } else {
                     float ortho = cam->GetOrthographicSize();
-                    if (ImGui::DragFloat("Ortho Size##cam", &ortho, 0.1f, 0.1f, 1000.0f)) {
+                    if (schizo::editor::ui::DragFloat("Ortho Size##cam", &ortho, 0.1f, 0.1f, 1000.0f)) {
                         cam->SetOrthographicSize(ortho);
                         editor_state.editor_scene->MarkModified();
                     }
                 }
 
                 float np = cam->GetNearPlane();
-                if (ImGui::DragFloat("Near##cam", &np, 0.01f, 0.001f, 1000.0f)) {
+                if (schizo::editor::ui::DragFloat("Near##cam", &np, 0.01f, 0.001f, 1000.0f)) {
                     cam->SetNearPlane(np);
                     editor_state.editor_scene->MarkModified();
                 }
                 float fp = cam->GetFarPlane();
-                if (ImGui::DragFloat("Far##cam",  &fp, 1.0f, np + 0.01f, 100000.0f)) {
+                if (schizo::editor::ui::DragFloat("Far##cam",  &fp, 1.0f, np + 0.01f, 100000.0f)) {
                     cam->SetFarPlane(fp);
                     editor_state.editor_scene->MarkModified();
                 }
 
                 glm::vec4 cc = cam->GetClearColor();
-                if (ImGui::ColorEdit4("Clear Color##cam", &cc.r,
+                if (schizo::editor::ui::ColorEdit4("Clear Color##cam", &cc.r,
                                       ImGuiColorEditFlags_AlphaBar |
                                       ImGuiColorEditFlags_AlphaPreview)) {
                     cam->SetClearColor(cc);
@@ -4812,7 +4801,7 @@ void ShowInspector(EditorState& editor_state) {
         ImGui::Separator();
         if (ImGui::TreeNode("Physics")) {
             static bool use_physics = false;
-            if (ImGui::Checkbox("Enable Physics##phys", &use_physics)) {
+            if (schizo::editor::ui::Checkbox("Enable Physics##phys", &use_physics)) {
                 editor_state.editor_scene->MarkModified();
             }
 
@@ -4822,11 +4811,11 @@ void ShowInspector(EditorState& editor_state) {
                 static float mass = 1.0f;
                 static bool gravity = true;
 
-                if (ImGui::DragFloat("Mass##phys", &mass, 0.1f, 0.01f, 100.0f)) {
+                if (schizo::editor::ui::DragFloat("Mass##phys", &mass, 0.1f, 0.01f, 100.0f)) {
                     editor_state.editor_scene->MarkModified();
                 }
 
-                if (ImGui::Checkbox("Use Gravity##phys", &gravity)) {
+                if (schizo::editor::ui::Checkbox("Use Gravity##phys", &gravity)) {
                     editor_state.editor_scene->MarkModified();
                 }
 
@@ -4835,7 +4824,7 @@ void ShowInspector(EditorState& editor_state) {
                 static int collider_type = 0;
                 const char* collider_types[] = { "None", "Box", "Sphere", "Capsule", "Mesh" };
 
-                if (ImGui::Combo("Collider Type##phys", &collider_type, collider_types, IM_ARRAYSIZE(collider_types))) {
+                if (schizo::editor::ui::Combo("Collider Type##phys", &collider_type, collider_types, IM_ARRAYSIZE(collider_types))) {
                     editor_state.editor_scene->MarkModified();
                     spdlog::info("Set collider type to: {}", collider_types[collider_type]);
                 }
@@ -4844,8 +4833,8 @@ void ShowInspector(EditorState& editor_state) {
                     static glm::vec3 collider_scale(1.0f, 1.0f, 1.0f);
                     static bool is_trigger = false;
 
-                    ImGui::DragFloat3("Collider Scale##phys", &collider_scale[0], 0.1f);
-                    ImGui::Checkbox("Is Trigger##phys", &is_trigger);
+                    schizo::editor::ui::DragFloat3("Collider Scale##phys", &collider_scale[0], 0.1f);
+                    schizo::editor::ui::Checkbox("Is Trigger##phys", &is_trigger);
                 }
             }
 
@@ -4858,7 +4847,7 @@ void ShowInspector(EditorState& editor_state) {
             const char* gizmo_modes[] = { "None", "Translate", "Rotate", "Scale" };
             int current_mode = static_cast<int>(editor_state.transform_gizmo.GetMode());
 
-            if (ImGui::Combo("Gizmo Mode##insp", &current_mode, gizmo_modes, IM_ARRAYSIZE(gizmo_modes))) {
+            if (schizo::editor::ui::Combo("Gizmo Mode##insp", &current_mode, gizmo_modes, IM_ARRAYSIZE(gizmo_modes))) {
                 editor_state.transform_gizmo.SetMode(static_cast<schizo::editor::GizmoMode>(current_mode));
             }
 
@@ -4869,7 +4858,7 @@ void ShowInspector(EditorState& editor_state) {
 
         ImGui::Separator();
 
-        if (ImGui::Button("Delete Entity", ImVec2(-1, 0))) {
+        if (schizo::editor::ui::Button("Delete Entity", ImVec2(-1, 0))) {
             PushDeleteEntityCommand(editor_state, scene, selected_entity);
         }
 
@@ -4899,7 +4888,11 @@ void ShowViewport(EditorState& editor_state) {
         return;
     }
 
-    ImGui::Begin("Viewport", &editor_state.show_viewport);  // freely dockable; End() must always run
+    if (!ImGui::Begin("Viewport", &editor_state.show_viewport)) {
+        editor_state.viewport_input_focused = false;
+        ImGui::End();
+        return;
+    }
     {
         editor_state.viewport_input_focused =
             ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
@@ -4919,9 +4912,9 @@ void ShowViewport(EditorState& editor_state) {
         } else {
             ImGui::Text("Edit Mode");
         }
-        ImGui::SameLine();
+        schizo::editor::ui::SameLineIfFits(viewport_playing ? "Stop (F5)" : "Play (F5)");
 
-        if (ImGui::Button(viewport_playing ? "Stop (F5)" : "Play (F5)")) {
+        if (schizo::editor::ui::Button(viewport_playing ? "Stop (F5)" : "Play (F5)")) {
             // Its own zone. Entering play mode builds the physics world, and
             // being called from inside ShowViewport meant that cost was billed
             // to "ui_viewport" -- which is why a 609 ms OBJ re-parse read as a
@@ -4930,13 +4923,13 @@ void ShowViewport(EditorState& editor_state) {
             if (viewport_playing) EndPlayMode(editor_state, scene);
             else                  BeginPlayMode(editor_state, scene);
         }
-        ImGui::SameLine();
+        schizo::editor::ui::SameLineIfFits("Reset Camera");
 
-        if (ImGui::Button("Reset Camera")) {
+        if (schizo::editor::ui::Button("Reset Camera")) {
             editor_state.viewport_camera.Reset();
         }
-        ImGui::SameLine();
-        if (ImGui::Button(editor_state.viewport_tools_expanded ? "Hide Tools" : "Tools"))
+        schizo::editor::ui::SameLineIfFits(editor_state.viewport_tools_expanded ? "Hide Tools" : "Tools");
+        if (schizo::editor::ui::Button(editor_state.viewport_tools_expanded ? "Hide Tools" : "Tools"))
             editor_state.viewport_tools_expanded = !editor_state.viewport_tools_expanded;
 
         // Less frequently used controls are collapsible so they do not take a
@@ -4946,22 +4939,19 @@ void ShowViewport(EditorState& editor_state) {
             auto cam_pos = editor_state.viewport_camera.GetPosition();
             float normalized_yaw = fmod(editor_state.viewport_camera.GetYaw(), 360.0f);
             if (normalized_yaw < 0.0f) normalized_yaw += 360.0f;
-            ImGui::Text("Camera (%.1f, %.1f, %.1f) | Yaw %.1f° | Pitch %.1f° | Entities %u",
+            ImGui::TextWrapped("Camera (%.1f, %.1f, %.1f) | Yaw %.1f° | Pitch %.1f° | Entities %u",
                         cam_pos.x, cam_pos.y, cam_pos.z, normalized_yaw,
                         editor_state.viewport_camera.GetPitch(),
                         scene ? scene->GetEntityCount() : 0);
-            ImGui::TextDisabled("Middle Mouse: Rotate | Scroll: Zoom | Right Drag: Pan");
+            schizo::editor::ui::TextDisabledWrapped("Middle Mouse: Rotate | Scroll: Zoom | Right Drag: Pan");
 
-            ImGui::Checkbox("Show Gizmo", &editor_state.show_gizmo);
-            ImGui::SameLine();
+            schizo::editor::ui::Checkbox("Show Gizmo", &editor_state.show_gizmo);
             const char* gizmo_modes[] = { "None", "Translate (T)", "Rotate (R)", "Scale (S)" };
             int gizmo_mode = static_cast<int>(editor_state.transform_gizmo.GetMode());
-            ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::Combo("Gizmo Mode", &gizmo_mode, gizmo_modes, IM_ARRAYSIZE(gizmo_modes))) {
+            if (schizo::editor::ui::Combo("Gizmo Mode", &gizmo_mode, gizmo_modes, IM_ARRAYSIZE(gizmo_modes))) {
                 editor_state.transform_gizmo.SetMode(static_cast<schizo::editor::GizmoMode>(gizmo_mode));
             }
-            ImGui::SameLine();
-            ImGui::Checkbox("Wireframe", &editor_state.wireframe_mode);
+            schizo::editor::ui::Checkbox("Wireframe", &editor_state.wireframe_mode);
         }
 
         ImGui::Separator();
@@ -4971,7 +4961,8 @@ void ShowViewport(EditorState& editor_state) {
         // image and by picking/projection, so every dock resize is reflected on
         // the very next frame without stretching stale input coordinates.
         ImVec2 viewport_size = ImGui::GetContentRegionAvail();
-        float aspect = viewport_size.x > 0 ? viewport_size.x / viewport_size.y : 1.0f;
+        const float aspect = viewport_size.x > 0.0f && viewport_size.y > 0.0f
+            ? viewport_size.x / viewport_size.y : 1.0f;
         if (viewport_size.x > 50.0f && viewport_size.y > 50.0f)
             editor_state.viewport_panel_size = {viewport_size.x, viewport_size.y};
 
@@ -5733,21 +5724,31 @@ void ShowViewport(EditorState& editor_state) {
     }
 }
 
-void ShowPreferences(EditorState& editor_state) {
+void ShowPreferences(EditorState& editor_state, schizo::editor::RenderSettings& settings) {
     if (!editor_state.show_preferences) return;
 
-    ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize;
+    ImGui::SetNextWindowSize(ImVec2(420, 350), ImGuiCond_FirstUseEver);
+    ImGuiWindowFlags flags = ImGuiWindowFlags_None;
     if (editor_state.gizmo_dragging) {
         flags |= ImGuiWindowFlags_NoInputs;  // Disable input when dragging in viewport
     }
 
-    ImGui::Begin("Preferences", &editor_state.show_preferences, flags);  // docked window = child; End() must always run
+    if (!ImGui::Begin("Preferences", &editor_state.show_preferences, flags)) {
+        ImGui::End();
+        return;
+    }
     {
         ImGui::Text("Editor Settings");
         ImGui::Separator();
-        ImGui::Checkbox("Vsync", nullptr);
-        ImGui::Checkbox("Show Grid", nullptr);
-        ImGui::SliderFloat("Grid Size", nullptr, 0.1f, 10.0f);
+        if (schizo::editor::ui::Checkbox("VSync (applies on restart)", &settings.vsync)) {
+            settings.preset = settings.detect_preset();
+            schizo::editor::save_render_settings(settings);
+            editor_state.set_status("VSync saved - restart to apply");
+        }
+        schizo::editor::ui::Checkbox("Show Gizmo", &editor_state.show_gizmo);
+        schizo::editor::ui::Checkbox("Wireframe", &editor_state.wireframe_mode);
+        schizo::editor::ui::Checkbox("Enable grid snapping", &editor_state.snap.enabled);
+        schizo::editor::ui::DragFloat("Grid snap size", &editor_state.snap.translate, 0.05f, 0.01f, 100.0f);
         ImGui::Separator();
 
         if (ImGui::Button("Close")) {
@@ -5780,27 +5781,27 @@ void ShowPlaybackControls(EditorState& editor_state) {
 
         // Play button
         ImGui::BeginDisabled(!can_play);
-        if (ImGui::Button("Play (F5)##playback", ImVec2(80, 0))) {
+        if (schizo::editor::ui::Button("Play (F5)##playback", ImVec2(80, 0))) {
             BeginPlayMode(editor_state, scene);
         }
         ImGui::EndDisabled();
 
-        ImGui::SameLine();
+        schizo::editor::ui::SameLineIfFits();
 
         // Pause button
         ImGui::BeginDisabled(!editor_state.scene_playback_manager->IsPlaying());
-        if (ImGui::Button("Pause##playback", ImVec2(80, 0))) {
+        if (schizo::editor::ui::Button("Pause##playback", ImVec2(80, 0))) {
             bool is_paused = editor_state.scene_playback_manager->IsPaused();
             editor_state.scene_playback_manager->SetPaused(!is_paused);
             spdlog::info(is_paused ? "Resumed playback" : "Paused playback");
         }
         ImGui::EndDisabled();
 
-        ImGui::SameLine();
+        schizo::editor::ui::SameLineIfFits();
 
         // Stop button
         ImGui::BeginDisabled(!editor_state.scene_playback_manager->IsPlaying());
-        if (ImGui::Button("Stop##playback", ImVec2(80, 0))) {
+        if (schizo::editor::ui::Button("Stop##playback", ImVec2(80, 0))) {
             EndPlayMode(editor_state, scene);
         }
         ImGui::EndDisabled();
@@ -5964,15 +5965,15 @@ void ShowNetworkPanel(EditorState& editor_state) {
         };
 
         if (!net.active()) {
-            ImGui::TextDisabled("Not connected.");
+            schizo::editor::ui::TextDisabledWrapped("Not connected.");
             ImGui::Separator();
             ImGui::TextUnformatted("Host a session:");
-            ImGui::SetNextItemWidth(90);
-            ImGui::InputText("Port##host", editor_state.net_host_port,
+            schizo::editor::ui::SetNextItemWidth(90);
+            schizo::editor::ui::InputText("Port##host", editor_state.net_host_port,
                              sizeof editor_state.net_host_port,
                              ImGuiInputTextFlags_CharsDecimal);
-            ImGui::SameLine();
-            if (ImGui::Button("Host")) {
+            schizo::editor::ui::SameLineIfFits();
+            if (schizo::editor::ui::Button("Host")) {
                 const int port = std::atoi(editor_state.net_host_port);
                 if (port > 0 && port < 65536)
                     net.host(static_cast<uint16_t>(port));
@@ -5980,38 +5981,38 @@ void ShowNetworkPanel(EditorState& editor_state) {
 
             ImGui::Separator();
             ImGui::TextUnformatted("Join a session:");
-            ImGui::SetNextItemWidth(160);
-            ImGui::InputText("IP##join", editor_state.net_join_ip,
+            schizo::editor::ui::SetNextItemWidth(160);
+            schizo::editor::ui::InputText("IP##join", editor_state.net_join_ip,
                              sizeof editor_state.net_join_ip);
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(90);
-            ImGui::InputText("Port##join", editor_state.net_join_port,
+            schizo::editor::ui::SameLineIfFits();
+            schizo::editor::ui::SetNextItemWidth(90);
+            schizo::editor::ui::InputText("Port##join", editor_state.net_join_port,
                              sizeof editor_state.net_join_port,
                              ImGuiInputTextFlags_CharsDecimal);
-            ImGui::SameLine();
-            if (ImGui::Button("Join")) {
+            schizo::editor::ui::SameLineIfFits();
+            if (schizo::editor::ui::Button("Join")) {
                 const int port = std::atoi(editor_state.net_join_port);
                 if (port > 0 && port < 65536)
                     net.join(editor_state.net_join_ip, static_cast<uint16_t>(port));
             }
-            ImGui::TextDisabled("Both instances must load the same scene.\n"
+            schizo::editor::ui::TextDisabledWrapped("Both instances must load the same scene.\n"
                                 "The host's moving objects replicate to clients.");
 
             ImGui::Separator();
             ImGui::TextUnformatted("Local test (in-editor PIE):");
-            ImGui::SetNextItemWidth(120);
-            ImGui::InputInt("Clients", &editor_state.net_launch_clients);
+            schizo::editor::ui::SetNextItemWidth(120);
+            schizo::editor::ui::InputInt("Clients", &editor_state.net_launch_clients);
             editor_state.net_launch_clients =
                 std::max(1, std::min(editor_state.net_launch_clients, 7));
-            ImGui::SameLine();
-            if (ImGui::Button("Host + Launch")) {
+            schizo::editor::ui::SameLineIfFits();
+            if (schizo::editor::ui::Button("Host + Launch")) {
                 const int port = std::atoi(editor_state.net_host_port);
                 if (port > 0 && port < 65536)
                     LaunchMultiplayerSession(editor_state,
                                              editor_state.net_launch_clients,
                                              static_cast<uint16_t>(port));
             }
-            ImGui::TextDisabled("Saves the scene, hosts here, and spawns N client\n"
+            schizo::editor::ui::TextDisabledWrapped("Saves the scene, hosts here, and spawns N client\n"
                                 "windows that auto-join. Move each with Arrow keys.");
         } else {
             const bool ok = st.connected;
@@ -6033,9 +6034,9 @@ void ShowNetworkPanel(EditorState& editor_state) {
             ImGui::Text("Sent:       %s", fmt_bytes(st.bytes_sent));
             ImGui::Text("Received:   %s", fmt_bytes(st.bytes_recv));
             ImGui::Separator();
-            ImGui::TextDisabled("Move your player with the Arrow keys.\n"
+            schizo::editor::ui::TextDisabledWrapped("Move your player with the Arrow keys.\n"
                                 "Each player is a coloured '[net] Player N' cube.");
-            if (ImGui::Button("Disconnect")) net.shutdown();
+            if (schizo::editor::ui::Button("Disconnect")) net.shutdown();
         }
     }
     ImGui::End();
@@ -6068,7 +6069,7 @@ void ShowPerformanceOverlay(EditorState& editor_state) {
         std::sort(rows.begin(), rows.end(),
                   [](const auto& a, const auto& b) { return a.second.total_ns > b.second.total_ns; });
         const double denom = frame_ms > 0.0 ? frame_ms : 1.0;
-        if (rows.empty()) ImGui::TextDisabled("no zones this frame");
+        if (rows.empty()) schizo::editor::ui::TextDisabledWrapped("no zones this frame");
         for (const auto& [tag, s] : rows) {
             const double ms = s.total_ns / 1.0e6;
             char lbl[96];
@@ -6085,7 +6086,7 @@ void ShowPerformanceOverlay(EditorState& editor_state) {
         const auto& passes = gpu.get_all_timings();
         const float gpu_total = gpu.get_total_gpu_time_ms();
         ImGui::Text("total %.2f ms   load %.0f%%", gpu_total, gpu.get_gpu_load_percent());
-        ImGui::SameLine();
+        schizo::editor::ui::SameLineIfFits();
         // Reading a live overlay off a screen and retyping it is how a
         // performance report gets rounded, reordered and half-remembered. One
         // button puts the exact numbers somewhere they can be pasted, and the
@@ -6109,7 +6110,7 @@ void ShowPerformanceOverlay(EditorState& editor_state) {
             editor_state.set_status("GPU breakdown copied to the clipboard");
         }
         if (passes.empty()) {
-            ImGui::TextDisabled("no GPU timings (timestamps disabled?)");
+            schizo::editor::ui::TextDisabledWrapped("no GPU timings (timestamps disabled?)");
         } else {
             std::vector<const engine::vulkan::GPUProfiler::PassTiming*> ps;
             for (const auto& [name, p] : passes) ps.push_back(&p);
@@ -6143,16 +6144,16 @@ void ShowPerformanceOverlay(EditorState& editor_state) {
         }
         if (!any) {
 #if GWS_MEMORY_TRACKING
-            ImGui::TextDisabled("per-tag tracking on; nothing routed through allocate_tracked yet");
+            schizo::editor::ui::TextDisabledWrapped("per-tag tracking on; nothing routed through allocate_tracked yet");
 #else
-            ImGui::TextDisabled("per-tag tracking compiled out (release build)");
+            schizo::editor::ui::TextDisabledWrapped("per-tag tracking compiled out (release build)");
 #endif
         }
 
         auto allocs = gws::memory::AllocatorRegistry::instance().snapshot();
         if (!allocs.empty()) {
             ImGui::Separator();
-            ImGui::TextDisabled("allocators (used / reserved, frag):");
+            schizo::editor::ui::TextDisabledWrapped("allocators (used / reserved, frag):");
             for (const auto& [name, st] : allocs) {
                 const float occ = st.total_reserved
                     ? static_cast<float>(st.total_allocated) / static_cast<float>(st.total_reserved) : 0.0f;
@@ -6170,7 +6171,7 @@ void ShowPerformanceOverlay(EditorState& editor_state) {
     if (ImGui::CollapsingHeader("Network (N4)", ImGuiTreeNodeFlags_DefaultOpen)) {
         const engine::network::NetProfileView& v = g_editor_net_profiler.view();
         if (v.peers == 0 && v.total_bytes_sent == 0 && v.total_bytes_recv == 0) {
-            ImGui::TextDisabled("offline — no active transport in this session");
+            schizo::editor::ui::TextDisabledWrapped("offline — no active transport in this session");
         } else {
             ImGui::Text("peers %zu   RTT %u ms   loss %.1f%%", v.peers, v.rtt_ms, v.packet_loss * 100.0f);
             ImGui::Text("up %.1f kbit/s   down %.1f kbit/s",
@@ -6182,12 +6183,12 @@ void ShowPerformanceOverlay(EditorState& editor_state) {
     // ---- N5 Frame capture (one-frame draw/dispatch-list snapshot) ----
     if (ImGui::CollapsingHeader("Frame Capture (N5)", ImGuiTreeNodeFlags_DefaultOpen)) {
         auto& fc = gws::profile::FrameCapture::instance();
-        if (ImGui::Button(fc.armed() ? "Arming... (next frame)" : "Capture Next Frame"))
+        if (schizo::editor::ui::Button(fc.armed() ? "Arming... (next frame)" : "Capture Next Frame"))
             fc.arm();
         if (fc.has_capture()) {
             const gws::profile::CapturedFrame& cap = fc.last();
-            ImGui::SameLine();
-            if (ImGui::Button("Save .txt")) {
+            schizo::editor::ui::SameLineIfFits();
+            if (schizo::editor::ui::Button("Save .txt")) {
                 const std::string txt = fc.to_text();
                 if (std::FILE* f = std::fopen("frame_capture.txt", "wb")) {
                     std::fwrite(txt.data(), 1, txt.size(), f);
@@ -6206,7 +6207,7 @@ void ShowPerformanceOverlay(EditorState& editor_state) {
             }
             ImGui::EndChild();
         } else {
-            ImGui::TextDisabled("no capture yet - click Capture Next Frame");
+            schizo::editor::ui::TextDisabledWrapped("no capture yet - click Capture Next Frame");
         }
     }
 
@@ -6227,8 +6228,8 @@ void ShowDebugPanels(EditorState& editor_state) {
     {
         ImGui::TextUnformatted("Phase 6 System Debug Tools:");
         ImGui::Separator();
-        ImGui::TextDisabled("Debug panels temporarily disabled due to ImGui state issues.");
-        ImGui::TextDisabled("These will be re-enabled after refactoring the panel hierarchy.");
+        schizo::editor::ui::TextDisabledWrapped("Debug panels temporarily disabled due to ImGui state issues.");
+        schizo::editor::ui::TextDisabledWrapped("These will be re-enabled after refactoring the panel hierarchy.");
 
         // TODO: Character Controller Panel - currently disabled due to Begin/End mismatch
         // if (editor_state.character_panel) {
@@ -7432,7 +7433,9 @@ int main(int argc, char** argv) {
         }
         // Game windows never touch editor.ini (they draw no docked layout and
         // must not clobber the editor's persisted one).
-        ImGui::GetIO().IniFilename = game_window_mode ? nullptr : "editor.ini";
+        // Automated screenshot/smoke runs must not overwrite the user's dock
+        // arrangement or stamp a layout migration into their project.
+        ImGui::GetIO().IniFilename = game_window_mode || frame_limit > 0 ? nullptr : "editor.ini";
         spdlog::info("ImGuiVulkan initialized");
 
         // ----------------------------------------------------------------
@@ -9084,8 +9087,10 @@ int main(int argc, char** argv) {
                     // the two are committed together — a crash before this point
                     // re-triggers the migration instead of leaving the version
                     // bumped but the new panels unsaved (floating) next launch.
-                    ImGui::SaveIniSettingsToDisk(ImGui::GetIO().IniFilename);
-                    std::ofstream("editor_layout.version") << kEditorDockLayoutVersion;
+                    if (ImGui::GetIO().IniFilename) {
+                        ImGui::SaveIniSettingsToDisk(ImGui::GetIO().IniFilename);
+                        std::ofstream("editor_layout.version") << kEditorDockLayoutVersion;
+                    }
                 }
                 ImGui::DockSpaceOverViewport(
                     dockspace_id, ImGui::GetMainViewport(),
@@ -9288,7 +9293,7 @@ int main(int argc, char** argv) {
             if (editor_state.asset_import_dialog &&
                 editor_state.asset_import_dialog->IsOpen())
                 editor_state.asset_import_dialog->RenderDialog();
-            ShowPreferences(editor_state);
+            ShowPreferences(editor_state, render_settings);
 
             // ---- authoring documents (4.10) ------------------------------
             // Dirty is a COMPARISON against what is on disk, not a flag raised
@@ -9460,9 +9465,9 @@ int main(int argc, char** argv) {
                     using schizo::editor::quality_preset_name;
 
                     ImGui::TextUnformatted("Quality");
-                    ImGui::SetNextItemWidth(160);
+                    schizo::editor::ui::SetNextItemWidth(160);
                     const QualityPreset cur = render_settings.preset;
-                    if (ImGui::BeginCombo("Preset", quality_preset_name(cur))) {
+                    if (schizo::editor::ui::BeginCombo("Preset", quality_preset_name(cur))) {
                         for (QualityPreset p : {QualityPreset::Low, QualityPreset::Medium,
                                                 QualityPreset::High, QualityPreset::Custom}) {
                             const bool sel = (p == cur);
@@ -9484,9 +9489,9 @@ int main(int argc, char** argv) {
                             "does not run costs nothing; one at lower quality still pays its "
                             "full-screen bandwidth.");
 
-                    ImGui::SetNextItemWidth(160);
+                    schizo::editor::ui::SetNextItemWidth(160);
                     float rs = render_settings.render_scale;
-                    if (ImGui::SliderFloat("Render scale", &rs,
+                    if (schizo::editor::ui::SliderFloat("Render scale", &rs,
                                            schizo::editor::RenderSettings::kMinScale,
                                            schizo::editor::RenderSettings::kMaxScale, "%.2f")) {
                         render_settings.render_scale = rs;
@@ -9499,14 +9504,14 @@ int main(int argc, char** argv) {
                         schizo::editor::save_render_settings(render_settings);
                         editor_state.set_status("Render scale saved - restart to apply");
                     }
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(restart)");
+                    schizo::editor::ui::SameLineIfFits();
+                    schizo::editor::ui::TextDisabledWrapped("(restart)");
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip(
                             "Render targets are created at startup, so a new scale takes "
                             "effect on the next launch.");
                     bool vs_on = render_settings.vsync;
-                    if (ImGui::Checkbox("VSync", &vs_on)) {
+                    if (schizo::editor::ui::Checkbox("VSync", &vs_on)) {
                         render_settings.vsync = vs_on;
                         render_settings.preset = render_settings.detect_preset();
                         schizo::editor::save_render_settings(render_settings);
@@ -9518,9 +9523,9 @@ int main(int argc, char** argv) {
                             "the CPU's fence wait absorbs both 'the GPU is busy' and 'the frame is "
                             "waiting for the monitor', so a 12-14 ms wait cannot tell you which. "
                             "Turn it off to find out. Applies on restart.");
-                    ImGui::SameLine();
+                    schizo::editor::ui::SameLineIfFits();
                     bool rt_on = render_settings.ray_tracing;
-                    if (ImGui::Checkbox("Ray tracing", &rt_on)) {
+                    if (schizo::editor::ui::Checkbox("Ray tracing", &rt_on)) {
                         render_settings.ray_tracing = rt_on;
                         render_settings.preset = render_settings.detect_preset();
                         schizo::editor::save_render_settings(render_settings);
@@ -9531,24 +9536,24 @@ int main(int argc, char** argv) {
                             "The lighting pass casts per-pixel ray-query shadow rays when this "
                             "is on. Measured at 10-12 ms on an RTX 3060 with a near-empty scene "
                             "- by far the most expensive thing in the frame. Applies on restart.");
-                    ImGui::SameLine();
-                    ImGui::TextDisabled(device.has_ray_tracing() ? "(active)" : "(inactive)");
-                    ImGui::TextDisabled("3D renders at %ux%u", kW, kH);
+                    schizo::editor::ui::SameLineIfFits();
+                    schizo::editor::ui::TextDisabledWrapped(device.has_ray_tracing() ? "(active)" : "(inactive)");
+                    schizo::editor::ui::TextDisabledWrapped("3D renders at %ux%u", kW, kH);
                     ImGui::Separator();
                 }
                 {
                     bool bloom = post_processing->is_effect_enabled(
                         gws::renderer::gpu::PostProcessEffect::Bloom);
-                    if (ImGui::Checkbox("Bloom", &bloom))
+                    if (schizo::editor::ui::Checkbox("Bloom", &bloom))
                         post_processing->set_effect_enabled(
                             gws::renderer::gpu::PostProcessEffect::Bloom, bloom);
 
                     bool fxaa = post_processing->is_fxaa_enabled();
-                    if (ImGui::Checkbox("FXAA (anti-aliasing)", &fxaa))
+                    if (schizo::editor::ui::Checkbox("FXAA (anti-aliasing)", &fxaa))
                         post_processing->set_fxaa_enabled(fxaa);
 
                     bool ae = post_processing->is_auto_exposure_enabled();
-                    if (ImGui::Checkbox("Auto-exposure", &ae))
+                    if (schizo::editor::ui::Checkbox("Auto-exposure", &ae))
                         post_processing->set_auto_exposure_enabled(ae);
 
                     // Reflections. The ray-traced toggle used to be an
@@ -9559,11 +9564,11 @@ int main(int argc, char** argv) {
                         ImGui::Separator();
                         ImGui::TextUnformatted("Reflections");
                         bool ssr_on = ssr->is_enabled();
-                        if (ImGui::Checkbox("Enabled##ssr", &ssr_on))
+                        if (schizo::editor::ui::Checkbox("Enabled##ssr", &ssr_on))
                             ssr->set_enabled(ssr_on);
                         bool ssr_rt = ssr->uses_rt();
                         ImGui::BeginDisabled(!ssr->rt_available());
-                        if (ImGui::Checkbox("Ray-traced##ssr", &ssr_rt))
+                        if (schizo::editor::ui::Checkbox("Ray-traced##ssr", &ssr_rt))
                             ssr->set_use_rt(ssr_rt);   // waits for device idle
                         ImGui::EndDisabled();
 
@@ -9575,17 +9580,17 @@ int main(int argc, char** argv) {
                         // and no device-idle stall, so it is free to flip while
                         // comparing.
                         bool tint = ssr->tint_by_albedo();
-                        if (ImGui::Checkbox("Tint by surface colour##ssr", &tint))
+                        if (schizo::editor::ui::Checkbox("Tint by surface colour##ssr", &tint))
                             ssr->set_tint_by_albedo(tint);
-                        ImGui::TextDisabled(tint
+                        schizo::editor::ui::TextDisabledWrapped(tint
                             ? "Metal reflections carry the surface's colour."
                             : "Metals reflect neutrally (pre-0.7.2 look).");
                         if (!ssr->rt_available()) {
-                            ImGui::TextDisabled("(RT unavailable on this GPU)");
+                            schizo::editor::ui::TextDisabledWrapped("(RT unavailable on this GPU)");
                         } else if (ssr_rt) {
-                            ImGui::TextDisabled("Reflects off-screen geometry.");
+                            schizo::editor::ui::TextDisabledWrapped("Reflects off-screen geometry.");
                         } else {
-                            ImGui::TextDisabled("Screen-space only: cannot reflect\n"
+                            schizo::editor::ui::TextDisabledWrapped("Screen-space only: cannot reflect\n"
                                                 "what is off-screen or behind you.");
                         }
                     }
@@ -9597,7 +9602,7 @@ int main(int argc, char** argv) {
                         const char* ao_items[] = { "SSAO", "HBAO", "HDAO",
                                                    "GTAO", "VXAO", "RT" };
                         int cur = static_cast<int>(ssao->technique());
-                        if (ImGui::Combo("Technique##ao", &cur, ao_items, 6)) {
+                        if (schizo::editor::ui::Combo("Technique##ao", &cur, ao_items, 6)) {
                             auto newt = static_cast<gws::renderer::gpu::AoTechnique>(cur);
                             ssao->set_technique(newt); // waits for device idle
                             // Rebind which occlusion texture the lighting pass
@@ -9611,7 +9616,7 @@ int main(int argc, char** argv) {
                                                            ssao->get_output_sampler());
                         }
                         if (!ssao->rt_available())
-                            ImGui::TextDisabled("(RT unavailable on this GPU)");
+                            schizo::editor::ui::TextDisabledWrapped("(RT unavailable on this GPU)");
                     }
 
                     // Volumetric sun lighting / light shafts (god rays).
@@ -9619,14 +9624,14 @@ int main(int argc, char** argv) {
                         ImGui::Separator();
                         ImGui::TextUnformatted("Volumetric Light (god rays)");
                         bool vol = volumetric_light->is_enabled();
-                        if (ImGui::Checkbox("Enable##vol", &vol))
+                        if (schizo::editor::ui::Checkbox("Enable##vol", &vol))
                             volumetric_light->set_enabled(vol);
                         if (vol) {
                             auto& vc = volumetric_light->mutable_config();
-                            ImGui::SliderFloat("  Intensity##vol",   &vc.intensity,    0.0f, 5.0f);
-                            ImGui::SliderFloat("  Density##vol",      &vc.density,      0.0f, 0.2f, "%.3f");
-                            ImGui::SliderFloat("  Anisotropy##vol",   &vc.anisotropy,   0.0f, 0.95f);
-                            ImGui::SliderFloat("  Max distance##vol", &vc.max_distance, 10.0f, 300.0f);
+                            schizo::editor::ui::SliderFloat("  Intensity##vol",   &vc.intensity,    0.0f, 5.0f);
+                            schizo::editor::ui::SliderFloat("  Density##vol",      &vc.density,      0.0f, 0.2f, "%.3f");
+                            schizo::editor::ui::SliderFloat("  Anisotropy##vol",   &vc.anisotropy,   0.0f, 0.95f);
+                            schizo::editor::ui::SliderFloat("  Max distance##vol", &vc.max_distance, 10.0f, 300.0f);
                             ImGui::SliderInt  ("  Steps##vol",        &vc.num_steps,    8, 128);
                         }
                     }
@@ -9636,17 +9641,17 @@ int main(int argc, char** argv) {
                         ImGui::Separator();
                         ImGui::TextUnformatted("Volumetric Fog (froxel)");
                         bool fon = froxel_fog->is_enabled();
-                        if (ImGui::Checkbox("Enable##fog", &fon))
+                        if (schizo::editor::ui::Checkbox("Enable##fog", &fon))
                             froxel_fog->set_enabled(fon);
                         if (fon) {
                             auto& fc = froxel_fog->mutable_config();
-                            ImGui::SliderFloat("  Density##fog",       &fc.density,        0.0f, 0.08f, "%.4f");
-                            ImGui::SliderFloat("  Height base##fog",   &fc.height_base,   -50.0f, 100.0f);
-                            ImGui::SliderFloat("  Height falloff##fog",&fc.height_falloff, 0.0f, 0.5f, "%.3f");
-                            ImGui::SliderFloat("  Range##fog",         &fc.max_distance,  20.0f, 400.0f);
-                            ImGui::SliderFloat("  Sun scatter##fog",   &fc.sun_intensity,  0.0f, 3.0f);
-                            ImGui::SliderFloat("  Anisotropy##fog",    &fc.anisotropy,     0.0f, 0.9f);
-                            ImGui::SliderFloat("  Local lights##fog",  &fc.local_intensity,0.0f, 4.0f);
+                            schizo::editor::ui::SliderFloat("  Density##fog",       &fc.density,        0.0f, 0.08f, "%.4f");
+                            schizo::editor::ui::SliderFloat("  Height base##fog",   &fc.height_base,   -50.0f, 100.0f);
+                            schizo::editor::ui::SliderFloat("  Height falloff##fog",&fc.height_falloff, 0.0f, 0.5f, "%.3f");
+                            schizo::editor::ui::SliderFloat("  Range##fog",         &fc.max_distance,  20.0f, 400.0f);
+                            schizo::editor::ui::SliderFloat("  Sun scatter##fog",   &fc.sun_intensity,  0.0f, 3.0f);
+                            schizo::editor::ui::SliderFloat("  Anisotropy##fog",    &fc.anisotropy,     0.0f, 0.9f);
+                            schizo::editor::ui::SliderFloat("  Local lights##fog",  &fc.local_intensity,0.0f, 4.0f);
                             ImGui::ColorEdit3 ("  Ambient##fog",       &fc.ambient.x);
                         }
                     }
@@ -9656,10 +9661,10 @@ int main(int argc, char** argv) {
                         ImGui::Separator();
                         ImGui::TextUnformatted("Animation Demo (skinned)");
                         bool aon = anim_demo->enabled();
-                        if (ImGui::Checkbox("Enable##animdemo", &aon))
+                        if (schizo::editor::ui::Checkbox("Enable##animdemo", &aon))
                             anim_demo->set_enabled(aon);
-                        ImGui::TextDisabled("  boxy biped @ origin: state machine +");
-                        ImGui::TextDisabled("  root motion + foot IK + GPU skinning");
+                        schizo::editor::ui::TextDisabledWrapped("  boxy biped @ origin: state machine +");
+                        schizo::editor::ui::TextDisabledWrapped("  root motion + foot IK + GPU skinning");
                     }
 
                     // Runtime game-UI HUD (gws_ui framework).
@@ -9667,10 +9672,10 @@ int main(int argc, char** argv) {
                         ImGui::Separator();
                         ImGui::TextUnformatted("Game UI HUD (gws_ui)");
                         bool uon = game_ui.enabled();
-                        if (ImGui::Checkbox("Enable##gameui", &uon))
+                        if (schizo::editor::ui::Checkbox("Enable##gameui", &uon))
                             game_ui.set_enabled(uon);
-                        ImGui::TextDisabled("  anchored HUD: health/XP/ability bars,");
-                        ImGui::TextDisabled("  resolution-scaled, over the viewport");
+                        schizo::editor::ui::TextDisabledWrapped("  anchored HUD: health/XP/ability bars,");
+                        schizo::editor::ui::TextDisabledWrapped("  resolution-scaled, over the viewport");
                     }
 
                     // Shadow shaping. Both of these exist because a shadow was
@@ -9689,27 +9694,27 @@ int main(int argc, char** argv) {
                         // path an artefact belonged to.
                         bool rts = lighting->is_rt_enabled();
                         ImGui::BeginDisabled(!device.has_ray_tracing());
-                        if (ImGui::Checkbox("Ray-traced shadows##rtsh", &rts))
+                        if (schizo::editor::ui::Checkbox("Ray-traced shadows##rtsh", &rts))
                             lighting->set_rt_enabled(rts);
                         ImGui::EndDisabled();
                         if (!device.has_ray_tracing())
-                            ImGui::TextDisabled("  (no ray tracing on this GPU)");
+                            schizo::editor::ui::TextDisabledWrapped("  (no ray tracing on this GPU)");
                         else
-                            ImGui::TextDisabled(rts
+                            schizo::editor::ui::TextDisabledWrapped(rts
                                 ? "  Ray-queried against real geometry."
                                 : "  Cascaded shadow maps with PCF.");
                         float soft = lighting->shadow_softness();
-                        if (ImGui::SliderFloat("Light scattering##shadow", &soft, 0.0f, 1.0f))
+                        if (schizo::editor::ui::SliderFloat("Light scattering##shadow", &soft, 0.0f, 1.0f))
                             lighting->set_shadow_softness(soft);
-                        ImGui::TextDisabled("  How far light spreads into shadow:");
-                        ImGui::TextDisabled("  0 is a hard edge, higher softens it.");
+                        schizo::editor::ui::TextDisabledWrapped("  How far light spreads into shadow:");
+                        schizo::editor::ui::TextDisabledWrapped("  0 is a hard edge, higher softens it.");
                         // The most expensive number in the renderer. Eight rays
                         // per pixel PER LIGHT at 1080p is ~16.6M ray traversals
                         // a frame, and the lighting pass measured 10-12 ms on an
                         // RTX 3060 with an 18-draw scene. Softness 0 already
                         // takes the 1-ray path; this makes the middle reachable.
                         int rays = lighting->shadow_ray_count();
-                        if (ImGui::SliderInt("Shadow rays##shadow", &rays, 1, 8)) {
+                        if (schizo::editor::ui::SliderInt("Shadow rays##shadow", &rays, 1, 8)) {
                             lighting->set_shadow_ray_count(rays);
                             render_settings.shadow_rays = rays;
                         }
@@ -9721,12 +9726,12 @@ int main(int argc, char** argv) {
                                 "This is the single most expensive number in the renderer: "
                                 "at 8 the lighting pass measured 10-12 ms on an RTX 3060 with "
                                 "a near-empty scene. 1 gives a hard edge and costs an eighth.");
-                        ImGui::TextDisabled("  Cost is linear in this: 4 halves the shadow cost.");
+                        schizo::editor::ui::TextDisabledWrapped("  Cost is linear in this: 4 halves the shadow cost.");
                         float persist = lighting->shadow_persistence();
-                        if (ImGui::SliderFloat("Light persistence##shadow", &persist, 0.0f, 0.5f))
+                        if (schizo::editor::ui::SliderFloat("Light persistence##shadow", &persist, 0.0f, 0.5f))
                             lighting->set_shadow_persistence(persist);
-                        ImGui::TextDisabled("  Light still reaching a shadow's core:");
-                        ImGui::TextDisabled("  0 is pure black, which reads flat.");
+                        schizo::editor::ui::TextDisabledWrapped("  Light still reaching a shadow's core:");
+                        schizo::editor::ui::TextDisabledWrapped("  0 is pure black, which reads flat.");
                     }
 
                     // Ambient / sky light -- the floor under everything.
@@ -9743,7 +9748,7 @@ int main(int argc, char** argv) {
                         ImGui::Separator();
                         ImGui::TextUnformatted("Ambient / sky light");
                         float amb = l_cfg.global_ambient;
-                        if (ImGui::SliderFloat("Strength##ambient", &amb, 0.0f, 1.0f)) {
+                        if (schizo::editor::ui::SliderFloat("Strength##ambient", &amb, 0.0f, 1.0f)) {
                             l_cfg.global_ambient = amb;
                             lighting->set_ambient_light(amb);
                             // IBL is the sky half of the same term. Scaled by the
@@ -9759,7 +9764,7 @@ int main(int argc, char** argv) {
                                 transparent->set_ambient(l_cfg.ambient_color, amb);
                         }
                         if (amb <= 0.0f)
-                            ImGui::TextDisabled("  0 — no ambient, no sky light:\n"
+                            schizo::editor::ui::TextDisabledWrapped("  0 — no ambient, no sky light:\n"
                                                 "  surfaces with no light on them are black.");
                     }
 
@@ -9773,7 +9778,7 @@ int main(int argc, char** argv) {
                         // dialled out still pays for 864 probe traces every frame.
                         auto& gc = ddgi->mutable_config();
                         float gi_strength = ddgi->is_enabled() ? gc.intensity : 0.0f;
-                        if (ImGui::SliderFloat("Intensity##ddgi", &gi_strength, 0.0f, 4.0f)) {
+                        if (schizo::editor::ui::SliderFloat("Intensity##ddgi", &gi_strength, 0.0f, 4.0f)) {
                             const bool want_on = gi_strength > 0.0f;
                             if (want_on != ddgi->is_enabled()) {
                                 ddgi->set_enabled(want_on);
@@ -9782,17 +9787,17 @@ int main(int argc, char** argv) {
                             if (want_on) gc.intensity = gi_strength;
                         }
                         if (!ddgi->is_enabled())
-                            ImGui::TextDisabled("  off — drag above 0 to enable");
+                            schizo::editor::ui::TextDisabledWrapped("  off — drag above 0 to enable");
                         if (ddgi->is_enabled()) {
-                            if (ImGui::Button("Fit grid to scene##ddgi"))
+                            if (schizo::editor::ui::Button("Fit grid to scene##ddgi"))
                                 ddgi_autofit_pending = true;
-                            ImGui::SameLine();
-                            ImGui::TextDisabled("(auto on enable)");
-                            ImGui::SliderFloat ("  Hysteresis##ddgi",  &gc.hysteresis,  0.5f, 0.995f, "%.3f");
-                            ImGui::SliderFloat ("  Normal bias##ddgi", &gc.normal_bias, 0.0f, 1.0f);
-                            ImGui::DragFloat3  ("  Grid origin##ddgi", &gc.origin.x,    0.5f);
-                            ImGui::DragFloat3  ("  Probe spacing##ddgi", &gc.spacing.x, 0.1f, 0.5f, 10.0f);
-                            ImGui::TextDisabled("  %u probes (%dx%dx%d, fixed at startup)",
+                            schizo::editor::ui::SameLineIfFits();
+                            schizo::editor::ui::TextDisabledWrapped("(auto on enable)");
+                            schizo::editor::ui::SliderFloat("  Hysteresis##ddgi",  &gc.hysteresis,  0.5f, 0.995f, "%.3f");
+                            schizo::editor::ui::SliderFloat("  Normal bias##ddgi", &gc.normal_bias, 0.0f, 1.0f);
+                            schizo::editor::ui::DragFloat3("  Grid origin##ddgi", &gc.origin.x,    0.5f);
+                            schizo::editor::ui::DragFloat3("  Probe spacing##ddgi", &gc.spacing.x, 0.1f, 0.5f, 10.0f);
+                            schizo::editor::ui::TextDisabledWrapped("  %u probes (%dx%dx%d, fixed at startup)",
                                                 ddgi->probe_count(), gc.counts.x,
                                                 gc.counts.y, gc.counts.z);
                         }
@@ -9803,29 +9808,29 @@ int main(int argc, char** argv) {
                         ImGui::Separator();
                         ImGui::TextUnformatted("Volumetric Clouds");
                         bool con = clouds->is_enabled();
-                        if (ImGui::Checkbox("Enable##cloud", &con))
+                        if (schizo::editor::ui::Checkbox("Enable##cloud", &con))
                             clouds->set_enabled(con);
                         if (con) {
                             auto& cc = clouds->mutable_config();
-                            ImGui::SliderFloat("  Coverage##cloud",   &cc.coverage,    0.0f, 1.0f);
-                            ImGui::SliderFloat("  Cloud size##cloud",  &cc.shape_scale, 0.0004f, 0.0040f, "%.4f");
-                            ImGui::SliderFloat("  Wispiness##cloud",   &cc.detail_strength, 0.0f, 1.0f);
-                            ImGui::SliderFloat("  Brightness##cloud",  &cc.brightness,  0.5f, 6.0f);
-                            ImGui::SliderFloat("  Density##cloud",     &cc.density,     0.1f, 4.0f);
-                            ImGui::SliderFloat("  Extinction##cloud",  &cc.extinction,  0.01f, 0.4f, "%.3f");
-                            ImGui::SliderFloat("  Wind speed##cloud",  &cc.wind_speed,  0.0f, 40.0f);
+                            schizo::editor::ui::SliderFloat("  Coverage##cloud",   &cc.coverage,    0.0f, 1.0f);
+                            schizo::editor::ui::SliderFloat("  Cloud size##cloud",  &cc.shape_scale, 0.0004f, 0.0040f, "%.4f");
+                            schizo::editor::ui::SliderFloat("  Wispiness##cloud",   &cc.detail_strength, 0.0f, 1.0f);
+                            schizo::editor::ui::SliderFloat("  Brightness##cloud",  &cc.brightness,  0.5f, 6.0f);
+                            schizo::editor::ui::SliderFloat("  Density##cloud",     &cc.density,     0.1f, 4.0f);
+                            schizo::editor::ui::SliderFloat("  Extinction##cloud",  &cc.extinction,  0.01f, 0.4f, "%.3f");
+                            schizo::editor::ui::SliderFloat("  Wind speed##cloud",  &cc.wind_speed,  0.0f, 40.0f);
                             ImGui::SliderInt  ("  March steps##cloud", &cc.march_steps, 16, 128);
                             ImGui::SliderInt  ("  Light steps##cloud", &cc.light_steps, 2, 12);
-                            ImGui::SliderFloat("  Bottom alt##cloud",  &cc.cloud_bottom, 100.0f, 2000.0f);
-                            ImGui::SliderFloat("  Top alt##cloud",     &cc.cloud_top,    200.0f, 4000.0f);
-                            ImGui::SliderFloat("  Sky flatness##cloud", &cc.earth_radius, 10000.0f, 200000.0f, "%.0f");
-                            ImGui::SliderFloat("  Max distance##cloud", &cc.max_march, 500.0f, 12000.0f, "%.0f");
+                            schizo::editor::ui::SliderFloat("  Bottom alt##cloud",  &cc.cloud_bottom, 100.0f, 2000.0f);
+                            schizo::editor::ui::SliderFloat("  Top alt##cloud",     &cc.cloud_top,    200.0f, 4000.0f);
+                            schizo::editor::ui::SliderFloat("  Sky flatness##cloud", &cc.earth_radius, 10000.0f, 200000.0f, "%.0f");
+                            schizo::editor::ui::SliderFloat("  Max distance##cloud", &cc.max_march, 500.0f, 12000.0f, "%.0f");
                             // Render-resolution scale (recreates the cloud buffers).
                             const char* res_items[] = { "Quarter", "Half", "Full" };
                             const float res_scales[] = { 0.25f, 0.5f, 1.0f };
                             int res_cur = (cc.resolution_scale <= 0.3f) ? 0
                                         : (cc.resolution_scale >= 0.9f ? 2 : 1);
-                            if (ImGui::Combo("  Resolution##cloud", &res_cur, res_items, 3)) {
+                            if (schizo::editor::ui::Combo("  Resolution##cloud", &res_cur, res_items, 3)) {
                                 cc.resolution_scale = res_scales[res_cur];
                                 clouds->rebuild_targets();
                             }
@@ -9837,81 +9842,81 @@ int main(int argc, char** argv) {
                     ImGui::TextUnformatted("Color FX");
 
                     bool chroma = post_processing->is_chromatic_enabled();
-                    if (ImGui::Checkbox("Chromatic aberration", &chroma))
+                    if (schizo::editor::ui::Checkbox("Chromatic aberration", &chroma))
                         post_processing->set_chromatic(
                             chroma, post_processing->chromatic_intensity_ref());
                     if (chroma)
-                        ImGui::SliderFloat("  Chroma amount",
+                        schizo::editor::ui::SliderFloat("  Chroma amount",
                             &post_processing->chromatic_intensity_ref(), 0.0f, 0.05f, "%.4f");
 
                     bool vig = post_processing->is_vignette_enabled();
-                    if (ImGui::Checkbox("Vignette", &vig))
+                    if (schizo::editor::ui::Checkbox("Vignette", &vig))
                         post_processing->set_vignette(
                             vig, post_processing->vignette_intensity_ref(),
                             post_processing->vignette_radius_ref());
                     if (vig) {
-                        ImGui::SliderFloat("  Vignette strength",
+                        schizo::editor::ui::SliderFloat("  Vignette strength",
                             &post_processing->vignette_intensity_ref(), 0.0f, 1.0f);
-                        ImGui::SliderFloat("  Vignette radius",
+                        schizo::editor::ui::SliderFloat("  Vignette radius",
                             &post_processing->vignette_radius_ref(), 0.2f, 1.2f);
                     }
 
                     bool grain = post_processing->is_film_grain_enabled();
-                    if (ImGui::Checkbox("Film grain", &grain))
+                    if (schizo::editor::ui::Checkbox("Film grain", &grain))
                         post_processing->set_film_grain(
                             grain, post_processing->film_grain_intensity_ref());
                     if (grain)
-                        ImGui::SliderFloat("  Grain amount",
+                        schizo::editor::ui::SliderFloat("  Grain amount",
                             &post_processing->film_grain_intensity_ref(), 0.0f, 0.3f);
 
                     bool sharpen = post_processing->is_sharpen_enabled();
-                    if (ImGui::Checkbox("Sharpen", &sharpen))
+                    if (schizo::editor::ui::Checkbox("Sharpen", &sharpen))
                         post_processing->set_sharpen(sharpen);
                     if (sharpen)
-                        ImGui::SliderFloat("  Sharpen amount",
+                        schizo::editor::ui::SliderFloat("  Sharpen amount",
                             &post_processing->sharpen_intensity_ref(), 0.0f, 2.0f);
 
                     bool lens = post_processing->is_lens_distortion_enabled();
-                    if (ImGui::Checkbox("Lens distortion", &lens))
+                    if (schizo::editor::ui::Checkbox("Lens distortion", &lens))
                         post_processing->set_lens_distortion(lens);
                     if (lens)
-                        ImGui::SliderFloat("  Distort (barrel/pincushion)",
+                        schizo::editor::ui::SliderFloat("  Distort (barrel/pincushion)",
                             &post_processing->lens_distortion_ref(), -0.5f, 0.5f);
 
                     ImGui::Separator();
                     ImGui::TextUnformatted("Color Grade");
                     bool grade = post_processing->is_color_grade_enabled();
-                    if (ImGui::Checkbox("Enable grading", &grade))
+                    if (schizo::editor::ui::Checkbox("Enable grading", &grade))
                         post_processing->set_color_grade(grade);
                     if (grade) {
-                        ImGui::SliderFloat("  Temperature", &post_processing->cg_temperature_ref(), -1.0f, 1.0f);
-                        ImGui::SliderFloat("  Tint",        &post_processing->cg_tint_ref(),        -1.0f, 1.0f);
-                        ImGui::SliderFloat("  Saturation",  &post_processing->cg_saturation_ref(),   0.0f, 2.0f);
-                        ImGui::SliderFloat("  Contrast",    &post_processing->cg_contrast_ref(),     0.5f, 2.0f);
-                        ImGui::SliderFloat("  Brightness",  &post_processing->cg_brightness_ref(),   0.5f, 2.0f);
+                        schizo::editor::ui::SliderFloat("  Temperature", &post_processing->cg_temperature_ref(), -1.0f, 1.0f);
+                        schizo::editor::ui::SliderFloat("  Tint",        &post_processing->cg_tint_ref(),        -1.0f, 1.0f);
+                        schizo::editor::ui::SliderFloat("  Saturation",  &post_processing->cg_saturation_ref(),   0.0f, 2.0f);
+                        schizo::editor::ui::SliderFloat("  Contrast",    &post_processing->cg_contrast_ref(),     0.5f, 2.0f);
+                        schizo::editor::ui::SliderFloat("  Brightness",  &post_processing->cg_brightness_ref(),   0.5f, 2.0f);
                     }
 
                     ImGui::Separator();
                     ImGui::TextUnformatted("Stylized");
                     bool poster = post_processing->is_posterize_enabled();
-                    if (ImGui::Checkbox("Posterize", &poster))
+                    if (schizo::editor::ui::Checkbox("Posterize", &poster))
                         post_processing->set_posterize(poster);
                     if (poster)
-                        ImGui::SliderFloat("  Levels",
+                        schizo::editor::ui::SliderFloat("  Levels",
                             &post_processing->posterize_levels_ref(), 2.0f, 32.0f);
 
                     bool pix = post_processing->is_pixelate_enabled();
-                    if (ImGui::Checkbox("Pixelate", &pix))
+                    if (schizo::editor::ui::Checkbox("Pixelate", &pix))
                         post_processing->set_pixelate(pix);
                     if (pix)
-                        ImGui::SliderFloat("  Block size (px)",
+                        schizo::editor::ui::SliderFloat("  Block size (px)",
                             &post_processing->pixelate_size_ref(), 1.0f, 32.0f);
 
                     bool scan = post_processing->is_scanlines_enabled();
-                    if (ImGui::Checkbox("Scanlines (CRT)", &scan))
+                    if (schizo::editor::ui::Checkbox("Scanlines (CRT)", &scan))
                         post_processing->set_scanlines(scan);
                     if (scan)
-                        ImGui::SliderFloat("  Scanline strength",
+                        schizo::editor::ui::SliderFloat("  Scanline strength",
                             &post_processing->scanline_intensity_ref(), 0.0f, 1.0f);
                 }
 

@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 #include "ai_assistant_panel.h"
 
 #include <imgui.h>
@@ -1015,13 +1016,13 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
     }
 
     ImGui::TextUnformatted("AI Scene Assistant");
-    ImGui::TextDisabled("Describe the result. Review the safe plan. Apply it yourself.");
+    ui::TextDisabledWrapped("Describe the result. Review the safe plan. Apply it yourself.");
     ImGui::SeparatorText("1. Account");
 
     ImGui::BeginDisabled(running_ || auth_running_ || runtime_installing_);
     int provider_index = provider_ == AiProvider::Codex ? 0 : 1;
     const char* providers[] = {"Codex (OpenAI)", "Claude (Anthropic Console)"};
-    ImGui::SetNextItemWidth(250.0f);
+    ui::SetNextItemWidth(250.0f);
     if (ImGui::Combo("##ai_provider", &provider_index, providers, 2)) {
         secure_credentials::Erase(anthropic_api_key_, sizeof(anthropic_api_key_));
         provider_ = provider_index == 0 ? AiProvider::Codex : AiProvider::Claude;
@@ -1055,35 +1056,35 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
     }
 
     if (!runtime_installing_ && auth_checked_ && !auth_.cli_available) {
-        if (ImGui::Button(provider_ == AiProvider::Codex ? "Install Codex Runtime" : "Install Claude Runtime"))
+        if (ui::Button(provider_ == AiProvider::Codex ? "Install Codex Runtime" : "Install Claude Runtime"))
             start_runtime_install();
-        ImGui::SameLine();
-        ImGui::TextDisabled("Official per-user installation");
+        ui::SameLineIfFits();
+        ui::TextDisabledWrapped("Official per-user installation");
     }
 
     if (provider_ == AiProvider::Codex) {
         if (!auth_.signed_in) {
             ImGui::BeginDisabled(auth_running_ || runtime_installing_ || !auth_.cli_available ||
                                  !auth_.secure_store_available);
-            if (ImGui::Button("Sign in with ChatGPT"))
+            if (ui::Button("Sign in with ChatGPT"))
                 start_login();
             ImGui::EndDisabled();
-            ImGui::SameLine();
+            ui::SameLineIfFits();
         }
         ImGui::BeginDisabled(auth_running_ || runtime_installing_ || running_);
         if (ImGui::SmallButton("Refresh"))
             start_auth_check();
         ImGui::EndDisabled();
-        ImGui::TextDisabled(auth_.signed_in ? "ChatGPT plan  -  encrypted OS keyring"
+        ui::TextDisabledWrapped(auth_.signed_in ? "ChatGPT plan  -  encrypted OS keyring"
                                            : "Uses your ChatGPT plan; credentials stay in the encrypted OS keyring.");
     } else {
-        ImGui::SetNextItemWidth(-1.0f);
+        ui::SetNextItemWidth(-1.0f);
         ImGui::InputTextWithHint("##anthropic_api_key", "Anthropic Console API key", anthropic_api_key_,
                                  sizeof(anthropic_api_key_), ImGuiInputTextFlags_Password);
 
         ImGui::BeginDisabled(auth_running_ || runtime_installing_ || !auth_.secure_store_available ||
                              anthropic_api_key_[0] == '\0');
-        if (ImGui::Button("Store encrypted")) {
+        if (ui::Button("Store encrypted")) {
             std::string secret(anthropic_api_key_);
             std::string store_error;
             if (secure_credentials::StoreAnthropicApiKey(secret, store_error)) {
@@ -1099,9 +1100,9 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
         ImGui::EndDisabled();
 
         if (auth_.signed_in) {
-            ImGui::SameLine();
+            ui::SameLineIfFits();
             ImGui::BeginDisabled(auth_running_ || runtime_installing_);
-            if (ImGui::Button("Remove stored key")) {
+            if (ui::Button("Remove stored key")) {
                 std::string remove_error;
                 if (secure_credentials::RemoveAnthropicApiKey(remove_error)) {
                     status_ = "Anthropic API key removed from the OS vault.";
@@ -1113,15 +1114,15 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
             }
             ImGui::EndDisabled();
         }
-        ImGui::SameLine();
+        ui::SameLineIfFits();
         ImGui::BeginDisabled(auth_running_ || runtime_installing_);
         if (ImGui::SmallButton("Refresh"))
             start_auth_check();
         ImGui::EndDisabled();
-        ImGui::TextDisabled("Saved only in Windows Credential Manager, macOS Keychain, or Linux Secret Service.");
+        ui::TextDisabledWrapped("Saved only in Windows Credential Manager, macOS Keychain, or Linux Secret Service.");
     }
     if (auth_checked_ && !auth_.signed_in && !auth_.detail.empty())
-        ImGui::TextDisabled("%s", auth_.detail.c_str());
+        ui::TextDisabledWrapped("%s", auth_.detail.c_str());
 
     ImGui::Spacing();
     ImGui::TextUnformatted("Model");
@@ -1136,7 +1137,7 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
             if (option.id == codex_model_)
                 preview_text = option.label;
         ImGui::BeginDisabled(!auth_.cli_available || runtime_installing_ || running_ || auth_running_);
-        ImGui::SetNextItemWidth(-1.0f);
+        ui::SetNextItemWidth(-1.0f);
         if (ImGui::BeginCombo("##codex_model", preview_text.c_str())) {
             const std::string default_label = default_model
                 ? "Automatic (" + default_model->label + ")"
@@ -1176,7 +1177,7 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
         };
         ImGui::TextUnformatted("Reasoning");
         ImGui::BeginDisabled(running_ || auth_running_ || !selected_model || selected_model->reasoning_efforts.empty());
-        ImGui::SetNextItemWidth(-1.0f);
+        ui::SetNextItemWidth(-1.0f);
         const std::string reasoning_preview = effort_label(codex_reasoning_effort_);
         if (ImGui::BeginCombo("##codex_reasoning", reasoning_preview.c_str())) {
             if (selected_model) {
@@ -1198,23 +1199,23 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
         if (last_model_refresh_ != std::chrono::steady_clock::time_point{}) {
             const auto age = std::chrono::duration_cast<std::chrono::minutes>(
                 std::chrono::steady_clock::now() - last_model_refresh_).count();
-            ImGui::TextDisabled("Models refresh automatically every 5 minutes - last refresh %lld min ago.",
+            ui::TextDisabledWrapped("Models refresh automatically every 5 minutes - last refresh %lld min ago.",
                                 static_cast<long long>(age));
         }
         if (!auth_.runtime_update_detail.empty())
-            ImGui::TextDisabled("%s", auth_.runtime_update_detail.c_str());
+            ui::TextDisabledWrapped("%s", auth_.runtime_update_detail.c_str());
         if (!auth_.models_loaded && !auth_running_ && auth_.signed_in)
-            ImGui::TextDisabled("Model refresh unavailable; retrying automatically. Showing the last loaded list.");
+            ui::TextDisabledWrapped("Model refresh unavailable; retrying automatically. Showing the last loaded list.");
         if (!model_notice_.empty()) ImGui::TextWrapped("%s", model_notice_.c_str());
 
         if (!auth_.usage_windows.empty()) {
             if (auth_.plan.empty())
-                ImGui::TextDisabled("Usage");
+                ui::TextDisabledWrapped("Usage");
             else
-                ImGui::TextDisabled("Usage - %s plan", auth_.plan.c_str());
+                ui::TextDisabledWrapped("Usage - %s plan", auth_.plan.c_str());
             if (!auth_.credit_balance.empty()) {
-                ImGui::SameLine();
-                ImGui::TextDisabled("- Credits: %s", auth_.credit_balance.c_str());
+                ui::SameLineIfFits();
+                ui::TextDisabledWrapped("- Credits: %s", auth_.credit_balance.c_str());
             }
             for (const UsageWindow& window : auth_.usage_windows) {
                 const int used = std::clamp(window.used_percent, 0, 100);
@@ -1223,11 +1224,15 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
                 const std::string reset = reset_time_text(window.resets_at);
                 if (!reset.empty())
                     overlay += " - resets " + reset;
-                ImGui::TextDisabled("%s", window.label.c_str());
-                ImGui::ProgressBar(static_cast<float>(remaining) / 100.0f, ImVec2(-1.0f, 0.0f), overlay.c_str());
+                ui::TextDisabledWrapped("%s", window.label.c_str());
+                const bool compact = ImGui::CalcTextSize(overlay.c_str()).x +
+                    2.0f * ImGui::GetStyle().FramePadding.x > ui::AvailableWidth();
+                const std::string bar_text = compact ? std::to_string(remaining) + "% left" : overlay;
+                ImGui::ProgressBar(static_cast<float>(remaining) / 100.0f, ImVec2(-1.0f, 0.0f), bar_text.c_str());
+                if (compact) ui::TextDisabledWrapped("%s", overlay.c_str());
             }
         } else if (auth_.signed_in && !auth_running_) {
-            ImGui::TextDisabled("Usage is currently unavailable; Refresh retries it.");
+            ui::TextDisabledWrapped("Usage is currently unavailable; Refresh retries it.");
         }
     } else {
         const char* labels[] = {"Default (Anthropic recommended)", "Sonnet (balanced)", "Opus (strongest)",
@@ -1237,10 +1242,10 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
         for (int i = 0; i < 4; ++i)
             if (claude_model_ == ids[i])
                 selected = i;
-        ImGui::SetNextItemWidth(-1.0f);
+        ui::SetNextItemWidth(-1.0f);
         if (ImGui::Combo("##claude_model", &selected, labels, 4))
             claude_model_ = ids[selected];
-        ImGui::TextDisabled("This editor session: %llu input / %llu output tokens - $%.4f",
+        ui::TextDisabledWrapped("This editor session: %llu input / %llu output tokens - $%.4f",
                             static_cast<unsigned long long>(session_input_tokens_),
                             static_cast<unsigned long long>(session_output_tokens_), session_cost_usd_);
     }
@@ -1248,11 +1253,11 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
 
     if (context.scene) {
         if (selected_entity_id)
-            ImGui::TextDisabled("Scene ready - selected entity #%u", selected_entity_id);
+            ui::TextDisabledWrapped("Scene ready - selected entity #%u", selected_entity_id);
         else
-            ImGui::TextDisabled("Scene ready - no entity selected");
+            ui::TextDisabledWrapped("Scene ready - no entity selected");
     } else {
-        ImGui::TextDisabled("Open a project and scene to begin.");
+        ui::TextDisabledWrapped("Open a project and scene to begin.");
     }
     ImGui::InputTextMultiline("##ai_request", prompt_, sizeof(prompt_), ImVec2(-1.0f, 110.0f));
 
@@ -1261,15 +1266,15 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
                              !runtime_installing_ && !auth_running_ &&
                              (provider_ != AiProvider::Codex || FindAiModel(auth_.models, codex_model_));
     ImGui::BeginDisabled(!can_request);
-    if (ImGui::Button("Create proposal", ImVec2(150.0f, 0.0f)))
+    if (ui::Button("Create proposal", ImVec2(150.0f, 0.0f)))
         start_request(context.scene, selected_entity_id);
     ImGui::EndDisabled();
     if (running_) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s is preparing a safe plan...", provider_name(provider_));
+        ui::SameLineIfFits();
+        ui::TextDisabledWrapped("%s is preparing a safe plan...", provider_name(provider_));
     } else if (!auth_.signed_in) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("Connect an account first.");
+        ui::SameLineIfFits();
+        ui::TextDisabledWrapped("Connect an account first.");
     }
 
     if (!status_.empty()) {
@@ -1286,7 +1291,7 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
 
     if (pending_plan_) {
         ImGui::TextWrapped("%s", pending_plan_->message.c_str());
-        ImGui::TextDisabled("%zu proposed action%s", pending_plan_->actions.size(),
+        ui::TextDisabledWrapped("%zu proposed action%s", pending_plan_->actions.size(),
                             pending_plan_->actions.size() == 1 ? "" : "s");
         ImGui::Spacing();
         for (size_t i = 0; i < pending_plan_->actions.size(); ++i) {
@@ -1307,7 +1312,7 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
         }
 
         ImGui::BeginDisabled(scene_changed);
-        if (ImGui::Button("Apply Changes", ImVec2(140.0f, 0.0f))) {
+        if (ui::Button("Apply Changes", ImVec2(140.0f, 0.0f))) {
             std::string apply_error;
             if (ApplyEngineAgentPlan(*pending_plan_, context, apply_error)) {
                 status_ = "Changes applied as one Ctrl+Z undo step.";
@@ -1318,20 +1323,20 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
             }
         }
         ImGui::EndDisabled();
-        ImGui::SameLine();
-        if (ImGui::Button("Discard")) {
+        ui::SameLineIfFits();
+        if (ui::Button("Discard")) {
             pending_plan_.reset();
             status_ = "Proposal discarded. Nothing was changed.";
             error_.clear();
         }
     } else if (running_) {
-        ImGui::TextDisabled("The proposal will appear here when it is ready.");
+        ui::TextDisabledWrapped("The proposal will appear here when it is ready.");
     } else {
-        ImGui::TextDisabled("No proposal yet.");
+        ui::TextDisabledWrapped("No proposal yet.");
     }
 
     if (!outgoing_scene_summary_.empty() && ImGui::CollapsingHeader("Data sent to the provider")) {
-        ImGui::TextDisabled("Your request plus this reduced snapshot; no source files or script contents.");
+        ui::TextDisabledWrapped("Your request plus this reduced snapshot; no source files or script contents.");
         readonly_text("##sent_snapshot", outgoing_scene_summary_, 150.0f);
     }
 

@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 #include "ability_system_panel.h"
 #include "../core/ability/include/ability.h"
 #include "../core/ability/include/ability_system.h"
@@ -38,14 +39,14 @@ void AbilitySystemPanel::Render(engine::ability::AbilitySystem* ability_system) 
     if (ability_system) {
         RenderAbilityListbox(ability_system);
     } else {
-        ImGui::TextDisabled("No ability system loaded");
+        ui::TextDisabledWrapped("No ability system loaded");
     }
     ImGui::EndChild();
     
     ImGui::Spacing();
-    ImGui::Checkbox("Show Cooldowns##ability", &state_.show_cooldowns);
-    ImGui::Checkbox("Show Descriptions##ability", &state_.show_ability_descriptions);
-    ImGui::Checkbox("Show Skill Tree##ability", &state_.show_skill_tree);
+    ui::Checkbox("Show Cooldowns##ability", &state_.show_cooldowns);
+    ui::Checkbox("Show Descriptions##ability", &state_.show_ability_descriptions);
+    ui::Checkbox("Show Skill Tree##ability", &state_.show_skill_tree);
     
     if (state_.show_cooldowns && ability_system) {
         ImGui::Separator();
@@ -61,7 +62,7 @@ void AbilitySystemPanel::Render(engine::ability::AbilitySystem* ability_system) 
             ImGui::Separator();
             RenderAbilityCreationTools();
         } else {
-            ImGui::TextDisabled("No ability system loaded for debug tools");
+            ui::TextDisabledWrapped("No ability system loaded for debug tools");
         }
         
         ImGui::Unindent();
@@ -70,7 +71,7 @@ void AbilitySystemPanel::Render(engine::ability::AbilitySystem* ability_system) 
 
 void AbilitySystemPanel::RenderAbilityListbox(engine::ability::AbilitySystem* ability_system) {
     ImGui::TextUnformatted("Search:");
-    ImGui::InputText("##AbilityFilter", state_.ability_filter, sizeof(state_.ability_filter));
+    ui::InputText("##AbilityFilter", state_.ability_filter, sizeof(state_.ability_filter));
     
     ImGui::Separator();
     ImGui::TextUnformatted("Abilities:");
@@ -85,7 +86,7 @@ void AbilitySystemPanel::RenderAbilityListbox(engine::ability::AbilitySystem* ab
 
 void AbilitySystemPanel::RenderAbilityProperties(engine::ability::Ability* ability) {
     if (!ability) {
-        ImGui::TextDisabled("No ability selected");
+        ui::TextDisabledWrapped("No ability selected");
         return;
     }
     
@@ -121,25 +122,26 @@ void AbilitySystemPanel::RenderCooldownDisplay(engine::ability::AbilitySystem* a
 
 void AbilitySystemPanel::RenderSkillTreeViewer(engine::ability::SkillTree* skill_tree) {
     if (!skill_tree) {
-        ImGui::TextDisabled("No skill tree loaded");
+        ui::TextDisabledWrapped("No skill tree loaded");
         return;
     }
     
-    ImGui::TextUnformatted("Skill Tree:");
+    ImGui::TextUnformatted("Skill Tree Preview:");
+    ui::TextDisabledWrapped("Preview only; these values do not unlock runtime skills.");
     ImGui::Text("Skill Points Available: 5");
     ImGui::Separator();
     
     // Display skill nodes in hierarchical view
     if (ImGui::TreeNode("Tier 1 - Basic Skills")) {
-        ImGui::Checkbox("Skill 1-A (Fire Damage)##s1a", new bool(true));
-        ImGui::Checkbox("Skill 1-B (Ice Damage)##s1b", new bool(false));
-        ImGui::Checkbox("Skill 1-C (Lightning)##s1c", new bool(false));
+        ui::Checkbox("Skill 1-A (Fire Damage)##s1a", &state_.preview_skills[0]);
+        ui::Checkbox("Skill 1-B (Ice Damage)##s1b", &state_.preview_skills[1]);
+        ui::Checkbox("Skill 1-C (Lightning)##s1c", &state_.preview_skills[2]);
         ImGui::TreePop();
     }
     
     if (ImGui::TreeNode("Tier 2 - Advanced Skills")) {
         ImGui::BeginDisabled();
-        ImGui::Checkbox("Skill 2-A (Requires Skill 1-A)##s2a", new bool(false));
+        ui::Checkbox("Skill 2-A (Requires Skill 1-A)##s2a", &state_.preview_skills[3]);
         ImGui::EndDisabled();
         ImGui::TreePop();
     }
@@ -181,13 +183,13 @@ void AbilitySystemPanel::RenderModifierBreakdown(const std::vector<engine::abili
 void AbilitySystemPanel::RenderAbilityEffect(engine::ability::Ability* ability) {
     ImGui::TextUnformatted("Effect Properties:");
     
-    static int effect_type = 0;
-    ImGui::Combo("Effect Type##ability", &effect_type, 
+    ui::TextDisabledWrapped("Effect preview; these values are not applied to the runtime ability.");
+    ui::Combo("Effect Type##ability", &state_.preview_effect_type,
                 "Damage\0\Heal\0\Status\0\DoT\0\Custom\0\0");
     
-    ImGui::SliderFloat("Base Damage##ability", new float(50.0f), 1.0f, 200.0f);
-    ImGui::SliderFloat("Effect Radius##ability", new float(5.0f), 0.0f, 20.0f);
-    ImGui::Checkbox("Requires Target##ability", new bool(true));
+    ui::SliderFloat("Base Damage##ability", &state_.preview_damage, 1.0f, 200.0f);
+    ui::SliderFloat("Effect Radius##ability", &state_.preview_effect_radius, 0.0f, 20.0f);
+    ui::Checkbox("Requires Target##ability", &state_.preview_requires_target);
 }
 
 void AbilitySystemPanel::RenderAbilityStats(engine::ability::Ability* ability) {
@@ -207,17 +209,17 @@ void AbilitySystemPanel::RenderAbilityTestingTools(engine::ability::AbilitySyste
     ImGui::TextUnformatted("Test Ability Activation:");
     
     // Test ability buttons
-    if (ImGui::Button("Activate: Fireball##test", ImVec2(-1, 0))) {
+    if (ui::Button("Activate: Fireball##test", ImVec2(-1, 0))) {
         // ability_system->ActivateAbility(fireball_id)
         ImGui::OpenPopup("Ability Activated##popup");
     }
     
-    if (ImGui::Button("Activate: Freezing Ray##test", ImVec2(-1, 0))) {
+    if (ui::Button("Activate: Freezing Ray##test", ImVec2(-1, 0))) {
         // ability_system->ActivateAbility(freeze_id)
         ImGui::OpenPopup("Ability Activated##popup");
     }
     
-    if (ImGui::Button("Activate: Lightning Strike##test", ImVec2(-1, 0))) {
+    if (ui::Button("Activate: Lightning Strike##test", ImVec2(-1, 0))) {
         // ability_system->ActivateAbility(lightning_id)
         ImGui::OpenPopup("Ability Activated##popup");
     }
@@ -225,7 +227,7 @@ void AbilitySystemPanel::RenderAbilityTestingTools(engine::ability::AbilitySyste
     if (ImGui::BeginPopupModal("Ability Activated##popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextColored(ImVec4(0, 1, 0, 1), "✓ Ability activated successfully!");
         ImGui::Spacing();
-        if (ImGui::Button("OK##popup", ImVec2(100, 0))) {
+        if (ui::Button("OK##popup", ImVec2(100, 0))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -234,15 +236,15 @@ void AbilitySystemPanel::RenderAbilityTestingTools(engine::ability::AbilitySyste
     ImGui::Spacing();
     ImGui::TextUnformatted("Quick Actions:");
     
-    if (ImGui::Button("Clear All Cooldowns##ability", ImVec2(-1, 0))) {
+    if (ui::Button("Clear All Cooldowns##ability", ImVec2(-1, 0))) {
         // ability_system->ClearAllCooldowns()
     }
     
-    if (ImGui::Button("Reset Skill Tree##ability", ImVec2(-1, 0))) {
+    if (ui::Button("Reset Skill Tree##ability", ImVec2(-1, 0))) {
         // ability_system->ResetSkillTree()
     }
     
-    if (ImGui::Button("Add Test Ability##ability", ImVec2(-1, 0))) {
+    if (ui::Button("Add Test Ability##ability", ImVec2(-1, 0))) {
         ImGui::OpenPopup("Create Test Ability##popup");
     }
     
@@ -251,16 +253,16 @@ void AbilitySystemPanel::RenderAbilityTestingTools(engine::ability::AbilitySyste
         static float damage = 25.0f;
         static float cooldown = 5.0f;
         
-        ImGui::InputText("Ability Name##create", ability_name, sizeof(ability_name));
-        ImGui::SliderFloat("Base Damage##create", &damage, 1.0f, 200.0f);
-        ImGui::SliderFloat("Cooldown##create", &cooldown, 0.1f, 30.0f);
+        ui::InputText("Ability Name##create", ability_name, sizeof(ability_name));
+        ui::SliderFloat("Base Damage##create", &damage, 1.0f, 200.0f);
+        ui::SliderFloat("Cooldown##create", &cooldown, 0.1f, 30.0f);
         
-        if (ImGui::Button("Create##ability", ImVec2(100, 0))) {
+        if (ui::Button("Create##ability", ImVec2(100, 0))) {
             // Create ability based on parameters
             ImGui::CloseCurrentPopup();
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel##ability", ImVec2(100, 0))) {
+        ui::SameLineIfFits("Cancel##ability");
+        if (ui::Button("Cancel##ability", ImVec2(100, 0))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -271,19 +273,19 @@ void AbilitySystemPanel::RenderAbilityCreationTools() {
     ImGui::TextUnformatted("Ability Templates:");
     ImGui::Separator();
     
-    if (ImGui::Button("Create Damage Ability##template", ImVec2(-1, 0))) {
+    if (ui::Button("Create Damage Ability##template", ImVec2(-1, 0))) {
         // Create template damage ability
     }
     
-    if (ImGui::Button("Create Heal Ability##template", ImVec2(-1, 0))) {
+    if (ui::Button("Create Heal Ability##template", ImVec2(-1, 0))) {
         // Create template heal ability
     }
     
-    if (ImGui::Button("Create DoT Ability##template", ImVec2(-1, 0))) {
+    if (ui::Button("Create DoT Ability##template", ImVec2(-1, 0))) {
         // Create template damage-over-time ability
     }
     
-    if (ImGui::Button("Create Channeled Ability##template", ImVec2(-1, 0))) {
+    if (ui::Button("Create Channeled Ability##template", ImVec2(-1, 0))) {
         // Create template channeled ability
     }
 }

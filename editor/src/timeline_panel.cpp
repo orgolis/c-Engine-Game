@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 // ============================================================================
 // timeline_panel — the sequencer's surface (4.4).
 //
@@ -85,22 +86,22 @@ void draw_timeline_panel(bool& open,
     if (doc) draw_document_bar(*doc, "sequence");
 
     // ---- transport ---------------------------------------------------------
-    if (ImGui::Button(st.playing ? "Pause" : "Play")) st.playing = !st.playing;
-    ImGui::SameLine();
-    if (ImGui::Button("Stop")) { st.playing = false; st.time = 0.0f; st.scrubbing = true; }
-    ImGui::SameLine();
-    ImGui::Checkbox("loop", &st.loop);
-    ImGui::SameLine();
+    if (ui::Button(st.playing ? "Pause" : "Play")) st.playing = !st.playing;
+    ui::SameLineIfFits("Stop");
+    if (ui::Button("Stop")) { st.playing = false; st.time = 0.0f; st.scrubbing = true; }
+    ui::SameLineIfFits("loop");
+    ui::Checkbox("loop", &st.loop);
+    ui::SameLineIfFits();
 
     float dur = seq.duration();
-    ImGui::SetNextItemWidth(90.0f);
-    if (ImGui::DragFloat("duration", &dur, 0.05f, 0.1f, 600.0f)) seq.set_duration(dur);
+    ui::SetNextItemWidth(90.0f);
+    if (ui::DragFloat("duration", &dur, 0.05f, 0.1f, 600.0f)) seq.set_duration(dur);
 
-    ImGui::SetNextItemWidth(-1.0f);
+    ui::SetNextItemWidth(-1.0f);
     // Dragging the playhead is scrubbing, and scrubbing must apply values --
     // otherwise the scene does not move while you drag and the timeline looks
     // dead.
-    if (ImGui::SliderFloat("##time", &st.time, 0.0f, seq.duration(), "%.2f s"))
+    if (ui::SliderFloat("##time", &st.time, 0.0f, seq.duration(), "%.2f s"))
         st.scrubbing = true;
 
     if (st.playing) st.time = seq.advance(st.time, delta_time, st.loop);
@@ -118,19 +119,19 @@ void draw_timeline_panel(bool& open,
         auto sel = scene ? scene->GetEntityById(selected_entity_id) : nullptr;
         if (sel) {
             ImGui::Text("Selected: %s", sel->GetName().c_str());
-            ImGui::SameLine();
+            ui::SameLineIfFits();
             static int target = 0;
-            ImGui::SetNextItemWidth(140.0f);
+            ui::SetNextItemWidth(140.0f);
             const char* names[] = {"Position X", "Position Y", "Position Z",
                                    "Rotation Yaw", "Rotation Pitch", "Rotation Roll", "Scale"};
-            ImGui::Combo("##target", &target, names, IM_ARRAYSIZE(names));
-            ImGui::SameLine();
-            if (ImGui::Button("Add track"))
+            ui::Combo("##target", &target, names, IM_ARRAYSIZE(names));
+            ui::SameLineIfFits("Add track");
+            if (ui::Button("Add track"))
                 seq.add_track(selected_entity_id, static_cast<TrackTarget>(target));
-            ImGui::SameLine();
+            ui::SameLineIfFits();
             // Keying the CURRENT value at the CURRENT time is the gesture people
             // expect from a timeline: pose the object, press the key.
-            if (ImGui::Button("Key current value")) {
+            if (ui::Button("Key current value")) {
                 Track& tr = seq.add_track(selected_entity_id, static_cast<TrackTarget>(target));
                 auto* t = sel->GetTransform();
                 const glm::vec3 p = t->GetLocalPosition();
@@ -148,7 +149,7 @@ void draw_timeline_panel(bool& open,
                 tr.curve.add({st.time, v, 0.0f, 0.0f});
             }
         } else {
-            ImGui::TextDisabled("Select an entity to add a track for it.");
+            ui::TextDisabledWrapped("Select an entity to add a track for it.");
         }
     }
 
@@ -156,7 +157,7 @@ void draw_timeline_panel(bool& open,
 
     // ---- tracks ------------------------------------------------------------
     if (seq.tracks().empty()) {
-        ImGui::TextDisabled("No tracks yet. Select an entity, choose a channel, "
+        ui::TextDisabledWrapped("No tracks yet. Select an entity, choose a channel, "
                             "and press Add track or Key current value.");
     }
 
@@ -170,8 +171,8 @@ void draw_timeline_panel(bool& open,
             (ent ? ent->GetName() : ("entity " + std::to_string(tr.entity_id))) +
             "  ·  " + track_target_name(tr.target);
 
-        ImGui::Checkbox("##en", &tr.enabled);
-        ImGui::SameLine();
+        ui::Checkbox("##en", &tr.enabled);
+        ui::SameLineIfFits();
         const bool opened = ImGui::CollapsingHeader(label.c_str());
         ImGui::SameLine(ImGui::GetWindowWidth() - 60.0f);
         if (ImGui::SmallButton("del")) to_remove = static_cast<int>(i);
@@ -181,14 +182,14 @@ void draw_timeline_panel(bool& open,
             // same Curve type the runtime evaluates. A second curve widget here
             // would ease differently from what plays back.
             static int sel_key = -1;
-            ImGui::TextDisabled("%zu key(s) — right-click the graph to add one",
+            ui::TextDisabledWrapped("%zu key(s) — right-click the graph to add one",
                                 tr.curve.size());
             draw_curve_editor("##track", tr.curve, 110.0f, &sel_key);
 
             // A marker showing where the playhead sits relative to the keys is
             // the difference between editing a curve and editing THIS curve at
             // THIS time.
-            ImGui::TextDisabled("playhead %.2fs of %.2fs", st.time, seq.duration());
+            ui::TextDisabledWrapped("playhead %.2fs of %.2fs", st.time, seq.duration());
         }
         ImGui::PopID();
     }

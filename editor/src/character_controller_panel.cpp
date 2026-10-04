@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 #include "character_controller_panel.h"
 #include "../core/character/include/character_controller.h"
 #include "../core/character/include/character_stats.h"
@@ -59,19 +60,19 @@ void CharacterControllerPanel::Render(engine::character::CharacterController* co
 
 void CharacterControllerPanel::RenderMovementProperties() {
     ImGui::TextUnformatted("Movement Parameters:");
-    ImGui::SliderFloat("Walk Speed##char", &state_.walk_speed, 1.0f, 15.0f);
-    ImGui::SliderFloat("Sprint Speed##char", &state_.sprint_speed, 5.0f, 25.0f);
-    ImGui::SliderFloat("Jump Force##char", &state_.jump_force, 5.0f, 30.0f);
+    ui::SliderFloat("Walk Speed##char", &state_.walk_speed, 1.0f, 15.0f);
+    ui::SliderFloat("Sprint Speed##char", &state_.sprint_speed, 5.0f, 25.0f);
+    ui::SliderFloat("Jump Force##char", &state_.jump_force, 5.0f, 30.0f);
     
     ImGui::Spacing();
     ImGui::TextUnformatted("Stamina Parameters:");
-    ImGui::SliderFloat("Stamina Drain Rate##char", &state_.stamina_drain_rate, 5.0f, 50.0f);
-    ImGui::SliderFloat("Stamina Regen Rate##char", &state_.stamina_regen_rate, 1.0f, 30.0f);
+    ui::SliderFloat("Stamina Drain Rate##char", &state_.stamina_drain_rate, 5.0f, 50.0f);
+    ui::SliderFloat("Stamina Regen Rate##char", &state_.stamina_regen_rate, 1.0f, 30.0f);
     
     ImGui::Spacing();
     ImGui::TextUnformatted("Ground Detection:");
-    ImGui::SliderFloat("Ground Check Distance##char", &state_.ground_check_distance, 0.1f, 2.0f);
-    ImGui::SliderFloat("Slope Limit (degrees)##char", &state_.slope_limit, 0.0f, 90.0f);
+    ui::SliderFloat("Ground Check Distance##char", &state_.ground_check_distance, 0.1f, 2.0f);
+    ui::SliderFloat("Slope Limit (degrees)##char", &state_.slope_limit, 0.0f, 90.0f);
 }
 
 void CharacterControllerPanel::RenderCharacterStats(engine::character::CharacterStats* stats) {
@@ -81,14 +82,14 @@ void CharacterControllerPanel::RenderCharacterStats(engine::character::Character
     float health = stats->GetHealth();
     float max_health = stats->GetMaxHealth();
     ImGui::ProgressBar(health / max_health, ImVec2(-1.0f, 0), "");
-    ImGui::SameLine();
+    ui::SameLineIfFits();
     ImGui::Text("Health: %.1f/%.1f", health, max_health);
     
     // Stamina display
     float stamina = stats->GetStamina();
     float max_stamina = stats->GetMaxStamina();
     ImGui::ProgressBar(stamina / max_stamina, ImVec2(-1.0f, 0), "");
-    ImGui::SameLine();
+    ui::SameLineIfFits();
     ImGui::Text("Stamina: %.1f/%.1f", stamina, max_stamina);
     
     // Armor
@@ -113,7 +114,7 @@ void CharacterControllerPanel::RenderCurrentState(engine::character::CharacterCo
 void CharacterControllerPanel::RenderInputBufferStatus(engine::character::CharacterController* controller) {
     ImGui::TextUnformatted("Input Buffer Status:");
     ImGui::ProgressBar(0.5f, ImVec2(-1.0f, 0), "");
-    ImGui::SameLine();
+    ui::SameLineIfFits();
     ImGui::Text("3/6 inputs buffered");
 }
 
@@ -137,9 +138,9 @@ void CharacterControllerPanel::RenderLocomotionBlending(engine::character::Chara
 
 void CharacterControllerPanel::RenderDebugOptions() {
     ImGui::TextUnformatted("Debug Visualization:");
-    ImGui::Checkbox("Show Velocity Vector##char", &state_.show_velocity_debug);
-    ImGui::Checkbox("Show State Name##char", &state_.show_state_name);
-    ImGui::Checkbox("Show Ground Detection##char", &state_.show_ground_detection);
+    ui::Checkbox("Show Velocity Vector##char", &state_.show_velocity_debug);
+    ui::Checkbox("Show State Name##char", &state_.show_state_name);
+    ui::Checkbox("Show Ground Detection##char", &state_.show_ground_detection);
 }
 
 void CharacterControllerPanel::RenderViewportDebug(engine::character::CharacterController* controller,
@@ -179,7 +180,7 @@ void CharacterControllerPanel::ApplyState(engine::character::CharacterController
 
 void CharacterControllerPanel::RenderStatsDebugEditor(engine::character::CharacterStats* stats) {
     if (!stats) {
-        ImGui::TextDisabled("No character stats");
+        ui::TextDisabledWrapped("No character stats");
         return;
     }
     
@@ -188,29 +189,29 @@ void CharacterControllerPanel::RenderStatsDebugEditor(engine::character::Charact
     
     // Health editing
     static float debug_health = 100.0f;
-    ImGui::SliderFloat("Health##debug", &debug_health, 0.0f, stats->GetMaxHealth());
-    if (ImGui::Button("Set Health##debug")) {
+    ui::SliderFloat("Health##debug", &debug_health, 0.0f, stats->GetMaxHealth());
+    if (ui::Button("Set Health##debug")) {
         // Would call stats->SetHealth(debug_health)
     }
     
     // Stamina editing
     static float debug_stamina = 100.0f;
-    ImGui::SliderFloat("Stamina##debug", &debug_stamina, 0.0f, stats->GetMaxStamina());
-    if (ImGui::Button("Set Stamina##debug")) {
+    ui::SliderFloat("Stamina##debug", &debug_stamina, 0.0f, stats->GetMaxStamina());
+    if (ui::Button("Set Stamina##debug")) {
         // Would call stats->SetStamina(debug_stamina)
     }
     
     // Armor editing
     static float debug_armor = 10.0f;
-    ImGui::SliderFloat("Armor##debug", &debug_armor, 0.0f, 100.0f);
-    if (ImGui::Button("Set Armor##debug")) {
+    ui::SliderFloat("Armor##debug", &debug_armor, 0.0f, 100.0f);
+    if (ui::Button("Set Armor##debug")) {
         // Would call stats->SetArmor(debug_armor)
     }
     
     // XP editing
     static float debug_xp = 0.0f;
-    ImGui::SliderFloat("Experience##debug", &debug_xp, 0.0f, 10000.0f);
-    if (ImGui::Button("Set XP##debug")) {
+    ui::SliderFloat("Experience##debug", &debug_xp, 0.0f, 10000.0f);
+    if (ui::Button("Set XP##debug")) {
         // Would call stats->AddExperience(debug_xp)
     }
     
@@ -218,8 +219,8 @@ void CharacterControllerPanel::RenderStatsDebugEditor(engine::character::Charact
     ImGui::TextUnformatted("Resistance Editing:");
     static float fire_resist = 0.0f;
     static float cold_resist = 0.0f;
-    ImGui::SliderFloat("Fire Resistance##debug", &fire_resist, 0.0f, 1.0f);
-    ImGui::SliderFloat("Cold Resistance##debug", &cold_resist, 0.0f, 1.0f);
+    ui::SliderFloat("Fire Resistance##debug", &fire_resist, 0.0f, 1.0f);
+    ui::SliderFloat("Cold Resistance##debug", &cold_resist, 0.0f, 1.0f);
 }
 
 void CharacterControllerPanel::RenderDebugControls(engine::character::CharacterController* controller) {
@@ -228,27 +229,27 @@ void CharacterControllerPanel::RenderDebugControls(engine::character::CharacterC
     ImGui::TextUnformatted("Debug Controls:");
     ImGui::Separator();
     
-    if (ImGui::Button("Reset Character State##debug", ImVec2(-1, 0))) {
+    if (ui::Button("Reset Character State##debug", ImVec2(-1, 0))) {
         // Reset to idle, clear velocity, etc
     }
     
-    if (ImGui::Button("Clear All Cooldowns##debug", ImVec2(-1, 0))) {
+    if (ui::Button("Clear All Cooldowns##debug", ImVec2(-1, 0))) {
         // Clear ability cooldowns
     }
     
-    if (ImGui::Button("Restore to Defaults##debug", ImVec2(-1, 0))) {
+    if (ui::Button("Restore to Defaults##debug", ImVec2(-1, 0))) {
         // Reset all parameters to defaults
     }
     
-    if (ImGui::Button("Simulate Damage (10 HP)##debug", ImVec2(-1, 0))) {
+    if (ui::Button("Simulate Damage (10 HP)##debug", ImVec2(-1, 0))) {
         // Deal 10 damage to character
     }
     
-    if (ImGui::Button("Restore Full Health##debug", ImVec2(-1, 0))) {
+    if (ui::Button("Restore Full Health##debug", ImVec2(-1, 0))) {
         // Restore full health
     }
     
-    if (ImGui::Button("Restore Full Stamina##debug", ImVec2(-1, 0))) {
+    if (ui::Button("Restore Full Stamina##debug", ImVec2(-1, 0))) {
         // Restore full stamina
     }
 }

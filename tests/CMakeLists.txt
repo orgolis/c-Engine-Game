@@ -17,6 +17,7 @@ add_executable(gws_tests
     test_engine_agent_gateway.cpp
     test_ai_model_catalog.cpp
     test_ai_runtime_manager.cpp
+    test_ui_layout.cpp
     ../editor/src/ai_runtime_manager.cpp
     ../editor/src/engine_agent_gateway.cpp
     ../editor/src/undo_redo_manager.cpp

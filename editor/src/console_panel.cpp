@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 // "Output" log console — captures the editor's own spdlog output (everything
 // that scrolls past in the console when running editor.exe) and shows it in a
 // dockable panel, colour-coded by level, with a min-level filter and search.
@@ -151,21 +152,21 @@ void ConsolePanel::Render(bool* open) {
     ImGui::Begin("Output", open);   // docked window = child; always End() below
     {
         // ---- toolbar ----
-        ImGui::SetNextItemWidth(110.0f);
+        ui::SetNextItemWidth(110.0f);
         // The logger runs at info level, so nothing below info is ever captured.
         // Offer only meaningful thresholds (no misleading "All" that implies
         // debug/trace lines that can never appear here).
         const char* levels[] = { "Info", "Warning", "Error" };
         int sel = (c.min_level <= 2) ? 0 : (c.min_level == 3 ? 1 : 2);
-        if (ImGui::Combo("##lvl", &sel, levels, 3))
+        if (ui::Combo("##lvl", &sel, levels, 3))
             c.min_level = (sel == 0) ? 2 : (sel == 1 ? 3 : 4);
-        ImGui::SameLine();
-        if (ImGui::Button("Clear")) { store().clear(); }
-        ImGui::SameLine();
-        ImGui::Checkbox("Autoscroll", &c.autoscroll);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputTextWithHint("##search", "filter...", c.search, sizeof(c.search));
+        ui::SameLineIfFits("Clear");
+        if (ui::Button("Clear")) { store().clear(); }
+        ui::SameLineIfFits("Autoscroll");
+        ui::Checkbox("Autoscroll", &c.autoscroll);
+        ui::SameLineIfFits();
+        ui::SetNextItemWidth(-1.0f);
+        ui::InputTextWithHint("##search", "filter...", c.search, sizeof(c.search));
         ImGui::Separator();
 
         // ---- log lines ----

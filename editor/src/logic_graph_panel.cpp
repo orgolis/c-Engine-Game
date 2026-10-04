@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 #include "logic_graph_panel.h"
 
 #include "ecs_bridge.h"
@@ -148,10 +149,10 @@ void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open,
         coalescer->observe(graph_before);
     }
 
-    ImGui::TextDisabled("EVENTS (blue) -> ACTIONS (purple) / FLOW (teal). DATA nodes (slate) feed values into "
+    ui::TextDisabledWrapped("EVENTS (blue) -> ACTIONS (purple) / FLOW (teal). DATA nodes (slate) feed values into "
                         "cyan input pins: Get Variable / Literal / Math / Compare -> a Set Flag value, a Branch "
                         "condition, etc. Gold pins = exec flow, cyan pins = values. Right-click canvas to add.");
-    ImGui::SameLine();
+    ui::SameLineIfFits();
     if (ImGui::SmallButton("Clear")) { g = ecs::LogicGraph{}; g_link_from = 0; g_data_from = 0; }
 
     // ---- Variables: graph-scoped typed values, read/written by Get/Set nodes ----
@@ -160,16 +161,16 @@ void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open,
         for (int i = 0; i < static_cast<int>(g.variables.size()); ++i) {
             auto& v = g.variables[i];
             ImGui::PushID(i);
-            ImGui::SetNextItemWidth(110);
+            ui::SetNextItemWidth(110);
             char nm[64]; std::snprintf(nm, sizeof nm, "%s", v.name.c_str());
             if (ImGui::InputTextWithHint("##vn", "name", nm, sizeof nm)) v.name = nm;
-            ImGui::SameLine();
+            ui::SameLineIfFits();
             const int t = static_cast<int>(v.value.type);
-            if (ImGui::RadioButton("Bool",  t == 0)) v.value.type = ecs::LogicValueType::Bool;   ImGui::SameLine();
-            if (ImGui::RadioButton("Int",   t == 1)) v.value.type = ecs::LogicValueType::Int;    ImGui::SameLine();
-            if (ImGui::RadioButton("Float", t == 2)) v.value.type = ecs::LogicValueType::Float;  ImGui::SameLine();
-            if (ImGui::RadioButton("Str",   t == 3)) v.value.type = ecs::LogicValueType::String; ImGui::SameLine();
-            ImGui::SetNextItemWidth(90);
+            if (ImGui::RadioButton("Bool",  t == 0)) v.value.type = ecs::LogicValueType::Bool;   ui::SameLineIfFits();
+            if (ImGui::RadioButton("Int",   t == 1)) v.value.type = ecs::LogicValueType::Int;    ui::SameLineIfFits();
+            if (ImGui::RadioButton("Float", t == 2)) v.value.type = ecs::LogicValueType::Float;  ui::SameLineIfFits();
+            if (ImGui::RadioButton("Str",   t == 3)) v.value.type = ecs::LogicValueType::String; ui::SameLineIfFits();
+            ui::SetNextItemWidth(90);
             switch (v.value.type) {
                 case ecs::LogicValueType::Bool:   { bool b = v.value.i != 0; if (ImGui::Checkbox("##vv", &b)) v.value.i = b ? 1 : 0; break; }
                 case ecs::LogicValueType::Int:    { ImGui::InputInt("##vv", &v.value.i, 0, 0); break; }
@@ -177,7 +178,7 @@ void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open,
                 case ecs::LogicValueType::String: { char sv[96]; std::snprintf(sv, sizeof sv, "%s", v.value.s.c_str());
                                                     if (ImGui::InputTextWithHint("##vv", "value", sv, sizeof sv)) v.value.s = sv; break; }
             }
-            ImGui::SameLine();
+            ui::SameLineIfFits();
             if (ImGui::SmallButton("x")) remove_var = i;
             ImGui::PopID();
         }
@@ -188,7 +189,8 @@ void draw_logic_graph_panel(EcsSceneBridge& bridge, bool* open,
 
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImVec2 sz = ImGui::GetContentRegionAvail();
-    if (sz.x < 60) sz.x = 60; if (sz.y < 60) sz.y = 60;
+    sz.x = std::max(1.0f, sz.x);
+    sz.y = std::max(1.0f, sz.y);
     const ImVec2 p1(p0.x + sz.x, p0.y + sz.y);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p0, p1, IM_COL32(28, 28, 33, 255));

@@ -3,6 +3,7 @@
 // ============================================================
 
 #include "asset_browser_panel.h"
+#include "ui_layout.h"
 #include "doc_io.h"        // Phase 4 document templates + the .matgraph/.animgraph/.seq types
 
 #include "scene.h"
@@ -356,18 +357,45 @@ void AssetBrowserPanel::Render(const std::shared_ptr<schizo::scene::Scene>& /*sc
     if (dirty_) list_current();
 
     // Docked window = child window internally; End() must run unconditionally.
-    ImGui::Begin("Asset Browser##panel", open);
+    if (!ImGui::Begin("Asset Browser##panel", open)) {
+        ImGui::End();
+        return;
+    }
     {
         render_toolbar();
         render_breadcrumbs();
         ImGui::Separator();
 
-        const float status_h = ImGui::GetFrameHeightWithSpacing();
-        if (show_tree_) {
+        // A long path or import error needs a wrapped, bounded status region,
+        // not a single clipped line that pushes Copy Path beyond the edge.
+        const AssetEntry* selected = selected_ >= 0 && selected_ < static_cast<int>(entries_.size())
+            ? &entries_[selected_] : nullptr;
+        std::string footer = std::to_string(entries_.size()) + " items";
+        if (selected) {
+            footer += " | " + selected->rel_path;
+            if (!selected->is_dir)
+                footer += " (" + std::string(selected->type) + ", " + human_size(selected->size) + ")";
+        }
+        if (!clipboard_.empty())
+            footer += std::string(" | ") + (clipboard_.cut ? "Cut: " : "Copied: ") +
+                      clipboard_.items.front().filename().string();
+        if (!status_.empty() && ImGui::GetTime() < status_until_)
+            footer += " | " + status_;
+        const float wrap_width = std::max(1.0f, ui::AvailableWidth() -
+            2.0f * ImGui::GetStyle().WindowPadding.x -
+            (selected ? ui::ButtonWidth("Copy Path") + ImGui::GetStyle().ItemSpacing.x : 0.0f));
+        const float footer_text_h = ImGui::CalcTextSize(footer.c_str(), nullptr, false, wrap_width).y;
+        const float status_h = std::max(ImGui::GetFrameHeightWithSpacing(),
+            std::min(footer_text_h + 2.0f * ImGui::GetStyle().WindowPadding.y +
+                     ImGui::GetStyle().ItemSpacing.y, ImGui::GetContentRegionAvail().y * 0.3f));
+        // A tree cannot take most of a narrow panel away from the files. Keep
+        // the user's toggle, and bring the split back when the panel is wider.
+        if (show_tree_ && ui::AvailableWidth() >= ImGui::GetFontSize() * 24.0f) {
             if (ImGui::BeginTable("##ab_split", 2,
                                   ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV,
-                                  ImVec2(0, -status_h))) {
-                ImGui::TableSetupColumn("tree", ImGuiTableColumnFlags_WidthFixed, 220.0f);
+                                  ImVec2(0, -status_h - ImGui::GetStyle().ItemSpacing.y))) {
+                ImGui::TableSetupColumn("tree", ImGuiTableColumnFlags_WidthFixed,
+                                       std::min(220.0f, ui::AvailableWidth() * 0.35f));
                 ImGui::TableSetupColumn("files", ImGuiTableColumnFlags_WidthStretch);
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
@@ -383,42 +411,20 @@ void AssetBrowserPanel::Render(const std::shared_ptr<schizo::scene::Scene>& /*sc
                 ImGui::EndTable();
             }
         } else {
-            ImGui::BeginChild("##ab_files", ImVec2(0, -status_h));
+            ImGui::BeginChild("##ab_files", ImVec2(0, -status_h - ImGui::GetStyle().ItemSpacing.y));
             render_entries();
             render_entity_drop_target();
             render_background_menu();
             ImGui::EndChild();
         }
 
-        // Status bar.
-        ImGui::Separator();
-        if (selected_ >= 0 && selected_ < static_cast<int>(entries_.size())) {
-            const AssetEntry& s = entries_[selected_];
-            if (s.is_dir) {
-                ImGui::Text("%zu items  |  %s", entries_.size(), s.rel_path.c_str());
-            } else {
-                ImGui::Text("%zu items  |  %s  (%s, %s)", entries_.size(), s.rel_path.c_str(),
-                            s.type, human_size(s.size).c_str());
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Copy Path"))
-                ImGui::SetClipboardText(s.rel_path.c_str());
-        } else {
-            ImGui::Text("%zu items", entries_.size());
+        ImGui::BeginChild("##ab_status", ImVec2(0, status_h));
+        if (selected) {
+            if (ui::Button("Copy Path")) ImGui::SetClipboardText(selected->rel_path.c_str());
+            ui::SameLineIfFits(ImGui::GetFontSize() * 8.0f);
         }
-
-        // What is on the clipboard, and how it will land. Explorer shows this
-        // by ghosting the cut icon; there is no icon here to ghost, so it is
-        // said in words -- otherwise a cut made two folders ago is invisible.
-        if (!clipboard_.empty()) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("|  %s: %s", clipboard_.cut ? "Cut" : "Copied",
-                                clipboard_.items.front().filename().string().c_str());
-        }
-        if (!status_.empty() && ImGui::GetTime() < status_until_) {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1.0f), "|  %s", status_.c_str());
-        }
+        ImGui::TextWrapped("%s", footer.c_str());
+        ImGui::EndChild();
 
         handle_shortcuts();
         render_modals();
@@ -429,22 +435,22 @@ void AssetBrowserPanel::Render(const std::shared_ptr<schizo::scene::Scene>& /*sc
 void AssetBrowserPanel::render_toolbar() {
     // Pinned roots.
     for (size_t i = 0; i < roots_.size(); ++i) {
-        if (i) ImGui::SameLine();
+        if (i) ui::SameLineIfFits(roots_[i].label.c_str());
         const bool here = current_ == roots_[i].path;
         if (here) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.26f, 0.45f, 0.70f, 1.0f));
         if (ImGui::SmallButton(roots_[i].label.c_str())) navigate(roots_[i].path);
         if (here) ImGui::PopStyleColor();
     }
-    ImGui::SameLine();
+    ui::SameLineIfFits("New...");
     if (ImGui::SmallButton("New...")) ImGui::OpenPopup("##ab_newmenu");
     if (ImGui::BeginPopup("##ab_newmenu")) { render_new_menu(); ImGui::EndPopup(); }
-    ImGui::SameLine();
+    ui::SameLineIfFits(grid_view_ ? "List" : "Tiles");
     if (ImGui::SmallButton(grid_view_ ? "List" : "Tiles")) grid_view_ = !grid_view_;
-    ImGui::SameLine();
+    ui::SameLineIfFits(show_tree_ ? "Hide Tree" : "Show Tree");
     if (ImGui::SmallButton(show_tree_ ? "Hide Tree" : "Show Tree")) show_tree_ = !show_tree_;
-    ImGui::SameLine();
+    ui::SameLineIfFits("Refresh");
     if (ImGui::SmallButton("Refresh")) dirty_ = true;
-    ImGui::SameLine();
+    ui::SameLineIfFits("Import...");
     if (ImGui::SmallButton("Import...")) {
         const std::string picked = gws::platform::browse_file("Import asset");
         if (!picked.empty()) {
@@ -466,35 +472,36 @@ void AssetBrowserPanel::render_toolbar() {
     }
 
     // Search row.
-    ImGui::SetNextItemWidth(220);
+    ui::SetNextItemWidth(220);
     const bool entered = ImGui::InputTextWithHint(
         "##ab_search",
         search_recursive_ ? "search subtree (Enter)" : "filter this folder",
         search_buf_, sizeof search_buf_,
         search_recursive_ ? ImGuiInputTextFlags_EnterReturnsTrue : 0);
     if (search_recursive_ ? entered : ImGui::IsItemEdited()) dirty_ = true;
-    ImGui::SameLine();
+    ui::SameLineIfFits(ImGui::CalcTextSize("Recursive").x + ImGui::GetFrameHeight() +
+                       ImGui::GetStyle().ItemInnerSpacing.x);
     if (ImGui::Checkbox("Recursive", &search_recursive_)) dirty_ = true;
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(110);
+    ui::SameLineIfFits(110.0f);
+    ui::SetNextItemWidth(110);
     static const char* kFilters[] = {"All", "Meshes", "Textures", "Audio",
                                      "Scripts", "Scenes", "Materials", "Other"};
-    ImGui::Combo("##ab_filter", &type_filter_, kFilters, IM_ARRAYSIZE(kFilters));
+    if (ImGui::Combo("##ab_filter", &type_filter_, kFilters, IM_ARRAYSIZE(kFilters))) dirty_ = true;
 
     // Sort mode (folders always stay first).
-    ImGui::SameLine();
+    ui::SameLineIfFits(ImGui::CalcTextSize("Sort").x + ImGui::GetStyle().ItemSpacing.x + 90.0f);
     ImGui::TextDisabled("Sort");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(90);
+    ui::SetNextItemWidth(90);
     static const char* kSorts[] = {"Name", "Type", "Size"};
     if (ImGui::Combo("##ab_sort", &sort_mode_, kSorts, IM_ARRAYSIZE(kSorts))) dirty_ = true;
 
     // Tile zoom (grid view only) — Unreal-style content-browser scaling.
     if (grid_view_) {
-        ImGui::SameLine();
+        ui::SameLineIfFits(ImGui::CalcTextSize("Zoom").x + ImGui::GetStyle().ItemSpacing.x + 90.0f);
         ImGui::TextDisabled("Zoom");
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(90);
+        ui::SetNextItemWidth(90);
         ImGui::SliderFloat("##ab_zoom", &tile_scale_, 0.6f, 2.0f, "%.1fx");
     }
 }
@@ -509,9 +516,9 @@ void AssetBrowserPanel::render_breadcrumbs() {
             (!base || rp.size() > base->path.generic_string().size()))
             base = &r;
     }
-    if (!base) { ImGui::TextDisabled("%s", cur.c_str()); return; }
+    if (!base) { ui::TextDisabledWrapped("%s", cur.c_str()); return; }
 
-    if (ImGui::SmallButton((base->label + "##bc_root").c_str())) navigate(base->path);
+    if (ui::Button((base->label + "##bc_root").c_str())) navigate(base->path);
     std::error_code ec;
     const fs::path rel = fs::relative(current_, base->path, ec);
     fs::path walk = base->path;
@@ -519,9 +526,11 @@ void AssetBrowserPanel::render_breadcrumbs() {
         int i = 0;
         for (const auto& seg : rel) {
             walk /= seg;
-            ImGui::SameLine(); ImGui::TextDisabled(">"); ImGui::SameLine();
             const std::string id = seg.string() + "##bc" + std::to_string(i++);
-            if (ImGui::SmallButton(id.c_str())) { navigate(walk); break; }
+            ui::SameLineIfFits(ui::ButtonWidth(id.c_str()) + ImGui::CalcTextSize(">").x +
+                               2.0f * ImGui::GetStyle().ItemSpacing.x);
+            ImGui::TextDisabled(">"); ImGui::SameLine();
+            if (ui::Button(id.c_str())) { navigate(walk); break; }
         }
     }
 }

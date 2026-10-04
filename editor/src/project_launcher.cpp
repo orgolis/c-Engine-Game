@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 #include "project_launcher.h"
 #include "gws/platform/file_dialog.h"
 
@@ -28,17 +29,17 @@ static bool draw_feature_checkboxes(FeatureSet& features) {
         if (forcer) {
             bool forced_on = true;
             ImGui::BeginDisabled();
-            ImGui::Checkbox(fi.name, &forced_on);
+            schizo::editor::ui::Checkbox(fi.name, &forced_on);
             ImGui::EndDisabled();
         } else {
-            if (ImGui::Checkbox(fi.name, &on)) {
+            if (schizo::editor::ui::Checkbox(fi.name, &on)) {
                 features.set(fi.id, on);
                 if (on) features.resolve_dependencies();
                 changed = true;
             }
         }
-        ImGui::SameLine();
-        ImGui::TextDisabled("(?)");
+        schizo::editor::ui::SameLineIfFits();
+        schizo::editor::ui::TextDisabledWrapped("(?)");
         if (ImGui::IsItemHovered()) {
             std::string tip = fi.desc;
             if (fi.depends_on != Feature::Count) {
@@ -108,8 +109,8 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
     ImGui::TextUnformatted("WORLD SHAPER");
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopStyleColor();
-    ImGui::TextDisabled("Choose a workspace and start shaping your world.");
-    ImGui::SameLine();
+    schizo::editor::ui::TextDisabledWrapped("Choose a workspace and start shaping your world.");
+    schizo::editor::ui::SameLineIfFits();
     const std::string project_count = std::to_string(registry.items().size()) +
                                       (registry.items().size() == 1 ? " recent project" : " recent projects");
     const float count_width = ImGui::CalcTextSize(project_count.c_str()).x;
@@ -133,9 +134,9 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
                 const float hint_x = (ImGui::GetContentRegionAvail().x -
                                       ImGui::CalcTextSize(empty_hint).x) * 0.5f;
                 if (hint_x > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + hint_x);
-                ImGui::TextDisabled("%s", empty_hint);
+                schizo::editor::ui::TextDisabledWrapped("%s", empty_hint);
             } else {
-                ImGui::TextDisabled("Double-click a project to open it.");
+                schizo::editor::ui::TextDisabledWrapped("Double-click a project to open it.");
                 ImGui::Dummy(ImVec2(0, 4));
                 ImGui::BeginChild("recent_list", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 3.0f), true);
                 const auto& items = registry.items();
@@ -153,8 +154,8 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
                                 chosen = true;
                         }
                     }
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("  %s", it.manifest_path.c_str());
+                    schizo::editor::ui::SameLineIfFits();
+                    schizo::editor::ui::TextDisabledWrapped("  %s", it.manifest_path.c_str());
                     ImGui::PopID();
                 }
                 ImGui::EndChild();
@@ -163,13 +164,13 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
                                 selected_recent < static_cast<int>(items.size()) &&
                                 fs::exists(items[selected_recent].manifest_path);
                 ImGui::BeginDisabled(!can_open);
-                if (ImGui::Button("Open", ImVec2(120, 0)) && can_open) {
+                if (schizo::editor::ui::Button("Open", ImVec2(120, 0)) && can_open) {
                     if (open_manifest(items[selected_recent].manifest_path, registry, out, error_msg))
                         chosen = true;
                 }
                 ImGui::EndDisabled();
-                ImGui::SameLine();
-                if (ImGui::Button("Remove from list", ImVec2(150, 0)) &&
+                schizo::editor::ui::SameLineIfFits();
+                if (schizo::editor::ui::Button("Remove from list", ImVec2(150, 0)) &&
                     selected_recent >= 0 && selected_recent < static_cast<int>(items.size())) {
                     registry.remove(items[selected_recent].manifest_path);
                     registry.save();
@@ -182,21 +183,21 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
         if (ImGui::BeginTabItem("New Project")) {
             ImGui::Dummy(ImVec2(0, 4));
             ImGui::TextUnformatted("Name");
-            ImGui::SetNextItemWidth(360);
-            ImGui::InputText("##name", new_name, sizeof(new_name));
+            schizo::editor::ui::SetNextItemWidth(360);
+            schizo::editor::ui::InputText("##name", new_name, sizeof(new_name));
 
             ImGui::TextUnformatted("Location");
-            ImGui::SetNextItemWidth(360);
-            ImGui::InputText("##loc", new_loc, sizeof(new_loc));
-            ImGui::SameLine();
-            if (ImGui::Button("Browse...##loc")) {
+            schizo::editor::ui::SetNextItemWidth(360);
+            schizo::editor::ui::InputText("##loc", new_loc, sizeof(new_loc));
+            schizo::editor::ui::SameLineIfFits();
+            if (schizo::editor::ui::Button("Browse...##loc")) {
                 std::string picked = gws::platform::browse_folder("Choose where to create the project");
                 if (!picked.empty()) std::snprintf(new_loc, sizeof(new_loc), "%s", picked.c_str());
             }
 
             ImGui::Dummy(ImVec2(0, 6));
             ImGui::TextUnformatted("Features");
-            ImGui::TextDisabled("Core systems (Rendering, ECS, Assets, Editor) are always included.");
+            schizo::editor::ui::TextDisabledWrapped("Core systems (Rendering, ECS, Assets, Editor) are always included.");
             ImGui::Dummy(ImVec2(0, 2));
             ImGui::BeginChild("new_features", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 3.0f), true);
             draw_feature_checkboxes(new_features);
@@ -205,7 +206,7 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
             ImGui::Dummy(ImVec2(0, 4));
             const bool can_create = std::strlen(new_name) > 0 && std::strlen(new_loc) > 0;
             ImGui::BeginDisabled(!can_create);
-            if (ImGui::Button("Create Project", ImVec2(160, 0)) && can_create) {
+            if (schizo::editor::ui::Button("Create Project", ImVec2(160, 0)) && can_create) {
                 std::string manifest_path;
                 if (create_project(new_loc, new_name, new_features, manifest_path)) {
                     if (open_manifest(manifest_path, registry, out, error_msg))
@@ -221,15 +222,15 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
         if (ImGui::BeginTabItem("Open Project")) {
             ImGui::Dummy(ImVec2(0, 4));
             ImGui::TextUnformatted("Project folder (or a project.schizo path)");
-            ImGui::SetNextItemWidth(360);
-            ImGui::InputText("##openpath", open_path, sizeof(open_path));
-            ImGui::SameLine();
-            if (ImGui::Button("Browse...##open")) {
+            schizo::editor::ui::SetNextItemWidth(360);
+            schizo::editor::ui::InputText("##openpath", open_path, sizeof(open_path));
+            schizo::editor::ui::SameLineIfFits();
+            if (schizo::editor::ui::Button("Browse...##open")) {
                 std::string picked = gws::platform::browse_folder("Choose a project folder");
                 if (!picked.empty()) std::snprintf(open_path, sizeof(open_path), "%s", picked.c_str());
             }
             ImGui::Dummy(ImVec2(0, 6));
-            if (ImGui::Button("Open", ImVec2(120, 0)) && std::strlen(open_path) > 0) {
+            if (schizo::editor::ui::Button("Open", ImVec2(120, 0)) && std::strlen(open_path) > 0) {
                 fs::path p(open_path);
                 std::string manifest_path =
                     (p.filename() == kManifestFilename) ? p.string()
@@ -254,7 +255,7 @@ bool draw_launcher(ProjectsRegistry& registry, ProjectManifest& out, bool& quit)
 
     ImGui::Dummy(ImVec2(0, 8));
 
-    if (ImGui::Button("Quit", ImVec2(100, 0))) {
+    if (schizo::editor::ui::Button("Quit", ImVec2(100, 0))) {
         quit = true;
     }
 
@@ -273,7 +274,7 @@ bool draw_feature_settings(FeatureSet& features, bool* p_open) {
         changed = draw_feature_checkboxes(features);
         ImGui::Dummy(ImVec2(0, 6));
         ImGui::Separator();
-        ImGui::TextDisabled("Panel visibility updates immediately. Systems that need engine\n"
+        schizo::editor::ui::TextDisabledWrapped("Panel visibility updates immediately. Systems that need engine\n"
                             "initialization fully apply after reopening the project.");
     }
     ImGui::End();

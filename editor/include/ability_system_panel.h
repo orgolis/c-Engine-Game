@@ -27,6 +27,12 @@ struct AbilitySystemState {
     // Skill tree state
     bool show_skill_tree = false;
     int selected_skill_node = -1;
+    // Persistent preview controls. Never allocate a new value each frame.
+    bool preview_skills[4] = {true, false, false, false};
+    int preview_effect_type = 0;
+    float preview_damage = 50.0f;
+    float preview_effect_radius = 5.0f;
+    bool preview_requires_target = true;
     
     // Modifier display
     bool show_modifier_breakdown = false;

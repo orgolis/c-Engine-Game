@@ -1,3 +1,4 @@
+#include "ui_layout.h"
 // ============================================================================
 // curve_editor — ImGui widgets for gws::anim::Curve and Gradient.
 //
@@ -125,12 +126,12 @@ bool draw_curve_editor(const char* label, gws::anim::Curve& curve,
     if (selected_key && *selected_key >= 0 &&
         *selected_key < static_cast<int>(curve.size())) {
         auto& k = curve.keys()[*selected_key];
-        ImGui::SetNextItemWidth(90); changed |= ImGui::DragFloat("t", &k.time, 0.01f);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(90); changed |= ImGui::DragFloat("v", &k.value, 0.01f);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(70); changed |= ImGui::DragFloat("out", &k.out_tangent, 0.05f);
-        ImGui::SameLine();
+        ui::SetNextItemWidth(90); changed |= ui::DragFloat("t", &k.time, 0.01f);
+        ui::SameLineIfFits();
+        ui::SetNextItemWidth(90); changed |= ui::DragFloat("v", &k.value, 0.01f);
+        ui::SameLineIfFits();
+        ui::SetNextItemWidth(70); changed |= ui::DragFloat("out", &k.out_tangent, 0.05f);
+        ui::SameLineIfFits();
         if (ImGui::SmallButton("del")) {
             curve.remove(static_cast<size_t>(*selected_key));
             *selected_key = -1;
@@ -210,15 +211,15 @@ bool draw_gradient_editor(const char* label, gws::anim::Gradient& grad,
     if (selected_stop && *selected_stop >= 0 &&
         *selected_stop < static_cast<int>(grad.size())) {
         auto& s = grad.stops()[*selected_stop];
-        changed |= ImGui::ColorEdit4("##stopcol", &s.color.x,
+        changed |= ui::ColorEdit4("##stopcol", &s.color.x,
                                      ImGuiColorEditFlags_AlphaBar |
                                      ImGuiColorEditFlags_AlphaPreviewHalf);
-        ImGui::SetNextItemWidth(90);
-        changed |= ImGui::DragFloat("pos", &s.time, 0.005f, 0.0f, 1.0f);
+        ui::SetNextItemWidth(90);
+        changed |= ui::DragFloat("pos", &s.time, 0.005f, 0.0f, 1.0f);
         // A gradient needs two stops to be a gradient; removing the last one
         // would leave a sample() that can only return white.
         if (grad.size() > 2) {
-            ImGui::SameLine();
+            ui::SameLineIfFits();
             if (ImGui::SmallButton("del stop")) {
                 grad.remove(static_cast<size_t>(*selected_stop));
                 *selected_stop = -1;
