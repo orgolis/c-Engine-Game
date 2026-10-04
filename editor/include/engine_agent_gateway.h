@@ -71,7 +71,10 @@ std::string BuildEngineAgentSceneSnapshot(
 // Shared prompt/schema for Codex and Claude. Both providers therefore have the
 // same capabilities and the same restrictions.
 std::string BuildEngineAgentPrompt(const std::string& user_request,
-                                   const std::string& scene_snapshot);
+                                   const std::string& scene_snapshot,
+                                   const EngineAgentPlan* previous_generated_scripts = nullptr);
+std::string BuildEngineAgentRepairPrompt(const std::string& original_prompt,
+                                         const std::string& validation_error);
 std::string EngineAgentOutputSchemaJson();
 
 bool ParseEngineAgentPlan(const std::string& provider_output,

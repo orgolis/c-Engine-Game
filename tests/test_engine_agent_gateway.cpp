@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "engine_agent_gateway.h"
+#include "camera_component.h"
 #include "scene.h"
 #include "script_component.h"
 #include "undo_redo_manager.h"
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
 
@@ -25,6 +27,67 @@ schizo::editor::EngineAgentApplyContext make_context(
 }
 
 }  // namespace
+
+TEST_CASE("AI prompt describes actual script semantics rather than silent no-ops",
+          "[editor][engine-agent][ai-prompt]") {
+    const std::string prompt = schizo::editor::BuildEngineAgentPrompt(
+        "Create enemies that chase the player", "{\"selected_entity_id\":0}");
+    REQUIRE(prompt.find("INTEGER entity id") != std::string::npos);
+    REQUIRE(prompt.find("WORLD space") != std::string::npos);
+    REQUIRE(prompt.find("OWN VM/module globals") != std::string::npos);
+    REQUIRE(prompt.find("pre-existing ECS components") != std::string::npos);
+    REQUIRE(prompt.find("attach_script REPLACES") != std::string::npos);
+    REQUIRE(prompt.find("not necessarily the player") != std::string::npos);
+    REQUIRE(prompt.find("Create enemies that chase the player") != std::string::npos);
+}
+
+TEST_CASE("AI scene metadata identifies cameras and disabled scripts without reading files",
+          "[editor][engine-agent][ai-context]") {
+    auto scene = std::make_shared<schizo::scene::Scene>("AI metadata test");
+    auto camera = std::make_shared<schizo::scene::Entity>("Main Camera");
+    camera->AddComponent<schizo::scene::CameraComponent>();
+    camera->GetTransform()->SetLocalPosition({1.0f, 2.0f, 3.0f});
+    auto script = camera->AddComponent<schizo::scene::ScriptComponent>();
+    script->SetScriptPath("assets/scripts/player.py");
+    script->SetEnabled(false);
+    scene->AddEntity(camera);
+    const auto snapshot = nlohmann::json::parse(
+        schizo::editor::BuildEngineAgentSceneSnapshot(scene, camera->GetId()));
+    REQUIRE(snapshot["selected_entity_id"] == camera->GetId());
+    const auto& item = snapshot["entities"][0];
+    REQUIRE(item["has_camera"] == true);
+    REQUIRE(item["active"] == true);
+    REQUIRE(item["script_enabled"] == false);
+    REQUIRE(item["world_position"] == nlohmann::json::array({1.0f, 2.0f, 3.0f}));
+    REQUIRE_FALSE(item.contains("content"));
+}
+
+TEST_CASE("AI correction preserves request and safety boundary",
+          "[editor][engine-agent][ai-repair]") {
+    const std::string prompt = schizo::editor::BuildEngineAgentPrompt("Move my cube", "{}");
+    const std::string repaired = schizo::editor::BuildEngineAgentRepairPrompt(
+        prompt, "Action 2: target must be an existing entity id.");
+    REQUIRE(repaired.starts_with(prompt));
+    REQUIRE(repaired.find("Action 2: target must be an existing entity id.") != std::string::npos);
+    REQUIRE(repaired.find("COMPLETE replacement JSON") != std::string::npos);
+    REQUIRE(repaired.find("safety limits remain unchanged") != std::string::npos);
+}
+
+TEST_CASE("AI follow-ups receive only previous generated scripts, never engine code",
+          "[editor][engine-agent][ai-context][security]") {
+    schizo::editor::EngineAgentPlan previous;
+    previous.actions.push_back({.type = "write_script", .path = "assets/scripts/ai_generated/combat.py",
+                                .content = "import engine\ndef on_start(e):\n    engine.log('combat ready')\n"});
+    previous.actions.push_back({.type = "write_script", .path = "editor/src/main.cpp",
+                                .content = "PRIVATE_ENGINE_SOURCE"});
+    previous.actions.push_back({.type = "write_script", .path = "assets/scripts/player.py",
+                                .content = "PRIVATE_USER_SCRIPT"});
+    const std::string prompt = schizo::editor::BuildEngineAgentPrompt("Add pursuit", "{}", &previous);
+    REQUIRE(prompt.find("combat ready") != std::string::npos);
+    REQUIRE(prompt.find("PRIVATE_ENGINE_SOURCE") == std::string::npos);
+    REQUIRE(prompt.find("PRIVATE_USER_SCRIPT") == std::string::npos);
+    REQUIRE(prompt.find("SAME generated script path") != std::string::npos);
+}
 
 TEST_CASE("Engine agent refuses paths outside its generated script folder",
           "[editor][engine-agent][security]") {

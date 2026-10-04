@@ -65,7 +65,7 @@ private:
     };
 
     void start_request(const std::shared_ptr<schizo::scene::Scene>& scene, uint32_t selected_entity_id);
-    void poll_request();
+    void poll_request(const EngineAgentApplyContext& context);
     void start_auth_check();
     void start_login();
     void poll_auth();
@@ -97,6 +97,15 @@ private:
     std::string codex_reasoning_effort_ = "high";
     std::string claude_model_ = "sonnet";
     std::string active_request_description_;
+    AiProvider active_provider_ = AiProvider::Codex;
+    std::string active_model_;
+    std::string active_effort_;
+    std::string active_prompt_;
+    bool repair_attempted_ = false;
+    EngineAgentPlan session_generated_scripts_;
+    std::weak_ptr<schizo::scene::Scene> script_context_scene_;
+    std::string outgoing_script_context_;
+    bool include_generated_script_context_ = true;
     uint64_t session_input_tokens_ = 0;
     uint64_t session_output_tokens_ = 0;
     double session_cost_usd_ = 0.0;

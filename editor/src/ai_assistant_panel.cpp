@@ -945,7 +945,15 @@ void AiAssistantPanel::start_request(const std::shared_ptr<schizo::scene::Scene>
     error_.clear();
     outgoing_scene_summary_ = BuildEngineAgentSceneSnapshot(scene, selected_entity_id);
     planned_scene_fingerprint_ = BuildEngineAgentSceneSnapshot(scene, 0);
-    const std::string full_prompt = BuildEngineAgentPrompt(prompt_, outgoing_scene_summary_);
+    if (script_context_scene_.lock() != scene) session_generated_scripts_.actions.clear();
+    outgoing_script_context_.clear();
+    if (include_generated_script_context_) {
+        for (const auto& action : session_generated_scripts_.actions)
+            outgoing_script_context_ += action.path + "\n" + action.content + "\n\n";
+    }
+    const std::string full_prompt = BuildEngineAgentPrompt(
+        prompt_, outgoing_scene_summary_,
+        include_generated_script_context_ ? &session_generated_scripts_ : nullptr);
     const AiProvider selected_provider = provider_;
     const ModelOption* resolved_model = FindAiModel(auth_.models, codex_model_);
     // Pass the exact catalog recommendation for Automatic, rather than letting
@@ -965,6 +973,11 @@ void AiAssistantPanel::start_request(const std::shared_ptr<schizo::scene::Scene>
     active_request_description_ = provider_ == AiProvider::Codex
         ? shown_model + " / " + selected_effort + " reasoning"
         : shown_model;
+    active_provider_ = selected_provider;
+    active_model_ = selected_model;
+    active_effort_ = selected_effort;
+    active_prompt_ = full_prompt;
+    repair_attempted_ = false;
     running_ = true;
     status_ = std::string(provider_name(provider_)) + " is preparing with " +
               active_request_description_ + "...";
@@ -973,7 +986,7 @@ void AiAssistantPanel::start_request(const std::shared_ptr<schizo::scene::Scene>
     });
 }
 
-void AiAssistantPanel::poll_request() {
+void AiAssistantPanel::poll_request(const EngineAgentApplyContext& context) {
     if (!running_ || !future_.valid() || future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
         return;
 
@@ -993,9 +1006,32 @@ void AiAssistantPanel::poll_request() {
 
     EngineAgentPlan plan;
     std::string parse_error;
-    if (!ParseEngineAgentPlan(result.output, plan, parse_error)) {
+    if (BuildEngineAgentSceneSnapshot(context.scene, 0) != planned_scene_fingerprint_) {
         status_.clear();
-        error_ = parse_error;
+        error_ = "The scene changed while the AI was preparing the plan. Create a fresh proposal.";
+        return;
+    }
+    const bool parsed = ParseEngineAgentPlan(result.output, plan, parse_error);
+    // JSON parser diagnostics may quote fragments of the rejected response.
+    // Do not send such fragments back; only the schema failure and metadata.
+    const std::string repair_error = parsed ? std::string{} :
+        "The response must be one valid JSON object matching the supplied output schema.";
+    if (!parsed || !ValidateEngineAgentPlan(plan, context, parse_error)) {
+        if (!repair_attempted_) {
+            repair_attempted_ = true;
+            running_ = true;
+            status_ = "Local validation found an invalid proposal. Correcting it once with " +
+                      active_request_description_ + "...";
+            const std::string repair_prompt = BuildEngineAgentRepairPrompt(
+                active_prompt_, parsed ? parse_error : repair_error);
+            future_ = std::async(std::launch::async,
+                [provider = active_provider_, model = active_model_, effort = active_effort_, repair_prompt] {
+                    return run_provider(provider, model, effort, repair_prompt);
+                });
+            return;
+        }
+        status_.clear();
+        error_ = "Proposal still invalid after one correction: " + parse_error;
         return;
     }
     status_ = "Proposal ready from " + active_request_description_ + ". Review it before applying.";
@@ -1003,7 +1039,7 @@ void AiAssistantPanel::poll_request() {
 }
 
 void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t selected_entity_id, bool* open) {
-    poll_request();
+    poll_request(context);
     poll_auth();
     poll_runtime_install();
     // Keep an already-open assistant fresh even when another docked tab is
@@ -1250,6 +1286,10 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
                             static_cast<unsigned long long>(session_output_tokens_), session_cost_usd_);
     }
     ImGui::SeparatorText("2. Describe");
+    ImGui::BeginDisabled(running_);
+    ui::Checkbox("Use previous AI-generated scripts for follow-up edits (session memory only)",
+                 &include_generated_script_context_);
+    ImGui::EndDisabled();
 
     if (context.scene) {
         if (selected_entity_id)
@@ -1311,10 +1351,27 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
                                "The scene changed after this proposal. Prepare a fresh plan.");
         }
 
-        ImGui::BeginDisabled(scene_changed);
+        ImGui::BeginDisabled(scene_changed || pending_plan_->actions.empty());
         if (ui::Button("Apply Changes", ImVec2(140.0f, 0.0f))) {
             std::string apply_error;
             if (ApplyEngineAgentPlan(*pending_plan_, context, apply_error)) {
+                if (script_context_scene_.lock() != context.scene)
+                    session_generated_scripts_.actions.clear();
+                script_context_scene_ = context.scene;
+                auto& scripts = session_generated_scripts_.actions;
+                for (const auto& action : pending_plan_->actions) {
+                    if (action.type != "write_script") continue;
+                    scripts.erase(std::remove_if(scripts.begin(), scripts.end(), [&](const auto& old) {
+                        return old.path == action.path;
+                    }), scripts.end());
+                    scripts.push_back(action);
+                }
+                size_t script_bytes = 0;
+                for (const auto& script : scripts) script_bytes += script.content.size();
+                while (script_bytes > 64 * 1024 && !scripts.empty()) {
+                    script_bytes -= scripts.front().content.size();
+                    scripts.erase(scripts.begin());
+                }
                 status_ = "Changes applied as one Ctrl+Z undo step.";
                 pending_plan_.reset();
                 error_.clear();
@@ -1336,8 +1393,12 @@ void AiAssistantPanel::Render(const EngineAgentApplyContext& context, uint32_t s
     }
 
     if (!outgoing_scene_summary_.empty() && ImGui::CollapsingHeader("Data sent to the provider")) {
-        ui::TextDisabledWrapped("Your request plus this reduced snapshot; no source files or script contents.");
+        ui::TextDisabledWrapped("Your request and this scene snapshot. Previous AI-generated scripts may be included via the follow-up checkbox and are listed below (session memory only). No engine code, other project files or credentials are sent.");
         readonly_text("##sent_snapshot", outgoing_scene_summary_, 150.0f);
+        if (!outgoing_script_context_.empty()) {
+            ui::TextDisabledWrapped("Previously AI-generated scripts sent as context:");
+            readonly_text("##sent_generated_scripts", outgoing_script_context_, 150.0f);
+        }
     }
 
     if (ImGui::CollapsingHeader("Safety limits")) {
