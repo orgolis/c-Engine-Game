@@ -90,3 +90,10 @@ script_cache/
 /diagnostics/
 /.gameworldshaper/
 /render_settings.txt
+
+# Obsidian workspace state for the docs vault (docs/ opens as an Obsidian vault
+# so the ~99 planning documents are browsable with search, backlinks and the
+# graph). The config files are committed; per-user layout and caches are not.
+docs/.obsidian/workspace.json
+docs/.obsidian/workspace-mobile.json
+docs/.obsidian/cache
