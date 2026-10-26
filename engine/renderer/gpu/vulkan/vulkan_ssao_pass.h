@@ -9,10 +9,14 @@
  */
 #pragma once
 
+#include "ao_blur_params.h"
+
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
 #include <memory>
 #include <cstdint>
+
+namespace engine::vulkan { class GpuZones; }
 
 namespace gws::renderer::gpu {
 
@@ -33,7 +37,8 @@ struct SsaoConfig {
 ///   - SSAO/HBAO/HDAO/GTAO: screen-space (G-Buffer only)
 ///   - VXAO: voxel-cone-traced (world-space, needs the voxelizer)
 ///   - RT:   ray-traced against the scene BVH (world-space, needs RT GPU)
-enum class AoTechnique { SSAO = 0, HBAO, HDAO, GTAO, VXAO, RT };
+// AoTechnique and ao_blur_params_for() live in ao_blur_params.h, which
+// carries no Vulkan dependency so aoblur_check can assert on them.
 
 class VulkanSsaoPass {
 public:
@@ -48,11 +53,21 @@ public:
     VulkanSsaoPass(const VulkanSsaoPass&) = delete;
     VulkanSsaoPass& operator=(const VulkanSsaoPass&) = delete;
 
-    /// Dispatch the SSAO compute. `view` and `proj` are the camera matrices
+    /// Dispatch the AO compute. `view` and `proj` are the camera matrices
     /// used by the shader to project sample points back onto the screen.
+    ///
+    /// `zones` is optional. When given, the two dispatches this makes — the AO
+    /// technique itself and the bilateral blur after it — are timed as
+    /// SEPARATE GPU zones rather than one "SSAO" total. They have to be
+    /// separable: measured on a 2-draw scene this pass cost 22-48 ms, and a
+    /// single combined number cannot say whether that is the technique or the
+    /// 7x7 denoise behind it, which are different bugs with different fixes.
+    /// The caller must NOT already have a zone open on `cmd` — GpuZones is a
+    /// flat timeline and zones may not nest.
     void execute(VkCommandBuffer cmd,
                  const glm::mat4& view,
-                 const glm::mat4& proj);
+                 const glm::mat4& proj,
+                 engine::vulkan::GpuZones* zones = nullptr);
 
     /// View of the **blurred** R8 occlusion image, in SHADER_READ_ONLY_OPTIMAL
     /// after `execute`. Lighting pass should bind this. (Internally there's

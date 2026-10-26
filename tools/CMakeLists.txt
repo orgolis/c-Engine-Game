@@ -332,6 +332,17 @@ if(MINGW)
     target_link_options(editcoalesce_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# aoblur_check: the AO denoise must be sized to the technique's noise. The
+# RT kernel was applied to every technique, so the analytic default paid 49
+# taps where 25 would do -- 14-18ms of blur against 8.8-9.8ms of the GTAO it
+# was cleaning. Pure header, no device needed.
+add_executable(aoblur_check aoblur_check/main.cpp)
+target_include_directories(aoblur_check PRIVATE ../engine/renderer/gpu/vulkan)
+target_compile_features(aoblur_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(aoblur_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # shadersource_check: the GLSL a human edits must still compile to the SPIR-V
 # that ships. shaders/lighting_pass.frag had been sitting broken in the tree
 # because nothing ever fed it to a compiler. Compares the instruction stream

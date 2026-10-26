@@ -9978,14 +9978,17 @@ int main(int argc, char** argv) {
                 // Per-stage GPU time has been resolved every frame since the
                 // Stage-14 work and printed nowhere, so "which pass is slow"
                 // had no answer outside the overlay. At debug level it does.
-                if (log_debug && (frame_count % 60) == 0) {
-                    const auto& gs = graph->get_stats();
-                    spdlog::debug("[gpu] shadow {:.2f}ms | geometry {:.2f}ms | "
-                                  "lighting {:.2f}ms | transparent {:.2f}ms | post {:.2f}ms",
-                                  gs.shadow_us / 1000.0, gs.geometry_us / 1000.0,
-                                  gs.lighting_us / 1000.0, gs.transparent_us / 1000.0,
-                                  gs.post_process_us / 1000.0);
-                }
+                //
+                // The line itself now lives after gpu_zones.end_frame(), below.
+                // These five render-graph stages are NOT the frame's GPU work:
+                // SSAO, SSR, HZB, DDGI, Water, Clouds, VolumetricLight and
+                // FroxelFog are dispatched as compute and timed separately by
+                // GpuZones, which reports later in the frame. Printing the five
+                // here described itself as the GPU breakdown while silently
+                // omitting every compute pass -- so a headless run, a CI run,
+                // and anyone reading editor.log all measured a fraction and
+                // called it the total. That is finding F2 again, one layer out:
+                // the overlay was fixed, the log was not.
             }
             // Same story for the HZB readback — the GPU finished copying the
             // HZB mip to the host buffer before signalling this fence.
@@ -10844,8 +10847,10 @@ int main(int argc, char** argv) {
                                    cam.position);
                     vxao->compute_ao(cmd);
                 } else {
-                    { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "SSAO");
-                    ssao->execute(cmd, cam.view, cam.proj); }
+                    // No zone opened here: execute() opens one per dispatch
+                    // (AO.<technique> and AO.Blur). A zone here too would nest,
+                    // which GpuZones forbids -- it is a flat timeline.
+                    ssao->execute(cmd, cam.view, cam.proj, &gpu_zones);
                 }
             }
             // Cloud shadow map — produced before lighting so the deferred
@@ -10974,6 +10979,33 @@ int main(int argc, char** argv) {
             gpu_zones.end_frame(device.get_device());
             engine::vulkan::GPUProfiler::instance().end_gpu_frame();
 
+            // The honest GPU breakdown: every pass GPUProfiler knows about,
+            // which is the five render-graph stages PLUS the compute zones
+            // GpuZones just reported. Printed here, after end_frame(), because
+            // this is the first point in the frame where that table is whole.
+            //
+            // Sorted and totalled rather than a fixed field list, so a pass
+            // added later shows up without anyone remembering to add it to a
+            // format string -- which is exactly how the compute passes went
+            // unprinted in the first place.
+            if (log_debug && (frame_count % 60) == 0) {
+                auto& prof = engine::vulkan::GPUProfiler::instance();
+                std::vector<const engine::vulkan::GPUProfiler::PassTiming*> ps;
+                for (const auto& [name, p] : prof.get_all_timings()) ps.push_back(&p);
+                std::sort(ps.begin(), ps.end(), [](const auto* a, const auto* b) {
+                    return a->duration_ms > b->duration_ms;
+                });
+                std::string line;
+                for (const auto* p : ps) {
+                    if (p->duration_ms < 0.005f) continue;   // noise, not a pass
+                    char b[64];
+                    std::snprintf(b, sizeof b, " | %s %.2fms", p->name.c_str(), p->duration_ms);
+                    line += b;
+                }
+                spdlog::debug("[gpu] total {:.2f}ms ({} passes){}",
+                              prof.get_total_gpu_time_ms(), ps.size(), line);
+            }
+
             // ImGui render pass — clears swapchain to dark gray, then draws UI on top.
             // The 3D scene is shown inside the Viewport panel via ImGui::Image().
             VkClearValue imgui_clear{};
@@ -11090,15 +11122,42 @@ int main(int argc, char** argv) {
                     const auto& gs = graph->get_stats();
                     MEMORYSTATUSEX ms{}; ms.dwLength = sizeof(ms);
                     GlobalMemoryStatusEx(&ms);
+                    // `gpu total` is GPUProfiler's whole table; the five named
+                    // stages after it are a SUBSET of that total, not a
+                    // decomposition of it. Without the total, this line read as
+                    // a complete GPU accounting while omitting every compute
+                    // pass, so a frame could show 0.5 ms of named stages and
+                    // spend 8 ms in SSR.
+                    // Total and breakdown are read from ONE GPUProfiler
+                    // snapshot. They used to come from two places — the total
+                    // from GPUProfiler here, the five named stages from
+                    // g_gpu_*_ms resolved earlier in the frame — so the parts
+                    // could exceed the whole and routinely did (a 9.60 ms
+                    // "light" inside a 2.94 ms total). A breakdown that
+                    // contradicts its own total teaches people to ignore the
+                    // line, which is how the compute passes went unnoticed.
+                    auto& gprof = engine::vulkan::GPUProfiler::instance();
+                    std::vector<const engine::vulkan::GPUProfiler::PassTiming*> top;
+                    for (const auto& [n, p] : gprof.get_all_timings()) top.push_back(&p);
+                    std::sort(top.begin(), top.end(), [](const auto* a, const auto* b) {
+                        return a->duration_ms > b->duration_ms;
+                    });
+                    std::string worst;
+                    for (size_t i = 0; i < top.size() && i < 3; ++i) {
+                        if (top[i]->duration_ms < 0.005f) break;
+                        char b[64];
+                        std::snprintf(b, sizeof b, " %s %.2f", top[i]->name.c_str(),
+                                      top[i]->duration_ms);
+                        worst += b;
+                    }
                     spdlog::info("[health] frame {} | {:.1f} fps ({:.2f} ms) | draws {} tris {} "
-                                 "| cull {}/{} vis | gpu shadow {:.2f} geo {:.2f} light {:.2f} "
-                                 "transp {:.2f} post {:.2f} ms | {}",
+                                 "| cull {}/{} vis | gpu total {:.2f} ms, worst:{} | {}",
                                  frame_count, delta_time > 0.0f ? 1.0f / delta_time : 0.0f,
                                  double(delta_time) * 1000.0,
                                  gs.geometry_draw_calls, gs.geometry_triangles,
                                  gs.frustum_visible_items, gs.frustum_input_items,
-                                 g_gpu_shadow_ms, g_gpu_geometry_ms, g_gpu_lighting_ms,
-                                 g_gpu_transparent_ms, g_gpu_post_ms,
+                                 gprof.get_total_gpu_time_ms(),
+                                 worst.empty() ? std::string(" (none)") : worst,
                                  gws::diag::memory_summary());
                 }
             }

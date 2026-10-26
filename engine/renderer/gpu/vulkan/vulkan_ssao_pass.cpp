@@ -10,16 +10,34 @@
 #include "ssao_blur_spirv.h"
 #include "ssao_rt_spirv.h"
 #include "ao_techniques_spirv.h" // HBAO / HDAO / GTAO
+#include "gpu_zones.h"
 
 #include <spdlog/spdlog.h>
 #include <array>
 #include <cstring>
 #include <cstdint>
+#include <optional>
+#include <string>
 
 namespace gws::renderer::gpu {
 
 namespace {
 constexpr VkFormat kOcclusionFormat = VK_FORMAT_R8_UNORM;
+
+// Zone names carry the technique, because which one is running is not
+// otherwise visible in a profile -- and the technique is chosen in code, not
+// by any setting the user can see.
+const char* technique_name(AoTechnique t) {
+    switch (t) {
+        case AoTechnique::SSAO: return "SSAO";
+        case AoTechnique::HBAO: return "HBAO";
+        case AoTechnique::HDAO: return "HDAO";
+        case AoTechnique::GTAO: return "GTAO";
+        case AoTechnique::VXAO: return "VXAO";
+        case AoTechnique::RT:   return "RT";
+    }
+    return "Unknown";
+}
 }
 
 std::unique_ptr<VulkanSsaoPass> VulkanSsaoPass::create(VulkanDevice* device,
@@ -464,7 +482,8 @@ void VulkanSsaoPass::resize(uint32_t width, uint32_t height) {
 
 void VulkanSsaoPass::execute(VkCommandBuffer cmd,
                               const glm::mat4& view,
-                              const glm::mat4& proj) {
+                              const glm::mat4& proj,
+                              engine::vulkan::GpuZones* zones) {
     if (!enabled_) {
         // When disabled, do nothing — the image holds whatever value it
         // had before. The lighting pass should fall back to its own AO
@@ -516,6 +535,10 @@ void VulkanSsaoPass::execute(VkCommandBuffer cmd,
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             layout_, 0, 1, &set_, 0, nullptr);
+    // Opened here and closed right after the dispatch, so the zone covers the
+    // technique alone -- not the barriers and not the blur.
+    std::optional<engine::vulkan::ScopedGpuZone> ao_zone;
+    if (zones) ao_zone.emplace(zones, cmd, std::string("AO.") + technique_name(technique_));
 
     // Per-technique AO radius. RT now relies on temporal accumulation, so a
     // medium radius (6) gives presence + converges smooth. Screen-space
@@ -571,6 +594,7 @@ void VulkanSsaoPass::execute(VkCommandBuffer cmd,
     const uint32_t gx = (width_ + 7) / 8;
     const uint32_t gy = (height_ + 7) / 8;
     vkCmdDispatch(cmd, gx, gy, 1);
+    ao_zone.reset();   // close before the barriers; the blur gets its own zone
 
     // Transition raw output to SHADER_READ_ONLY so the blur compute can
     // sample it; transition the blurred image to GENERAL for compute write.
@@ -594,6 +618,8 @@ void VulkanSsaoPass::execute(VkCommandBuffer cmd,
 
     // Bilateral blur pass.
     if (blur_pipeline_ != VK_NULL_HANDLE) {
+        std::optional<engine::vulkan::ScopedGpuZone> blur_zone;
+        if (zones) blur_zone.emplace(zones, cmd, "AO.Blur");
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, blur_pipeline_);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 blur_layout_, 0, 1, &blur_set_, 0, nullptr);
@@ -606,12 +632,25 @@ void VulkanSsaoPass::execute(VkCommandBuffer cmd,
         } bpc{};
         bpc.output_w     = static_cast<int32_t>(width_);
         bpc.output_h     = static_cast<int32_t>(height_);
-        // Looser + wider than before: the RT AO is stochastic, so the denoise
-        // must reach across more pixels and tolerate more depth/normal variation
-        // to actually clean the grain (tight sigmas were preserving the noise).
-        bpc.depth_sigma  = 0.04f;  // was 0.01 — smooth across more depth slope
-        bpc.normal_sigma = 0.30f;  // was 0.20 — smooth across more curvature
-        bpc.radius       = 3;      // was 2 — 7x7 kernel
+        // The denoise is sized to the NOISE, which is a property of the
+        // technique — not a constant.
+        //
+        // RT AO is stochastic: it needs the wide kernel and loose sigmas, or
+        // the grain survives (tight sigmas were preserving it). Every other
+        // technique here is analytic. Their only noise is the per-pixel hash
+        // rotation, which a 5x5 clears completely.
+        //
+        // Those RT values were applied to ALL techniques, and the cost of that
+        // is not small: this kernel is O(r^2) with three texture fetches per
+        // tap, so 7x7 is 49 taps against 5x5's 25 — nearly double — and it ran
+        // on the default path, every frame, for every user. Measured on a
+        // 2-draw / 734-triangle scene at 1920x1032, AO.Blur cost 14-18 ms
+        // against AO.GTAO's 8.8-9.8 ms: the denoise cost roughly twice the AO
+        // it was cleaning, to remove noise that technique does not produce.
+        const AoBlurParams bp = ao_blur_params_for(technique_);
+        bpc.depth_sigma  = bp.depth_sigma;
+        bpc.normal_sigma = bp.normal_sigma;
+        bpc.radius       = bp.radius;
         vkCmdPushConstants(cmd, blur_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(bpc), &bpc);
         vkCmdDispatch(cmd, gx, gy, 1);

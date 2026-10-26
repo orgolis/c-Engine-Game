@@ -24,6 +24,80 @@ of them already exist and work — which is why they have not helped.
 
 ---
 
+## F11 — the AO denoise was sized for ray tracing and ran on everything 🟠
+
+**Measured 2026-10-26 on an RTX 3060**, `MyGame` (30 draws, 169,427 triangles), 1920×1032, VSync and ray
+tracing off, A/B in one session:
+
+| Blur kernel | `AO.Blur` | GPU total |
+|---|---|---|
+| 7×7 (before) | 1.54 ms | 3.33 ms |
+| 5×5 (after) | **0.79 ms** | **2.59 ms** |
+
+**0.75 ms of GPU saved, 49% of the blur's cost** — matching the 49→25 tap ratio exactly. Frame rate did
+not move (75.3 → 75.1 fps), because the frame is not GPU-bound right now. This is a real saving in a
+budget that is not currently the constraint.
+
+**The defect.** The bilateral blur went from 5×5 to 7×7 with looser sigmas, for the stated and correct
+reason that RT AO is stochastic and tight sigmas preserved its grain. That tuning was then applied to
+every technique. The kernel is O(r²) with three texture fetches per tap, so the analytic default paid 49
+taps where 25 would do, to remove noise GTAO does not produce. Fixed by `ao_blur_params_for()` in
+`engine/renderer/gpu/vulkan/ao_blur_params.h`, pinned by `aoblur_check` (15 assertions, mutation-tested
+by reintroducing the bug: 7 failures).
+
+### ⚠️ Retraction: the 2026-10-19 figures in this section were not representative
+
+An earlier version of F11 reported a 44 ms frame, AO at 22–48 ms, and called it the dominant cost in the
+engine. **Those absolute numbers are withdrawn.** Re-measuring the same project at the same resolution
+with the same settings a week later gave GPU work of 2.6 ms where it had been 26–31 ms.
+
+The giveaway is that the difference is near-uniform across unrelated passes:
+
+| Pass | 2026-10-19 | 2026-10-26 | ratio |
+|---|---|---|---|
+| `AO.GTAO` | 8.9 ms | 0.93 ms | 9.6× |
+| `VolumetricLight` | 4.4 ms | 0.55 ms | 8.0× |
+| `SSR` | 4.17 ms | 0.23 ms | 18× |
+| `HZB` | 0.05 ms | 0.05 ms | 1× (already at its floor) |
+
+A single multiplier across passes that share no code points at GPU clock or power state during that
+session, not at the shaders. **Lesson for this document: a GPU measurement is only trustworthy as an A/B
+taken inside one session.** Absolute millisecond figures carried across sessions are not comparable, and
+several numbers recorded here over the project's life were taken that way.
+
+What survives from 2026-10-19 is everything differential or arithmetic: the 49-vs-25 tap argument, the
+ratio between blur and AO, and both measurement defects below — which were real, and are fixed.
+
+### The measurement defects (both fixed)
+
+**The log omitted every compute pass.** The `[gpu]` and `[health]` lines printed the five render-graph
+stages and nothing else — SSAO, SSR, HZB, DDGI, Water, Clouds, VolumetricLight and FroxelFog were all
+absent, so a headless run, a CI run, or anyone reading `editor.log` saw a fraction of the frame presented
+as the total. **This is F2 recurring one layer out**: F2 fixed the overlay and left the log reporting the
+old five. Both lines now report `GPUProfiler`'s whole table, built by iteration rather than a fixed
+format string, so a pass added later cannot go unprinted the same way.
+
+**The health line's breakdown contradicted its own total.** The total came from `GPUProfiler` and the
+five stages from `g_gpu_*_ms` resolved earlier in the frame, so the parts could exceed the whole, and did
+— a 9.60 ms "light" inside a 2.94 ms total. Both now come from one snapshot.
+
+**AO reported as one opaque number.** `SSAO` covered both the technique and the denoise behind it, which
+cannot distinguish two bugs with different fixes. Now `AO.<technique>` and `AO.Blur`.
+
+### Still open under this finding
+
+- **The AO technique is hardcoded.** `VulkanSsaoPass::create()` sets GTAO, overriding the class default
+  of `SSAO`. No quality preset selects it — Low/Medium/High only flip AO on and off — and nothing
+  persists it, so the editor's dropdown forgets every launch.
+- **A ~4 ms phantom** attached to roughly one pass per frame in the 2026-10-19 session and moved between
+  them (HZB reading 0.05 ms one frame and 4.01 ms the next). Not observed on 2026-10-26. It may be the
+  same underlying condition as the retraction above.
+- **The real current bottleneck is not the GPU.** The frame is ~13.3 ms against ~2.6 ms of GPU work, and
+  the frame rate is the same with VSync on and off (75.1 vs 75.3 fps). Something paces the frame at
+  ~13.3 ms that is neither the GPU nor the swapchain. **This is the lead worth chasing next.**
+
+---
+
 ## F0 — MEASURED: the lighting pass is 94% of the frame 🔴
 
 **The first real numbers, from the user's own testing on 2026-08-30 (v0.8.2, RTX 3060).** Everything else in
