@@ -1,4 +1,5 @@
 #include "vulkan_swapchain.h"
+#include "present_mode_choice.h"
 #include "logging/logger.h"
 #include <algorithm>
 #include <cstdint>
@@ -64,8 +65,9 @@ void VulkanSwapchain::initialize(uint32_t width, uint32_t height) {
                  present_mode == VK_PRESENT_MODE_FIFO_KHR      ? "FIFO"      :
                  present_mode == VK_PRESENT_MODE_MAILBOX_KHR   ? "MAILBOX"   :
                  present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE" : "other",
-                 g_vsync ? "vsync on - frame rate capped to the refresh rate"
-                         : "vsync off - uncapped");
+                 present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR
+                     ? "uncapped, may tear"
+                     : "frame rate capped to the display refresh rate");
     extent = choose_swap_extent(capabilities);
     
     image_format = surface_format.format;
@@ -234,19 +236,23 @@ VkPresentModeKHR VulkanSwapchain::choose_present_mode(
         return false;
     };
 
-    if (g_vsync) {
-        // FIFO is always available and is the honest default: it presents once
-        // per refresh and does not render frames nobody sees.
-        return VK_PRESENT_MODE_FIFO_KHR;
+    // The decision itself is in present_mode_choice.h, with no Vulkan in it,
+    // so presentmode_check can assert on it without a device.
+    const PresentModeChoice choice = choose_present_mode_for(
+        g_vsync, has(VK_PRESENT_MODE_MAILBOX_KHR), has(VK_PRESENT_MODE_IMMEDIATE_KHR));
+
+    if (!g_vsync && choice != PresentModeChoice::Immediate) {
+        GWS_LOG_WARN("[swapchain] vsync off requested but IMMEDIATE is not available - "
+                     "falling back to {}, which still presents once per refresh, so the "
+                     "frame rate stays capped to the display",
+                     choice == PresentModeChoice::Mailbox ? "MAILBOX" : "FIFO");
     }
 
-    // Unlocked. MAILBOX first (renders ahead, presents the newest, no tearing),
-    // then IMMEDIATE (tears, but the only option on some drivers), then FIFO --
-    // which is not unlocked at all, so say so rather than pretend.
-    if (has(VK_PRESENT_MODE_MAILBOX_KHR))   return VK_PRESENT_MODE_MAILBOX_KHR;
-    if (has(VK_PRESENT_MODE_IMMEDIATE_KHR)) return VK_PRESENT_MODE_IMMEDIATE_KHR;
-    GWS_LOG_WARN("[swapchain] vsync off requested but neither MAILBOX nor IMMEDIATE "
-                 "is available - staying on FIFO, so the frame rate stays capped");
+    switch (choice) {
+        case PresentModeChoice::Immediate: return VK_PRESENT_MODE_IMMEDIATE_KHR;
+        case PresentModeChoice::Mailbox:   return VK_PRESENT_MODE_MAILBOX_KHR;
+        case PresentModeChoice::Fifo:      break;
+    }
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 

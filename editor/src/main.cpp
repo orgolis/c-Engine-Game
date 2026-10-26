@@ -9997,8 +9997,15 @@ int main(int argc, char** argv) {
             }
 
             g_cp.mark("post_hzb_readback");
+            // Scoped deliberately. GWS_PROFILE_ZONE declares a local whose
+            // lifetime IS the measurement, so a bare one at the top level of
+            // this loop body runs to the end of the frame and reports the rest
+            // of the frame under its own name. This one read 11.6 ms of a
+            // 13.1 ms frame while the acquire itself costs almost nothing.
+            uint32_t image_index = UINT32_MAX;
+            {
             GWS_PROFILE_ZONE("acquire_swapchain_image");
-            uint32_t image_index = swapchain->acquire_next_image(
+            image_index = swapchain->acquire_next_image(
                 acquire_sems[current_frame]);
             if (image_index == UINT32_MAX) {
                 // Swapchain went out of date between the top-of-loop size check
@@ -10013,6 +10020,7 @@ int main(int argc, char** argv) {
                     continue;
                 }
             }
+            }   // end acquire_swapchain_image zone
             vkResetFences(device.get_device(), 1, &frame_fences[current_frame]);
 
             VkCommandBuffer cmd = frame_cmds[current_frame];
@@ -10812,7 +10820,7 @@ int main(int argc, char** argv) {
             const glm::mat4 sh_proj = shadow_active
                 ? shadow_view_proj
                 : graph->get_camera().proj;
-            GWS_PROFILE_ZONE("stage_shadow");
+            { GWS_PROFILE_ZONE("stage_shadow");
             graph->execute_stage(cmd, RenderGraphStage::Shadow,
                 [&](VkCommandBuffer rec_cmd) {
                     uint32_t calls = 0, tris = 0;
@@ -10823,7 +10831,7 @@ int main(int argc, char** argv) {
                                            shadow_draws.data(),
                                            shadow_draws.size(),
                                            &calls, &tris);
-                });
+                }); }
             { GWS_PROFILE_ZONE("stage_geometry");
               graph->execute_stage(cmd, RenderGraphStage::Geometry,   {}); }
             // HZB occlusion: build the depth pyramid from THIS frame's depth
@@ -10952,7 +10960,7 @@ int main(int argc, char** argv) {
             // Transparent stage uses a custom recorder so we can feed it
             // the back-to-front-sorted transparent draw list directly,
             // independent of the graph's stored opaque draw_items_.
-            GWS_PROFILE_ZONE("stage_transparent");
+            { GWS_PROFILE_ZONE("stage_transparent");
             graph->execute_stage(cmd, RenderGraphStage::Transparent,
                 [&](VkCommandBuffer rec_cmd) {
                     transparent->execute(rec_cmd, transparent_draws, graph->get_camera());
@@ -10972,7 +10980,7 @@ int main(int argc, char** argv) {
                             particles_pass->execute(rec_cmd, bb, cam.proj * cam.view);
                         }
                     }
-                });
+                }); }
             { GWS_PROFILE_ZONE("stage_post");
               graph->execute_stage(cmd, RenderGraphStage::PostProcess, {}); }
             graph->end_frame(cmd);
@@ -11034,9 +11042,9 @@ int main(int argc, char** argv) {
             submit_info.pCommandBuffers      = &cmd;
             submit_info.signalSemaphoreCount = 1;
             submit_info.pSignalSemaphores    = &render_sems[current_frame];
-            GWS_PROFILE_ZONE("queue_submit");
-            vkQueueSubmit(device.get_graphics_queue(), 1, &submit_info,
-                          frame_fences[current_frame]);
+            { GWS_PROFILE_ZONE("queue_submit");
+              vkQueueSubmit(device.get_graphics_queue(), 1, &submit_info,
+                            frame_fences[current_frame]); }
 
             g_cp.mark("pre_present");
             { GWS_PROFILE_ZONE("present");

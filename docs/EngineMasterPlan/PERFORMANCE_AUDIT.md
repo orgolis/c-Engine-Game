@@ -24,6 +24,67 @@ of them already exist and work — which is why they have not helped.
 
 ---
 
+## F12 — the tools lied about the frame, in two directions 🟠
+
+**Measured 2026-10-26, RTX 3060, `MyGame` (30 draws, 169,427 triangles), 1920×1032.**
+
+F11 closed by naming "the frame is paced at ~13.3 ms by something that is not the GPU" as the biggest
+remaining mystery. It was not a mystery. **The display is 75 Hz, and 1/75 s is 13.333 ms.** The engine
+does its work and waits for the monitor. Two instrumentation defects are what made that look like a
+puzzle rather than a fact, and both are worth fixing on their own account.
+
+### (a) A profiler zone that is not in its own block measures the rest of the frame
+
+`GWS_PROFILE_ZONE` declares a local whose *lifetime* is the measurement. Four of the editor's 28 zones
+were written as bare statements at the top level of the frame-loop body, so each one ran to the end of
+the frame:
+
+| Zone | Reported | Correctly scoped |
+|---|---|---|
+| `acquire_swapchain_image` | 11.637 ms | — (trivial) |
+| `stage_shadow` | 10.515 ms | **0.363 ms** |
+| `stage_transparent` | 9.145 ms | **0.125 ms** |
+| `queue_submit` | 8.778 ms | **0.184 ms** |
+
+Nothing errored. The zones were silently nested and all ended at the same point, so they sorted into a
+tidy descending sequence that reads exactly like a real profile — 29× wrong, and convincing.
+
+With them scoped, the frame resolves with no mystery in it: **~3.8 ms of work, ~7.4 ms blocked in
+`present` waiting for the 75 Hz refresh.** Largest real items are `stage_geometry` 0.73 ms,
+`ui_assetbrowser` 0.73 ms and `ecs_sync` 0.71 ms.
+
+Guarded by `profilescope_check`, a source-text check — the defect is lexical scope, so there is nothing
+left to inspect at runtime.
+
+### (b) "VSync off" selected a mode that is still capped
+
+`choose_present_mode` preferred MAILBOX when vsync was off and the log called it "uncapped". MAILBOX
+neither blocks the CPU nor tears, and neither of those makes it uncapped: the presentation engine still
+releases one image per vertical blank. Measured consequence — 75.1 fps vsync on, 75.3 fps vsync off, on a
+75 Hz panel, while the GPU did 2.6 ms of work.
+
+**That is why the F11 AO saving was invisible.** A real 0.75 ms improvement cannot move a frame rate
+pinned to the refresh interval. Now prefers IMMEDIATE, falling back to MAILBOX then FIFO, and the log
+describes what the chosen mode actually does. `presentmode_check` asserts on *capping*, not on mode
+names. `present_mode_choice.h` keeps the decision free of Vulkan so it is checkable without a device.
+
+> Switching to IMMEDIATE did **not** raise the frame rate here, because a windowed app on Windows is
+> composited by DWM at the refresh rate regardless of present mode. The fix is still right — the log was
+> false and "off" should mean off — but uncapped measurement needs exclusive fullscreen.
+
+### What this means for how this document is read
+
+**Frame rate is not a usable metric on this machine.** At 75 Hz with ~4 ms of work there is roughly 9 ms
+of idle headroom, so almost any optimization will measure as "no change in fps" while being perfectly
+real. Judge work by the GPU breakdown and the CPU zone report, not by fps — and see the F11 retraction
+for why absolute millisecond figures must come from an A/B inside one session.
+
+The engine is **not currently frame-rate limited on this hardware.** That does not make the accumulated
+costs acceptable — it means they are being paid out of headroom instead of out of frame rate, and a
+heavier scene or a slower machine spends that headroom immediately.
+
+---
+
 ## F11 — the AO denoise was sized for ray tracing and ran on everything 🟠
 
 **Measured 2026-10-26 on an RTX 3060**, `MyGame` (30 draws, 169,427 triangles), 1920×1032, VSync and ray

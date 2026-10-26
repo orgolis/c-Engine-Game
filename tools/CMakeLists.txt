@@ -332,6 +332,28 @@ if(MINGW)
     target_link_options(editcoalesce_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# presentmode_check: "vsync off" must pick a mode that does not cap. MAILBOX
+# was preferred and logged as "uncapped" -- it is neither, which made the
+# frame rate useless as a measure (75.1 fps vsync on, 75.3 off, on a 75 Hz
+# panel). Pure header, no device needed.
+add_executable(presentmode_check presentmode_check/main.cpp)
+target_include_directories(presentmode_check PRIVATE ../engine/renderer/gpu/vulkan)
+target_compile_features(presentmode_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(presentmode_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
+# profilescope_check: a GWS_PROFILE_ZONE written as a bare statement measures
+# everything to the end of its enclosing block, which in the frame loop is the
+# whole frame. Four of them reported plausible wrong numbers (stage_shadow
+# read 10.5ms; correctly scoped it is 0.36ms). Source-text check -- the defect
+# is lexical scope, so there is nothing left to inspect at runtime.
+add_executable(profilescope_check profilescope_check/main.cpp)
+target_compile_features(profilescope_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(profilescope_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # aoblur_check: the AO denoise must be sized to the technique's noise. The
 # RT kernel was applied to every technique, so the analytic default paid 49
 # taps where 25 would do -- 14-18ms of blur against 8.8-9.8ms of the GTAO it
