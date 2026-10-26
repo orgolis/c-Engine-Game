@@ -2,17 +2,45 @@
 // shadersource_check — the GLSL a human edits must still be the SPIR-V that runs.
 //
 // The engine ships precompiled SPIR-V baked into the binary as generated header
-// arrays. The GLSL those came from lives in
-// engine/renderer/gpu/vulkan/shaders/. Nothing connected the two, and that gap
-// is not hypothetical: `shaders/lighting_pass.frag` had been sitting in the
-// tree in a state where it did not even COMPILE, because the engine runs the
-// baked array and nobody ever fed the file to a compiler.
+// arrays. Nothing connected those arrays to the GLSL anyone edits, and that gap
+// is not hypothetical: `lighting_pass.frag` had been sitting in the tree in a
+// state where it did not even COMPILE, because the engine runs the baked array
+// and nobody ever fed the file to a compiler.
 //
 // A stale shader source is a nasty kind of wrong. It does not fail — you edit
 // it, rebuild, see no change, and conclude the edit did nothing. Then you edit
 // harder.
 //
 // So: compile each source and compare it to the array that actually ships.
+//
+// WHERE THE SOURCES LIVE — and why this check reads two directories.
+//
+// There are two shader directories, for a reason that is historical rather
+// than designed:
+//
+//   tools/                              — the live sources. The regen scripts
+//                                         (tools/regen_*_spirv.sh) cd here,
+//                                         compile these files to the .spv
+//                                         beside them, and spv_to_header.py
+//                                         turns those into the shipped arrays.
+//   engine/renderer/gpu/vulkan/shaders/ — created by #67, which extracted GLSL
+//                                         that had only ever existed as inline
+//                                         C++ string literals.
+//
+// For the shaders that were genuinely inline-only, that extraction gave them
+// their first real home and `shaders/` is where they belong. But eight of the
+// files #67 created already had a maintained source in tools/, so those became
+// frozen 2026-08-10 snapshots of whatever shipped that day while tools/ kept
+// moving. This check originally read only `shaders/`, which meant it compared
+// the shipped array against the copy nobody edits: three cases went red for
+// drift that had already been shipped correctly, and — far worse — a green
+// result certified a file the engine does not build from. The check written to
+// stop "you edit a shader and nothing changes" was reinforcing it.
+//
+// So a source is resolved from tools/ FIRST and `shaders/` only as a fallback,
+// which is the order in which they are authoritative. And a name present in
+// BOTH is itself a failure (see check_no_duplicate_sources) — one shader, one
+// home, or this grows back.
 //
 // WHAT COUNTS AS EQUAL. SPIR-V carries debug annotations (OpSource, OpName,
 // OpLine, OpSourceExtension…) and a header word identifying which compiler
@@ -25,6 +53,7 @@
 //
 // Skips (does not fail) when glslangValidator is absent, like the GPU checks do.
 // ============================================================================
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +65,8 @@
 // The arrays that actually ship.
 #include "gbuffer_demo_spirv.h"
 #include "gbuffer_scene_spirv.h"
+#include "lighting_pass_spirv.h"
+#include "lighting_pass_nort_spirv.h"
 #include "shadow_caster_spirv.h"
 #include "transparent_pass_spirv.h"
 #include "transparent_composite_spirv.h"
@@ -112,39 +143,88 @@ fs::path find_glslang() {
     return {};
 }
 
-fs::path find_shader_dir(const fs::path& exe_dir) {
+// The repo root, found by walking up from the executable looking for a marker
+// that only the source checkout has. An installed engine has neither.
+fs::path find_repo_root(const fs::path& exe_dir) {
     std::error_code ec;
     for (fs::path d = exe_dir; !d.empty(); d = d.parent_path()) {
-        const fs::path c = d / "engine" / "renderer" / "gpu" / "vulkan" / "shaders";
-        if (fs::is_directory(c, ec)) return c;
+        if (fs::is_directory(d / "engine" / "renderer" / "gpu" / "vulkan" / "shaders", ec) &&
+            fs::is_directory(d / "tools", ec))
+            return d;
         if (d == d.parent_path()) break;
     }
     return {};
 }
 
+fs::path live_dir(const fs::path& root)  { return root / "tools"; }
+fs::path extracted_dir(const fs::path& root) {
+    return root / "engine" / "renderer" / "gpu" / "vulkan" / "shaders";
+}
+
+// tools/ first: that is the directory the regen scripts compile from, so it is
+// the one whose contents actually become the shipped array.
+fs::path resolve_source(const fs::path& root, const char* file) {
+    std::error_code ec;
+    const fs::path a = live_dir(root) / file;
+    if (fs::exists(a, ec)) return a;
+    const fs::path b = extracted_dir(root) / file;
+    if (fs::exists(b, ec)) return b;
+    return {};
+}
+
 struct Case {
-    const char*     file;      // source under shaders/
+    const char*     file;      // resolved via resolve_source()
     const uint32_t* shipped;
     uint32_t        shipped_bytes;
+    const char*     defines = "";   // e.g. "-DGWS_RAY_QUERY" for a variant
 };
+
+// One shader, one home. A name in both directories is the defect that made
+// this check validate the wrong file for two months: the copy nobody compiles
+// drifts, and whichever way the check happens to resolve it, half its answers
+// are about a file that does not ship. Fails by name so the fix is obvious.
+void check_no_duplicate_sources(const fs::path& root) {
+    std::error_code ec;
+    const fs::path live = live_dir(root), extracted = extracted_dir(root);
+    std::vector<std::string> dupes;
+    for (const auto& e : fs::directory_iterator(extracted, ec)) {
+        if (!e.is_regular_file(ec)) continue;
+        const std::string name = e.path().filename().string();
+        if (fs::exists(live / name, ec)) dupes.push_back(name);
+    }
+    std::sort(dupes.begin(), dupes.end());
+    if (dupes.empty()) {
+        check(true, "every shader source has exactly one home");
+        return;
+    }
+    std::string msg = "shader sources exist in BOTH tools/ and "
+                      "engine/renderer/gpu/vulkan/shaders/:";
+    for (const auto& d : dupes) msg += "\n         " + d;
+    msg += "\n       tools/ is the copy the regen scripts build from, so the"
+           "\n       other is dead weight that silently drifts. Delete it.";
+    check(false, msg);
+}
 
 }  // namespace
 
 int main(int argc, char** argv) {
     std::printf("=== shadersource_check ===\n\n");
 
-    const fs::path exe_dir  = fs::absolute(fs::path(argv[0])).parent_path();
-    const fs::path glslang  = find_glslang();
-    const fs::path shad_dir = find_shader_dir(exe_dir);
+    const fs::path exe_dir = fs::absolute(fs::path(argv[0])).parent_path();
+    const fs::path glslang = find_glslang();
+    const fs::path root    = find_repo_root(exe_dir);
 
     if (glslang.empty()) {
         std::printf("SKIP shadersource_check: glslangValidator not found (set VULKAN_SDK)\n");
         return 0;
     }
-    if (shad_dir.empty()) {
+    if (root.empty()) {
         std::printf("SKIP shadersource_check: needs a source checkout, not an installed engine\n");
         return 0;
     }
+
+    check_no_duplicate_sources(root);
+    const int dup_fail = g_fail;   // everything after this is drift
 
     const Case cases[] = {
         {"gbuffer_demo.vert",          kGBufferDemoVertSpv,          kGBufferDemoVertSpv_size},
@@ -156,6 +236,17 @@ int main(int argc, char** argv) {
         {"transparent.vert",           kTransparentVertSpv,          kTransparentVertSpv_size},
         {"transparent_composite.vert", kTransparentCompositeVertSpv, kTransparentCompositeVertSpv_size},
         {"transparent_composite.frag", kTransparentCompositeFragSpv, kTransparentCompositeFragSpv_size},
+        // The lighting pass: the most expensive shader in the engine, the one
+        // whose source was once in the tree not even compiling, and — until
+        // tools/ became resolvable above — the one case this check could not
+        // cover at all. Both variants come from the ONE source and must be
+        // regenerated together (tools/regen_lighting_spirv.sh); covering only
+        // the ray-query one would miss exactly the drift that script exists to
+        // prevent, which shows up solely on machines without ray tracing.
+        {"lighting_pass.vert",         kLightingPassVertSpv,         kLightingPassVertSpv_size},
+        {"lighting_pass.frag",         kLightingPassFragSpv,         kLightingPassFragSpv_size,
+                                       "-DGWS_RAY_QUERY"},
+        {"lighting_pass.frag",         kLightingPassFragNoRtSpv,     kLightingPassFragNoRtSpv_size},
     };
 
     std::error_code ec;
@@ -163,20 +254,32 @@ int main(int argc, char** argv) {
     fs::create_directories(tmp, ec);
 
     for (const auto& c : cases) {
-        const fs::path src = shad_dir / c.file;
-        if (!fs::exists(src, ec)) {
-            check(false, std::string(c.file) + ": source file is missing");
+        // One source feeds two variants, so the file name alone is ambiguous
+        // in the output. Name the variant by the define that selects it.
+        const std::string label =
+            *c.defines ? std::string(c.file) + " [" + c.defines + "]" : std::string(c.file);
+
+        const fs::path src = resolve_source(root, c.file);
+        if (src.empty()) {
+            check(false, label + ": source file is in neither tools/ nor shaders/");
             continue;
         }
 
         // vulkan1.2 => SPIR-V 1.5, which is what the shipped arrays declare.
         // Targeting a different version changes the OpEntryPoint interface
         // rules and would report a difference that is purely about flags.
-        const fs::path out = tmp / (std::string(c.file) + ".spv");
-        const std::string cmd = "\"\"" + glslang.string() + "\" -V --target-env vulkan1.2 \"" +
+        //
+        // -S <stage> rather than relying on the extension: a variant compiled
+        // to a temp name keeps its stage explicit, and the regen scripts pass
+        // it too, so this matches how the shipped array was actually built.
+        const std::string stage = fs::path(c.file).extension().string().substr(1);
+        const fs::path out = tmp / (label + ".spv");
+        const std::string cmd = "\"\"" + glslang.string() + "\" -V --target-env vulkan1.2 " +
+                                (*c.defines ? std::string(c.defines) + " " : std::string()) +
+                                "-S " + stage + " \"" +
                                 src.string() + "\" -o \"" + out.string() + "\" >nul 2>&1\"";
         if (std::system(cmd.c_str()) != 0) {
-            check(false, std::string(c.file) + ": does not compile");
+            check(false, label + ": does not compile");
             continue;
         }
 
@@ -186,10 +289,10 @@ int main(int argc, char** argv) {
         const auto b       = significant(shipped_words);
 
         if (a.empty() || b.empty()) {
-            check(false, std::string(c.file) + ": could not parse one of the modules");
+            check(false, label + ": could not parse one of the modules");
             continue;
         }
-        check(a == b, std::string(c.file) + ": compiles to the SPIR-V that ships");
+        check(a == b, label + ": compiles to the SPIR-V that ships");
         fs::remove(out, ec);
     }
 
@@ -198,9 +301,17 @@ int main(int argc, char** argv) {
     std::printf("\n%d passed, %d failed", g_pass, g_fail);
     if (g_skip) std::printf(", %d skipped", g_skip);
     std::printf("\n");
-    if (g_fail)
+    // Two failures mean two different things and have two different fixes.
+    // Printing the drift remedy for a duplicate-source failure sends the
+    // reader to regenerate a header that was never the problem.
+    const int drift_fail = g_fail - dup_fail;
+    if (drift_fail)
         std::printf("FAIL shadersource_check — a shader source no longer matches the shipped SPIR-V.\n"
                     "Either the source drifted, or the header was not regenerated after an edit\n"
                     "(tools/spv_to_header.py).\n");
+    if (dup_fail)
+        std::printf("FAIL shadersource_check — a shader source exists in two directories.\n"
+                    "Delete the copy under engine/renderer/gpu/vulkan/shaders/; tools/ is the\n"
+                    "one the regen scripts compile and therefore the one that ships.\n");
     return g_fail ? 1 : 0;
 }
