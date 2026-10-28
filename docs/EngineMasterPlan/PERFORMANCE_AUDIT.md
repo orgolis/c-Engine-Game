@@ -24,6 +24,53 @@ of them already exist and work — which is why they have not helped.
 
 ---
 
+## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed
+
+**Measured 2026-10-28, RTX 3060, `MyGame`, 1920×1032, ray tracing on, 8 shadow rays (the High preset).**
+Interleaved A/B of the old and new binary, three rounds each; `AO.GTAO` stayed at ~0.92 ms in both as a
+GPU clock reference, so the comparison is within one clock state.
+
+| | Lighting | GPU total |
+|---|---|---|
+| Before | 8.8–11.2 ms (median ~10.1) | 12.3–16.3 ms — over the 13.33 ms refresh budget |
+| After | **4.5–5.8 ms (median ~5.45)** | **8.1–10.2 ms** — back under it |
+
+**~4.6 ms saved, 46% of the lighting pass**, against a theoretical ceiling of 50%.
+
+**The defect.** `rayQueryShadow()` cast all N cone rays for every shadowed pixel. Only the penumbra needs
+them. A pixel fully in light or fully in shadow spent eight rays to learn what the first few already
+said, and on most screens that is most pixels. F0 found that these rays dominate the frame; the response
+so far was to ration them through presets (High = 8, first launch = Medium with RT off). That treats
+the count as the problem when the design is the problem.
+
+**The fix.** Trace the even-indexed half of the existing golden-angle spiral first. Those rays span the
+disc (radii 0.25–0.90 of the cone at N=8, innermost included, so a thin occluder over the centre is
+still seen). If they agree, return that. If they disagree, trace the odd half and average all N.
+Same directions and count as before, so the penumbra estimate is unchanged. Below four rays the probe
+half is too small to call a pixel solid, so every ray is traced as before.
+
+**What it costs in image.** A pixel can only be misread where the odd rays would have disagreed with
+unanimous even ones: the faint outer edge of a penumbra, worth one ray's step (1/N). The per-pixel
+rotation already dithers by that much. Screenshot diff, before vs after, same frame:
+
+- **0.047% of viewport pixels** (249) moved by 4+ levels, max 39, all on penumbra edges (sphere rim,
+  the shaded side of a block, a slab edge). Indistinguishable at 8× zoom.
+- 19.5% moved by exactly **1 level**, in contour bands that cover the **sky** too, which casts no
+  shadow rays. Auto-exposure: the misread edge pixels nudge average luminance, exposure shifts by a
+  fraction of a level, and smooth gradients re-quantize. Not a local shadow change.
+- Noise floor (old binary vs itself): 0.2% of pixels, max 1 level.
+
+**No new check.** The behaviour lives in GLSL, which no check here can execute without a GPU, and a
+C++ model of it would test a copy, which is the trap fixed in `2b22630`. `shadersource_check` does pin
+the shipped SPIR-V to this source. The evidence for the image claim is the diff above, and it should
+be repeated if the cone sampling changes.
+
+**Still open.** Divergence: a warp that straddles a penumbra edge runs both halves for all its lanes,
+which is why the saving is 46% and not 50%. Temporal accumulation (one or two rays per pixel per frame,
+reprojected) would cut much deeper, and is the larger project F0 actually points at.
+
+---
+
 ## F12 — the tools lied about the frame, in two directions 🟠
 
 **Measured 2026-10-26, RTX 3060, `MyGame` (30 draws, 169,427 triangles), 1920×1032.**
