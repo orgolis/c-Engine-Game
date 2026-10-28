@@ -2827,6 +2827,30 @@ void ShowSceneHierarchy(EditorState& editor_state) {
 
         ImGui::BeginChild("EntityList", ImVec2(0, 0), true);
 
+        // Rows outside the visible part of the list are not built.
+        //
+        // Every row used to be: a label string assembled from the name and id,
+        // a tree node, a drag source, a drop target and a context-menu check --
+        // for every entity in the scene, every frame, while a couple of dozen
+        // are on screen. At 20k entities that was ~7 ms a frame for a panel.
+        // ImGuiListClipper needs a flat list and this is a tree whose open
+        // state lives in ImGui, so it is clipped by hand: an off-screen row
+        // only adds its height to `skip`, which is emitted as one spacer when
+        // the next visible row comes (or the list ends), so the scrollbar
+        // still describes the whole tree. An off-screen OPEN node still pushes
+        // its id, so its children get the same ids -- and the same stored
+        // open/closed state -- as when it is drawn.
+        static float hier_row_h = 0.0f;       // measured from a drawn row
+        float hier_skip = 0.0f;
+        const ImRect hier_clip = ImGui::GetCurrentWindow()->ClipRect;
+        const float  hier_spacing = ImGui::GetStyle().ItemSpacing.y;
+        auto flush_hier_skip = [&] {
+            if (hier_skip > 0.0f) {
+                ImGui::Dummy(ImVec2(0.0f, std::max(0.0f, hier_skip - hier_spacing)));
+                hier_skip = 0.0f;
+            }
+        };
+
         // Helper lambda to recursively display entity hierarchy
         std::function<void(const std::shared_ptr<schizo::scene::Entity>&)> draw_entity_node =
             [&](const std::shared_ptr<schizo::scene::Entity>& entity) {
@@ -2834,6 +2858,23 @@ void ShowSceneHierarchy(EditorState& editor_state) {
 
                 const auto& children = entity->GetChildren();
                 bool has_children = !children.empty();
+
+                if (hier_row_h > 0.0f) {
+                    const float y = ImGui::GetCursorScreenPos().y + hier_skip;
+                    if (y + hier_row_h < hier_clip.Min.y || y > hier_clip.Max.y) {
+                        hier_skip += hier_row_h;
+                        const void* pid = (void*)(intptr_t)entity->GetId();
+                        // DefaultOpen: an absent entry means open, as TreeNodeEx reads it.
+                        if (has_children &&
+                            ImGui::GetStateStorage()->GetInt(ImGui::GetID(pid), 1) != 0) {
+                            ImGui::TreePush(pid);
+                            for (const auto& child : children) draw_entity_node(child);
+                            ImGui::TreePop();
+                        }
+                        return;
+                    }
+                }
+                flush_hier_skip();
 
                 ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen;
                 if (!has_children) {
@@ -2849,7 +2890,9 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                     label += " [inactive]";
                 }
 
+                const float row_y0 = ImGui::GetCursorPosY();
                 bool node_open = ImGui::TreeNodeEx((void*)(intptr_t)entity->GetId(), flags, "%s", label.c_str());
+                hier_row_h = ImGui::GetCursorPosY() - row_y0;
 
                 // Handle selection on click
                 if (ImGui::IsItemClicked()) {
@@ -2973,6 +3016,7 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 draw_entity_node(entity);
             }
         }
+        flush_hier_skip();   // rows below the visible area still size the scrollbar
 
         // A prefab dropped on the LIST rather than on an entity instantiates at
         // the scene root. Without this the only way to place one is onto an

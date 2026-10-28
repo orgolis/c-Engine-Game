@@ -141,6 +141,21 @@ that additions, removals, `Destroy()` and active state are honoured, and that an
 not rebuild its lists. Mutation-tested: a never-refreshing cache fails 3, a rebuild-every-time cache
 fails 1, detection that marks everything fails to compile.
 
+### (d) The Scene Hierarchy panel built every row, every frame — fixed
+
+Each row was a label string assembled from name and id, a tree node, a drag source, a drop target and a
+context-menu check — for all 20k entities, with a couple of dozen on screen. `ImGuiListClipper` needs a
+flat list and this is a tree whose open state lives in ImGui, so it is clipped by hand: an off-screen
+row only adds its height to a pending skip, emitted as one spacer when the next visible row comes or
+the list ends, so the scrollbar still describes the whole tree. An off-screen *open* node still pushes
+its id, so its children keep the same ids and stored open/closed state.
+
+`ui_hierarchy` @ 20k: **8.5 → 1.36 ms**. Screenshot A/B against the previous build: **0 of 252,540
+pixels differ** in the panel, scrollbar thumb included. The remaining ~1.4 ms is walking 20k entities
+to keep ids and open state right; a cached flattened list would remove it. No check: the panel needs
+a live ImGui frame and the editor's state; the evidence is the pixel diff. Verified at the top of the
+list only — the skip arithmetic is the same at any scroll offset, but that was not screenshotted.
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed
