@@ -209,6 +209,38 @@ Interleaved A/B, two rounds, 20k entities on a 6-core / 12-thread Ryzen 5 4500:
 No check accompanies it: the function needs a live device for its material cache. The evidence is
 the identical counts and pixels, and phase one being read-only by construction.
 
+### (g) The TLAS instance loop read from GPU-mapped memory — fixed
+
+`rt_scene_update` was ~9 ms at 20k entities. Zones inside it put 8.06 ms in `rebuild_tlas`, 0.33 ms
+in BLAS checks and 0.18 ms in the per-instance shading data — so not the two
+`vkGetBufferDeviceAddress` calls per instance that looked like the obvious suspect.
+
+`rebuild_tlas` assigned each `VkAccelerationStructureInstanceKHR` field straight into the mapped,
+host-coherent instance buffer, which is uncached or write-combined memory. Four of those fields are
+**bitfields**, and assigning a bitfield is a read-modify-write — so every instance **read from
+GPU-mapped memory** several times, each read a round trip write-combining cannot hide. The shading-
+data loop next to it builds a local struct and stores it whole, which is why it took 0.18 ms for the
+same count. Now the instance is built locally and stored with one `memcpy`: stores only.
+
+| @ 20k entities | Before | After |
+|---|---|---|
+| `rt.rebuild_tlas` | 8.06 ms | **0.41 ms** (20×) |
+| `rt_scene_update` | 8.57 ms | **0.90 ms** |
+| frame | 41.4 ms | **31.4 ms** |
+
+Screenshot A/B against the previous build: 1 viewport pixel differs by 1 level (frame times differ,
+and auto-exposure steps by frame time). A sweep found no other instance writer and no in-place
+modification of a mapped pointer. **No check:** a mutable reference into a mapped buffer is not
+syntactically distinguishable from one into a CPU array (the one candidate pattern matched only a CPU
+array). The robust guard is a write-only wrapper type for mapped pointers — a broader change, noted
+as a recommendation.
+
+**Open question raised while reading this code (not fixed):** the TLAS, its instance buffer and the
+instance-data buffer are each single-buffered and rewritten every frame, with two frames in flight. If
+the GPU is still executing the previous frame's TLAS build or ray queries when the CPU overwrites
+them, that is a CPU/GPU race. It has not been observed; it needs synchronization validation before
+anyone claims either way.
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed

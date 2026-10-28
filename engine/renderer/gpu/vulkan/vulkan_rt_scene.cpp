@@ -15,6 +15,7 @@
  * dstAccess = ACCELERATION_STRUCTURE_READ.
  */
 
+#include "profiler/profiler.h"
 #include <chrono>
 #include "vulkan_rt_scene.h"
 #include "vulkan_device.h"
@@ -414,7 +415,17 @@ void VulkanRtScene::rebuild_tlas(VkCommandBuffer cmd, const DrawItem* items, siz
         auto it = blas_cache_.find(d.mesh);
         if (it == blas_cache_.end()) continue;
 
-        VkAccelerationStructureInstanceKHR& inst = dst[written];
+        // Built in ordinary memory, then stored whole. This used to assign the
+        // fields one by one straight into `dst` -- mapped, host-coherent
+        // memory, which is uncached or write-combined -- and four of them are
+        // BITFIELDS (instanceCustomIndex:24 + mask:8, the SBT offset:24 +
+        // flags:8). Assigning a bitfield is a read-modify-write, so every
+        // instance READ from GPU-mapped memory several times, each read a
+        // full round trip that write-combining cannot hide. At 15k instances
+        // that was 8 ms a frame -- the whole of rt_scene_update -- to write
+        // 1 MB. The neighbouring instance-data loop builds a local struct and
+        // stores it whole, and took 0.18 ms for the same count.
+        VkAccelerationStructureInstanceKHR inst{};
         // 3x4 row-major transform: write the model matrix's top three rows.
         for (int row = 0; row < 3; ++row) {
             for (int col = 0; col < 4; ++col) {
@@ -426,6 +437,7 @@ void VulkanRtScene::rebuild_tlas(VkCommandBuffer cmd, const DrawItem* items, siz
         inst.instanceShaderBindingTableRecordOffset = 0;
         inst.flags                                  = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
         inst.accelerationStructureReference         = it->second.device_address;
+        std::memcpy(&dst[written], &inst, sizeof inst);   // stores only, never a load
         ++written;
     }
     last_instance_count_ = written;
@@ -571,17 +583,22 @@ void VulkanRtScene::update(VkCommandBuffer cmd, const DrawItem* items, size_t co
     }
 
     // Build BLAS for any meshes we haven't seen yet.
+    { GWS_PROFILE_ZONE("rt.ensure_blas");
     for (size_t i = 0; i < count; ++i) {
         ensure_blas(cmd, items[i].mesh);
     }
+    }
 
     // Rebuild the TLAS with this frame's instance list.
+    { GWS_PROFILE_ZONE("rt.rebuild_tlas");
     rebuild_tlas(cmd, items, count);
+    }
 
     // Build the per-instance shading data SSBO (indexed by DrawItem index =
     // instanceCustomIndex). The RT reflection pass reads this to re-shade
     // hit points without depending on screen-space colour.
     if (count > 0) {
+        GWS_PROFILE_ZONE("rt.instance_data");
         VkDevice vk = device_->get_device();
         const VkDeviceSize required = sizeof(RtInstanceDataGpu) * count;
         if (required > instance_data_capacity_) {
