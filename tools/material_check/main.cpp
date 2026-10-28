@@ -174,6 +174,18 @@ int main() {
         { MaterialDesc m = base; m.metallic_roughness_map = "o.png"; differs(m, "metallic-roughness map"); }
         { MaterialDesc m = base; m.occlusion_map = "other.png"; differs(m, "occlusion map"); }
         { MaterialDesc m = base; m.emissive_map = "other.png";  differs(m, "emissive map"); }
+        // The hash packs floats two to a 64-bit word. A packing slip that drops
+        // one half of a word would pass every check above that happens to probe
+        // the other half -- so every component is probed, not one per vector.
+        { MaterialDesc m = base; m.base_color.g += 0.1f;        differs(m, "base colour green"); }
+        { MaterialDesc m = base; m.base_color.b += 0.1f;        differs(m, "base colour blue"); }
+        { MaterialDesc m = base; m.emissive.r = 0.7f;           differs(m, "emissive red"); }
+        { MaterialDesc m = base; m.emissive.b = 0.7f;           differs(m, "emissive blue"); }
+        { MaterialDesc m = base; m.uv_scale.y  = 8.0f;          differs(m, "UV tiling (v)"); }
+        { MaterialDesc m = base; m.uv_offset.x = 0.25f;         differs(m, "UV offset (u)"); }
+        { MaterialDesc m = base; m.detail_normal_map = "other_n.png"; differs(m, "detail normal map"); }
+        { MaterialDesc m = base; std::swap(m.metallic, m.roughness);
+          if (m.metallic != m.roughness) differs(m, "metallic and roughness swapped (one word, two halves)"); }
 
         // The negative half. A rename must NOT rebuild: the name is invisible to
         // the GPU, and churning descriptor sets on every keystroke in a text

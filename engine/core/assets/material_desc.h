@@ -60,6 +60,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -162,43 +163,70 @@ struct MaterialDesc {
     /// file rebuilds exactly once. `name` is excluded on purpose — renaming a
     /// material must not churn descriptor sets, because the rename changes
     /// nothing the GPU can observe.
+    ///
+    /// Hashed a 64-bit word at a time. It was byte-at-a-time FNV-1a -- ~93
+    /// dependent multiplies per material, and the material cache computes it
+    /// for every primitive every frame to find the material it found last
+    /// frame: ~3 ms at 20k entities. Floats go in pairs and strings by length
+    /// plus 8-byte chunks (the length prefix keeps "ab"+"c" != "a"+"bc"), so
+    /// a typical material is ~20 steps. Each word is pre-mixed and the result
+    /// avalanched, so a difference in any input bit can reach every output
+    /// bit -- plain word-wise FNV would let high-bit differences stay high.
+    /// The value is in-memory only (cache keys, equality); nothing persists it.
     uint64_t content_hash() const {
-        uint64_t h = 1469598103934665603ull;               // FNV-1a offset basis
-        auto mix_bytes = [&h](const void* p, size_t n) {
-            const auto* b = static_cast<const unsigned char*>(p);
-            for (size_t i = 0; i < n; ++i) h = (h ^ b[i]) * 1099511628211ull;
+        uint64_t h = 1469598103934665603ull;
+        auto mix64 = [&h](uint64_t w) {
+            w *= 0x9E3779B97F4A7C15ull;     // spread the word upward...
+            w ^= w >> 29;                   // ...and fold its high bits back down
+            h  = (h ^ w) * 0x100000001B3ull;
+            h ^= h >> 32;
         };
-        auto mix_f = [&](float f) {
+        auto fbits = [](float f) -> uint64_t {
             // Normalise -0.0 to +0.0 so two materials that compare equal also
             // hash equal; the raw bit patterns differ.
             if (f == 0.0f) f = 0.0f;
-            mix_bytes(&f, sizeof f);
+            uint32_t u;
+            std::memcpy(&u, &f, sizeof u);
+            return u;
         };
+        auto mix_f2 = [&](float a, float b) { mix64(fbits(a) | (fbits(b) << 32)); };
         auto mix_s = [&](const std::string& s) {
-            mix_bytes(s.data(), s.size());
-            h = (h ^ 0xFFu) * 1099511628211ull;            // terminator: "ab"+"c" != "a"+"bc"
+            mix64(s.size());
+            size_t i = 0;
+            for (; i + 8 <= s.size(); i += 8) {
+                uint64_t w;
+                std::memcpy(&w, s.data() + i, 8);
+                mix64(w);
+            }
+            if (i < s.size()) {
+                uint64_t w = 0;
+                std::memcpy(&w, s.data() + i, s.size() - i);
+                mix64(w);
+            }
         };
-        mix_f(base_color.r); mix_f(base_color.g); mix_f(base_color.b); mix_f(base_color.a);
-        mix_f(metallic); mix_f(roughness); mix_f(occlusion); mix_f(normal_scale);
-        mix_f(emissive.r); mix_f(emissive.g); mix_f(emissive.b); mix_f(emissive_intensity);
-        mix_f(alpha_cutoff);
+        mix_f2(base_color.r, base_color.g); mix_f2(base_color.b, base_color.a);
+        mix_f2(metallic, roughness);        mix_f2(occlusion, normal_scale);
+        mix_f2(emissive.r, emissive.g);     mix_f2(emissive.b, emissive_intensity);
         // The UV transform changes where every map is sampled, so it is as
         // observable as any factor above. Omitting it would mean a tiling edit
         // never invalidates the cached GPU material -- the surface keeps its
         // old repeat and the edit appears to do nothing.
-        mix_f(uv_scale.x);  mix_f(uv_scale.y);
-        mix_f(uv_offset.x); mix_f(uv_offset.y);
+        mix_f2(alpha_cutoff, uv_scale.x);   mix_f2(uv_scale.y, uv_offset.x);
         // Detail maps are as observable as any other field; leaving them out
         // would mean editing detail strength never invalidates the cached GPU
         // material, exactly the trap the UV fields fell into.
-        mix_f(detail_scale); mix_f(detail_albedo_strength); mix_f(detail_normal_strength);
-        mix_s(detail_albedo_map); mix_s(detail_normal_map);
-        mix_f(parallax_depth); mix_s(height_map);
+        mix_f2(uv_offset.y, detail_scale);
+        mix_f2(detail_albedo_strength, detail_normal_strength);
         const uint8_t flags = static_cast<uint8_t>(alpha_mode) |
                               (double_sided ? 0x80u : 0u);
-        mix_bytes(&flags, sizeof flags);
+        mix64(fbits(parallax_depth) | (uint64_t(flags) << 32));
+        mix_s(detail_albedo_map); mix_s(detail_normal_map); mix_s(height_map);
         mix_s(albedo_map); mix_s(normal_map); mix_s(metallic_roughness_map);
         mix_s(occlusion_map); mix_s(emissive_map);
+        // Final avalanche (MurmurHash3's fmix64).
+        h ^= h >> 33; h *= 0xFF51AFD7ED558CCDull;
+        h ^= h >> 33; h *= 0xC4CEB9FE1A85EC53ull;
+        h ^= h >> 33;
         return h;
     }
 

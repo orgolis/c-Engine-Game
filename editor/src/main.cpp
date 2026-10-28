@@ -10432,7 +10432,12 @@ int main(int argc, char** argv) {
                 continue;
             }
 
-            std::vector<gws::renderer::gpu::DrawItem> opaque_draws, transparent_draws;
+            // Persistent across frames, cleared by build_draw_items. As locals
+            // they were rebuilt from zero capacity every frame: at 20k
+            // entities that is 2 MB of ~104-byte items regrown through ~15
+            // reallocations, each a fresh large allocation touching new pages
+            // -- 2.7 ms a frame spent appending to a vector.
+            static std::vector<gws::renderer::gpu::DrawItem> opaque_draws, transparent_draws;
             // Run the ECS transform system FIRST so its world matrices are
             // ready, then feed them to the draw-list builder (authoritative:
             // build_draw_items reads ECS LocalToWorld, OOP matrix is fallback).
@@ -10645,7 +10650,16 @@ int main(int argc, char** argv) {
             {
                 GWS_PROFILE_ZONE("draw_sort");
                 const size_t n = opaque_draws.size();
-                std::vector<float> depth_key(n);
+                // Scratch persists, like the draw lists: these were three more
+                // scene-sized allocations a frame, and the swap below handed
+                // opaque_draws a brand-new 2 MB buffer every frame -- so making
+                // the list itself persistent would have saved nothing. With
+                // `sorted` persistent too, the swap trades two long-lived
+                // buffers and nothing is allocated in steady state.
+                static std::vector<float>    depth_key;
+                static std::vector<uint32_t> order;
+                static std::vector<gws::renderer::gpu::DrawItem> sorted;
+                depth_key.resize(n);
                 for (size_t i = 0; i < n; ++i) {
                     const auto& d = opaque_draws[i];
                     const glm::vec3 c = d.mesh
@@ -10653,13 +10667,13 @@ int main(int argc, char** argv) {
                         : glm::vec3(d.model[3]);
                     depth_key[i] = -(cam.view * glm::vec4(c, 1.0f)).z;  // + = in front
                 }
-                std::vector<uint32_t> order(n);
+                order.resize(n);
                 for (size_t i = 0; i < n; ++i) order[i] = static_cast<uint32_t>(i);
                 std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
                     if (depth_key[a] != depth_key[b]) return depth_key[a] < depth_key[b];
                     return opaque_draws[a].material < opaque_draws[b].material;
                 });
-                std::vector<gws::renderer::gpu::DrawItem> sorted;
+                sorted.clear();
                 sorted.reserve(n);
                 for (uint32_t idx : order) sorted.push_back(opaque_draws[idx]);
                 opaque_draws.swap(sorted);

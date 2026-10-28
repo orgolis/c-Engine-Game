@@ -156,6 +156,33 @@ to keep ids and open state right; a cached flattened list would remove it. No ch
 a live ImGui frame and the editor's state; the evidence is the pixel diff. Verified at the top of the
 list only — the skip arithmetic is the same at any scroll offset, but that was not screenshotted.
 
+### (e) Draw building: allocation churn fixed; the rest is memory-bound
+
+**Fixed: the draw lists were rebuilt from zero capacity every frame.** `opaque_draws` and
+`transparent_draws` were locals of the frame loop — at 20k entities, 2 MB of ~104-byte items regrown
+through ~15 reallocations per frame. `draw_sort` then allocated three more scene-sized vectors and
+swapped a brand-new 2 MB buffer into the list, so a persistent list alone would have saved nothing.
+Both lists and the sort scratch now persist. `build_draw_items` 9.24 → 7.99 ms, `draw_sort` 2.03 →
+1.90 ms.
+
+**Made faster, effect in-frame not resolved: the material content hash.** Every primitive hashes
+its `MaterialDesc` every frame to find the GPU material it found last frame. The hash was byte-at-a-
+time FNV-1a; it is now word-at-a-time with a final avalanche. Out-of-line microbenchmark: **82 → 32 ns**
+(no maps), **115 → 37 ns** (one map). In the editor at 20k an interleaved A/B could not separate it
+from run-to-run noise (two valid rounds: 8.05 / 8.98 ms vs 8.08 / 7.38 ms; a third round was lost to
+a minimised window). The likely reason is the finding below: the loop waits on memory, and the CPU
+overlaps hash arithmetic with those waits. `material_check` now probes every float component
+individually and a swapped pair, since the hash packs floats two to a word — mutation-tested:
+dropping one half of a word is caught only by the new assertions.
+
+**The finding that sets the next step: draw building is memory-bound.** A split with in-loop timers
+put ~6 ms of the ~8 ms before material resolution even starts — `IsActiveInHierarchy`, the
+world-matrix lookup, two component lookups. That is not computation; it is cache misses on large
+`Entity` objects (four component structs embedded by value), on each component the lookup inspects,
+and on the matrix table. Per-entity work that waits on memory scales with the cores issuing the
+requests, which is the job system's case. (In-loop timers at this granularity add more than they
+measure — six clock reads per entity — so these splits are directional, not exact.)
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed
