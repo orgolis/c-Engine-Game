@@ -80,6 +80,109 @@ namespace {
 using ecs::flag_get;
 using ecs::flag_set;
 
+// ---- OOP -> ECS converters ------------------------------------------------
+// One per mirrored kind: a fresh ECS value built from the scene component --
+// fresh, because World::add replaces the whole component, so the in-place path
+// in sync_and_run must too. Pure reads of the scene, which is what lets them
+// run on the job system; the serial path below uses the same functions, so the
+// two paths cannot disagree about a field.
+ecs::LightComponent to_ecs(const scene::LightComponent& lc) {
+    ecs::LightComponent l{};
+    l.type      = static_cast<uint32_t>(lc.GetType());
+    l.color     = lc.GetColor();
+    l.intensity = lc.GetIntensity();
+    l.range     = lc.GetRange();
+    l.flags     = flag_set(flag_set(0u, 0, lc.GetCastShadow()), 1, lc.IsEnabled());
+    return l;
+}
+ecs::Collider to_ecs(const scene::ColliderComponent& cc) {
+    ecs::Collider c{};
+    c.shape  = static_cast<uint32_t>(cc.GetShape());
+    c.radius = cc.GetRadius();
+    c.height = cc.GetHeight();
+    c.layer  = static_cast<uint32_t>(cc.GetMask());
+    return c;
+}
+ecs::CameraComponent to_ecs(const scene::CameraComponent& cam) {
+    ecs::CameraComponent c{};
+    c.projection = static_cast<uint32_t>(cam.GetProjection());
+    c.fov        = cam.GetFOV();
+    c.ortho_size = cam.GetOrthographicSize();
+    c.near_plane = cam.GetNearPlane();
+    return c;
+}
+ecs::WaterComponent to_ecs(const scene::WaterComponent& w) {
+    ecs::WaterComponent c{};
+    c.wave_height  = w.GetWaveHeight();
+    c.wave_speed   = w.GetWaveSpeed();
+    c.wave_scale   = w.GetWaveScale();
+    c.clarity      = w.GetClarity();
+    c.reflectivity = w.GetReflectivity();
+    c.flags        = flag_set(0u, 0, w.IsPhysical());
+    return c;
+}
+ecs::TerrainComponent to_ecs(const scene::TerrainComponent& t) {
+    ecs::TerrainComponent c{};
+    c.size         = t.GetSize();
+    c.height_scale = t.GetHeightScale();
+    c.water_level  = t.GetWaterLevel();
+    return c;
+}
+ecs::ScriptComponent to_ecs(const scene::ScriptComponent& sc) {
+    ecs::ScriptComponent c{};
+    // The path is a string and reflected fields must be trivially
+    // copyable, so the ECS side carries a hash of it. Enough to ask "is
+    // this the same script"; not enough to load one, which stays the OOP
+    // side's job until the asset system hands out real ids.
+    const std::string& path = sc.GetScriptPath();
+    uint64_t h = 1469598103934665603ull;
+    for (char ch : path) { h ^= static_cast<uint8_t>(ch); h *= 1099511628211ull; }
+    c.script_asset = path.empty() ? 0ull : h;
+    c.flags        = flag_set(0u, 0, sc.IsEnabled());
+    return c;
+}
+ecs::AudioSource to_ecs(const scene::AudioSourceComponent& a) {
+    ecs::AudioSource c{};
+    c.volume = a.GetVolume();
+    c.pitch  = a.GetPitch();
+    c.radius = a.GetRadius();
+    c.flags  = flag_set(flag_set(flag_set(0u, 0, a.IsLooping()),
+                                 1, a.IsSpatial()),
+                        2, a.IsPlaying());
+    return c;
+}
+// The three below are mirrored only while enabled/active; callers check that.
+ecs::ParticleEmitter to_ecs(const scene::ParticleEmitterComponent& pe) {
+    ecs::ParticleEmitter c{};
+    c.spawn_rate    = pe.spawn_rate;
+    c.max_particles = pe.max_particles;
+    c.color_start   = pe.color_start;
+    c.color_end     = pe.color_end;
+    c.flags         = flag_set(flag_set(0u, 0, pe.enabled), 1, pe.emitting);
+    return c;
+}
+ecs::NpcAgent to_ecs(const scene::NpcAgentComponent& na) {
+    ecs::NpcAgent c{};
+    c.sight_range   = na.sight_range;
+    c.sight_fov_deg = na.sight_fov_deg;
+    c.move_speed    = na.move_speed;
+    c.patrol_radius = na.patrol_radius;
+    c.attack_range  = na.attack_range;
+    c.ability_index = na.ability_index;
+    c.flags         = flag_set(0u, 0, na.enabled);
+    return c;
+}
+ecs::SkinnedMesh to_ecs(const scene::SkinnedMeshComponent& sm) {
+    ecs::SkinnedMesh c{};
+    c.clip_index     = sm.clip_index;
+    c.idle_clip      = sm.idle_clip;
+    c.move_clip      = sm.move_clip;
+    c.speed          = sm.speed;
+    c.move_threshold = sm.move_threshold;
+    c.flags          = flag_set(flag_set(0u, 0, sm.playing), 1, sm.drive_from_motion);
+    return c;
+}
+
 // Mirror every non-Transform component kind between the OOP entity and its ECS
 // entity.
 //
@@ -106,13 +209,7 @@ void sync_scene_components(ecs::World& world, ecs::Entity e,
                 lc->SetCastShadow(flag_get(l->flags, 0));
             }
         } else {
-            ecs::LightComponent l{};
-            l.type      = static_cast<uint32_t>(lc->GetType());
-            l.color     = lc->GetColor();
-            l.intensity = lc->GetIntensity();
-            l.range     = lc->GetRange();
-            l.flags     = flag_set(flag_set(0u, 0, lc->GetCastShadow()), 1, lc->IsEnabled());
-            world.add<ecs::LightComponent>(e, l);
+            world.add<ecs::LightComponent>(e, to_ecs(*lc));
         }
     }
 
@@ -124,12 +221,7 @@ void sync_scene_components(ecs::World& world, ecs::Entity e,
                 cc->SetHeight(c->height);
             }
         } else {
-            ecs::Collider c{};
-            c.shape  = static_cast<uint32_t>(cc->GetShape());
-            c.radius = cc->GetRadius();
-            c.height = cc->GetHeight();
-            c.layer  = static_cast<uint32_t>(cc->GetMask());
-            world.add<ecs::Collider>(e, c);
+            world.add<ecs::Collider>(e, to_ecs(*cc));
         }
     }
 
@@ -141,12 +233,7 @@ void sync_scene_components(ecs::World& world, ecs::Entity e,
                 cam->SetNearPlane(c->near_plane);
             }
         } else {
-            ecs::CameraComponent c{};
-            c.projection = static_cast<uint32_t>(cam->GetProjection());
-            c.fov        = cam->GetFOV();
-            c.ortho_size = cam->GetOrthographicSize();
-            c.near_plane = cam->GetNearPlane();
-            world.add<ecs::CameraComponent>(e, c);
+            world.add<ecs::CameraComponent>(e, to_ecs(*cam));
         }
     }
 
@@ -159,14 +246,7 @@ void sync_scene_components(ecs::World& world, ecs::Entity e,
                 w->SetClarity(c->clarity);
             }
         } else {
-            ecs::WaterComponent c{};
-            c.wave_height  = w->GetWaveHeight();
-            c.wave_speed   = w->GetWaveSpeed();
-            c.wave_scale   = w->GetWaveScale();
-            c.clarity      = w->GetClarity();
-            c.reflectivity = w->GetReflectivity();
-            c.flags        = flag_set(0u, 0, w->IsPhysical());
-            world.add<ecs::WaterComponent>(e, c);
+            world.add<ecs::WaterComponent>(e, to_ecs(*w));
         }
     }
 
@@ -175,26 +255,12 @@ void sync_scene_components(ecs::World& world, ecs::Entity e,
     // its own editing tools, so an ECS write cannot meaningfully describe it.
     // A half-supported reverse path would be worse than none.
     if (auto t = oent->GetComponent<scene::TerrainComponent>()) {
-        ecs::TerrainComponent c{};
-        c.size         = t->GetSize();
-        c.height_scale = t->GetHeightScale();
-        c.water_level  = t->GetWaterLevel();
-        world.add<ecs::TerrainComponent>(e, c);
+        world.add<ecs::TerrainComponent>(e, to_ecs(*t));
     }
 
     // ---- Script ---------------------------------------------------------
     if (auto sc = oent->GetComponent<scene::ScriptComponent>()) {
-        ecs::ScriptComponent c{};
-        // The path is a string and reflected fields must be trivially
-        // copyable, so the ECS side carries a hash of it. Enough to ask "is
-        // this the same script"; not enough to load one, which stays the OOP
-        // side's job until the asset system hands out real ids.
-        const std::string& path = sc->GetScriptPath();
-        uint64_t h = 1469598103934665603ull;
-        for (char ch : path) { h ^= static_cast<uint8_t>(ch); h *= 1099511628211ull; }
-        c.script_asset = path.empty() ? 0ull : h;
-        c.flags        = flag_set(0u, 0, sc->IsEnabled());
-        world.add<ecs::ScriptComponent>(e, c);
+        world.add<ecs::ScriptComponent>(e, to_ecs(*sc));
     }
 
     // ---- Audio ----------------------------------------------------------
@@ -205,14 +271,7 @@ void sync_scene_components(ecs::World& world, ecs::Entity e,
                 a->SetPitch(c->pitch);
             }
         } else {
-            ecs::AudioSource c{};
-            c.volume = a->GetVolume();
-            c.pitch  = a->GetPitch();
-            c.radius = a->GetRadius();
-            c.flags  = flag_set(flag_set(flag_set(0u, 0, a->IsLooping()),
-                                         1, a->IsSpatial()),
-                                2, a->IsPlaying());
-            world.add<ecs::AudioSource>(e, c);
+            world.add<ecs::AudioSource>(e, to_ecs(*a));
         }
     }
 
@@ -228,13 +287,7 @@ void sync_scene_components(ecs::World& world, ecs::Entity e,
                 pe->emitting      = flag_get(c->flags, 1);
             }
         } else if (pe->enabled) {
-            ecs::ParticleEmitter c{};
-            c.spawn_rate    = pe->spawn_rate;
-            c.max_particles = pe->max_particles;
-            c.color_start   = pe->color_start;
-            c.color_end     = pe->color_end;
-            c.flags         = flag_set(flag_set(0u, 0, pe->enabled), 1, pe->emitting);
-            world.add<ecs::ParticleEmitter>(e, c);
+            world.add<ecs::ParticleEmitter>(e, to_ecs(*pe));
         }
     }
 
@@ -250,15 +303,7 @@ void sync_scene_components(ecs::World& world, ecs::Entity e,
                 na->enabled       = flag_get(c->flags, 0);
             }
         } else if (na->enabled) {
-            ecs::NpcAgent c{};
-            c.sight_range   = na->sight_range;
-            c.sight_fov_deg = na->sight_fov_deg;
-            c.move_speed    = na->move_speed;
-            c.patrol_radius = na->patrol_radius;
-            c.attack_range  = na->attack_range;
-            c.ability_index = na->ability_index;
-            c.flags         = flag_set(0u, 0, na->enabled);
-            world.add<ecs::NpcAgent>(e, c);
+            world.add<ecs::NpcAgent>(e, to_ecs(*na));
         }
     }
 
@@ -275,18 +320,124 @@ void sync_scene_components(ecs::World& world, ecs::Entity e,
                 sm->drive_from_motion = flag_get(c->flags, 1);
             }
         } else if (sm->active()) {
-            ecs::SkinnedMesh c{};
-            c.clip_index     = sm->clip_index;
-            c.idle_clip      = sm->idle_clip;
-            c.move_clip      = sm->move_clip;
-            c.speed          = sm->speed;
-            c.move_threshold = sm->move_threshold;
-            c.flags          = flag_set(flag_set(0u, 0, sm->playing),
-                                        1, sm->drive_from_motion);
-            world.add<ecs::SkinnedMesh>(e, c);
+            world.add<ecs::SkinnedMesh>(e, to_ecs(*sm));
         }
     }
 }
+
+// The entity's drawable info as an ECS MeshRenderer; false when it has none.
+bool mesh_renderer_of(scene::Entity* oent, ecs::MeshRenderer& mr) {
+    mr = ecs::MeshRenderer{};
+    bool drawable = false;
+    if (auto m = oent->GetComponent<scene::MeshRendererComponent>()) {
+        mr.primitive = static_cast<uint32_t>(m->GetMeshType());
+        drawable = true;
+    }
+    if (const auto* mc = oent->GetMeshComponent()) {
+        if (!mc->mesh_path.empty()) {
+            mr.mesh = static_cast<uint64_t>(std::hash<std::string>{}(mc->mesh_path));
+            drawable = true;
+        }
+    }
+    return drawable;
+}
+
+// ---- The in-place mirror (sync_and_run's parallel path) -------------------
+template <typename T>
+using PoolOf = std::remove_reference_t<
+    decltype(std::declval<entt::registry&>().template storage<T>())>;
+
+// Every pool the in-place mirror touches, fetched ONCE on the calling thread:
+// registry::storage<T>() creates a missing pool, and creating one is a
+// mutation. The workers then only call contains() and get() on these, which
+// read the pools' existing arrays.
+struct MirrorPools {
+    PoolOf<ecs::EcsAuthoritative>& authoritative;
+    PoolOf<ecs::Transform>&        transform;
+    PoolOf<ecs::LightComponent>&   light;
+    PoolOf<ecs::Collider>&         collider;
+    PoolOf<ecs::CameraComponent>&  camera;
+    PoolOf<ecs::WaterComponent>&   water;
+    PoolOf<ecs::TerrainComponent>& terrain;
+    PoolOf<ecs::ScriptComponent>&  script;
+    PoolOf<ecs::AudioSource>&      audio;
+    PoolOf<ecs::ParticleEmitter>&  particle;
+    PoolOf<ecs::NpcAgent>&         npc;
+    PoolOf<ecs::SkinnedMesh>&      skinned;
+    PoolOf<ecs::MeshRenderer>&     mesh;
+
+    static MirrorPools fetch(entt::registry& r) {
+        return MirrorPools{
+            r.storage<ecs::EcsAuthoritative>(), r.storage<ecs::Transform>(),
+            r.storage<ecs::LightComponent>(),   r.storage<ecs::Collider>(),
+            r.storage<ecs::CameraComponent>(),  r.storage<ecs::WaterComponent>(),
+            r.storage<ecs::TerrainComponent>(), r.storage<ecs::ScriptComponent>(),
+            r.storage<ecs::AudioSource>(),      r.storage<ecs::ParticleEmitter>(),
+            r.storage<ecs::NpcAgent>(),         r.storage<ecs::SkinnedMesh>(),
+            r.storage<ecs::MeshRenderer>()};
+    }
+};
+
+// Mirror one entity OOP -> ECS by overwriting components it ALREADY has, which
+// is every component of every entity in a scene that is not changing shape.
+// Overwriting an existing component is a write to that entity's slot and
+// nothing else, so different entities can do it on different threads -- and
+// it is exactly what World::add does for an existing component (EnTT's
+// emplace_or_replace), with no update listeners anywhere in this codebase to
+// skip.
+//
+// Returns false, having possibly written some components, when the entity
+// needs anything else: an ECS-authoritative tag (the other direction), a
+// component the ECS does not have yet, or a MeshRenderer to remove -- every
+// one a structural change. The caller then runs the original serial code for
+// that entity, which rewrites the same values through World::add.
+bool mirror_in_place(MirrorPools& P, ecs::Entity e, scene::Entity* o,
+                     const scene::Transform* tf) {
+    if (P.authoritative.contains(e) || !P.transform.contains(e)) return false;
+    {
+        ecs::Transform t;
+        t.position = tf->GetLocalPosition();
+        t.rotation = tf->GetLocalRotation();
+        t.scale    = tf->GetLocalScale();
+        P.transform.get(e) = t;
+    }
+    const auto put = [e](auto& pool, const auto& value) {
+        if (!pool.contains(e)) return false;
+        pool.get(e) = value;
+        return true;
+    };
+    if (auto c = o->GetComponent<scene::LightComponent>())
+        if (!put(P.light, to_ecs(*c))) return false;
+    if (auto c = o->GetComponent<scene::ColliderComponent>())
+        if (!put(P.collider, to_ecs(*c))) return false;
+    if (auto c = o->GetComponent<scene::CameraComponent>())
+        if (!put(P.camera, to_ecs(*c))) return false;
+    if (auto c = o->GetComponent<scene::WaterComponent>())
+        if (!put(P.water, to_ecs(*c))) return false;
+    if (auto c = o->GetComponent<scene::TerrainComponent>())
+        if (!put(P.terrain, to_ecs(*c))) return false;
+    if (auto c = o->GetComponent<scene::ScriptComponent>())
+        if (!put(P.script, to_ecs(*c))) return false;
+    if (auto c = o->GetComponent<scene::AudioSourceComponent>())
+        if (!put(P.audio, to_ecs(*c))) return false;
+    if (auto* pe = o->GetParticleEmitterComponent(); pe && pe->enabled)
+        if (!put(P.particle, to_ecs(*pe))) return false;
+    if (auto* na = o->GetNpcAgentComponent(); na && na->enabled)
+        if (!put(P.npc, to_ecs(*na))) return false;
+    if (auto* sm = o->GetSkinnedMeshComponent(); sm && sm->active())
+        if (!put(P.skinned, to_ecs(*sm))) return false;
+
+    ecs::MeshRenderer mr;
+    if (mesh_renderer_of(o, mr)) {
+        if (!put(P.mesh, mr)) return false;
+    } else if (P.mesh.contains(e)) {
+        return false;   // a removal is structural
+    }
+    return true;
+}
+
+// Below this many entities, fanning out costs more than it spreads.
+constexpr size_t kParallelMirrorMin = 1024;
 
 }  // namespace
 
@@ -337,6 +488,7 @@ struct EcsSceneBridge::Impl {
     std::vector<glm::mat4>         local, world_mat;
     std::vector<char>              done;
     std::vector<int>               chain;
+    std::vector<char>              needs_serial;   // sync.entities: 1 = original path
     size_t                         verify_cursor = 0;
 
     // G0 gameplay services, one per world. Ticked/flushed by tick_gameplay().
@@ -794,9 +946,35 @@ void EcsSceneBridge::sync_and_run(
     }
 
     next("sync.entities");
-    // Create-or-reuse, in active order, refreshing the Transform component.
+    // Two passes. The first mirrors, on the job system, every entity whose ECS
+    // components all exist already -- in a scene that is not changing shape,
+    // all of them -- by overwriting them in place (see mirror_in_place). It is
+    // worth it because this loop is memory-bound: each entity is a cache miss
+    // on the Entity, its component list and every component, and more cores
+    // keep more of those misses in flight. At 20k entities it was ~7 ms on one
+    // thread.
+    //
+    // The second pass is the original code, run for whatever the first could
+    // not do: authoritative entities, components the ECS does not have yet,
+    // removals. Below kParallelMirrorMin entities the first pass is skipped
+    // and the second does everything, exactly as before.
     shadow.resize(oop_tf.size());
+    auto& serial = impl_->needs_serial;
+    serial.assign(oop_tf.size(), 1);
+    {
+        auto& js = gws::jobs::JobSystem::instance();
+        if (js.initialized() && oop_tf.size() >= kParallelMirrorMin) {
+            MirrorPools pools = MirrorPools::fetch(world.registry());
+            auto in_place = [&](size_t i) {
+                const ecs::Entity e = slot_of[i]->entity;
+                shadow[i] = e;
+                serial[i] = mirror_in_place(pools, e, oop_ent[i], oop_tf[i]) ? 0 : 1;
+            };
+            js.parallel_for(0, oop_tf.size(), [&in_place](size_t i) { in_place(i); });
+        }
+    }
     for (size_t i = 0; i < oop_tf.size(); ++i) {
+        if (!serial[i]) continue;
         scene::Transform* tf = oop_tf[i];
         const ecs::Entity e = slot_of[i]->entity;
         // Transform sync. Normally OOP -> ECS: the scene is authoritative and
@@ -844,19 +1022,8 @@ void EcsSceneBridge::sync_and_run(
         // scene's drawables live in the ECS (Stage 1.4) and collect_draws()
         // runs on the real scene. Non-authoritative: rendering still uses the
         // OOP path; this proves the data-oriented draw hand-off on real data.
-        scene::Entity* oent = oop_ent[i];
-        ecs::MeshRenderer mr{};
-        bool drawable = false;
-        if (auto m = oent->GetComponent<scene::MeshRendererComponent>()) {
-            mr.primitive = static_cast<uint32_t>(m->GetMeshType());
-            drawable = true;
-        }
-        if (const auto* mc = oent->GetMeshComponent()) {
-            if (!mc->mesh_path.empty()) {
-                mr.mesh = static_cast<uint64_t>(std::hash<std::string>{}(mc->mesh_path));
-                drawable = true;
-            }
-        }
+        ecs::MeshRenderer mr;
+        const bool drawable = mesh_renderer_of(oop_ent[i], mr);
         if (drawable) world.add<ecs::MeshRenderer>(e, mr);
         else if (world.has<ecs::MeshRenderer>(e)) world.remove<ecs::MeshRenderer>(e);
     }

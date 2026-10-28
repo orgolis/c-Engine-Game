@@ -23,7 +23,13 @@
 // ============================================================================
 #include "ecs_bridge.h"
 
+#include "collider_component.h"
+#include "ecs/components.h"
+#include "ecs/world.h"
 #include "entity.h"
+#include "jobs/job_system.h"
+#include "light_component.h"
+#include "mesh_renderer_component.h"
 #include "scene.h"
 #include "transform.h"
 
@@ -154,6 +160,86 @@ int main() {
     std::printf("\nScene gone: everything is torn down:\n");
     br.sync_and_run(nullptr);
     check(br.world_matrix(a->GetTransform()) == nullptr, "no answers without a scene");
+
+    // ---------------------------------------------------------------------
+    // Above 1,024 entities the component mirror runs on the job system,
+    // overwriting components the ECS already has in place, and falls back to
+    // the original serial code for anything structural. Nothing above reaches
+    // that path -- the scenes are small -- so this scene is big enough to.
+    // ---------------------------------------------------------------------
+    std::printf("\nLarge scene: the parallel in-place mirror agrees with the scene:\n");
+    {
+        gws::jobs::JobSystem::instance().init();
+        auto big = std::make_shared<scene::Scene>("big");
+        std::vector<std::shared_ptr<scene::Entity>> es;
+        for (int i = 0; i < 3000; ++i) {
+            auto e = big->CreateEntity("E");
+            e->GetTransform()->SetLocalPosition(glm::vec3(float(i), 0.0f, 0.0f));
+            if (i % 11 != 0) e->AddComponent<scene::MeshRendererComponent>(scene::MeshType::Cube);
+            if (i % 3 == 0)  e->AddComponent<scene::ColliderComponent>(scene::ColliderShape::Sphere);
+            if (i % 5 == 0)  e->AddComponent<scene::LightComponent>(scene::LightType::Point);
+            es.push_back(e);
+        }
+        editor::EcsSceneBridge bb;
+        auto& w = bb.world();
+        auto ecs_of = [&](const std::shared_ptr<scene::Entity>& e) {
+            return static_cast<ecs::Entity>(bb.ecs_entity_id(e->GetTransform()));
+        };
+        bb.sync_and_run(big);      // first sync: everything is new -> serial path
+        bb.sync_and_run(big);      // steady state -> the in-place path
+
+        // Edit values on the scene side; the steady-state sync must carry them.
+        for (int i = 0; i < 3000; i += 7)
+            es[i]->GetTransform()->SetLocalPosition(glm::vec3(float(i), 5.0f, -1.0f));
+        for (int i = 0; i < 3000; i += 15)                  // multiples of 3 and 5
+            es[i]->GetComponent<scene::LightComponent>()->SetIntensity(2.5f + float(i));
+        for (int i = 0; i < 3000; i += 9)
+            es[i]->GetComponent<scene::ColliderComponent>()->SetRadius(0.25f + float(i));
+        bb.sync_and_run(big);
+
+        bool tf_ok = true, light_ok = true, col_ok = true, mesh_ok = true, absent_ok = true;
+        for (int i = 0; i < 3000; ++i) {
+            const ecs::Entity e = ecs_of(es[i]);
+            const auto* t = w.try_get<ecs::Transform>(e);
+            tf_ok = tf_ok && t && t->position == es[i]->GetTransform()->GetLocalPosition();
+            if (auto lc = es[i]->GetComponent<scene::LightComponent>()) {
+                const auto* l = w.try_get<ecs::LightComponent>(e);
+                light_ok = light_ok && l && l->intensity == lc->GetIntensity();
+            } else {
+                absent_ok = absent_ok && !w.has<ecs::LightComponent>(e);
+            }
+            if (auto cc = es[i]->GetComponent<scene::ColliderComponent>()) {
+                const auto* c = w.try_get<ecs::Collider>(e);
+                col_ok = col_ok && c && c->radius == cc->GetRadius();
+            }
+            mesh_ok = mesh_ok && (w.has<ecs::MeshRenderer>(e) == (i % 11 != 0));
+        }
+        check(tf_ok,     "every transform edit reached the ECS");
+        check(light_ok,  "every light intensity edit reached the ECS");
+        check(col_ok,    "every collider radius edit reached the ECS");
+        check(absent_ok, "no entity gained a light it does not have");
+        check(mesh_ok,   "MeshRenderer exactly where the scene has a mesh");
+
+        // Structural changes in a steady large scene take the serial fallback.
+        es[1]->AddComponent<scene::LightComponent>(scene::LightType::Spot);   // new kind on an entity
+        es[2]->RemoveComponent(es[2]->GetComponent<scene::MeshRendererComponent>());
+        bb.sync_and_run(big);
+        check(w.has<ecs::LightComponent>(ecs_of(es[1])),
+              "a component added to an existing entity appears (serial fallback)");
+        check(!w.has<ecs::MeshRenderer>(ecs_of(es[2])),
+              "a removed mesh renderer is removed (serial fallback)");
+
+        // An ECS-authoritative entity inside the large scene still flows ECS -> OOP.
+        {
+            const ecs::Entity e = ecs_of(es[4]);
+            w.tag<ecs::EcsAuthoritative>(e);
+            w.get<ecs::Transform>(e).position = glm::vec3(42.0f, 43.0f, 44.0f);
+            bb.sync_and_run(big);
+            check(es[4]->GetTransform()->GetLocalPosition() == glm::vec3(42.0f, 43.0f, 44.0f),
+                  "an authoritative entity's ECS write reaches the scene (not overwritten)");
+        }
+        gws::jobs::JobSystem::instance().shutdown();
+    }
 
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     if (g_fail)

@@ -267,6 +267,50 @@ window was up, not by this change, as the reruns showed.
 additions and removals of components and entities, and no rebuild when unchanged. Mutation-tested:
 a never-refreshing index fails 4, a rebuild-every-query index fails 1.
 
+### (i) More per-frame copies, two audio scans
+
+`VulkanRenderGraph::set_draw_items` took its vector **by value** — an allocation, a 1.5 MB copy and a
+free per frame. `geometry_draws` and `shadow_draws` were fresh locals every frame. `EditorAudioDriver`
+walked the whole scene twice a frame (listener, sources). Now: a const-reference copy into retained
+capacity, persistent lists, and `EntitiesWithAny` for audio (scene order kept, so the first active
+listener is unchanged). `pre_build → pre_record` @ 20k: 7.6 / 7.0 → 6.5 / 5.0 ms.
+
+### (j) The ECS mirror on the job system — done
+
+The mirror's per-entity pass (`sync.entities`, ~6.5 ms @ 20k) is memory-bound like draw building, but
+it *writes* into the ECS, and adding components is not thread-safe. The observation that made it
+parallel: in a scene that is not changing shape, every entity already has every ECS component it
+mirrors, and overwriting an existing component is a write to that entity's slot and nothing else.
+
+- The pools are fetched once on the calling thread (`registry::storage<T>()` creates a missing pool,
+  which is a mutation); workers only call `contains()` and `get()`.
+- A worker builds each component's fresh value — the same thing `World::add` assigns for an existing
+  component; no update listeners exist anywhere to skip — and writes it in place.
+- Anything else — an `EcsAuthoritative` entity, a component the ECS does not have yet, a
+  MeshRenderer to remove — falls back to the original serial code for that entity.
+- Each kind's scene→ECS conversion is one `to_ecs()` function used by both paths, so they cannot
+  disagree about a field.
+
+Interleaved A/B, two clean rounds (identical draw counts):
+
+| @ 20k | Before | After |
+|---|---|---|
+| `sync.entities` | 6.54 / 6.31 ms | **1.43 / 1.50 ms** (4.4×) |
+| `ecs_sync` | 10.8 / 11.0 ms | **4.8 / 5.5 ms** |
+| frame | 25.7 / 26.4 ms | **20.1 / 19.7 ms** |
+
+`ecssync_check` gains a 3,000-entity scene with the job system running — the only scene in any check
+large enough to take the new path: steady-state edits to transforms, lights and colliders all arrive;
+no entity gains a component it lacks; a component added to an existing entity and a MeshRenderer
+removal both take the fallback; an authoritative entity's ECS write survives. Mutation-tested: the
+in-place path skipping lights fails 2, a missing component treated as handled fails 1, ignoring the
+authoritative tag fails 1.
+
+Screenshots: two serial runs 0 px apart, two parallel runs 13 px apart, serial vs parallel ~470 px —
+all 1 level, mixed sign, confined to the upper viewport (sky and distance). Rendering takes geometry
+from the same matrices either way and lights from the scene, not the mirror. The likely cause is a
+time-based effect at a ~25% different frame rate; that is an inference, not a measurement.
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed
