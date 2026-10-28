@@ -219,6 +219,9 @@ public:
     /// and a full copy into the parameter and freed the previous buffer --
     /// 1.5 MB a frame at 15k draws.
     void set_draw_items(const std::vector<DrawItem>& draws);
+    /// The same, without a copy: `draws` becomes this frame's list and
+    /// receives the previous one, for the caller to reuse as scratch.
+    void swap_draw_items(std::vector<DrawItem>& draws) { draw_items_.swap(draws); }
     const std::vector<DrawItem>& get_draw_items() const { return draw_items_; }
 
     /// Enable/disable frustum culling on the CPU before submission.

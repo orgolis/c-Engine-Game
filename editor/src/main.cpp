@@ -6711,7 +6711,21 @@ int main(int argc, char** argv) {
         // screenshots exactly as before -- but nobody has to look at it.
         if (frame_limit > 0) {
             glfwSetWindowPos(glfw_window, -static_cast<int>(win_w) - 64, 32);
-            spdlog::info("[frames] window placed off-screen for the {}-frame run", frame_limit);
+#ifdef _WIN32
+            // And never activatable. Off-screen was not enough either: when
+            // another window closes, Windows hands focus to the next window in
+            // line -- which could be this one -- and then whatever the person
+            // types drives the editor camera and the dock tabs mid-run (seen:
+            // different draw counts, a different tab in the screenshot). With
+            // WS_EX_NOACTIVATE it never becomes the foreground window, so it
+            // never receives their input.
+            if (HWND hwnd = glfwGetWin32Window(glfw_window)) {
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
+                                  GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_NOACTIVATE);
+            }
+#endif
+            spdlog::info("[frames] window placed off-screen (and unfocusable) for the "
+                         "{}-frame run", frame_limit);
         }
 
         // Size the offscreen 3D targets from the REAL framebuffer, not a
@@ -7462,7 +7476,11 @@ int main(int argc, char** argv) {
         // Occlusion hysteresis: a draw must test occluded on TWO consecutive
         // frames before it's actually dropped (one grace frame absorbs
         // readback latency + test jitter). Keyed by mesh+submesh+position.
-        std::unordered_map<uint64_t, uint8_t> hzb_occluded_streak;
+        // Sorted by key, binary-searched. This was an unordered_map rebuilt
+        // every frame -- a node allocation per occluded draw, ~3.7k a frame at
+        // 20k entities, freed again by the swap. Two vectors keep their
+        // capacity, so a steady scene allocates nothing.
+        std::vector<std::pair<uint64_t, uint8_t>> hzb_occluded_streak, hzb_next_streak;
 
         // ----------------------------------------------------------------
         // ImGui render pass: clears swapchain to dark gray, presents as PRESENT_SRC.
@@ -10820,21 +10838,33 @@ int main(int argc, char** argv) {
                         return h;
                     };
                     geometry_draws.reserve(draw_n);
-                    std::unordered_map<uint64_t, uint8_t> next_streak;
-                    next_streak.reserve(hzb_occluded_streak.size() + 8);
+                    hzb_next_streak.clear();
+                    const auto by_key = [](const std::pair<uint64_t, uint8_t>& p, uint64_t k) {
+                        return p.first < k;
+                    };
                     for (size_t i = 0; i < draw_n; ++i) {
                         if (hzb_culler->was_visible(static_cast<uint32_t>(i))) {
                             geometry_draws.push_back(opaque_draws[i]);
                             continue;
                         }
                         const uint64_t key = draw_key(opaque_draws[i]);
-                        auto sit = hzb_occluded_streak.find(key);
-                        const uint8_t streak = static_cast<uint8_t>(
-                            (sit != hzb_occluded_streak.end() ? sit->second : 0) + 1);
-                        next_streak[key] = std::min<uint8_t>(streak, 8);
+                        const auto sit = std::lower_bound(hzb_occluded_streak.begin(),
+                                                          hzb_occluded_streak.end(), key, by_key);
+                        const uint8_t prev = (sit != hzb_occluded_streak.end() && sit->first == key)
+                                                 ? sit->second : 0;
+                        const uint8_t streak = static_cast<uint8_t>(prev + 1);
+                        hzb_next_streak.emplace_back(key, std::min<uint8_t>(streak, 8));
                         if (streak < 2) geometry_draws.push_back(opaque_draws[i]);
                     }
-                    hzb_occluded_streak.swap(next_streak);
+                    // Draws sharing a key got the same streak (same previous
+                    // value), so dropping duplicates loses nothing -- the map
+                    // this replaced simply overwrote them with that value.
+                    std::sort(hzb_next_streak.begin(), hzb_next_streak.end());
+                    hzb_next_streak.erase(
+                        std::unique(hzb_next_streak.begin(), hzb_next_streak.end(),
+                                    [](const auto& a, const auto& b) { return a.first == b.first; }),
+                        hzb_next_streak.end());
+                    hzb_occluded_streak.swap(hzb_next_streak);
                     hzb_did_filter = true;
                 } else {
                     // No trustworthy pyramid this frame — everything visible,
@@ -10849,7 +10879,11 @@ int main(int argc, char** argv) {
                 hzb_prev_cam_fwd = view_fwd;
                 hzb_prev_valid   = true;
             }
-            graph->set_draw_items(hzb_did_filter ? geometry_draws : opaque_draws);
+            // The filtered list is handed over by swap: nothing reads
+            // geometry_draws after this, and copying it into the graph was a
+            // second 1.7 MB copy of what had just been built.
+            if (hzb_did_filter) graph->swap_draw_items(geometry_draws);
+            else                graph->set_draw_items(opaque_draws);
 
             // Sync the transparent pass's view of the dynamic light list each
             // frame so newly-added lights or removed lights take effect.

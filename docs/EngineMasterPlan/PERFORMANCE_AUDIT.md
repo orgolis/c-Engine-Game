@@ -406,6 +406,31 @@ left of the primary monitor: still a real, restored window with its full framebu
 screenshotting as before. They used to open over whatever the person at the machine was doing; a
 minimised one stalls the run and a clicked one moves the camera, and both happened repeatedly.
 
+### (n) HZB hysteresis without per-frame allocation; the filtered list handed over, not copied
+
+`hzb_cull` split into AABB build 0.24, pyramid test 0.21 and **filter 0.88 ms** @ 20k. The filter keeps
+a 2-frame occlusion hysteresis keyed per draw, in an `unordered_map` rebuilt every frame — a node
+allocation per occluded draw (3,683 here), freed again by the swap. It is now two persistent sorted
+vectors with binary-search lookups; duplicates of a key always carry the same streak, so dropping them
+reproduces the map's overwrite exactly. And the filtered list was copied twice — built into
+`geometry_draws`, then copied by `set_draw_items` — though nothing reads it afterwards: it is now
+swapped into the graph (`swap_draw_items`), O(1), both vectors keeping their capacity.
+
+| @ 20k, fixed dt, two clean rounds | Before | After |
+|---|---|---|
+| `hzb_cull` | 1.41 / 1.53 ms | **1.18 / 1.15 ms** |
+| frame | 20.6 / 20.2 ms | **18.7 / 19.1 ms** |
+
+Screenshots **0 px** between every pair, draw counts identical.
+
+**Measurement runs can no longer receive input.** The first attempt at this A/B was unusable: draw
+counts differed even between two baseline runs, and one screenshot showed a different dock tab. The
+off-screen window from (m) still got keyboard focus whenever Windows handed it on — when another
+window closed — and typing then drove the editor camera. `--frames` windows are now `WS_EX_NOACTIVATE`
+on Windows: never the foreground window, never anyone's keystrokes. Every run since: identical draw
+counts. This very likely explains several "camera moved by outside input" runs earlier in F14 as
+well — and those runs also saved MyGame's `editor.ini`, so its dock layout may have changed.
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed
