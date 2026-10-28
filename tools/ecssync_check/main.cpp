@@ -125,6 +125,35 @@ int main() {
     check(mirrored(br, e), "the added one is mirrored");
     check(br.entity_count() == 3, "three active entities, not four");
 
+    std::printf("\nWhen the entity list is unchanged, only what moved is redone:\n");
+    {
+        // The reconcile and parents passes skip work when this sync gathers
+        // exactly last sync's list. A re-parent changes no list, so it must be
+        // caught by the parent comparison alone.
+        br.sync_and_run(scn);
+        br.sync_and_run(scn);                        // same list twice: fast path
+        auto p2 = scn->CreateEntity("P2");
+        p2->GetTransform()->SetLocalPosition(glm::vec3(0.0f, 100.0f, 0.0f));
+        br.sync_and_run(scn);                        // list changed (P2 added)
+        br.sync_and_run(scn);                        // same list again
+        p2->AddChild(e);                             // re-parent, no list change
+        br.sync_and_run(scn);
+        check(mirrored(br, e), "a re-parent under an unchanged list is picked up");
+        p2->GetTransform()->SetLocalPosition(glm::vec3(0.0f, -50.0f, 0.0f));
+        br.sync_and_run(scn);
+        check(mirrored(br, e), "and the child follows its NEW parent afterwards");
+
+        // Same set, different order: remove and re-add in one frame.
+        const uint32_t id_e = br.ecs_entity_id(e->GetTransform());
+        scn->RemoveEntity(a);
+        scn->AddEntity(a);
+        br.sync_and_run(scn);
+        check(br.created() == 0 && br.destroyed() == 0,
+              "a reorder of the same set creates and destroys nothing");
+        check(br.ecs_entity_id(e->GetTransform()) == id_e && mirrored(br, a) && mirrored(br, b),
+              "and keeps identities and matrices right");
+    }
+
     std::printf("\nDeactivating drops it; reactivating brings it back:\n");
     e->SetActive(false);
     br.sync_and_run(scn);
@@ -218,6 +247,12 @@ int main() {
                 col_ok = col_ok && c && c->radius == cc->GetRadius();
             }
             mesh_ok = mesh_ok && (w.has<ecs::MeshRenderer>(e) == (i % 11 != 0));
+        }
+        // World matrices too: the publish pass runs on the job system here.
+        {
+            bool wm_ok = true;
+            for (const auto& e : es) wm_ok = wm_ok && mirrored(bb, e);
+            check(wm_ok, "every world matrix matches the scene (parallel publish)");
         }
         check(tf_ok,     "every transform edit reached the ECS");
         check(light_ok,  "every light intensity edit reached the ECS");

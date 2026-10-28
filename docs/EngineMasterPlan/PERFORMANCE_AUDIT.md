@@ -345,6 +345,43 @@ meaningless while it is set, and the editor says so at startup.
 (mesh, material, LOD) with per-instance matrices from a buffer — which touches shaders, the scene
 pipeline layout and per-frame instance buffers, and pairs with a state-aware sort. Not done yet.
 
+### (l) The ECS mirror's bookkeeping, skipped when nothing changed shape
+
+After (b) and (j), `ecs_sync` was still ~6 ms @ 20k, spread over passes that each touch every entity:
+`reconcile` (a slot lookup per entity), `parents` (re-reading each transform's parent pointer and
+looking up the parent's slot), `publish` (two scattered writes per entity).
+
+- **`reconcile`:** if this sync gathered exactly the same transforms in the same order as the last,
+  every slot pointer, index and entity from the last sync is still right — slots are erased only by
+  the sweep, which never erases a slot the last sync used — so the pass is skipped. Stamps go stale
+  while nothing changes, which is safe: the next sync that changes something stamps every active
+  slot, so anything stale still sweeps.
+- **`parents`:** the parent pointer is read during the gather (the entity is in cache then). With the
+  same list, an entity whose parent pointer is unchanged keeps last sync's parent index and
+  `ShadowParent`; only a re-parented entity is resolved again.
+- **`publish`:** on the job system above 1,024 entities (each write is to that entity's own element and
+  slot; the pool is fetched once).
+
+| @ 20k (fixed dt; one baseline lost to a minimised window) | Before | After |
+|---|---|---|
+| `sync.parents` | 1.44 ms | **0.03 ms** |
+| `sync.reconcile` | 0.75 ms | **0.015 ms** |
+| `sync.publish` | 0.74 ms | **0.26 ms** |
+| `sync.gather` | 0.40 ms | 0.49–0.58 ms (now also reads parents) |
+| **`ecs_sync`** | **6.03 ms** | **3.09 / 3.45 ms** |
+
+Screenshots with `GWS_FIXED_DT`: **0 px**. `ecssync_check` gains a re-parent under an unchanged list,
+the child then following its new parent, a same-set reorder (no create/destroy, identities and
+matrices right), and world-matrix agreement for all 3,000 entities in the large scene (the parallel
+publish). Mutation-tested: reusing parents without comparing fails 2; dropping the slot write in
+publish fails 8; treating equal list sizes as the same list fails 4.
+
+**A hang found by that last mutation.** It initially did not fail — it hung: stale indices formed a
+parent cycle, and the hierarchy resolve walked up parent chains with no bound. A real cycle would
+hang the editor the same way. The walk is now bounded by the entity count; a cycle is resolved as a
+root with a one-time warning, so a corrupted hierarchy shows up as wrong matrices and a log line,
+not a frozen editor.
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed

@@ -484,6 +484,11 @@ struct EcsSceneBridge::Impl {
     std::vector<scene::Transform*> oop_tf;
     std::vector<scene::Entity*>    oop_ent;     // parallel to oop_tf (for components)
     std::vector<Slot*>             slot_of;     // parallel to oop_tf
+    // The previous sync's gathered transforms and their parents, index-aligned
+    // with slot_of/parent_idx as that sync left them. See the reconcile and
+    // parents passes: when this sync gathers the same list, both reuse them.
+    std::vector<scene::Transform*> prev_tf;
+    std::vector<scene::Transform*> oop_parent, prev_parent;
     std::vector<int>               parent_idx;  // -1 == root
     std::vector<glm::mat4>         local, world_mat;
     std::vector<char>              done;
@@ -886,14 +891,18 @@ void EcsSceneBridge::sync_and_run(
     auto next = [&](const char* t) { lap.reset(); lap.emplace(t); };
     next("sync.clear");
     shadow.clear();
+    std::swap(impl_->prev_tf, oop_tf);               // last sync's list, kept
+    std::swap(impl_->prev_parent, impl_->oop_parent);
     oop_tf.clear();
     oop_ent.clear();
-    parent_idx.clear();
+    impl_->oop_parent.clear();
     if (!scene) {
         // Scene gone: tear down all persistent shadow entities.
         for (auto& kv : slots) world.destroy(kv.second.entity);
         destroyed_ = slots.size();
         slots.clear();
+        impl_->prev_tf.clear();      // nothing from before may be reused
+        impl_->prev_parent.clear();
         return;
     }
 
@@ -906,6 +915,7 @@ void EcsSceneBridge::sync_and_run(
         if (!tf) continue;
         oop_tf.push_back(tf);
         oop_ent.push_back(ent.get());
+        impl_->oop_parent.push_back(tf->GetParent());
     }
 
     next("sync.reconcile");
@@ -913,6 +923,21 @@ void EcsSceneBridge::sync_and_run(
     // transforms, reuse the rest (keeping their identity + components across
     // frames), destroy the ones no longer active. One lookup per entity, and
     // in steady state no allocation.
+    //
+    // Unless nothing changed shape. If this sync gathered exactly the same
+    // transforms in the same order as the last one, every slot_of pointer,
+    // index and entity from the last sync is still right: slots are only
+    // erased by the sweep below, and that sweep never erases a slot the last
+    // sync used. So the per-entity lookup -- a scattered cache miss for every
+    // entity, every frame, ~1 ms at 20k -- is skipped. Stamps go stale while
+    // nothing changes, which is safe: the next sync that does change something
+    // stamps every active slot, so anything stale still sweeps.
+    const bool same_list = impl_->prev_tf.size() == oop_tf.size() &&
+                           slots.size() == oop_tf.size() &&
+                           std::equal(oop_tf.begin(), oop_tf.end(), impl_->prev_tf.begin());
+    if (same_list) {
+        reused_ = oop_tf.size();
+    } else {
     slot_of.resize(oop_tf.size());
     for (size_t i = 0; i < oop_tf.size(); ++i) {
         auto [it, inserted] = slots.try_emplace(oop_tf[i]);
@@ -928,6 +953,7 @@ void EcsSceneBridge::sync_and_run(
         sl.index   = static_cast<int>(i);
         sl.stamp   = stamp;
         slot_of[i] = &sl;
+    }
     }
     // Every active transform now has a slot stamped this sync, so a stale slot
     // exists exactly when there are more slots than active transforms. Only
@@ -1031,9 +1057,21 @@ void EcsSceneBridge::sync_and_run(
 
     next("sync.parents");
     // --- Pass 3: wire parents (resolve OOP parent -> shadow index / entity).
-    parent_idx.assign(shadow.size(), -1);
+    //
+    // With the same list as last sync, an entity whose parent pointer is also
+    // unchanged keeps last sync's parent_idx and ShadowParent -- indices and
+    // entities are the same, so the resolution would come out the same. Only
+    // a re-parented entity is resolved again. The parent pointers were read in
+    // the gather pass, while each entity was already in cache.
+    const auto& opar = impl_->oop_parent;
+    const auto& ppar = impl_->prev_parent;
+    const bool reuse_parents = same_list && ppar.size() == opar.size() &&
+                               parent_idx.size() == opar.size();
+    if (!reuse_parents) parent_idx.assign(shadow.size(), -1);
     for (size_t i = 0; i < shadow.size(); ++i) {
-        scene::Transform* p = oop_tf[i]->GetParent();
+        scene::Transform* p = opar[i];
+        if (reuse_parents && p == ppar[i]) continue;
+        parent_idx[i] = -1;
         if (!p) continue;
         auto it = slots.find(p);   // every remaining slot is active this sync
         if (it != slots.end()) {
@@ -1062,9 +1100,10 @@ void EcsSceneBridge::sync_and_run(
     auto& world_mat = impl_->world_mat;
     auto& done      = impl_->done;
     auto& chain     = impl_->chain;
+    auto& ltw_pool = world.registry().storage<ecs::LocalToWorld>();   // fetched once
     local.resize(shadow.size());
     for (size_t i = 0; i < shadow.size(); ++i)
-        local[i] = world.get<ecs::LocalToWorld>(shadow[i]).value;
+        local[i] = ltw_pool.get(shadow[i]).value;
 
     world_mat.resize(shadow.size());
     done.assign(shadow.size(), 0);
@@ -1074,7 +1113,27 @@ void EcsSceneBridge::sync_and_run(
         // Walk up to the highest unresolved ancestor, recording the chain.
         chain.clear();
         int cur = static_cast<int>(i);
-        while (cur != -1 && !done[cur]) { chain.push_back(cur); cur = parent_idx[cur]; }
+        // Bounded: a chain longer than the entity count can only be a parent
+        // cycle, and an unbounded walk around one never ends -- the editor
+        // hangs with no error. A cycle cannot come from a well-formed scene,
+        // but a bug that corrupts parent_idx (or a scene that parents A under
+        // B under A) should show up as wrong matrices and a warning, not as a
+        // frozen editor. The cycle's top is treated as a root.
+        bool cycle = false;
+        while (cur != -1 && !done[cur]) {
+            if (chain.size() > shadow.size()) { cycle = true; break; }
+            chain.push_back(cur);
+            cur = parent_idx[cur];
+        }
+        if (cycle) {
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                spdlog::warn("[ecs] parent cycle in the scene hierarchy; resolving it as a root "
+                             "(reported once)");
+            }
+            cur = -1;
+        }
         glm::mat4 acc = (cur == -1) ? glm::mat4(1.0f) : world_mat[cur];
         // Apply from the top of the chain down.
         for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
@@ -1084,9 +1143,19 @@ void EcsSceneBridge::sync_and_run(
         }
     }
     next("sync.publish");
-    for (size_t i = 0; i < shadow.size(); ++i) {
-        world.get<ecs::LocalToWorld>(shadow[i]).value = world_mat[i];
-        slot_of[i]->world = world_mat[i];
+    // Independent per entity -- its own LocalToWorld element, its own slot --
+    // and each write a cache miss, so it goes on the job system above the
+    // threshold. The pool was fetched once above; workers only call get().
+    {
+        auto publish = [&](size_t i) {
+            ltw_pool.get(shadow[i]).value = world_mat[i];
+            slot_of[i]->world = world_mat[i];
+        };
+        auto& js = gws::jobs::JobSystem::instance();
+        if (js.initialized() && shadow.size() >= kParallelMirrorMin)
+            js.parallel_for(0, shadow.size(), [&publish](size_t i) { publish(i); });
+        else
+            for (size_t i = 0; i < shadow.size(); ++i) publish(i);
     }
     matrices_written_ = shadow.size();
 
