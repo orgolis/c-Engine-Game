@@ -310,6 +310,10 @@ private:
     RenderGraphConfig config_{};
     CameraData camera_{};
     std::vector<DrawItem> draw_items_{};
+    // The geometry stage's frustum-culled working copy of draw_items_. A
+    // member so its capacity survives: as a local it was a fresh 1.5 MB
+    // allocation every frame at 15k draws.
+    std::vector<DrawItem> geometry_scratch_{};
     std::vector<StageEntry> stages_{};
     RenderGraphStats stats_{};
     RenderGraphStage last_executed_ = RenderGraphStage::StageCount;

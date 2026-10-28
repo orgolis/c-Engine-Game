@@ -501,7 +501,9 @@ void VulkanRenderGraph::record_geometry(VkCommandBuffer cmd, const StageRecorder
         recorder(cmd);
     } else if (!draw_items_.empty()) {
         // Default: textured-pipeline iteration over the caller's draw list.
-        std::vector<DrawItem> items_to_draw = draw_items_;
+        // Culled in a persistent scratch list (reuses its capacity).
+        std::vector<DrawItem>& items_to_draw = geometry_scratch_;
+        items_to_draw.assign(draw_items_.begin(), draw_items_.end());
         Frustum frustum = Frustum::from_matrix(camera_.proj * camera_.view);
         if (frustum_culling_enabled_) {
             CullingStats cull{};

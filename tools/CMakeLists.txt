@@ -32,6 +32,17 @@ if(MINGW)
     target_link_options(componentsync_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# draworder_check: the radix front-to-back draw order (draw_order.h) must equal
+# the std::sort(depth, then material) order it replaced -- negative depths,
+# signed zeros (which must tie), mass ties falling back to material, and inputs
+# large enough that every radix byte varies. Header-only and Vulkan-free.
+add_executable(draworder_check draworder_check/main.cpp)
+target_include_directories(draworder_check PRIVATE ${CMAKE_SOURCE_DIR}/engine/renderer/gpu/vulkan)
+target_compile_features(draworder_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(draworder_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # componentlookup_check: GetComponent<T>() must agree with a dynamic_cast scan
 # and keep its fast path. The scene probes ~10 component kinds per entity per
 # frame; as RTTI scans that was 15 ms at 20k entities. Asserts agreement for

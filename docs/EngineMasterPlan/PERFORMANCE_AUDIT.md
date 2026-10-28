@@ -307,9 +307,43 @@ in-place path skipping lights fails 2, a missing component treated as handled fa
 authoritative tag fails 1.
 
 Screenshots: two serial runs 0 px apart, two parallel runs 13 px apart, serial vs parallel ~470 px —
-all 1 level, mixed sign, confined to the upper viewport (sky and distance). Rendering takes geometry
-from the same matrices either way and lights from the scene, not the mirror. The likely cause is a
-time-based effect at a ~25% different frame rate; that is an inference, not a measurement.
+all 1 level, mixed sign, confined to the upper viewport. This was first written up as "likely a
+time-based effect at a different frame rate — an inference". **Since measured (see (k)): with
+`GWS_FIXED_DT`, serial and parallel mirror are 0 px apart.** The difference was frame timing.
+
+### (k) `draw_sort` as a radix sort; the geometry stage's list copy; exact screenshot A/Bs
+
+**`draw_sort`.** `std::sort` compared float depths through an index indirection — ~1 ms of the sort's
+~1.8 ms at 15k draws. `front_to_back_order` (`draw_order.h`, Vulkan-free) maps each depth to a
+32-bit key whose unsigned order is its float order (negatives inverted, `-0.0` normalised to tie
+with `+0.0`), runs a four-pass LSD radix sort, then sorts only runs of exactly equal depth by
+material — the original tie-break, exactly. Depths are computed on the job system above 2,048 draws.
+`draworder_check` compares the order element by element with the old `std::sort` on negatives, signed
+zeros, mass ties and 20k random depths; mutation-tested (no sign inversion fails 4, no tie pass fails
+4, no `-0.0` normalisation fails 2). Out of line: radix 0.19 ms vs `std::sort` 1.06 ms.
+
+**Geometry stage.** `record_geometry` copied the whole draw list into a fresh local before culling:
+`items_to_draw = draw_items_`, 1.5 MB allocated per frame. Now a persistent scratch member. Zones
+showed the stage as 0.71 ms copy+cull and 2.85 ms recording (4,150 material and 4,174 mesh rebinds
+across 14,859 draws).
+
+| @ 20k, interleaved, two clean rounds | Before | After |
+|---|---|---|
+| `draw_sort` | 1.60 / 1.94 ms | **1.07 / 1.05 ms** |
+| `stage_geometry` | 3.99 / 3.89 ms | **3.32 / 3.38 ms** |
+| frame | 20.8 / 22.1 ms | **19.5 / 20.0 ms** |
+
+**`GWS_FIXED_DT=<seconds>` — exact screenshot A/Bs.** Every performance change here produced the same
+pattern: same-binary runs 0–20 px apart, before-vs-after a few hundred px, all 1 level. Two builds at
+different speeds reach frame N at different simulated times, so anything animated differs. With
+`GWS_FIXED_DT`, every frame advances simulation time by a fixed step, and frame N is the same instant
+in both builds. Measured: this change, **0 px**; the parallel ECS mirror (j), **0 px**. Rendering
+passes read no clocks of their own (checked), so the fixed step covers them. `[health]` fps is
+meaningless while it is set, and the editor says so at startup.
+
+**Still the big one in this stage: 2.85 ms of draw recording.** The fix is instancing — one draw per
+(mesh, material, LOD) with per-instance matrices from a buffer — which touches shaders, the scene
+pipeline layout and per-frame instance buffers, and pairs with a state-aware sort. Not done yet.
 
 ---
 

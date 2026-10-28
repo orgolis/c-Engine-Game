@@ -13,6 +13,7 @@
 #include "vulkan/vulkan_g_buffer.h"
 #include "vulkan/vulkan_lighting_pass.h"
 #include "vulkan/culling.h"   // Frustum::is_sphere_visible — per-light culling
+#include "vulkan/draw_order.h"   // front-to-back radix order for draw_sort
 #include "vulkan/vulkan_texture.h"  // Texture::create_from_file — spot cookies
 #include "vulkan/vulkan_shadow_map.h"
 #include "vulkan/vulkan_post_processing.h"
@@ -8607,6 +8608,24 @@ int main(int argc, char** argv) {
             last_frame_wall = now_wall;
             if (delta_time > kMaxFrameDt) delta_time = kMaxFrameDt;
             if (delta_time < 0.0f) delta_time = 0.0f;
+            // GWS_FIXED_DT=<seconds>: every frame advances simulation time by
+            // exactly this much, however long it took. For measurement only.
+            // Without it, two builds that run at different speeds reach frame N
+            // at different simulated times, so anything animated differs and a
+            // screenshot A/B cannot tell "the change altered the image" from
+            // "the change made the frame faster". With it, frame N is the same
+            // simulated instant in both, and an exact pixel match means
+            // identical rendering. Wall-clock fps in the [health] line is
+            // meaningless while it is set.
+            static const float g_fixed_dt = [] {
+                const char* v = std::getenv("GWS_FIXED_DT");
+                const float f = v ? static_cast<float>(std::atof(v)) : 0.0f;
+                if (f > 0.0f)
+                    spdlog::warn("[measure] GWS_FIXED_DT={} s: simulation time is fixed per "
+                                 "frame; [health] fps does not reflect wall time", f);
+                return f;
+            }();
+            if (g_fixed_dt > 0.0f) delta_time = g_fixed_dt;
 
             // Tick the skinned-animation test rig (CPU: state machine + root
             // motion + foot IK). Done early so the pose is current for both the
@@ -10665,22 +10684,32 @@ int main(int argc, char** argv) {
                 // `sorted` persistent too, the swap trades two long-lived
                 // buffers and nothing is allocated in steady state.
                 static std::vector<float>    depth_key;
+                static std::vector<uint64_t> tie_key;
                 static std::vector<uint32_t> order;
+                static gws::renderer::gpu::DrawOrderScratch order_scratch;
                 static std::vector<gws::renderer::gpu::DrawItem> sorted;
                 depth_key.resize(n);
-                for (size_t i = 0; i < n; ++i) {
+                tie_key.resize(n);
+                // Depths on the job system above a few thousand draws: each is
+                // two matrix-vector products on a draw whose mesh may not be
+                // in cache. The order itself is a radix sort (draw_order.h),
+                // which replaced a std::sort comparing floats through an index
+                // -- same order, ties still broken by material.
+                auto depth_of = [&](size_t i) {
                     const auto& d = opaque_draws[i];
                     const glm::vec3 c = d.mesh
                         ? glm::vec3(d.model * glm::vec4(d.mesh->bounding_box().center(), 1.0f))
                         : glm::vec3(d.model[3]);
                     depth_key[i] = -(cam.view * glm::vec4(c, 1.0f)).z;  // + = in front
-                }
-                order.resize(n);
-                for (size_t i = 0; i < n; ++i) order[i] = static_cast<uint32_t>(i);
-                std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
-                    if (depth_key[a] != depth_key[b]) return depth_key[a] < depth_key[b];
-                    return opaque_draws[a].material < opaque_draws[b].material;
-                });
+                    tie_key[i]   = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(d.material));
+                };
+                auto& sort_js = gws::jobs::JobSystem::instance();
+                if (sort_js.initialized() && n >= 2048)
+                    sort_js.parallel_for(0, n, [&depth_of](size_t i) { depth_of(i); });
+                else
+                    for (size_t i = 0; i < n; ++i) depth_of(i);
+                gws::renderer::gpu::front_to_back_order(depth_key.data(), tie_key.data(), n,
+                                                        order, order_scratch);
                 sorted.clear();
                 sorted.reserve(n);
                 for (uint32_t idx : order) sorted.push_back(opaque_draws[idx]);
