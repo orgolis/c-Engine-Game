@@ -241,7 +241,8 @@ bool VulkanRtScene::ensure_blas(VkCommandBuffer cmd, const Mesh* mesh) {
         spdlog::warn("VulkanRtScene::ensure_blas: mesh has 0 triangles; skipping");
         return false;
     }
-    spdlog::debug("VulkanRtScene: building BLAS for mesh with {} tri", triangle_count);
+    spdlog::debug("VulkanRtScene: building BLAS for mesh with {} tri in its buffer (every LOD tier; "
+                  "the BLAS takes LOD 0)", triangle_count);
 
     // Geometry description — a single triangle geometry per BLAS. Stride
     // must match SceneVertex exactly (pos+normal+uv+tangent = 12 floats);

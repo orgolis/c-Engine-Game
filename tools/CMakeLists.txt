@@ -32,6 +32,18 @@ if(MINGW)
     target_link_options(componentsync_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# primitivelod_check: the curved primitives' LOD tiers switch in only where the
+# tier's deviation from LOD 0 projects under half a pixel. The error formula
+# deciding that is measured against the real tessellation (sampled triangles)
+# for every tier -- the first version underestimated a UV sphere's bulge ~2x.
+add_executable(primitivelod_check primitivelod_check/main.cpp)
+target_include_directories(primitivelod_check PRIVATE ../editor/include)
+target_link_libraries(primitivelod_check PRIVATE renderer scene)
+target_compile_features(primitivelod_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(primitivelod_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # assetbrowserpaths_check: the asset browser's breadcrumbs, now computed lexically
 # once per folder change, must equal what fs::relative produced every frame
 # (which went through the file system: ~0.65 ms a frame in every scene).

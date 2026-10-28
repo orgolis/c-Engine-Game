@@ -518,11 +518,11 @@ void VulkanShadowMap::draw_items(VkCommandBuffer cmd,
         const glm::vec3 local_center = (bb.min + bb.max) * 0.5f;
         const glm::vec3 origin = glm::vec3(d.model * glm::vec4(local_center, 1.0f));
         const float distance = glm::length(origin - light_position);
-        const size_t base_lod = d.mesh->select_lod(d.submesh_index, distance);
-        // One tier coarser for ordinary meshes, the SAME tier for terrain --
-        // see shadow_lod_for() for why terrain is different. draw_submesh
-        // clamps internally, so a mesh with fewer tiers is unaffected either way.
-        const size_t shadow_lod = shadow_lod_for(base_lod, d.is_terrain);
+        const size_t base_lod = d.mesh->select_lod(d.submesh_index, d.mesh->lod_distance(distance, d.model));
+        // One tier coarser for ordinary meshes, the SAME tier for terrain and
+        // the primitives -- see shadow_lod_for() for why. draw_submesh clamps
+        // internally, so a mesh with fewer tiers is unaffected either way.
+        const size_t shadow_lod = shadow_lod_for(base_lod, d.is_terrain || d.mesh->lod_error_bounded());
 
         d.mesh->draw_submesh(cmd, d.submesh_index, shadow_lod);
 

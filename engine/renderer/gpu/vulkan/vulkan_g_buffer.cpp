@@ -1399,8 +1399,8 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
         const AABB& bb = d.mesh->bounding_box();
         const glm::vec3 local_center = (bb.min + bb.max) * 0.5f;
         const glm::vec3 draw_origin  = glm::vec3(d.model * glm::vec4(local_center, 1.0f));
-        const size_t lod = d.mesh->select_lod(d.submesh_index,
-                                              glm::length(draw_origin - camera_position));
+        const size_t lod = d.mesh->select_lod(
+            d.submesh_index, d.mesh->lod_distance(glm::length(draw_origin - camera_position), d.model));
         // The per-meshlet path culls meshlet by meshlet, with exactly this
         // test. LOD 0's indices are its meshlets concatenated in order, so when
         // EVERY meshlet passes, that path draws the whole LOD-0 range -- the
@@ -1563,7 +1563,7 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
         const glm::vec3 local_center = (bb.min + bb.max) * 0.5f;
         const glm::vec3 draw_origin  = glm::vec3(d.model * glm::vec4(local_center, 1.0f));
         const float distance = glm::length(draw_origin - camera_position);
-        const size_t lod = d.mesh->select_lod(d.submesh_index, distance);
+        const size_t lod = d.mesh->select_lod(d.submesh_index, d.mesh->lod_distance(distance, d.model));
 
         if (occlusion != nullptr) occlusion->begin_draw(cmd, draw_idx);
 

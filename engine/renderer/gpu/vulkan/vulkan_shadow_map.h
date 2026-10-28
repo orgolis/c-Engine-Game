@@ -48,8 +48,16 @@ enum class ShadowMapType {
 /// The bias itself predates terrain LOD by months and was harmless while every
 /// terrain chunk had exactly one tier -- draw_submesh clamped the +1 away. It
 /// only became a bug when terrain gained tiers.
-inline size_t shadow_lod_for(size_t gbuffer_lod, bool is_terrain) {
-    return is_terrain ? gbuffer_lod : gbuffer_lod + 1;
+///
+/// NOR MAY THE ENGINE'S PRIMITIVES (Mesh::lod_error_bounded), which had one
+/// tier until they gained LODs too. Their tiers switch in exactly where the
+/// change reaches half a pixel on screen, so one tier coarser is past that: a
+/// near sphere's shadow became a visible 16-gon. Their lower tiers also enclose
+/// the surface, so a coarser caster would sit in front of the surface it
+/// shadows. Drawing the G-buffer's tier never costs more than before -- they
+/// used to cast LOD 0 at every distance.
+inline size_t shadow_lod_for(size_t gbuffer_lod, bool same_tier) {
+    return same_tier ? gbuffer_lod : gbuffer_lod + 1;
 }
 
 /**

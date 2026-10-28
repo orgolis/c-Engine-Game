@@ -14,6 +14,7 @@
 #include "culling.h" // for AABB (used by-value as a member)
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -242,6 +243,28 @@ public:
     bool is_double_sided() const { return double_sided_; }
     void set_double_sided(bool d) { double_sided_ = d; }
 
+    /// When true, each LOD threshold is the distance at which that tier's
+    /// geometric error falls under half a pixel, in units of the mesh's OWN
+    /// size. The engine's primitives set it (primitive_lod in
+    /// primitive_meshes.h). Two consequences:
+    ///  - lod_distance() divides the camera distance by the draw's scale, so a
+    ///    sphere scaled x10 keeps its detail ten times further out;
+    ///  - the shadow pass draws the same tier, not one coarser: these tiers
+    ///    already switch at the visibility limit (see shadow_lod_for).
+    /// Off by default, so meshes whose thresholds were authored in world units
+    /// (glTF) behave exactly as before.
+    void set_lod_error_bounded(bool on) { lod_error_bounded_ = on; }
+    bool lod_error_bounded() const { return lod_error_bounded_; }
+
+    /// The distance select_lod() should be given for a draw with `model`.
+    float lod_distance(float camera_distance, const glm::mat4& model) const {
+        if (!lod_error_bounded_) return camera_distance;
+        const float s = std::max({glm::length(glm::vec3(model[0])),
+                                  glm::length(glm::vec3(model[1])),
+                                  glm::length(glm::vec3(model[2]))});
+        return s > 0.0f ? camera_distance / s : camera_distance;
+    }
+
     /// Vertex input descriptors compatible with this mesh's layout. Used by
     /// the geometry pipeline at creation time.
     static VkVertexInputBindingDescription vertex_binding();
@@ -256,6 +279,7 @@ private:
     uint32_t       vertex_count_ = 0;
     uint32_t       index_count_  = 0;
     bool           double_sided_ = false;
+    bool           lod_error_bounded_ = false;
     std::vector<Submesh> submeshes_;
     AABB           bounding_box_;
 

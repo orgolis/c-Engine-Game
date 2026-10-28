@@ -234,7 +234,10 @@ Mesh::Mesh(Mesh&& other) noexcept
       ibo_(other.ibo_), ibo_memory_(other.ibo_memory_),
       vertex_count_(other.vertex_count_),
       index_count_(other.index_count_),
-      submeshes_(std::move(other.submeshes_)) {
+      double_sided_(other.double_sided_),
+      lod_error_bounded_(other.lod_error_bounded_),
+      submeshes_(std::move(other.submeshes_)),
+      bounding_box_(other.bounding_box_) {
     other.device_     = nullptr;
     other.vbo_        = VK_NULL_HANDLE;
     other.vbo_memory_ = VK_NULL_HANDLE;
@@ -254,7 +257,10 @@ Mesh& Mesh::operator=(Mesh&& other) noexcept {
         ibo_memory_   = other.ibo_memory_;
         vertex_count_ = other.vertex_count_;
         index_count_  = other.index_count_;
+        double_sided_    = other.double_sided_;
+        lod_error_bounded_ = other.lod_error_bounded_;
         submeshes_    = std::move(other.submeshes_);
+        bounding_box_ = other.bounding_box_;
         other.device_       = nullptr;
         other.vbo_          = VK_NULL_HANDLE;
         other.vbo_memory_   = VK_NULL_HANDLE;

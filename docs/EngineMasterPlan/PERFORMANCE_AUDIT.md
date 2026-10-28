@@ -477,6 +477,92 @@ not done. The evidence is the cross-mode 0-px match and the validation diff.
   handles without clearing the source, and the moved-from object's destructor runs `cleanup()`.
   Nothing in the editor appears to call it today.
 
+### (p) The curved primitives get LOD tiers — 5.37M triangles → 1.43M
+
+With CPU work down to ~17 ms the 20k frame is GPU-bound, and the geometry pass was drawing **5.37M
+triangles, 5.1M of them spheres**: a sphere was 1,024 triangles at any distance, and nearly all of
+the ~5,000 covered a few dozen pixels. Primitives had exactly one LOD.
+
+Each curved primitive now has two lower tiers from **its own generator** (so every tier is exactly
+round, with exact normals and UVs — decimating LOD 0 would only approximate that): sphere 16×32 →
+8×16 → 4×8, cylinder 24 → 12 → 6, capsule 24×8 → 12×4 → 6×2. A tier switches in where its deviation
+from LOD 0 projects to **under half a pixel** at a conservative view (1440 px tall at 45° FOV, 1,738
+px per unit at 1 m). The thresholds are in units of the mesh's **own size**: these meshes are
+`lod_error_bounded`, so the camera distance is divided by the draw's largest axis scale and a sphere
+scaled ×10 keeps its detail ten times further out. glTF meshes keep world-unit thresholds, unchanged.
+Switch distances: sphere 85.5 / 314.9 sizes, cylinder 76.2 / 283.7, capsule 119.7 / 457.4.
+
+Two things the first version got wrong, both caught before commit:
+
+1. **The error formula.** It took the larger of the two directions' sagittas. A UV quad's deepest
+   point is near its centre, where both curvatures add: `r (1 − cos(π/a) cos(π/m))`. The first
+   version underestimated that by up to 2×, so tiers would have switched in at about half the safe
+   distance. Found by measuring every tier's real deviation (sampled triangles).
+2. **Ray tracing would have made coarse spheres shadow themselves.** The BLAS is built from LOD 0
+   only (unchanged), but shadow and AO rays start at the *rasterized* surface. An inscribed coarse
+   tier's face centres are up to **0.068 × size inside the BLAS**, beyond the shadow ray's 0.02-unit
+   offset, so the ray hits the object's own inner wall. A CPU model of the lighting pass's rays (same
+   origin offsets, same epsilon, no culling) found **873 of 3,692 lit shadow rays (24%)** from an
+   inscribed 4×8 sphere hitting its own LOD 0 at scale 1. AO is worse: 5,376 self-hits in the same
+   setup. The 20k test scene could not show this: it is lit by the sky under cloud shadow, with no
+   sharp sun shadows anywhere. A temporary build that forced tier 2 everywhere looked clean for that
+   reason. A sunny scene would have shown it.
+
+   **Fix: the lower tiers enclose the surface.** They are pushed out by `1 / (cos(π/a) cos(π/m))`
+   until their flattest face touches it. Every ray start is then on or outside the ideal surface and
+   LOD 0 lies inside it, so a ray leaving on the normal side only gets further away and **cannot hit
+   its own object** — by construction, at any scale. Normals stay exactly radial (all of a tier's
+   vertices are equidistant from its centre or axis). LOD 0 is the mesh it always was.
+
+| @ 20k, fixed dt, interleaved | LOD 0 only (`GWS_NO_PRIMITIVE_LOD=1`) | LOD tiers |
+|---|---|---|
+| triangles | 5,365,539 | **1,427,011** (−73%) |
+| draw calls | 45 | 39 |
+| GPU geometry pass, median of 18 reports, two rounds | 2.65 / 2.54 ms | **1.40 / 1.23 ms** |
+| `stage_geometry` (CPU), three rounds | 1.70 / 2.03 / 1.84 ms | 1.11 / 1.40 / 1.46 ms |
+
+**The GPU total could not be resolved on this machine.** Per-run totals follow the GPU clock state:
+the GTAO clock reference differed by −13% to +6% between paired runs, and the two long rounds moved
+the total in opposite directions (18.52 → 19.98 ms, 19.60 → 17.12 ms). The geometry pass is lower in
+every paired report, about 70 in all, including after clock normalisation.
+
+**Image:** cross-mode differences (≥8 levels: 122–428 px) are at this session's same-mode run-to-run
+noise (100–304 px; see the GPU-bound nondeterminism below). They sit on distant silhouettes along the
+horizon band, where sub-pixel geometry changes are expected.
+
+`primitivelod_check` (98 assertions) checks the cache's real tier table:
+- every tier's measured deviation (signed distance over sampled triangles) is bounded by its formula,
+  and the formula is within 1.5× of it;
+- LOD 0 is inscribed and the lower tiers enclose the surface; normals are radial;
+- triangle counts descend, switch distances ascend, and each switch is ≤ 0.5 px;
+- the lighting pass's shadow and AO rays from every tier, at scales 1/4/16, never hit their own LOD 0,
+  and an inscribed tier does (the bug above);
+- the six `lighting_pass.frag` lines the ray model mirrors are pinned;
+- `lod_distance` is scale-aware, and moving a `Mesh` keeps it so.
+
+Mutation-tested: all 16 header mutations are caught (inscribed tiers, a dropped meridian term, a
+wrong capsule factor, a mis-centred cylinder, an under-reported error, tilted normals, the old
+formula, …), and so is dropping the flag from the move constructor.
+
+Also fixed on the way: `Mesh`'s move constructor and move assignment dropped `double_sided_` and
+`bounding_box_` (and would have dropped the new flag). Nothing moves a `Mesh` by value today. Mesh
+bounds are computed from all vertices, so these three primitives' culling bounds now include the
+enclosing tiers — up to 25% larger for the capsule. That is conservative: it can never cull wrongly.
+
+**The shadow-map pass keeps the primitives' G-buffer tier.** It normally draws one tier coarser
+(`shadow_lod_for`), and terrain is already exempt. The same story applies here: the bias was harmless
+while primitives had one tier and became a bug once they gained more. These tiers switch in exactly
+at the half-pixel limit, so one tier coarser is past it. With RT off, a near sphere scaled ×2 would
+cast a 16-gon shadow whose facets exceed a 2.9 cm shadow texel. It never costs more than before:
+primitives used to cast LOD 0 at every distance. Both behaviours hang off one flag,
+`Mesh::lod_error_bounded` ("each threshold is where this tier's error reaches half a pixel, in the
+mesh's own size"). The shadow call site is GPU code with no automated check; the check asserts that
+the flag survives moves.
+
+**Open:** glTF meshes with meshoptimizer LOD tiers have the same raster-vs-BLAS mismatch, since a
+decimated tier lies partly inside LOD 0. The self-shadowing risk applies to them. The general fix is
+per-instance LOD selection in the TLAS (one BLAS per tier); not done.
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed
