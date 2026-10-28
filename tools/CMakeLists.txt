@@ -45,6 +45,19 @@ if(MINGW)
     target_link_options(componentlookup_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# ecssync_check: the ECS mirror's persistent slots across syncs. Removal,
+# deactivation, a remove-and-add in one frame (counts stay equal), identity
+# kept across syncs, a moved parent, and sampled verification that still
+# covers everything -- the ways a persistent table goes quietly stale where
+# the old rebuild-every-frame maps could not.
+add_executable(ecssync_check ecssync_check/main.cpp ../editor/src/ecs_bridge.cpp)
+target_include_directories(ecssync_check PRIVATE ../editor/include)
+target_link_libraries(ecssync_check PRIVATE gws_ecs gws_reflection gws_jobs scene gws_logging)
+target_compile_features(ecssync_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(ecssync_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # ecsauthority_check: an ECS write to a Transform must survive the frame. The
 # assertions are symmetric on purpose -- a flip that quietly changed behaviour
 # for UNtagged entities would be far worse than one that did nothing.

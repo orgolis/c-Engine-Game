@@ -77,6 +77,40 @@ dropping one `final` fails 1 assertion; recording the wrong type key fails 12.
 suggested `final` alone made dynamic_cast cheap. It does not under GCC 13 (~49 ns final or not,
 measured out of line).
 
+### (b) The ECS mirror rebuilt its bookkeeping every frame — fixed
+
+`sync_and_run` kept three maps keyed by `Transform*`: entity identity (persistent), an index map
+rebuilt from scratch every sync, and the world-matrix map rendering reads, cleared and refilled every
+sync — 40k node allocations and frees per frame at 20k entities to describe an unchanged scene. The
+hierarchy resolve allocated three scene-sized vectors per sync plus a fresh vector *per entity*. And
+a verification pass recomputed every entity's world matrix from the scene, every frame, in release.
+
+Now one persistent slot per transform holds identity, this sync's index, a last-seen stamp and the
+world matrix. A steady-state sync does one lookup per entity and allocates nothing; the table is only
+walked for removals when there are more slots than active transforms. Scratch arrays persist.
+Verification runs in full whenever the set changes (so the editor's one-time "N/N match" log still
+means all of them) and otherwise on a rotating 1/32 slice — every entity still checked every 32
+frames.
+
+| Pass @ 20k | Before | After |
+|---|---|---|
+| `sync.verify` | 2.53 ms | **0.08 ms** |
+| `sync.publish` | 1.95 ms | **0.81 ms** |
+| `sync.hierarchy` | 1.93 ms | **0.53 ms** |
+| `sync.clear` | 1.06 ms | **0 ms** |
+| `sync.entities` | 10.09 ms | **7.92 ms** |
+| `sync.parents` | 0.85 ms | 1.55 ms — *worse*: the long-lived table's nodes are larger and scattered |
+| **`ecs_sync`** | **21.0 ms** | **12.7 ms** (33.3 ms before (a)) |
+
+`ecssync_check` covers what a persistent table can get quietly wrong: a removed or deactivated entity
+still answered for, a remove-and-add in one frame (counts equal), identity across syncs, a moved
+parent, and sampled verification that still covers everything. Mutation-tested: disabling the stale
+sweep fails 6, always sampling fails 2.
+
+**What remains in the mirror** is ~6 ms of `sync_scene_components`: every component of every entity
+copied every frame whether or not it changed. Removing that needs change tracking on the scene side
+(a version counter per component), which is a design change rather than a cleanup.
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed

@@ -305,19 +305,39 @@ struct EcsSceneBridge::Impl {
     // resolved parent index alongside each shadow entity lets us build the
     // hierarchy and verify against the OOP world matrix without relying on
     // EnTT's internal storage iteration order.
-    // Persistent: OOP Transform* -> its stable shadow entity, kept ACROSS
-    // frames. Reconciled each sync (create new / reuse existing / destroy gone)
-    // so an entity keeps its identity and components frame to frame.
-    std::unordered_map<scene::Transform*, ecs::Entity> tf_to_entity;
+    // Persistent, one slot per active OOP Transform, kept ACROSS frames and
+    // reconciled each sync (create new / reuse existing / destroy gone) so an
+    // entity keeps its identity and components frame to frame.
+    //
+    // This used to be three maps: this one (Transform* -> entity), a
+    // Transform* -> index map rebuilt from scratch every sync, and the
+    // Transform* -> world-matrix map rendering reads, cleared and refilled
+    // every sync. At 20k entities that was ~4.5 ms a frame of hashing and of
+    // allocating and freeing 40k map nodes to describe a scene that had not
+    // changed. One slot holds all three facts, so a steady-state sync does one
+    // lookup per entity and allocates nothing. unordered_map never moves an
+    // element on insert, so a Slot* stays valid for the whole sync.
+    struct Slot {
+        ecs::Entity entity = ecs::null_entity;
+        int         index  = -1;     // position in this sync's active arrays
+        uint64_t    stamp  = 0;      // the last sync that saw it active
+        glm::mat4   world{1.0f};     // ECS-computed world matrix, this sync
+    };
+    std::unordered_map<scene::Transform*, Slot> slots;
+    uint64_t                                    sync_stamp = 0;
 
-    // Per-frame working arrays (active entities this frame, in iteration order).
+    // Per-sync working arrays (active entities this sync, in iteration
+    // order). Members rather than locals so their capacity survives: at scene
+    // scale, re-growing them every frame is its own cost.
     std::vector<ecs::Entity>       shadow;
     std::vector<scene::Transform*> oop_tf;
     std::vector<scene::Entity*>    oop_ent;     // parallel to oop_tf (for components)
+    std::vector<Slot*>             slot_of;     // parallel to oop_tf
     std::vector<int>               parent_idx;  // -1 == root
-    // Authoritative read path: OOP Transform* -> ECS-computed world matrix,
-    // refreshed every sync. Rendering queries this instead of GetWorldMatrix().
-    std::unordered_map<scene::Transform*, glm::mat4> result;
+    std::vector<glm::mat4>         local, world_mat;
+    std::vector<char>              done;
+    std::vector<int>               chain;
+    size_t                         verify_cursor = 0;
 
     // G0 gameplay services, one per world. Ticked/flushed by tick_gameplay().
     ecs::GameplayEventBus event_bus;
@@ -334,8 +354,8 @@ static glm::mat4 compose_trs(const ecs::Transform& t);
 
 const glm::mat4* EcsSceneBridge::world_matrix(
     const schizo::scene::Transform* tf) const {
-    auto it = impl_->result.find(const_cast<scene::Transform*>(tf));
-    return it == impl_->result.end() ? nullptr : &it->second;
+    auto it = impl_->slots.find(const_cast<scene::Transform*>(tf));
+    return it == impl_->slots.end() ? nullptr : &it->second.world;
 }
 
 ecs::World& EcsSceneBridge::world() { return impl_->world; }
@@ -518,9 +538,9 @@ bool EcsSceneBridge::make_gameplay_dummy(const scene::Transform* tf) {
 }
 
 uint32_t EcsSceneBridge::ecs_entity_id(const schizo::scene::Transform* tf) const {
-    auto it = impl_->tf_to_entity.find(const_cast<scene::Transform*>(tf));
-    if (it == impl_->tf_to_entity.end()) return kNoEcsEntity;
-    return entt::to_integral(it->second);
+    auto it = impl_->slots.find(const_cast<scene::Transform*>(tf));
+    if (it == impl_->slots.end()) return kNoEcsEntity;
+    return entt::to_integral(it->second.entity);
 }
 
 // Generic reflection-driven component (de)serialization lives in
@@ -696,11 +716,13 @@ void EcsSceneBridge::sync_and_run(
     created_ = reused_ = destroyed_ = 0;
 
     auto& world        = impl_->world;
-    auto& tf_to_entity = impl_->tf_to_entity;
+    auto& slots        = impl_->slots;
     auto& shadow       = impl_->shadow;
     auto& oop_tf       = impl_->oop_tf;
     auto& oop_ent      = impl_->oop_ent;
+    auto& slot_of      = impl_->slot_of;
     auto& parent_idx   = impl_->parent_idx;
+    const uint64_t stamp = ++impl_->sync_stamp;
 
     // One profiler zone per pass, back to back. This runs over every entity in
     // the scene every frame, so it is where scene size turns into milliseconds
@@ -715,12 +737,11 @@ void EcsSceneBridge::sync_and_run(
     oop_tf.clear();
     oop_ent.clear();
     parent_idx.clear();
-    impl_->result.clear();
     if (!scene) {
         // Scene gone: tear down all persistent shadow entities.
-        for (auto& kv : tf_to_entity) world.destroy(kv.second);
-        destroyed_ = tf_to_entity.size();
-        tf_to_entity.clear();
+        for (auto& kv : slots) world.destroy(kv.second.entity);
+        destroyed_ = slots.size();
+        slots.clear();
         return;
     }
 
@@ -736,40 +757,48 @@ void EcsSceneBridge::sync_and_run(
     }
 
     next("sync.reconcile");
-    // --- Pass 2: reconcile persistent map. Destroy shadow entities whose OOP
-    // transform is no longer active, create entities for new ones, reuse the
-    // rest (keeping their identity + components across frames).
-    std::unordered_map<scene::Transform*, int> tf_to_index;
-    tf_to_index.reserve(oop_tf.size());
-    for (size_t i = 0; i < oop_tf.size(); ++i)
-        tf_to_index.emplace(oop_tf[i], static_cast<int>(i));
-
-    std::vector<scene::Transform*> to_erase;
-    for (auto& kv : tf_to_entity)
-        if (tf_to_index.find(kv.first) == tf_to_index.end()) {
-            world.destroy(kv.second);
-            to_erase.push_back(kv.first);
+    // --- Pass 2: reconcile the persistent slots. Create entities for new
+    // transforms, reuse the rest (keeping their identity + components across
+    // frames), destroy the ones no longer active. One lookup per entity, and
+    // in steady state no allocation.
+    slot_of.resize(oop_tf.size());
+    for (size_t i = 0; i < oop_tf.size(); ++i) {
+        auto [it, inserted] = slots.try_emplace(oop_tf[i]);
+        Impl::Slot& sl = it->second;
+        if (inserted) {
+            sl.entity = world.create();
+            world.add<ecs::LocalToWorld>(sl.entity, ecs::LocalToWorld{});
+            world.add<ShadowParent>(sl.entity, ShadowParent{});
+            ++created_;
+        } else {
+            ++reused_;
         }
-    for (scene::Transform* tf : to_erase) tf_to_entity.erase(tf);
-    destroyed_ = to_erase.size();
+        sl.index   = static_cast<int>(i);
+        sl.stamp   = stamp;
+        slot_of[i] = &sl;
+    }
+    // Every active transform now has a slot stamped this sync, so a stale slot
+    // exists exactly when there are more slots than active transforms. Only
+    // then is the table walked -- not every frame, which is what the old
+    // per-frame "build a map, diff it against the other map" did.
+    if (slots.size() != oop_tf.size()) {
+        for (auto it = slots.begin(); it != slots.end();) {
+            if (it->second.stamp != stamp) {
+                world.destroy(it->second.entity);
+                it = slots.erase(it);
+                ++destroyed_;
+            } else {
+                ++it;
+            }
+        }
+    }
 
     next("sync.entities");
     // Create-or-reuse, in active order, refreshing the Transform component.
     shadow.resize(oop_tf.size());
     for (size_t i = 0; i < oop_tf.size(); ++i) {
         scene::Transform* tf = oop_tf[i];
-        ecs::Entity e;
-        auto found = tf_to_entity.find(tf);
-        if (found != tf_to_entity.end()) {
-            e = found->second;
-            ++reused_;
-        } else {
-            e = world.create();
-            world.add<ecs::LocalToWorld>(e, ecs::LocalToWorld{});
-            world.add<ShadowParent>(e, ShadowParent{});
-            tf_to_entity.emplace(tf, e);
-            ++created_;
-        }
+        const ecs::Entity e = slot_of[i]->entity;
         // Transform sync. Normally OOP -> ECS: the scene is authoritative and
         // the ECS is a per-frame mirror.
         //
@@ -839,10 +868,10 @@ void EcsSceneBridge::sync_and_run(
     for (size_t i = 0; i < shadow.size(); ++i) {
         scene::Transform* p = oop_tf[i]->GetParent();
         if (!p) continue;
-        auto it = tf_to_index.find(p);
-        if (it != tf_to_index.end()) {
-            parent_idx[i] = it->second;
-            world.get<ShadowParent>(shadow[i]).value = shadow[it->second];
+        auto it = slots.find(p);   // every remaining slot is active this sync
+        if (it != slots.end()) {
+            parent_idx[i] = it->second.index;
+            world.get<ShadowParent>(shadow[i]).value = shadow[it->second.index];
         }
     }
 
@@ -858,17 +887,25 @@ void EcsSceneBridge::sync_and_run(
     // Dependency-ordered, so serial with memoisation here; the real engine
     // parallelises this by depth-wave (noted for step 2). Reads the local
     // matrices written above, writes world matrices back into LocalToWorld.
-    std::vector<glm::mat4> local(shadow.size());
+    //
+    // The scratch arrays persist in Impl. This allocated three scene-sized
+    // vectors per sync plus a fresh chain vector PER ENTITY -- 20k heap
+    // allocations a frame at 20k entities to walk, usually, a chain of one.
+    auto& local     = impl_->local;
+    auto& world_mat = impl_->world_mat;
+    auto& done      = impl_->done;
+    auto& chain     = impl_->chain;
+    local.resize(shadow.size());
     for (size_t i = 0; i < shadow.size(); ++i)
         local[i] = world.get<ecs::LocalToWorld>(shadow[i]).value;
 
-    std::vector<glm::mat4> world_mat(shadow.size());
-    std::vector<char>      done(shadow.size(), 0);
+    world_mat.resize(shadow.size());
+    done.assign(shadow.size(), 0);
     // Iterative resolve up the parent chain (no recursion depth limit risk).
     for (size_t i = 0; i < shadow.size(); ++i) {
         if (done[i]) continue;
         // Walk up to the highest unresolved ancestor, recording the chain.
-        std::vector<int> chain;
+        chain.clear();
         int cur = static_cast<int>(i);
         while (cur != -1 && !done[cur]) { chain.push_back(cur); cur = parent_idx[cur]; }
         glm::mat4 acc = (cur == -1) ? glm::mat4(1.0f) : world_mat[cur];
@@ -882,14 +919,25 @@ void EcsSceneBridge::sync_and_run(
     next("sync.publish");
     for (size_t i = 0; i < shadow.size(); ++i) {
         world.get<ecs::LocalToWorld>(shadow[i]).value = world_mat[i];
-        impl_->result.emplace(oop_tf[i], world_mat[i]);
+        slot_of[i]->world = world_mat[i];
     }
     matrices_written_ = shadow.size();
 
     next("sync.verify");
-    // --- Verify: EVERY entity's ECS world matrix must equal the OOP one. A
-    // full match validates components + storage + parallel TRS + hierarchy.
-    for (size_t i = 0; i < shadow.size(); ++i) {
+    // --- Verify: the ECS world matrix must equal the OOP one. A match
+    // validates components + storage + parallel TRS + hierarchy.
+    //
+    // Every entity when the set changed (including the first sync, which is
+    // what the editor's one-time "ECS shadow live" log reports), otherwise a
+    // rotating 1/32 slice: every entity is still checked every 32 frames.
+    // Checking all of them every frame cost 2-2.5 ms at 20k entities, in
+    // release, to re-confirm a result that only changes when the set or the
+    // math does.
+    const bool   full   = created_ > 0 || destroyed_ > 0;
+    const size_t n_ent  = shadow.size();
+    const size_t stride = full ? 1 : 32;
+    const size_t start  = (full || n_ent == 0) ? 0 : (impl_->verify_cursor++ % stride);
+    for (size_t i = start; i < n_ent; i += stride) {
         ++checked_;
         const glm::mat4 expected = oop_tf[i]->GetWorldMatrix();
         const float* a = &world_mat[i][0][0];
