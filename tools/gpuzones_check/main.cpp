@@ -23,9 +23,17 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <utility>
+#include <vector>
 
 using engine::vulkan::ZoneRegistry;
 using engine::vulkan::GPUProfiler;
+
+// A reporting call that resets the frame and zeroes every pass it was not
+// handed. Correct with one producer, destructive with two -- and there are two.
+template <typename P>
+concept HasClobberingSubmit =
+    requires(P& p, const std::vector<std::pair<std::string, float>>& v) { p.submit_frame(v); };
 
 static int g_failures = 0;
 static void check(const char* name, bool ok) {
@@ -177,6 +185,50 @@ int main() {
         check("the other producer's passes survive a partial frame",
               p.get_pass_timing("Lighting") && p.get_pass_timing("Lighting")->duration_ms == 8.0f);
         check("total counts everything on display", p.get_total_gpu_time_ms() == 15.0f);
+    }
+
+    std::printf("\n[group] both producers, in the order the editor actually calls them\n");
+    {
+        // REGRESSION. The group above proves submit_partial() is additive. It
+        // did not prove the producers USE it: GpuZones::end_frame() still called
+        // submit_frame(), which zeroed the render graph's five stages every
+        // frame. The lighting stage took 23 ms of a 31 ms GPU frame and the
+        // table, the total and the [health] line all reported it as 0.00 --
+        // F2's own bug, still live in the direction nobody re-checked.
+        //
+        // That call sits in the Vulkan half this check compiles out, so it
+        // cannot be exercised here. The API that made it possible can be
+        // asserted absent instead: no producer can clobber another through a
+        // call that does not exist.
+        check("GPUProfiler offers no single-producer submit that zeroes others",
+              !HasClobberingSubmit<GPUProfiler>);
+
+        // Replay one real frame: graph stages first (right after the fence),
+        // then GpuZones at end_frame(), which reports EVERY registered zone --
+        // the ones that ran with their time, the ones that did not as 0.
+        auto& p = GPUProfiler::instance();
+        p.begin_gpu_frame();
+        p.submit_partial({{"Shadow", 0.6f}, {"Geometry", 1.1f}, {"Lighting", 23.0f},
+                          {"Transparent", 0.3f}, {"PostProcess", 0.5f}});
+        p.submit_partial({{"AO.GTAO", 1.6f}, {"AO.Blur", 1.6f}, {"SSR", 0.0f},
+                          {"DDGI.Trace", 0.0f}});
+        p.end_gpu_frame();
+        check("the graph's most expensive stage survives the compute report",
+              p.get_pass_timing("Lighting") &&
+              p.get_pass_timing("Lighting")->duration_ms == 23.0f);
+        check("every graph stage survives, not only the first",
+              p.get_pass_timing("Shadow") && p.get_pass_timing("Shadow")->duration_ms == 0.6f &&
+              p.get_pass_timing("PostProcess") &&
+              p.get_pass_timing("PostProcess")->duration_ms == 0.5f);
+        check("a compute zone that did not run is still zeroed by its producer",
+              p.get_pass_timing("DDGI.Trace") &&
+              p.get_pass_timing("DDGI.Trace")->duration_ms == 0.0f);
+        // 0.6 + 1.1 + 23.0 + 0.3 + 0.5 + 1.6 + 1.6 = 28.7. Compared with a
+        // tolerance: the sum is of floats, and an exact compare would make this
+        // check about rounding instead of about which passes were counted.
+        const float total = p.get_total_gpu_time_ms();
+        check("the total is graph stages PLUS compute zones (28.7 ms, not 3.2)",
+              total > 28.69f && total < 28.71f);
     }
 
     std::printf("\n%s — %d failure(s)\n", g_failures ? "FAILED" : "PASSED", g_failures);

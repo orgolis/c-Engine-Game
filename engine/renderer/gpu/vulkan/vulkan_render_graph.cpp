@@ -335,7 +335,7 @@ bool VulkanRenderGraph::resolve_timings() {
 void VulkanRenderGraph::update_gpu_profiler() {
     // Feed this frame's resolved per-stage GPU timings (set by resolve_timings,
     // in µs) into the GPUProfiler the Stage 14 overlay reads (N2). Only stages
-    // that actually ran are submitted; submit_frame() zeroes the rest.
+    // that actually ran are submitted.
     std::vector<std::pair<std::string, float>> passes;
     const auto add = [&](RenderGraphStage stage, double us) {
         if (us > 0.0)
@@ -347,7 +347,7 @@ void VulkanRenderGraph::update_gpu_profiler() {
     add(RenderGraphStage::Transparent, stats_.transparent_us);
     add(RenderGraphStage::PostProcess, stats_.post_process_us);
     // Additive: GpuZones reports the compute passes dispatched between these
-    // stages in the same frame, and submit_frame() would have clobbered them.
+    // stages in the same frame, and both reports must survive.
     engine::vulkan::GPUProfiler::instance().submit_partial(passes);
 }
 

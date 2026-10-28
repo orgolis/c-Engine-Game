@@ -72,7 +72,49 @@ names. `present_mode_choice.h` keeps the decision free of Vulkan so it is checka
 > composited by DWM at the refresh rate regardless of present mode. The fix is still right — the log was
 > false and "off" should mean off — but uncapped measurement needs exclusive fullscreen.
 
+### (c) Correction, 2026-10-28 — the "honest" GPU total still excluded the render-graph stages
+
+F11 says both log lines "now report `GPUProfiler`'s whole table". Structurally they did. But
+`GpuZones::end_frame()` reported through `submit_frame()`, which zeroes every pass absent from its
+argument — so each frame it erased the five render-graph stages (shadow, geometry, **lighting**,
+transparent, post) that the graph had reported moments earlier. F2 moved the graph onto the additive
+`submit_partial()` so it would stop clobbering the compute zones; nobody moved GpuZones, so the
+clobbering simply ran the other way. **This is F2's bug a third time**, and it was in the fix for the
+second.
+
+Consequences for the numbers above:
+
+- Every **GPU total** in F11 and F12 excludes the render-graph stages. The F11 *A/B difference* is
+  unaffected (`AO.Blur` is a compute zone and was measured correctly), but its "GPU total" column
+  understates by roughly 3.8 ms with ray tracing off (geometry 1.1, lighting 1.3, shadow 0.6, post 0.5,
+  transparent 0.3 — measured today).
+- **The verdict below holds only with ray-traced shadows off or at 1 ray.** Interleaved A/B on MyGame,
+  same session, 75 Hz, VSync on:
+
+| Config | GPU total | Lighting | Frame |
+|---|---|---|---|
+| RT on, 8 shadow rays (High) | 12.8–17.3 ms | 8.8–11.9 ms | 13.7–17.1 ms — **over budget, misses vblank** |
+| RT off | 5.1–6.4 ms | 0.8–1.8 ms | 13.28 ms (refresh-paced) |
+| RT on, 1 shadow ray | 4.8–6.7 ms | 0.7–1.8 ms | ~13 ms (refresh-paced) |
+
+  Earlier the same day, in a slower GPU clock state, 8 rays read **20–23 ms** of lighting and the editor
+  ran at **31 fps**. Ray tracing as such costs almost nothing here; the eight shadow rays cost about
+  1.1 ms each. This is **F0**, found in August, hidden again by the truncated total.
+
+Fixed by deleting `submit_frame()` outright — the header already documented the one-producer hazard,
+and the documentation did not stop it. `gpuzones_check` now asserts the clobbering API stays gone
+(mutation-tested: restoring it fails the check) and replays the real producer order.
+
+**The fence wait was also a composite.** The zone named `wait_prev_frame_fence` wrapped the fence wait
+*and* the occlusion resolve, the timestamp resolve and the HZB readback — three GPU reads, exactly the
+kind of thing that blocks. Split into four zones. Measured: fence **31.3 ms**, the other three
+**0.08 ms combined**. The wait really is the GPU finishing, and its books now balance against the
+GPU table.
+
 ### What this means for how this document is read
+
+> **Read with (c) above.** The paragraphs below were written from the truncated total. They are correct
+> for ray-traced shadows off or at 1 ray, and wrong for the High preset's 8.
 
 **Frame rate is not a usable metric on this machine.** At 75 Hz with ~4 ms of work there is roughly 9 ms
 of idle headroom, so almost any optimization will measure as "no change in fps" while being perfectly
@@ -153,9 +195,8 @@ cannot distinguish two bugs with different fixes. Now `AO.<technique>` and `AO.B
 - **A ~4 ms phantom** attached to roughly one pass per frame in the 2026-10-19 session and moved between
   them (HZB reading 0.05 ms one frame and 4.01 ms the next). Not observed on 2026-10-26. It may be the
   same underlying condition as the retraction above.
-- **The real current bottleneck is not the GPU.** The frame is ~13.3 ms against ~2.6 ms of GPU work, and
-  the frame rate is the same with VSync on and off (75.1 vs 75.3 fps). Something paces the frame at
-  ~13.3 ms that is neither the GPU nor the swapchain. **This is the lead worth chasing next.**
+- ~~**The real current bottleneck is not the GPU.**~~ Resolved in F12: the ~13.3 ms was the 75 Hz
+  refresh. And per F12 (c), the ~2.6 ms "GPU work" figure here excluded the render-graph stages.
 
 ---
 

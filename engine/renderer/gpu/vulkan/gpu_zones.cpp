@@ -207,7 +207,18 @@ void GpuZones::end_frame(VkDevice device) {
         out.emplace_back(zones_.name_at(z), last_ms_[z]);
     }
 
-    GPUProfiler::instance().submit_frame(out);
+    // Additive. This was submit_frame(), which zeroes every pass absent from
+    // its argument -- i.e. all five render-graph stages, which the graph had
+    // reported moments earlier. The graph was moved to submit_partial() in F2
+    // so it would stop clobbering these compute zones; this call was never
+    // moved, so the clobbering simply ran the other way. The cost: the GPU
+    // table and the [health] total reported ~6 ms while the lighting stage
+    // alone took 23 ms, and the frame's real bottleneck read as 0.00.
+    //
+    // Zones that did not run are already in `out` as an explicit 0, so the
+    // additive call loses nothing: "this pass stopped" is still reported, by
+    // the only producer that knows it.
+    GPUProfiler::instance().submit_partial(out);
 }
 #endif  // !GWS_ZONES_NO_VULKAN
 

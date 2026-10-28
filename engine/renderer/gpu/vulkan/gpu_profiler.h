@@ -66,27 +66,23 @@ public:
    */
   void update_from_query_results(const std::vector<uint64_t>& timestamps);
 
-  /**
-   * Submit a frame's already-resolved per-pass timings (name, milliseconds).
-   * For callers that read their own GPU timestamps (e.g. VulkanRenderGraph,
-   * which resolves stage µs itself) instead of going through the query-index
-   * model above. Recomputes the frame total; passes absent this frame are
-   * zeroed so a disabled stage shows 0 rather than a stale value; each named
-   * pass keeps its rolling history.
-   */
-  void submit_frame(const std::vector<std::pair<std::string, float>>& passes);
-
-  /// Additive frame accounting (performance audit F2).
+  /// Additive frame accounting (performance audit F2) -- the ONLY way to
+  /// report resolved per-pass timings (name, milliseconds).
   ///
-  /// submit_frame() resets the total and zeroes anything absent from its
-  /// argument, so it can only be called by ONE producer per frame. The frame's
-  /// timings now come from two: the render graph's five render-pass stages, and
-  /// GpuZones for every compute pass dispatched between them. With the old API
-  /// the second call clobbered the first, which is how the reported total came
-  /// to exclude the most expensive work in the frame.
+  /// A frame's timings come from two producers: the render graph's five
+  /// render-pass stages, and GpuZones for every compute pass dispatched
+  /// between them. There used to be a submit_frame() as well, which reset the
+  /// total and zeroed every pass absent from its argument -- so it was only
+  /// correct with exactly one producer, and with two, whichever called it
+  /// second erased the other. F2 moved the graph off it; GpuZones stayed on
+  /// it, and erased the graph's stages every frame, including a 23 ms
+  /// lighting pass that then read as 0.00. It has been deleted rather than
+  /// documented, because the documentation was already there and did not
+  /// stop it. gpuzones_check asserts it stays gone.
   ///
   /// Bracket the frame with begin_gpu_frame()/end_gpu_frame() and let each
-  /// producer call submit_partial().
+  /// producer call submit_partial(). A producer that knows a pass stopped
+  /// reports it as 0; absence means "no news", not "it stopped".
   void begin_gpu_frame();
   void submit_partial(const std::vector<std::pair<std::string, float>>& passes);
   void end_gpu_frame();

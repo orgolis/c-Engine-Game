@@ -8497,8 +8497,6 @@ int main(int argc, char** argv) {
             gws::diag::hang_heartbeat();
             g_cp.reset();
             g_cp.mark("frame_begin");
-            g_cp.reset();
-            g_cp.mark("frame_begin");
 
             double now_wall = glfwGetTime();
             float delta_time = static_cast<float>(now_wall - last_frame_wall);
@@ -9932,19 +9930,34 @@ int main(int argc, char** argv) {
             // or the presentation engine is pacing us, the wait shows up HERE —
             // and until this was measured, the difference between "the renderer
             // is slow" and "we are waiting for vsync" was unknowable.
+            //
+            // One zone per operation, deliberately. This was a single
+            // "wait_prev_frame_fence" zone wrapped around all four, so the
+            // fence wait was also credited with the occlusion resolve, the
+            // timestamp resolve and the HZB readback — and all three READ GPU
+            // results, which is exactly the kind of thing that blocks. A zone
+            // reporting 28 ms under a name meaning "we waited for the GPU"
+            // while silently containing three other GPU reads cannot tell
+            // "the GPU was busy" apart from "we stalled reading its answers",
+            // and that is the only question worth asking here. Same defect as
+            // the four scope bugs in F12, one layer in.
             { GWS_PROFILE_ZONE("wait_prev_frame_fence");
             vkWaitForFences(device.get_device(), 1, &frame_fences[current_frame],
                             VK_TRUE, UINT64_MAX);
+            }
             // The previous frame's occlusion queries are guaranteed available
             // after its fence. Pull the results into the culler so this
             // frame can skip occluded draws.
             g_cp.mark("post_fence");
+            { GWS_PROFILE_ZONE("resolve_occlusion_queries");
             if (graph) graph->resolve_occlusion_queries();
+            }
             // Same fence guarantees the GPU finished the previous frame's
             // timestamp writes — pull per-pass GPU timings into the profiler
             // the Stage 14 Performance overlay reads (N2). Only feeds when the
             // device supports timestamps; otherwise the GPU section stays empty.
             g_cp.mark("post_occl_resolve");
+            {
             // Reset the frame accumulator BEFORE either producer reports.
             //
             // Two of them now feed one frame: the render graph resolves its five
@@ -9952,6 +9965,7 @@ int main(int argc, char** argv) {
             // dispatched between them at end_frame() further down. Resetting between
             // the two would discard whichever reported first -- which is the same
             // class of bug this item exists to fix, merely inverted.
+            GWS_PROFILE_ZONE("resolve_gpu_timings");
             engine::vulkan::GPUProfiler::instance().begin_gpu_frame();
             if (graph && graph->resolve_timings()) {
                 graph->update_gpu_profiler();
@@ -9990,9 +10004,11 @@ int main(int argc, char** argv) {
                 // called it the total. That is finding F2 again, one layer out:
                 // the overlay was fixed, the log was not.
             }
+            }
+            g_cp.mark("post_timings");
             // Same story for the HZB readback — the GPU finished copying the
             // HZB mip to the host buffer before signalling this fence.
-            g_cp.mark("post_timings");
+            { GWS_PROFILE_ZONE("hzb_readback");
             if (hzb_culler) hzb_culler->pull_readback();
             }
 
