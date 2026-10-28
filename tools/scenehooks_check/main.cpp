@@ -184,6 +184,29 @@ int main() {
         check(scn->GetEntityCount() == count, "a Destroy()ed entity is removed on the next update");
     }
 
+    std::printf("\nA parent can never become its own descendant:\n");
+    {
+        // The hierarchy panel only refused dropping an entity onto ITSELF. Drop a
+        // parent onto its child and SetParent built A -> B -> A, after which
+        // IsActiveInHierarchy() and every world-matrix walk recursed forever.
+        auto s3   = std::make_shared<Scene>("cycle");
+        auto top  = s3->CreateEntity("top");
+        auto mid  = s3->CreateEntity("mid");
+        auto leaf = s3->CreateEntity("leaf");
+        top->AddChild(mid);
+        mid->AddChild(leaf);
+        check(!top->SetParent(leaf), "parenting an entity under its grandchild is refused");
+        check(!top->SetParent(top), "parenting an entity under itself is refused");
+        check(top->GetParent() == nullptr && mid->GetParent() == top && leaf->GetParent() == mid,
+              "and the hierarchy is left exactly as it was");
+        check(top->IsActiveInHierarchy() && leaf->IsActiveInHierarchy(),
+              "so walking it still terminates");
+        auto other = s3->CreateEntity("other");
+        check(leaf->SetParent(other) && leaf->GetParent() == other,
+              "an ordinary re-parent still works");
+        check(mid->SetParent(nullptr) && mid->GetParent() == nullptr, "and so does detaching");
+    }
+
     std::printf("\nEntitiesWithAny<...> finds exactly the entities a full scan would:\n");
     {
         // A fresh scene, so the expected lists are easy to state.

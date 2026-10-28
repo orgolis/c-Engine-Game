@@ -42,9 +42,23 @@ Entity::~Entity() {
     components_.clear();
 }
 
-void Entity::SetParent(std::shared_ptr<Entity> parent) {
+bool Entity::SetParent(std::shared_ptr<Entity> parent) {
     if (parent_ == parent) {
-        return;
+        return true;
+    }
+
+    // Refuse a cycle. Walking up from the proposed parent reaches this entity
+    // exactly when the proposed parent is this entity or one of its
+    // descendants. The walk ends because the hierarchy is acyclic -- which
+    // this check is what guarantees. Before it, dropping a parent onto its own
+    // child in the hierarchy panel built A -> B -> A, and the next
+    // IsActiveInHierarchy() recursed until the stack ran out.
+    for (const Entity* p = parent.get(); p != nullptr; p = p->parent_.get()) {
+        if (p == this) {
+            spdlog::warn("Refused to parent '{}' under '{}': it is that entity's ancestor "
+                         "(the hierarchy would loop)", name_, parent->GetName());
+            return false;
+        }
     }
     
     // Remove from old parent
@@ -65,6 +79,7 @@ void Entity::SetParent(std::shared_ptr<Entity> parent) {
     } else {
         transform_.SetParent(nullptr);
     }
+    return true;
 }
 
 void Entity::AddChild(std::shared_ptr<Entity> child) {

@@ -2921,11 +2921,15 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                         if (dragged && dragged != entity) {  // Can't parent to self
                             auto old_parent = dragged->GetParent();
                             const uint32_t old_pid = old_parent ? old_parent->GetId() : 0;
-                            dragged->SetParent(entity);
-                            spdlog::info("Reparented {} to {}", dragged->GetName(), entity->GetName());
-                            PushReparentCommand(editor_state, scene, dragged_entity_id,
-                                                old_pid, entity->GetId());
-                            editor_state.editor_scene->MarkModified();
+                            // Refused (and nothing recorded) when `entity` is a
+                            // descendant of `dragged`: dropping a parent onto its
+                            // own child used to build a loop and crash the editor.
+                            if (dragged->SetParent(entity)) {
+                                spdlog::info("Reparented {} to {}", dragged->GetName(), entity->GetName());
+                                PushReparentCommand(editor_state, scene, dragged_entity_id,
+                                                    old_pid, entity->GetId());
+                                editor_state.editor_scene->MarkModified();
+                            }
                         }
                     }
 

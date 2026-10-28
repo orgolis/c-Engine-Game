@@ -224,7 +224,10 @@ public:
     /**
      * @brief Set parent entity
      */
-    void SetParent(std::shared_ptr<Entity> parent);
+    /// Returns false, changing nothing, when `parent` is this entity or one
+    /// of its descendants: that would make a cycle, and every walk up the
+    /// hierarchy (IsActiveInHierarchy, world matrices) would never end.
+    bool SetParent(std::shared_ptr<Entity> parent);
     
     /**
      * @brief Add child entity
