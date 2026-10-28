@@ -14,6 +14,7 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
+#include <array>
 #include <vector>
 #include <memory>
 #include <cstdint>
@@ -28,6 +29,8 @@ class VulkanShaderRegistry;
 class VulkanOcclusionCuller;
 class VulkanHzbCuller;
 struct DrawItem;
+class Mesh;
+class Material;
 
 /**
  * @struct GeometryPushConstants
@@ -374,9 +377,58 @@ private:
     // which this header deliberately does not include.
     std::shared_ptr<void> scene_vert_keepalive_;
     VkPipeline build_scene_variant(VkShaderModule vert, VkShaderModule frag,
-                                   VkCullModeFlags cull);
+                                   VkCullModeFlags cull,
+                                   VkPipelineLayout layout = VK_NULL_HANDLE);
 
     uint32_t last_indirect_submissions_ = 0;
+
+    // ---- Instanced scene draws (draw_items) --------------------------------
+    // Draws sharing a mesh, material, LOD and cull mode go out as ONE
+    // vkCmdDrawIndexed with instanceCount = N. Each instance's {mvp, model}
+    // -- the same 128 bytes the push constants carry -- sits in a storage
+    // buffer at set 2, read by gbuffer_scene_instanced.vert at
+    // gl_InstanceIndex. One per-object draw cost ~190 ns of CPU per object.
+    //
+    // Three buffers in a ring, one per frame: draw_items runs once a frame
+    // and two frames are in flight, so the slot written now was last read
+    // three frames ago and is free -- which is also what makes growing it in
+    // place safe. The instanced pipeline layout matches the scene layout for
+    // sets 0-1 and the push range, so sets bound under one stay valid under
+    // the other. All of it is optional: if any piece fails to build, the
+    // pipelines stay null and every draw takes the per-object path.
+    static constexpr uint32_t kInstanceRing = 3;
+    struct InstanceSlot {
+        VkBuffer        buffer   = VK_NULL_HANDLE;
+        VkDeviceMemory  memory   = VK_NULL_HANDLE;
+        void*           mapped   = nullptr;
+        VkDescriptorSet set      = VK_NULL_HANDLE;
+        VkDeviceSize    capacity = 0;
+    };
+    VkDescriptorSetLayout instance_set_layout_       = VK_NULL_HANDLE;
+    VkDescriptorPool      instance_pool_             = VK_NULL_HANDLE;
+    std::array<InstanceSlot, kInstanceRing> instance_slots_{};
+    uint32_t              instance_frame_            = 0;
+    VkPipelineLayout      instanced_pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline            instanced_pipeline_back_   = VK_NULL_HANDLE;
+    VkPipeline            instanced_pipeline_none_   = VK_NULL_HANDLE;
+    std::shared_ptr<void> instanced_vert_keepalive_;
+    bool create_instancing(VkDevice vk_device, VkShaderModule scene_frag);
+    bool ensure_instance_capacity(InstanceSlot& slot, VkDeviceSize bytes);
+    void destroy_instancing(VkDevice vk_device);
+
+    // Per-frame batching scratch, kept so a frame allocates nothing.
+    struct InstanceCandidate {
+        uint32_t draw;      // index into draw_items' list
+        uint32_t group;     // batch it joins
+        uint32_t lod;       // clamped LOD tier
+    };
+    std::vector<InstanceCandidate> inst_candidates_;
+    std::vector<uint32_t>          inst_group_count_, inst_group_first_, inst_order_;
+    struct InstanceGroupKey {
+        VkPipeline pipeline; const Material* material; const Mesh* mesh;
+        uint32_t submesh; uint32_t lod;
+    };
+    std::vector<InstanceGroupKey>  inst_groups_;
 };
 
 } // namespace gws::renderer::gpu

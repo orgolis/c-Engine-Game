@@ -431,6 +431,52 @@ on Windows: never the foreground window, never anyone's keystrokes. Every run si
 counts. This very likely explains several "camera moved by outside input" runs earlier in F14 as
 well — and those runs also saved MyGame's `editor.ini`, so its dock layout may have changed.
 
+### (o) Instanced G-buffer draws — 14,851 draw calls → 45
+
+Draws sharing a mesh, material, submesh, LOD and cull mode now go out as one `vkCmdDrawIndexed` with
+`instanceCount = N`. Each instance's `{mvp, model}` — the same 128 bytes the push constants carry,
+computed on the CPU exactly as before — sits in a storage buffer at set 2;
+`tools/gbuffer_scene_instanced.vert` reads it at `gl_InstanceIndex` and does exactly the math of
+`gbuffer_scene.vert`. A ring of three buffers (one per frame; the slot written was last read three
+frames ago, which is also what makes growing it in place safe). The instanced layout matches the
+scene layout for sets 0–1 and the push range, so bound sets survive a pipeline switch.
+
+Exactness rules: terrain, material-graph and occlusion-query draws keep the per-object path. The
+per-meshlet path is kept only where it would cull something: LOD 0's indices are its meshlets in
+order, so when every meshlet passes the meshlet path's own frustum test, a whole-submesh draw is the
+same triangles in the same order. Groups are formed with a stable counting sort, so instances stay
+front to back. Instance data is stored whole into mapped memory (no reads — see (g)).
+
+| @ 20k, fixed dt, interleaved | Per object | Instanced |
+|---|---|---|
+| draw calls | 14,851 | **45** (triangles identical: 5,365,539) |
+| `stage_geometry` (CPU) | 3.63 / 4.41 ms | **1.97 / 1.84 ms** |
+| GPU geometry pass | 4.84 / 2.74 ms | **3.08 / 2.46 ms** (clock refs matched per round) |
+
+**Image:** an instanced frame and a per-object frame are **pixel-identical (0 px)** — measured on
+the 20k scene and on plain MyGame. Validation layers: the instanced path adds **no** VUID (the set is
+identical with `GWS_NO_INSTANCING=1`). `GWS_NO_INSTANCING=1` switches it off at runtime: an A/B in one
+binary, and a way out if a driver disagrees. `shadersource_check` pins the new shader's SPIR-V.
+
+**No automated check.** The path needs a device; a GPU check that renders the G-buffer both ways and
+compares readbacks is possible with the existing headless-device harness, but is new harness code —
+not done. The evidence is the cross-mode 0-px match and the validation diff.
+
+### Open findings recorded while doing (o)
+
+- **Rendering is not deterministic when the GPU is the bottleneck.** With `GWS_FIXED_DT`, same-binary
+  runs matched exactly while frames were CPU-bound; in a GPU-bound state the same build gives
+  ~400–2,000 px of difference between runs (stochastic water/reflection noise, a few object edges),
+  in both instancing modes. Something reads GPU results with timing-dependent latency. Suspects: the
+  single-buffered TLAS / instance data (see (g)), HZB readback timing, occlusion queries.
+- **The validation layers already report 12 distinct VUIDs** before any of this work — including the
+  known semaphore reuse (`VUID-vkQueueSubmit-pSignalSemaphores-00067`), image-layout and view-type
+  mismatches on draws/dispatches/copies, a fragment-stage storage write without
+  `fragmentStoresAndAtomics`, and a colour-blend attachment-count mismatch at pipeline creation.
+- **`VulkanGBuffer::resize()` would double-destroy every handle**: the defaulted move copies raw
+  handles without clearing the source, and the moved-from object's destructor runs `cleanup()`.
+  Nothing in the editor appears to call it today.
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed

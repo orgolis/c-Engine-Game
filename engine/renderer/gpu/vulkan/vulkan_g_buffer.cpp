@@ -13,6 +13,7 @@
 #include "vulkan_render_graph.h" // for DrawItem
 #include "gbuffer_demo_spirv.h"   // pre-compiled SPIR-V fallback for GCC builds
 #include "gbuffer_scene_spirv.h"  // pre-compiled SPIR-V fallback for GCC builds
+#include "gbuffer_scene_instanced_spirv.h"  // instanced vertex stage (draw_items)
 #include "gbuffer_terrain_spirv.h" // terrain splat-blend pipeline (SPIR-V)
 #include "vulkan_occlusion_culler.h"
 #include "vulkan_hzb_culler.h"
@@ -20,7 +21,9 @@
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <array>
+#include <unordered_map>
 #include <cstring>
+#include <cstdlib>
 #include <cstdint>
 
 namespace gws::renderer::gpu {
@@ -742,6 +745,140 @@ void VulkanGBuffer::create_scene_pipeline() {
     // change the interface the fragment stage expects.
     scene_vert_module_    = vert->handle;
     scene_vert_keepalive_ = std::static_pointer_cast<void>(vert);
+
+    // Optional: without it every draw takes the per-object path, as before.
+    if (!create_instancing(vk_device, frag->handle)) {
+        spdlog::warn("[gbuffer] instanced scene pipeline unavailable; drawing per object");
+        destroy_instancing(vk_device);
+    }
+}
+
+bool VulkanGBuffer::create_instancing(VkDevice vk_device, VkShaderModule scene_frag) {
+    VkDescriptorSetLayoutBinding b{};
+    b.binding         = 0;
+    b.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    b.descriptorCount = 1;
+    b.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT;
+    VkDescriptorSetLayoutCreateInfo li{};
+    li.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    li.bindingCount = 1;
+    li.pBindings    = &b;
+    if (vkCreateDescriptorSetLayout(vk_device, &li, nullptr, &instance_set_layout_) != VK_SUCCESS)
+        return false;
+
+    VkDescriptorPoolSize ps{};
+    ps.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    ps.descriptorCount = kInstanceRing;
+    VkDescriptorPoolCreateInfo pi{};
+    pi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pi.maxSets       = kInstanceRing;
+    pi.poolSizeCount = 1;
+    pi.pPoolSizes    = &ps;
+    if (vkCreateDescriptorPool(vk_device, &pi, nullptr, &instance_pool_) != VK_SUCCESS) return false;
+    for (auto& slot : instance_slots_) {
+        VkDescriptorSetAllocateInfo ai{};
+        ai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool     = instance_pool_;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts        = &instance_set_layout_;
+        if (vkAllocateDescriptorSets(vk_device, &ai, &slot.set) != VK_SUCCESS) return false;
+    }
+
+    // Sets 0 and 1 and the push range exactly as the scene layout: that is
+    // what keeps the frame and material sets valid across a switch between
+    // the per-object and instanced pipelines.
+    VkPushConstantRange push_range{};
+    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    push_range.offset     = 0;
+    push_range.size       = sizeof(ScenePushConstants);
+    const std::array<VkDescriptorSetLayout, 3> set_layouts = {
+        frame_set_layout_, config_.material_set_layout, instance_set_layout_ };
+    VkPipelineLayoutCreateInfo lci{};
+    lci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    lci.setLayoutCount         = static_cast<uint32_t>(set_layouts.size());
+    lci.pSetLayouts            = set_layouts.data();
+    lci.pushConstantRangeCount = 1;
+    lci.pPushConstantRanges    = &push_range;
+    if (vkCreatePipelineLayout(vk_device, &lci, nullptr, &instanced_pipeline_layout_) != VK_SUCCESS)
+        return false;
+
+    // Precompiled only: tools/gbuffer_scene_instanced.vert is its one source,
+    // pinned to this SPIR-V by shadersource_check.
+    auto vert = shader_registry_->create_from_spirv(
+        kGBufferSceneInstancedVertSpv, kGBufferSceneInstancedVertSpv_size,
+        ShaderStage::Vertex, "gbuffer_scene_instanced.vert");
+    if (!vert) return false;
+    instanced_vert_keepalive_ = std::static_pointer_cast<void>(vert);
+
+    instanced_pipeline_back_ = build_scene_variant(vert->handle, scene_frag, VK_CULL_MODE_BACK_BIT,
+                                                   instanced_pipeline_layout_);
+    instanced_pipeline_none_ = build_scene_variant(vert->handle, scene_frag, VK_CULL_MODE_NONE,
+                                                   instanced_pipeline_layout_);
+    return instanced_pipeline_back_ != VK_NULL_HANDLE && instanced_pipeline_none_ != VK_NULL_HANDLE;
+}
+
+bool VulkanGBuffer::ensure_instance_capacity(InstanceSlot& slot, VkDeviceSize bytes) {
+    if (bytes <= slot.capacity && slot.mapped != nullptr) return true;
+    VkDevice vk_device = device_->get_device();
+    // Safe without waiting: this slot was last read three frames ago (see the
+    // header), and only this frame's slot is ever replaced.
+    if (slot.mapped)            { vkUnmapMemory(vk_device, slot.memory); slot.mapped = nullptr; }
+    if (slot.buffer)            { vkDestroyBuffer(vk_device, slot.buffer, nullptr); slot.buffer = VK_NULL_HANDLE; }
+    if (slot.memory)            { vkFreeMemory(vk_device, slot.memory, nullptr);    slot.memory = VK_NULL_HANDLE; }
+    slot.capacity = 0;
+
+    const VkDeviceSize size = std::max<VkDeviceSize>(bytes + bytes / 2, 64 * 1024);
+    VkBufferCreateInfo bi{};
+    bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size        = size;
+    bi.usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(vk_device, &bi, nullptr, &slot.buffer) != VK_SUCCESS) return false;
+    VkMemoryRequirements req{};
+    vkGetBufferMemoryRequirements(vk_device, slot.buffer, &req);
+    VkMemoryAllocateInfo mi{};
+    mi.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mi.allocationSize  = req.size;
+    mi.memoryTypeIndex = device_->find_memory_type(
+        req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(vk_device, &mi, nullptr, &slot.memory) != VK_SUCCESS) return false;
+    vkBindBufferMemory(vk_device, slot.buffer, slot.memory, 0);
+    if (vkMapMemory(vk_device, slot.memory, 0, size, 0, &slot.mapped) != VK_SUCCESS) return false;
+    slot.capacity = size;
+
+    VkDescriptorBufferInfo bufi{};
+    bufi.buffer = slot.buffer;
+    bufi.offset = 0;
+    bufi.range  = VK_WHOLE_SIZE;
+    VkWriteDescriptorSet w{};
+    w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet          = slot.set;
+    w.dstBinding      = 0;
+    w.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    w.descriptorCount = 1;
+    w.pBufferInfo     = &bufi;
+    vkUpdateDescriptorSets(vk_device, 1, &w, 0, nullptr);
+    return true;
+}
+
+void VulkanGBuffer::destroy_instancing(VkDevice vk_device) {
+    if (instanced_pipeline_back_) vkDestroyPipeline(vk_device, instanced_pipeline_back_, nullptr);
+    if (instanced_pipeline_none_) vkDestroyPipeline(vk_device, instanced_pipeline_none_, nullptr);
+    if (instanced_pipeline_layout_) vkDestroyPipelineLayout(vk_device, instanced_pipeline_layout_, nullptr);
+    instanced_pipeline_back_ = instanced_pipeline_none_ = VK_NULL_HANDLE;
+    instanced_pipeline_layout_ = VK_NULL_HANDLE;
+    for (auto& slot : instance_slots_) {
+        if (slot.mapped) vkUnmapMemory(vk_device, slot.memory);
+        if (slot.buffer) vkDestroyBuffer(vk_device, slot.buffer, nullptr);
+        if (slot.memory) vkFreeMemory(vk_device, slot.memory, nullptr);
+        slot = InstanceSlot{};
+    }
+    if (instance_pool_)       vkDestroyDescriptorPool(vk_device, instance_pool_, nullptr);
+    if (instance_set_layout_) vkDestroyDescriptorSetLayout(vk_device, instance_set_layout_, nullptr);
+    instance_pool_       = VK_NULL_HANDLE;
+    instance_set_layout_ = VK_NULL_HANDLE;
+    instanced_vert_keepalive_.reset();
 }
 
 // The stock pipelines and any material-graph variant are built from the SAME
@@ -750,7 +887,7 @@ void VulkanGBuffer::create_scene_pipeline() {
 // subtly differently for a reason nobody would think to look for, and a copy
 // drifts the first time either side is touched.
 VkPipeline VulkanGBuffer::build_scene_variant(VkShaderModule vert, VkShaderModule frag,
-                                              VkCullModeFlags cull) {
+                                              VkCullModeFlags cull, VkPipelineLayout layout) {
     VkDevice vk_device = device_->get_device();
 
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
@@ -829,7 +966,7 @@ VkPipeline VulkanGBuffer::build_scene_variant(VkShaderModule vert, VkShaderModul
     info.pDepthStencilState  = &ds;
     info.pColorBlendState    = &cb;
     info.pDynamicState       = &dyn;
-    info.layout              = scene_pipeline_layout_;
+    info.layout              = layout != VK_NULL_HANDLE ? layout : scene_pipeline_layout_;
     info.renderPass          = render_pass_;
     info.subpass             = 0;
 
@@ -1223,9 +1360,113 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
     const TerrainMaterial* last_terrain_material = nullptr;
     VkPipeline      last_pipeline = VK_NULL_HANDLE;
 
+    // ---- Instancing (see the header). A draw that qualifies is collected in
+    // the loop below instead of drawn, and goes out after it as part of one
+    // instanced draw per (pipeline, material, mesh, submesh, LOD). Everything
+    // else takes the per-object path exactly as before. Occlusion queries are
+    // per draw, so any culler disables it for the frame.
+    // GWS_NO_INSTANCING=1 draws everything per object, like the editor's other
+    // GWS_NO_* switches: an A/B of the two paths in ONE binary, and a way out
+    // if a driver ever disagrees with the instanced pipeline.
+    static const bool no_instancing = std::getenv("GWS_NO_INSTANCING") != nullptr;
+    InstanceSlot* islot = nullptr;
+    bool instancing = !no_instancing &&
+                      instanced_pipeline_back_ != VK_NULL_HANDLE &&
+                      instanced_pipeline_none_ != VK_NULL_HANDLE &&
+                      occlusion == nullptr && hzb_culler == nullptr;
+    if (instancing) {
+        islot = &instance_slots_[instance_frame_ % kInstanceRing];
+        // Sized for every draw up front, so a failure here means "draw this
+        // frame per object", decided before anything is skipped.
+        constexpr VkDeviceSize kInstanceBytes = 2 * sizeof(glm::mat4);   // {mvp, model}
+        instancing = ensure_instance_capacity(*islot, draw_count * kInstanceBytes);
+    }
+    ++instance_frame_;
+    inst_candidates_.clear();
+    inst_groups_.clear();
+    std::unordered_map<uint64_t, uint32_t> group_of;   // key hash -> group (few entries)
+
+    // Same pipeline choice, LOD and meshlet rule as the per-object code below.
+    const auto instanceable = [&](const DrawItem& d, uint32_t& lod_out,
+                                  VkPipeline& pipe_out) -> bool {
+        VkPipeline terrain_pipe = d.mesh->is_double_sided() ? terrain_pipeline_none_
+                                                            : terrain_pipeline_;
+        if (terrain_pipe == VK_NULL_HANDLE) terrain_pipe = terrain_pipeline_;
+        if (d.is_terrain && terrain_pipe != VK_NULL_HANDLE && d.terrain_material != nullptr)
+            return false;                                   // terrain pipeline
+        if (d.use_graph_material && graph_pipeline_ != VK_NULL_HANDLE)
+            return false;                                   // material-graph pipeline
+        const AABB& bb = d.mesh->bounding_box();
+        const glm::vec3 local_center = (bb.min + bb.max) * 0.5f;
+        const glm::vec3 draw_origin  = glm::vec3(d.model * glm::vec4(local_center, 1.0f));
+        const size_t lod = d.mesh->select_lod(d.submesh_index,
+                                              glm::length(draw_origin - camera_position));
+        // The per-meshlet path culls meshlet by meshlet, with exactly this
+        // test. LOD 0's indices are its meshlets concatenated in order, so when
+        // EVERY meshlet passes, that path draws the whole LOD-0 range -- the
+        // same triangles, in the same order, as one submesh draw -- and the
+        // draw can be batched. Only an object straddling the frustum edge,
+        // where meshlet culling actually removes something, keeps it.
+        if (meshlet_frustum != nullptr && lod == 0 &&
+            d.submesh_index < d.mesh->submeshes().size()) {
+            const auto& mls = d.mesh->submeshes()[d.submesh_index].lod0_meshlets;
+            if (mls.size() > 1) {
+                const float scale = std::max({glm::length(glm::vec3(d.model[0])),
+                                              glm::length(glm::vec3(d.model[1])),
+                                              glm::length(glm::vec3(d.model[2]))});
+                for (const auto& ml : mls) {
+                    const glm::vec3 wc = glm::vec3(d.model * glm::vec4(ml.center, 1.0f));
+                    if (!meshlet_frustum->is_sphere_visible(wc, ml.radius * scale)) return false;
+                }
+            }
+        }
+        const size_t li = d.mesh->clamped_lod(d.submesh_index, lod);
+        if (li == static_cast<size_t>(-1)) return false;    // nothing to draw: old path skips it
+        lod_out  = static_cast<uint32_t>(li);
+        pipe_out = d.mesh->is_double_sided() ? instanced_pipeline_none_ : instanced_pipeline_back_;
+        return true;
+    };
+
     for (size_t i = 0; i < draw_count; ++i) {
         const DrawItem& d = draws[i];
         if (!d.mesh || !d.material) continue;
+
+        if (instancing) {
+            uint32_t   lod  = 0;
+            VkPipeline pipe = VK_NULL_HANDLE;
+            if (instanceable(d, lod, pipe)) {
+                uint64_t h = 1469598103934665603ull;
+                auto mix = [&h](uint64_t v) { h ^= v; h *= 1099511628211ull; };
+                mix(reinterpret_cast<uintptr_t>(pipe));
+                mix(reinterpret_cast<uintptr_t>(d.material));
+                mix(reinterpret_cast<uintptr_t>(d.mesh));
+                mix(d.submesh_index);
+                mix(lod);
+                const InstanceGroupKey key{pipe, d.material, d.mesh,
+                                           static_cast<uint32_t>(d.submesh_index), lod};
+                uint32_t g;
+                auto it = group_of.find(h);
+                const auto same = [&key](const InstanceGroupKey& k) {
+                    return k.pipeline == key.pipeline && k.material == key.material &&
+                           k.mesh == key.mesh && k.submesh == key.submesh && k.lod == key.lod;
+                };
+                if (it != group_of.end() && same(inst_groups_[it->second])) {
+                    g = it->second;
+                } else if (it == group_of.end()) {
+                    g = static_cast<uint32_t>(inst_groups_.size());
+                    inst_groups_.push_back(key);
+                    group_of.emplace(h, g);
+                } else {
+                    // A 64-bit hash collision between two different keys: draw
+                    // this one per object rather than mis-batch it.
+                    g = UINT32_MAX;
+                }
+                if (g != UINT32_MAX) {
+                    inst_candidates_.push_back({static_cast<uint32_t>(i), g, lod});
+                    continue;
+                }
+            }
+        }
 
         // Skip draws that were fully occluded last frame (per the HZB
         // culler's CPU-side AABB-vs-HZB test).
@@ -1409,6 +1650,70 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
         }
         if (occlusion != nullptr) occlusion->end_draw(cmd, draw_idx);
     }
+
+    // ---- Instanced batches ---------------------------------------------------
+    if (instancing && !inst_candidates_.empty()) {
+        // Stable counting sort by group: each group's instances stay in the
+        // order the caller gave (front to back), and groups go out in order of
+        // their nearest member.
+        const size_t ng = inst_groups_.size();
+        inst_group_count_.assign(ng, 0);
+        for (const auto& c : inst_candidates_) ++inst_group_count_[c.group];
+        inst_group_first_.assign(ng, 0);
+        for (size_t g = 1; g < ng; ++g)
+            inst_group_first_[g] = inst_group_first_[g - 1] + inst_group_count_[g - 1];
+        inst_order_.resize(inst_candidates_.size());
+        {
+            std::vector<uint32_t>& cursor = inst_group_count_;   // reused as write cursors
+            for (size_t g = 0; g < ng; ++g) cursor[g] = inst_group_first_[g];
+            for (uint32_t ci = 0; ci < inst_candidates_.size(); ++ci)
+                inst_order_[cursor[inst_candidates_[ci].group]++] = ci;
+        }
+
+        // Each instance's {mvp, model}, computed exactly as the push constant
+        // is, stored whole: never a read from mapped memory (see the TLAS
+        // write in vulkan_rt_scene.cpp for what a read there costs).
+        struct InstanceGpu { glm::mat4 mvp; glm::mat4 model; };
+        static_assert(sizeof(InstanceGpu) == 128, "matches the shader's std430 InstanceData");
+        auto* dst = static_cast<InstanceGpu*>(islot->mapped);
+        for (size_t p = 0; p < inst_order_.size(); ++p) {
+            const DrawItem& d = draws[inst_candidates_[inst_order_[p]].draw];
+            const InstanceGpu g{view_proj * d.model, d.model};
+            std::memcpy(&dst[p], &g, sizeof g);
+        }
+
+        for (size_t g = 0; g < ng; ++g) {
+            const InstanceGroupKey& k = inst_groups_[g];
+            const uint32_t first = inst_group_first_[g];
+            const uint32_t count = (g + 1 < ng ? inst_group_first_[g + 1] : static_cast<uint32_t>(inst_order_.size())) - first;
+            if (count == 0) continue;
+            if (k.pipeline != last_pipeline) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, k.pipeline);
+                last_pipeline = k.pipeline;
+                last_material = nullptr;
+                last_terrain_material = nullptr;
+                if (frame_set_ != VK_NULL_HANDLE)
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                            instanced_pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        instanced_pipeline_layout_, 2, 1, &islot->set, 0, nullptr);
+            }
+            if (k.material != last_material) {
+                k.material->bind(cmd, instanced_pipeline_layout_, /*set=*/1);
+                last_material = k.material;
+            }
+            if (k.mesh != last_mesh) {
+                k.mesh->bind(cmd);
+                last_mesh = k.mesh;
+            }
+            k.mesh->draw_submesh_instanced(cmd, k.submesh, k.lod, count, first);
+            if (out_draw_calls) ++(*out_draw_calls);
+            if (out_triangles) {
+                const auto& sm = k.mesh->submeshes()[k.submesh];
+                *out_triangles += (sm.lods[k.lod].index_count / 3) * count;
+            }
+        }
+    }
 }
 
 void VulkanGBuffer::begin_lighting_pass(VkCommandBuffer cmd) {
@@ -1472,6 +1777,8 @@ void VulkanGBuffer::cleanup() {
         vkDestroyPipeline(vk_device, terrain_pipeline_, nullptr);
         terrain_pipeline_ = VK_NULL_HANDLE;
     }
+    // Before the frame set layout below, which the instanced layout references.
+    destroy_instancing(vk_device);
     if (scene_pipeline_layout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(vk_device, scene_pipeline_layout_, nullptr);
         // Per-frame set-0 resources. Unmapped before the memory is freed: the

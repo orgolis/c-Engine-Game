@@ -65,6 +65,7 @@
 // The arrays that actually ship.
 #include "gbuffer_demo_spirv.h"
 #include "gbuffer_scene_spirv.h"
+#include "gbuffer_scene_instanced_spirv.h"
 #include "lighting_pass_spirv.h"
 #include "lighting_pass_nort_spirv.h"
 #include "shadow_caster_spirv.h"
@@ -231,6 +232,7 @@ int main(int argc, char** argv) {
         {"gbuffer_demo.frag",          kGBufferDemoFragSpv,          kGBufferDemoFragSpv_size},
         {"gbuffer_scene.vert",         kGBufferSceneVertSpv,         kGBufferSceneVertSpv_size},
         {"gbuffer_scene.frag",         kGBufferSceneFragSpv,         kGBufferSceneFragSpv_size},
+        {"gbuffer_scene_instanced.vert", kGBufferSceneInstancedVertSpv, kGBufferSceneInstancedVertSpv_size},
         {"shadow_caster.vert",         kShadowCasterVertSpv,         kShadowCasterVertSpv_size},
         {"shadow_caster.frag",         kShadowCasterFragSpv,         kShadowCasterFragSpv_size},
         {"transparent.vert",           kTransparentVertSpv,          kTransparentVertSpv_size},

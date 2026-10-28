@@ -175,6 +175,16 @@ public:
     void draw_submesh(VkCommandBuffer cmd, size_t submesh_idx,
                       size_t lod_index = 0) const;
 
+    /// draw_submesh for `instance_count` instances starting at
+    /// `first_instance` -- the instanced G-buffer path, whose vertex stage
+    /// finds each instance's matrices at gl_InstanceIndex.
+    void draw_submesh_instanced(VkCommandBuffer cmd, size_t submesh_idx, size_t lod_index,
+                                uint32_t instance_count, uint32_t first_instance) const;
+
+    /// The LOD tier draw_submesh would actually use for `lod_index` (it
+    /// clamps), or SIZE_MAX when the submesh does not exist or has none.
+    size_t clamped_lod(size_t submesh_idx, size_t lod_index) const;
+
     /// Issue `vkCmdDrawIndexed` for a single meshlet (a sub-range of the
     /// shared index buffer). Caller must have already done frustum
     /// culling — this is just the draw call wrapper.

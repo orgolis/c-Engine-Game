@@ -472,6 +472,21 @@ void Mesh::draw_submesh(VkCommandBuffer cmd, size_t submesh_idx,
     vkCmdDrawIndexed(cmd, lod.index_count, 1, lod.index_offset, 0, 0);
 }
 
+void Mesh::draw_submesh_instanced(VkCommandBuffer cmd, size_t submesh_idx, size_t lod_index,
+                                  uint32_t instance_count, uint32_t first_instance) const {
+    if (submesh_idx >= submeshes_.size() || instance_count == 0) return;
+    const auto& s = submeshes_[submesh_idx];
+    if (s.lods.empty()) return;
+    const auto& lod = s.lods[std::min(lod_index, s.lods.size() - 1)];
+    vkCmdDrawIndexed(cmd, lod.index_count, instance_count, lod.index_offset, 0, first_instance);
+}
+
+size_t Mesh::clamped_lod(size_t submesh_idx, size_t lod_index) const {
+    if (submesh_idx >= submeshes_.size() || submeshes_[submesh_idx].lods.empty())
+        return static_cast<size_t>(-1);
+    return std::min(lod_index, submeshes_[submesh_idx].lods.size() - 1);
+}
+
 void Mesh::draw_meshlet(VkCommandBuffer cmd, uint32_t first_index,
                         uint32_t index_count) const {
     vkCmdDrawIndexed(cmd, index_count, 1, first_index, 0, 0);

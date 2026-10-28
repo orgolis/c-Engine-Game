@@ -29,6 +29,14 @@ python spv_to_header.py gbuffer_scene.vert.spv    kGBufferSceneVertSpv \
                         gbuffer_scene.frag.spv    kGBufferSceneFragSpv \
                         ../engine/renderer/gpu/vulkan/gbuffer_scene_spirv.h
 
+# The instanced G-buffer vertex stage: gbuffer_scene.vert with its matrices
+# read per instance from a storage buffer. Regenerated with it because the two
+# must keep identical outputs -- the instanced pipeline reuses the same
+# fragment stage, so a drifted varying would shade wrongly, not fail.
+"$GV" --target-env vulkan1.2 -S vert -o gbuffer_scene_instanced.vert.spv gbuffer_scene_instanced.vert
+python spv_to_header.py gbuffer_scene_instanced.vert.spv kGBufferSceneInstancedVertSpv \
+                        ../engine/renderer/gpu/vulkan/gbuffer_scene_instanced_spirv.h
+
 python spv_to_header.py transparent_pass.vert.spv kTransparentVertSpv \
                         transparent_pass.frag.spv kTransparentFragSpv \
                         ../engine/renderer/gpu/vulkan/transparent_pass_spirv.h

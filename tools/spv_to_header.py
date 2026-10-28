@@ -15,8 +15,23 @@ def emit(spv_path: Path, var_name: str) -> tuple[str, int]:
     return "\n".join(lines), len(data)
 
 def main():
+    # One shader: <spv> <var> <out.h>. For a stage with no partner in the same
+    # header (the instanced G-buffer vertex stage reuses the stock fragment).
+    if len(sys.argv) == 4:
+        spv, var, out_path = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+        block, nbytes = emit(spv, var)
+        out_path.write_text(
+            f"// Auto-generated SPIR-V fallback for {spv.name}.\n"
+            f"// Compiled via glslangValidator --target-env vulkan1.2.\n"
+            f"// Regenerate with c-Engine-Game/tools/spv_to_header.py.\n"
+            f"#pragma once\n"
+            f"#include <cstdint>\n\n"
+            f"{block}\n", encoding="utf-8")
+        print(f"Wrote {out_path}: {nbytes}B")
+        return
     if len(sys.argv) != 6:
         print("Usage: spv_to_header.py <vert.spv> <vert_var> <frag.spv> <frag_var> <out.h>")
+        print("   or: spv_to_header.py <shader.spv> <var> <out.h>")
         sys.exit(1)
     vert_spv = Path(sys.argv[1])
     vert_var = sys.argv[2]
