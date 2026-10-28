@@ -149,6 +149,12 @@ public:
     // full match validates the whole path: reflected components -> world
     // storage -> parallel system math -> parent propagation.
     size_t verified()         const { return verified_; }
+    // The most recent FULL verification (every entity), kept until the next
+    // one. checked()/verified() describe this sync, which in steady state
+    // checks a rotating 1/32 slice -- so a one-time "N/N match" report has to
+    // read these, or it reports whatever slice its frame happened to get.
+    size_t full_checked()     const { return full_checked_; }
+    size_t full_verified()    const { return full_verified_; }
     // Persistence reconciliation counts for the most recent sync: entities
     // newly created, reused from the prior frame, and destroyed (no longer
     // active). reused>0 proves shadow entities now persist across frames.
@@ -164,6 +170,8 @@ private:
     size_t matrices_written_ = 0;
     size_t checked_          = 0;
     size_t verified_         = 0;
+    size_t full_checked_     = 0;
+    size_t full_verified_    = 0;
     size_t created_          = 0;
     size_t reused_           = 0;
     size_t destroyed_        = 0;

@@ -10603,8 +10603,8 @@ int main(int argc, char** argv) {
                              "computed (parallel TRS + hierarchy), {}/{} matrices "
                              "match OOP world -> {}",
                              ecs_bridge.entity_count(), ecs_bridge.matrices_written(),
-                             ecs_bridge.verified(), ecs_bridge.checked(),
-                             (ecs_bridge.verified() == ecs_bridge.checked())
+                             ecs_bridge.full_verified(), ecs_bridge.full_checked(),
+                             (ecs_bridge.full_verified() == ecs_bridge.full_checked())
                                  ? "OK" : "MISMATCH");
                 ecs_shadow_logged = true;
             }

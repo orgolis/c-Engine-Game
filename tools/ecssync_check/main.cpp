@@ -155,6 +155,11 @@ int main() {
         check(worst_slice < n, "an unchanged sync checks fewer than all of them");
         check(total == n, "32 unchanged syncs check every entity exactly once");
         check(all_ok, "and every checked matrix matched");
+        // The editor's one-time "N/N match" log can run on any frame. Reading
+        // checked() there printed "1/1" for a 19-entity scene -- the slice its
+        // frame happened to get. The last full verification survives slices.
+        check(br.full_checked() == n && br.full_verified() == n,
+              "after sampled syncs, the last FULL verification still reports all of them");
     }
 
     std::printf("\nScene gone: everything is torn down:\n");

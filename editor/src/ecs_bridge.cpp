@@ -1094,9 +1094,11 @@ void EcsSceneBridge::sync_and_run(
     // --- Verify: the ECS world matrix must equal the OOP one. A match
     // validates components + storage + parallel TRS + hierarchy.
     //
-    // Every entity when the set changed (including the first sync, which is
-    // what the editor's one-time "ECS shadow live" log reports), otherwise a
-    // rotating 1/32 slice: every entity is still checked every 32 frames.
+    // Every entity when the set changed (including the first sync), otherwise
+    // a rotating 1/32 slice: every entity is still checked every 32 frames.
+    // A full pass is also recorded in full_checked_/full_verified_, which is
+    // what the editor's one-time "ECS shadow live" log reports -- that log
+    // runs on whatever frame first reaches it, not necessarily the first sync.
     // Checking all of them every frame cost 2-2.5 ms at 20k entities, in
     // release, to re-confirm a result that only changes when the set or the
     // math does.
@@ -1113,6 +1115,10 @@ void EcsSceneBridge::sync_and_run(
         for (int k = 0; k < 16; ++k)
             max_diff = std::max(max_diff, std::fabs(a[k] - b[k]));
         if (max_diff < 1e-3f) ++verified_;
+    }
+    if (full) {
+        full_checked_  = checked_;
+        full_verified_ = verified_;
     }
 }
 
