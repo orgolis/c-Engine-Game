@@ -111,6 +111,36 @@ sweep fails 6, always sampling fails 2.
 copied every frame whether or not it changed. Removing that needs change tracking on the scene side
 (a version counter per component), which is a design change rather than a cleanup.
 
+### (c) Edit mode updated every entity up to six times a frame, to do nothing — fixed
+
+Found by a new `[frame-cp]` debug line that prints every gap between the frame's checkpoints, next to
+the `[profiler]` zones: ~6 ms at 20k entities sat between `pre_input` and `pre_scripts` with no zone
+at all. It was edit mode's `scene->Update()`.
+
+`Scene::Update` walked every entity once per fixed step (3–4 at that frame rate, more the slower the
+frame), then for Update, then LateUpdate, then a destroyed-entity sweep. Each visit was a cache miss on
+a large `Entity` (it embeds four component structs by value), a recursive parent-chain walk in
+`IsActiveInHierarchy`, and a virtual call per component — into an empty default almost every time.
+Only six component classes override any hook; **none overrides `OnFixedUpdate`**.
+
+`AddComponent<T>` now records which hooks T overrides, decided at compile time (`&T::OnUpdate` has
+type `void (Component::*)(float)` exactly when T runs the empty default). The scene keeps a list of
+entities per hook, rebuilt only when the entity list or any component set changes — tracked by a
+version and a process-wide generation counter, since an entity does not know its scene — and each
+pass visits only its list. The destroyed-entity sweep runs only after a `Destroy()`.
+
+| @ 20k entities | Before | After |
+|---|---|---|
+| `pre_input → pre_scripts` | 5.7–7.2 ms | **0.007 ms** |
+| `scene_update` (new zone) | — | **0.002 ms** |
+| lists rebuilt during the run | — | **1** (2 entities have OnUpdate) |
+| frame | 64.4 ms | 58.2 ms |
+
+`scenehooks_check` asserts the compile-time detection, that each hook runs where and only where it did,
+that additions, removals, `Destroy()` and active state are honoured, and that an unchanged scene does
+not rebuild its lists. Mutation-tested: a never-refreshing cache fails 3, a rebuild-every-time cache
+fails 1, detection that marks everything fails to compile.
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed

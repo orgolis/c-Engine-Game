@@ -45,6 +45,19 @@ if(MINGW)
     target_link_options(componentlookup_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# scenehooks_check: Scene::Update visits only entities whose components
+# override each hook, from lists cached until the entity list or a component
+# set changes. Asserts the compile-time override detection, that each hook runs
+# where (and only where) it did, that additions/removals/Destroy() are picked
+# up, that active state is respected, and that an unchanged scene does not
+# rebuild its lists every frame -- a cache that does is correct and useless.
+add_executable(scenehooks_check scenehooks_check/main.cpp)
+target_link_libraries(scenehooks_check PRIVATE scene gws_logging)
+target_compile_features(scenehooks_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(scenehooks_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # ecssync_check: the ECS mirror's persistent slots across syncs. Removal,
 # deactivation, a remove-and-add in one frame (counts stay equal), identity
 # kept across syncs, a moved parent, and sampled verification that still

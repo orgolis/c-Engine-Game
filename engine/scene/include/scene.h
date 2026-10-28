@@ -205,6 +205,17 @@ protected:
     
     // Entity management
     std::vector<std::shared_ptr<Entity>> entities_;
+    uint64_t entity_list_version_ = 0;   // bumped by AddEntity / RemoveEntity / Clear
+
+    // Entities with a component overriding each per-frame hook, so Update
+    // visits only those (see Scene::Update). Rebuilt when the entity list or
+    // any component set changes. shared_ptr, not raw: an entity removed by an
+    // earlier pass stays valid until the next rebuild instead of dangling.
+    std::vector<std::shared_ptr<Entity>> hooked_fixed_, hooked_update_, hooked_late_;
+    uint64_t hooked_list_version_  = ~0ull;
+    uint64_t hooked_component_gen_ = ~0ull;
+    uint64_t hooked_rebuilds_      = 0;
+    uint64_t seen_destroy_gen_     = 0;
     std::unordered_map<uint32_t, std::shared_ptr<Entity>> entities_by_id_;
     std::unordered_map<std::string, std::vector<std::shared_ptr<Entity>>> entities_by_tag_;
 
@@ -227,6 +238,16 @@ protected:
      * @brief Update all entities
      */
     void UpdateEntities(float delta_time);
+
+    /// Rebuild the per-hook entity lists if the entity list or any component
+    /// set changed since the last rebuild. Cheap when nothing did.
+    void RefreshHookedEntities();
+
+public:
+    /// How many times the per-hook lists were rebuilt -- for checks: a scene
+    /// that rebuilds every frame has silently lost the point of caching them.
+    uint64_t HookedListRebuilds() const { return hooked_rebuilds_; }
+    size_t   HookedUpdateCount() const { return hooked_update_.size(); }
 };
 
 } // namespace schizo::scene

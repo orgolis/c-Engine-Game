@@ -19,6 +19,25 @@ namespace schizo::scene {
 class Scene;
 class Component;
 
+/// Which per-frame hooks a component actually overrides. Most override none:
+/// a mesh or a collider is data, and calling three empty virtual functions on
+/// it several times a frame is pure cost. The scene uses these bits to visit
+/// only the entities that have something to run -- see Scene::Update.
+enum ComponentHook : uint8_t {
+    kHookFixedUpdate = 1u << 0,
+    kHookUpdate      = 1u << 1,
+    kHookLateUpdate  = 1u << 2,
+    kHookAll         = kHookFixedUpdate | kHookUpdate | kHookLateUpdate,
+};
+
+namespace detail {
+/// Bumped whenever any entity's component set changes, so a scene can tell
+/// that its cached per-hook entity lists are stale without being told by each
+/// entity (an entity does not know its scene). Defined in scene.cpp.
+uint64_t component_set_generation();
+void     bump_component_set_generation();
+}  // namespace detail
+
 // ============================================================================
 // Component Base Class
 // ============================================================================
@@ -80,11 +99,30 @@ private:
     // compare a key instead of running dynamic_cast. See GetComponent.
     std::size_t           type_hash_ = 0;
     const std::type_info* type_      = nullptr;
+    // Hooks this component's type overrides, also recorded by AddComponent<T>.
+    // All of them until then: a component that did not come through
+    // AddComponent is assumed to need every call, which is what it got before.
+    uint8_t               hooks_     = kHookAll;
 
     friend class Entity;
 };
 
 namespace detail {
+/// Which hooks T overrides, decided at compile time. `&T::OnUpdate` has type
+/// `void (Component::*)(float)` exactly when neither T nor any class between
+/// it and Component declares OnUpdate -- i.e. T runs the empty default.
+template <typename T>
+constexpr uint8_t component_hooks() {
+    uint8_t m = 0;
+    if constexpr (!std::is_same_v<decltype(&T::OnFixedUpdate), void (Component::*)(float)>)
+        m |= kHookFixedUpdate;
+    if constexpr (!std::is_same_v<decltype(&T::OnUpdate), void (Component::*)(float)>)
+        m |= kHookUpdate;
+    if constexpr (!std::is_same_v<decltype(&T::OnLateUpdate), void (Component::*)(float)>)
+        m |= kHookLateUpdate;
+    return m;
+}
+
 // typeid(T).hash_code() hashes the mangled NAME on every call, so it is
 // computed once per type. Name-based, so the value agrees across modules even
 // where each module has its own type_info object for T.
@@ -243,11 +281,17 @@ public:
         component->entity_    = this;
         component->type_hash_ = detail::component_type_hash<T>();
         component->type_      = &typeid(T);   // make_shared<T>: exactly T
+        component->hooks_     = detail::component_hooks<T>();
         component->OnAttach();
 
         components_.push_back(component);
+        hook_mask_ |= component->hooks_;
+        detail::bump_component_set_generation();
         return component;
     }
+
+    /// OR of the hooks every component on this entity overrides.
+    uint8_t HookMask() const { return hook_mask_; }
 
     /// Is `comp` exactly a T? Only meaningful for a FINAL T -- see below.
     ///
@@ -401,7 +445,8 @@ protected:
     
     // Components
     std::vector<std::shared_ptr<Component>> components_;
-    
+    uint8_t hook_mask_ = 0;   // OR of components_' hooks_; kept by Add/RemoveComponent
+
     // State
     bool is_active_ = true;
     bool is_destroyed_ = false;

@@ -30,6 +30,7 @@
 #include <glm/glm.hpp>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <string>

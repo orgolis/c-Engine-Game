@@ -995,6 +995,21 @@ struct FrameCheckpoints {
                       pts[worst-1].label, pts[worst].label, worst_ms);
         return b;
     }
+    // Every gap, in order. The profiler's zones cover named work; this covers
+    // the frame, so the two together show time that no zone accounts for --
+    // at 20k entities that was a quarter of the frame.
+    std::string all_gaps() const {
+        std::string out;
+        char b[160];
+        for (size_t i = 1; i < pts.size(); ++i) {
+            const double ms = std::chrono::duration<double, std::milli>(
+                                  pts[i].t - pts[i-1].t).count();
+            std::snprintf(b, sizeof b, "%s%s->%s %.3f", out.empty() ? "" : " | ",
+                          pts[i-1].label, pts[i].label, ms);
+            out += b;
+        }
+        return out;
+    }
 };
 static FrameCheckpoints g_cp;
 
@@ -8883,6 +8898,7 @@ int main(int argc, char** argv) {
                 // This ensures the hierarchy MarkDirty cascade works in the editor
                 auto scene = editor_state.editor_scene->GetScene();
                 if (scene) {
+                    GWS_PROFILE_ZONE("scene_update");
                     scene->Update(delta_time);
                 }
             }
@@ -11232,12 +11248,14 @@ int main(int argc, char** argv) {
                 }
             }
 #if GWS_PROFILE_ENABLED
-            if (frame_count % (log_debug ? 60 : 240) == 0)
-                // debug level: per-frame profiler breakdown stays out of the
-                // default console + Output panel (the Performance overlay shows
-                // live timings); raise the log level to see it here.
+            // debug level: per-frame profiler breakdown stays out of the
+            // default console + Output panel (the Performance overlay shows
+            // live timings); raise the log level to see it here.
+            if (frame_count % (log_debug ? 60 : 240) == 0) {
                 spdlog::debug("[profiler] {}",
                               gws::profile::Profiler::instance().format_report());
+                spdlog::debug("[frame-cp] {}", g_cp.all_gaps());
+            }
 #endif
         }
 

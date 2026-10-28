@@ -2,9 +2,27 @@
 #include "scene.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 
 namespace schizo::scene {
+
+namespace {
+// Process-wide, because an entity does not know which scene holds it. A scene
+// compares these against the values it last saw; any change -- in any scene --
+// costs at most one rebuild or one scan, which is what every frame paid before.
+std::atomic<uint64_t> g_component_set_generation{0};
+std::atomic<uint64_t> g_destroy_generation{0};
+}  // namespace
+
+namespace detail {
+uint64_t component_set_generation() {
+    return g_component_set_generation.load(std::memory_order_acquire);
+}
+void bump_component_set_generation() {
+    g_component_set_generation.fetch_add(1, std::memory_order_acq_rel);
+}
+}  // namespace detail
 
 // ============================================================================
 // Entity Implementation
@@ -119,11 +137,18 @@ void Entity::RemoveComponent(std::shared_ptr<Component> component) {
     if (it != components_.end()) {
         (*it)->OnDetach();
         components_.erase(it);
+        hook_mask_ = 0;
+        for (const auto& c : components_)
+            if (c) hook_mask_ |= c->hooks_;
+        detail::bump_component_set_generation();
     }
 }
 
+// Each of these returns before IsActiveInHierarchy -- which walks the parent
+// chain -- when no component on the entity overrides the hook, because then
+// the loop below would only call empty functions.
 void Entity::FixedUpdate(float delta_time) {
-    if (!IsActiveInHierarchy()) {
+    if (!(hook_mask_ & kHookFixedUpdate) || !IsActiveInHierarchy()) {
         return;
     }
     
@@ -133,7 +158,7 @@ void Entity::FixedUpdate(float delta_time) {
 }
 
 void Entity::Update(float delta_time) {
-    if (!IsActiveInHierarchy()) {
+    if (!(hook_mask_ & kHookUpdate) || !IsActiveInHierarchy()) {
         return;
     }
     
@@ -143,7 +168,7 @@ void Entity::Update(float delta_time) {
 }
 
 void Entity::LateUpdate(float delta_time) {
-    if (!IsActiveInHierarchy()) {
+    if (!(hook_mask_ & kHookLateUpdate) || !IsActiveInHierarchy()) {
         return;
     }
     
@@ -154,6 +179,7 @@ void Entity::LateUpdate(float delta_time) {
 
 void Entity::Destroy() {
     is_destroyed_ = true;
+    g_destroy_generation.fetch_add(1, std::memory_order_acq_rel);
 }
 
 // ============================================================================
@@ -189,8 +215,9 @@ void Scene::AddEntity(std::shared_ptr<Entity> entity) {
     if (!entity) return;
     
     entities_.push_back(entity);
+    ++entity_list_version_;
     entities_by_id_[entity->GetId()] = entity;
-    
+
     const auto& tag = entity->GetTag();
     if (!tag.empty()) {
         entities_by_tag_[tag].push_back(entity);
@@ -205,6 +232,7 @@ void Scene::RemoveEntity(std::shared_ptr<Entity> entity) {
     auto it = std::find(entities_.begin(), entities_.end(), entity);
     if (it != entities_.end()) {
         entities_.erase(it);
+        ++entity_list_version_;
     }
     
     entities_by_id_.erase(entity->GetId());
@@ -269,19 +297,28 @@ void Scene::Update(float delta_time) {
     // Accumulate time for fixed updates
     accumulated_time_ += delta_time;
     
-    // Perform fixed updates
+    // Each pass below visits only the entities with a component that overrides
+    // its hook. It used to visit every entity, every pass: one per fixed step
+    // (more steps the slower the frame), then Update, then LateUpdate -- each
+    // visit a cache miss on a large Entity, a parent-chain walk and a virtual
+    // call per component into, almost always, an empty default. Nothing in the
+    // engine overrides OnFixedUpdate at all. At 20k entities that was ~6 ms a
+    // frame in edit mode for no work. The lists are re-checked before every
+    // pass, so an entity or component added by an earlier pass is picked up.
     while (accumulated_time_ >= config_.fixed_timestep) {
-        for (auto& entity : entities_) {
+        RefreshHookedEntities();
+        for (auto& entity : hooked_fixed_) {
             entity->FixedUpdate(config_.fixed_timestep);
         }
         accumulated_time_ -= config_.fixed_timestep;
     }
-    
+
     // Perform variable updates
     UpdateEntities(delta_time);
-    
+
     // Late updates
-    for (auto& entity : entities_) {
+    RefreshHookedEntities();
+    for (auto& entity : hooked_late_) {
         entity->LateUpdate(delta_time);
     }
     
@@ -305,6 +342,7 @@ void Scene::Reload() {
 
 void Scene::Clear() {
     entities_.clear();
+    ++entity_list_version_;
     entities_by_id_.clear();
     entities_by_tag_.clear();
     
@@ -357,9 +395,36 @@ void Scene::UpdateSpatialPartitioning() {
     // }
 }
 
+void Scene::RefreshHookedEntities() {
+    const uint64_t gen = detail::component_set_generation();
+    if (gen == hooked_component_gen_ && entity_list_version_ == hooked_list_version_)
+        return;
+    hooked_fixed_.clear();
+    hooked_update_.clear();
+    hooked_late_.clear();
+    for (const auto& e : entities_) {
+        if (!e) continue;
+        const uint8_t m = e->HookMask();
+        if (m & kHookFixedUpdate) hooked_fixed_.push_back(e);
+        if (m & kHookUpdate)      hooked_update_.push_back(e);
+        if (m & kHookLateUpdate)  hooked_late_.push_back(e);
+    }
+    hooked_component_gen_ = gen;
+    hooked_list_version_  = entity_list_version_;
+    ++hooked_rebuilds_;
+}
+
 void Scene::ProcessDestroyedEntities() {
+    // Only an Entity::Destroy() call can make an entity destroyed, and every
+    // one bumps the generation -- so an unchanged generation means there is
+    // nothing to find, and the scan over every entity is skipped. Read before
+    // scanning, so a Destroy() during the scan is caught next frame.
+    const uint64_t gen = g_destroy_generation.load(std::memory_order_acquire);
+    if (gen == seen_destroy_gen_) return;
+    seen_destroy_gen_ = gen;
+
     std::vector<std::shared_ptr<Entity>> to_remove;
-    
+
     for (const auto& entity : entities_) {
         if (entity->IsDestroyed()) {
             to_remove.push_back(entity);
@@ -372,7 +437,8 @@ void Scene::ProcessDestroyedEntities() {
 }
 
 void Scene::UpdateEntities(float delta_time) {
-    for (auto& entity : entities_) {
+    RefreshHookedEntities();
+    for (auto& entity : hooked_update_) {
         entity->Update(delta_time);
     }
 }
