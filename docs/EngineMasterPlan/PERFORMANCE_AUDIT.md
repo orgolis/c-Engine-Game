@@ -524,7 +524,12 @@ Two things the first version got wrong, both caught before commit:
 **The GPU total could not be resolved on this machine.** Per-run totals follow the GPU clock state:
 the GTAO clock reference differed by −13% to +6% between paired runs, and the two long rounds moved
 the total in opposite directions (18.52 → 19.98 ms, 19.60 → 17.12 ms). The geometry pass is lower in
-every paired report, about 70 in all, including after clock normalisation.
+every paired report, about 70 in all, including after clock normalisation. The render settings had
+VSync on, which lets the driver downclock into the vblank slack, so I re-measured with `VSYNC=0` (two
+more 1,200-frame rounds). Same picture: the geometry pass is lower in 35 of 36 samples paired by frame
+index, and the total moved −0.3 ms in one round and −2.9 ms in the other. Lighting's ±1.5 ms swings do
+not correlate between runs at the same simulated instant (r = −0.5 … +0.06), so they are run state
+(clocks, other GPU clients preempting the longest pass), not scene content.
 
 **Image:** cross-mode differences (≥8 levels: 122–428 px) are at this session's same-mode run-to-run
 noise (100–304 px; see the GPU-bound nondeterminism below). They sit on distant silhouettes along the
