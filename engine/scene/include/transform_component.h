@@ -17,7 +17,7 @@ namespace schizo::scene {
  * This component wraps the entity's built-in transform, providing 
  * component-based access to position, rotation, and scale.
  */
-class TransformComponent : public Component {
+class TransformComponent final : public Component {
 public:
     TransformComponent() = default;
     virtual ~TransformComponent() = default;

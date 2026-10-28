@@ -26,7 +26,7 @@ enum class CameraProjection : uint8_t {
  * (if any) drives rendering. Camera intrinsics here are decoupled from
  * the viewport's aspect ratio — pass aspect into GetProjectionMatrix().
  */
-class CameraComponent : public Component {
+class CameraComponent final : public Component {
 public:
     CameraComponent() = default;
     virtual ~CameraComponent() = default;

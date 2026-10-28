@@ -1,4 +1,6 @@
 #include "ecs_bridge.h"
+#include "profiler/profiler.h"
+#include <optional>
 #include "ecs/register_all.h"
 #include "ecs/gameplay_tick.h"
 
@@ -700,6 +702,15 @@ void EcsSceneBridge::sync_and_run(
     auto& oop_ent      = impl_->oop_ent;
     auto& parent_idx   = impl_->parent_idx;
 
+    // One profiler zone per pass, back to back. This runs over every entity in
+    // the scene every frame, so it is where scene size turns into milliseconds
+    // -- at 20k entities it was a third of a 100 ms frame -- and a single zone
+    // around the whole call could not say which pass. The passes share locals,
+    // so scoped blocks do not fit; an optional zone that is reset and
+    // re-emplaced gives each pass exactly its own span.
+    std::optional<gws::profile::ScopedZone> lap;
+    auto next = [&](const char* t) { lap.reset(); lap.emplace(t); };
+    next("sync.clear");
     shadow.clear();
     oop_tf.clear();
     oop_ent.clear();
@@ -713,6 +724,7 @@ void EcsSceneBridge::sync_and_run(
         return;
     }
 
+    next("sync.gather");
     // --- Pass 1: gather active entities (active-in-hierarchy implies every
     // ancestor is also active, so the parent map below resolves for non-roots).
     for (const auto& ent : scene->GetEntities()) {
@@ -723,6 +735,7 @@ void EcsSceneBridge::sync_and_run(
         oop_ent.push_back(ent.get());
     }
 
+    next("sync.reconcile");
     // --- Pass 2: reconcile persistent map. Destroy shadow entities whose OOP
     // transform is no longer active, create entities for new ones, reuse the
     // rest (keeping their identity + components across frames).
@@ -740,6 +753,7 @@ void EcsSceneBridge::sync_and_run(
     for (scene::Transform* tf : to_erase) tf_to_entity.erase(tf);
     destroyed_ = to_erase.size();
 
+    next("sync.entities");
     // Create-or-reuse, in active order, refreshing the Transform component.
     shadow.resize(oop_tf.size());
     for (size_t i = 0; i < oop_tf.size(); ++i) {
@@ -819,6 +833,7 @@ void EcsSceneBridge::sync_and_run(
     }
     entity_count_ = shadow.size();
 
+    next("sync.parents");
     // --- Pass 3: wire parents (resolve OOP parent -> shadow index / entity).
     parent_idx.assign(shadow.size(), -1);
     for (size_t i = 0; i < shadow.size(); ++i) {
@@ -831,12 +846,14 @@ void EcsSceneBridge::sync_and_run(
         }
     }
 
+    next("sync.local_trs");
     // --- System phase A (PARALLEL): LocalToWorld.value = local matrix.
     ecs::parallel_each<ecs::Transform, ecs::LocalToWorld>(
         world, [](ecs::Entity, ecs::Transform& t, ecs::LocalToWorld& l) {
             l.value = compose_trs(t);
         });
 
+    next("sync.hierarchy");
     // --- System phase B (hierarchy resolve): world = parent_world * local.
     // Dependency-ordered, so serial with memoisation here; the real engine
     // parallelises this by depth-wave (noted for step 2). Reads the local
@@ -862,12 +879,14 @@ void EcsSceneBridge::sync_and_run(
             done[*it] = 1;
         }
     }
+    next("sync.publish");
     for (size_t i = 0; i < shadow.size(); ++i) {
         world.get<ecs::LocalToWorld>(shadow[i]).value = world_mat[i];
         impl_->result.emplace(oop_tf[i], world_mat[i]);
     }
     matrices_written_ = shadow.size();
 
+    next("sync.verify");
     // --- Verify: EVERY entity's ECS world matrix must equal the OOP one. A
     // full match validates components + storage + parallel TRS + hierarchy.
     for (size_t i = 0; i < shadow.size(); ++i) {

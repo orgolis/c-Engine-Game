@@ -45,7 +45,7 @@ enum class AlphaMode : uint8_t {
  * @class MeshRendererComponent
  * @brief Component that renders a mesh with color
  */
-class MeshRendererComponent : public Component {
+class MeshRendererComponent final : public Component {
 public:
     MeshRendererComponent(MeshType type = MeshType::Cube, const glm::vec4& color = glm::vec4(1.0f))
         : mesh_type_(type), color_(color) {}

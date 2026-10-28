@@ -21,7 +21,7 @@ namespace schizo::scene {
 // `status_` is runtime-only feedback for the Inspector ("ok" / compile or
 // runtime error text) — set by the ScriptSystem, never serialized.
 
-class ScriptComponent : public Component {
+class ScriptComponent final : public Component {
 public:
     ScriptComponent() = default;
     explicit ScriptComponent(const std::string& path) : script_path_(path) {}

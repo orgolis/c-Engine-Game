@@ -6386,6 +6386,13 @@ int main(int argc, char** argv) {
     // point at all, so that entire path was unreachable to measurement.
     bool        stress_play = false;
     bool        stress_ssr_toggle = false;
+    // --stress-entities N: add N primitive entities to the loaded scene, in
+    // memory only. Every CPU system that walks the scene -- ECS sync,
+    // transform propagation, draw building, culling, sorting, command
+    // recording -- costs microseconds on a 30-draw test project, which says
+    // nothing about how it scales. This is the scene that question needs.
+    // Nothing saves on exit, so the user's scene file is never touched.
+    int         stress_entities = 0;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--net-host" && i + 1 < argc) {
@@ -6437,6 +6444,8 @@ int main(int argc, char** argv) {
             startup_select = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (a == "--stress-play") {
             stress_play = true;
+        } else if (a == "--stress-entities" && i + 1 < argc) {
+            stress_entities = std::max(0, std::atoi(argv[++i]));
         } else if (a == "--stress-ssr-toggle") {
             // Flip ray-traced reflections on and off repeatedly while
             // rendering. set_use_rt() destroys and rebuilds the compute
@@ -8122,7 +8131,43 @@ int main(int argc, char** argv) {
                 st.show_preferences = !st.show_preferences;
             });
 
-            if (startup_select != 0) {
+            if (stress_entities > 0) {
+            if (auto sc = editor_scene.GetScene()) {
+                const auto t0 = std::chrono::steady_clock::now();
+                // A grid in front of the default camera (at z=5 looking down
+                // -z), wide enough that frustum culling rejects a real share.
+                // One in four is parented to the previous entity so transform
+                // propagation sees hierarchies, not only roots. Rotation and
+                // scale vary by index so nothing is a degenerate special case.
+                const int side = static_cast<int>(std::ceil(std::sqrt(double(stress_entities))));
+                std::shared_ptr<schizo::scene::Entity> prev;
+                for (int n = 0; n < stress_entities; ++n) {
+                    const int gx = n % side, gz = n / side;
+                    const float s = 0.4f + 0.05f * float(n % 7);
+                    auto e = (n % 3 == 0)
+                        ? schizo::scene::EntityFactory::CreateSphere(sc, "Stress", s)
+                        : schizo::scene::EntityFactory::CreateCube(sc, "Stress", s);
+                    if (!e) break;
+                    auto* t = e->GetTransform();
+                    const glm::vec3 pos(2.5f * float(gx - side / 2), 0.5f + float(n % 5),
+                                        -2.5f * float(gz));
+                    if (n % 4 == 3 && prev) {
+                        prev->AddChild(e);
+                        t->SetLocalPosition(glm::vec3(0.0f, 1.2f, 0.0f));
+                    } else {
+                        t->SetLocalPosition(pos);
+                    }
+                    t->SetLocalRotation(glm::quat(glm::vec3(0.0f, 0.37f * float(n), 0.0f)));
+                    prev = e;
+                }
+                const double ms = std::chrono::duration<double, std::milli>(
+                                      std::chrono::steady_clock::now() - t0).count();
+                spdlog::warn("[stress] added {} entities to the scene in memory ({:.1f} ms) "
+                             "-- not saved; scene now has {}",
+                             stress_entities, ms, sc->GetEntityCount());
+            }
+        }
+        if (startup_select != 0) {
             editor_state.selected_entity_id = startup_select;
             spdlog::info("[select] entity {} selected at startup", startup_select);
         }
@@ -10332,7 +10377,8 @@ int main(int argc, char** argv) {
             // ready, then feed them to the draw-list builder (authoritative:
             // build_draw_items reads ECS LocalToWorld, OOP matrix is fallback).
             { GWS_PROFILE_ZONE("ecs_sync");
-              ecs_bridge.sync_and_run(editor_scene.GetScene());
+              ecs_bridge.sync_and_run(editor_scene.GetScene()); }
+            { GWS_PROFILE_ZONE("gameplay_tick");
               ecs_bridge.tick_gameplay(delta_time); }   // G0: effects/abilities/triggers/timers/events
 
             // Scene logic graph: start/stop with Play, and feed key presses to

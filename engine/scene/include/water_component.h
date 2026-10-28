@@ -17,7 +17,7 @@ namespace schizo::scene {
 //
 // Purely visual in v1 — no buoyancy/swimming yet (planned follow-up).
 
-class WaterComponent : public Component {
+class WaterComponent final : public Component {
 public:
     WaterComponent() = default;
     virtual ~WaterComponent() = default;

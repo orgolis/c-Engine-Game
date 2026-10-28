@@ -12,7 +12,7 @@ namespace schizo::character {
 using namespace schizo::scene;
 
 // Component to mark entity as player
-class PlayerMarkerComponent : public Component {
+class PlayerMarkerComponent final : public Component {
 public:
     bool is_player = true;
 };

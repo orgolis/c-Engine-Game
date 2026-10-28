@@ -47,7 +47,7 @@ enum class ShadowQuality : uint8_t {
  * Simplified light system integrated directly into the editor without
  * depending on the full renderer module.
  */
-class LightComponent : public Component {
+class LightComponent final : public Component {
 public:
     /**
      * Create a light component with the specified type
@@ -341,7 +341,7 @@ private:
  * @brief Component for directional light
  * @deprecated Use LightComponent with LightType::Directional instead
  */
-class DirectionalLightComponent : public Component {
+class DirectionalLightComponent final : public Component {
 public:
     DirectionalLightComponent(
         const glm::vec3& color = glm::vec3(1.0f),
@@ -418,7 +418,7 @@ protected:
  * @class GlobalLightComponent
  * @brief Component for global ambient light
  */
-class GlobalLightComponent : public Component {
+class GlobalLightComponent final : public Component {
 public:
     GlobalLightComponent(
         const glm::vec3& color = glm::vec3(0.3f),

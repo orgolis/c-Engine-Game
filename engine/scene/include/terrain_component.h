@@ -27,7 +27,7 @@ inline constexpr int kTerrainLayers = 4;
 // every sculpt edit); a Jolt HeightField + the splatmap (later phases) watch
 // the same counter.
 
-class TerrainComponent : public Component {
+class TerrainComponent final : public Component {
 public:
     explicit TerrainComponent(int resolution = 64, float size = 100.0f) {
         Resize(resolution, size);

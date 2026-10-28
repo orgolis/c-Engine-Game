@@ -27,7 +27,7 @@ namespace schizo::scene {
  * renderer->SetMesh(my_mesh);
  * renderer->SetMaterial(my_material);
  */
-class MeshRenderer : public Component {
+class MeshRenderer final : public Component {
 public:
     MeshRenderer() = default;
     ~MeshRenderer() override = default;
@@ -191,7 +191,7 @@ private:
  * Similar to MeshRenderer but with skeleton/bone support for animations.
  * (Implementation stub for now - full implementation in animation system)
  */
-class SkinnedMeshRenderer : public Component {
+class SkinnedMeshRenderer final : public Component {
 public:
     SkinnedMeshRenderer() = default;
     ~SkinnedMeshRenderer() override = default;
@@ -232,7 +232,7 @@ private:
  * 
  * Renders debug lines for visualization (gizmos, paths, bounds, etc.)
  */
-class LineRenderer : public Component {
+class LineRenderer final : public Component {
 public:
     LineRenderer() = default;
     ~LineRenderer() override = default;

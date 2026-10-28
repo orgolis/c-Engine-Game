@@ -24,6 +24,61 @@ of them already exist and work — which is why they have not helped.
 
 ---
 
+## F14 — the core systems' cost per entity, measured at scale 🔴 (in progress)
+
+**Measured 2026-10-28, `MyGame` plus `--stress-entities N`** (N primitives added in memory, never saved;
+a grid in front of the camera, one in four parented, varied rotation and scale).
+
+A 30-draw test scene cannot answer how the CPU side scales. Every system that walks the scene costs
+microseconds there, which earlier read as "not worth optimising". At 20k entities the frame is
+**103 ms and entirely CPU-bound** — the GPU fence wait drops to 0.009 ms:
+
+| Zone | 1k | 5k | 20k |
+|---|---|---|---|
+| `ecs_sync` | 1.76 | 7.5 | **32.6 ms** |
+| `build_draw_items` | 0.74 | 3.2 | **13.1 ms** |
+| `rt_scene_update` | 0.76 | 2.3 | **8.9 ms** |
+| `ui_hierarchy` | 0.41 | 1.9 | **8.2 ms** |
+| `stage_geometry` | 0.17 | 0.8 | 5.4 ms |
+| `draw_sort` | 0.10 | 0.4 | 2.7 ms |
+| *(between zones)* | | | ~31 ms |
+
+All linear, all with large per-entity constants. The order of work is: remove the waste in each
+system, then spread what remains across the job system. Parallelising waste only distributes it.
+
+**Correction to an earlier claim.** The job system is not "almost entirely idle": ECS render
+collection, the system scheduler, transform propagation, frustum culling (above 2,048 items) and the
+HZB AABB build all use it. The earlier count looked only at `editor/src/main.cpp`.
+
+### (a) `GetComponent<T>()` was an RTTI scan — fixed
+
+Every component lookup did `dynamic_pointer_cast` over the entity's component list. Under MinGW
+GCC 13 a failed `dynamic_cast` costs ~25 ns (the type comparison can fall back to comparing mangled
+names), and the ECS mirror alone asks every entity for ~10 kinds per frame, mostly ones it lacks:
+**15.3 ms per frame at 20k entities**, before draw building asked the same questions again.
+
+`AddComponent<T>` now records the exact type (a name-based hash plus `type_info`), and for a `final`
+T `GetComponent` compares that key instead — for a final type, "dynamic_cast succeeds" and "is
+exactly a T" are the same statement. Non-final T keeps the original scan, unchanged. All 18 leaf
+components are now `final`; a future subclass means removing `final`, which falls back to correct and
+slower rather than silently missing components.
+
+| | Before | After |
+|---|---|---|
+| one miss, 2-component entity | 82–104 ns | **5–9 ns** |
+| `sync_scene_components` @ 20k | 15.3 ms | **6.3 ms** |
+| `ecs_sync` @ 20k | 33.3 ms | **21.0 ms** |
+
+`componentlookup_check` asserts agreement with the dynamic_cast scan for every kind (first-found,
+duplicates, removal, the non-final path) and that every leaf component is final. Mutation-tested:
+dropping one `final` fails 1 assertion; recording the wrong type key fails 12.
+
+*Benchmark trap worth recording:* inlined into a timing loop, the scan measured 0.2 ns and briefly
+suggested `final` alone made dynamic_cast cheap. It does not under GCC 13 (~49 ns final or not,
+measured out of line).
+
+---
+
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed
 
 **Measured 2026-10-28, RTX 3060, `MyGame`, 1920×1032, ray tracing on, 8 shadow rays (the High preset).**

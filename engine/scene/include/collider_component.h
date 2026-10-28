@@ -34,7 +34,7 @@ enum class ColliderShape : uint8_t {
  * component on StartPlayback and create matching RigidBody + CollisionShape
  * instances inside the PhysicsWorld.
  */
-class ColliderComponent : public Component {
+class ColliderComponent final : public Component {
 public:
     explicit ColliderComponent(ColliderShape shape = ColliderShape::Box)
         : shape_(shape) {}

@@ -17,7 +17,7 @@ namespace schizo::renderer {
  * Integrates skeleton, animations, and animator into the ECS
  * Syncs with entity transform for root motion support
  */
-class AnimationComponent : public schizo::scene::Component {
+class AnimationComponent final : public schizo::scene::Component {
 public:
     AnimationComponent();
     virtual ~AnimationComponent() = default;

@@ -22,7 +22,7 @@ namespace schizo::renderer {
  * - Support for multiple materials
  * - Dynamic mesh deformation based on bone transforms
  */
-class SkeletalMeshComponent : public schizo::scene::Component {
+class SkeletalMeshComponent final : public schizo::scene::Component {
 public:
     SkeletalMeshComponent();
     virtual ~SkeletalMeshComponent() = default;

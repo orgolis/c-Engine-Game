@@ -32,6 +32,19 @@ if(MINGW)
     target_link_options(componentsync_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# componentlookup_check: GetComponent<T>() must agree with a dynamic_cast scan
+# and keep its fast path. The scene probes ~10 component kinds per entity per
+# frame; as RTTI scans that was 15 ms at 20k entities. Asserts agreement for
+# every kind (first-found, duplicates, removal, the non-final path) and that
+# every leaf component is `final` -- losing it is correct-but-slow, so nothing
+# else would ever notice.
+add_executable(componentlookup_check componentlookup_check/main.cpp)
+target_link_libraries(componentlookup_check PRIVATE scene gws_logging)
+target_compile_features(componentlookup_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(componentlookup_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # ecsauthority_check: an ECS write to a Transform must survive the frame. The
 # assertions are symmetric on purpose -- a flip that quietly changed behaviour
 # for UNtagged entities would be far worse than one that did nothing.

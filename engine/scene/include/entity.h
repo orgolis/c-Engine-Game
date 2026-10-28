@@ -10,6 +10,8 @@
 #include <string>
 #include <cstdint>
 #include <typeinfo>
+#include <type_traits>
+#include <cstddef>
 
 namespace schizo::scene {
 
@@ -71,9 +73,27 @@ public:
 
 protected:
     class Entity* entity_ = nullptr;
-    
+
+private:
+    // The component's exact type, recorded by Entity::AddComponent<T> -- the
+    // one place that knows it, since it constructs a T. Lets GetComponent<T>
+    // compare a key instead of running dynamic_cast. See GetComponent.
+    std::size_t           type_hash_ = 0;
+    const std::type_info* type_      = nullptr;
+
     friend class Entity;
 };
+
+namespace detail {
+// typeid(T).hash_code() hashes the mangled NAME on every call, so it is
+// computed once per type. Name-based, so the value agrees across modules even
+// where each module has its own type_info object for T.
+template <typename T>
+std::size_t component_type_hash() {
+    static const std::size_t h = typeid(T).hash_code();
+    return h;
+}
+}  // namespace detail
 
 // ============================================================================
 // Entity Class
@@ -220,54 +240,101 @@ public:
         static_assert(std::is_base_of_v<Component, T>, "T must derive from Component");
         
         auto component = std::make_shared<T>(std::forward<Args>(args)...);
-        component->entity_ = this;
+        component->entity_    = this;
+        component->type_hash_ = detail::component_type_hash<T>();
+        component->type_      = &typeid(T);   // make_shared<T>: exactly T
         component->OnAttach();
-        
+
         components_.push_back(component);
         return component;
     }
-    
+
+    /// Is `comp` exactly a T? Only meaningful for a FINAL T -- see below.
+    ///
+    /// This is the hot path behind every GetComponent<T>(), which the scene
+    /// calls about ten times per entity per frame from the ECS mirror alone --
+    /// mostly for components the entity does not have. As a dynamic_cast scan
+    /// that measured ~75 ns per probe on MinGW, where a failed RTTI type
+    /// comparison falls back to comparing mangled names: 15 ms a frame at 20k
+    /// entities for the mirror, before draw building asked the same questions
+    /// again.
+    ///
+    /// For a FINAL T, dynamic_cast<T> succeeds exactly when the component's
+    /// type is T, so comparing the key recorded in AddComponent gives the same
+    /// answer -- an integer compare on a miss, which is the common case. A
+    /// non-final T could be a base of the component, so GetComponent keeps the
+    /// original dynamic_cast scan for it, unchanged. That is why the leaf
+    /// components are marked final: the fast path is taken only where it is
+    /// provably the same answer, and adding a subclass later means removing
+    /// `final`, which falls back to correct-and-slower rather than silently
+    /// missing components.
+    template<typename T>
+    static bool is_exactly(const Component& comp) {
+        static_assert(std::is_final_v<T>, "only a final type can be matched by key");
+        if (comp.type_ == nullptr)                       // not created by AddComponent
+            return dynamic_cast<const T*>(&comp) != nullptr;
+        return comp.type_hash_ == detail::component_type_hash<T>() &&
+               *comp.type_ == typeid(T);
+    }
+
     /**
      * @brief Get component of type T (first found)
      */
     template<typename T>
     std::shared_ptr<T> GetComponent() {
         static_assert(std::is_base_of_v<Component, T>, "T must derive from Component");
-        
-        for (auto& comp : components_) {
-            if (auto casted = std::dynamic_pointer_cast<T>(comp)) {
-                return casted;
+
+        if constexpr (std::is_final_v<T>) {
+            for (auto& comp : components_)
+                if (comp && is_exactly<T>(*comp)) return std::static_pointer_cast<T>(comp);
+            return nullptr;
+        } else {
+            for (auto& comp : components_) {
+                if (auto casted = std::dynamic_pointer_cast<T>(comp)) {
+                    return casted;
+                }
             }
+            return nullptr;
         }
-        return nullptr;
     }
-    
+
     /**
      * @brief Get component of type T (const version)
      */
     template<typename T>
     std::shared_ptr<const T> GetComponent() const {
         static_assert(std::is_base_of_v<Component, T>, "T must derive from Component");
-        
-        for (const auto& comp : components_) {
-            if (auto casted = std::dynamic_pointer_cast<const T>(comp)) {
-                return casted;
+
+        if constexpr (std::is_final_v<T>) {
+            for (const auto& comp : components_)
+                if (comp && is_exactly<T>(*comp)) return std::static_pointer_cast<const T>(comp);
+            return nullptr;
+        } else {
+            for (const auto& comp : components_) {
+                if (auto casted = std::dynamic_pointer_cast<const T>(comp)) {
+                    return casted;
+                }
             }
+            return nullptr;
         }
-        return nullptr;
     }
-    
+
     /**
      * @brief Get all components of type T
      */
     template<typename T>
     std::vector<std::shared_ptr<T>> GetComponents() {
         static_assert(std::is_base_of_v<Component, T>, "T must derive from Component");
-        
+
         std::vector<std::shared_ptr<T>> result;
-        for (auto& comp : components_) {
-            if (auto casted = std::dynamic_pointer_cast<T>(comp)) {
-                result.push_back(casted);
+        if constexpr (std::is_final_v<T>) {
+            for (auto& comp : components_)
+                if (comp && is_exactly<T>(*comp)) result.push_back(std::static_pointer_cast<T>(comp));
+        } else {
+            for (auto& comp : components_) {
+                if (auto casted = std::dynamic_pointer_cast<T>(comp)) {
+                    result.push_back(casted);
+                }
             }
         }
         return result;

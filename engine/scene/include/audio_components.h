@@ -20,7 +20,7 @@ namespace schizo::scene {
  * @class AudioSourceComponent
  * @brief A sound emitter attached to an entity.
  */
-class AudioSourceComponent : public Component {
+class AudioSourceComponent final : public Component {
 public:
     AudioSourceComponent() = default;
     virtual ~AudioSourceComponent() = default;
@@ -96,7 +96,7 @@ private:
  * @brief The "ears" — one active listener (usually the camera/player) drives the
  * mixer's pan/attenuation. Pose comes from the entity's Transform.
  */
-class AudioListenerComponent : public Component {
+class AudioListenerComponent final : public Component {
 public:
     AudioListenerComponent() = default;
     virtual ~AudioListenerComponent() = default;
