@@ -3,6 +3,7 @@
 // ============================================================
 
 #include "asset_browser_panel.h"
+#include "asset_browser_paths.h"
 #include "doc_io.h"        // Phase 4 document templates + the .matgraph/.animgraph/.seq types
 
 #include "scene.h"
@@ -247,6 +248,7 @@ void AssetBrowserPanel::detect_roots() {
     }
 
     roots_.clear();
+    crumb_valid_ = false;   // its root index refers to the old list
     auto add = [&](const char* label, const fs::path& p) {
         std::error_code e2;
         if (fs::exists(p, e2) && fs::is_directory(p, e2)) roots_.push_back({label, p});
@@ -280,6 +282,7 @@ void AssetBrowserPanel::RefreshAssets() { dirty_ = true; }
 
 void AssetBrowserPanel::list_current() {
     entries_.clear();
+    subdir_cache_.clear();   // whatever made the listing stale may have moved folders too
     selected_ = -1;
     std::error_code ec;
 
@@ -500,33 +503,44 @@ void AssetBrowserPanel::render_toolbar() {
 }
 
 void AssetBrowserPanel::render_breadcrumbs() {
-    // Deepest pinned root containing current_; show clickable segments from it.
-    const Root* base = nullptr;
-    const std::string cur = current_.generic_string();
-    for (const auto& r : roots_) {
-        const std::string rp = r.path.generic_string();
-        if (cur.rfind(rp, 0) == 0 &&
-            (!base || rp.size() > base->path.generic_string().size()))
-            base = &r;
+    // Recomputed only when the folder changes (see crumb_key_). Deepest pinned
+    // root containing current_ -- chosen by string prefix, so the segments
+    // below it are taken lexically too; fs::relative would also have resolved
+    // the paths against the disk, every frame.
+    if (!crumb_valid_ || crumb_key_ != current_.native() ||
+        crumb_root_ >= static_cast<int>(roots_.size())) {
+        crumb_key_   = current_.native();
+        crumb_valid_ = true;
+        std::vector<fs::path> root_paths;
+        root_paths.reserve(roots_.size());
+        for (const auto& r : roots_) root_paths.push_back(r.path);
+        Breadcrumbs b = compute_breadcrumbs(current_, root_paths);
+        crumb_root_  = b.root;
+        crumb_ids_   = std::move(b.ids);
+        crumb_paths_ = std::move(b.paths);
+        crumb_text_  = current_.generic_string();
     }
-    if (!base) { ImGui::TextDisabled("%s", cur.c_str()); return; }
 
-    if (ImGui::SmallButton((base->label + "##bc_root").c_str())) navigate(base->path);
-    std::error_code ec;
-    const fs::path rel = fs::relative(current_, base->path, ec);
-    fs::path walk = base->path;
-    if (!ec && rel != fs::path(".")) {
-        int i = 0;
-        for (const auto& seg : rel) {
-            walk /= seg;
-            ImGui::SameLine(); ImGui::TextDisabled(">"); ImGui::SameLine();
-            const std::string id = seg.string() + "##bc" + std::to_string(i++);
-            if (ImGui::SmallButton(id.c_str())) { navigate(walk); break; }
-        }
+    if (crumb_root_ < 0) { ImGui::TextDisabled("%s", crumb_text_.c_str()); return; }
+    const Root& base = roots_[crumb_root_];
+    if (ImGui::SmallButton((base.label + "##bc_root").c_str())) { navigate(base.path); return; }
+    for (size_t i = 0; i < crumb_ids_.size(); ++i) {
+        ImGui::SameLine(); ImGui::TextDisabled(">"); ImGui::SameLine();
+        if (ImGui::SmallButton(crumb_ids_[i].c_str())) { navigate(crumb_paths_[i]); break; }
     }
 }
 
 void AssetBrowserPanel::render_tree() {
+    // Revalidate the cached folder tree now and then, so a folder created
+    // outside the editor shows up within a couple of seconds -- the file list
+    // has never noticed those at all, but the tree used to, by re-reading the
+    // disk every frame.
+    constexpr double kTreeRevalidateSeconds = 2.0;
+    const double now = ImGui::GetTime();
+    if (now - subdir_cache_time_ > kTreeRevalidateSeconds) {
+        subdir_cache_.clear();
+        subdir_cache_time_ = now;
+    }
     for (const auto& r : roots_) {
         ImGui::PushID(r.label.c_str());
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
@@ -545,16 +559,22 @@ void AssetBrowserPanel::render_tree() {
 
 void AssetBrowserPanel::render_tree_dir(const fs::path& dir, int depth) {
     if (depth > 24) return;
-    std::error_code ec;
-    std::vector<fs::path> subdirs;
-    for (fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end;
-         !ec && it != end; it.increment(ec)) {
-        std::error_code e2;
-        if (it->is_directory(e2)) subdirs.push_back(it->path());
+    // Listed from disk only on a cache miss (see subdir_cache_). The reference
+    // stays valid while the recursion below inserts other folders: an
+    // unordered_map never moves its elements.
+    auto [cached, miss] = subdir_cache_.try_emplace(dir.string());
+    std::vector<fs::path>& subdirs = cached->second;
+    if (miss) {
+        std::error_code ec;
+        for (fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end;
+             !ec && it != end; it.increment(ec)) {
+            std::error_code e2;
+            if (it->is_directory(e2)) subdirs.push_back(it->path());
+        }
+        std::sort(subdirs.begin(), subdirs.end(), [](const fs::path& a, const fs::path& b) {
+            return lower(a.filename().string()) < lower(b.filename().string());
+        });
     }
-    std::sort(subdirs.begin(), subdirs.end(), [](const fs::path& a, const fs::path& b) {
-        return lower(a.filename().string()) < lower(b.filename().string());
-    });
     for (const auto& sd : subdirs) {
         const std::string name = sd.filename().string();
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |

@@ -32,6 +32,17 @@ if(MINGW)
     target_link_options(componentsync_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# assetbrowserpaths_check: the asset browser's breadcrumbs, now computed lexically
+# once per folder change, must equal what fs::relative produced every frame
+# (which went through the file system: ~0.65 ms a frame in every scene).
+# Asserted against the old algorithm on real directories, with '.' and '..'.
+add_executable(assetbrowserpaths_check assetbrowserpaths_check/main.cpp)
+target_include_directories(assetbrowserpaths_check PRIVATE ../editor/include)
+target_compile_features(assetbrowserpaths_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(assetbrowserpaths_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # draworder_check: the radix front-to-back draw order (draw_order.h) must equal
 # the std::sort(depth, then material) order it replaced -- negative depths,
 # signed zeros (which must tie), mass ties falling back to material, and inputs

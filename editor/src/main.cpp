@@ -6612,6 +6612,16 @@ int main(int argc, char** argv) {
         }
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         glfwWindowHint(GLFW_RESIZABLE,  GLFW_TRUE);
+        // A --frames run is a measurement or a smoke test: it renders N frames
+        // and exits. It used to open in front of whatever the person at the
+        // machine was doing and take keyboard focus -- and a window that gets
+        // minimised or clicked mid-run changes the run (minimised, the editor
+        // sleeps; clicked, the camera moves). Shown without focus, it stays
+        // out of the way. Same size, so measurements are unaffected.
+        if (frame_limit > 0) {
+            glfwWindowHint(GLFW_FOCUSED,       GLFW_FALSE);
+            glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+        }
 
         // Per-machine graphics settings (performance audit F1/F7). Loaded before
         // the window so the render scale is known when the targets are sized.
@@ -6692,6 +6702,16 @@ int main(int argc, char** argv) {
             spdlog::error("glfwCreateWindow failed");
             glfwTerminate();
             return 1;
+        }
+        // ...and off-screen. Not focusing it was not enough: it still opened on
+        // top of the desktop, and a window someone minimises mid-run stalls the
+        // run (a minimised window has no framebuffer, so the editor sleeps).
+        // Placed just left of the primary monitor it is still a real, restored
+        // window with its full-size framebuffer -- it renders, presents and
+        // screenshots exactly as before -- but nobody has to look at it.
+        if (frame_limit > 0) {
+            glfwSetWindowPos(glfw_window, -static_cast<int>(win_w) - 64, 32);
+            spdlog::info("[frames] window placed off-screen for the {}-frame run", frame_limit);
         }
 
         // Size the offscreen 3D targets from the REAL framebuffer, not a

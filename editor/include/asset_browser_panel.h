@@ -22,6 +22,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 namespace schizo::scene { class Scene; }
 
@@ -107,6 +108,22 @@ private:
     std::filesystem::path   cwd_;            // runtime working dir
     std::filesystem::path   current_;        // directory shown in the right pane
     std::vector<AssetEntry> entries_;        // current dir listing (or search hits)
+    // Sorted subfolders per folder, for the tree. Cleared with the file listing
+    // (list_current) and at most every kTreeRevalidateSeconds, so a folder made
+    // in Explorer still appears -- it used to be read from disk every frame for
+    // every open tree node, ~0.65 ms a frame in every scene.
+    std::unordered_map<std::string, std::vector<std::filesystem::path>> subdir_cache_;
+    double subdir_cache_time_ = -1.0e9;
+    // Breadcrumb segments for current_, recomputed only when current_ changes.
+    // They were rebuilt every frame with fs::relative(), which canonicalises
+    // both paths through the file system -- syscalls on every frame to draw
+    // a row of folder names, ~0.65 ms a frame in every scene.
+    std::filesystem::path::string_type crumb_key_;
+    bool                               crumb_valid_ = false;
+    int                                crumb_root_  = -1;   // index into roots_, -1 = none
+    std::string                        crumb_text_;          // when no root contains current_
+    std::vector<std::string>           crumb_ids_;           // "<segment>##bc<i>"
+    std::vector<std::filesystem::path> crumb_paths_;         // where each segment navigates
     int                     selected_ = -1;
 
     char  search_buf_[128] = {};

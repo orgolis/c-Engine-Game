@@ -382,6 +382,30 @@ hang the editor the same way. The walk is now bounded by the entity count; a cyc
 root with a one-time warning, so a corrupted hierarchy shows up as wrong matrices and a log line,
 not a frozen editor.
 
+### (m) The asset browser asked the file system for its breadcrumbs every frame — fixed
+
+On plain MyGame, `ui_assetbrowser` was the single largest CPU zone: **~0.65 ms every frame, in every
+scene** — with the panel's tab not even visible (it ignores `ImGui::Begin`'s return). Zones inside it
+put the whole cost in the toolbar/breadcrumb row, where `render_breadcrumbs` called `fs::relative()`
+every frame. That is not string arithmetic: it canonicalises both paths through the file system.
+
+The breadcrumbs (`compute_breadcrumbs`, `editor/include/asset_browser_paths.h`) are now computed
+once per folder change, lexically — both sides `lexically_normal()`ed, which removes `.` and `..`
+as `fs::relative` did, without asking the disk. `ui_assetbrowser`: **0.652 → 0.010 ms**.
+`assetbrowserpaths_check` compares against the old `fs::relative` algorithm on real directories,
+including `.` and `..` paths and a folder no root contains; mutation-tested (dropping the
+normalisation fails 2).
+
+My first guess was the folder tree, which also re-listed directories from disk every frame for every
+open node. It is now cached too (cleared with the file listing and every 2 s, so a folder made in
+Explorer still appears), but it was not where this time went — the measurement after that change
+was unchanged. Recorded because the guess was plausible and wrong.
+
+**Measurement runs no longer appear on the desktop.** `--frames` windows open without focus and just
+left of the primary monitor: still a real, restored window with its full framebuffer, rendering and
+screenshotting as before. They used to open over whatever the person at the machine was doing; a
+minimised one stalls the run and a clicked one moves the camera, and both happened repeatedly.
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed
