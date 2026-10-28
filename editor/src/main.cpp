@@ -8706,12 +8706,14 @@ int main(int argc, char** argv) {
                     actor->set_model(sk_tf->GetWorldMatrix());
                 }
                 // Release actors whose entity is gone or no longer skinned.
+                // One id lookup per actor. This scanned the whole scene once PER
+                // ACTOR -- actors x entities a frame, a quadratic waiting for the
+                // first scene with a few skinned characters in it.
                 skinned_actors.prune([&sk_scene](uint32_t id) {
-                    for (const auto& e : sk_scene->GetEntities())
-                        if (e && e->GetId() == id) {
-                            auto* c = e->GetSkinnedMeshComponent();
-                            return c && c->active();
-                        }
+                    if (auto e = sk_scene->GetEntityById(id)) {
+                        auto* c = e->GetSkinnedMeshComponent();
+                        return c && c->active();
+                    }
                     return false;
                 });
             }
@@ -10161,6 +10163,7 @@ int main(int argc, char** argv) {
             // Skinning dispatch for every per-entity character, before the
             // shadow/geometry passes read the skinned vertex buffers.
             if (auto sk_scene2 = editor_state.editor_scene->GetScene()) {
+                GWS_PROFILE_ZONE("skinning_scan");
                 for (const auto& ent : sk_scene2->GetEntities()) {
                     if (!ent) continue;
                     auto* smc = ent->GetSkinnedMeshComponent();
@@ -10289,7 +10292,10 @@ int main(int argc, char** argv) {
                 const gws::renderer::gpu::Frustum light_frustum =
                     gws::renderer::gpu::Frustum::from_matrix(cam.proj * cam.view);
                 uint32_t lights_total = 0, lights_culled = 0;
-                const auto& scene_entities = editor_scene.GetScene()->GetEntities();
+                // Only the entities that have a light -- not the whole scene,
+                // which at 20k entities cost ~1.8 ms a frame to find two.
+                const auto& scene_entities =
+                    editor_scene.GetScene()->EntitiesWithAny<schizo::scene::LightComponent>();
                 for (const auto& entity : scene_entities) {
                     if (!entity || !entity->IsActiveInHierarchy()) continue;
                     auto lc = entity->GetComponent<schizo::scene::LightComponent>();
@@ -10441,6 +10447,7 @@ int main(int argc, char** argv) {
             // Run the ECS transform system FIRST so its world matrices are
             // ready, then feed them to the draw-list builder (authoritative:
             // build_draw_items reads ECS LocalToWorld, OOP matrix is fallback).
+            g_cp.mark("pre_ecs");
             { GWS_PROFILE_ZONE("ecs_sync");
               ecs_bridge.sync_and_run(editor_scene.GetScene()); }
             { GWS_PROFILE_ZONE("gameplay_tick");
@@ -10513,6 +10520,7 @@ int main(int argc, char** argv) {
                 }
             }
 
+            g_cp.mark("pre_build");
             { GWS_PROFILE_ZONE("build_draw_items");
               schizo::editor::build_draw_items(
                   editor_scene.GetScene(), prim_cache, mat_cache, asset_cache,
@@ -10871,6 +10879,7 @@ int main(int argc, char** argv) {
                 g_buffer->set_indirect_draws(nullptr);
             }
 
+            g_cp.mark("pre_record");
             gpu_zones.begin_frame(cmd, gpu_frame++);
             graph->begin_frame(cmd);
 
@@ -10956,6 +10965,7 @@ int main(int argc, char** argv) {
             const glm::mat4 sh_proj = shadow_active
                 ? shadow_view_proj
                 : graph->get_camera().proj;
+            g_cp.mark("pre_stages");
             { GWS_PROFILE_ZONE("stage_shadow");
             graph->execute_stage(cmd, RenderGraphStage::Shadow,
                 [&](VkCommandBuffer rec_cmd) {
@@ -11034,7 +11044,11 @@ int main(int argc, char** argv) {
             if (water_pass && !g_no_water) {
                 water_pass->begin_frame();
                 if (auto wscene = editor_state.editor_scene->GetScene()) {
-                    for (const auto& went : wscene->GetEntities()) {
+                    // Entities with water or terrain only, in scene order -- the
+                    // union, so an entity with both still adds its standalone
+                    // surface before its terrain water, as the full scan did.
+                    for (const auto& went : wscene->EntitiesWithAny<
+                             schizo::scene::WaterComponent, schizo::scene::TerrainComponent>()) {
                         if (!went || !went->IsActiveInHierarchy()) continue;
                         // Standalone water surfaces.
                         if (auto wc = went->GetComponent<schizo::scene::WaterComponent>()) {
@@ -11117,6 +11131,7 @@ int main(int argc, char** argv) {
                         }
                     }
                 }); }
+            g_cp.mark("pre_post");
             { GWS_PROFILE_ZONE("stage_post");
               graph->execute_stage(cmd, RenderGraphStage::PostProcess, {}); }
             graph->end_frame(cmd);

@@ -248,6 +248,48 @@ public:
     /// that rebuilds every frame has silently lost the point of caching them.
     uint64_t HookedListRebuilds() const { return hooked_rebuilds_; }
     size_t   HookedUpdateCount() const { return hooked_update_.size(); }
+
+    /// Entities with at least one component of any of Ts, in scene order.
+    ///
+    /// For per-frame "find the few entities that have X" loops -- the lights,
+    /// the water surfaces -- which used to walk the whole scene every frame to
+    /// find two entities: at 20k entities, ~1.8 ms for the lights alone.
+    /// Cached per type set and rebuilt only when the entity list or any
+    /// component set changes (the same signals as the per-hook lists), so a
+    /// steady scene pays nothing. Callers still check whatever per-frame state
+    /// they care about (active, enabled) on the few entities returned.
+    ///
+    /// The reference is valid until the next call for the same type set.
+    template <typename... Ts>
+    const std::vector<std::shared_ptr<Entity>>& EntitiesWithAny() {
+        static_assert(sizeof...(Ts) > 0, "name at least one component type");
+        std::size_t key = 0;
+        ((key = key * 1000003u ^ detail::component_type_hash<Ts>()), ...);
+        ComponentIndex& ix = component_index_[key];
+        const uint64_t gen = detail::component_set_generation();
+        if (!ix.built || ix.gen != gen || ix.version != entity_list_version_) {
+            ix.list.clear();
+            for (const auto& e : entities_)
+                if (e && (... || (e->GetComponent<Ts>() != nullptr)))
+                    ix.list.push_back(e);
+            ix.gen     = gen;
+            ix.version = entity_list_version_;
+            ix.built   = true;
+            ++component_index_rebuilds_;
+        }
+        return ix.list;
+    }
+    uint64_t ComponentIndexRebuilds() const { return component_index_rebuilds_; }
+
+private:
+    struct ComponentIndex {
+        std::vector<std::shared_ptr<Entity>> list;
+        uint64_t gen     = 0;
+        uint64_t version = 0;
+        bool     built   = false;
+    };
+    std::unordered_map<std::size_t, ComponentIndex> component_index_;
+    uint64_t component_index_rebuilds_ = 0;
 };
 
 } // namespace schizo::scene

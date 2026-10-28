@@ -184,6 +184,45 @@ int main() {
         check(scn->GetEntityCount() == count, "a Destroy()ed entity is removed on the next update");
     }
 
+    std::printf("\nEntitiesWithAny<...> finds exactly the entities a full scan would:\n");
+    {
+        // A fresh scene, so the expected lists are easy to state.
+        auto s2 = std::make_shared<Scene>("index");
+        auto lamp1 = s2->CreateEntity("lamp1");  lamp1->AddComponent<LightComponent>();
+        auto box   = s2->CreateEntity("box");    box->AddComponent<MeshRendererComponent>(MeshType::Cube);
+        auto both  = s2->CreateEntity("both");
+        both->AddComponent<ColliderComponent>(ColliderShape::Box);
+        both->AddComponent<LightComponent>();
+        auto lamp2 = s2->CreateEntity("lamp2");  lamp2->AddComponent<LightComponent>();
+
+        auto names = [](const std::vector<std::shared_ptr<Entity>>& v) {
+            std::string out;
+            for (const auto& e : v) out += e->GetName() + ",";
+            return out;
+        };
+        check(names(s2->EntitiesWithAny<LightComponent>()) == "lamp1,both,lamp2,",
+              "lights, in scene order");
+        check(names(s2->EntitiesWithAny<ColliderComponent, MeshRendererComponent>()) == "box,both,",
+              "a union keeps scene order, and lists an entity once");
+
+        const uint64_t r0 = s2->ComponentIndexRebuilds();
+        for (int i = 0; i < 50; ++i) (void)s2->EntitiesWithAny<LightComponent>();
+        check(s2->ComponentIndexRebuilds() == r0, "50 unchanged queries -> no rebuild");
+
+        auto lamp3 = s2->CreateEntity("lamp3");  lamp3->AddComponent<LightComponent>();
+        check(names(s2->EntitiesWithAny<LightComponent>()) == "lamp1,both,lamp2,lamp3,",
+              "an added entity appears");
+        box->AddComponent<LightComponent>();
+        check(names(s2->EntitiesWithAny<LightComponent>()) == "lamp1,box,both,lamp2,lamp3,",
+              "a component added to an existing entity appears, in its scene position");
+        both->RemoveComponent(both->GetComponent<LightComponent>());
+        check(names(s2->EntitiesWithAny<LightComponent>()) == "lamp1,box,lamp2,lamp3,",
+              "a removed component disappears");
+        s2->RemoveEntity(lamp2);
+        check(names(s2->EntitiesWithAny<LightComponent>()) == "lamp1,box,lamp3,",
+              "a removed entity disappears");
+    }
+
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     if (g_fail)
         std::printf("FAIL scenehooks_check — Scene::Update ran the wrong hooks, missed a change, "

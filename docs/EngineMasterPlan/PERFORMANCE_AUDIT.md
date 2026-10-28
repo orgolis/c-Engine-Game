@@ -241,6 +241,32 @@ the GPU is still executing the previous frame's TLAS build or ray queries when t
 them, that is a CPU/GPU race. It has not been observed; it needs synchronization validation before
 anyone claims either way.
 
+### (h) Whole-scene scans to find a few entities — lights and water indexed, a quadratic removed
+
+With the named systems fixed, five new checkpoints (`pre_ecs`, `pre_build`, `pre_record`,
+`pre_stages`, `pre_post`) located ~8.6 ms at 20k entities that no zone covered. One block,
+`pre_skinning → pre_ecs`, was 2.1 ms with no zone at all. The frame walks the whole scene **six times**
+to find a handful of entities: three times for skinned meshes, once for lights (~1.8 ms — two lights
+in this scene), once for water, and once **per skinned actor** to check that actor's entity still
+exists (actors × entities per frame — a quadratic waiting for the first scene with several characters).
+
+- `Scene::EntitiesWithAny<Ts...>()`: entities having any of the given component types, in scene
+  order, cached per type set and rebuilt only when the entity list or a component set changes — the
+  same signals as the per-hook lists. Lights use it; water uses the union `<Water, Terrain>`, which
+  keeps the original per-entity order.
+- The actor prune uses the scene's existing id map: one lookup per actor.
+- The three skinned-mesh scans remain (~0.2 ms each): `SkinnedMeshComponent` is a struct embedded in
+  `Entity`, not a `Component`, so no change signal exists to cache against.
+
+`pre_skinning → pre_ecs` @ 20k: **2.1 → 0.68 ms**. Screenshot A/B, two clean reruns per binary:
+0–1 pixel difference (noise floor). A first run differed across the whole viewport — its draw count
+was different too (15,627 vs 14,851): the editor camera had been moved by outside input while the
+window was up, not by this change, as the reruns showed.
+
+`scenehooks_check` gains the index: correct set in scene order, a union listed once and in order,
+additions and removals of components and entities, and no rebuild when unchanged. Mutation-tested:
+a never-refreshing index fails 4, a rebuild-every-query index fails 1.
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed
