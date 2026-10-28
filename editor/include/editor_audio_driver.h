@@ -40,7 +40,10 @@ public:
         // ---- Listener: first active AudioListener entity, else the fallback ----
         gws::audio::Listener lst = listener_fallback;
         glm::vec3 listener_pos = lst.position;
-        for (const auto& e : scene->GetEntities()) {
+        // Both loops visit only entities with the component they look for,
+        // in scene order (so "first active listener" still means the same
+        // one). They walked the whole scene, twice, every frame.
+        for (const auto& e : scene->EntitiesWithAny<scene::AudioListenerComponent>()) {
             if (!e || !e->IsActive()) continue;
             auto al = e->GetComponent<scene::AudioListenerComponent>();
             if (al && al->IsActive()) {
@@ -60,7 +63,7 @@ public:
 
         // ---- Sources ----
         seen_.clear();
-        for (const auto& e : scene->GetEntities()) {
+        for (const auto& e : scene->EntitiesWithAny<scene::AudioSourceComponent>()) {
             if (!e) continue;
             auto src = e->GetComponent<scene::AudioSourceComponent>();
             if (!src) continue;

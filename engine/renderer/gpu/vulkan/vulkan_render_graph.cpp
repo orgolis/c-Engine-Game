@@ -212,8 +212,8 @@ void VulkanRenderGraph::set_camera(const CameraData& camera) {
     }
 }
 
-void VulkanRenderGraph::set_draw_items(std::vector<DrawItem> draws) {
-    draw_items_ = std::move(draws);
+void VulkanRenderGraph::set_draw_items(const std::vector<DrawItem>& draws) {
+    draw_items_.assign(draws.begin(), draws.end());   // reuses capacity
 }
 
 void VulkanRenderGraph::begin_frame(VkCommandBuffer cmd) {

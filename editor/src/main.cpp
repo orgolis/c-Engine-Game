@@ -10694,7 +10694,9 @@ int main(int argc, char** argv) {
             // longer applies was_visible() itself, because it frustum-culls
             // its copy first and the shifted indices read the wrong draw's
             // visibility (the old "random objects disappear" bug).
-            std::vector<gws::renderer::gpu::DrawItem> geometry_draws;
+            // Persistent, like the other per-frame draw lists (see opaque_draws).
+            static std::vector<gws::renderer::gpu::DrawItem> geometry_draws;
+            geometry_draws.clear();
             bool hzb_did_filter = false;
             if (hzb_culler) {
                 GWS_PROFILE_ZONE("hzb_cull");
@@ -10806,7 +10808,9 @@ int main(int argc, char** argv) {
             // Blend materials cast binarised shadows (cutoff=0.5 in their
             // emissive_factor.a). Cutout materials use their per-material
             // cutoff. Opaque materials' cutoff is 0 → no discard branch.
-            std::vector<gws::renderer::gpu::DrawItem> shadow_draws;
+            // Persistent: a fresh 2 MB list every frame otherwise (see opaque_draws).
+            static std::vector<gws::renderer::gpu::DrawItem> shadow_draws;
+            shadow_draws.clear();
             shadow_draws.reserve(opaque_draws.size() + transparent_draws.size());
             shadow_draws.insert(shadow_draws.end(), opaque_draws.begin(), opaque_draws.end());
             shadow_draws.insert(shadow_draws.end(), transparent_draws.begin(), transparent_draws.end());

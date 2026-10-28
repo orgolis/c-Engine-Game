@@ -213,7 +213,12 @@ public:
     /// recorders iterate this list; bind material descriptor sets at set=1
     /// for geometry; bind only mesh+MVP for shadows. Pass an empty vector
     /// to fall back to the legacy demo-triangle behaviour (smoke tests).
-    void set_draw_items(std::vector<DrawItem> draws);
+    ///
+    /// Copied into the graph's own list, which keeps its capacity. This took
+    /// the vector BY VALUE and moved it in, so every frame paid an allocation
+    /// and a full copy into the parameter and freed the previous buffer --
+    /// 1.5 MB a frame at 15k draws.
+    void set_draw_items(const std::vector<DrawItem>& draws);
     const std::vector<DrawItem>& get_draw_items() const { return draw_items_; }
 
     /// Enable/disable frustum culling on the CPU before submission.
