@@ -20,6 +20,7 @@
 #include "ecs_bridge.h"   // authoritative ECS world matrices (Stage 1.4 step 2)
 #include "assets/asset_watcher.h"   // shared hot-reload file watching
 #include "jobs/task_runner.h"       // background OBJ parsing
+#include "jobs/job_system.h"        // build_draw_items phase one
 #include "asset_pipeline/obj_import.h"   // OBJ + .mtl (shared with the cooker)
 
 #include <chrono>
@@ -1244,6 +1245,29 @@ private:
 /// Output is split by alpha mode: AlphaMode::Blend entities go to
 /// `out_transparent` (rendered by the forward transparent pass), everything
 /// else goes to `out_opaque` (rendered by the deferred G-Buffer pass).
+namespace detail_draw {
+
+/// What phase one of build_draw_items learned about one entity, using only
+/// reads that are safe on any thread. Phase two acts on it in scene order.
+struct EntityDraw {
+    enum Kind : uint8_t { kSkip, kTerrain, kAsset, kPrimitive };
+    const schizo::scene::MeshRendererComponent* mr = nullptr;   // the entity owns it
+    gws::renderer::gpu::Mesh* mesh   = nullptr;   // primitive mesh, if any
+    uint64_t  material_key = 0;      // content hash of the inline material
+    glm::mat4 model{1.0f};
+    Kind      kind      = kSkip;
+    schizo::scene::AlphaMode am = schizo::scene::AlphaMode::Opaque;
+    bool      has_key   = false;     // false: resolve the material in phase two
+    bool      has_model = false;     // false: compute the OOP matrix in phase two
+};
+
+/// Below this, phase one runs on the calling thread: fanning out costs more
+/// than the work it spreads. Same reasoning, and order of magnitude, as
+/// culling.cpp's kParallelCullMin.
+inline constexpr size_t kParallelDrawBuildMin = 1024;
+
+}  // namespace detail_draw
+
 inline void build_draw_items(
     const std::shared_ptr<schizo::scene::Scene>& scene,
     const PrimitiveMeshCache& meshes,
@@ -1266,20 +1290,81 @@ inline void build_draw_items(
     out_transparent.clear();
     if (!scene) return;
 
-    for (const auto& ent : scene->GetEntities()) {
-        if (!ent || !ent->IsActiveInHierarchy()) continue;
+    // Two phases, because almost all of the per-entity cost is WAITING ON
+    // MEMORY -- the active check, the world matrix, the component lookups, the
+    // material hash, each a cache miss on a large Entity or a component -- and
+    // waiting on memory is what more cores do well. At 20k entities this loop
+    // was ~8 ms on one thread.
+    //
+    // Phase one runs on the job system and only reads: nothing it calls
+    // mutates shared state. Phase two runs here, in scene order, and does
+    // everything that touches a cache (materials, mesh assets, terrain), none
+    // of which is thread-safe. Phase two visiting entities in the same order as
+    // the old single loop is what keeps the output identical.
+    using detail_draw::EntityDraw;
+    const auto& ents = scene->GetEntities();
+    const size_t n_ents = ents.size();
+    static std::vector<EntityDraw> pending;   // persistent: no per-frame allocation
+    pending.resize(n_ents);
+
+    auto classify = [&](size_t i) {
+        EntityDraw& r = pending[i];
+        r = EntityDraw{};
+        const auto& ent = ents[i];
+        if (!ent || !ent->IsActiveInHierarchy()) return;
 
         // Authoritative: read the world matrix the ECS transform system
-        // computed this frame. Falls back to the OOP matrix for entities not
-        // in the shadow (e.g. before the first sync). These are verified
-        // equal, so this changes the data path, not the pixels.
-        schizo::scene::Transform* tf = ent->GetTransform();
-        const glm::mat4* ecs_model = ecs ? ecs->world_matrix(tf) : nullptr;
-        const glm::mat4 model = ecs_model ? *ecs_model : tf->GetWorldMatrix();
+        // computed this frame. These are verified equal to the OOP ones, so
+        // this changes the data path, not the pixels. NOT the OOP fallback
+        // here: Transform::GetWorldMatrix() recomputes into a mutable cache,
+        // and two threads doing that for a shared dirty parent race. An entity
+        // the ECS has not seen yet (created after this frame's sync) gets its
+        // OOP matrix in phase two instead.
+        const glm::mat4* ecs_model = ecs ? ecs->world_matrix(ent->GetTransform()) : nullptr;
+        if (ecs_model) { r.model = *ecs_model; r.has_model = true; }
+
+        if (ent->GetComponent<schizo::scene::TerrainComponent>()) {
+            r.kind = EntityDraw::kTerrain;
+            return;
+        }
+        auto mr = ent->GetComponent<schizo::scene::MeshRendererComponent>();
+        r.mr = mr.get();
+        r.am = mr ? mr->GetAlphaMode() : schizo::scene::AlphaMode::Opaque;
+        if (mr) {
+            r.mesh = meshes.get(mr->GetMeshType());
+            // An inline material reads only the component, so its key can be
+            // hashed here. An assigned .mat goes through MaterialAssetCache,
+            // which loads files on a miss -- phase two only.
+            if (r.mesh && !mr->HasMaterial()) {
+                r.material_key = resolve_entity_material(mr.get(), nullptr).content_hash();
+                r.has_key = true;
+            }
+        }
+        const auto* mc = ent->GetMeshComponent();
+        if (mc && !mc->mesh_path.empty()) r.kind = EntityDraw::kAsset;
+        else if (mr && r.mesh)            r.kind = EntityDraw::kPrimitive;
+    };
+    auto& js = gws::jobs::JobSystem::instance();
+    if (js.initialized() && n_ents >= detail_draw::kParallelDrawBuildMin)
+        js.parallel_for(0, n_ents, [&classify](size_t i) { classify(i); });
+    else
+        for (size_t i = 0; i < n_ents; ++i) classify(i);
+
+    // Consecutive entities very often share a material; remember the last.
+    // Pointers stay valid all frame: the cache only evicts in end_frame().
+    gws::renderer::gpu::Material* last_mat = nullptr;
+    uint64_t last_key = 0;
+
+    for (size_t i = 0; i < n_ents; ++i) {
+        const EntityDraw& r = pending[i];
+        if (r.kind == EntityDraw::kSkip) continue;
+        const auto& ent = ents[i];
+        const glm::mat4 model = r.has_model ? r.model : ent->GetTransform()->GetWorldMatrix();
 
         // Terrain takes precedence over mesh/primitive components. Chunked:
         // one DrawItem per (non-fully-holed) chunk mesh.
-        if (auto tc = ent->GetComponent<schizo::scene::TerrainComponent>()) {
+        if (r.kind == EntityDraw::kTerrain) {
+            auto tc = ent->GetComponent<schizo::scene::TerrainComponent>();
             const auto& chunk_meshes =
                 terrain_cache.get_or_build(ent->GetId(), tc.get(), device);
             if (!chunk_meshes.empty()) {
@@ -1324,15 +1409,14 @@ inline void build_draw_items(
             continue;   // terrain entity handled
         }
 
-        // Resolve the entity's alpha mode for the primitive path. For the
-        // asset path we route per-DrawItem based on the loaded glTF's
-        // per-material alphaMode (see below).
-        auto mr = ent->GetComponent<schizo::scene::MeshRendererComponent>();
-        schizo::scene::AlphaMode am = mr ? mr->GetAlphaMode()
-                                         : schizo::scene::AlphaMode::Opaque;
+        // The entity's alpha mode for the primitive path, resolved in phase
+        // one. For the asset path we route per-DrawItem based on the loaded
+        // glTF's per-material alphaMode (see below).
+        const schizo::scene::MeshRendererComponent* mr = r.mr;
+        const schizo::scene::AlphaMode am = r.am;
 
-        const auto* mc = ent->GetMeshComponent();
-        if (mc && !mc->mesh_path.empty()) {
+        if (r.kind == EntityDraw::kAsset) {
+            const auto* mc = ent->GetMeshComponent();
             const auto* loaded = asset_cache.get_or_load(
                 mc->mesh_path, device, mat_layout, mat_pool, textures);
             if (loaded && !loaded->draw_items.empty()) {
@@ -1346,7 +1430,7 @@ inline void build_draw_items(
                 gws::renderer::gpu::Material* override_mat = nullptr;
                 if (mr && mr->GetOverrideAssetMaterial()) {
                     override_mat = mat_cache.get_or_create(
-                        resolve_entity_material(mr.get(), material_assets),
+                        resolve_entity_material(mr, material_assets),
                         device, mat_layout, mat_pool, textures);
                 }
 
@@ -1378,17 +1462,26 @@ inline void build_draw_items(
         // Primitive-driven mesh (hierarchy "+ Add Entity").
         if (!mr) continue;
 
-        gws::renderer::gpu::Mesh* mesh = meshes.get(mr->GetMeshType());
+        gws::renderer::gpu::Mesh* mesh = r.mesh;
         if (!mesh) continue;
 
         // One resolution rule for both paths: an assigned .mat wins, otherwise
         // the component's inline fields. The alpha cutoff the G-Buffer and the
         // shadow caster need is derived inside the cache from the alpha mode,
         // so it cannot drift between the two call sites the way it used to.
-        gws::renderer::gpu::Material* mat = mat_cache.get_or_create(
-            resolve_entity_material(mr.get(), material_assets),
-            device, mat_layout, mat_pool, textures);
+        //
+        // An inline material was hashed in phase one, so a built one is found
+        // by key -- the same entry get_or_create() would return for the same
+        // desc. Only a miss, or an assigned .mat, resolves the desc here.
+        gws::renderer::gpu::Material* mat = nullptr;
+        if (r.has_key)
+            mat = (last_mat && r.material_key == last_key) ? last_mat
+                                                            : mat_cache.find(r.material_key);
+        if (!mat)
+            mat = mat_cache.get_or_create(resolve_entity_material(mr, material_assets),
+                                          device, mat_layout, mat_pool, textures);
         if (!mat) continue;
+        if (r.has_key) { last_key = r.material_key; last_mat = mat; }
 
         gws::renderer::gpu::DrawItem di;
         di.mesh          = mesh;

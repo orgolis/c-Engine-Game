@@ -183,6 +183,32 @@ and on the matrix table. Per-entity work that waits on memory scales with the co
 requests, which is the job system's case. (In-loop timers at this granularity add more than they
 measure — six clock reads per entity — so these splits are directional, not exact.)
 
+### (f) Draw building on the job system — done
+
+`build_draw_items` is now two phases. **Phase one runs on the job system** (above 1,024 entities) and
+only reads: active check, the ECS world matrix, component lookups, primitive mesh, and the inline
+material's content hash. **Phase two runs on the main thread in scene order** and does everything
+that touches a cache — materials (resolved by the key phase one computed, with the last hit
+remembered), mesh assets, terrain — none of which is thread-safe. Visiting entities in the same order
+as the old single loop keeps the output identical.
+
+One race had to be designed out rather than locked around: `Transform::GetWorldMatrix()` recomputes
+into a `mutable` cache when dirty, so two workers computing a shared dirty parent would race. Phase
+one never calls it — it takes only the matrix the ECS mirror already computed, and an entity created
+after this frame's sync gets its OOP matrix in phase two.
+
+Interleaved A/B, two rounds, 20k entities on a 6-core / 12-thread Ryzen 5 4500:
+
+| | Serial | Two-phase |
+|---|---|---|
+| `build_draw_items` | 7.28 / 6.93 ms | **1.90 / 1.80 ms** (3.8×) |
+| frame | 44.4 / 45.2 ms | **38.5 / 38.4 ms** |
+| draws / triangles | 14,851 / 5,365,539 | identical |
+| viewport pixels vs serial | — | **0 changed** (noise floor between serial runs: 0) |
+
+No check accompanies it: the function needs a live device for its material cache. The evidence is
+the identical counts and pixels, and phase one being read-only by construction.
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed

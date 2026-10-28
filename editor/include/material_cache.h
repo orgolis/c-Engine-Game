@@ -78,6 +78,20 @@ inline constexpr uint64_t kMaterialGpuMinAgeFrames = 8;
 
 class MaterialGpuCache {
 public:
+    /// The material get_or_create() would return for a desc whose
+    /// content_hash() is `key`, if it is already built -- marked used this
+    /// frame exactly as get_or_create's hit path marks it. Null if not built.
+    ///
+    /// For callers that computed the key elsewhere: draw building hashes each
+    /// entity's material on the job system, where this cache (which is not
+    /// thread-safe) cannot be touched, then resolves keys here in order.
+    gws::renderer::gpu::Material* find(uint64_t key) {
+        auto it = entries_.find(key);
+        if (it == entries_.end()) return nullptr;
+        it->second.last_used = frame_;
+        return it->second.material.get();
+    }
+
     /// Build (or fetch) the GPU material for `desc`. Materials with equal
     /// content share one descriptor set.
     ///
