@@ -7563,6 +7563,14 @@ int main(int argc, char** argv) {
         // Game windows never touch editor.ini (they draw no docked layout and
         // must not clobber the editor's persisted one).
         ImGui::GetIO().IniFilename = game_window_mode ? nullptr : "editor.ini";
+        // A --frames run is automation (smoke tests, measurements): it reads the
+        // user's layout, so the viewport is the size they actually work at, but
+        // never writes it back. It used to save editor.ini on every exit --
+        // into the project folder of whoever ran a benchmark against it.
+        if (frame_limit > 0 && !game_window_mode) {
+            ImGui::LoadIniSettingsFromDisk("editor.ini");
+            ImGui::GetIO().IniFilename = nullptr;
+        }
         spdlog::info("ImGuiVulkan initialized");
 
         // ----------------------------------------------------------------
@@ -9251,8 +9259,10 @@ int main(int argc, char** argv) {
                     // the two are committed together — a crash before this point
                     // re-triggers the migration instead of leaving the version
                     // bumped but the new panels unsaved (floating) next launch.
-                    ImGui::SaveIniSettingsToDisk(ImGui::GetIO().IniFilename);
-                    std::ofstream("editor_layout.version") << kEditorDockLayoutVersion;
+                    if (ImGui::GetIO().IniFilename != nullptr) {   // null: a --frames run
+                        ImGui::SaveIniSettingsToDisk(ImGui::GetIO().IniFilename);
+                        std::ofstream("editor_layout.version") << kEditorDockLayoutVersion;
+                    }
                 }
                 ImGui::DockSpaceOverViewport(
                     dockspace_id, ImGui::GetMainViewport(),
