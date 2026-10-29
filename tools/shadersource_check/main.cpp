@@ -68,6 +68,7 @@
 #include "gbuffer_scene_instanced_spirv.h"
 #include "lighting_pass_spirv.h"
 #include "lighting_pass_nort_spirv.h"
+#include "lighting_pass_rt_novote_spirv.h"
 #include "shadow_caster_spirv.h"
 #include "transparent_pass_spirv.h"
 #include "transparent_composite_spirv.h"
@@ -241,12 +242,14 @@ int main(int argc, char** argv) {
         // The lighting pass: the most expensive shader in the engine, the one
         // whose source was once in the tree not even compiling, and — until
         // tools/ became resolvable above — the one case this check could not
-        // cover at all. Both variants come from the ONE source and must be
+        // cover at all. All three variants come from the ONE source and must be
         // regenerated together (tools/regen_lighting_spirv.sh); covering only
         // the ray-query one would miss exactly the drift that script exists to
         // prevent, which shows up solely on machines without ray tracing.
         {"lighting_pass.vert",         kLightingPassVertSpv,         kLightingPassVertSpv_size},
         {"lighting_pass.frag",         kLightingPassFragSpv,         kLightingPassFragSpv_size,
+                                       "-DGWS_RAY_QUERY -DGWS_SUBGROUP_VOTE"},
+        {"lighting_pass.frag",         kLightingPassFragRtNoVoteSpv, kLightingPassFragRtNoVoteSpv_size,
                                        "-DGWS_RAY_QUERY"},
         {"lighting_pass.frag",         kLightingPassFragNoRtSpv,     kLightingPassFragNoRtSpv_size},
     };

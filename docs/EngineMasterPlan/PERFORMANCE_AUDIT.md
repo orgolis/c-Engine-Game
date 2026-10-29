@@ -674,6 +674,62 @@ translucency), the check fails first, so they re-decide whether the skip still h
 tested: all six mutations are caught (deleted, moved after the shadow calls, radiance condition
 dropped, a back-light term added, denominator unguarded, NdotL unclamped).
 
+### (r) A warp votes on its shadow probes — Lighting roughly a third of what it was
+
+**Why not a screen-space edge pre-pass.** The obvious idea — find shadow edges in screen space and
+trace one ray elsewhere — cannot keep the look. A fixed neighbourhood can certify a pixel as solid only
+when the penumbra is narrower than the neighbourhood. A distant occluder's penumbra can be metres
+wide, so the gradient would be cut off at the window's edge.
+
+**The vote** works at the GPU's own granularity and adds no pass:
+- Each pixel traces **one** ray of its probe half. Which one is picked per pixel, so across a warp the
+  probes cover every ring of the cone at every angle.
+- The warp compares answers (`subgroupAllEqual`). If at least 16 pixels are active and all agree, every
+  pixel returns that answer: **one ray instead of four** for the whole warp.
+- Otherwise the probe counts as that ray of the probe half, and every pixel finishes F13's estimator
+  exactly as before. That means it **never traces more rays** and split warps are **exact**.
+
+A warp is misread only where all its probes missed an occluder the full estimator would have seen. That
+needs the region to be occluded by a few percent at most: 32 probes all miss a 5% occlusion 19% of the
+time, and a 1/8 occlusion 1.4% of the time. That is the faint outer edge of a penumbra, nearly always
+within F13's own 1/N bound.
+
+**Measured on the fixed baseline (F15)**, with shadows that work. VSync off, frame-paired, interleaved:
+
+| Lighting | Without the vote | With the vote | Paired samples lower |
+|---|---|---|---|
+| MyGame | 6.7 / 8.2 ms | **2.5 / 2.7 ms** | 16 of 16 |
+| 20k entities | 7.6 / 10.1 ms | **4.1 / 4.2 ms** | 16 of 16 |
+| shadow test scene | (small) | −0.6 / −1.5 ms | 6 of 6 |
+
+**Image**, measured on a scene built to show penumbras: a strong low sun, casters from contact height
+up to a plate 3 m in the air, and thin bars with overlapping penumbras. That scene is deterministic, with
+0 px between same-binary runs. With the vote, **81 px move by ≥4 levels (0.015% of the viewport)** and
+the maximum is 13. These are scattered 2–4 px specks at faint outer edges, not warp-shaped blocks. MyGame
+and 20k show the same scale once run-state noise is excluded (85 / 92 px, max 13 / 16). F13's precedent
+was 0.05% of pixels moving by more than 3 levels. Validation layers report the same VUID set with and
+without the vote.
+
+**Where it may run.** Subgroup vote and ballot in the fragment stage are optional in Vulkan; only compute
+is guaranteed. SPIR-V declaring an unsupported capability is invalid usage, and a driver may answer it by
+crashing in pipeline creation, as ray query once did on an RX 5700. So there are now **three** lighting
+variants from one source:
+- ray query + vote (the default);
+- ray query without the vote;
+- no ray query.
+
+`VulkanDevice::has_fragment_subgroup_vote()` requires both vote and ballot in the fragment stage.
+`GWS_NO_SUBGROUP_VOTE=1` forces the fallback. Rendered against the pre-vote build, the fallback is
+**pixel-identical (0 px)**. `shadersource_check` pins all three variants.
+
+`shadowvote_check` models the estimator on 32,000 random warps (every ray count, solid, penumbra, mixed,
+warps below the 16 floor). It asserts that the probe is always an even index inside the probe half,
+that **no warp ever traces more rays** than before, and that **every split warp is exact pixel for
+pixel**. It also pins the shader lines the model mirrors, the regen script's three variants, the
+lighting pass's selection and the device query. Mutation-tested: all nine mutations are caught (odd
+probe, probe not reused, no voter floor, in the model and in the shader; regen without the fallback;
+vote variant whenever RT; compute-stage support accepted).
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed

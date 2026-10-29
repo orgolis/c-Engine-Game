@@ -10,7 +10,7 @@
 // 10-series and most integrated GPUs are all in that category -- this was not
 // an exotic configuration.
 //
-// Regenerate BOTH variants together with tools/regen_lighting_spirv.sh.
+// Regenerate ALL variants together with tools/regen_lighting_spirv.sh.
 #pragma once
 #include <cstdint>
 

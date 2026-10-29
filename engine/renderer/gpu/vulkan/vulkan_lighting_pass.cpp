@@ -10,6 +10,7 @@
 #include "vulkan_texture.h"        // RGBA32F LTC LUT textures (area lights)
 #include "lighting_pass_spirv.h"  // pre-compiled SPIR-V fallback for GCC builds
 #include "lighting_pass_nort_spirv.h"   // non-ray-traced variant (RDNA1/GTX10/Intel)
+#include "lighting_pass_rt_novote_spirv.h"   // ray query without the fragment-stage warp vote
 #include "ltc_matrix.h"           // embedded LTC1/LTC2 area-light tables
 #include <spdlog/spdlog.h>
 #include <stdexcept>
@@ -881,18 +882,30 @@ void VulkanLightingPass::create_pipeline() {
     // vkCreateGraphicsPipelines on an AMD RX 5700 -- no error, no validation
     // message, just a dead process. RDNA 1, GTX 10-series and most integrated
     // GPUs are all in that category, so this was not an exotic configuration.
-    const bool rt = device_->has_ray_tracing();
-    auto frag = rt
+    //
+    // A THIRD for the same reason: the ray-query variant also lets a warp vote
+    // on its shadow probes, which needs subgroup vote + ballot in the fragment
+    // stage -- optional in Vulkan (only compute is guaranteed). A ray-tracing
+    // GPU without it gets the same shader minus the vote: identical shadows,
+    // just the warp-wide early-out missing.
+    const bool rt   = device_->has_ray_tracing();
+    const bool vote = rt && device_->has_fragment_subgroup_vote();
+    auto frag = vote
         ? shader_registry_->create_from_spirv(kLightingPassFragSpv,
                                               kLightingPassFragSpv_size,
                                               ShaderStage::Fragment,
                                               "lighting_pass.frag")
+        : rt
+        ? shader_registry_->create_from_spirv(kLightingPassFragRtNoVoteSpv,
+                                              kLightingPassFragRtNoVoteSpv_size,
+                                              ShaderStage::Fragment,
+                                              "lighting_pass.frag[rt-no-vote]")
         : shader_registry_->create_from_spirv(kLightingPassFragNoRtSpv,
                                               kLightingPassFragNoRtSpv_size,
                                               ShaderStage::Fragment,
                                               "lighting_pass.frag[no-rt]");
     spdlog::info("VulkanLightingPass: using the {} fragment shader",
-                 rt ? "ray-query" : "non-ray-traced");
+                 vote ? "ray-query" : rt ? "ray-query (no warp vote)" : "non-ray-traced");
     if (!vert || !frag) {
         throw std::runtime_error("Failed to compile lighting shaders");
     }

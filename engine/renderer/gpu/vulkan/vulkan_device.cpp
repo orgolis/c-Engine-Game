@@ -1040,6 +1040,30 @@ void VulkanDevice::create_logical_device() {
         GWS_LOG_INFO("Ray tracing extensions not available on this device — RT disabled");
     }
 
+    // Subgroup vote + ballot in the FRAGMENT stage: the ray-query lighting
+    // shader lets a warp vote on its shadow probes (see rayQueryShadow). Core
+    // Vulkan 1.1 only guarantees subgroup operations in compute, and SPIR-V
+    // declaring an unsupported capability is invalid usage that a driver may
+    // answer by crashing in pipeline creation (it happened with ray query on an
+    // RX 5700), so the lighting pass picks a variant from this.
+    // GWS_NO_SUBGROUP_VOTE=1 forces the fallback (an A/B in one binary).
+    {
+        VkPhysicalDeviceSubgroupProperties sg{};
+        sg.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+        VkPhysicalDeviceProperties2 sg_props2{};
+        sg_props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        sg_props2.pNext = &sg;
+        vkGetPhysicalDeviceProperties2(physical_device, &sg_props2);
+        const VkSubgroupFeatureFlags need = VK_SUBGROUP_FEATURE_VOTE_BIT | VK_SUBGROUP_FEATURE_BALLOT_BIT;
+        const bool env_off = std::getenv("GWS_NO_SUBGROUP_VOTE") != nullptr;
+        fragment_subgroup_vote_ = !env_off &&
+                                  (sg.supportedStages & VK_SHADER_STAGE_FRAGMENT_BIT) != 0 &&
+                                  (sg.supportedOperations & need) == need;
+        GWS_LOG_INFO("Fragment-stage subgroup vote/ballot: {} (subgroup size {}{})",
+                     fragment_subgroup_vote_ ? "yes" : "no", sg.subgroupSize,
+                     env_off ? ", disabled by GWS_NO_SUBGROUP_VOTE" : "");
+    }
+
     // Features2 UNCONDITIONALLY now. Bindless has to be chained whether or not
     // ray tracing is on, and the old shape -- pEnabledFeatures when RT was off,
     // the chain when it was on -- had no room for a second optional feature

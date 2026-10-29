@@ -32,6 +32,14 @@ if(MINGW)
     target_link_options(componentsync_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# shadowvote_check: the soft-shadow warp vote never costs a ray, leaves split
+# warps exact, and only reaches GPUs with fragment-stage subgroup vote/ballot.
+add_executable(shadowvote_check shadowvote_check/main.cpp)
+target_compile_features(shadowvote_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(shadowvote_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # shadowskip_check: the lighting pass returns before tracing shadow rays for a
 # surface facing away from the light (its result is multiplied by NdotL = 0).
 # Pins the skip ahead of every shadow call and the premises that keep it exact.

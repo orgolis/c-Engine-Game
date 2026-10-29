@@ -318,6 +318,11 @@ public:
 
     bool has_ray_tracing() const { return ray_tracing_supported_; }
 
+    /// Subgroup vote and ballot are usable in fragment shaders. Optional in
+    /// Vulkan (only compute is guaranteed), so the lighting pass only builds
+    /// its warp-vote variant when this is true.
+    bool has_fragment_subgroup_vote() const { return fragment_subgroup_vote_; }
+
     /// Resolved RT extension function pointers. Only valid when
     /// `has_ray_tracing()` returns true — call sites must check first.
     const struct VulkanRtFunctions* get_rt_functions() const {
@@ -410,6 +415,7 @@ private:
     // were available and the rayQuery + accelerationStructure features
     // were enabled on the logical device. See `has_ray_tracing()`.
     bool ray_tracing_supported_ = false;
+    bool fragment_subgroup_vote_ = false;
     bool bindless_supported_    = false;
     uint32_t max_bindless_textures_ = 0;
     /// Table size ceiling. Drivers report maxima in the millions; a pool sized

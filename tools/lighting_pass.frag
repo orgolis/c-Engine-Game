@@ -2,6 +2,10 @@
 #ifdef GWS_RAY_QUERY
 #extension GL_EXT_ray_query : require
 #endif
+#ifdef GWS_SUBGROUP_VOTE
+#extension GL_KHR_shader_subgroup_vote : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#endif
 
 layout(location = 0) in vec2 inTexCoord;
 layout(location = 0) out vec4 outColor;
@@ -301,12 +305,43 @@ float rayQueryShadow(vec3 worldPos, vec3 normal, vec3 ray_dir, float t_max) {
     // and is worth one ray's step (1/N) -- the same step the per-pixel rotation
     // already dithers by. Below four rays the probe half is one or two rays,
     // too few to call a pixel solid, so every ray is traced as before.
+    //
+    // A warp votes before any pixel traces the rest of its probe half. Each
+    // pixel traces ONE ray of that half -- which one is picked per pixel, so
+    // across a warp the probes land on every ring of the cone at every angle --
+    // and if every active pixel of the warp (16 at least) got the same answer,
+    // they all return it: one ray instead of four for the whole warp. Otherwise
+    // the probe simply counts as that ray of the half below, so a pixel in a
+    // split warp traces exactly what it traced before; this never costs a ray.
+    // A warp is misread only where all of its probes missed an occluder that
+    // the full estimator would have seen -- i.e. where its region is occluded
+    // by a few percent at most (32 probes all miss a 5% occlusion 19% of the
+    // time, a 10% one 3%, a 1/8 one 1.4%): the faint outer edge of a penumbra
+    // again, nearly always within the 1/N bound above.
     float lit = 0.0;
     int   probes = 0;
+#ifdef GWS_SUBGROUP_VOTE
+    int k = -1;
+    if (kConeRays >= 4) {
+        const int half_count = (kConeRays + 1) / 2;
+        k = 2 * min(int(aoHash(gl_FragCoord.yx + vec2(41.0, 289.0)) * float(half_count)), half_count - 1);
+        float probe = rayQueryShadowOne(origin, coneRayDir(ray_dir, tx, ty, spread, ang, k, kConeRays), t_max);
+        if (subgroupBallotBitCount(subgroupBallot(true)) >= 16u && subgroupAllEqual(probe))
+            return probe;
+        lit = probe;
+        probes = 1;
+    }
+    for (int i = 0; i < kConeRays; i += 2) {
+        if (i == k) continue;
+        lit += rayQueryShadowOne(origin, coneRayDir(ray_dir, tx, ty, spread, ang, i, kConeRays), t_max);
+        ++probes;
+    }
+#else
     for (int i = 0; i < kConeRays; i += 2) {
         lit += rayQueryShadowOne(origin, coneRayDir(ray_dir, tx, ty, spread, ang, i, kConeRays), t_max);
         ++probes;
     }
+#endif
     if (kConeRays >= 4 && (lit == 0.0 || lit == float(probes)))
         return lit / float(probes);
     for (int i = 1; i < kConeRays; i += 2)
