@@ -568,6 +568,51 @@ the flag survives moves.
 decimated tier lies partly inside LOD 0. The self-shadowing risk applies to them. The general fix is
 per-instance LOD selection in the TLAS (one BLAS per tier); not done.
 
+### (q) Shadow rays for surfaces facing away from the light — skipped
+
+**Where the 20k frame's GPU time goes now.** A decomposition by render setting (VSync off, lower
+quartile of each run, since preemption only ever adds time):
+
+| Lighting pass @ 20k | 8 shadow rays (High) | 1 shadow ray | RT off |
+|---|---|---|---|
+| two rounds | 9.4 / 10.4 ms | 2.6 / 2.5 ms | 1.9 / 1.7 ms |
+
+About 7 of Lighting's ~10 ms is the soft-shadow cone. F13's split traces at least four rays per pixel
+and eight in a penumbra. Each ray costs ~1.5 ms here, against ~1.1 ms on plain MyGame: more
+TLAS to traverse. The BLAS and TLAS are already built `PREFER_FAST_TRACE` with opaque geometry and
+opaque rays, so the build flags are not the lever.
+
+**The waste:** `evaluateLight()` traced those rays before looking at whether the surface faced the
+light at all. The light's whole contribution is `(kD·albedo/π + specular) · radiance · NdotL ·
+shadow`, every factor but `shadow` is finite (the specular denominator carries +1e-4), and `NdotL`
+is `max(dot(N, L), 0)`. So on a back face, or outside a spot's cone or cookie, the result is exactly
+zero whatever the rays say. It now returns zero before any shadow evaluation. Back faces come in
+coherent regions (the far half of every object), so whole warps skip.
+
+| @ 20k, RT, 8 rays, VSync off | Lighting, paired by frame index (base → new) |
+|---|---|
+| round 1 | median −0.62 ms, lower in 8 of 8 samples |
+| round 2 | median −2.05 ms, lower in 8 of 8 samples |
+
+On plain MyGame, with few back faces in view, there was no effect detectable under the noise
+(+1.9 / −1.3 ms).
+
+**Exactness, tested with a control.** On MyGame, base and new images differed by ~60 px of ≥32
+levels on one grazing-lit band, where both binaries show speckles. A control binary carried the
+same branch behind a runtime-opaque guard (`pc.lightCount > 1000000u && …`): same code shape, old
+behaviour. Ten runs over the three binaries fell into **three discrete image states**, and **the
+baseline binary itself produced two of them**. The ~60 px is which state a run lands in, not the
+change. That also sharpens the open nondeterminism finding below: the states are discrete, like a
+readback that lands a frame early or late, not continuous noise. At 20k the cross-mode differences
+equal the same-mode ones exactly.
+
+`shadowskip_check` pins the skip ahead of every shadow call, plus the premises that keep it exact:
+`NdotL` clamped and set before it, `radiance` final before it, the result a single product with
+both, only two returns, and the +1e-4. If anyone adds a term outside the product (back-lighting,
+translucency), the check fails first, so they re-decide whether the skip still holds. Mutation-
+tested: all six mutations are caught (deleted, moved after the shadow calls, radiance condition
+dropped, a back-light term added, denominator unguarded, NdotL unclamped).
+
 ---
 
 ## F13 — soft shadows traced the whole cone for pixels that did not need it 🔴 → fixed

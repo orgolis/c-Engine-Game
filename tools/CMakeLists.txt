@@ -32,6 +32,15 @@ if(MINGW)
     target_link_options(componentsync_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# shadowskip_check: the lighting pass returns before tracing shadow rays for a
+# surface facing away from the light (its result is multiplied by NdotL = 0).
+# Pins the skip ahead of every shadow call and the premises that keep it exact.
+add_executable(shadowskip_check shadowskip_check/main.cpp)
+target_compile_features(shadowskip_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(shadowskip_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # primitivelod_check: the curved primitives' LOD tiers switch in only where the
 # tier's deviation from LOD 0 projects under half a pixel. The error formula
 # deciding that is measured against the real tessellation (sampled triangles)

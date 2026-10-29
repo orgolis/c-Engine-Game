@@ -505,6 +505,12 @@ vec3 evaluateLight(Light L, vec3 N, vec3 V, vec3 worldPos,
             radiance = vec3(0.0);
         }
     }
+    // A surface facing away from the light, or outside a spot's cone or
+    // cookie, gets exactly nothing from it: NdotL or radiance is zero, and the
+    // result below is a product of finite terms (the specular denominator
+    // carries +1e-4), so it is zero whatever the shadow says. Its shadow rays
+    // used to be traced anyway -- four to eight per pixel on every back face.
+    if (NdotL <= 0.0 || all(equal(radiance, vec3(0.0)))) return vec3(0.0);
     float shadow;
     if (L.position.w == 1.0)      shadow = pointShadow(worldPos, N, L);
     else if (L.position.w == 2.0) shadow = spotShadow(worldPos, N, L);
