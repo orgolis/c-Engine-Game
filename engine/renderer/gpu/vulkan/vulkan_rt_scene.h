@@ -113,17 +113,34 @@ private:
     // this, so steady-state frames just refit / rebuild in place.
     VkDeviceSize          tlas_capacity_ = 0;
 
-    // Reused per-frame instance buffer (host-visible, mapped once).
-    VkBuffer        instance_buffer_       = VK_NULL_HANDLE;
-    VkDeviceMemory  instance_memory_       = VK_NULL_HANDLE;
-    void*           instance_mapped_       = nullptr;
-    VkDeviceSize    instance_capacity_     = 0;
+    // Host-written buffers get one slot per frame in flight, plus one. The CPU
+    // records frame N while frame N-1 may still be executing (the renderer
+    // waits only for frame N-2's fence), so a single buffer was overwritten
+    // under a frame that had not read it yet. A slot is written again three
+    // updates later, when the frame that used it has retired.
+    static constexpr uint32_t kHostRing = 3;
+    struct HostSlot {
+        VkBuffer       buffer   = VK_NULL_HANDLE;
+        VkDeviceMemory memory   = VK_NULL_HANDLE;
+        void*          mapped   = nullptr;
+        VkDeviceSize   capacity = 0;
+    };
+    bool ensure_host_slot(HostSlot& slot, VkDeviceSize size, VkBufferUsageFlags usage);
+    void destroy_host_slot(HostSlot& slot);
 
-    // Per-instance shading data SSBO (host-visible), parallel to the TLAS
-    // instances. Indexed by DrawItem index = instanceCustomIndex.
+    // TLAS build input -- read by the build through its device address only,
+    // so it can change every frame without touching a descriptor.
+    HostSlot instance_ring_[kHostRing];
+
+    // Per-instance shading data SSBO, parallel to the TLAS instances, indexed
+    // by DrawItem index = instanceCustomIndex. DEVICE-LOCAL with a stable
+    // handle, because the reflection and DDGI passes bind it through
+    // descriptor sets that a frame in flight may still be using; each frame's
+    // records are written to a staging slot and copied in on the GPU timeline,
+    // after the previous frame's reads.
+    HostSlot        instance_data_staging_[kHostRing];
     VkBuffer        instance_data_buffer_   = VK_NULL_HANDLE;
     VkDeviceMemory  instance_data_memory_   = VK_NULL_HANDLE;
-    void*           instance_data_mapped_   = nullptr;
     VkDeviceSize    instance_data_capacity_ = 0;
 
     // Reused scratch buffer — grown as needed.

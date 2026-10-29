@@ -24,6 +24,62 @@ of them already exist and work — which is why they have not helped.
 
 ---
 
+## F16 — the ray-tracing scene raced the frame in flight 🟠 → fixed
+
+**The open finding behind it:** identical runs, with fixed dt, ended in different images. There were
+three distinct results in three runs at 20k entities, in discrete states rather than noise (see F14 (q)).
+
+**The mechanism.** The editor keeps two frames in flight (`kMaxFrames = 2`): before recording frame N it
+waits only for frame N−2. `VulkanRtScene` assumed it had the GPU to itself:
+- the TLAS was **rebuilt in place** with no barrier against frame N−1's ray queries (lighting,
+  reflections, AO, DDGI);
+- every build shared **one scratch buffer**, with nothing ordering frame N's builds after frame N−1's;
+- the TLAS **instance records** and the reflection/DDGI **shading SSBO** were written by the CPU straight
+  into single host-visible buffers that frame N−1 could still be reading;
+- when the scene grew, those buffers and the TLAS were **destroyed on the spot**, under frame N−1. That is
+  a use-after-free that fires while a project loads; comments elsewhere already describe a "white window"
+  device loss at that moment.
+
+**Fix:**
+- a barrier at the start of `update()` orders the frame's builds after the previous frame's fragment
+  and compute ray queries and its builds (submission order spans command buffers on one queue);
+- the two host-written buffers come from a ring of three slots, deeper than the frames in flight;
+- the shading SSBO the passes bind is now device-local with a stable handle. Each frame's records go to
+  a staging slot and are copied in on the GPU timeline, fenced after the previous frame's reads;
+- replacing a grown TLAS or SSBO first drains the GPU. That is rare, and the BLAS path already did the
+  same.
+
+| Viewport image states, fixed dt | Before | After |
+|---|---|---|
+| 20k entities | 3 distinct in 3 runs | **1 in 3** |
+| MyGame | 2 in 4 | 2 in 7: six identical, the outlier the first run after a rebuild |
+
+The remaining MyGame outlier differs only on the translucent glass wall (sparse 1-level dither and the
+old sparkle at its base). That is the transparency and reflection path, which accumulates history. A
+cold first run, with async meshes finishing on a different frame, would explain it; this is unproven.
+
+**Performance-neutral**, interleaved. A first, non-interleaved comparison showed the GPU total falling
+"3×", with a full-screen blur 3× cheaper. That was a change in machine state between the two blocks of
+runs, and interleaving put the totals within noise of each other. Validation layers give the identical VUID set with
+and without the fix, at 20k.
+
+`rtsync_check` pins the contract:
+- the ring is deeper than `kMaxFrames`, read from **both** the editor and the RT scene, so raising the
+  frames in flight fails until the ring grows;
+- the barrier precedes every build and covers fragment, compute and build stages;
+- both host buffers rotate;
+- the SSBO is device-local and filled by a fenced copy;
+- growth waits before replacing a buffer.
+
+Mutation-tested: all seven mutations are caught.
+
+**Seen while testing, open:** `skinning_check` crashed at exit twice in about 90 runs, both times after
+every assertion had passed. It could not be reproduced under gdb, and the check uses nothing these
+changes touch beyond the device's new subgroup query and `Mesh`'s move operations. Not shown to be
+pre-existing, so recorded here.
+
+---
+
 ## F15 — every lit pixel was off by the camera position (shipped in v0.8.6) 🔴 → fixed
 
 **Found 2026-10-29 while trying to measure soft-shadow quality — there was nothing to measure.** A

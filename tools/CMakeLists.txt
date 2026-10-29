@@ -32,6 +32,15 @@ if(MINGW)
     target_link_options(componentsync_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# rtsync_check: the RT scene never writes or frees memory a frame in flight
+# still uses (host ring deeper than kMaxFrames, pre-build barrier, drain on
+# growth, the bound SSBO filled by a fenced GPU copy).
+add_executable(rtsync_check rtsync_check/main.cpp)
+target_compile_features(rtsync_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(rtsync_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # shadowvote_check: the soft-shadow warp vote never costs a ray, leaves split
 # warps exact, and only reaches GPUs with fragment-stage subgroup vote/ballot.
 add_executable(shadowvote_check shadowvote_check/main.cpp)

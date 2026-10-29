@@ -109,17 +109,37 @@ VulkanRtScene::~VulkanRtScene() {
     blas_cache_.clear();
     tlas_.destroy(vk, fns_);
 
-    if (instance_mapped_ != nullptr && instance_memory_ != VK_NULL_HANDLE) {
-        vkUnmapMemory(vk, instance_memory_);
-        instance_mapped_ = nullptr;
-    }
-    destroy_buffer(instance_buffer_, instance_memory_);
-    if (instance_data_mapped_ != nullptr && instance_data_memory_ != VK_NULL_HANDLE) {
-        vkUnmapMemory(vk, instance_data_memory_);
-        instance_data_mapped_ = nullptr;
-    }
+    for (HostSlot& slot : instance_ring_)         destroy_host_slot(slot);
+    for (HostSlot& slot : instance_data_staging_) destroy_host_slot(slot);
     destroy_buffer(instance_data_buffer_, instance_data_memory_);
     destroy_buffer(scratch_buffer_, scratch_memory_);
+}
+
+bool VulkanRtScene::ensure_host_slot(HostSlot& slot, VkDeviceSize size, VkBufferUsageFlags usage) {
+    if (size <= slot.capacity && slot.mapped != nullptr) return true;
+    // This slot was last written kHostRing updates ago; that frame has retired,
+    // so replacing the buffer cannot pull it out from under the GPU.
+    destroy_host_slot(slot);
+    slot.capacity = align(size * 2, 256);
+    if (!create_buffer(slot.capacity, usage,
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                       slot.buffer, slot.memory)) {
+        slot.capacity = 0;
+        return false;
+    }
+    if (vkMapMemory(device_->get_device(), slot.memory, 0, slot.capacity, 0, &slot.mapped) != VK_SUCCESS) {
+        destroy_host_slot(slot);
+        return false;
+    }
+    return true;
+}
+
+void VulkanRtScene::destroy_host_slot(HostSlot& slot) {
+    if (slot.mapped != nullptr && slot.memory != VK_NULL_HANDLE)
+        vkUnmapMemory(device_->get_device(), slot.memory);
+    slot.mapped = nullptr;
+    destroy_buffer(slot.buffer, slot.memory);
+    slot.capacity = 0;
 }
 
 // ---- Buffer helpers -------------------------------------------------------
@@ -389,26 +409,15 @@ void VulkanRtScene::rebuild_tlas(VkCommandBuffer cmd, const DrawItem* items, siz
     // VkAccelerationStructureInstanceKHR (64 bytes).
     const size_t       alloc_count = count > 0 ? count : 1;
     const VkDeviceSize required = sizeof(VkAccelerationStructureInstanceKHR) * alloc_count;
-    if (required > instance_capacity_) {
-        if (instance_mapped_ != nullptr) {
-            vkUnmapMemory(vk, instance_memory_);
-            instance_mapped_ = nullptr;
-        }
-        destroy_buffer(instance_buffer_, instance_memory_);
-        instance_capacity_ = align(required * 2, 256);
-        if (!create_buffer(instance_capacity_,
-                           VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                           instance_buffer_, instance_memory_)) {
-            spdlog::error("VulkanRtScene: instance buffer allocation failed"); return;
-        }
-        vkMapMemory(vk, instance_memory_, 0, instance_capacity_, 0, &instance_mapped_);
+    HostSlot& inst_slot = instance_ring_[rt_frame_ % kHostRing];
+    if (!ensure_host_slot(inst_slot, required,
+                          VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)) {
+        spdlog::error("VulkanRtScene: instance buffer allocation failed"); return;
     }
 
     // Fill the instance records.
-    auto* dst = static_cast<VkAccelerationStructureInstanceKHR*>(instance_mapped_);
+    auto* dst = static_cast<VkAccelerationStructureInstanceKHR*>(inst_slot.mapped);
     uint32_t written = 0;
     for (size_t i = 0; i < count; ++i) {
         const DrawItem& d = items[i];
@@ -445,7 +454,7 @@ void VulkanRtScene::rebuild_tlas(VkCommandBuffer cmd, const DrawItem* items, siz
     // NOTE: do NOT early-out on written == 0 — we still build an empty
     // (but valid) TLAS so the descriptor binding never dangles.
 
-    const VkDeviceAddress inst_addr = buffer_device_address(instance_buffer_);
+    const VkDeviceAddress inst_addr = buffer_device_address(inst_slot.buffer);
 
     VkAccelerationStructureGeometryInstancesDataKHR insts{};
     insts.sType                  = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
@@ -476,6 +485,11 @@ void VulkanRtScene::rebuild_tlas(VkCommandBuffer cmd, const DrawItem* items, siz
     // descriptor sets still pointing at the old handle).
     if (tlas_.handle == VK_NULL_HANDLE ||
         size_info.accelerationStructureSize > tlas_capacity_) {
+        // The frame in flight may still be tracing rays through the old TLAS,
+        // through a descriptor set that is about to be rewritten with the new
+        // handle. Growth is rare (a scene gaining instances, mostly while a
+        // project loads), so drain the GPU rather than track the old one.
+        if (tlas_.handle != VK_NULL_HANDLE) vkDeviceWaitIdle(vk);
         tlas_.destroy(vk, fns_);
         // Allocate with 2x headroom so we don't reallocate on every
         // small instance-count change. Matches the scratch/instance
@@ -583,6 +597,29 @@ void VulkanRtScene::update(VkCommandBuffer cmd, const DrawItem* items, size_t co
         }
     }
 
+    // Order this frame's builds after the previous frame's use of the same
+    // memory. The TLAS is rebuilt IN PLACE and every build shares one scratch
+    // buffer, while the frame before -- two are in flight -- may still be
+    // tracing rays through the TLAS (lighting, reflections, AO, DDGI) or still
+    // building it. Without this the rebuild could overwrite a structure rays
+    // were walking, which is how identical runs ended in different images.
+    // Submission order spans command buffers on one queue, so this barrier
+    // covers the previous frame's commands.
+    {
+        VkMemoryBarrier pre{};
+        pre.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        pre.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                            VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        pre.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                            VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                             VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                             VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                             0, 1, &pre, 0, nullptr, 0, nullptr);
+    }
+
     // Build BLAS for any meshes we haven't seen yet.
     { GWS_PROFILE_ZONE("rt.ensure_blas");
     for (size_t i = 0; i < count; ++i) {
@@ -603,24 +640,23 @@ void VulkanRtScene::update(VkCommandBuffer cmd, const DrawItem* items, size_t co
         VkDevice vk = device_->get_device();
         const VkDeviceSize required = sizeof(RtInstanceDataGpu) * count;
         if (required > instance_data_capacity_) {
-            if (instance_data_mapped_ != nullptr) {
-                vkUnmapMemory(vk, instance_data_memory_);
-                instance_data_mapped_ = nullptr;
-            }
+            // Bound through descriptor sets the frame in flight may still be
+            // using; drain before replacing it (rare: the scene grew).
+            if (instance_data_buffer_ != VK_NULL_HANDLE) vkDeviceWaitIdle(vk);
             destroy_buffer(instance_data_buffer_, instance_data_memory_);
             instance_data_capacity_ = align(required * 2, 256);
-            if (create_buffer(instance_data_capacity_,
-                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                              instance_data_buffer_, instance_data_memory_)) {
-                vkMapMemory(vk, instance_data_memory_, 0, instance_data_capacity_,
-                            0, &instance_data_mapped_);
-            }
+            if (!create_buffer(instance_data_capacity_,
+                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                               VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                               instance_data_buffer_, instance_data_memory_))
+                instance_data_capacity_ = 0;
         }
-        if (instance_data_mapped_ != nullptr) {
-            auto* dst = static_cast<RtInstanceDataGpu*>(instance_data_mapped_);
+        HostSlot& staging = instance_data_staging_[rt_frame_ % kHostRing];
+        if (instance_data_buffer_ != VK_NULL_HANDLE &&
+            ensure_host_slot(staging, required, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) {
+            auto* dst = static_cast<RtInstanceDataGpu*>(staging.mapped);
             for (size_t i = 0; i < count; ++i) {
                 RtInstanceDataGpu d{};
                 const DrawItem& it = items[i];
@@ -650,6 +686,25 @@ void VulkanRtScene::update(VkCommandBuffer cmd, const DrawItem* items, size_t co
                 }
                 dst[i] = d;
             }
+            // Into the stable SSBO, after the previous frame's shader reads of
+            // it and before this frame's.
+            VkMemoryBarrier before{};
+            before.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            before.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            before.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
+            VkBufferCopy region{};
+            region.size = required;
+            vkCmdCopyBuffer(cmd, staging.buffer, instance_data_buffer_, 1, &region);
+            VkMemoryBarrier after{};
+            after.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            after.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            after.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0, 1, &after, 0, nullptr, 0, nullptr);
         }
     }
 }
