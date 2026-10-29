@@ -32,6 +32,14 @@ if(MINGW)
     target_link_options(componentsync_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# presentsync_check: the submit/present semaphore is per swapchain image, not
+# per frame in flight (VUID-vkQueueSubmit-pSignalSemaphores-00067).
+add_executable(presentsync_check presentsync_check/main.cpp)
+target_compile_features(presentsync_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(presentsync_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # rtsync_check: the RT scene never writes or frees memory a frame in flight
 # still uses (host ring deeper than kMaxFrames, pre-build barrier, drain on
 # growth, the bound SSBO filled by a fenced GPU copy).

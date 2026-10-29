@@ -7579,8 +7579,26 @@ int main(int argc, char** argv) {
         constexpr uint32_t kMaxFrames = 2;
         VkCommandBuffer frame_cmds[kMaxFrames]    = {};
         VkSemaphore     acquire_sems[kMaxFrames]  = {};
-        VkSemaphore     render_sems[kMaxFrames]   = {};
         VkFence         frame_fences[kMaxFrames]  = {};
+        // The semaphore a submit signals and the present waits on is per
+        // SWAPCHAIN IMAGE, not per frame in flight. A frame's fence proves its
+        // submit finished, not that the presentation engine has consumed the
+        // present's wait -- so a per-frame semaphore could be signalled again
+        // while that wait was still pending (VUID-vkQueueSubmit-
+        // pSignalSemaphores-00067, reported on every run). An image cannot be
+        // acquired again until its previous present is done, which covers it.
+        // Grown, never shrunk, when a recreated swapchain has more images, so
+        // no semaphore a present might still wait on is ever destroyed early.
+        std::vector<VkSemaphore> present_sems;
+        auto ensure_present_sems = [&](uint32_t image_count) {
+            VkSemaphoreCreateInfo ci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            while (present_sems.size() < image_count) {
+                VkSemaphore sem = VK_NULL_HANDLE;
+                vkCreateSemaphore(device.get_device(), &ci, nullptr, &sem);
+                present_sems.push_back(sem);
+            }
+        };
+        ensure_present_sems(swapchain->get_image_count());
 
         VkCommandBufferAllocateInfo cmd_alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         cmd_alloc.commandPool        = device.get_command_pool();
@@ -7593,7 +7611,6 @@ int main(int argc, char** argv) {
         fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         for (uint32_t i = 0; i < kMaxFrames; ++i) {
             vkCreateSemaphore(device.get_device(), &sem_info, nullptr, &acquire_sems[i]);
-            vkCreateSemaphore(device.get_device(), &sem_info, nullptr, &render_sems[i]);
             vkCreateFence(device.get_device(), &fence_info, nullptr, &frame_fences[i]);
         }
         uint32_t current_frame = 0;
@@ -8387,6 +8404,7 @@ int main(int argc, char** argv) {
                 if (fb) vkDestroyFramebuffer(device.get_device(), fb, nullptr);
             swapchain->recreate(static_cast<uint32_t>(fbw),
                                 static_cast<uint32_t>(fbh));
+            ensure_present_sems(swapchain->get_image_count());
             imgui_framebuffers.assign(swapchain->get_image_count(), VK_NULL_HANDLE);
             for (uint32_t i = 0; i < swapchain->get_image_count(); ++i) {
                 VkImageView views[] = { swapchain->get_image_view(i) };
@@ -11293,14 +11311,14 @@ int main(int argc, char** argv) {
             submit_info.commandBufferCount   = 1;
             submit_info.pCommandBuffers      = &cmd;
             submit_info.signalSemaphoreCount = 1;
-            submit_info.pSignalSemaphores    = &render_sems[current_frame];
+            submit_info.pSignalSemaphores    = &present_sems[image_index];
             { GWS_PROFILE_ZONE("queue_submit");
               vkQueueSubmit(device.get_graphics_queue(), 1, &submit_info,
                             frame_fences[current_frame]); }
 
             g_cp.mark("pre_present");
             { GWS_PROFILE_ZONE("present");
-              swapchain->present_image(image_index, render_sems[current_frame]); }
+              swapchain->present_image(image_index, present_sems[image_index]); }
             current_frame = (current_frame + 1) % kMaxFrames;
             ++frame_count;
 
@@ -11464,9 +11482,10 @@ int main(int argc, char** argv) {
 
         for (uint32_t i = 0; i < kMaxFrames; ++i) {
             vkDestroyFence(device.get_device(), frame_fences[i], nullptr);
-            vkDestroySemaphore(device.get_device(), render_sems[i], nullptr);
             vkDestroySemaphore(device.get_device(), acquire_sems[i], nullptr);
         }
+        for (VkSemaphore sem : present_sems)
+            vkDestroySemaphore(device.get_device(), sem, nullptr);
         vkFreeCommandBuffers(device.get_device(), device.get_command_pool(),
                              kMaxFrames, frame_cmds);
 
