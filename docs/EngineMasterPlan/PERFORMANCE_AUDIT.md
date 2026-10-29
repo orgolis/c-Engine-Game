@@ -24,6 +24,67 @@ of them already exist and work — which is why they have not helped.
 
 ---
 
+## F15 — every lit pixel was off by the camera position (shipped in v0.8.6) 🔴 → fixed
+
+**Found 2026-10-29 while trying to measure soft-shadow quality — there was nothing to measure.** A
+scene built to show sun shadows (a strong low sun, a light ground, casters from contact height up to
+3 m) showed **no shadows at all with ray tracing on**, and a darker ground. With RT off, shadow maps
+showed shadows — but detached from the objects casting them. The released v0.8.6 behaves the same. A
+scene with nothing but a ground plane and the sun: with RT on, the open ground came out at 155 against
+193 with RT off.
+
+**Bisected by instrumenting, not by guessing.** The TLAS held exactly the right 15 instances with the
+right transforms. Every BLAS barrier was in place. A debug view of one sun ray per pixel showed every
+ray from the ground hitting something at least 0.5 m away, which ruled out both a flipped ray and
+self-intersection. The final debug view checked the reconstructed `worldPos.y` on the ground: it was
+**below −0.5** for 99.7% of pixels, where the ground is at y = 0.
+
+**The cause.** `VulkanLightingPass` pushes `invViewProj = inverse(proj × view-rotation-only)`. The camera
+translation was deliberately stripped, in the first ray-tracing commit (June), so the sky shader gets a
+precise ray direction. F5 (`58c53c8`, 2026-09-27) replaced the G-buffer position attachment with
+`worldPosFromDepth()`, which unprojects through **that** matrix. The result is the position *relative to
+the camera*, and the shader used it as a world position. With the editor camera at (0, 1, 5), the
+ground reconstructed at y = −1. Every consumer of `worldPos` was off by the camera position:
+
+- **Ray-traced shadows:** every ray started under the ground and hit it from below, so everything
+  read "shadowed". The sun's direct light was effectively off whenever RT was on.
+- **Shadow maps:** lookups landed beside the shadows.
+- **Point and spot lights:** distance, falloff and direction were computed from the wrong point.
+  MyGame's orange point light lit nothing in view.
+- **The view vector** (`cameraPos − worldPos`), so specular and Fresnel were wrong unless the camera
+  sat at the origin.
+- **Cloud shadows, contact shadows** and RT AO origins.
+
+**Fix:** `worldPosFromDepth()` adds `pc.cameraPos` to the camera-relative result. That is correct, and
+also the precise order: unproject relative to the camera, then translate. `contactShadow()` projects
+with the same rotation-only matrix, so it now projects `p − cameraPos`. After the fix, MyGame shows its
+sun shadows and the point light lights the ground beside it, and the shadow test scene shows RT and
+shadow-map shadows attached to their casters.
+
+**Why `gbuffer_reconstruct_check` passed.** It validated the formula against `inverse(proj × view)`, the
+full view matrix, which is not the matrix the engine pushes. It tested an assumption, not the contract.
+It now:
+- builds the matrix exactly as `vulkan_lighting_pass.cpp` does;
+- asserts that the old formula is off by exactly the camera position, and that adding the camera to a
+  full-view inverse would count it twice;
+- pins both sides of the contract in the source: the C++ matrix construction, the shader's
+  `+ pc.cameraPos`, and `contactShadow`'s camera-relative projection.
+
+Mutation-tested: the shipped shader, C++ switching to the full inverse, and `contactShadow` reverted are
+each caught.
+
+**Consequences for earlier measurements.** Every RT lighting number since F5 was measured with shadow rays
+that all hit the ground within centimetres. That includes F13 (soft shadows, `02f5d7a`) and F14 (q)
+(back-face skip). F13's split, "trace the rest of the cone only where the probes disagree", never saw a
+real penumbra. Its saving was real for what ran, but the costs of a working shadow pass have to be
+re-measured. The same goes for every "no sun shadows visible in this scene" observation in F14.
+
+**Also found:** `--frames` runs wrote the dock layout back to the project's `editor.ini` on every exit,
+including the runs behind this audit. They now read the user's layout (so the viewport is the size
+they work at) and never write it.
+
+---
+
 ## F14 — the core systems' cost per entity, measured at scale 🔴 (in progress)
 
 **Measured 2026-10-28, `MyGame` plus `--stress-entities N`** (N primitives added in memory, never saved;

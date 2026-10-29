@@ -74,10 +74,19 @@ layout(push_constant) uniform Constants {
 // [-1,1]), so depthNdc needs no remap -- only the screen UV does.
 // Proven against tools/gbuffer_reconstruct_check; do not "fix" the
 // missing depth remap without reading that check first.
+//
+// pc.invViewProj is the inverse of proj * view-ROTATION-only (the sky needs a
+// direction without a precision-losing subtraction; see main()). Unprojecting
+// through it gives the position RELATIVE TO THE CAMERA, so the camera position
+// is added back here -- which is also the precise order. Returning the
+// relative position put every pixel off by the camera's own position: every
+// shadow ray started under the ground (so ray-traced shadows read "shadowed"
+// everywhere), shadow-map lookups landed beside the shadows, and point
+// lights lit the wrong place.
 vec3 worldPosFromDepth(vec2 uv, float depthNdc) {
     vec2 ndc = uv * 2.0 - 1.0;
-    vec4 worldH = pc.invViewProj * vec4(ndc, depthNdc, 1.0);
-    return worldH.xyz / worldH.w;
+    vec4 relH = pc.invViewProj * vec4(ndc, depthNdc, 1.0);
+    return relH.xyz / relH.w + pc.cameraPos;
 }
 
 bool flagSet(int bit) { return (int(pc.flags) & (1 << bit)) != 0; }
@@ -383,7 +392,7 @@ float contactShadow(vec3 worldPos, vec3 N, vec3 Ldir) {
     for (int i = 1; i <= STEPS; ++i) {
         vec3 p = worldPos + Ldir * (MAX_DIST * float(i) / float(STEPS))
                           + N * 0.02;
-        vec4 clip = viewProj * vec4(p, 1.0);
+        vec4 clip = viewProj * vec4(p - pc.cameraPos, 1.0);   // viewProj is rotation-only: camera-relative in
         if (clip.w <= 0.0) break;
         vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;

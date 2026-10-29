@@ -19,6 +19,18 @@
 // round-trip, so this check can actually distinguish the two conventions
 // rather than passing either way.
 //
+// THE MATRIX MUST BE THE ONE THE ENGINE PUSHES. This check first validated the
+// formula against inverse(proj * view) -- but vulkan_lighting_pass.cpp pushes
+// inverse(proj * view-ROTATION-only), stripped of the camera translation for
+// the sky's sake, and has since the first ray-tracing commit. Unprojected
+// through that, a pixel comes out relative to the camera. The shader treated it
+// as world space, so v0.8.6 shipped with every pixel off by the camera's own
+// position: ray-traced shadows started under the ground and read "shadowed"
+// everywhere, shadow-map lookups landed beside the shadows, point lights lit
+// the wrong place -- and this check passed, because it tested a matrix nobody
+// used. It now builds the matrix exactly as the renderer does, and pins both
+// sides of that contract in the source.
+//
 // Tested by forward/inverse round-trip: project a KNOWN world point through
 // the SAME view+proj construction tests/deferred_scene_test.cpp uses
 // (glm::lookAt / glm::perspective with the Vulkan Y-flip), producing the
@@ -31,18 +43,45 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace {
 
-// Mirrors tools/lighting_pass.frag's worldPosFromDepth() exactly. Task 2
-// ports this body verbatim into GLSL.
-glm::vec3 world_pos_from_depth(glm::vec2 uv, float depth_ndc, const glm::mat4& inv_view_proj) {
+// Mirrors tools/lighting_pass.frag's worldPosFromDepth() exactly: unproject
+// through the pushed (rotation-only) matrix, which yields a camera-relative
+// position, then add the camera position back.
+glm::vec3 world_pos_from_depth(glm::vec2 uv, float depth_ndc, const glm::mat4& inv_view_proj,
+                               const glm::vec3& camera_pos) {
     const glm::vec2 ndc = uv * 2.0f - 1.0f;
     const glm::vec4 clip(ndc.x, ndc.y, depth_ndc, 1.0f);
-    const glm::vec4 world_h = inv_view_proj * clip;
-    return glm::vec3(world_h) / world_h.w;
+    const glm::vec4 rel_h = inv_view_proj * clip;
+    return glm::vec3(rel_h) / rel_h.w + camera_pos;
+}
+
+// The matrix VulkanLightingPass pushes as pc.invViewProj, built the same way.
+glm::mat4 pushed_inv_view_proj(const glm::mat4& proj, const glm::mat4& view) {
+    const glm::mat4 view_rot_only = glm::mat4(glm::mat3(view));
+    return glm::inverse(proj * view_rot_only);
+}
+
+std::string read_file(const std::filesystem::path& p) {
+    std::ifstream f(p);
+    std::stringstream ss; ss << f.rdbuf();
+    return ss.str();
+}
+
+std::filesystem::path find_repo_root(const std::filesystem::path& exe_dir) {
+    std::error_code ec;
+    for (std::filesystem::path d = exe_dir; !d.empty(); d = d.parent_path()) {
+        if (std::filesystem::exists(d / "tools" / "lighting_pass.frag", ec)) return d;
+        if (d == d.parent_path()) break;
+    }
+    return {};
 }
 
 int g_failures = 0;
@@ -83,7 +122,7 @@ ScreenSample project(const glm::vec3& world, const glm::mat4& view, const glm::m
 
 }  // namespace
 
-int main() {
+int main(int, char** argv) {
     std::printf("gbuffer_reconstruct_check -- world-position-from-depth formula (F5)\n");
 
     // Same construction as tests/deferred_scene_test.cpp: 60 deg FOV,
@@ -92,7 +131,7 @@ int main() {
     const glm::mat4 view = glm::lookAt(glm::vec3(2.0f, 2.0f, 3.0f), glm::vec3(0.0f), glm::vec3(0, 1, 0));
     glm::mat4 proj = glm::perspective(glm::radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f);
     proj[1][1] *= -1.0f;
-    const glm::mat4 inv_view_proj = glm::inverse(proj * view);
+    const glm::mat4 inv_view_proj = pushed_inv_view_proj(proj, view);
     const float eps = 1e-3f;  // float32 round-trip through a 4x4 inverse
 
     const glm::vec3 camera_pos(2.0f, 2.0f, 3.0f);
@@ -121,7 +160,7 @@ int main() {
             if (s.uv.x < 0.0f || s.uv.x > 1.0f || s.uv.y < 0.0f || s.uv.y > 1.0f) {
                 continue;  // outside this camera's frustum -- not a case the shader sees
             }
-            const glm::vec3 got = world_pos_from_depth(s.uv, s.depth, inv_view_proj);
+            const glm::vec3 got = world_pos_from_depth(s.uv, s.depth, inv_view_proj, camera_pos);
             char label[96];
             std::snprintf(label, sizeof(label), "(%.1f, %.1f, %.1f) round-trips", p.x, p.y, p.z);
             // Points placed deliberately near the far plane (99 units out of
@@ -143,7 +182,7 @@ int main() {
             {{0.0f, 1.0f}, 0.5f}, {{1.0f, 1.0f}, 0.5f},
         };
         for (const auto& c : cases) {
-            const glm::vec3 world = world_pos_from_depth(c.uv, c.depth, inv_view_proj);
+            const glm::vec3 world = world_pos_from_depth(c.uv, c.depth, inv_view_proj, camera_pos);
             const ScreenSample back = project(world, view, proj);
             char label[96];
             std::snprintf(label, sizeof(label),
@@ -166,12 +205,12 @@ int main() {
         const glm::vec2 ndc = s.uv * 2.0f - 1.0f;
         const glm::vec4 wrong_clip(ndc.x, ndc.y, s.depth * 2.0f - 1.0f, 1.0f);
         const glm::vec4 wrong_h = inv_view_proj * wrong_clip;
-        const glm::vec3 wrong = glm::vec3(wrong_h) / wrong_h.w;
+        const glm::vec3 wrong = glm::vec3(wrong_h) / wrong_h.w + camera_pos;
         check("the GL-style [-1,1] remap gives a DIFFERENT point "
               "(proves this check can tell the two conventions apart)",
               !close(wrong, p, eps));
         check("the actual (no-remap) formula gives the right point back",
-              close(world_pos_from_depth(s.uv, s.depth, inv_view_proj), p, eps));
+              close(world_pos_from_depth(s.uv, s.depth, inv_view_proj, camera_pos), p, eps));
     }
 
     std::printf("\n[group] a cleared (sky) pixel reads as the far plane, not garbage\n");
@@ -182,11 +221,50 @@ int main() {
         // along that ray, not NaN or the origin -- contactShadow()'s
         // replacement sky check (Task 2) depends on this being a
         // well-defined point, not a divide-by-zero.
-        const glm::vec3 far_point = world_pos_from_depth({0.5f, 0.5f}, 1.0f, inv_view_proj);
+        const glm::vec3 far_point = world_pos_from_depth({0.5f, 0.5f}, 1.0f, inv_view_proj, camera_pos);
         check("finite", std::isfinite(far_point.x) && std::isfinite(far_point.y) && std::isfinite(far_point.z));
         const float dist_from_camera = glm::length(far_point - glm::vec3(2.0f, 2.0f, 3.0f));
         check("close to the far plane (100 units), not the near one",
               dist_from_camera > 90.0f && dist_from_camera < 110.0f);
+    }
+
+    std::printf("\n[group] the camera position is added back (the v0.8.6 bug)\n");
+    {
+        // Unprojecting through the pushed matrix WITHOUT adding the camera
+        // back -- the shipped shader -- is off by exactly the camera position.
+        const glm::vec3 p(1.5f, 0.5f, -0.5f);
+        const ScreenSample s = project(p, view, proj);
+        const glm::vec2 ndc = s.uv * 2.0f - 1.0f;
+        const glm::vec4 rel_h = inv_view_proj * glm::vec4(ndc.x, ndc.y, s.depth, 1.0f);
+        const glm::vec3 relative = glm::vec3(rel_h) / rel_h.w;
+        check("without the camera added back, the point is off by the camera position "
+              "(proves this check would have caught the shipped shader)",
+              !close(relative, p, eps) && close(relative + camera_pos, p, eps));
+        // The full-view inverse is NOT what the renderer pushes; with it, adding
+        // the camera would count it twice. The two sides must change together.
+        const glm::mat4 full_inv = glm::inverse(proj * view);
+        const glm::vec4 full_h = full_inv * glm::vec4(ndc.x, ndc.y, s.depth, 1.0f);
+        check("the full-view inverse already includes the camera (adding it again would be wrong)",
+              close(glm::vec3(full_h) / full_h.w, p, eps) &&
+              !close(glm::vec3(full_h) / full_h.w + camera_pos, p, eps));
+    }
+
+    std::printf("\n[group] both sides of the contract, in the source\n");
+    {
+        const std::filesystem::path root = find_repo_root(std::filesystem::absolute(argv[0]).parent_path());
+        if (root.empty()) {
+            std::printf("  SKIP needs a source checkout\n");
+        } else {
+            const std::string cpp = read_file(root / "engine" / "renderer" / "gpu" / "vulkan" / "vulkan_lighting_pass.cpp");
+            const std::string frag = read_file(root / "tools" / "lighting_pass.frag");
+            check("vulkan_lighting_pass.cpp pushes inverse(proj * view-rotation-only)",
+                  cpp.find("const glm::mat4 view_rot_only = glm::mat4(glm::mat3(view_matrix_));") != std::string::npos &&
+                  cpp.find("glm::inverse(proj_matrix_ * view_rot_only)") != std::string::npos);
+            check("lighting_pass.frag's worldPosFromDepth adds the camera position back",
+                  frag.find("return relH.xyz / relH.w + pc.cameraPos;") != std::string::npos);
+            check("contactShadow projects camera-relative points through the inverse",
+                  frag.find("viewProj * vec4(p - pc.cameraPos, 1.0)") != std::string::npos);
+        }
     }
 
     std::printf("\n%s -- %d failure(s)\n", g_failures ? "FAILED" : "PASSED", g_failures);
