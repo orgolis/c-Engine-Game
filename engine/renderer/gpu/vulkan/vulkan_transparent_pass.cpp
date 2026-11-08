@@ -506,6 +506,7 @@ void VulkanTransparentPass::set_lighting_resources(
     uint32_t    max_lights,
     VkImageView dir_view,
     VkSampler   dir_sampler,
+    VkImageLayout dir_layout,
     VkImageView pt_view,
     VkSampler   pt_sampler)
 {
@@ -516,7 +517,7 @@ void VulkanTransparentPass::set_lighting_resources(
 
     VkDescriptorImageInfo di{};
     di.sampler = dir_sampler; di.imageView = dir_view;
-    di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    di.imageLayout = dir_layout;
     VkDescriptorImageInfo pi{};
     pi.sampler = pt_sampler;  pi.imageView = pt_view;
     pi.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

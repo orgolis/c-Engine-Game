@@ -87,6 +87,11 @@ void VulkanSwapchain::initialize(uint32_t width, uint32_t height) {
     create_info.imageExtent = extent;
     create_info.imageArrayLayers = 1;
     create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    // --screenshot copies the presented image into a buffer, which needs
+    // TRANSFER_SRC (VUID-vkCmdCopyImageToBuffer-srcImage-00186 on every
+    // screenshot run). Requested only where the surface allows it.
+    if (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+        create_info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     
     uint32_t queue_family_indices[] = {graphics_queue_family, present_queue_family};
     

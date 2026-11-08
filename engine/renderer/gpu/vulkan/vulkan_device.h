@@ -292,6 +292,10 @@ public:
     /// True when `samplerAnisotropy` was enabled at logical-device creation.
     /// Sampler creation must gate `anisotropyEnable` on this.
     bool anisotropy_enabled() const { return anisotropy_enabled_; }
+    /// independentBlend was enabled (different blend states per attachment).
+    bool independent_blend_enabled() const { return independent_blend_enabled_; }
+    /// fragmentStoresAndAtomics was enabled (storage writes from fragment shaders).
+    bool fragment_stores_enabled() const { return fragment_stores_enabled_; }
 
     /// True when multiDrawIndirect was actually GRANTED at device creation.
     /// Callers must ask: issuing drawCount > 1 without it is undefined
@@ -427,6 +431,8 @@ private:
     // enabled. `max_anisotropy_` mirrors the device's limit. See
     // `anisotropy_enabled()` / `max_anisotropy()`.
     bool  anisotropy_enabled_ = false;
+    bool  independent_blend_enabled_ = false;
+    bool  fragment_stores_enabled_ = false;
     bool  multi_draw_indirect_enabled_ = false;
     uint32_t max_draw_indirect_count_ = 1;
     float max_anisotropy_     = 1.0f;

@@ -165,9 +165,15 @@ void GpuZones::end_frame(VkDevice device) {
     // wrong means always reading a ring that is still executing and therefore
     // never reporting anything at all. A handful of non-blocking queries is
     // correct for any frames-in-flight count up to kRings.
+    // Start ONE ring back. end_frame() runs before this frame's command buffer
+    // is submitted, so the ring it is writing has had its reset recorded but
+    // not executed: probing it read queries that were never reset (the first
+    // frames: VUID-vkGetQueryPoolResults-None-09401) or, later, results left
+    // there kRings frames ago -- which succeeded, and reported stale timings
+    // as the newest.
     uint32_t read_ring = write_ring_;
     bool     found     = false;
-    for (uint32_t back = 0; back < kRings && !found; ++back) {
+    for (uint32_t back = 1; back < kRings && !found; ++back) {
         const uint32_t ring = (write_ring_ + kRings - back) % kRings;
         if (!ring_written_[ring]) continue;
         for (uint32_t z = 0; z < zones_.count() && !found; ++z) {

@@ -25,6 +25,12 @@ std::unique_ptr<VulkanVxaoPass> VulkanVxaoPass::create(VulkanDevice* device,
                                                        uint32_t width,
                                                        uint32_t height) {
     if (!device || !g_buffer || width == 0 || height == 0) return nullptr;
+    // voxelize.frag writes the voxel grid from the fragment stage, which needs
+    // fragmentStoresAndAtomics; building the pipeline without it is invalid.
+    if (!device->fragment_stores_enabled()) {
+        spdlog::info("VulkanVxaoPass: not built -- this GPU has no fragment-stage storage writes");
+        return nullptr;
+    }
     auto p = std::unique_ptr<VulkanVxaoPass>(new VulkanVxaoPass());
     if (!p->initialize(device, g_buffer, width, height)) return nullptr;
     spdlog::info("VulkanVxaoPass created ({}x{}, grid {}^3)", width, height, kGrid);

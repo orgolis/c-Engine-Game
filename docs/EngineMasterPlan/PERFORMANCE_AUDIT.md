@@ -24,6 +24,33 @@ of them already exist and work — which is why they have not helped.
 
 ---
 
+## F17 — the validation layers are silent now 🟠 → fixed
+
+"The validation layers already report 12 distinct VUIDs" sat in F14's open findings as a known
+list. Each was undefined behaviour that this NVIDIA driver happened to forgive. Several masked
+others: fixing one exposed the next in the same family. All are fixed. A 200-frame run of a
+shadow test scene, and a 300-frame run of MyGame (water, async assets, a point light), now produce
+**zero VUIDs and zero Vulkan warnings**. Images are pixel-identical to before on this GPU (0 px).
+
+| VUID(s) | Cause | Fix |
+|---|---|---|
+| `vkQueueSubmit-pSignalSemaphores-00067` | present semaphore per frame in flight | per swapchain image (`b2cb5dc`) |
+| `vkCmdDraw/Dispatch-viewType-07752` | the shadow map's framebuffer view was created INTO `shadow_view_`, replacing the 2D_ARRAY view every shader samples (and leaking it) | separate attachment view |
+| `vkCmdDraw(Indexed)-imageLayout-00344` | the lighting pass declared the shadow map and the G-buffer depth `SHADER_READ_ONLY`, while both sit in `DEPTH_STENCIL_READ_ONLY` (the transparent pass did the same for the shadow map) | declare the real layout; the lighting pass reports the *effective* layout (real map or dummy) for others to bind |
+| `VkPipelineColorBlendStateCreateInfo-pAttachments-00605` | WBOIT blends its two targets differently without `independentBlend` | enabled where supported, with a warning where not |
+| `RuntimeSpirv-NonWritable-06340` | VXAO's `voxelize.frag` writes storage without `fragmentStoresAndAtomics` | enabled where supported; VXAO declines to build where not |
+| `vkCmdCopyImage-aspect-06662`, `VkImageMemoryBarrier-oldLayout-01212` | the post output is a copy source without `TRANSFER_SRC` | usage added |
+| `vkCmdCopyImageToBuffer-srcImage-00186` (+ a non-VUID "image not acquired") | `--screenshot` copied the swapchain image without `TRANSFER_SRC`, and **after it had been presented** | usage added where the surface allows; the readback is recorded into the final frame's own command buffer while the image is acquired, and written after its fence. Screenshots identical (0 px) |
+| `vkGetQueryPoolResults-None-09401` | `GpuZones::end_frame()` runs before the frame is submitted, but probed the ring it was still writing. First frames: queries never reset. Afterwards: **stale timings from three frames earlier reported as the newest** | probe from the previous frame's ring |
+| `vkDestroyDevice-device-05137` | ImGui's descriptor pool was created into a local and never destroyed (ImGui never frees a caller's pool); plus the leaked shadow array view above | owned and destroyed by `ImGuiVulkan` |
+
+**No automated guard yet.** A check that runs the editor with validation on a small scene and
+requires zero messages would pin all of this, but it needs a window, not the headless device the
+GPU checks use. Recorded as the gap. Until then, `GWS_VALIDATION=1` with `--frames` on any project
+is the test, and it should print nothing.
+
+---
+
 ## F16 — the ray-tracing scene raced the frame in flight 🟠 → fixed
 
 **The open finding behind it:** identical runs, with fixed dt, ended in different images. There were
@@ -586,7 +613,7 @@ not done. The evidence is the cross-mode 0-px match and the validation diff.
   ~400–2,000 px of difference between runs (stochastic water/reflection noise, a few object edges),
   in both instancing modes. Something reads GPU results with timing-dependent latency. Suspects: the
   single-buffered TLAS / instance data (see (g)), HZB readback timing, occlusion queries.
-- **The validation layers already report 12 distinct VUIDs** before any of this work — including the
+- ~~**The validation layers already report 12 distinct VUIDs**~~ (all fixed: F17) before any of this work — including the
   known semaphore reuse (`VUID-vkQueueSubmit-pSignalSemaphores-00067`), image-layout and view-type
   mismatches on draws/dispatches/copies, a fragment-stage storage write without
   `fragmentStoresAndAtomics`, and a colour-blend attachment-count mismatch at pipeline creation.

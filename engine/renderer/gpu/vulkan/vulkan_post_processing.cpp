@@ -97,7 +97,11 @@ void VulkanPostProcessing::create_output_image() {
     image_info.arrayLayers = 1;
     image_info.samples = VK_SAMPLE_COUNT_1_BIT;
     image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    // TRANSFER_SRC: FXAA and the colour-FX pass copy this image into their
+    // intermediates before reading it back. Missing, that was
+    // VUID-vkCmdCopyImage-aspect-06662 and VUID-VkImageMemoryBarrier-oldLayout-01212.
+    image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     
     if (vkCreateImage(vk_device, &image_info, nullptr, &output_image_) != VK_SUCCESS) {

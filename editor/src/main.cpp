@@ -846,79 +846,76 @@ static void PushLogicGraphCommand(EditorState& editor_state,
 // being able to SEE what the editor put on screen, from a headless run, on
 // someone else's machine.
 // ============================================================================
-static void capture_swapchain_tga(gws::renderer::gpu::VulkanDevice& device,
-                                  gws::renderer::gpu::VulkanSwapchain* swapchain,
-                                  uint32_t image_index,
-                                  const std::string& path) {
-    if (swapchain == nullptr) return;
-    VkDevice vk = device.get_device();
-    vkDeviceWaitIdle(vk);
-
-    const uint32_t w = swapchain->get_width();
-    const uint32_t h = swapchain->get_height();
-    const VkDeviceSize bytes = VkDeviceSize(w) * h * 4;
-    const VkImage src = swapchain->get_image(image_index);
-
+// The readback is RECORDED into the final frame's own command buffer, between
+// the UI pass and vkEndCommandBuffer, while the swapchain image is still
+// acquired. It used to run as a separate submission after the present -- on an
+// image no longer owned by the application, which the validation layers flag
+// on every screenshot run. (The copy also lacked TRANSFER_SRC on the swapchain,
+// which failed first and hid it.)
+struct SwapchainCapture {
     VkBuffer       buf = VK_NULL_HANDLE;
     VkDeviceMemory mem = VK_NULL_HANDLE;
+    uint32_t       w = 0, h = 0;
+};
+
+static bool record_swapchain_capture(gws::renderer::gpu::VulkanDevice& device,
+                                     gws::renderer::gpu::VulkanSwapchain* swapchain,
+                                     uint32_t image_index, VkCommandBuffer cmd,
+                                     SwapchainCapture& cap) {
+    if (swapchain == nullptr || cmd == VK_NULL_HANDLE) return false;
+    VkDevice vk = device.get_device();
+    cap.w = swapchain->get_width();
+    cap.h = swapchain->get_height();
+    const VkDeviceSize bytes = VkDeviceSize(cap.w) * cap.h * 4;
+    const VkImage src = swapchain->get_image(image_index);
+
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bi.size = bytes; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    if (vkCreateBuffer(vk, &bi, nullptr, &buf) != VK_SUCCESS) return;
-    VkMemoryRequirements req{}; vkGetBufferMemoryRequirements(vk, buf, &req);
+    if (vkCreateBuffer(vk, &bi, nullptr, &cap.buf) != VK_SUCCESS) return false;
+    VkMemoryRequirements req{}; vkGetBufferMemoryRequirements(vk, cap.buf, &req);
     VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     ai.allocationSize = req.size;
     ai.memoryTypeIndex = device.find_memory_type(
         req.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (vkAllocateMemory(vk, &ai, nullptr, &mem) != VK_SUCCESS) {
-        vkDestroyBuffer(vk, buf, nullptr); return;
+    if (vkAllocateMemory(vk, &ai, nullptr, &cap.mem) != VK_SUCCESS) {
+        vkDestroyBuffer(vk, cap.buf, nullptr); cap.buf = VK_NULL_HANDLE; return false;
     }
-    vkBindBufferMemory(vk, buf, mem, 0);
+    vkBindBufferMemory(vk, cap.buf, cap.mem, 0);
 
-    VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    ca.commandPool = device.get_command_pool();
-    ca.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ca.commandBufferCount = 1;
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    if (vkAllocateCommandBuffers(vk, &ca, &cmd) != VK_SUCCESS) {
-        vkFreeMemory(vk, mem, nullptr); vkDestroyBuffer(vk, buf, nullptr); return;
-    }
-    VkCommandBufferBeginInfo bg{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    bg.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &bg);
-
-    auto barrier = [&](VkImageLayout from, VkImageLayout to,
-                       VkAccessFlags srcA, VkAccessFlags dstA) {
+    auto barrier = [&](VkImageLayout from, VkImageLayout to, VkAccessFlags srcA, VkAccessFlags dstA,
+                       VkPipelineStageFlags srcS, VkPipelineStageFlags dstS) {
         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         b.oldLayout = from; b.newLayout = to;
         b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         b.image = src;
         b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         b.srcAccessMask = srcA; b.dstAccessMask = dstA;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr,
-                             0, nullptr, 1, &b);
+        vkCmdPipelineBarrier(cmd, srcS, dstS, 0, 0, nullptr, 0, nullptr, 1, &b);
     };
+    // The UI pass left the image in PRESENT_SRC; read it, then hand it back.
     barrier(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            0, VK_ACCESS_TRANSFER_READ_BIT);
-
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkBufferImageCopy region{};
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.imageExtent = {w, h, 1};
-    vkCmdCopyImageToBuffer(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &region);
-
+    region.imageExtent = {cap.w, cap.h, 1};
+    vkCmdCopyImageToBuffer(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, cap.buf, 1, &region);
     barrier(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            VK_ACCESS_TRANSFER_READ_BIT, 0);
-    vkEndCommandBuffer(cmd);
+            VK_ACCESS_TRANSFER_READ_BIT, 0,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    return true;
+}
 
-    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
-    vkQueueSubmit(device.get_graphics_queue(), 1, &si, VK_NULL_HANDLE);
-    vkQueueWaitIdle(device.get_graphics_queue());
-    vkFreeCommandBuffers(vk, device.get_command_pool(), 1, &cmd);
-
+// Call once the frame that recorded the capture has finished (its fence).
+static void write_swapchain_capture(gws::renderer::gpu::VulkanDevice& device,
+                                    SwapchainCapture& cap, const std::string& path) {
+    VkDevice vk = device.get_device();
+    if (cap.buf == VK_NULL_HANDLE) return;
+    const uint32_t w = cap.w, h = cap.h;
+    const VkDeviceSize bytes = VkDeviceSize(w) * h * 4;
     void* mapped = nullptr;
-    if (vkMapMemory(vk, mem, 0, bytes, 0, &mapped) == VK_SUCCESS && mapped) {
+    if (vkMapMemory(vk, cap.mem, 0, bytes, 0, &mapped) == VK_SUCCESS && mapped) {
         const uint8_t* px = static_cast<const uint8_t*>(mapped);
         // Swapchain is B8G8R8A8, which is already TGA's channel order.
         std::vector<uint8_t> out;
@@ -939,7 +936,7 @@ static void capture_swapchain_tga(gws::renderer::gpu::VulkanDevice& device,
                 if (r > 250 && g > 250 && b > 250) ++white_px;
             }
         }
-        vkUnmapMemory(vk, mem);
+        vkUnmapMemory(vk, cap.mem);
         std::ofstream f(path, std::ios::binary | std::ios::trunc);
         f.write(reinterpret_cast<const char*>(out.data()),
                 static_cast<std::streamsize>(out.size()));
@@ -950,8 +947,9 @@ static void capture_swapchain_tga(gws::renderer::gpu::VulkanDevice& device,
                      "pure-white pixels {:.1f}%",
                      path, w, h, lum_sum / total, 100.0 * double(white_px) / total);
     }
-    vkFreeMemory(vk, mem, nullptr);
-    vkDestroyBuffer(vk, buf, nullptr);
+    vkFreeMemory(vk, cap.mem, nullptr);
+    vkDestroyBuffer(vk, cap.buf, nullptr);
+    cap = SwapchainCapture{};
 }
 
 // Last RESOLVED per-stage GPU times (ms). Captured right after
@@ -7294,6 +7292,7 @@ int main(int argc, char** argv) {
                 lighting->get_max_lights(),
                 lighting->get_effective_directional_shadow_view(),
                 lighting->get_effective_directional_shadow_sampler(),
+                lighting->get_effective_directional_shadow_layout(),
                 lighting->get_effective_point_shadow_view(),
                 lighting->get_effective_point_shadow_sampler());
 
@@ -11300,6 +11299,13 @@ int main(int argc, char** argv) {
             imgui->end_frame(cmd);  // ImGui::Render + RenderDrawData
             vkCmdEndRenderPass(cmd);
 
+            // The last frame of a --frames run records the screenshot readback
+            // here, while it still owns the swapchain image.
+            SwapchainCapture capture{};
+            const bool last_frame = frame_limit > 0 && frame_count + 1 >= frame_limit;
+            const bool capturing = last_frame && !screenshot_path.empty() &&
+                                   record_swapchain_capture(device, swapchain, image_index, cmd, capture);
+
             vkEndCommandBuffer(cmd);
 
             VkPipelineStageFlags wait_stage =
@@ -11366,10 +11372,12 @@ int main(int argc, char** argv) {
                 }
             }
 
+            if (capturing) {
+                vkWaitForFences(device.get_device(), 1, &frame_fences[(current_frame + kMaxFrames - 1) % kMaxFrames],
+                                VK_TRUE, UINT64_MAX);
+                write_swapchain_capture(device, capture, screenshot_path);
+            }
             if (frame_limit > 0 && frame_count >= frame_limit) {
-                if (!screenshot_path.empty()) {
-                    capture_swapchain_tga(device, swapchain, image_index, screenshot_path);
-                }
                 spdlog::info("[frames] rendered {} frame(s); exiting as requested", frame_count);
                 break;
             }

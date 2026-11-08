@@ -191,11 +191,15 @@ void VulkanShadowMap::create_render_pass() {
 void VulkanShadowMap::create_framebuffer() {
     VkDevice vk_device = device_->get_device();
 
-    // Create depth view in `shadow_view_` so the framebuffer holds a live
-    // reference for its lifetime. Destroying this view immediately after
-    // vkCreateFramebuffer (as the original code did) leaves the framebuffer
-    // with a dangling internal handle and segfaults when any later
-    // vkCmdBeginRenderPass dereferences it.
+    // The framebuffer gets its OWN view, kept alive for the framebuffer's
+    // lifetime (destroying it right after vkCreateFramebuffer, as the original
+    // code did, left a dangling handle that segfaulted in vkCmdBeginRenderPass).
+    //
+    // It used to be created INTO `shadow_view_`, overwriting the 2D_ARRAY view
+    // create_image() had just made. That leaked the array view, and handed
+    // every shader that samples the shadow map -- all four declare
+    // sampler2DArray -- a plain 2D view: VUID-vkCmdDraw-viewType-07752 and its
+    // vkCmdDispatch twin on every run. Undefined behaviour that NVIDIA forgave.
     VkImageViewCreateInfo view_info{};
     view_info.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     view_info.image    = shadow_image_;
@@ -207,7 +211,7 @@ void VulkanShadowMap::create_framebuffer() {
     view_info.subresourceRange.baseArrayLayer = 0;
     view_info.subresourceRange.layerCount     = 1;
 
-    if (vkCreateImageView(vk_device, &view_info, nullptr, &shadow_view_) != VK_SUCCESS) {
+    if (vkCreateImageView(vk_device, &view_info, nullptr, &attachment_view_) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create depth view for shadow framebuffer");
     }
 
@@ -215,7 +219,7 @@ void VulkanShadowMap::create_framebuffer() {
     framebuffer_info.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     framebuffer_info.renderPass      = render_pass_;
     framebuffer_info.attachmentCount = 1;
-    framebuffer_info.pAttachments    = &shadow_view_;
+    framebuffer_info.pAttachments    = &attachment_view_;
     framebuffer_info.width           = config_.width;
     framebuffer_info.height          = config_.height;
     framebuffer_info.layers          = 1;
@@ -571,6 +575,10 @@ void VulkanShadowMap::cleanup() {
     if (shadow_view_ != VK_NULL_HANDLE) {
         vkDestroyImageView(vk_device, shadow_view_, nullptr);
         shadow_view_ = VK_NULL_HANDLE;
+    }
+    if (attachment_view_ != VK_NULL_HANDLE) {
+        vkDestroyImageView(vk_device, attachment_view_, nullptr);
+        attachment_view_ = VK_NULL_HANDLE;
     }
 
     if (shadow_image_ != VK_NULL_HANDLE) {

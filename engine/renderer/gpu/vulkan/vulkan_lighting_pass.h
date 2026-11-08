@@ -307,6 +307,15 @@ public:
                    ? directional_shadow_view_
                    : dummy_shadow_2d_array_view_;
     }
+    /// The layout the effective directional shadow view is in when sampled:
+    /// the real map is left in DEPTH_STENCIL_READ_ONLY by its render pass, the
+    /// dummy was transitioned to SHADER_READ_ONLY. Whoever binds the view must
+    /// declare the matching one (VUID-vkCmdDraw*-imageLayout-00344).
+    VkImageLayout get_effective_directional_shadow_layout() const {
+        return directional_shadow_view_ != VK_NULL_HANDLE
+                   ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                   : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
     VkSampler   get_effective_directional_shadow_sampler() const {
         return directional_shadow_sampler_ != VK_NULL_HANDLE
                    ? directional_shadow_sampler_

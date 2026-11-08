@@ -83,6 +83,7 @@ public:
                                 uint32_t    max_lights,
                                 VkImageView directional_shadow_view,
                                 VkSampler   directional_shadow_sampler,
+                                VkImageLayout directional_shadow_layout,  // the real map and the dummy differ
                                 VkImageView point_shadow_view,
                                 VkSampler   point_shadow_sampler);
 

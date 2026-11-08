@@ -149,6 +149,10 @@ struct ImGuiVulkan::Impl {
     VulkanRenderGraph* graph = nullptr;
     ImGui_ImplVulkanH_Window g_MainWindowData{};
     bool initialized = false;
+    // ImGui's backend never destroys a pool the caller hands it, so the pool
+    // -- and the font and texture sets in it -- belongs here. It used to be a
+    // local in create(), and leaked (VUID-vkDestroyDevice-device-05137).
+    VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
 
     ~Impl() {
         if (initialized && device) {
@@ -159,6 +163,8 @@ struct ImGuiVulkan::Impl {
             ImGui_ImplVulkan_Shutdown();
             ImGui_ImplGlfw_Shutdown();
             ImGui::DestroyContext();
+            if (vkdev != VK_NULL_HANDLE && descriptor_pool != VK_NULL_HANDLE)
+                vkDestroyDescriptorPool(vkdev, descriptor_pool, nullptr);
         }
     }
 };
@@ -251,6 +257,7 @@ std::unique_ptr<ImGuiVulkan> ImGuiVulkan::create(VulkanDevice* device,
     }
 
     init_info.DescriptorPool = descriptor_pool;
+    impl->descriptor_pool    = descriptor_pool;
 
     if (!ImGui_ImplVulkan_Init(&init_info)) {
         spdlog::error("ImGuiVulkan: ImGui_ImplVulkan_Init failed");

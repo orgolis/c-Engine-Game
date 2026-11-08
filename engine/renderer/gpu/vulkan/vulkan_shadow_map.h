@@ -194,7 +194,8 @@ private:
     
     // Shadow depth image
     VkImage shadow_image_ = VK_NULL_HANDLE;
-    VkImageView shadow_view_ = VK_NULL_HANDLE;
+    VkImageView shadow_view_ = VK_NULL_HANDLE;       // sampled: 2D_ARRAY over every layer
+    VkImageView attachment_view_ = VK_NULL_HANDLE;   // rendered into: layer 0, 2D
     VkDeviceMemory shadow_memory_ = VK_NULL_HANDLE;
     VkSampler shadow_sampler_ = VK_NULL_HANDLE;
     

@@ -1018,13 +1018,22 @@ void VulkanLightingPass::update_descriptor_set() {
         image_infos[i].imageView   = gbuffer_views[i];
         image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
+    // Binding 4 is the G-buffer DEPTH, which the geometry pass leaves in
+    // DEPTH_STENCIL_READ_ONLY (the transparent, froxel and volumetric passes
+    // already say so). Declaring SHADER_READ_ONLY was
+    // VUID-vkCmdDraw-imageLayout-00344 on every frame.
+    image_infos[4].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     // Shadow maps fall back to the dummy 1×1 textures when no real shadow
     // map has been bound. The shader reads them unconditionally; the
     // `castsShadow` flag in each Light entry controls whether the result
     // is actually used.
     image_infos[5].sampler     = directional_shadow_sampler_ ? directional_shadow_sampler_ : shadow_sampler_;
     image_infos[5].imageView   = directional_shadow_view_    ? directional_shadow_view_    : dummy_shadow_2d_array_view_;
-    image_infos[5].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // The real shadow map is left in DEPTH_STENCIL_READ_ONLY by its render pass
+    // (the froxel and volumetric passes already declare that); the dummy was
+    // transitioned to SHADER_READ_ONLY. Declaring SHADER_READ_ONLY for the real
+    // one was VUID-vkCmdDraw-imageLayout-00344 on every run.
+    image_infos[5].imageLayout = get_effective_directional_shadow_layout();
     image_infos[6].sampler     = point_shadow_sampler_       ? point_shadow_sampler_       : shadow_sampler_;
     image_infos[6].imageView   = point_shadow_view_          ? point_shadow_view_          : dummy_shadow_cube_view_;
     image_infos[6].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

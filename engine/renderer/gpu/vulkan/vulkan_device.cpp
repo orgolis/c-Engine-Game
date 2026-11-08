@@ -840,6 +840,34 @@ void VulkanDevice::create_logical_device() {
         // commands built here always use 0, so it is deliberately not required.
     }
 
+    // Two more core features the renderer used without ever requesting them --
+    // undefined behaviour that happened to work, reported by the validation
+    // layers on every run:
+    //  - independentBlend: the WBOIT transparent pass blends its accumulation
+    //    target additively and its revealage target multiplicatively, which is
+    //    two different blend states in one pipeline
+    //    (VUID-VkPipelineColorBlendStateCreateInfo-pAttachments-00605).
+    //  - fragmentStoresAndAtomics: VXAO's voxelize.frag writes its voxel grid
+    //    from the fragment stage (VUID-RuntimeSpirv-NonWritable-06340).
+    // Near-universal on desktop GPUs. Without fragment stores VXAO declines to
+    // build; without independent blend the transparent pass is not correct and
+    // says so at startup.
+    {
+        VkPhysicalDeviceFeatures supported{};
+        vkGetPhysicalDeviceFeatures(physical_device, &supported);
+        if (supported.independentBlend) {
+            device_features.independentBlend = VK_TRUE;
+            independent_blend_enabled_ = true;
+        } else {
+            GWS_LOG_WARN("independentBlend not supported -- order-independent transparency "
+                         "will not blend correctly on this GPU");
+        }
+        if (supported.fragmentStoresAndAtomics) {
+            device_features.fragmentStoresAndAtomics = VK_TRUE;
+            fragment_stores_enabled_ = true;
+        }
+    }
+
     // shaderInt64 (core VkPhysicalDeviceFeatures, NOT an extension feature):
     // required by every ray-query shader that addresses BLAS vertex/index
     // buffers via 64-bit device addresses -- ssr_rt.comp, ddgi_trace.comp,
