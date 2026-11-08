@@ -712,6 +712,36 @@ the flag survives moves.
 decimated tier lies partly inside LOD 0. The self-shadowing risk applies to them. The general fix is
 per-instance LOD selection in the TLAS (one BLAS per tier); not done.
 
+### (s) The hierarchy panel caches its rows — 1.44 → 0.03 ms at 20k
+
+With shadows fixed (F15) and voted (r), the 20k frame is CPU-bound again: 15.8 ms, GPU 6.6 ms, on an
+idle machine. The hierarchy panel still walked all 20k entities every frame to find the two dozen
+rows on screen. The earlier fix (`34d701e`) stopped *drawing* off-screen rows, but each still cost a
+`std::function` call, a pointer chase and an ImGui ID hash.
+
+The panel now caches the flattened rows (entity and depth, for every entity whose ancestors are all
+open) and draws only the slice that intersects the panel. To keep IDs and stored open state
+identical, it pushes the ids of the first row's ancestors exactly as the nested draw would. The cache
+rebuilds when `detail::hierarchy_generation()` moves or a drawn node's open state disagrees with it
+(a toggle). The new counter is bumped by every change to the tree's shape: create, remove, clear,
+re-parent. Names and flags are read live.
+
+| @ 20k | before | after |
+|---|---|---|
+| `ui_hierarchy` | 1.44 ms | **0.028 ms** |
+
+The panel is pixel-identical to before at N = 0 and N = 20k (0 px).
+
+`hierarchygen_check` (12 assertions) proves that every shape change bumps the generation (create,
+parent, grandparent, move, un-parent, AddChild, RemoveChild, remove, clear) and that nothing else
+does (same parent, refused loop, rename, (de)activate, move, ten frames of Update). Mutation-tested:
+dropping the bump from `SetParent` or from `RemoveEntity` is caught.
+
+**Next CPU leads at 20k** (ms): `ecs_sync` 3.6 (the mirror copies every component of every entity
+every frame; making it change-driven needs versions on all 18 component kinds), `build_draw_items`
+2.1, `stage_geometry` 1.6, `draw_sort` / `rt_scene_update` / `hzb_cull` ~1.0 each. All of them
+redo per-entity work in a scene where nothing moves.
+
 ### (q) Shadow rays for surfaces facing away from the light — skipped
 
 **Where the 20k frame's GPU time goes now.** A decomposition by render setting (VSync off, lower

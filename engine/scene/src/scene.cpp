@@ -13,6 +13,7 @@ namespace {
 // costs at most one rebuild or one scan, which is what every frame paid before.
 std::atomic<uint64_t> g_component_set_generation{0};
 std::atomic<uint64_t> g_destroy_generation{0};
+std::atomic<uint64_t> g_hierarchy_generation{0};
 }  // namespace
 
 namespace detail {
@@ -21,6 +22,12 @@ uint64_t component_set_generation() {
 }
 void bump_component_set_generation() {
     g_component_set_generation.fetch_add(1, std::memory_order_acq_rel);
+}
+uint64_t hierarchy_generation() {
+    return g_hierarchy_generation.load(std::memory_order_acquire);
+}
+void bump_hierarchy_generation() {
+    g_hierarchy_generation.fetch_add(1, std::memory_order_acq_rel);
 }
 }  // namespace detail
 
@@ -79,6 +86,7 @@ bool Entity::SetParent(std::shared_ptr<Entity> parent) {
     } else {
         transform_.SetParent(nullptr);
     }
+    detail::bump_hierarchy_generation();
     return true;
 }
 
@@ -231,6 +239,7 @@ void Scene::AddEntity(std::shared_ptr<Entity> entity) {
     
     entities_.push_back(entity);
     ++entity_list_version_;
+    detail::bump_hierarchy_generation();
     entities_by_id_[entity->GetId()] = entity;
 
     const auto& tag = entity->GetTag();
@@ -248,6 +257,7 @@ void Scene::RemoveEntity(std::shared_ptr<Entity> entity) {
     if (it != entities_.end()) {
         entities_.erase(it);
         ++entity_list_version_;
+        detail::bump_hierarchy_generation();
     }
     
     entities_by_id_.erase(entity->GetId());
@@ -358,6 +368,7 @@ void Scene::Reload() {
 void Scene::Clear() {
     entities_.clear();
     ++entity_list_version_;
+    detail::bump_hierarchy_generation();
     entities_by_id_.clear();
     entities_by_tag_.clear();
     

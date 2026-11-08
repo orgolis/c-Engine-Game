@@ -2850,31 +2850,12 @@ void ShowSceneHierarchy(EditorState& editor_state) {
             }
         };
 
-        // Helper lambda to recursively display entity hierarchy
-        std::function<void(const std::shared_ptr<schizo::scene::Entity>&)> draw_entity_node =
-            [&](const std::shared_ptr<schizo::scene::Entity>& entity) {
-                if (!entity) return;
-
-                const auto& children = entity->GetChildren();
-                bool has_children = !children.empty();
-
-                if (hier_row_h > 0.0f) {
-                    const float y = ImGui::GetCursorScreenPos().y + hier_skip;
-                    if (y + hier_row_h < hier_clip.Min.y || y > hier_clip.Max.y) {
-                        hier_skip += hier_row_h;
-                        const void* pid = (void*)(intptr_t)entity->GetId();
-                        // DefaultOpen: an absent entry means open, as TreeNodeEx reads it.
-                        if (has_children &&
-                            ImGui::GetStateStorage()->GetInt(ImGui::GetID(pid), 1) != 0) {
-                            ImGui::TreePush(pid);
-                            for (const auto& child : children) draw_entity_node(child);
-                            ImGui::TreePop();
-                        }
-                        return;
-                    }
-                }
-                flush_hier_skip();
-
+        // One row: the tree node and everything a row does (select, drag,
+        // drop, context menu). Returns TreeNodeEx's result -- true means it
+        // pushed, and the caller pops. Children are NOT drawn here; the row
+        // list below already holds them in order.
+        auto draw_entity_row =
+            [&](const std::shared_ptr<schizo::scene::Entity>& entity, bool has_children) -> bool {
                 ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen;
                 if (!has_children) {
                     flags |= ImGuiTreeNodeFlags_Leaf;
@@ -3003,23 +2984,99 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                     ImGui::EndPopup();
                 }
 
-                // Recursively draw children
-                if (node_open) {
-                    for (const auto& child : children) {
-                        draw_entity_node(child);
-                    }
-                    ImGui::TreePop();
-                }
+                return node_open;
             };
 
-        // Draw root entities (those without parents)
-        const auto& entities = scene->GetEntities();
-        for (const auto& entity : entities) {
-            if (!entity->GetParent()) {
-                draw_entity_node(entity);
+        // The tree, flattened into the rows it shows -- every entity whose
+        // ancestors are all open, in draw order, with its depth -- and CACHED.
+        // It used to be walked in full every frame to find the two dozen rows
+        // on screen: 1.6 ms at 20k entities, for a panel. The row list only
+        // changes when the tree's shape does (detail::hierarchy_generation:
+        // add, remove, clear, re-parent) or a node opens or closes, which the
+        // draw loop below notices as a node whose open state disagrees with
+        // the list. Names and flags are read live from the entities.
+        struct HierRow {
+            std::shared_ptr<schizo::scene::Entity> entity;   // kept alive for this frame
+            int  depth;
+            bool has_children;
+        };
+        static std::vector<HierRow> hier_rows;
+        static uint64_t    hier_gen   = ~0ull;
+        static const void* hier_scene = nullptr;
+        static bool        hier_stale = true;
+        const uint64_t gen = schizo::scene::detail::hierarchy_generation();
+        if (hier_stale || gen != hier_gen || hier_scene != scene.get()) {
+            hier_rows.clear();
+            // Mirror the ID stack the draw builds (TreePush per open node), so
+            // the open state read here is the same entry TreeNodeEx reads.
+            std::function<void(const std::shared_ptr<schizo::scene::Entity>&, int)> flatten =
+                [&](const std::shared_ptr<schizo::scene::Entity>& e, int depth) {
+                    if (!e) return;
+                    const auto& kids = e->GetChildren();
+                    hier_rows.push_back({e, depth, !kids.empty()});
+                    const void* pid = (void*)(intptr_t)e->GetId();
+                    // DefaultOpen: an absent entry means open, as TreeNodeEx reads it.
+                    if (!kids.empty() && ImGui::GetStateStorage()->GetInt(ImGui::GetID(pid), 1) != 0) {
+                        ImGui::TreePush(pid);
+                        for (const auto& k : kids) flatten(k, depth + 1);
+                        ImGui::TreePop();
+                    }
+                };
+            for (const auto& e : scene->GetEntities())
+                if (e && !e->GetParent()) flatten(e, 0);
+            hier_gen = gen;
+            hier_scene = scene.get();
+            hier_stale = false;
+        }
+
+        // Draw only the rows that intersect the panel. Before a row height
+        // has been measured, draw the first screenful and measure.
+        const size_t n_rows = hier_rows.size();
+        size_t first = 0, last = std::min<size_t>(n_rows, 64);
+        if (hier_row_h > 0.0f && n_rows > 0) {
+            const float top = ImGui::GetCursorScreenPos().y;
+            const float a = (hier_clip.Min.y - top) / hier_row_h;
+            const float b = (hier_clip.Max.y - top) / hier_row_h;
+            first = static_cast<size_t>(std::clamp(a, 0.0f, float(n_rows)));
+            last  = static_cast<size_t>(std::clamp(b + 1.0f, 0.0f, float(n_rows)));
+            if (last < first) last = first;
+        }
+        hier_skip = float(first) * hier_row_h;
+        // The first drawn row sits under its ancestors' tree nodes: push their
+        // ids exactly as those nodes would have, so this row's id -- and the
+        // open state stored under it -- is the one the nested draw produced.
+        int pushed = 0;
+        if (first < last) {
+            std::vector<const schizo::scene::Entity*> chain;
+            for (auto* a = hier_rows[first].entity->GetParent().get(); a; a = a->GetParent().get())
+                chain.push_back(a);
+            for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+                ImGui::TreePush((void*)(intptr_t)(*it)->GetId());
+                ++pushed;
             }
         }
-        flush_hier_skip();   // rows below the visible area still size the scrollbar
+        size_t drawn_to = first;
+        for (size_t i = first; i < last; ++i) {
+            const HierRow& row = hier_rows[i];
+            while (pushed > row.depth) { ImGui::TreePop(); --pushed; }
+            flush_hier_skip();
+            const bool open = draw_entity_row(row.entity, row.has_children);
+            drawn_to = i + 1;
+            if (!row.has_children) {             // a Leaf node always reports open
+                if (open) ImGui::TreePop();
+                continue;
+            }
+            const bool expect_open = i + 1 < n_rows && hier_rows[i + 1].depth > row.depth;
+            if (open) ++pushed;
+            if (open != expect_open) {           // toggled: the list below is wrong
+                hier_stale = true;
+                break;
+            }
+        }
+        while (pushed > 0) { ImGui::TreePop(); --pushed; }
+        // Rows below the visible area still size the scrollbar.
+        hier_skip += float(n_rows - drawn_to) * hier_row_h;
+        flush_hier_skip();
 
         // A prefab dropped on the LIST rather than on an entity instantiates at
         // the scene root. Without this the only way to place one is onto an

@@ -36,6 +36,12 @@ namespace detail {
 /// entity (an entity does not know its scene). Defined in scene.cpp.
 uint64_t component_set_generation();
 void     bump_component_set_generation();
+/// Bumped whenever the SHAPE of any scene's entity tree changes -- an entity
+/// added, removed or cleared, or re-parented -- so a view of the tree (the
+/// hierarchy panel) can cache its flattened rows instead of walking every
+/// entity every frame. Names and flags are not shape: they are read live.
+uint64_t hierarchy_generation();
+void     bump_hierarchy_generation();
 }  // namespace detail
 
 // ============================================================================
