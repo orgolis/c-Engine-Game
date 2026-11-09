@@ -28,6 +28,7 @@ namespace gws::renderer::gpu {
 
 class VulkanDevice;
 class Mesh;
+class Material;
 struct DrawItem;
 struct VulkanRtFunctions;
 
@@ -172,6 +173,27 @@ private:
     uint32_t                   rt_frame_ = 0;
 
     uint32_t        last_instance_count_   = 0;
+
+    /// What the TLAS and the instance data were last built from, per draw. A
+    /// frame whose list matches it field for field changes nothing the GPU
+    /// holds, so update() skips the BLAS lookups, the instance writes, the
+    /// TLAS build and the instance-data upload: last frame's structures are
+    /// still exact. The vertex buffer is part of it because ensure_blas keys a
+    /// rebuild on it (a re-uploaded mesh at a reused address).
+    struct BuiltFrom {
+        const Mesh*     mesh     = nullptr;
+        const Material* material = nullptr;
+        VkBuffer        vbo      = VK_NULL_HANDLE;
+        glm::mat4       model{1.0f};
+    };
+    std::vector<BuiltFrom> built_from_;
+    bool                   have_built_  = false;
+    bool                   last_skipped_ = false;
+    bool                   tlas_build_ok_ = false;   // rebuild_tlas reached the build
+
+public:
+    /// Did the last update() find nothing changed and skip all its work?
+    bool last_update_skipped() const { return last_skipped_; }
 };
 
 } // namespace gws::renderer::gpu

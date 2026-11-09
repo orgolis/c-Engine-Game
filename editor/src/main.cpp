@@ -10920,6 +10920,12 @@ int main(int argc, char** argv) {
             // broken by material so identical materials draw back-to-back
             // and the descriptor rebind count drops. The WBOIT transparent
             // list is order-independent — left untouched.
+            //
+            // After the swap below, build_order_draws holds the same draws in
+            // the order they were built -- stable from frame to frame, where
+            // the sorted order changes whenever the camera moves. The RT scene
+            // takes that one, so an unchanged scene lets it skip its rebuild.
+            static std::vector<gws::renderer::gpu::DrawItem> build_order_draws;
             {
                 GWS_PROFILE_ZONE("draw_sort");
                 const size_t n = opaque_draws.size();
@@ -10933,7 +10939,7 @@ int main(int argc, char** argv) {
                 static std::vector<uint64_t> tie_key;
                 static std::vector<uint32_t> order;
                 static gws::renderer::gpu::DrawOrderScratch order_scratch;
-                static std::vector<gws::renderer::gpu::DrawItem> sorted;
+                std::vector<gws::renderer::gpu::DrawItem>& sorted = build_order_draws;
                 depth_key.resize(n);
                 tie_key.resize(n);
                 // Depths on the job system above a few thousand draws: each is
@@ -11223,7 +11229,7 @@ int main(int argc, char** argv) {
                     // the lighting descriptor pointing at a destroyed TLAS,
                     // which hung the editor on scene load).
                     { GWS_PROFILE_ZONE("rt_scene_update");
-                      rt_scene->update(cmd, opaque_draws.data(), opaque_draws.size()); }
+                      rt_scene->update(cmd, build_order_draws.data(), build_order_draws.size()); }
                     // Re-bind the TLAS handle. rebuild_tlas() always produces
                     // a valid handle (empty TLAS for empty scenes), so this is
                     // never null and the descriptor never dangles.

@@ -28,6 +28,9 @@
 
 #include <spdlog/spdlog.h>
 #include <cstring>
+#include <atomic>
+#include <cstdlib>
+#include "jobs/job_system.h"
 #include <cstdint>
 
 namespace gws::renderer::gpu {
@@ -395,6 +398,7 @@ bool VulkanRtScene::ensure_blas(VkCommandBuffer cmd, const Mesh* mesh) {
 
 void VulkanRtScene::rebuild_tlas(VkCommandBuffer cmd, const DrawItem* items, size_t count) {
     VkDevice vk = device_->get_device();
+    tlas_build_ok_ = false;
     last_instance_count_ = 0;
 
     // Always build a TLAS — even with 0 instances. An empty TLAS is a
@@ -541,6 +545,7 @@ void VulkanRtScene::rebuild_tlas(VkCommandBuffer cmd, const DrawItem* items, siz
     range.primitiveCount = written;
     const VkAccelerationStructureBuildRangeInfoKHR* p_range = &range;
     fns_->cmdBuildAccelerationStructures(cmd, 1, &build, &p_range);
+    tlas_build_ok_ = true;
 
     // Make the TLAS visible to subsequent ray queries in fragment / compute.
     VkMemoryBarrier mb{};
@@ -597,6 +602,44 @@ void VulkanRtScene::update(VkCommandBuffer cmd, const DrawItem* items, size_t co
         }
     }
 
+    // Nothing changed since the last build: the TLAS, the BLAS set and the
+    // instance data on the GPU are exactly what this frame would build, so
+    // none of it is redone (the editor passes the draws in a stable order, so
+    // a moving camera alone does not count as a change). GWS_RT_FULL=1
+    // rebuilds every frame regardless.
+    static const bool rt_full = std::getenv("GWS_RT_FULL") != nullptr;
+    last_skipped_ = false;
+    if (!rt_full && have_built_ && tlas_.handle != VK_NULL_HANDLE &&
+        built_from_.size() == count) {
+        GWS_PROFILE_ZONE("rt.compare");
+        // ~180 bytes read per draw (the draw and its snapshot): memory-bound,
+        // so it goes wide above a few thousand, each worker giving up as soon
+        // as any has seen a difference.
+        std::atomic<bool> differs{false};
+        auto cmp = [&](size_t b0, size_t e0) {
+            for (size_t i = b0; i < e0; ++i) {
+                if ((i & 255) == 0 && differs.load(std::memory_order_relaxed)) return;
+                const DrawItem& d = items[i];
+                const BuiltFrom& b = built_from_[i];
+                if (!(d.mesh == b.mesh && d.material == b.material && d.model == b.model &&
+                      (d.mesh == nullptr || d.mesh->get_vertex_buffer() == b.vbo))) {
+                    differs.store(true, std::memory_order_relaxed);
+                    return;
+                }
+            }
+        };
+        auto& js = gws::jobs::JobSystem::instance();
+        if (js.initialized() && count >= 4096)
+            js.parallel_for(0, count, [&cmp](size_t b0, size_t e0) { cmp(b0, e0); });
+        else
+            cmp(0, count);
+        if (!differs.load()) {
+            last_skipped_ = true;
+            return;
+        }
+    }
+    have_built_ = false;   // set again only once this frame's build completes
+
     // Order this frame's builds after the previous frame's use of the same
     // memory. The TLAS is rebuilt IN PLACE and every build shares one scratch
     // buffer, while the frame before -- two are in flight -- may still be
@@ -635,6 +678,7 @@ void VulkanRtScene::update(VkCommandBuffer cmd, const DrawItem* items, size_t co
     // Build the per-instance shading data SSBO (indexed by DrawItem index =
     // instanceCustomIndex). The RT reflection pass reads this to re-shade
     // hit points without depending on screen-space colour.
+    bool instance_data_ok = (count == 0);
     if (count > 0) {
         GWS_PROFILE_ZONE("rt.instance_data");
         VkDevice vk = device_->get_device();
@@ -705,7 +749,21 @@ void VulkanRtScene::update(VkCommandBuffer cmd, const DrawItem* items, size_t co
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                  0, 1, &after, 0, nullptr, 0, nullptr);
+            instance_data_ok = true;
         }
+    }
+
+    // Remember what the GPU now holds -- only when all of it was built, so a
+    // failed allocation is retried next frame rather than skipped forever.
+    if (tlas_build_ok_ && instance_data_ok) {
+        built_from_.resize(count);
+        for (size_t i = 0; i < count; ++i) {
+            const DrawItem& d = items[i];
+            built_from_[i] = BuiltFrom{d.mesh, d.material,
+                                       d.mesh ? d.mesh->get_vertex_buffer() : VK_NULL_HANDLE,
+                                       d.model};
+        }
+        have_built_ = true;
     }
 }
 

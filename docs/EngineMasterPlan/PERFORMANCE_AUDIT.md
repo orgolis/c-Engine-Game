@@ -921,6 +921,33 @@ next step for scenes that spawn every frame.
 
 
 
+### (w) The ray-tracing scene is not rebuilt when nothing changed
+
+`VulkanRtScene::update` rebuilt the TLAS in place and re-uploaded the per-instance shading data
+every frame. It now keeps a compact record of what the GPU holds, per draw: mesh, material, model
+matrix, and the mesh's vertex buffer (the BLAS cache keys a rebuild on it). A frame whose list
+matches field for field skips the BLAS lookups, the instance writes, the TLAS build and the upload,
+because last frame's structures are still exact. Material parameters are set only at creation, so a
+pointer match means identical parameters. The record is kept only when both the TLAS build and the
+upload succeeded, so a failed allocation is retried rather than skipped.
+
+The editor used to hand the RT scene the **front-to-back sorted** list, whose order changes whenever
+the camera moves, so a moving camera alone would have defeated the skip. It now passes the same draws
+in build order, which the sort's scratch list holds after its swap. Instance index and instance data
+come from one list, so they stay consistent. The compare reads ~180 bytes per draw and runs on the
+job system with a shared early-out flag.
+
+| @ 20k, still | rebuild every frame | skip |
+|---|---|---|
+| `rt_scene_update` (CPU) | 0.81–1.37 ms | **0.19–0.29 ms** (the compare) |
+| TLAS build + instance upload (GPU) | every frame | none |
+
+Under 40 changes per frame it costs the same as before (0.99 vs 1.0 ms). `GWS_RT_FULL=1` rebuilds
+every frame. Images: skip vs full in the same order differ by 1 and 40 px. Against the old sorted
+order, the difference (~1,900 px, max 68) matches the same binary against itself (1,873 px), the
+known discrete states of GPU-bound runs. MyGame is 0 px. Validation layers are clean under
+`GWS_TEST_SHAKE`.
+
 ### (q) Shadow rays for surfaces facing away from the light — skipped
 
 **Where the 20k frame's GPU time goes now.** A decomposition by render setting (VSync off, lower
