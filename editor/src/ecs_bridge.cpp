@@ -496,6 +496,16 @@ struct EcsSceneBridge::Impl {
     std::vector<char>              needs_serial;   // sync.entities: 1 = original path
     size_t                         verify_cursor = 0;
 
+    // Incremental transforms (see the local_trs pass). oop_stamp is parallel
+    // to oop_tf: each Transform's ChangeStamp() as gathered. local/world_mat
+    // above persist across syncs and hold the previous sync's complete result
+    // when have_prev_matrices is set.
+    std::vector<uint64_t>          oop_stamp;
+    std::vector<uint8_t>           wstate;         // 0 unknown, 1 world changed, 2 unchanged
+    std::vector<uint32_t>          changed;        // indices whose world matrix is recomputed
+    uint64_t                       prev_sync_begin = 0;
+    bool                           have_prev_matrices = false;
+
     // G0 gameplay services, one per world. Ticked/flushed by tick_gameplay().
     ecs::GameplayEventBus event_bus;
     ecs::TimerManager     timer_mgr;
@@ -876,6 +886,9 @@ void EcsSceneBridge::sync_and_run(
     auto& slots        = impl_->slots;
     auto& shadow       = impl_->shadow;
     auto& oop_tf       = impl_->oop_tf;
+    auto& oop_stamp    = impl_->oop_stamp;
+    // Any Transform stamped from here on counts as changed at the next sync.
+    const uint64_t sync_begin = scene::Transform::ChangeStampCounter();
     auto& oop_ent      = impl_->oop_ent;
     auto& slot_of      = impl_->slot_of;
     auto& parent_idx   = impl_->parent_idx;
@@ -895,8 +908,10 @@ void EcsSceneBridge::sync_and_run(
     std::swap(impl_->prev_parent, impl_->oop_parent);
     oop_tf.clear();
     oop_ent.clear();
+    oop_stamp.clear();
     impl_->oop_parent.clear();
     if (!scene) {
+        impl_->have_prev_matrices = false;
         // Scene gone: tear down all persistent shadow entities.
         for (auto& kv : slots) world.destroy(kv.second.entity);
         destroyed_ = slots.size();
@@ -916,6 +931,7 @@ void EcsSceneBridge::sync_and_run(
         oop_tf.push_back(tf);
         oop_ent.push_back(ent.get());
         impl_->oop_parent.push_back(tf->GetParent());
+        oop_stamp.push_back(tf->ChangeStamp());   // the Transform is in cache right now
     }
 
     next("sync.reconcile");
@@ -1080,84 +1096,197 @@ void EcsSceneBridge::sync_and_run(
         }
     }
 
-    next("sync.local_trs");
-    // --- System phase A (PARALLEL): LocalToWorld.value = local matrix.
-    ecs::parallel_each<ecs::Transform, ecs::LocalToWorld>(
-        world, [](ecs::Entity, ecs::Transform& t, ecs::LocalToWorld& l) {
-            l.value = compose_trs(t);
-        });
-
-    next("sync.hierarchy");
-    // --- System phase B (hierarchy resolve): world = parent_world * local.
-    // Dependency-ordered, so serial with memoisation here; the real engine
-    // parallelises this by depth-wave (noted for step 2). Reads the local
-    // matrices written above, writes world matrices back into LocalToWorld.
+    // ---- Transforms: incremental when the scene kept its shape ----------
     //
-    // The scratch arrays persist in Impl. This allocated three scene-sized
-    // vectors per sync plus a fresh chain vector PER ENTITY -- 20k heap
-    // allocations a frame at 20k entities to walk, usually, a chain of one.
-    auto& local     = impl_->local;
-    auto& world_mat = impl_->world_mat;
-    auto& done      = impl_->done;
-    auto& chain     = impl_->chain;
-    auto& ltw_pool = world.registry().storage<ecs::LocalToWorld>();   // fetched once
-    local.resize(shadow.size());
-    for (size_t i = 0; i < shadow.size(); ++i)
-        local[i] = ltw_pool.get(shadow[i]).value;
+    // Recomputing every entity's local and world matrix every frame is what a
+    // static scene paid for nothing: ~1 ms at 20k entities. When this sync has
+    // the same entities in the same order with the same parents as the last
+    // one (reuse_parents), and the last one left a complete result, only the
+    // transforms stamped since the last sync began -- plus any entity on the
+    // serial path (ECS-authoritative write-back, new components) -- get a new
+    // local matrix; "world changed" then propagates from parent to child, and
+    // only those chains are multiplied and published. Everything else keeps
+    // last sync's matrices, which were computed from the same inputs.
+    //
+    // GWS_ECS_FULL_TRANSFORMS=1 forces the full path (A/B, bisecting). The
+    // verify pass below compares the result with the scene's own matrices
+    // every frame for a rotating slice (GWS_ECS_VERIFY_ALL=1: all of them).
+    static const bool force_full_tf = std::getenv("GWS_ECS_FULL_TRANSFORMS") != nullptr;
+    const bool incremental = !force_full_tf && reuse_parents && impl_->have_prev_matrices &&
+                             impl_->local.size() == shadow.size() &&
+                             impl_->world_mat.size() == shadow.size() &&
+                             oop_stamp.size() == shadow.size();
+    if (!incremental) {
+        next("sync.local_trs");
+        // --- System phase A (PARALLEL): LocalToWorld.value = local matrix.
+        ecs::parallel_each<ecs::Transform, ecs::LocalToWorld>(
+            world, [](ecs::Entity, ecs::Transform& t, ecs::LocalToWorld& l) {
+                l.value = compose_trs(t);
+            });
 
-    world_mat.resize(shadow.size());
-    done.assign(shadow.size(), 0);
-    // Iterative resolve up the parent chain (no recursion depth limit risk).
-    for (size_t i = 0; i < shadow.size(); ++i) {
-        if (done[i]) continue;
-        // Walk up to the highest unresolved ancestor, recording the chain.
-        chain.clear();
-        int cur = static_cast<int>(i);
-        // Bounded: a chain longer than the entity count can only be a parent
-        // cycle, and an unbounded walk around one never ends -- the editor
-        // hangs with no error. A cycle cannot come from a well-formed scene,
-        // but a bug that corrupts parent_idx (or a scene that parents A under
-        // B under A) should show up as wrong matrices and a warning, not as a
-        // frozen editor. The cycle's top is treated as a root.
-        bool cycle = false;
-        while (cur != -1 && !done[cur]) {
-            if (chain.size() > shadow.size()) { cycle = true; break; }
-            chain.push_back(cur);
-            cur = parent_idx[cur];
-        }
-        if (cycle) {
-            static bool warned = false;
-            if (!warned) {
-                warned = true;
-                spdlog::warn("[ecs] parent cycle in the scene hierarchy; resolving it as a root "
-                             "(reported once)");
+        next("sync.hierarchy");
+        // --- System phase B (hierarchy resolve): world = parent_world * local.
+        // Dependency-ordered, so serial with memoisation here; the real engine
+        // parallelises this by depth-wave (noted for step 2). Reads the local
+        // matrices written above, writes world matrices back into LocalToWorld.
+        //
+        // The scratch arrays persist in Impl. This allocated three scene-sized
+        // vectors per sync plus a fresh chain vector PER ENTITY -- 20k heap
+        // allocations a frame at 20k entities to walk, usually, a chain of one.
+        auto& local     = impl_->local;
+        auto& world_mat = impl_->world_mat;
+        auto& done      = impl_->done;
+        auto& chain     = impl_->chain;
+        auto& ltw_pool = world.registry().storage<ecs::LocalToWorld>();   // fetched once
+        local.resize(shadow.size());
+        for (size_t i = 0; i < shadow.size(); ++i)
+            local[i] = ltw_pool.get(shadow[i]).value;
+
+        world_mat.resize(shadow.size());
+        done.assign(shadow.size(), 0);
+        // Iterative resolve up the parent chain (no recursion depth limit risk).
+        for (size_t i = 0; i < shadow.size(); ++i) {
+            if (done[i]) continue;
+            // Walk up to the highest unresolved ancestor, recording the chain.
+            chain.clear();
+            int cur = static_cast<int>(i);
+            // Bounded: a chain longer than the entity count can only be a parent
+            // cycle, and an unbounded walk around one never ends -- the editor
+            // hangs with no error. A cycle cannot come from a well-formed scene,
+            // but a bug that corrupts parent_idx (or a scene that parents A under
+            // B under A) should show up as wrong matrices and a warning, not as a
+            // frozen editor. The cycle's top is treated as a root.
+            bool cycle = false;
+            while (cur != -1 && !done[cur]) {
+                if (chain.size() > shadow.size()) { cycle = true; break; }
+                chain.push_back(cur);
+                cur = parent_idx[cur];
             }
-            cur = -1;
+            if (cycle) {
+                static bool warned = false;
+                if (!warned) {
+                    warned = true;
+                    spdlog::warn("[ecs] parent cycle in the scene hierarchy; resolving it as a root "
+                                 "(reported once)");
+                }
+                cur = -1;
+            }
+            glm::mat4 acc = (cur == -1) ? glm::mat4(1.0f) : world_mat[cur];
+            // Apply from the top of the chain down.
+            for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+                acc = acc * local[*it];
+                world_mat[*it] = acc;
+                done[*it] = 1;
+            }
         }
-        glm::mat4 acc = (cur == -1) ? glm::mat4(1.0f) : world_mat[cur];
-        // Apply from the top of the chain down.
-        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
-            acc = acc * local[*it];
-            world_mat[*it] = acc;
-            done[*it] = 1;
+        next("sync.publish");
+        // Independent per entity -- its own LocalToWorld element, its own slot --
+        // and each write a cache miss, so it goes on the job system above the
+        // threshold. The pool was fetched once above; workers only call get().
+        {
+            auto publish = [&](size_t i) {
+                ltw_pool.get(shadow[i]).value = world_mat[i];
+                slot_of[i]->world = world_mat[i];
+            };
+            auto& js = gws::jobs::JobSystem::instance();
+            if (js.initialized() && shadow.size() >= kParallelMirrorMin)
+                js.parallel_for(0, shadow.size(), [&publish](size_t i) { publish(i); });
+            else
+                for (size_t i = 0; i < shadow.size(); ++i) publish(i);
         }
-    }
-    next("sync.publish");
-    // Independent per entity -- its own LocalToWorld element, its own slot --
-    // and each write a cache miss, so it goes on the job system above the
-    // threshold. The pool was fetched once above; workers only call get().
-    {
-        auto publish = [&](size_t i) {
-            ltw_pool.get(shadow[i]).value = world_mat[i];
-            slot_of[i]->world = world_mat[i];
-        };
+        matrices_written_ = shadow.size();
+        impl_->have_prev_matrices = true;
+    } else {
+        next("sync.local_trs");
+        const size_t n = shadow.size();
+        auto& local     = impl_->local;
+        auto& world_mat = impl_->world_mat;
+        auto& wst       = impl_->wstate;
+        auto& changed   = impl_->changed;
+        wst.assign(n, 0);
+        changed.clear();
+        for (size_t i = 0; i < n; ++i) {
+            if (oop_stamp[i] >= impl_->prev_sync_begin || serial[i]) {
+                wst[i] = 1;                        // own transform changed
+                changed.push_back(static_cast<uint32_t>(i));
+            }
+        }
+        auto& tf_pool  = world.registry().storage<ecs::Transform>();
+        auto& ltw_pool = world.registry().storage<ecs::LocalToWorld>();
         auto& js = gws::jobs::JobSystem::instance();
-        if (js.initialized() && shadow.size() >= kParallelMirrorMin)
-            js.parallel_for(0, shadow.size(), [&publish](size_t i) { publish(i); });
-        else
-            for (size_t i = 0; i < shadow.size(); ++i) publish(i);
+        {
+            auto compose = [&](size_t k) {
+                const size_t i = changed[k];
+                local[i] = compose_trs(tf_pool.get(shadow[i]));
+            };
+            if (js.initialized() && changed.size() >= kParallelMirrorMin)
+                js.parallel_for(0, changed.size(), [&compose](size_t k) { compose(k); });
+            else
+                for (size_t k = 0; k < changed.size(); ++k) compose(k);
+        }
+
+        next("sync.hierarchy");
+        // Nothing changed at all (a still scene): every matrix stands.
+        if (changed.empty()) {
+            matrices_written_ = 0;
+        } else {
+        // An entity's WORLD matrix changed iff its own transform did or an
+        // ancestor's world did. Resolved with the same memoised upward walk
+        // as the full path, bounded the same way against a parent cycle.
+        auto& chain = impl_->chain;
+        for (size_t i = 0; i < n; ++i) {
+            if (wst[i] != 0) continue;
+            chain.clear();
+            int cur = static_cast<int>(i);
+            while (cur != -1 && wst[cur] == 0 && chain.size() <= n) {
+                chain.push_back(cur);
+                cur = parent_idx[cur];
+            }
+            const uint8_t v = (cur == -1 || chain.size() > n) ? 2 : wst[cur];
+            for (int c : chain) wst[c] = v;
+        }
+        // Recompute, parent before child: every unchanged entity is "done"
+        // with last sync's world matrix.
+        auto& done = impl_->done;
+        done.resize(n);
+        changed.clear();
+        for (size_t i = 0; i < n; ++i) {
+            done[i] = (wst[i] == 2) ? 1 : 0;
+            if (wst[i] == 1) changed.push_back(static_cast<uint32_t>(i));
+        }
+        for (uint32_t i : changed) {
+            if (done[i]) continue;
+            chain.clear();
+            int cur = static_cast<int>(i);
+            while (cur != -1 && !done[cur] && chain.size() <= n) {
+                chain.push_back(cur);
+                cur = parent_idx[cur];
+            }
+            if (chain.size() > n) cur = -1;          // cycle: resolve as a root
+            glm::mat4 acc = (cur == -1) ? glm::mat4(1.0f) : world_mat[cur];
+            for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+                acc = acc * local[*it];
+                world_mat[*it] = acc;
+                done[*it] = 1;
+            }
+        }
+
+        next("sync.publish");
+        {
+            auto publish = [&](size_t k) {
+                const size_t i = changed[k];
+                ltw_pool.get(shadow[i]).value = world_mat[i];
+                slot_of[i]->world = world_mat[i];
+            };
+            if (js.initialized() && changed.size() >= kParallelMirrorMin)
+                js.parallel_for(0, changed.size(), [&publish](size_t k) { publish(k); });
+            else
+                for (size_t k = 0; k < changed.size(); ++k) publish(k);
+        }
+        matrices_written_ = changed.size();
+        }   // !changed.empty()
     }
-    matrices_written_ = shadow.size();
+    impl_->prev_sync_begin = sync_begin;
 
     next("sync.verify");
     // --- Verify: the ECS world matrix must equal the OOP one. A match
@@ -1171,14 +1300,15 @@ void EcsSceneBridge::sync_and_run(
     // Checking all of them every frame cost 2-2.5 ms at 20k entities, in
     // release, to re-confirm a result that only changes when the set or the
     // math does.
+    static const bool verify_all = std::getenv("GWS_ECS_VERIFY_ALL") != nullptr;
     const bool   full   = created_ > 0 || destroyed_ > 0;
     const size_t n_ent  = shadow.size();
-    const size_t stride = full ? 1 : 32;
+    const size_t stride = (full || verify_all) ? 1 : 32;
     const size_t start  = (full || n_ent == 0) ? 0 : (impl_->verify_cursor++ % stride);
     for (size_t i = start; i < n_ent; i += stride) {
         ++checked_;
         const glm::mat4 expected = oop_tf[i]->GetWorldMatrix();
-        const float* a = &world_mat[i][0][0];
+        const float* a = &impl_->world_mat[i][0][0];
         const float* b = &expected[0][0];
         float max_diff = 0.0f;
         for (int k = 0; k < 16; ++k)
@@ -1189,6 +1319,10 @@ void EcsSceneBridge::sync_and_run(
         full_checked_  = checked_;
         full_verified_ = verified_;
     }
+    if (verify_all && verified_ != checked_)
+        spdlog::warn("[ecs] verify: {} of {} world matrices differ from the scene's "
+                     "(incremental transforms {})",
+                     checked_ - verified_, checked_, incremental ? "on" : "off");
 }
 
 }  // namespace schizo::editor

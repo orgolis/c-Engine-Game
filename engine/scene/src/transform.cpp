@@ -3,6 +3,8 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <cmath>
 
 namespace schizo::scene {
@@ -10,6 +12,18 @@ namespace schizo::scene {
 // ============================================================================
 // Transform Implementation
 // ============================================================================
+
+namespace {
+// Starts at 1 so a stamp of 0 never occurs.
+std::atomic<uint64_t> g_change_stamp{1};
+}  // namespace
+
+uint64_t Transform::NextChangeStamp() {
+    return g_change_stamp.fetch_add(1, std::memory_order_relaxed);
+}
+uint64_t Transform::ChangeStampCounter() {
+    return g_change_stamp.load(std::memory_order_relaxed);
+}
 
 Transform::Transform() = default;
 
@@ -24,7 +38,10 @@ Transform::~Transform() {
     }
     // Orphan our own children — their parent pointer would otherwise dangle.
     for (Transform* child : children_) {
-        if (child) child->parent_ = nullptr;
+        if (child) {
+            child->parent_ = nullptr;
+            child->change_stamp_ = NextChangeStamp();   // its world matrix just changed
+        }
     }
     children_.clear();
 }
@@ -32,6 +49,7 @@ Transform::~Transform() {
 void Transform::SetLocalPosition(const glm::vec3& position) {
     if (local_position_ != position) {
         local_position_ = position;
+        change_stamp_ = NextChangeStamp();
         MarkDirty();
     }
 }
@@ -39,6 +57,7 @@ void Transform::SetLocalPosition(const glm::vec3& position) {
 void Transform::SetLocalRotation(const glm::quat& rotation) {
     if (local_rotation_ != rotation) {
         local_rotation_ = glm::normalize(rotation);
+        change_stamp_ = NextChangeStamp();
         MarkDirty();
     }
 }
@@ -46,6 +65,7 @@ void Transform::SetLocalRotation(const glm::quat& rotation) {
 void Transform::SetLocalScale(const glm::vec3& scale) {
     if (local_scale_ != scale) {
         local_scale_ = scale;
+        change_stamp_ = NextChangeStamp();
         MarkDirty();
     }
 }
@@ -152,6 +172,7 @@ void Transform::SetParent(Transform* parent) {
         parent_->children_.push_back(this);
     }
 
+    change_stamp_ = NextChangeStamp();
     MarkDirty();  // cascades to our descendants
 }
 

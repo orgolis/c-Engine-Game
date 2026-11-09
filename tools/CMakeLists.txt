@@ -159,6 +159,18 @@ if(MINGW)
     target_link_options(ecssync_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# ecsincremental_check: incremental transforms in the ECS mirror (only what was
+# stamped since the last sync, propagated parent to child) must give the same
+# world matrices as the scene, through 300 frames of random edits on a 3000-
+# entity forest, and must actually run incrementally.
+add_executable(ecsincremental_check ecsincremental_check/main.cpp ../editor/src/ecs_bridge.cpp)
+target_include_directories(ecsincremental_check PRIVATE ../editor/include)
+target_link_libraries(ecsincremental_check PRIVATE gws_ecs gws_reflection gws_jobs scene gws_logging)
+target_compile_features(ecsincremental_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(ecsincremental_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # ecsauthority_check: an ECS write to a Transform must survive the frame. The
 # assertions are symmetric on purpose -- a flip that quietly changed behaviour
 # for UNtagged entities would be far worse than one that did nothing.

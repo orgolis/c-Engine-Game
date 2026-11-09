@@ -824,6 +824,42 @@ count leaves the result in the scratch buffers. Mutation-tested: dropping the sw
 The last two are order-preserving copies of the ~96-byte `DrawItem`. Passing indices instead of items
 between these stages is the next step there.
 
+### (v) Change-driven transforms in the ECS mirror (stage 1 of change-driven scene processing)
+
+A still scene recomputed every entity's local and world matrix every frame. **Every Transform now
+carries a change stamp** (`Transform::ChangeStamp()`), taken from one global atomic counter. The only
+writers are `SetLocalPosition/Rotation/Scale` and `SetParent`; the world-space setters, `Translate`,
+`Rotate` and `LookAt` all go through them, and the destructor stamps the children it orphans.
+
+The ECS sync reads the stamps in the gather pass it already does. When the entity list and parent
+links match the last sync, it does three things:
+
+- recomputes local matrices only for transforms stamped since the last sync began, plus entities on
+  the serial path (ECS-authoritative write-back, new components);
+- propagates "world changed" parent to child, with the same bounded memoised walk;
+- multiplies and publishes only those chains, and does nothing at all on a still frame.
+
+Any change of shape takes the old full path. The existing `Transform` dirty flag couldn't be reused:
+`MarkDirty` returns early while the flag is set, and since rendering reads the ECS matrices nothing
+calls `GetWorldMatrix()` to clear it, so its propagation had silently stopped.
+
+| @ 20k, static, same binary | full | incremental |
+|---|---|---|
+| `sync.local_trs` | 0.29–0.34 ms | 0.03 ms |
+| `sync.hierarchy` | 0.37–0.47 ms | 0.12 ms → 0 on a still frame |
+| `sync.publish` | 0.23–0.31 ms | 0 |
+
+Pixel-identical. `GWS_ECS_VERIFY_ALL=1` (verify every matrix every frame; warns on a mismatch) is
+clean at 0 and 20k. `GWS_ECS_FULL_TRANSFORMS=1` forces the old path. `ecsincremental_check`: a
+3000-entity forest up to five deep, 300 frames of random moves, rotations, scales, re-parents,
+(de)activations and still frames, with every matrix compared every frame and the incremental path
+confirmed to run. A deep chain must rewrite exactly its five members. Mutation-tested: dropping the
+propagation (206 bad frames) or one setter's stamp (209) is caught.
+
+**Stage 2, not done yet:** the per-component mirror (`sync.entities`, ~1.5 ms) and the draw records
+(`draw.classify`, ~1.4 ms) still visit every entity. They need the same kind of stamp on component
+data, which has more writers (setters, reflection, raw-field inspector widgets).
+
 ### (q) Shadow rays for surfaces facing away from the light — skipped
 
 **Where the 20k frame's GPU time goes now.** A decomposition by render setting (VSync off, lower

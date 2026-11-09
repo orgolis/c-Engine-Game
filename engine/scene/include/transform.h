@@ -124,6 +124,17 @@ public:
      * @brief Get parent transform
      */
     Transform* GetParent() const { return parent_; }
+
+    /// When this transform's local TRS or parent link last changed, on one
+    /// global monotonic counter. An observer that remembered
+    /// ChangeStampCounter() at some moment knows this transform changed since
+    /// then exactly when ChangeStamp() >= that value. It says nothing about
+    /// ancestors: a parent's move changes this WORLD matrix without stamping
+    /// this transform, so a world-space cache has to propagate parent to child
+    /// (the editor's ECS sync does). Every write to the local TRS goes through
+    /// SetLocalPosition/Rotation/Scale or SetParent, and those stamp.
+    uint64_t ChangeStamp() const { return change_stamp_; }
+    static uint64_t ChangeStampCounter();
     
     /**
      * @brief Detach from parent
@@ -168,6 +179,9 @@ protected:
     // (e.g. cameras parented to the player) wouldn't follow.
     Transform* parent_ = nullptr;
     std::vector<Transform*> children_;
+
+    static uint64_t NextChangeStamp();
+    uint64_t change_stamp_ = NextChangeStamp();   // a new transform counts as changed
 
     /**
      * @brief Recalculate cached world matrix
