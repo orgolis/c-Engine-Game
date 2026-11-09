@@ -335,18 +335,21 @@ bool VulkanVolumetricLightPass::create_composite_pipeline(VkImageView hdr_color_
     fbi.width           = width_; fbi.height = height_; fbi.layers = 1;
     if (vkCreateFramebuffer(vk, &fbi, nullptr, &composite_framebuffer_) != VK_SUCCESS) return false;
 
-    // Binding 0 = half-res scatter, binding 1 = full-res G-Buffer position
-    // (the bilateral-upsample edge-stop guide).
-    std::array<VkDescriptorSetLayoutBinding, 2> cbnd{};
-    for (uint32_t i = 0; i < 2; ++i) {
+    // Binding 0 = half-res scatter, binding 1 = full-res G-Buffer depth and
+    // binding 2 = the pass's UBO: the bilateral-upsample edge-stop guide is
+    // the world position, rebuilt from depth with inv_view_proj (F5) rather
+    // than read from a position target.
+    std::array<VkDescriptorSetLayoutBinding, 3> cbnd{};
+    for (uint32_t i = 0; i < 3; ++i) {
         cbnd[i].binding         = i;
-        cbnd[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        cbnd[i].descriptorType  = (i == 2) ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                                           : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         cbnd[i].descriptorCount = 1;
         cbnd[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
     }
     VkDescriptorSetLayoutCreateInfo li{};
     li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    li.bindingCount = 2; li.pBindings = cbnd.data();
+    li.bindingCount = 3; li.pBindings = cbnd.data();
     if (vkCreateDescriptorSetLayout(vk, &li, nullptr, &composite_dsl_) != VK_SUCCESS) return false;
 
     VkPipelineLayoutCreateInfo pli{};
@@ -354,12 +357,13 @@ bool VulkanVolumetricLightPass::create_composite_pipeline(VkImageView hdr_color_
     pli.setLayoutCount = 1; pli.pSetLayouts = &composite_dsl_;
     if (vkCreatePipelineLayout(vk, &pli, nullptr, &composite_layout_) != VK_SUCCESS) return false;
 
-    VkDescriptorPoolSize ps{};
-    ps.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps.descriptorCount = 2;
+    std::array<VkDescriptorPoolSize, 2> ps{};
+    ps[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; ps[0].descriptorCount = 2;
+    ps[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         ps[1].descriptorCount = 1;
     VkDescriptorPoolCreateInfo pi{};
     pi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pi.maxSets       = 1;
-    pi.poolSizeCount = 1; pi.pPoolSizes = &ps;
+    pi.poolSizeCount = static_cast<uint32_t>(ps.size()); pi.pPoolSizes = ps.data();
     if (vkCreateDescriptorPool(vk, &pi, nullptr, &composite_pool_) != VK_SUCCESS) return false;
     VkDescriptorSetAllocateInfo dai{};
     dai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -373,18 +377,27 @@ bool VulkanVolumetricLightPass::create_composite_pipeline(VkImageView hdr_color_
     std::array<VkDescriptorImageInfo, 2> cii{};
     cii[0] = { gbuffer_sampler_, scatter_view_,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    cii[1] = { gbuffer_sampler_, g_buffer_->get_position_view(),
-               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    std::array<VkWriteDescriptorSet, 2> cw{};
-    for (uint32_t i = 0; i < 2; ++i) {
+    cii[1] = { gbuffer_sampler_, g_buffer_->get_depth_view(),
+               VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+    VkDescriptorBufferInfo cubi{};
+    cubi.buffer = ubo_;
+    cubi.offset = 0;
+    cubi.range  = sizeof(VolUBO);
+    std::array<VkWriteDescriptorSet, 3> cw{};
+    for (uint32_t i = 0; i < 3; ++i) {
         cw[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         cw[i].dstSet          = composite_set_;
         cw[i].dstBinding      = i;
         cw[i].descriptorCount = 1;
-        cw[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        cw[i].pImageInfo      = &cii[i];
+        if (i == 2) {
+            cw[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            cw[i].pBufferInfo    = &cubi;
+        } else {
+            cw[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            cw[i].pImageInfo     = &cii[i];
+        }
     }
-    vkUpdateDescriptorSets(vk, 2, cw.data(), 0, nullptr);
+    vkUpdateDescriptorSets(vk, 3, cw.data(), 0, nullptr);
 
     VkShaderModuleCreateInfo smvi{};
     smvi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;

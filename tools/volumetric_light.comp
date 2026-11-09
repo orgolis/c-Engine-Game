@@ -99,7 +99,9 @@ void main() {
     float max_distance = ub.params.x;
     float end_dist = max_distance;
     if (depth < 1.0 - 1e-5) {
-        vec3 world_pos = texture(positionTex, uv).xyz;
+        // From depth (F5), with the same inverse the march direction uses.
+        vec4 wp = ub.inv_view_proj * vec4(ndc, depth, 1.0);
+        vec3 world_pos = wp.xyz / wp.w;
         end_dist = min(length(world_pos - origin), max_distance);
     }
 
