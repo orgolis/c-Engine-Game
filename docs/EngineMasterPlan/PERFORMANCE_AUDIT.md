@@ -779,6 +779,45 @@ restore would overwrite whatever that editor had saved since the backup was take
 race: the file changed under a live session today. Runs now set `GWS_VSYNC=0`, which overrides the
 setting for that process only and is never written back.
 
+### (u) HZB occlusion tested only the nearest 4096 draws — now every draw
+
+`VulkanHzbCuller::test_visibility` stopped at `Config::max_draws` (4096), and `was_visible()` answers
+"visible" past the end. The list is sorted front to back, so only the **nearest** 4096 draws were
+ever occlusion-tested. Every draw beyond them was drawn regardless: in a large scene those are the far
+ones, the likeliest to be hidden. `max_draws` only sized a CPU array; it is now just the initial
+capacity.
+
+Testing 5× the draws had to cost no more than testing 4096 did, so:
+
+- `test_visibility` runs on the job system above 2048 draws. Each verdict reads only its own AABB
+  and the CPU pyramid.
+- The hysteresis decision (visible, or occluded with a streak) runs in parallel per draw. Only the
+  order-preserving copy stays serial.
+- The streak table was a vector `std::sort`ed every frame. With ~17k draws occluded at 20k that sort
+  alone was ~0.5 ms, so it became a flat open-addressing table (`hzb_streak.h`): lock-free reads, one
+  linear rebuild, two tables swapped per frame, nothing allocated in steady state.
+
+| @ 20k, interleaved ×3 | before | after |
+|---|---|---|
+| draws occlusion-tested | 4,096 | **20,000** |
+| `hzb_cull` | 0.95 / 1.05 / 0.91 ms | 0.94 / 0.98 / 0.96 ms |
+| `stage_geometry` (CPU) | 0.84 / 0.88 / 0.97 ms | **0.32 / 0.37 / 0.33 ms** |
+| triangles | 1.54M | **0.57M** |
+| GPU Geometry pass | 0.82 ms | **0.54 ms** |
+
+Pixel-identical (0 px in all three pairs). The camera-motion gate (skip occlusion on a cut or fast
+pan) and the two-frame hysteresis are unchanged; they now cover every draw instead of the nearest
+4096.
+
+`hzbstreak_check` (12 assertions) replays 200 frames of random occlusion through the old sorted
+vector and the new table, including duplicate keys, key 0, draws coming and going, and a table forced
+to grow. It requires identical keep/drop verdicts and streaks. Mutation-tested: an overwrite that
+doesn't overwrite, and a lookup that misses one slot, are both caught.
+
+**Still serial at 20k:** `sort.radix` 0.40 ms, `sort.gather` 0.3–0.5 ms and `hzb.filter` ~0.57 ms.
+The last two are order-preserving copies of the ~96-byte `DrawItem`. Passing indices instead of items
+between these stages is the next step there.
+
 ### (q) Shadow rays for surfaces facing away from the light — skipped
 
 **Where the 20k frame's GPU time goes now.** A decomposition by render setting (VSync off, lower

@@ -100,6 +100,16 @@ if(MINGW)
     target_link_options(draworder_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# hzbstreak_check: the HZB hysteresis hash table (hzb_streak.h) must give the
+# same keep/drop verdicts and streaks as the sorted vector it replaced, over
+# many frames of random occlusion, duplicate keys and forced growth.
+add_executable(hzbstreak_check hzbstreak_check/main.cpp)
+target_include_directories(hzbstreak_check PRIVATE ${CMAKE_SOURCE_DIR}/engine/renderer/gpu/vulkan)
+target_compile_features(hzbstreak_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(hzbstreak_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # componentlookup_check: GetComponent<T>() must agree with a dynamic_cast scan
 # and keep its fast path. The scene probes ~10 component kinds per entity per
 # frame; as RTTI scans that was 15 ms at 20k entities. Asserts agreement for

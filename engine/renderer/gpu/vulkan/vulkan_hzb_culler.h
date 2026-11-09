@@ -40,7 +40,7 @@ public:
         VkFormat depth_format  = VK_FORMAT_D32_SFLOAT;
         uint32_t depth_width   = 0;
         uint32_t depth_height  = 0;
-        uint32_t max_draws     = 4096;
+        uint32_t max_draws     = 4096;   ///< initial capacity; every draw is tested regardless
         /// Mip level the readback buffer captures. Smaller mip = lower CPU
         /// cost, coarser test. Defaults to mip 4 (~120x67 px at 1920x1080).
         uint32_t readback_mip  = 4;

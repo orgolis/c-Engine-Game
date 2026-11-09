@@ -8,6 +8,7 @@
 #include "hzb_downsample_spirv.h"
 
 #include <spdlog/spdlog.h>
+#include "jobs/job_system.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -469,9 +470,13 @@ void VulkanHzbCuller::test_visibility(const glm::vec3* aabb_mins,
                                       const glm::vec3* aabb_maxs,
                                       size_t count,
                                       const glm::mat4& view_proj) {
-    const size_t draw_count = std::min(count, static_cast<size_t>(config_.max_draws));
-
-    if (visibility_.size() < draw_count) visibility_.assign(config_.max_draws, 1);
+    // Every draw is tested. This used to stop at config_.max_draws (4096): on
+    // a front-to-back list that meant only the NEAREST 4096 draws were ever
+    // occlusion-tested and every draw past them -- the far ones, the likeliest
+    // to be hidden -- was drawn regardless. max_draws is only the initial
+    // capacity now.
+    const size_t draw_count = count;
+    if (visibility_.size() < draw_count) visibility_.resize(draw_count, 1);
 
     if (!enabled_ || !cpu_hzb_valid_) {
         std::fill(visibility_.begin(), visibility_.begin() + draw_count, 1);
@@ -481,12 +486,12 @@ void VulkanHzbCuller::test_visibility(const glm::vec3* aabb_mins,
         return;
     }
 
-    uint32_t visible = 0;
-    uint32_t culled  = 0;
     const float w = static_cast<float>(readback_width_);
     const float h = static_cast<float>(readback_height_);
 
-    for (size_t i = 0; i < draw_count; ++i) {
+    // One draw's verdict: reads only its own AABB and the CPU pyramid, so the
+    // draws are tested in parallel above a few thousand.
+    auto test_one = [&](size_t i) -> uint8_t {
         const glm::vec3& mn = aabb_mins[i];
         const glm::vec3& mx = aabb_maxs[i];
 
@@ -499,7 +504,6 @@ void VulkanHzbCuller::test_visibility(const glm::vec3* aabb_mins,
         float max_x = -std::numeric_limits<float>::infinity();
         float max_y = -std::numeric_limits<float>::infinity();
         float min_z =  std::numeric_limits<float>::infinity();
-        bool  behind_near = false;
 
         for (int c = 0; c < 8; ++c) {
             glm::vec4 corner(
@@ -508,7 +512,7 @@ void VulkanHzbCuller::test_visibility(const glm::vec3* aabb_mins,
                 (c & 4) ? mx.z : mn.z,
                 1.0f);
             glm::vec4 clip = view_proj * corner;
-            if (clip.w <= 0.0f) { behind_near = true; break; }
+            if (clip.w <= 0.0f) return 1;   // behind the near plane: visible
             const float inv_w = 1.0f / clip.w;
             const float ndc_x = clip.x * inv_w;
             const float ndc_y = clip.y * inv_w;
@@ -520,20 +524,12 @@ void VulkanHzbCuller::test_visibility(const glm::vec3* aabb_mins,
             min_z = std::min(min_z, ndc_z);
         }
 
-        if (behind_near) {
-            visibility_[i] = 1;
-            ++visible;
-            continue;
-        }
-
         // Clip AABB against the frustum sides; if entirely off-screen,
         // mark invisible (frustum culling already does this but the HZB
         // sample requires on-screen coords anyway).
         if (max_x < -1.0f || min_x > 1.0f || max_y < -1.0f || min_y > 1.0f ||
             min_z >  1.0f) {
-            visibility_[i] = 0;
-            ++culled;
-            continue;
+            return 0;
         }
 
         // NDC → [0,1] UV, then to readback texel coords.
@@ -550,11 +546,7 @@ void VulkanHzbCuller::test_visibility(const glm::vec3* aabb_mins,
         // ndc_z is in [-1, 1] while Vulkan stores depth values in [0, 1].
         // For ndc_z < 0 the AABB straddles Vulkan's near-clip plane —
         // treat as "definitely visible" (conservative).
-        if (min_z < 0.0f) {
-            visibility_[i] = 1;
-            ++visible;
-            continue;
-        }
+        if (min_z < 0.0f) return 1;
 
         // Sample the MAX (furthest) depth across the AABB's screen
         // footprint. If our nearest NDC depth exceeds that, we're behind
@@ -566,18 +558,21 @@ void VulkanHzbCuller::test_visibility(const glm::vec3* aabb_mins,
                 region_max = std::max(region_max, d);
             }
         }
+        return (min_z > region_max + 1e-4f) ? 0 : 1;
+    };
 
-        if (min_z > region_max + 1e-4f) {
-            visibility_[i] = 0;
-            ++culled;
-        } else {
-            visibility_[i] = 1;
-            ++visible;
-        }
+    constexpr size_t kParallelTestMin = 2048;   // as the frustum culler (culling.cpp)
+    auto& js = gws::jobs::JobSystem::instance();
+    if (draw_count >= kParallelTestMin && js.initialized()) {
+        js.parallel_for(0, draw_count, [&](size_t i) { visibility_[i] = test_one(i); });
+    } else {
+        for (size_t i = 0; i < draw_count; ++i) visibility_[i] = test_one(i);
     }
 
+    uint32_t visible = 0;
+    for (size_t i = 0; i < draw_count; ++i) visible += visibility_[i];
     last_visible_count_ = visible;
-    last_culled_count_  = culled;
+    last_culled_count_  = static_cast<uint32_t>(draw_count) - visible;
     have_results_       = true;
 }
 

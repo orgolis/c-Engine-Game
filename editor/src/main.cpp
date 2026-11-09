@@ -54,6 +54,7 @@
 // migration is a separate pass.)
 #include "jobs/job_system.h"
 #include "memory/memory.h"
+#include "vulkan/hzb_streak.h"   // HZB hysteresis table
 #include "profiler/profiler.h" // scoped CPU zones, per-thread (Stage 0.6)
 #include "profiler/frame_capture.h" // N5: one-frame draw-list snapshot
 #include "memory/memory_snapshot.h" // N3: per-tag live bytes + allocator registry
@@ -7446,7 +7447,7 @@ int main(int argc, char** argv) {
         hzb_cfg.depth_format = VK_FORMAT_D32_SFLOAT;
         hzb_cfg.depth_width  = kW;
         hzb_cfg.depth_height = kH;
-        hzb_cfg.max_draws    = 4096;
+        hzb_cfg.max_draws    = 4096;   // initial capacity only: every draw is tested
         hzb_cfg.readback_mip = 4;
         // GWS_NO_HZB=1 disables HZB occlusion culling at runtime. It does a
         // GPU->CPU readback every frame, which is the kind of thing that can
@@ -7541,11 +7542,12 @@ int main(int argc, char** argv) {
         // Occlusion hysteresis: a draw must test occluded on TWO consecutive
         // frames before it's actually dropped (one grace frame absorbs
         // readback latency + test jitter). Keyed by mesh+submesh+position.
-        // Sorted by key, binary-searched. This was an unordered_map rebuilt
-        // every frame -- a node allocation per occluded draw, ~3.7k a frame at
-        // 20k entities, freed again by the swap. Two vectors keep their
-        // capacity, so a steady scene allocates nothing.
-        std::vector<std::pair<uint64_t, uint8_t>> hzb_occluded_streak, hzb_next_streak;
+        // Two flat hash tables (hzb_streak.h), last frame's and this frame's,
+        // swapped each frame; both keep their storage, so a steady scene
+        // allocates nothing. Before: an unordered_map rebuilt every frame (a
+        // node allocation per occluded draw), then a vector std::sort-ed every
+        // frame -- ~1 ms once every draw was tested and ~17k came out occluded.
+        gws::renderer::gpu::HzbStreakTable hzb_occluded_streak, hzb_next_streak;
 
         // ----------------------------------------------------------------
         // ImGui render pass: clears swapchain to dark gray, presents as PRESENT_SRC.
@@ -10838,13 +10840,16 @@ int main(int argc, char** argv) {
                     depth_key[i] = -(cam.view * glm::vec4(c, 1.0f)).z;  // + = in front
                     tie_key[i]   = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(d.material));
                 };
+                std::optional<gws::profile::ScopedZone> lap_; lap_.emplace("sort.depth");
                 auto& sort_js = gws::jobs::JobSystem::instance();
                 if (sort_js.initialized() && n >= 2048)
                     sort_js.parallel_for(0, n, [&depth_of](size_t i) { depth_of(i); });
                 else
                     for (size_t i = 0; i < n; ++i) depth_of(i);
+                lap_.reset(); lap_.emplace("sort.radix");
                 gws::renderer::gpu::front_to_back_order(depth_key.data(), tie_key.data(), n,
                                                         order, order_scratch);
+                lap_.reset(); lap_.emplace("sort.gather");
                 sorted.clear();
                 sorted.reserve(n);
                 for (uint32_t idx : order) sorted.push_back(opaque_draws[idx]);
@@ -10870,6 +10875,7 @@ int main(int argc, char** argv) {
                 // FrameAllocator (transient, reset next frame) — this is the
                 // first real allocation served by it live, alongside the
                 // first per-frame parallel workload.
+                std::optional<gws::profile::ScopedZone> lap_; lap_.emplace("hzb.aabb");
                 const size_t draw_n = opaque_draws.size();
                 glm::vec3* aabb_mins = draw_n ? frame_allocator.alloc_array<glm::vec3>(draw_n) : nullptr;
                 glm::vec3* aabb_maxs = draw_n ? frame_allocator.alloc_array<glm::vec3>(draw_n) : nullptr;
@@ -10911,8 +10917,10 @@ int main(int argc, char** argv) {
                     hzb_prev_valid && !camera_moved_fast) {
                     // Test with the view-proj of the frame that BUILT the
                     // current pyramid — never the current camera.
+                    lap_.reset(); lap_.emplace("hzb.test");
                     hzb_culler->test_visibility(aabb_mins, aabb_maxs, draw_n,
                                                 hzb_prev_vp);
+                    lap_.reset(); lap_.emplace("hzb.filter");
 
                     // Filter with 2-frame hysteresis: only drop a draw that
                     // tested occluded two frames running. Keyed by mesh +
@@ -10931,33 +10939,39 @@ int main(int argc, char** argv) {
                         return h;
                     };
                     geometry_draws.reserve(draw_n);
-                    hzb_next_streak.clear();
-                    const auto by_key = [](const std::pair<uint64_t, uint8_t>& p, uint64_t k) {
-                        return p.first < k;
-                    };
-                    for (size_t i = 0; i < draw_n; ++i) {
+                    // Each draw's decision (visible, or its occluded streak and
+                    // key) reads only that draw and last frame's streak table,
+                    // so it is made in parallel; the order-preserving copy and
+                    // the new streak table stay serial.
+                    static std::vector<uint8_t>  hzb_streak_of;   // 0 = visible this frame
+                    static std::vector<uint64_t> hzb_key_of;
+                    hzb_streak_of.resize(draw_n);
+                    hzb_key_of.resize(draw_n);
+                    auto decide = [&](size_t i) {
                         if (hzb_culler->was_visible(static_cast<uint32_t>(i))) {
-                            geometry_draws.push_back(opaque_draws[i]);
-                            continue;
+                            hzb_streak_of[i] = 0;
+                            return;
                         }
                         const uint64_t key = draw_key(opaque_draws[i]);
-                        const auto sit = std::lower_bound(hzb_occluded_streak.begin(),
-                                                          hzb_occluded_streak.end(), key, by_key);
-                        const uint8_t prev = (sit != hzb_occluded_streak.end() && sit->first == key)
-                                                 ? sit->second : 0;
-                        const uint8_t streak = static_cast<uint8_t>(prev + 1);
-                        hzb_next_streak.emplace_back(key, std::min<uint8_t>(streak, 8));
+                        const uint8_t prev = hzb_occluded_streak.get(key);   // read-only: safe in parallel
+                        hzb_key_of[i]    = key;
+                        hzb_streak_of[i] = static_cast<uint8_t>(prev + 1);   // 1..9
+                    };
+                    auto& hzb_js = gws::jobs::JobSystem::instance();
+                    if (hzb_js.initialized() && draw_n >= 2048)
+                        hzb_js.parallel_for(0, draw_n, [&decide](size_t i) { decide(i); });
+                    else
+                        for (size_t i = 0; i < draw_n; ++i) decide(i);
+                    // Draws sharing a key get the same streak (same previous
+                    // value), so a later put of the same key changes nothing.
+                    hzb_next_streak.reset(draw_n - hzb_culler->get_visible_count());
+                    for (size_t i = 0; i < draw_n; ++i) {
+                        const uint8_t streak = hzb_streak_of[i];
+                        if (streak != 0)
+                            hzb_next_streak.put(hzb_key_of[i], std::min<uint8_t>(streak, 8));
                         if (streak < 2) geometry_draws.push_back(opaque_draws[i]);
                     }
-                    // Draws sharing a key got the same streak (same previous
-                    // value), so dropping duplicates loses nothing -- the map
-                    // this replaced simply overwrote them with that value.
-                    std::sort(hzb_next_streak.begin(), hzb_next_streak.end());
-                    hzb_next_streak.erase(
-                        std::unique(hzb_next_streak.begin(), hzb_next_streak.end(),
-                                    [](const auto& a, const auto& b) { return a.first == b.first; }),
-                        hzb_next_streak.end());
-                    hzb_occluded_streak.swap(hzb_next_streak);
+                    std::swap(hzb_occluded_streak, hzb_next_streak);
                     hzb_did_filter = true;
                 } else {
                     // No trustworthy pyramid this frame — everything visible,
