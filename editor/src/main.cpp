@@ -10335,16 +10335,40 @@ int main(int argc, char** argv) {
             if (imported_actor) imported_actor->record_skin(cmd);
             // Skinning dispatch for every per-entity character, before the
             // shadow/geometry passes read the skinned vertex buffers.
+            //
+            // The skinned component is a plain struct embedded in every Entity
+            // (no component-set signal to index it by), so finding the few
+            // characters means looking at every entity. That look is read-only
+            // and goes wide; only the hits do the (not thread-safe) actor-cache
+            // work, in scene order. The actors found here are reused by the
+            // draw-list step below, which used to scan the whole scene a second
+            // time to find the same ones.
+            static std::vector<schizo::editor::ImportedSkinnedActor*> frame_skinned;
+            frame_skinned.clear();
             if (auto sk_scene2 = editor_state.editor_scene->GetScene()) {
                 GWS_PROFILE_ZONE("skinning_scan");
-                for (const auto& ent : sk_scene2->GetEntities()) {
-                    if (!ent) continue;
-                    auto* smc = ent->GetSkinnedMeshComponent();
-                    if (!smc || !smc->active()) continue;
+                const auto& sk_ents = sk_scene2->GetEntities();
+                static std::vector<uint8_t> is_skinned;
+                is_skinned.resize(sk_ents.size());
+                auto probe = [&](size_t i) {
+                    const auto& ent = sk_ents[i];
+                    const auto* smc = ent ? ent->GetSkinnedMeshComponent() : nullptr;
+                    is_skinned[i] = (smc && smc->active()) ? 1u : 0u;
+                };
+                auto& sk_js = gws::jobs::JobSystem::instance();
+                if (sk_js.initialized() && sk_ents.size() >= 2048)
+                    sk_js.parallel_for(0, sk_ents.size(), [&probe](size_t i) { probe(i); });
+                else
+                    for (size_t i = 0; i < sk_ents.size(); ++i) probe(i);
+                for (size_t i = 0; i < sk_ents.size(); ++i) {
+                    if (!is_skinned[i]) continue;
+                    const auto& ent = sk_ents[i];
                     if (auto* a = skinned_actors.get_or_create(
-                            ent->GetId(), smc->gltf_path, &device,
-                            mat_layout, mat_pool, &texture_manager))
+                            ent->GetId(), ent->GetSkinnedMeshComponent()->gltf_path, &device,
+                            mat_layout, mat_pool, &texture_manager)) {
                         a->record_skin(cmd);
+                        frame_skinned.push_back(a);
+                    }
                 }
             }
 
@@ -10732,17 +10756,8 @@ int main(int argc, char** argv) {
                 opaque_draws.push_back(imported_actor->draw_item());
             // Per-entity skinned characters join the opaque list like any other
             // draw, so they get culling, shadows and the G-buffer for free.
-            if (auto sk_scene3 = editor_state.editor_scene->GetScene()) {
-                for (const auto& ent : sk_scene3->GetEntities()) {
-                    if (!ent) continue;
-                    auto* smc = ent->GetSkinnedMeshComponent();
-                    if (!smc || !smc->active()) continue;
-                    if (auto* a = skinned_actors.get_or_create(
-                            ent->GetId(), smc->gltf_path, &device,
-                            mat_layout, mat_pool, &texture_manager))
-                        opaque_draws.push_back(a->draw_item());
-                }
-            }
+            // The actors were found (and skinned) by the scan before recording.
+            for (auto* a : frame_skinned) opaque_draws.push_back(a->draw_item());
 
             // DDGI grid auto-fit: enclose the scene's world AABB (from the
             // opaque draw list) with the fixed probe grid so probes actually
