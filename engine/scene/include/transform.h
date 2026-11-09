@@ -137,6 +137,13 @@ public:
     static uint64_t ChangeStampCounter();
     /// A fresh stamp from the same counter (entities use it for their content).
     static uint64_t NextChangeStamp();
+
+    /// When the editor's ECS mirror last recomputed this transform's WORLD
+    /// matrix -- for its own change or an ancestor's. Written by the mirror
+    /// only; caches of world-space data (the draw records) compare it the same
+    /// way as ChangeStamp. Not a change to the transform itself.
+    uint64_t WorldStamp() const { return world_stamp_; }
+    void     SetWorldStamp(uint64_t s) { world_stamp_ = s; }
     
     /**
      * @brief Detach from parent
@@ -181,6 +188,7 @@ protected:
     // (e.g. cameras parented to the player) wouldn't follow.
     Transform* parent_ = nullptr;
     uint64_t change_stamp_ = NextChangeStamp();   // next to parent_: both read every frame
+    uint64_t world_stamp_  = 0;
     std::vector<Transform*> children_;
 
 

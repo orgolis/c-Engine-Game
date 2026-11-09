@@ -23,7 +23,10 @@
 #include "jobs/task_runner.h"       // background OBJ parsing
 #include "jobs/job_system.h"        // build_draw_items phase one
 #include "profiler/profiler.h"      // draw.classify / draw.emit zones
+#include <cstdlib>
 #include <optional>
+#include <utility>
+#include <spdlog/spdlog.h>
 #include "asset_pipeline/obj_import.h"   // OBJ + .mtl (shared with the cooker)
 
 #include <chrono>
@@ -1310,10 +1313,48 @@ inline void build_draw_items(
     static std::vector<EntityDraw> pending;   // persistent: no per-frame allocation
     pending.resize(n_ents);
 
+    // Change-driven: last frame's record for the same entity at the same index
+    // is reused when nothing it was derived from can have changed since that
+    // build began -- its components and active flag (Entity::ContentStamp),
+    // its transform (ChangeStamp) and its WORLD matrix, which the ECS mirror
+    // stamps whenever it recomputes it, for this or any ancestor's change
+    // (WorldStamp). A record that used the OOP fallback matrix (an entity the
+    // ECS has not seen) is always rebuilt. Classifying an entity is several
+    // cache misses (the entity, its components, the ECS matrix lookup); the
+    // check is one. GWS_DRAW_FULL=1 rebuilds every record; GWS_DRAW_VERIFY=1
+    // also rebuilds the reused ones and reports any that differ.
+    static std::vector<const schizo::scene::Entity*> record_of;
+    static std::vector<uint8_t> reused;
+    static uint64_t last_build_begin = 0;
+    static uint64_t last_hierarchy_gen = 0;
+    static bool     have_records = false;
+    static const bool draw_full   = std::getenv("GWS_DRAW_FULL") != nullptr;
+    static const bool draw_verify = std::getenv("GWS_DRAW_VERIFY") != nullptr;
+    const uint64_t build_begin = schizo::scene::Transform::ChangeStampCounter();
+    // Any re-parent anywhere invalidates every record: moving an ancestor under
+    // an inactive entity deactivates its whole subtree while stamping only the
+    // ancestor (and a now-inactive descendant leaves the ECS, so no world stamp
+    // reaches it either). SetActive stamps its descendants itself. Re-parenting
+    // is rare at runtime; a frame of full rebuild is the price.
+    const uint64_t hierarchy_gen = schizo::scene::detail::hierarchy_generation();
+    const bool may_reuse = ecs != nullptr && have_records && !draw_full &&
+                           hierarchy_gen == last_hierarchy_gen;
+    record_of.resize(n_ents, nullptr);
+    reused.assign(n_ents, 0);
+
     auto classify = [&](size_t i) {
         EntityDraw& r = pending[i];
-        r = EntityDraw{};
         const auto& ent = ents[i];
+        if (may_reuse && ent && record_of[i] == ent.get() && r.has_model) {
+            const auto* tf = std::as_const(*ent).GetTransform();
+            if (ent->ContentStamp() < last_build_begin && tf->ChangeStamp() < last_build_begin &&
+                tf->WorldStamp() < last_build_begin) {
+                reused[i] = 1;
+                return;
+            }
+        }
+        record_of[i] = ent.get();
+        r = EntityDraw{};
         if (!ent || !ent->IsActiveInHierarchy()) return;
 
         // Authoritative: read the world matrix the ECS transform system
@@ -1353,6 +1394,30 @@ inline void build_draw_items(
         js.parallel_for(0, n_ents, [&classify](size_t i) { classify(i); });
     else
         for (size_t i = 0; i < n_ents; ++i) classify(i);
+    if (draw_verify && may_reuse) {
+        // Rebuild every reused record from scratch and compare.
+        static std::vector<EntityDraw> saved;
+        saved.assign(pending.begin(), pending.end());
+        size_t checked = 0, differ = 0;
+        for (size_t i = 0; i < n_ents; ++i) {
+            if (!reused[i]) continue;
+            ++checked;
+            record_of[i] = nullptr;           // forces the rebuild path
+            classify(i);
+            const EntityDraw& a = saved[i];
+            const EntityDraw& b = pending[i];
+            if (a.kind != b.kind || a.mr != b.mr || a.mesh != b.mesh ||
+                a.material_key != b.material_key || a.has_key != b.has_key ||
+                a.has_model != b.has_model || a.am != b.am || a.model != b.model)
+                ++differ;
+        }
+        if (differ)
+            spdlog::warn("[draw] verify: {} of {} reused draw records differ from a rebuild",
+                         differ, checked);
+    }
+    last_build_begin = build_begin;
+    last_hierarchy_gen = hierarchy_gen;
+    have_records = true;
     lap.reset(); lap.emplace("draw.emit");
 
     // Consecutive entities very often share a material; remember the last.

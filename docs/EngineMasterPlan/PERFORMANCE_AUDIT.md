@@ -890,7 +890,36 @@ turns the skip off. `componentstamp_check` has two halves:
 Mutation-tested: a setter without `MarkChanged()` fails both halves, and an accessor that doesn't
 stamp fails the behaviour half.
 
-**Stage 2b, open:** the draw records (`draw.classify`, ~1.4 ms parallel) still visit every entity.
+**Stage 2b: the draw records.** `build_draw_items` reuses last frame's record for the same entity at
+the same index when its content stamp, its Transform stamp and its new **world stamp** all predate the
+last build. The ECS mirror sets the world stamp on the Transform whenever it recomputes the world
+matrix, for this entity's change or an ancestor's. Records that used the OOP fallback matrix are
+always rebuilt. **Any re-parent invalidates all records for that frame.** `GWS_TEST_SHAKE` found
+why: moving an ancestor under an inactive entity deactivates its subtree but stamps only the
+ancestor, and the now-inactive descendants leave the ECS, so no world stamp reaches them either.
+`SetActive` stamps its descendants itself. Re-parenting is rare at runtime.
+
+| @ 20k | full | change-driven |
+|---|---|---|
+| still: `draw.classify` | 1.17–1.38 ms | **0.25–0.27 ms** |
+| still: `build_draw_items` | 1.57–1.79 ms | **0.66–0.68 ms** |
+| 40 changes/frame: `ecs_sync` | 3.39 ms | **0.93 ms** |
+| 40 changes/frame: `build_draw_items` | 1.88 ms | **0.81 ms** |
+
+Verification:
+
+- `GWS_DRAW_VERIFY=1` rebuilds every reused record and reports differences. It caught the re-parent
+  case; clean since.
+- `GWS_TEST_SHAKE=N` (automation) changes N random entities before every sync: moves, rotations,
+  recolours, and every 10th frame (de)activations and re-parents. Run with `GWS_ECS_VERIFY_ALL=1
+  GWS_DRAW_VERIFY=1`, it is clean at 0 and 20k.
+- `GWS_DRAW_FULL=1` turns reuse off.
+
+**Open:** frames where the active entity *list* changes (spawning, despawning, activation) take the
+full paths, and the slot reconcile alone costs 1.4–1.9 ms at 20k. An incremental reconcile is the
+next step for scenes that spawn every frame.
+
+
 
 ### (q) Shadow rays for surfaces facing away from the light — skipped
 

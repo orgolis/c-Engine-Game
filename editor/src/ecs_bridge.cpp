@@ -1174,7 +1174,10 @@ void EcsSceneBridge::sync_and_run(
     // verify pass below compares the result with the scene's own matrices
     // every frame for a rotating slice (GWS_ECS_VERIFY_ALL=1: all of them).
     static const bool force_full_tf = std::getenv("GWS_ECS_FULL_TRANSFORMS") != nullptr;
-    const bool incremental = !force_full_tf && reuse_parents && impl_->have_prev_matrices &&
+    // Every world matrix (re)computed by this sync is marked with one stamp
+    // on its Transform, for world-space caches downstream (draw records).
+    const uint64_t world_stamp = scene::Transform::NextChangeStamp();
+    const bool incremental =!force_full_tf && reuse_parents && impl_->have_prev_matrices &&
                              impl_->local.size() == shadow.size() &&
                              impl_->world_mat.size() == shadow.size() &&
                              oop_stamp.size() == shadow.size();
@@ -1249,6 +1252,7 @@ void EcsSceneBridge::sync_and_run(
             auto publish = [&](size_t i) {
                 ltw_pool.get(shadow[i]).value = world_mat[i];
                 slot_of[i]->world = world_mat[i];
+                oop_tf[i]->SetWorldStamp(world_stamp);
             };
             auto& js = gws::jobs::JobSystem::instance();
             if (js.initialized() && shadow.size() >= kParallelMirrorMin)
@@ -1339,6 +1343,7 @@ void EcsSceneBridge::sync_and_run(
                 const size_t i = changed[k];
                 ltw_pool.get(shadow[i]).value = world_mat[i];
                 slot_of[i]->world = world_mat[i];
+                oop_tf[i]->SetWorldStamp(world_stamp);
             };
             if (js.initialized() && changed.size() >= kParallelMirrorMin)
                 js.parallel_for(0, changed.size(), [&publish](size_t k) { publish(k); });

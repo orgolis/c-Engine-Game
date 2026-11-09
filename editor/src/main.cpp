@@ -10645,6 +10645,61 @@ int main(int argc, char** argv) {
             // Run the ECS transform system FIRST so its world matrices are
             // ready, then feed them to the draw-list builder (authoritative:
             // build_draw_items reads ECS LocalToWorld, OOP matrix is fallback).
+            //
+            // GWS_TEST_SHAKE=N (automation): every frame, N random entities are
+            // moved, recoloured, (de)activated or re-parented before the sync --
+            // the inputs the change-driven mirror and draw records must notice.
+            // Run with GWS_ECS_VERIFY_ALL=1 GWS_DRAW_VERIFY=1: any stale matrix
+            // or draw record is reported.
+            static const int test_shake = [] {
+                const char* v = std::getenv("GWS_TEST_SHAKE");
+                return v ? std::atoi(v) : 0;
+            }();
+            if (test_shake > 0) {
+                if (auto shs = editor_state.editor_scene->GetScene()) {
+                    static uint32_t rs = 12345u;
+                    auto rnd = [] { rs = rs * 1664525u + 1013904223u; return rs >> 8; };
+                    const auto& se = shs->GetEntities();
+                    for (int k = 0; k < test_shake && !se.empty(); ++k) {
+                        const auto& e = se[rnd() % se.size()];
+                        if (!e) continue;
+                        auto* tf = e->GetTransform();
+                        switch (rnd() % 8) {
+                        case 0: case 1: case 2:
+                            tf->SetLocalPosition(tf->GetLocalPosition() +
+                                glm::vec3(float(rnd() % 100) * 0.01f - 0.5f, 0.0f,
+                                          float(rnd() % 100) * 0.01f - 0.5f));
+                            break;
+                        case 3:
+                            tf->SetLocalRotation(glm::angleAxis(float(rnd() % 628) * 0.01f,
+                                                                glm::vec3(0.0f, 1.0f, 0.0f)));
+                            break;
+                        case 4:
+                            if (auto mrc = e->GetComponent<schizo::scene::MeshRendererComponent>())
+                                mrc->SetColor(glm::vec4(float(rnd() % 100) * 0.01f, 0.5f, 0.5f, 1.0f));
+                            break;
+                        case 5:
+                            // Also every 10th frame only: it changes the active
+                            // list, which takes the full (non-incremental) paths.
+                            if (frame_count % 10 == 0) e->SetActive(!e->IsActive());
+                            break;
+                        default: {
+                            // Re-parent under another entity (never into its own subtree).
+                            // Only every 10th frame: a re-parent invalidates every
+                            // draw record, so the other frames exercise reuse.
+                            if (frame_count % 10 != 0) break;
+                            const auto& p = se[rnd() % se.size()];
+                            bool cycle = !p || p == e;
+                            for (auto* t = p ? p->GetTransform() : nullptr; t && !cycle; t = t->GetParent())
+                                cycle = (t == tf);
+                            if (!cycle && (rnd() % 2)) e->SetParent(p);
+                            else                        e->SetParent(nullptr);
+                            break;
+                        }
+                        }
+                    }
+                }
+            }
             g_cp.mark("pre_ecs");
             { GWS_PROFILE_ZONE("ecs_sync");
               ecs_bridge.sync_and_run(editor_scene.GetScene()); }
