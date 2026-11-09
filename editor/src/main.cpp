@@ -10651,6 +10651,17 @@ int main(int argc, char** argv) {
             // the inputs the change-driven mirror and draw records must notice.
             // Run with GWS_ECS_VERIFY_ALL=1 GWS_DRAW_VERIFY=1: any stale matrix
             // or draw record is reported.
+            // GWS_TEST_PLAY=N (automation): enter play mode at frame N, exactly as
+            // F5 does -- physics, the player controller and scripts then mutate
+            // the scene every frame, which is what the verifiers need to see.
+            static const int test_play_at = [] {
+                const char* v = std::getenv("GWS_TEST_PLAY");
+                return v ? std::atoi(v) : -1;
+            }();
+            if (test_play_at >= 0 && frame_count == test_play_at && editor_state.scene_playback_manager &&
+                !editor_state.scene_playback_manager->IsPlaying()) {
+                if (auto ps = editor_state.editor_scene->GetScene()) BeginPlayMode(editor_state, ps);
+            }
             static const int test_shake = [] {
                 const char* v = std::getenv("GWS_TEST_SHAKE");
                 return v ? std::atoi(v) : 0;
