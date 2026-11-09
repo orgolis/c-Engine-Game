@@ -21,6 +21,8 @@
 #include "assets/asset_watcher.h"   // shared hot-reload file watching
 #include "jobs/task_runner.h"       // background OBJ parsing
 #include "jobs/job_system.h"        // build_draw_items phase one
+#include "profiler/profiler.h"      // draw.classify / draw.emit zones
+#include <optional>
 #include "asset_pipeline/obj_import.h"   // OBJ + .mtl (shared with the cooker)
 
 #include <chrono>
@@ -1344,11 +1346,13 @@ inline void build_draw_items(
         if (mc && !mc->mesh_path.empty()) r.kind = EntityDraw::kAsset;
         else if (mr && r.mesh)            r.kind = EntityDraw::kPrimitive;
     };
+    std::optional<gws::profile::ScopedZone> lap; lap.emplace("draw.classify");   // one zone per phase
     auto& js = gws::jobs::JobSystem::instance();
     if (js.initialized() && n_ents >= detail_draw::kParallelDrawBuildMin)
         js.parallel_for(0, n_ents, [&classify](size_t i) { classify(i); });
     else
         for (size_t i = 0; i < n_ents; ++i) classify(i);
+    lap.reset(); lap.emplace("draw.emit");
 
     // Consecutive entities very often share a material; remember the last.
     // Pointers stay valid all frame: the cache only evicts in end_frame().
