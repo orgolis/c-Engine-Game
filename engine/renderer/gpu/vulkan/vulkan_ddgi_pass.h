@@ -77,6 +77,9 @@ public:
     void set_sun(const glm::vec3& direction, const glm::vec3& color) {
         sun_direction_ = direction; sun_color_ = color;
     }
+    /// This frame's camera, for the composite to rebuild surface positions
+    /// from depth (F5). Call before execute_trace(), which uploads the UBO.
+    void set_view_proj(const glm::mat4& view_proj) { inv_view_proj_ = glm::inverse(view_proj); }
 
     DdgiConfig& mutable_config() { return config_; }
     const DdgiConfig& config() const { return config_; }
@@ -108,6 +111,7 @@ private:
     VkBuffer  instance_data_buffer_  = VK_NULL_HANDLE;
     glm::vec3 sun_direction_ = glm::vec3(0.3f, -1.0f, 0.2f);
     glm::vec3 sun_color_     = glm::vec3(1.0f, 0.95f, 0.85f);
+    glm::mat4 inv_view_proj_ = glm::mat4(1.0f);
 
     VkSampler gbuffer_sampler_ = VK_NULL_HANDLE;  // nearest, clamp
     VkSampler atlas_sampler_   = VK_NULL_HANDLE;  // linear, clamp

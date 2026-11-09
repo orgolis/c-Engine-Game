@@ -28,6 +28,7 @@ struct DdgiUBO {
     glm::vec4  sun_dir;    // xyz + normal bias
     glm::vec4  sun_color;  // rgb + max ray distance
     glm::vec4  ambient;    // rgb + enabled
+    glm::mat4  inv_view_proj;   // composite: surface position from depth (F5)
 };
 
 VkShaderModule make_module(VkDevice dev, const uint32_t* code, size_t bytes) {
@@ -221,7 +222,9 @@ bool VulkanDdgiPass::initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,
         VkDescriptorImageInfo irr_st{VK_NULL_HANDLE, irr_view_, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo dep_st{VK_NULL_HANDLE, dep_view_, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo env_ci{env_cubemap_sampler, env_cubemap_view, sr};
-        VkDescriptorImageInfo pos_ci{gbuffer_sampler_, g_buffer_->get_position_view(), sr};
+        // Depth, not the position target: the composite rebuilds positions (F5).
+        VkDescriptorImageInfo pos_ci{gbuffer_sampler_, g_buffer_->get_depth_view(),
+                                     VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo nrm_ci{gbuffer_sampler_, g_buffer_->get_normal_view(), sr};
         VkDescriptorImageInfo alb_ci{gbuffer_sampler_, g_buffer_->get_albedo_view(), sr};
         VkDescriptorImageInfo dpt_ci{gbuffer_sampler_, g_buffer_->get_depth_view(), dr};
@@ -463,6 +466,7 @@ void VulkanDdgiPass::execute_trace(VkCommandBuffer cmd) {
     u.sun_dir   = glm::vec4(sun_direction_, config_.normal_bias);
     u.sun_color = glm::vec4(sun_color_, config_.max_ray_dist);
     u.ambient   = glm::vec4(config_.ambient, 1.0f);   // w = enabled
+    u.inv_view_proj = inv_view_proj_;
     std::memcpy(ubo_mapped_, &u, sizeof(u));
     ++frame_index_;
 

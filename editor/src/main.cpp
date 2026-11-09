@@ -11390,6 +11390,7 @@ int main(int argc, char** argv) {
                 // + instance buffer are bound and DDGI is enabled in the panel.
                 if (ddgi && !g_no_ddgi) {
                     engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "DDGI.Trace");
+                    ddgi->set_view_proj(cam.proj * cam.view);   // composite reads depth (F5)
                     ddgi->execute_trace(cmd);
                 }
                 { GWS_PROFILE_ZONE("stage_lighting");

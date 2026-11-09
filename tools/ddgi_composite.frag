@@ -14,9 +14,10 @@ layout(set = 0, binding = 0, std140) uniform DdgiUBO {
     vec4  sun_dir;    // xyz = sun (trace only), w = normal bias
     vec4  sun_color;  // rgb (trace only), w = max ray distance
     vec4  ambient;    // rgb (trace only), w = enabled
+    mat4  inv_view_proj; // composite only: surface position from depth (F5)
 } u;
 
-layout(set = 0, binding = 1) uniform sampler2D positionTex;
+// binding 1 (was the position target) is unused: positions come from depthTex (F5)
 layout(set = 0, binding = 2) uniform sampler2D normalTex;
 layout(set = 0, binding = 3) uniform sampler2D albedoTex;
 layout(set = 0, binding = 4) uniform sampler2D depthTex;
@@ -59,7 +60,8 @@ void main() {
     if (dot(N, N) < 0.01) { outColor = vec4(0.0); return; }
     N = normalize(N);
 
-    vec3 P      = texture(positionTex, inUV).xyz;
+    vec4 Ph     = u.inv_view_proj * vec4(inUV * 2.0 - 1.0, texture(depthTex, inUV).r, 1.0);
+    vec3 P      = Ph.xyz / Ph.w;
     vec3 albedo = texture(albedoTex, inUV).rgb;
 
     // Bias the sample point off the surface toward the normal so surface
