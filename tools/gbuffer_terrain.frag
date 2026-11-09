@@ -59,10 +59,9 @@ layout(set = 1, binding = 11) uniform sampler2D mr1;
 layout(set = 1, binding = 12) uniform sampler2D mr2;
 layout(set = 1, binding = 13) uniform sampler2D mr3;
 
-layout(location = 0) out vec4 outPosition;
-layout(location = 1) out vec4 outNormalRoughness;
-layout(location = 2) out vec4 outAlbedoMetallic;
-layout(location = 3) out vec4 outMaterial;
+layout(location = 0) out vec4 outNormalRoughness;
+layout(location = 1) out vec4 outAlbedoMetallic;
+layout(location = 2) out vec4 outMaterial;
 
 // Blend weights for the three world-axis projections. Squared-and-normalised
 // off the surface normal, raised to `sharpness`: higher keeps each projection
@@ -176,7 +175,6 @@ void main() {
     metallic  = clamp(metallic, 0.0, 1.0);
     ao        = clamp(ao, 0.0, 1.0);
 
-    outPosition        = vec4(inWorldPos, 1.0);
     outNormalRoughness = vec4(N, roughness);
     outAlbedoMetallic  = vec4(albedo, metallic);
     // Terrain has no emissive channel — a glowing terrain layer is not a thing

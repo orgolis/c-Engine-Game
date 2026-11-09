@@ -34,10 +34,9 @@ layout(set = 1, binding = 6) uniform sampler2D detailAlbedoMap;
 layout(set = 1, binding = 7) uniform sampler2D detailNormalMap;
 layout(set = 1, binding = 8) uniform sampler2D heightMap;
 
-layout(location = 0) out vec4 outPosition;
-layout(location = 1) out vec4 outNormalRoughness;
-layout(location = 2) out vec4 outAlbedoMetallic;
-layout(location = 3) out vec4 outMaterial;
+layout(location = 0) out vec4 outNormalRoughness;
+layout(location = 1) out vec4 outAlbedoMetallic;
+layout(location = 2) out vec4 outMaterial;
 
 // Parallax occlusion mapping.
 //
@@ -157,7 +156,6 @@ void main() {
     float ao   = texture(aoMap, uv).r * mat.occlusion_strength;
     vec3  emis = mat.emissive_factor.rgb + texture(emissiveMap, uv).rgb;
 
-    outPosition         = vec4(inWorldPos, 1.0);
     outNormalRoughness  = vec4(N, roughness);
     outAlbedoMetallic   = vec4(base.rgb, metallic);
     outMaterial         = vec4(emis, ao);

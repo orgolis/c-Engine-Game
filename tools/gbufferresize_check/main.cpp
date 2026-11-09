@@ -57,7 +57,7 @@ int main() {
         if (gb) {
             gb->resize(&device, 800, 600);
             check(gb->get_width() == 800 && gb->get_height() == 600 &&
-                  gb->get_position_view() != VK_NULL_HANDLE && gb->get_render_pass() != VK_NULL_HANDLE,
+                  gb->get_normal_view() != VK_NULL_HANDLE && gb->get_render_pass() != VK_NULL_HANDLE,
                   "resize gives it the new size and live handles");
             gb->resize(&device, 1280, 720);
             check(gb->get_width() == 1280 && gb->get_height() == 720,

@@ -328,8 +328,8 @@ void VulkanSsaoPass::write_descriptor_set() {
 
     std::array<VkDescriptorImageInfo, 5> infos{};
     infos[0].sampler     = gbuffer_sampler_;
-    infos[0].imageView   = g_buffer_->get_position_view();
-    infos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    infos[0].imageView   = g_buffer_->get_depth_view();   // unused since F5 (positions come from depth); bound to depth until the binding is retired
+    infos[0].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     infos[1].sampler     = gbuffer_sampler_;
     infos[1].imageView   = g_buffer_->get_normal_view();
     infos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

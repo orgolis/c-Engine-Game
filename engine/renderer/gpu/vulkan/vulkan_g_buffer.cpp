@@ -45,7 +45,8 @@ std::unique_ptr<VulkanGBuffer> VulkanGBuffer::create(VulkanDevice* device,
     VkPhysicalDevice physical_device = device->get_physical_device();
     
     try {
-        // Create position image (RGBA16F)
+        // The RGBA16F image template (the normal target copies it). There is no
+        // position target any more: every reader rebuilds positions from depth (F5).
         VkImageCreateInfo pos_info{};
         pos_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         pos_info.imageType = VK_IMAGE_TYPE_2D;
@@ -58,30 +59,10 @@ std::unique_ptr<VulkanGBuffer> VulkanGBuffer::create(VulkanDevice* device,
         pos_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         pos_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         
-        if (vkCreateImage(vk_device, &pos_info, nullptr, &gbuffer->position_image_) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create position image");
-        }
-        
-        // Allocate memory for position image
-        VkMemoryRequirements pos_mem_reqs;
-        vkGetImageMemoryRequirements(vk_device, gbuffer->position_image_, &pos_mem_reqs);
-        
-        VkMemoryAllocateInfo pos_alloc{};
-        pos_alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        pos_alloc.allocationSize = pos_mem_reqs.size;
-        pos_alloc.memoryTypeIndex = device->find_memory_type(
-            pos_mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        
-        if (vkAllocateMemory(vk_device, &pos_alloc, nullptr, &gbuffer->position_memory_) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to allocate memory for position image");
-        }
-        
-        vkBindImageMemory(vk_device, gbuffer->position_image_, gbuffer->position_memory_, 0);
         
         // Create image view for position
         VkImageViewCreateInfo pos_view_info{};
         pos_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        pos_view_info.image = gbuffer->position_image_;
         pos_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
         pos_view_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
         pos_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -90,9 +71,6 @@ std::unique_ptr<VulkanGBuffer> VulkanGBuffer::create(VulkanDevice* device,
         pos_view_info.subresourceRange.baseArrayLayer = 0;
         pos_view_info.subresourceRange.layerCount = 1;
         
-        if (vkCreateImageView(vk_device, &pos_view_info, nullptr, &gbuffer->position_view_) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create position image view");
-        }
         
         // Create normal image (RGBA16F)
         VkImageCreateInfo norm_info = pos_info;
@@ -253,11 +231,13 @@ std::unique_ptr<VulkanGBuffer> VulkanGBuffer::create(VulkanDevice* device,
 
 void VulkanGBuffer::create_render_pass() {
     VkDevice vk_device = device_->get_device();
-    
-    // Attachment descriptions
-    std::vector<VkAttachmentDescription> attachments(5);
-    
-    // Position attachment
+
+    // Normal, albedo, material, depth. There used to be a world-position
+    // target in front (RGBA16F, 8 bytes a pixel written and read back by a
+    // dozen passes); every reader now rebuilds positions from depth (F5).
+    std::vector<VkAttachmentDescription> attachments(4);
+
+    // Normal attachment
     attachments[0].format = VK_FORMAT_R16G16B16A16_SFLOAT;
     attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
     attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -266,52 +246,40 @@ void VulkanGBuffer::create_render_pass() {
     attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    
-    // Normal attachment
-    attachments[1] = attachments[0];
-    
+
     // Albedo attachment
-    attachments[2] = attachments[0];
-    attachments[2].format = VK_FORMAT_R8G8B8A8_UNORM;
-    
+    attachments[1] = attachments[0];
+    attachments[1].format = VK_FORMAT_R8G8B8A8_UNORM;
+
     // Material attachment
-    attachments[3] = attachments[2];
-    
+    attachments[2] = attachments[1];
+
     // Depth attachment
-    attachments[4].format = VK_FORMAT_D32_SFLOAT;
-    attachments[4].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[4].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[4].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[4].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[4].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[4].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[4].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    
-    // Color attachment references
-    std::vector<VkAttachmentReference> color_refs(4);
-    for (int i = 0; i < 4; ++i) {
-        color_refs[i].attachment = i;
-        color_refs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    }
-    
-    // Depth attachment reference
+    attachments[3].format = VK_FORMAT_D32_SFLOAT;
+    attachments[3].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[3].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[3].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[3].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[3].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[3].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[3].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
     VkAttachmentReference depth_ref{};
-    depth_ref.attachment = 4;
+    depth_ref.attachment = 3;
     depth_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    
-    // Subpass description
-    VkAttachmentReference color_attachment_refs[4];
-    for (int i = 0; i < 4; ++i) {
+
+    VkAttachmentReference color_attachment_refs[kColorAttachments];
+    for (uint32_t i = 0; i < kColorAttachments; ++i) {
         color_attachment_refs[i].attachment = i;
         color_attachment_refs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
-    
+
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 4;
+    subpass.colorAttachmentCount = kColorAttachments;
     subpass.pColorAttachments = color_attachment_refs;
     subpass.pDepthStencilAttachment = &depth_ref;
-    
+
     // Subpass dependency
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -320,8 +288,7 @@ void VulkanGBuffer::create_render_pass() {
     dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependency.srcAccessMask = 0;
     dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    
-    // Create render pass
+
     VkRenderPassCreateInfo render_pass_info{};
     render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     render_pass_info.attachmentCount = static_cast<uint32_t>(attachments.size());
@@ -330,7 +297,7 @@ void VulkanGBuffer::create_render_pass() {
     render_pass_info.pSubpasses = &subpass;
     render_pass_info.dependencyCount = 1;
     render_pass_info.pDependencies = &dependency;
-    
+
     if (vkCreateRenderPass(vk_device, &render_pass_info, nullptr, &render_pass_) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create G-Buffer render pass");
     }
@@ -340,7 +307,6 @@ void VulkanGBuffer::create_framebuffer() {
     VkDevice vk_device = device_->get_device();
     
     std::vector<VkImageView> attachments = {
-        position_view_,
         normal_view_,
         albedo_view_,
         material_view_,
@@ -369,16 +335,15 @@ void VulkanGBuffer::begin_geometry_pass(VkCommandBuffer cmd) {
     begin_info.renderArea.offset = {0, 0};
     begin_info.renderArea.extent = {config_.width, config_.height};
     
-    std::vector<VkClearValue> clear_values(5);
-    clear_values[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-    clear_values[1].color = {{0.0f, 0.0f, 1.0f, 0.0f}};  // Normal default (0, 0, 1)
-    clear_values[2].color = {{0.04f, 0.04f, 0.04f, 0.0f}};  // Dark gray background
+    std::vector<VkClearValue> clear_values(4);
+    clear_values[0].color = {{0.0f, 0.0f, 1.0f, 0.0f}};  // Normal default (0, 0, 1)
+    clear_values[1].color = {{0.04f, 0.04f, 0.04f, 0.0f}};  // Dark gray background
     // Layout per the scene fragment shader: (emissive.rgb, ao). emissive
     // must clear to 0 so the lighting pass doesn't add a phantom glow on
     // background pixels; ao clears to 1 so ambient * albedo still shows
     // through the un-drawn region (instead of multiplying to black).
-    clear_values[3].color = {{0.0f, 0.0f, 0.0f, 1.0f}};  // (emissive=0, ao=1)
-    clear_values[4].depthStencil = {1.0f, 0};
+    clear_values[2].color = {{0.0f, 0.0f, 0.0f, 1.0f}};  // (emissive=0, ao=1)
+    clear_values[3].depthStencil = {1.0f, 0};
     
     begin_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
     begin_info.pClearValues = clear_values.data();
@@ -424,12 +389,10 @@ layout(location = 0) in vec3 inWorldPos;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec3 inAlbedo;
 layout(location = 3) in float inMetallic;
-layout(location = 0) out vec4 outPosition;
-layout(location = 1) out vec4 outNormal;
-layout(location = 2) out vec4 outAlbedo;
-layout(location = 3) out vec4 outMaterial;
+layout(location = 0) out vec4 outNormal;
+layout(location = 1) out vec4 outAlbedo;
+layout(location = 2) out vec4 outMaterial;
 void main() {
-    outPosition = vec4(inWorldPos, 1.0);
     outNormal   = vec4(normalize(inNormal), 0.5); // .a = roughness 0.5
     outAlbedo   = vec4(inAlbedo, inMetallic);
     outMaterial = vec4(0.0, 1.0, 0.0, 0.0);        // ID, AO, emission, reserved
@@ -508,10 +471,9 @@ layout(set = 1, binding = 3) uniform sampler2D mrMap; // green=R, blue=M (glTF)
 layout(set = 1, binding = 4) uniform sampler2D aoMap;
 layout(set = 1, binding = 5) uniform sampler2D emissiveMap;
 
-layout(location = 0) out vec4 outPosition;
-layout(location = 1) out vec4 outNormalRoughness;
-layout(location = 2) out vec4 outAlbedoMetallic;
-layout(location = 3) out vec4 outMaterial;
+layout(location = 0) out vec4 outNormalRoughness;
+layout(location = 1) out vec4 outAlbedoMetallic;
+layout(location = 2) out vec4 outMaterial;
 
 void main() {
     vec4 base = texture(albedoMap, inUV) * mat.base_color_factor;
@@ -539,7 +501,6 @@ void main() {
     float ao   = texture(aoMap, inUV).r * mat.occlusion_strength;
     vec3  emis = mat.emissive_factor.rgb + texture(emissiveMap, inUV).rgb;
 
-    outPosition         = vec4(inWorldPos, 1.0);
     outNormalRoughness  = vec4(N, roughness);
     outAlbedoMetallic   = vec4(base.rgb, metallic);
     // Pack emissive RGB + AO into the 4th attachment. Previously this
@@ -649,7 +610,7 @@ void VulkanGBuffer::create_demo_pipeline() {
     ds.depthCompareOp   = VK_COMPARE_OP_LESS;
 
     // 4 color attachments, no blending.
-    std::array<VkPipelineColorBlendAttachmentState, 4> cbas{};
+    std::array<VkPipelineColorBlendAttachmentState, kColorAttachments> cbas{};
     for (auto& cba : cbas) {
         cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -946,7 +907,7 @@ VkPipeline VulkanGBuffer::build_scene_variant(VkShaderModule vert, VkShaderModul
     ds.depthWriteEnable = VK_TRUE;
     ds.depthCompareOp   = VK_COMPARE_OP_LESS;
 
-    std::array<VkPipelineColorBlendAttachmentState, 4> cbas{};
+    std::array<VkPipelineColorBlendAttachmentState, kColorAttachments> cbas{};
     for (auto& cba : cbas) {
         cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -1137,7 +1098,7 @@ void VulkanGBuffer::create_terrain_pipeline() {
     ds.depthWriteEnable = VK_TRUE;
     ds.depthCompareOp   = VK_COMPARE_OP_LESS;
 
-    std::array<VkPipelineColorBlendAttachmentState, 4> cbas{};
+    std::array<VkPipelineColorBlendAttachmentState, kColorAttachments> cbas{};
     for (auto& cba : cbas) {
         cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -1857,10 +1818,6 @@ void VulkanGBuffer::cleanup() {
     }
     
     // Destroy image views
-    if (position_view_ != VK_NULL_HANDLE) {
-        vkDestroyImageView(vk_device, position_view_, nullptr);
-        position_view_ = VK_NULL_HANDLE;
-    }
     if (normal_view_ != VK_NULL_HANDLE) {
         vkDestroyImageView(vk_device, normal_view_, nullptr);
         normal_view_ = VK_NULL_HANDLE;
@@ -1879,10 +1836,6 @@ void VulkanGBuffer::cleanup() {
     }
     
     // Destroy images
-    if (position_image_ != VK_NULL_HANDLE) {
-        vkDestroyImage(vk_device, position_image_, nullptr);
-        position_image_ = VK_NULL_HANDLE;
-    }
     if (normal_image_ != VK_NULL_HANDLE) {
         vkDestroyImage(vk_device, normal_image_, nullptr);
         normal_image_ = VK_NULL_HANDLE;
@@ -1901,10 +1854,6 @@ void VulkanGBuffer::cleanup() {
     }
     
     // Free memory
-    if (position_memory_ != VK_NULL_HANDLE) {
-        vkFreeMemory(vk_device, position_memory_, nullptr);
-        position_memory_ = VK_NULL_HANDLE;
-    }
     if (normal_memory_ != VK_NULL_HANDLE) {
         vkFreeMemory(vk_device, normal_memory_, nullptr);
         normal_memory_ = VK_NULL_HANDLE;

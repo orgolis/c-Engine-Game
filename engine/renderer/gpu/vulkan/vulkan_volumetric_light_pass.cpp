@@ -252,14 +252,14 @@ bool VulkanVolumetricLightPass::create_compute_pipeline() {
     VkImageLayout sr = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkImageLayout dr = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     std::array<VkDescriptorImageInfo, 5> ii{};
-    ii[0] = { gbuffer_sampler_, g_buffer_->get_position_view(), sr };
+    ii[0] = { gbuffer_sampler_, g_buffer_->get_depth_view(),    dr };   // unused since F5 (positions come from depth); bound to depth until the binding is retired
     ii[1] = { gbuffer_sampler_, g_buffer_->get_depth_view(),    dr };
     ii[2] = { shadow_sampler_,  shadow_view_,                   dr };
     ii[3] = { VK_NULL_HANDLE,   scatter_view_,                  VK_IMAGE_LAYOUT_GENERAL };
-    // Binding 5 placeholder (position view) until set_cloud_shadow() supplies
+    // Binding 5 placeholder (G-buffer depth) until set_cloud_shadow() supplies
     // the real map; harmless because the shader only samples it when
     // cloud_params.w > 0.5, which stays 0 until clouds bind a map.
-    ii[4] = { gbuffer_sampler_, g_buffer_->get_position_view(), sr };
+    ii[4] = { gbuffer_sampler_, g_buffer_->get_depth_view(),    dr };
 
     std::array<VkWriteDescriptorSet, 6> ws{};
     ws[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

@@ -8,12 +8,10 @@ layout(location = 0) in vec3 inWorldPos;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec3 inAlbedo;
 layout(location = 3) in float inMetallic;
-layout(location = 0) out vec4 outPosition;
-layout(location = 1) out vec4 outNormal;
-layout(location = 2) out vec4 outAlbedo;
-layout(location = 3) out vec4 outMaterial;
+layout(location = 0) out vec4 outNormal;
+layout(location = 1) out vec4 outAlbedo;
+layout(location = 2) out vec4 outMaterial;
 void main() {
-    outPosition = vec4(inWorldPos, 1.0);
     outNormal   = vec4(normalize(inNormal), 0.5); // .a = roughness 0.5
     outAlbedo   = vec4(inAlbedo, inMetallic);
     outMaterial = vec4(0.0, 1.0, 0.0, 0.0);        // ID, AO, emission, reserved

@@ -232,7 +232,7 @@ bool VulkanSsrPass::create_compute_pipeline() {
     VkImageLayout sr = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkImageLayout dr = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     std::array<VkDescriptorImageInfo, 7> ii{};
-    ii[0] = { gbuffer_sampler_, g_buffer_->get_position_view(), sr };
+    ii[0] = { gbuffer_sampler_, g_buffer_->get_depth_view(),    dr };   // unused since F5 (positions come from depth); bound to depth until the binding is retired
     ii[1] = { gbuffer_sampler_, g_buffer_->get_normal_view(),   sr };
     ii[2] = { gbuffer_sampler_, g_buffer_->get_depth_view(),    dr };
     ii[3] = { gbuffer_sampler_, g_buffer_->get_albedo_view(),   sr };

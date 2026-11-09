@@ -101,6 +101,12 @@ class VulkanIndirectDrawBuffer;
  */
 class VulkanGBuffer {
 public:
+    /// Normal, albedo, material (depth is separate). Every G-buffer pipeline
+    /// declares exactly this many colour blend states; the fragment shaders
+    /// write locations 0..2 in that order. (A world-position target used to
+    /// sit at location 0 -- F5 rebuilds positions from depth instead.)
+    static constexpr uint32_t kColorAttachments = 3;
+
     /// Route meshlet draws through an indirect buffer (3.2).
     ///
     /// Optional and off by default: passing nullptr keeps the direct path
@@ -181,7 +187,6 @@ public:
     /**
      * @brief Get position texture handle
      */
-    VkImageView get_position_view() const { return position_view_; }
     
     /**
      * @brief Get normal texture handle
@@ -273,21 +278,18 @@ private:
     VulkanDevice* device_ = nullptr;
     
     // Images
-    VkImage position_image_ = VK_NULL_HANDLE;
     VkImage normal_image_ = VK_NULL_HANDLE;
     VkImage albedo_image_ = VK_NULL_HANDLE;
     VkImage material_image_ = VK_NULL_HANDLE;
     VkImage depth_image_ = VK_NULL_HANDLE;
     
     // Image views
-    VkImageView position_view_ = VK_NULL_HANDLE;
     VkImageView normal_view_ = VK_NULL_HANDLE;
     VkImageView albedo_view_ = VK_NULL_HANDLE;
     VkImageView material_view_ = VK_NULL_HANDLE;
     VkImageView depth_view_ = VK_NULL_HANDLE;
     
     // Memory
-    VkDeviceMemory position_memory_ = VK_NULL_HANDLE;
     VkDeviceMemory normal_memory_ = VK_NULL_HANDLE;
     VkDeviceMemory albedo_memory_ = VK_NULL_HANDLE;
     VkDeviceMemory material_memory_ = VK_NULL_HANDLE;

@@ -69,10 +69,9 @@ layout(set = 1, binding = 3) uniform sampler2D mrMap;
 layout(set = 1, binding = 4) uniform sampler2D aoMap;
 layout(set = 1, binding = 5) uniform sampler2D emissiveMap;
 
-layout(location = 0) out vec4 outPosition;
-layout(location = 1) out vec4 outNormalRoughness;
-layout(location = 2) out vec4 outAlbedoMetallic;
-layout(location = 3) out vec4 outMaterial;
+layout(location = 0) out vec4 outNormalRoughness;
+layout(location = 1) out vec4 outAlbedoMetallic;
+layout(location = 2) out vec4 outMaterial;
 
 // The graph's texture slots map onto the material's existing maps, so a
 // TextureSample node samples something real without new descriptors.
@@ -113,7 +112,6 @@ constexpr const char* kEpilogue = R"(
 
     float gs_ao = texture(aoMap, inUV).r * mat.occlusion_strength;
 
-    outPosition        = vec4(inWorldPos, 1.0);
     outNormalRoughness = vec4(N, clamp(gs_out_roughness, 0.04, 1.0));
     outAlbedoMetallic  = vec4(gs_out_base_color, clamp(gs_out_metallic, 0.0, 1.0));
     outMaterial        = vec4(gs_out_emissive, gs_ao);

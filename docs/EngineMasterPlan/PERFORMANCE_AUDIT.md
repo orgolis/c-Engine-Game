@@ -1411,7 +1411,42 @@ It is unreachable for anyone launching through the Hub, which is how this engine
 recorded prior failure repeating verbatim: the same shape as gating ray-traced reflections behind
 `GWS_SSR_RT=1` and asking the user to test it.
 
-### F5 — The G-buffer is 28 bytes per pixel, 8 of them redundant 🟠
+### F5 — The G-buffer is 28 bytes per pixel, 8 of them redundant 🟠 → fixed (2026-11-09)
+
+**Done (2026-11-09): the position target is gone.** All 13 remaining readers rebuild positions from
+the float32 depth buffer:
+
+- **Camera-relative, `inverse(proj * view-rotation)`:** SSAO, HBAO, HDAO, GTAO, and SSR.
+- **World space with `camera_pos` added:** RT SSR.
+- **The pass's own full inverse:** volumetric light and its bilateral upsample, froxel composite,
+  water, DDGI composite, VXAO.
+- **RT AO** reads its matrices from a new UBO. Its 160-byte push range exceeded the 128 bytes Vulkan
+  guarantees, so the pipeline layout was invalid on AMD-class devices.
+
+The G-buffer is now normal, albedo, material and depth (`kColorAttachments = 3`). Every G-buffer
+fragment shader writes locations 0..2: scene, terrain, demo, the inline copies, and the material-graph
+template. Every pipeline declares three blend states.
+
+Results:
+
+- MyGame is **pixel-identical** to before the removal.
+- The G-buffer pass costs **0.45 → 0.34 ms** on the GPU, with 16 MB less VRAM and 8 B/px less
+  written.
+- Validation is clean for every AO technique, for RT SSR with froxel fog, DDGI and clouds, and at 20k
+  in play mode. The suite passes, 87/87.
+
+Converting the readers changed images only by precision. The RGBA16F positions had visible
+quantisation, such as HBAO's contour banding: AO differs by at most 1–6 levels and SSR edges by up
+to 51. The work also exposed two real bugs. The target cleared to **(0,0,0,1)**, so every sky pixel
+claimed to be geometry at the world origin:
+
+- **Froxel fog never fogged the sky.** Separately, it showed no fog at all while volumetric light was
+  on.
+- **Water farther from the camera than the camera is from the origin was discarded** wherever the
+  sky was behind it.
+
+Both are fixed by the depth test (1.0 = sky).
+
 
 **Phase 1 shipped in v0.8.6:** the lighting pass (94% of frame per F0, and the only one of the 14
 consumers that already had both a depth binding and an invViewProj available) no longer reads the

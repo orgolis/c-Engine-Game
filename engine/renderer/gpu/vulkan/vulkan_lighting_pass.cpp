@@ -1005,7 +1005,7 @@ void VulkanLightingPass::update_descriptor_set() {
     }
 
     std::array<VkImageView, 5> gbuffer_views{
-        gbuffer_->get_position_view(),
+        gbuffer_->get_depth_view(),   // binding 0: unused since F5 (positions come from depth); bound to depth until the binding is retired
         gbuffer_->get_normal_view(),
         gbuffer_->get_albedo_view(),
         gbuffer_->get_material_view(),
@@ -1023,6 +1023,7 @@ void VulkanLightingPass::update_descriptor_set() {
     // already say so). Declaring SHADER_READ_ONLY was
     // VUID-vkCmdDraw-imageLayout-00344 on every frame.
     image_infos[4].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    image_infos[0].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;   // depth too (F5)
     // Shadow maps fall back to the dummy 1×1 textures when no real shadow
     // map has been bound. The shader reads them unconditionally; the
     // `castsShadow` flag in each Light entry controls whether the result
