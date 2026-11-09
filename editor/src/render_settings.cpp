@@ -169,7 +169,12 @@ bool load_render_settings(RenderSettings& out) {
     return true;
 }
 
+namespace { bool g_saves_blocked = false; }
+
+void block_render_settings_saves() { g_saves_blocked = true; }
+
 bool save_render_settings(const RenderSettings& s) {
+    if (g_saves_blocked) return true;   // GWS_RENDER_SETTINGS_OVERRIDE: never persist it
     const fs::path p = settings_path();
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);

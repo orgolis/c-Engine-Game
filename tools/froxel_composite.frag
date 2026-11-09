@@ -20,7 +20,7 @@ layout(set = 0, binding = 0) uniform FroxelUBO {
     vec4 ambient;
 } ub;
 
-layout(set = 0, binding = 1) uniform sampler2D positionTex;  // w=1 where geometry
+layout(set = 0, binding = 1) uniform sampler2D depthTex;     // G-buffer depth (1.0 = sky)
 layout(set = 0, binding = 2) uniform sampler3D integratedTex;
 
 layout(location = 0) in vec2 inUV;
@@ -34,8 +34,14 @@ float ign(vec2 px) {
 }
 
 void main() {
-    vec4 scene = texture(positionTex, inUV);
-    float dist = scene.w > 0.5 ? length(scene.xyz - ub.cam_pos.xyz) : ub.fog.w;
+    // Distance to the surface, from depth (F5) -- this used to read a
+    // position target whose w marked geometry; the depth clear (1.0) marks sky.
+    float d = texture(depthTex, inUV).r;
+    float dist = ub.fog.w;
+    if (d < 1.0 - 1e-5) {
+        vec4 h = ub.inv_view_proj * vec4(inUV * 2.0 - 1.0, d, 1.0);
+        dist = length(h.xyz / h.w - ub.cam_pos.xyz);
+    }
     dist = clamp(dist, NEAR, ub.fog.w);
 
     // Inverse of the exponential slice mapping, normalized to [0,1] W —

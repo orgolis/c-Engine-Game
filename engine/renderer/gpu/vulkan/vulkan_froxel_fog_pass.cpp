@@ -211,8 +211,9 @@ bool VulkanFroxelFogPass::initialize(VulkanDevice* device, VulkanGBuffer* g_buff
         VkDescriptorImageInfo integr_st{VK_NULL_HANDLE, integrated_view_, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo shadow_ci{shadow_sampler, shadow_view,
                                         VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
-        VkDescriptorImageInfo pos_ci{gbuffer_sampler_, g_buffer_->get_position_view(),
-                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        // The composite reads depth (F5), not the position target.
+        VkDescriptorImageInfo pos_ci{gbuffer_sampler_, g_buffer_->get_depth_view(),
+                                     VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo integr_ci{volume_sampler_, integrated_view_,
                                         VK_IMAGE_LAYOUT_GENERAL};
 

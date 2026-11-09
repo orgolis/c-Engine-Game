@@ -116,6 +116,10 @@ void        render_settings_from_text(const std::string& text, RenderSettings& o
 /// False only when the file cannot be read or written.
 bool load_render_settings(RenderSettings& out);
 bool save_render_settings(const RenderSettings& s);
+/// After this, save_render_settings() does nothing (and reports success): a
+/// process running with GWS_RENDER_SETTINGS_OVERRIDE must not write its
+/// overridden values into the user's file.
+void block_render_settings_saves();
 
 /// A sane starting preset for the device actually present. An integrated GPU
 /// should get a usable first launch without anyone finding the settings menu,

@@ -6745,6 +6745,20 @@ int main(int argc, char** argv) {
             }
         }
 
+        // GWS_RENDER_SETTINGS_OVERRIDE="FROXEL=1;DDGI=1" (automation): the
+        // settings-file syntax, ';'-separated, applied over the loaded settings
+        // for this process only. Saving is blocked while it is active, so an
+        // override can never end up in the user's per-machine file -- which is
+        // how a test run can exercise an effect the user has switched off.
+        if (const char* ov = std::getenv("GWS_RENDER_SETTINGS_OVERRIDE"); ov && *ov) {
+            std::string text = schizo::editor::render_settings_to_text(render_settings);
+            text += "\n";
+            for (const char* c = ov; *c; ++c) text += (*c == ';') ? '\n' : *c;
+            schizo::editor::render_settings_from_text(text, render_settings);
+            schizo::editor::block_render_settings_saves();
+            spdlog::info("[perf] GWS_RENDER_SETTINGS_OVERRIDE='{}' (this run only; saving disabled)", ov);
+        }
+
         // The window used to be created at a hardcoded 1920x1080 -- larger than
         // the whole display on a 1366x768 laptop, which then rendered more
         // pixels than it could ever show. Fit it to the monitor's WORK area
