@@ -112,6 +112,7 @@ void RenderSettings::sanitize() {
     if (render_scale > kMaxScale)     render_scale = kMaxScale;
     if (shadow_rays < 1) shadow_rays = 1;
     if (shadow_rays > 8) shadow_rays = 8;
+    if (ao_technique < 0 || ao_technique > 5) ao_technique = 3;
 }
 
 std::string render_settings_to_text(const RenderSettings& s) {
@@ -128,6 +129,7 @@ std::string render_settings_to_text(const RenderSettings& s) {
     o << "RAY_TRACING="  << (s.ray_tracing ? 1 : 0) << "\n";
     o << "SHADOW_RAYS="  << s.shadow_rays << "\n";
     o << "VSYNC="        << (s.vsync ? 1 : 0) << "\n";
+    o << "AO_TECHNIQUE=" << s.ao_technique << "\n";
     return o.str();
 }
 
@@ -153,6 +155,7 @@ void render_settings_from_text(const std::string& text, RenderSettings& out) {
         else if (k == "RAY_TRACING")  out.ray_tracing  = as_bool(v);
         else if (k == "SHADOW_RAYS")  out.shadow_rays  = static_cast<int>(as_float(trim(v), 8.0f));
         else if (k == "VSYNC")        out.vsync        = as_bool(v);
+        else if (k == "AO_TECHNIQUE") out.ao_technique = static_cast<int>(as_float(trim(v), 3.0f));
     }
     out.sanitize();
 }

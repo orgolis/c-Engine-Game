@@ -7138,7 +7138,35 @@ int main(int argc, char** argv) {
         // suite. Built unconditionally so the technique selector can switch
         // to it; only runs when VXAO is the active technique.
         auto vxao = VulkanVxaoPass::create(&device, g_buffer.get(), kW, kH);
-        bool vxao_bound = false; // tracks which AO texture lighting samples
+
+        // Switch the AO technique and point the lighting pass at the matching
+        // occlusion texture (VXAO has its own; the rest share the SSAO pass's).
+        // False -- and nothing changed -- if this device cannot run it.
+        auto apply_ao_technique = [&](int t) -> bool {
+            if (!ssao || t < 0 || t > 5) return false;
+            const auto tech = static_cast<gws::renderer::gpu::AoTechnique>(t);
+            if (tech == gws::renderer::gpu::AoTechnique::RT && !ssao->rt_available()) return false;
+            if (tech == gws::renderer::gpu::AoTechnique::VXAO && !vxao) return false;
+            ssao->set_technique(tech);   // waits for device idle
+            if (tech == gws::renderer::gpu::AoTechnique::VXAO)
+                lighting->set_ssao_texture(vxao->get_output_view(), vxao->get_output_sampler());
+            else
+                lighting->set_ssao_texture(ssao->get_output_view(), ssao->get_output_sampler());
+            return true;
+        };
+        // The technique chosen last time (render_settings), or GWS_AO_TECHNIQUE
+        // =0..5 for this process only -- automation, never saved.
+        {
+            int want = render_settings.ao_technique;
+            if (const char* v = std::getenv("GWS_AO_TECHNIQUE"); v && v[0] >= '0' && v[0] <= '5') {
+                want = v[0] - '0';
+                spdlog::info("[perf] GWS_AO_TECHNIQUE={} (overrides render_settings for this run)", want);
+            }
+            if (want != 3 && !apply_ao_technique(want)) {
+                spdlog::warn("AO technique {} is not available on this device; using GTAO", want);
+                apply_ao_technique(3);
+            }
+        }
 
         // SSR — runs after Lighting (needs lit HDR) and before Transparent
         // (so transparent fragments composite over reflections). The env
@@ -9856,18 +9884,10 @@ int main(int argc, char** argv) {
                         const char* ao_items[] = { "SSAO", "HBAO", "HDAO",
                                                    "GTAO", "VXAO", "RT" };
                         int cur = static_cast<int>(ssao->technique());
-                        if (ImGui::Combo("Technique##ao", &cur, ao_items, 6)) {
-                            auto newt = static_cast<gws::renderer::gpu::AoTechnique>(cur);
-                            ssao->set_technique(newt); // waits for device idle
-                            // Rebind which occlusion texture the lighting pass
-                            // samples: VXAO has its own output image, all the
-                            // others share the SSAO pass's blurred output.
-                            if (newt == gws::renderer::gpu::AoTechnique::VXAO && vxao)
-                                lighting->set_ssao_texture(vxao->get_output_view(),
-                                                           vxao->get_output_sampler());
-                            else
-                                lighting->set_ssao_texture(ssao->get_output_view(),
-                                                           ssao->get_output_sampler());
+                        if (ImGui::Combo("Technique##ao", &cur, ao_items, 6) &&
+                            apply_ao_technique(cur)) {
+                            render_settings.ao_technique = cur;   // remembered next launch
+                            schizo::editor::save_render_settings(render_settings);
                         }
                         if (!ssao->rt_available())
                             ImGui::TextDisabled("(RT unavailable on this GPU)");

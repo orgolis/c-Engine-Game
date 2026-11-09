@@ -51,6 +51,12 @@ struct RenderSettings {
     float render_scale = 1.0f;
 
     bool ssao       = true;
+    /// Which ambient-occlusion technique, as gpu::AoTechnique's index:
+    /// 0 SSAO, 1 HBAO, 2 HDAO, 3 GTAO, 4 VXAO, 5 RT. Not part of a preset --
+    /// a preset decides whether AO runs, this decides how. The editor's
+    /// dropdown used to forget the choice every launch (create() hardcodes
+    /// GTAO). A technique the device cannot run falls back to GTAO.
+    int  ao_technique = 3;
     bool ssr        = true;
     bool clouds     = true;
     bool volumetric = true;

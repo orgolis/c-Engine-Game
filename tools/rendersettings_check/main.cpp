@@ -136,6 +136,20 @@ int main() {
         render_settings_from_text("SHADOW_RAYS=0\n", rays);
         check("zero rays is clamped to 1", rays.shadow_rays == 1);
 
+        // The AO technique survives a save/load (it used to be forgotten every
+        // launch) and an unknown index falls back to GTAO (3).
+        RenderSettings ao_a;
+        ao_a.ao_technique = 1;   // HBAO
+        RenderSettings ao_b;
+        render_settings_from_text(render_settings_to_text(ao_a), ao_b);
+        check("the AO technique round-trips", ao_b.ao_technique == 1);
+        RenderSettings ao_c;
+        render_settings_from_text("AO_TECHNIQUE=42\n", ao_c);
+        check("an unknown AO technique falls back to GTAO", ao_c.ao_technique == 3);
+        RenderSettings ao_d;
+        render_settings_from_text("PRESET=High\n", ao_d);
+        check("a file from before AO_TECHNIQUE existed keeps GTAO", ao_d.ao_technique == 3);
+
         RenderSettings nan_s;
         render_settings_from_text("RENDER_SCALE=notanumber\n", nan_s);
         check("an unparseable scale keeps a usable value",
