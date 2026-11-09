@@ -586,7 +586,10 @@ void VulkanSsrPass::execute(VkCommandBuffer cmd,
     static_assert(offsetof(PC, tint_by_albedo) == 108,
                   "tint_by_albedo must stay at 108: BOTH ssr shaders read it there");
     const glm::mat4 vp = proj * view;
-    std::memcpy(pc.view_proj, &vp[0][0], sizeof(pc.view_proj));
+    // proj * view-ROTATION: both SSR shaders reconstruct camera-relative
+    // positions from depth with its inverse (F5); the RT one adds camera_pos.
+    const glm::mat4 vp_rot = proj * glm::mat4(glm::mat3(view));
+    std::memcpy(pc.view_proj, &vp_rot[0][0], sizeof(pc.view_proj));
     pc.camera_pos[0] = camera_position.x;
     pc.camera_pos[1] = camera_position.y;
     pc.camera_pos[2] = camera_position.z;

@@ -82,6 +82,18 @@ layout(push_constant) uniform PC {
     vec4  ambient;    // rgb = colour × intensity
 } pc;
 
+// F5: positions come from the depth buffer, not a position G-buffer target.
+// pc.view_proj is proj * view-ROTATION, so relPos() is relative to the
+// camera (the lighting pass's convention, proven by
+// tools/gbuffer_reconstruct_check).
+mat4 g_inv_vp;
+vec3 relPos(vec2 uv) {
+    float d = texture(depthTex, uv).r;
+    vec4 h = g_inv_vp * vec4(uv * 2.0 - 1.0, d, 1.0);
+    return h.xyz / h.w;
+}
+
+
 const float kBaseReflect  = 0.02;
 const float kSkyClampLuma = 2.0;
 
@@ -97,6 +109,7 @@ float sun_shadow(vec3 p, vec3 n, vec3 L) {
 }
 
 void main() {
+    g_inv_vp = inverse(pc.view_proj);
     ivec2 px = ivec2(gl_GlobalInvocationID.xy);
     if (px.x >= pc.output_size.x || px.y >= pc.output_size.y) return;
     vec2 uv = (vec2(px) + 0.5) / vec2(pc.output_size);
@@ -122,7 +135,7 @@ void main() {
     if (smoothness < 0.1) { imageStore(dstReflection, px, vec4(0.0)); return; }
 
     float metallic = texture(albedoTex, uv).a;
-    vec3 P = texture(positionTex, uv).xyz;
+    vec3 P = relPos(uv) + pc.camera_pos.xyz;   // world space: rays trace the TLAS (F5)
     vec3 V = normalize(P - pc.camera_pos.xyz);
     vec3 R = reflect(V, N);
 

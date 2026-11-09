@@ -48,6 +48,20 @@ layout(push_constant) uniform PC {
     float tint_by_albedo;
 } pc;
 
+// F5: positions come from the depth buffer, not a position G-buffer target.
+// pc.view_proj is proj * view-ROTATION, so relPos() is relative to the
+// camera (the lighting pass's convention, proven by
+// tools/gbuffer_reconstruct_check).
+mat4 g_inv_vp;
+vec4 g_vp_w;       // the w row of pc.view_proj  (clip.w = dot(g_vp_w, p))
+vec4 g_inv_vp_w;   // the w row of its inverse
+vec3 relPos(vec2 uv) {
+    float d = texture(depthTex, uv).r;
+    vec4 h = g_inv_vp * vec4(uv * 2.0 - 1.0, d, 1.0);
+    return h.xyz / h.w;
+}
+
+
 const int   kRefineSteps = 6;     // binary-search refinement iterations
 const float kBaseReflect = 0.01;  // dielectric base reflectance (~F0 for plastic)
 const float kSkyClampLuma = 2.0;  // HDR sample luminance clamp (anti-sky-blowout)
@@ -58,7 +72,7 @@ float hash12(vec2 p) {
     return fract((p3.x + p3.y) * p3.z);
 }
 
-// Project a world-space point into NDC. Returns false if behind near plane.
+// Project a camera-relative point into NDC. Returns false if behind near plane.
 bool project(vec3 world_pos, out vec3 ndc) {
     vec4 clip = pc.view_proj * vec4(world_pos, 1.0);
     if (clip.w <= 0.0) return false;
@@ -93,9 +107,17 @@ bool point_is_behind(vec3 world_pos, out vec3 ndc, out vec2 uv,
     vec3 scene_n = texture(normalTex, uv).xyz;
     if (dot(scene_n, scene_n) < 0.01) { return false; }
 
-    vec3  scene_pos = texture(positionTex, uv).xyz;
-    float ray_dist   = distance(world_pos, pc.camera_pos.xyz);
-    float scene_dist = distance(scene_pos, pc.camera_pos.xyz);
+    // Camera-relative positions (F5). The scene point at this pixel and the
+    // ray point lie on the same ray from the camera, so their distances are
+    // in the ratio of their clip w -- exact for a perspective projection. The
+    // ray point's w is one row of view_proj; the scene point's is one row of
+    // the inverse (h.w = 1/w). A dot product per march step instead of the
+    // full reconstruction, which made this pass ~40% slower.
+    float d_scene    = texture(depthTex, uv).r;
+    float w_ray      = dot(g_vp_w, vec4(world_pos, 1.0));
+    float w_scene    = 1.0 / dot(g_inv_vp_w, vec4(ndc.xy, d_scene, 1.0));
+    float ray_dist   = length(world_pos);
+    float scene_dist = ray_dist * (w_scene / w_ray);
     delta = ray_dist - scene_dist;
     valid = true;
     return delta > 0.0;
@@ -124,9 +146,13 @@ void main() {
         return;
     }
 
+    // Only pixels that reflect get this far: the inverse is not free.
+    g_inv_vp = inverse(pc.view_proj);
+    g_vp_w     = vec4(pc.view_proj[0][3], pc.view_proj[1][3], pc.view_proj[2][3], pc.view_proj[3][3]);
+    g_inv_vp_w = vec4(g_inv_vp[0][3], g_inv_vp[1][3], g_inv_vp[2][3], g_inv_vp[3][3]);
     float metallic = texture(albedoTex, uv).a;
-    vec3 P = texture(positionTex, uv).xyz;
-    vec3 V = normalize(P - pc.camera_pos.xyz);
+    vec3 P = relPos(uv);      // camera-relative (F5)
+    vec3 V = normalize(P);
     vec3 R = reflect(V, N);
 
     // Coarse march. Jitter the first step by [0, 1) of a step length so
