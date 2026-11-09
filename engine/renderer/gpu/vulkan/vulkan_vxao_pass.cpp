@@ -245,7 +245,8 @@ bool VulkanVxaoPass::create_cone_pipeline() {
     li.bindingCount = 5; li.pBindings = b.data();
     if (vkCreateDescriptorSetLayout(vk, &li, nullptr, &cone_dsl_) != VK_SUCCESS) return false;
 
-    VkPushConstantRange pr{}; pr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; pr.size = sizeof(float) * 4;
+    // ivec2 size + intensity + pad, then inverse(proj * view) for positions (F5).
+    VkPushConstantRange pr{}; pr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; pr.size = sizeof(float) * 4 + sizeof(glm::mat4);
     VkPipelineLayoutCreateInfo pli{}; pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pli.setLayoutCount = 1; pli.pSetLayouts = &cone_dsl_;
     pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pr;
@@ -276,7 +277,8 @@ bool VulkanVxaoPass::create_cone_pipeline() {
 
     VkImageLayout sr = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     std::array<VkDescriptorImageInfo, 4> ii{};
-    ii[0] = { gbuffer_sampler_, g_buffer_->get_position_view(), sr };
+    ii[0] = { gbuffer_sampler_, g_buffer_->get_depth_view(),
+              VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };   // depth, not position (F5)
     ii[1] = { gbuffer_sampler_, g_buffer_->get_normal_view(),   sr };
     ii[2] = { VK_NULL_HANDLE,   ao_view_,                       VK_IMAGE_LAYOUT_GENERAL };
     ii[3] = { voxel_sampler_,   voxel_sampled_view_,            sr };
@@ -364,7 +366,7 @@ void VulkanVxaoPass::voxelize(VkCommandBuffer cmd, const DrawItem* items, size_t
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 }
 
-void VulkanVxaoPass::compute_ao(VkCommandBuffer cmd) {
+void VulkanVxaoPass::compute_ao(VkCommandBuffer cmd, const glm::mat4& view_proj) {
     if (cone_pipe_ == VK_NULL_HANDLE) return;
     // AO output → GENERAL for compute write.
     VkImageMemoryBarrier b{}; b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -377,8 +379,9 @@ void VulkanVxaoPass::compute_ao(VkCommandBuffer cmd) {
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cone_pipe_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cone_layout_, 0, 1, &cone_set_, 0, nullptr);
-    struct { int32_t w, h; float intensity, pad; } pc{};
+    struct { int32_t w, h; float intensity, pad; glm::mat4 inv_view_proj; } pc{};
     pc.w = int32_t(width_); pc.h = int32_t(height_); pc.intensity = 1.0f;
+    pc.inv_view_proj = glm::inverse(view_proj);
     vkCmdPushConstants(cmd, cone_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     vkCmdDispatch(cmd, (width_ + 7) / 8, (height_ + 7) / 8, 1);
 

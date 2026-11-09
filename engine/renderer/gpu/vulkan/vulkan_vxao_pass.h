@@ -45,7 +45,8 @@ public:
                   const glm::vec3& camera_position);
 
     /// Stage 2 — cone-trace the grid into the occlusion output image.
-    void compute_ao(VkCommandBuffer cmd);
+    /// `view_proj` = proj * view, to rebuild surface positions from depth (F5).
+    void compute_ao(VkCommandBuffer cmd, const glm::mat4& view_proj);
 
     /// Occlusion output (R8), SHADER_READ_ONLY after compute_ao. Lighting
     /// binds this when the VXAO technique is selected.

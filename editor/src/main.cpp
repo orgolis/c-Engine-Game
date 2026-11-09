@@ -11370,7 +11370,7 @@ int main(int argc, char** argv) {
                         // VXAO: voxelize this frame's opaque draws, then cone-trace.
                         vxao->voxelize(cmd, opaque_draws.data(), opaque_draws.size(),
                                        cam.position);
-                        vxao->compute_ao(cmd);
+                        vxao->compute_ao(cmd, cam.proj * cam.view);
                     } else {
                         // No zone opened here: execute() opens one per dispatch
                         // (AO.<technique> and AO.Blur). A zone here too would nest,
