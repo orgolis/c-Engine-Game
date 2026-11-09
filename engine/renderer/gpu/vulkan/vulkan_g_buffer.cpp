@@ -18,6 +18,9 @@
 #include "vulkan_occlusion_culler.h"
 #include "vulkan_hzb_culler.h"
 #include "culling.h" // Frustum for per-meshlet culling
+#include "jobs/job_system.h"
+#include "profiler/profiler.h"
+#include <optional>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <array>
@@ -1427,14 +1430,40 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
         return true;
     };
 
+    // Classify every draw first. It is pure -- each draw's pipeline, LOD
+    // selection and per-meshlet frustum test read only that draw and write
+    // only its own slot -- and at 20k entities it was most of this function's
+    // CPU time on one thread. The grouping and command recording below stay
+    // serial: they share the group table and the command buffer. Below the
+    // threshold the fan-out costs more than it saves (the same figure the
+    // frustum culler measured, culling.cpp).
+    constexpr size_t kParallelClassifyMin = 2048;
+    std::optional<gws::profile::ScopedZone> lap;   // one zone per phase, back to back
+    lap.emplace("geo.classify");
+    if (instancing) {
+        draw_class_.resize(draw_count);
+        auto classify = [&](size_t i) {
+            const DrawItem& d = draws[i];
+            DrawClass c{VK_NULL_HANDLE, 0, 0};
+            if (d.mesh && d.material && instanceable(d, c.lod, c.pipeline)) c.instanceable = 1;
+            draw_class_[i] = c;
+        };
+        auto& js = gws::jobs::JobSystem::instance();
+        if (draw_count >= kParallelClassifyMin && js.initialized())
+            js.parallel_for(0, draw_count, [&classify](size_t i) { classify(i); });
+        else
+            for (size_t i = 0; i < draw_count; ++i) classify(i);
+    }
+
+    lap.reset(); lap.emplace("geo.per_object");
     for (size_t i = 0; i < draw_count; ++i) {
         const DrawItem& d = draws[i];
         if (!d.mesh || !d.material) continue;
 
         if (instancing) {
-            uint32_t   lod  = 0;
-            VkPipeline pipe = VK_NULL_HANDLE;
-            if (instanceable(d, lod, pipe)) {
+            const uint32_t   lod  = draw_class_[i].lod;
+            const VkPipeline pipe = draw_class_[i].pipeline;
+            if (draw_class_[i].instanceable) {
                 uint64_t h = 1469598103934665603ull;
                 auto mix = [&h](uint64_t v) { h ^= v; h *= 1099511628211ull; };
                 mix(reinterpret_cast<uintptr_t>(pipe));
@@ -1652,6 +1681,7 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
     }
 
     // ---- Instanced batches ---------------------------------------------------
+    lap.reset(); lap.emplace("geo.instanced");
     if (instancing && !inst_candidates_.empty()) {
         // Stable counting sort by group: each group's instances stay in the
         // order the caller gave (front to back), and groups go out in order of
@@ -1676,11 +1706,17 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
         struct InstanceGpu { glm::mat4 mvp; glm::mat4 model; };
         static_assert(sizeof(InstanceGpu) == 128, "matches the shader's std430 InstanceData");
         auto* dst = static_cast<InstanceGpu*>(islot->mapped);
-        for (size_t p = 0; p < inst_order_.size(); ++p) {
+        // Each instance writes only its own slot, so this goes wide too.
+        auto fill = [&](size_t p) {
             const DrawItem& d = draws[inst_candidates_[inst_order_[p]].draw];
             const InstanceGpu g{view_proj * d.model, d.model};
             std::memcpy(&dst[p], &g, sizeof g);
-        }
+        };
+        auto& js = gws::jobs::JobSystem::instance();
+        if (inst_order_.size() >= kParallelClassifyMin && js.initialized())
+            js.parallel_for(0, inst_order_.size(), [&fill](size_t p) { fill(p); });
+        else
+            for (size_t p = 0; p < inst_order_.size(); ++p) fill(p);
 
         for (size_t g = 0; g < ng; ++g) {
             const InstanceGroupKey& k = inst_groups_[g];

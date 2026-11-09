@@ -158,4 +158,15 @@ void cull_draw_items_frustum(std::vector<DrawItem>& items,
                               const Frustum& frustum,
                               CullingStats* stats = nullptr);
 
+/**
+ * @brief Frustum-cull `in[0, count)`, APPENDING the visible items to `out` in
+ * input order (clear `out` first for a fresh list; its capacity is reused).
+ * Same test as cull_draw_items_frustum, but copies only the visible items —
+ * use it instead of copy-then-cull. Stats describe this call's input only.
+ */
+void cull_draw_items_frustum_into(const DrawItem* in, size_t count,
+                                  std::vector<DrawItem>& out,
+                                  const Frustum& frustum,
+                                  CullingStats* stats = nullptr);
+
 } // namespace gws::renderer::gpu

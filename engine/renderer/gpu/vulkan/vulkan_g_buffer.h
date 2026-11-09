@@ -423,6 +423,10 @@ private:
         uint32_t lod;       // clamped LOD tier
     };
     std::vector<InstanceCandidate> inst_candidates_;
+    // Per-draw instancing classification, filled in parallel before the
+    // serial grouping/recording loop (see draw_items).
+    struct DrawClass { VkPipeline pipeline; uint32_t lod; uint8_t instanceable; };
+    std::vector<DrawClass>         draw_class_;
     std::vector<uint32_t>          inst_group_count_, inst_group_first_, inst_order_;
     struct InstanceGroupKey {
         VkPipeline pipeline; const Material* material; const Mesh* mesh;

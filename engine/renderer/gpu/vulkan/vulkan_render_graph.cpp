@@ -3,6 +3,7 @@
  * @brief Implementation of the Phase 4 Week 3 deferred render graph.
  */
 
+#include "profiler/profiler.h"
 #include "vulkan_render_graph.h"
 
 #include "vulkan_device.h"
@@ -462,7 +463,9 @@ void VulkanRenderGraph::record_shadow(VkCommandBuffer cmd, const StageRecorder& 
         // Shadow caster matrices come from the camera for now (single
         // directional cascade); a future cascade-matrix setter will replace
         // this with per-cascade orthographic projections.
-        std::vector<DrawItem> items_to_draw = draw_items_;
+        // A persistent scratch list: this used to copy the whole draw list
+        // into a fresh vector every frame.
+        std::vector<DrawItem>& items_to_draw = shadow_scratch_;
         if (frustum_culling_enabled_ && has_shadow_cull_view_proj_) {
             // Cull casters against the LIGHT'S frustum, never the camera's:
             // an object outside the camera view whose shadow falls INTO the
@@ -474,7 +477,11 @@ void VulkanRenderGraph::record_shadow(VkCommandBuffer cmd, const StageRecorder& 
             // Shadow stage doesn't update the per-frame frustum stats —
             // those track the geometry-stage view, which is the canonical
             // "what the camera sees" measurement. Pass nullptr to skip.
-            cull_draw_items_frustum(items_to_draw, light_frustum);
+            items_to_draw.clear();
+            cull_draw_items_frustum_into(draw_items_.data(), draw_items_.size(),
+                                         items_to_draw, light_frustum);
+        } else {
+            items_to_draw.assign(draw_items_.begin(), draw_items_.end());
         }
         config_.shadow_map->draw_items(cmd, camera_.view, camera_.proj,
                                        camera_.position,
@@ -503,17 +510,20 @@ void VulkanRenderGraph::record_geometry(VkCommandBuffer cmd, const StageRecorder
         // Default: textured-pipeline iteration over the caller's draw list.
         // Culled in a persistent scratch list (reuses its capacity).
         std::vector<DrawItem>& items_to_draw = geometry_scratch_;
-        items_to_draw.assign(draw_items_.begin(), draw_items_.end());
         Frustum frustum = Frustum::from_matrix(camera_.proj * camera_.view);
         if (frustum_culling_enabled_) {
+            GWS_PROFILE_ZONE("geo.frustum");
             CullingStats cull{};
-            cull_draw_items_frustum(items_to_draw, frustum, &cull);
+            items_to_draw.clear();
+            cull_draw_items_frustum_into(draw_items_.data(), draw_items_.size(),
+                                         items_to_draw, frustum, &cull);
             stats_.frustum_input_items   = cull.input_items;
             stats_.frustum_visible_items = cull.output_items;
             stats_.frustum_culled_items  = cull.culled_frustum;
         } else {
             // Culling disabled: report the input list as fully visible so
             // downstream UI can still display sensible numbers.
+            items_to_draw.assign(draw_items_.begin(), draw_items_.end());
             stats_.frustum_input_items   = static_cast<uint32_t>(items_to_draw.size());
             stats_.frustum_visible_items = static_cast<uint32_t>(items_to_draw.size());
             stats_.frustum_culled_items  = 0;
@@ -548,6 +558,7 @@ void VulkanRenderGraph::record_geometry(VkCommandBuffer cmd, const StageRecorder
     // has fresh data. Done immediately after the geometry pass while the
     // depth attachment is still in DEPTH_STENCIL_READ_ONLY_OPTIMAL.
     if (config_.hzb_culler != nullptr) {
+        GWS_PROFILE_ZONE("geo.hzb_build");
         config_.hzb_culler->build_and_readback(cmd);
     }
 }

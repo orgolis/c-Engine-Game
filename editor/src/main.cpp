@@ -6812,10 +6812,19 @@ int main(int argc, char** argv) {
         // picks its shader variant from has_ray_tracing() at pipeline creation --
         // so this necessarily applies at startup.
         render_cfg.enable_ray_tracing = render_settings.ray_tracing;
-        render_cfg.enable_vsync = render_settings.vsync;
+        // GWS_VSYNC=0/1 overrides the saved setting for this process only
+        // (measurement runs): it never reaches render_settings, so nothing
+        // saves it into the user's per-machine file. Automation used to edit
+        // that file around each run, which raced any editor the user had open.
+        bool vsync = render_settings.vsync;
+        if (const char* v = std::getenv("GWS_VSYNC"); v != nullptr && (v[0] == '0' || v[0] == '1')) {
+            vsync = (v[0] == '1');
+            spdlog::info("[perf] GWS_VSYNC={} (overrides render_settings for this run)", v[0]);
+        }
+        render_cfg.enable_vsync = vsync;
         // The swapchain picks its present mode from this; set it before the
         // device creates one.
-        gws::renderer::gpu::VulkanSwapchain::set_vsync(render_settings.vsync);
+        gws::renderer::gpu::VulkanSwapchain::set_vsync(vsync);
         render_cfg.window_width      = kW;
         render_cfg.window_height     = kH;
         // Validation layers intercept EVERY Vulkan call. Shipping with them on
@@ -10980,11 +10989,17 @@ int main(int argc, char** argv) {
             // emissive_factor.a). Cutout materials use their per-material
             // cutoff. Opaque materials' cutoff is 0 → no discard branch.
             // Persistent: a fresh 2 MB list every frame otherwise (see opaque_draws).
+            // Filled at the shadow stage below: culled straight from the two
+            // lists when light culling runs, instead of concatenating all of
+            // them and then compacting.
             static std::vector<gws::renderer::gpu::DrawItem> shadow_draws;
             shadow_draws.clear();
-            shadow_draws.reserve(opaque_draws.size() + transparent_draws.size());
-            shadow_draws.insert(shadow_draws.end(), opaque_draws.begin(), opaque_draws.end());
-            shadow_draws.insert(shadow_draws.end(), transparent_draws.begin(), transparent_draws.end());
+            const auto concat_shadow_draws = [&]() {
+                shadow_draws.clear();
+                shadow_draws.reserve(opaque_draws.size() + transparent_draws.size());
+                shadow_draws.insert(shadow_draws.end(), opaque_draws.begin(), opaque_draws.end());
+                shadow_draws.insert(shadow_draws.end(), transparent_draws.begin(), transparent_draws.end());
+            };
 
             // Stage 6: drive per-entity AudioSource/AudioListener components.
             // The listener defaults to the editor camera (basis from the view
@@ -11036,6 +11051,7 @@ int main(int argc, char** argv) {
                         };
                     cap_list("Geometry",    opaque_draws);
                     cap_list("Transparent", transparent_draws);
+                    concat_shadow_draws();   // the caster list before light culling
                     cap_list("Shadow",      shadow_draws);
                     fc.end();
                     spdlog::info("[frame-capture] frame {} -> {} draws, {} triangles",
@@ -11133,7 +11149,13 @@ int main(int argc, char** argv) {
                 GWS_PROFILE_ZONE("shadow_light_cull");
                 gws::renderer::gpu::Frustum light_frustum =
                     gws::renderer::gpu::Frustum::from_matrix(shadow_view_proj);
-                gws::renderer::gpu::cull_draw_items_frustum(shadow_draws, light_frustum);
+                shadow_draws.clear();
+                gws::renderer::gpu::cull_draw_items_frustum_into(
+                    opaque_draws.data(), opaque_draws.size(), shadow_draws, light_frustum);
+                gws::renderer::gpu::cull_draw_items_frustum_into(
+                    transparent_draws.data(), transparent_draws.size(), shadow_draws, light_frustum);
+            } else {
+                concat_shadow_draws();
             }
 
             const glm::mat4 sh_view = glm::mat4(1.0f);

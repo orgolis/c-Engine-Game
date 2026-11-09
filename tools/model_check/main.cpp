@@ -18,6 +18,7 @@
 #include "vulkan/vulkan_device.h"
 #include "vulkan/vulkan_scene_material.h"
 #include "vulkan/culling.h"
+#include "jobs/job_system.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -96,6 +97,9 @@ int main(int argc, char** argv) {
                                        glm::vec3(0.0f, 1.0f, 0.0f));
     const glm::mat4 proj = glm::perspective(glm::radians(45.0f), 16.0f / 9.0f, 0.1f, 1000.0f);
     const Frustum frustum = Frustum::from_matrix(proj * view);
+    // The cull fans out across the job system above 2048 items; without it
+    // only the serial path would ever be exercised here.
+    gws::jobs::JobSystem::instance().init();
 
     schizo::editor::AssetMeshCache cache;
     int failures = 0;
@@ -142,6 +146,45 @@ int main(int argc, char** argv) {
                     stats.input_items, stats.output_items, stats.culled_frustum,
                     all_culled ? "   <-- FALSE CULL (model is on-screen!)" : "");
         if (all_culled) ++failures;
+
+        // cull_draw_items_frustum_into (what the render graph and the editor's
+        // shadow list use) must keep exactly what copy-then-cull keeps, in the
+        // same order, on both sides of the parallel threshold, and append
+        // rather than overwrite. A grid of copies, many off-screen.
+        if (!draws.empty()) {
+            for (const size_t target : {size_t{300}, size_t{6000}}) {
+                std::vector<DrawItem> grid;
+                grid.reserve(target);
+                for (size_t k = 0; grid.size() < target; ++k) {
+                    const glm::mat4 t = glm::translate(glm::mat4(1.0f),
+                        glm::vec3(float(k % 41) * 3.0f - 60.0f, float((k / 41) % 7) * 3.0f - 9.0f,
+                                  -float(k / 287) * 3.0f));
+                    for (const auto& d : draws) {
+                        if (grid.size() == target) break;
+                        DrawItem g = d;
+                        g.model = t * d.model;
+                        grid.push_back(g);
+                    }
+                }
+                std::vector<DrawItem> ref = grid;
+                cull_draw_items_frustum(ref, frustum);
+                std::vector<DrawItem> into;
+                CullingStats s1{}, s2{};
+                cull_draw_items_frustum_into(grid.data(), grid.size(), into, frustum, &s1);
+                cull_draw_items_frustum_into(grid.data(), grid.size(), into, frustum, &s2);  // appends
+                bool same = into.size() == ref.size() * 2 && s1.output_items == ref.size() &&
+                            s2.output_items == ref.size() &&
+                            s1.culled_frustum == grid.size() - ref.size();
+                for (size_t i = 0; same && i < into.size(); ++i) {
+                    const DrawItem& r = ref[i % ref.size()];
+                    same = into[i].mesh == r.mesh && into[i].submesh_index == r.submesh_index &&
+                           into[i].model == r.model;
+                }
+                std::printf("       cull_into n=%zu: %zu kept%s\n", grid.size(), ref.size(),
+                            same ? " (matches copy-then-cull, appends)" : "   <-- MISMATCH with copy-then-cull");
+                if (!same || ref.empty() || ref.size() == grid.size()) ++failures;
+            }
+        }
 
         // Physics mesh-collider load (.obj): must resolve the SAME file the
         // renderer just loaded — a mismatch = model renders but has no collider.

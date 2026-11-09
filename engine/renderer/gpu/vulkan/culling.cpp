@@ -106,89 +106,108 @@ bool Frustum::is_sphere_visible(const glm::vec3& center, float radius) const {
     return true;
 }
 
+namespace {
+
+// Per item, a bounding-SPHERE test runs first — one matrix*vec4 + six dot
+// products. Only when the sphere straddles a plane does the exact 8-corner
+// AABB transform + test run. Fully-outside and fully-inside items (the vast
+// majority) never pay the corner transform.
+bool frustum_keeps(const DrawItem& item, const Frustum& frustum) {
+    if (!item.mesh) return false;
+
+    const AABB& local = item.mesh->bounding_box();
+
+    // World-space bounding sphere: transformed center + radius scaled by the
+    // largest column length (max scale factor) of the model matrix.
+    const glm::vec3 center = glm::vec3(item.model * glm::vec4(local.center(), 1.0f));
+    const float sx = glm::length(glm::vec3(item.model[0]));
+    const float sy = glm::length(glm::vec3(item.model[1]));
+    const float sz = glm::length(glm::vec3(item.model[2]));
+    const float radius = local.bounding_radius() * std::max(sx, std::max(sy, sz));
+
+    bool fully_inside = true;
+    for (int i = 0; i < Frustum::plane_count; ++i) {
+        const float dist = frustum.planes()[i].distance_to_point(center);
+        if (dist < -radius) return false;          // sphere fully outside
+        if (dist < radius)  fully_inside = false;  // straddles this plane
+    }
+    if (fully_inside) return true;                 // sphere fully inside
+
+    // Borderline: exact (conservative) AABB test.
+    return frustum.is_visible(local.transform(item.model));
+}
+
+// The TEST is embarrassingly parallel; the COMPACTION is not, because the
+// output order has to stay stable (draw order affects both batching and
+// blended geometry). So: evaluate the mask across workers, then compact in one
+// serial pass.
+//
+// Only above a threshold. Below it the job-system fan-out costs more than the
+// work it distributes, and a "parallel" version that is slower on the scenes
+// people actually have would be a regression dressed as an optimisation.
+// kParallelCullMin was picked by measuring both paths (see
+// tools/cullbench_check).
+constexpr size_t kParallelCullMin = 2048;
+
+// visible[i] = frustum_keeps(in[i]). Returns false (mask untouched) below the
+// parallel threshold — the caller then tests inline, which is cheaper than
+// writing and re-reading a mask.
+bool parallel_mask(const DrawItem* in, size_t n, const Frustum& frustum,
+                   std::vector<uint8_t>& visible) {
+    if (n < kParallelCullMin) return false;
+    auto& js = gws::jobs::JobSystem::instance();
+    if (!js.initialized()) return false;
+    visible.resize(n);
+    js.parallel_for(0, n, [&](size_t i) { visible[i] = frustum_keeps(in[i], frustum) ? 1u : 0u; });
+    return true;
+}
+
+thread_local std::vector<uint8_t> t_visible;   // reused mask (no per-frame allocation)
+
+} // namespace
+
 void cull_draw_items_frustum(std::vector<DrawItem>& items,
                               const Frustum& frustum,
                               CullingStats* stats) {
     CullingStats temp_stats{};
     if (!stats) stats = &temp_stats;
-
     stats->input_items = static_cast<uint32_t>(items.size());
 
-    // Single-pass stable compaction (the old erase-in-loop was O(n²): every
-    // erase shifted the whole tail; on a 10k-draw list that's ~50M moves).
-    //
-    // Per item, a bounding-SPHERE test runs first — one matrix*vec4 + six
-    // dot products. Only when the sphere straddles a plane does the exact
-    // 8-corner AABB transform + test run. Fully-outside and fully-inside
-    // items (the vast majority) never pay the corner transform.
-    auto keep = [&](const DrawItem& item) -> bool {
-        if (!item.mesh) return false;
-
-        const AABB& local = item.mesh->bounding_box();
-
-        // World-space bounding sphere: transformed center + radius scaled by
-        // the largest column length (max scale factor) of the model matrix.
-        const glm::vec3 center =
-            glm::vec3(item.model * glm::vec4(local.center(), 1.0f));
-        const float sx = glm::length(glm::vec3(item.model[0]));
-        const float sy = glm::length(glm::vec3(item.model[1]));
-        const float sz = glm::length(glm::vec3(item.model[2]));
-        const float radius =
-            local.bounding_radius() * std::max(sx, std::max(sy, sz));
-
-        bool fully_inside = true;
-        for (int i = 0; i < Frustum::plane_count; ++i) {
-            const float dist = frustum.planes()[i].distance_to_point(center);
-            if (dist < -radius) return false;          // sphere fully outside
-            if (dist < radius)  fully_inside = false;  // straddles this plane
-        }
-        if (fully_inside) return true;                 // sphere fully inside
-
-        // Borderline: exact (conservative) AABB test.
-        return frustum.is_visible(local.transform(item.model));
-    };
-
-    // The TEST is embarrassingly parallel; the COMPACTION is not, because the
-    // output order has to stay stable (draw order affects both batching and
-    // blended geometry). So: evaluate the mask across workers, then compact in
-    // one cheap serial pass over a byte array.
-    //
-    // Only above a threshold. Below it the job-system fan-out costs more than
-    // the work it distributes, and a "parallel" version that is slower on the
-    // scenes people actually have would be a regression dressed as an
-    // optimisation. kParallelCullMin was picked by measuring both paths (see
-    // tools/cullbench_check).
-    constexpr size_t kParallelCullMin = 2048;
-
+    // Single-pass stable compaction (the old erase-in-loop was O(n²)).
+    const bool masked = parallel_mask(items.data(), items.size(), frustum, t_visible);
     size_t out = 0;
-    if (items.size() >= kParallelCullMin) {
-        std::vector<uint8_t> visible(items.size(), 0);
-        gws::jobs::JobSystem::instance().parallel_for(
-            0, items.size(), [&](size_t i) { visible[i] = keep(items[i]) ? 1u : 0u; });
-        for (size_t i = 0; i < items.size(); ++i) {
-            if (visible[i]) {
-                if (out != i) items[out] = items[i];
-                ++out;
-            } else {
-                stats->culled_frustum++;
-            }
-        }
-    } else {
-        for (size_t i = 0; i < items.size(); ++i) {
-            if (keep(items[i])) {
-                if (out != i) items[out] = items[i];
-                ++out;
-            } else {
-                stats->culled_frustum++;
-            }
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (masked ? t_visible[i] != 0 : frustum_keeps(items[i], frustum)) {
+            if (out != i) items[out] = items[i];
+            ++out;
+        } else {
+            stats->culled_frustum++;
         }
     }
     items.resize(out);
-
     stats->output_items = static_cast<uint32_t>(items.size());
+}
 
-    spdlog::debug("Frustum culling: {} → {} items (culled {})",
-                  stats->input_items, stats->output_items, stats->culled_frustum);
+void cull_draw_items_frustum_into(const DrawItem* in, size_t count,
+                                  std::vector<DrawItem>& out,
+                                  const Frustum& frustum,
+                                  CullingStats* stats) {
+    CullingStats temp_stats{};
+    if (!stats) stats = &temp_stats;
+    stats->input_items = static_cast<uint32_t>(count);
+
+    // Copying the whole list and then compacting it in place moved every item
+    // twice (0.23 ms copy + the compaction at 20k draws); only the survivors
+    // are copied here, once.
+    const size_t before = out.size();
+    out.reserve(before + count);
+    const bool masked = parallel_mask(in, count, frustum, t_visible);
+    for (size_t i = 0; i < count; ++i) {
+        if (masked ? t_visible[i] != 0 : frustum_keeps(in[i], frustum)) out.push_back(in[i]);
+    }
+    const size_t kept = out.size() - before;
+    stats->output_items   = static_cast<uint32_t>(kept);
+    stats->culled_frustum = static_cast<uint32_t>(count - kept);
 }
 
 } // namespace gws::renderer::gpu

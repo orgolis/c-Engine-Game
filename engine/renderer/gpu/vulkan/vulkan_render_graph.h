@@ -317,6 +317,7 @@ private:
     // member so its capacity survives: as a local it was a fresh 1.5 MB
     // allocation every frame at 15k draws.
     std::vector<DrawItem> geometry_scratch_{};
+    std::vector<DrawItem> shadow_scratch_{};    // shadow stage's culled list (capacity reused)
     std::vector<StageEntry> stages_{};
     RenderGraphStats stats_{};
     RenderGraphStage last_executed_ = RenderGraphStage::StageCount;

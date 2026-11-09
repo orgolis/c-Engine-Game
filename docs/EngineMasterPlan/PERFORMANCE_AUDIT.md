@@ -742,6 +742,43 @@ every frame; making it change-driven needs versions on all 18 component kinds), 
 2.1, `stage_geometry` 1.6, `draw_sort` / `rt_scene_update` / `hzb_cull` ~1.0 each. All of them
 redo per-entity work in a scene where nothing moves.
 
+### (t) The geometry stage: cull straight from the caller's list, classify on the job system
+
+Sub-zones on `stage_geometry` at 20k (1.37 ms) showed where its time went before any change:
+`geo.per_object` 0.36, `geo.frustum` 0.36, **`geo.copy` 0.23** (the whole 20k `DrawItem` list
+copied into the scratch list just so the cull could compact it in place), `geo.instanced` 0.21,
+`geo.classify` 0.10–0.30.
+
+- **`cull_draw_items_frustum_into`** tests the caller's list (in parallel above 2048 items, as
+  before) and *appends* only the survivors to the output, preserving order. That's one copy of the
+  visible items instead of a copy of everything plus a compaction. The visibility mask is a reused
+  thread-local, so there's no per-frame allocation. Three call sites used copy-then-cull:
+  - the render graph's geometry stage (a persistent scratch list)
+  - the render graph's own shadow stage, which allocated a fresh `std::vector` of the whole draw
+    list every frame and now uses a persistent scratch list
+  - the editor's shadow caster list, which concatenated opaque + transparent (20k) and then
+    compacted. It now culls each list straight in. The frame-capture debug path, which records the
+    caster list *before* culling, builds the concatenation only when a capture runs.
+- **G-buffer classification** (pipeline, LOD tier, instanceable) and the instance-buffer fill run
+  on the job system above 2048 draws. Classification measured alone (zone, interleaved, ×2):
+  serial 0.30 / 0.31 ms, parallel 0.14 / 0.11 ms.
+
+| @ 20k, interleaved ×3 | before | after |
+|---|---|---|
+| `stage_geometry` | 1.35 / 1.55 / 1.23 ms | **1.16 / 0.96 / 1.02 ms** |
+| `shadow_light_cull` (editor) | 0.27 / 0.24 / 0.21 ms | **0.23 / 0.18 / 0.19 ms** |
+
+The screenshots are pixel-identical to before (0 px in the viewport crop, runs 2 and 3; run 1 differs
+by 482 px between two runs of the *old* binary too). `model_check` now proves the new function
+equals copy-then-cull (same items, same order, same stats) at 300 and 6000 items, i.e. on both sides
+of the parallel threshold, with partial culling in each case, and that a second call appends.
+
+**Measurement hygiene.** The A/B scripts used to switch VSync off by editing the user's
+`render_settings.txt` and restoring a backup afterwards. With the user's own editor open, that
+restore would overwrite whatever that editor had saved since the backup was taken. That's a real
+race: the file changed under a live session today. Runs now set `GWS_VSYNC=0`, which overrides the
+setting for that process only and is never written back.
+
 ### (q) Shadow rays for surfaces facing away from the light — skipped
 
 **Where the 20k frame's GPU time goes now.** A decomposition by render setting (VSync off, lower
