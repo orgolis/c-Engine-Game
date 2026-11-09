@@ -92,6 +92,7 @@ private:
         glm::vec4 sun_dir;
         glm::vec4 sun_color;
         glm::vec4 resolution;
+        glm::mat4 inv_view_proj;   // scene position from depth (F5)
     };
 
     bool initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,

@@ -11,9 +11,10 @@ layout(set = 0, binding = 0) uniform FrameUBO {
     vec4 sun_dir;      // xyz = direction light->scene
     vec4 sun_color;    // xyz
     vec4 resolution;   // xy = render target size
+    mat4 inv_view_proj; // inverse(proj * view): scene position from depth (F5)
 } u;
 
-layout(set = 0, binding = 1) uniform sampler2D positionTex;  // G-buffer world pos (w=1 where geometry)
+layout(set = 0, binding = 1) uniform sampler2D depthTex;     // G-buffer depth (1.0 = sky)
 layout(set = 0, binding = 2) uniform samplerCube envMap;
 
 layout(push_constant) uniform WaterPC {
@@ -51,11 +52,19 @@ void main() {
     float hz = wave_h(inGridXZ + vec2(0, e), t) - wave_h(inGridXZ - vec2(0, e), t);
     vec3 N = normalize(vec3(-hx / (2.0 * e), 1.0, -hz / (2.0 * e)));
 
-    // Manual depth test + water depth from the G-buffer world position.
+    // Manual depth test + water depth from the scene behind, rebuilt from the
+    // G-buffer depth (F5). This read a position target that clears to
+    // (0,0,0,1) -- so every sky pixel claimed to be geometry at the world
+    // origin, and water farther from the camera than the camera is from the
+    // origin was discarded wherever the sky was behind it.
     vec2 uv = gl_FragCoord.xy / u.resolution.xy;
-    vec4 scene = texture(positionTex, uv);
+    float d = texture(depthTex, uv).r;
     float frag_dist  = length(inWorldPos - cam);
-    float scene_dist = scene.w > 0.5 ? length(scene.xyz - cam) : 1e9;
+    float scene_dist = 1e9;
+    if (d < 1.0 - 1e-5) {
+        vec4 h = u.inv_view_proj * vec4(uv * 2.0 - 1.0, d, 1.0);
+        scene_dist = length(h.xyz / h.w - cam);
+    }
     if (scene_dist < frag_dist - 0.05) discard;        // opaque geometry in front
 
     float depth_diff = scene_dist - frag_dist;         // water thickness along the ray

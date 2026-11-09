@@ -125,8 +125,9 @@ bool VulkanWaterPass::initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,
         if (vkAllocateDescriptorSets(vk, &si, &set_) != VK_SUCCESS) return false;
 
         VkDescriptorBufferInfo bi{ubo_, 0, sizeof(FrameUBO)};
-        VkDescriptorImageInfo  pos{gbuffer_sampler_, g_buffer_->get_position_view(),
-                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        // Depth, not the position target (F5).
+        VkDescriptorImageInfo  pos{gbuffer_sampler_, g_buffer_->get_depth_view(),
+                                   VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo  env{env_sampler, env_view,
                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         std::array<VkWriteDescriptorSet, 3> w{};
@@ -307,6 +308,7 @@ void VulkanWaterPass::execute(VkCommandBuffer cmd,
     FrameUBO u{};
     u.view       = view;
     u.proj       = proj;
+    u.inv_view_proj = glm::inverse(proj * view);
     u.cam_time   = glm::vec4(camera_position, time_seconds);
     u.sun_dir    = glm::vec4(sun_direction_, 0.0f);
     u.sun_color  = glm::vec4(sun_color_, 0.0f);
