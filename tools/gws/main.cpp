@@ -141,7 +141,8 @@ int cmd_version(bool json) {
 // failure — the same policy CI applies, now owned by the tool instead of by a
 // copy of the list living in a YAML file.
 bool needs_gpu(const std::string& name) {
-    return name == "texture_check" || name == "model_check" || name == "skinning_check";
+    return name == "texture_check" || name == "model_check" || name == "skinning_check" ||
+           name == "gbufferresize_check";
 }
 
 int cmd_test(int argc, char** argv) {
