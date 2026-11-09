@@ -580,7 +580,10 @@ void VulkanSsaoPass::execute(VkCommandBuffer cmd,
             float   radius, bias, intensity;
             int32_t frame, accumulate;
         } pc{};
-        std::memcpy(pc.view_proj, &vp[0][0], sizeof(pc.view_proj));
+        // proj * view-ROTATION: the shaders reconstruct camera-relative
+        // positions from depth with its inverse (F5).
+        const glm::mat4 vp_rot = proj * glm::mat4(glm::mat3(view));
+        std::memcpy(pc.view_proj, &vp_rot[0][0], sizeof(pc.view_proj));
         pc.output_w   = static_cast<int32_t>(width_);
         pc.output_h   = static_cast<int32_t>(height_);
         pc.radius     = radius_val;

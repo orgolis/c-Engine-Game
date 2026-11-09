@@ -21,6 +21,22 @@ layout(push_constant) uniform PC {
     float _pad;
 } pc;
 
+// F5: positions come from the depth buffer, not a position G-buffer target
+// (8 bytes per pixel the G-buffer no longer has to write and every AO
+// technique no longer has to read; float32 depth is also more precise than
+// the old RGBA16F positions). pc.view_proj is proj * view-ROTATION, so these
+// positions are relative to the camera -- AO only ever uses differences
+// between them, which are the same as in world space. The convention
+// (ndc = uv * 2 - 1, Vulkan depth used as-is) is the lighting pass's, proven by
+// tools/gbuffer_reconstruct_check.
+mat4 g_inv_vp;
+vec3 relPos(vec2 uv) {
+    float d = texture(depthTex, uv).r;
+    vec4 h = g_inv_vp * vec4(uv * 2.0 - 1.0, d, 1.0);
+    return h.xyz / h.w;
+}
+
+
 // 8 ring directions; each is used with its negation to form a pair.
 const vec2 kDir[8] = vec2[8](
     vec2( 1.0,  0.0), vec2( 0.707,  0.707),
@@ -30,6 +46,7 @@ const vec2 kDir[8] = vec2[8](
 );
 
 void main() {
+    g_inv_vp = inverse(pc.view_proj);
     ivec2 px = ivec2(gl_GlobalInvocationID.xy);
     if (px.x >= pc.output_size.x || px.y >= pc.output_size.y) return;
     vec2 uv = (vec2(px) + 0.5) / vec2(pc.output_size);
@@ -37,7 +54,7 @@ void main() {
     vec3 N = texture(normalTex, uv).xyz;
     if (dot(N, N) < 0.01) { imageStore(dstOcclusion, px, vec4(1.0)); return; }
     N = normalize(N);
-    vec3 P = texture(positionTex, uv).xyz;
+    vec3 P = relPos(uv);
 
     vec2 texel  = 1.0 / vec2(pc.output_size);
     float ringPx = 10.0; // gather ring radius in pixels
@@ -45,8 +62,8 @@ void main() {
     float occlusion = 0.0;
     for (int i = 0; i < 8; ++i) {
         vec2 off = kDir[i] * texel * ringPx;
-        vec3 pa = texture(positionTex, uv + off).xyz;
-        vec3 pb = texture(positionTex, uv - off).xyz;
+        vec3 pa = relPos(uv + off);
+        vec3 pb = relPos(uv - off);
         // Signed height of each neighbour above the centre's tangent plane.
         float ha = dot(pa - P, N);
         float hb = dot(pb - P, N);

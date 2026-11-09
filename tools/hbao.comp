@@ -21,6 +21,22 @@ layout(push_constant) uniform PC {
     float _pad;
 } pc;
 
+// F5: positions come from the depth buffer, not a position G-buffer target
+// (8 bytes per pixel the G-buffer no longer has to write and every AO
+// technique no longer has to read; float32 depth is also more precise than
+// the old RGBA16F positions). pc.view_proj is proj * view-ROTATION, so these
+// positions are relative to the camera -- AO only ever uses differences
+// between them, which are the same as in world space. The convention
+// (ndc = uv * 2 - 1, Vulkan depth used as-is) is the lighting pass's, proven by
+// tools/gbuffer_reconstruct_check.
+mat4 g_inv_vp;
+vec3 relPos(vec2 uv) {
+    float d = texture(depthTex, uv).r;
+    vec4 h = g_inv_vp * vec4(uv * 2.0 - 1.0, d, 1.0);
+    return h.xyz / h.w;
+}
+
+
 float hash(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
     p += dot(p, p + 45.32);
@@ -30,6 +46,7 @@ float hash(vec2 p) {
 const float PI = 3.14159265359;
 
 void main() {
+    g_inv_vp = inverse(pc.view_proj);
     ivec2 px = ivec2(gl_GlobalInvocationID.xy);
     if (px.x >= pc.output_size.x || px.y >= pc.output_size.y) return;
     vec2 uv = (vec2(px) + 0.5) / vec2(pc.output_size);
@@ -37,7 +54,7 @@ void main() {
     vec3 N = texture(normalTex, uv).xyz;
     if (dot(N, N) < 0.01) { imageStore(dstOcclusion, px, vec4(1.0)); return; }
     N = normalize(N);
-    vec3 P = texture(positionTex, uv).xyz;
+    vec3 P = relPos(uv);
 
     const int NUM_DIRECTIONS = 6;
     const int NUM_STEPS      = 4;
@@ -55,7 +72,7 @@ void main() {
         for (int s = 1; s <= NUM_STEPS; ++s) {
             vec2 suv = uv + dir * texel * (float(s) * stride);
             if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) break;
-            vec3 sp   = texture(positionTex, suv).xyz;
+            vec3 sp   = relPos(suv);
             vec3 diff = sp - P;
             float dist = length(diff);
             if (dist > 1e-4 && dist < pc.radius) {
