@@ -478,6 +478,7 @@ struct EcsSceneBridge::Impl {
         int         index  = -1;     // position in this sync's active arrays
         uint64_t    stamp  = 0;      // the last sync that saw it active
         glm::mat4   world{1.0f};     // ECS-computed world matrix, this sync
+        glm::mat4   local{1.0f};     // its local matrix: both survive index shifts
     };
     std::unordered_map<scene::Transform*, Slot> slots;
     uint64_t                                    sync_stamp = 0;
@@ -507,6 +508,9 @@ struct EcsSceneBridge::Impl {
     // when have_prev_matrices is set.
     std::vector<uint64_t>          oop_stamp;
     std::vector<uint64_t>          oop_cstamp;     // parallel to oop_tf: Entity::ContentStamp()
+    std::vector<uint8_t>           created_at;     // parallel to oop_tf: slot made by this sync
+    std::vector<Slot*>             prev_slot_of;   // last sync's slot_of (two-pointer reconcile)
+    std::vector<scene::Transform*> removal_candidates;
     bool                           have_prev_mirror = false;   // last sync mirrored every entity
     std::vector<uint8_t>           wstate;         // 0 unknown, 1 world changed, 2 unchanged
     std::vector<uint32_t>          changed;        // indices whose world matrix is recomputed
@@ -995,9 +999,82 @@ void EcsSceneBridge::sync_and_run(
     const bool same_list = impl_->prev_tf.size() == oop_tf.size() &&
                            slots.size() == oop_tf.size() &&
                            std::equal(oop_tf.begin(), oop_tf.end(), impl_->prev_tf.begin());
+    auto& created_at = impl_->created_at;   // 1 = slot made by this sync
+    created_at.assign(oop_tf.size(), 0);
+    static const bool force_full_reconcile = std::getenv("GWS_ECS_FULL_RECONCILE") != nullptr;
+    bool reconciled = false;
     if (same_list) {
         reused_ = oop_tf.size();
-    } else {
+        reconciled = true;
+    } else if (!force_full_reconcile && impl_->have_prev_mirror && !impl_->prev_tf.empty() &&
+               slot_of.size() == impl_->prev_tf.size()) {
+        // The list changed -- something spawned, despawned, (de)activated --
+        // but almost always only a little. Walk it against last sync's list:
+        // a run that matches reuses last sync's slot pointer with no lookup.
+        // A mismatch costs one lookup; a reused slot still carries its index
+        // from the last sync, which resynchronises the walk. Last-sync entries
+        // walked past are the only removal candidates, so the whole table is
+        // no longer swept. Every lookup used to run for every entity on such a
+        // frame (~1.4-1.9 ms at 20k), plus the sweep.
+        auto& prev_slot = impl_->prev_slot_of;
+        prev_slot.swap(slot_of);
+        const auto& ptf = impl_->prev_tf;
+        auto& cand = impl_->removal_candidates;
+        cand.clear();
+        slot_of.resize(oop_tf.size());
+        size_t j = 0;
+        for (size_t i = 0; i < oop_tf.size(); ++i) {
+            if (j < ptf.size() && oop_tf[i] == ptf[j]) {
+                slot_of[i] = prev_slot[j++];
+                ++reused_;
+                continue;
+            }
+            auto [it, inserted] = slots.try_emplace(oop_tf[i]);
+            Impl::Slot& sl = it->second;
+            if (inserted) {
+                sl.entity = world.create();
+                world.add<ecs::LocalToWorld>(sl.entity, ecs::LocalToWorld{});
+                world.add<ShadowParent>(sl.entity, ShadowParent{});
+                created_at[i] = 1;
+                ++created_;
+            } else {
+                ++reused_;
+                const size_t k = static_cast<size_t>(sl.index);   // its place last sync
+                if (sl.index >= 0 && k < ptf.size() && k >= j && ptf[k] == oop_tf[i]) {
+                    for (size_t m = j; m < k; ++m) cand.push_back(ptf[m]);
+                    j = k + 1;
+                }
+            }
+            slot_of[i] = &sl;
+        }
+        for (; j < ptf.size(); ++j) cand.push_back(ptf[j]);
+        // Index and stamp every active slot (the same-list path leaves them
+        // as the last sync that changed something set them). Scattered writes,
+        // so wide.
+        {
+            auto mark = [&](size_t i) {
+                slot_of[i]->index = static_cast<int>(i);
+                slot_of[i]->stamp = stamp;
+                oop_tf[i]->SetMirrorIndex(static_cast<int>(i));
+            };
+            auto& rjs = gws::jobs::JobSystem::instance();
+            if (rjs.initialized() && oop_tf.size() >= kParallelMirrorMin)
+                rjs.parallel_for(0, oop_tf.size(), [&mark](size_t i) { mark(i); });
+            else
+                for (size_t i = 0; i < oop_tf.size(); ++i) mark(i);
+        }
+        // A candidate seen anywhere in this sync's list (it moved) is stamped.
+        for (scene::Transform* key : cand) {
+            auto it = slots.find(key);
+            if (it != slots.end() && it->second.stamp != stamp) {
+                world.destroy(it->second.entity);
+                slots.erase(it);
+                ++destroyed_;
+            }
+        }
+        reconciled = true;
+    }
+    if (!reconciled) {
     slot_of.resize(oop_tf.size());
     for (size_t i = 0; i < oop_tf.size(); ++i) {
         auto [it, inserted] = slots.try_emplace(oop_tf[i]);
@@ -1006,6 +1083,7 @@ void EcsSceneBridge::sync_and_run(
             sl.entity = world.create();
             world.add<ecs::LocalToWorld>(sl.entity, ecs::LocalToWorld{});
             world.add<ShadowParent>(sl.entity, ShadowParent{});
+            created_at[i] = 1;
             ++created_;
         } else {
             ++reused_;
@@ -1013,6 +1091,7 @@ void EcsSceneBridge::sync_and_run(
         sl.index   = static_cast<int>(i);
         sl.stamp   = stamp;
         slot_of[i] = &sl;
+        oop_tf[i]->SetMirrorIndex(static_cast<int>(i));
     }
     }
     // Every active transform now has a slot stamped this sync, so a stale slot
@@ -1059,14 +1138,17 @@ void EcsSceneBridge::sync_and_run(
             // per-entity misses are the whole cost of this pass. ECS-
             // authoritative entities always take the serial path.
             static const bool force_full_mirror = std::getenv("GWS_ECS_FULL_MIRROR") != nullptr;
-            const bool may_skip = !force_full_mirror && same_list && impl_->have_prev_mirror &&
+            // Per entity, so a frame where the list changed still skips every
+            // entity that kept its slot: a reused slot was mirrored by the
+            // last sync, and its ECS entity and components persisted.
+            const bool may_skip = !force_full_mirror && impl_->have_prev_mirror &&
                                   impl_->oop_cstamp.size() == oop_tf.size();
             const uint64_t since = impl_->prev_sync_begin;
             const auto& cst = impl_->oop_cstamp;
             auto in_place = [&](size_t i) {
                 const ecs::Entity e = slot_of[i]->entity;
                 shadow[i] = e;
-                if (may_skip && oop_stamp[i] < since && cst[i] < since &&
+                if (may_skip && !created_at[i] && oop_stamp[i] < since && cst[i] < since &&
                     !pools.authoritative.contains(e)) {
                     serial[i] = 0;
                     return;
@@ -1151,10 +1233,18 @@ void EcsSceneBridge::sync_and_run(
         if (reuse_parents && p == ppar[i]) continue;
         parent_idx[i] = -1;
         if (!p) continue;
-        auto it = slots.find(p);   // every remaining slot is active this sync
-        if (it != slots.end()) {
-            parent_idx[i] = it->second.index;
-            world.get<ShadowParent>(shadow[i]).value = shadow[it->second.index];
+        // The parent's index from its Transform, checked against this sync's
+        // list before it is trusted; a hash lookup only when the hint is stale.
+        // After a list change every child used to hash its parent.
+        int k = p->MirrorIndex();
+        if (k < 0 || static_cast<size_t>(k) >= oop_tf.size() || oop_tf[k] != p) {
+            auto it = slots.find(p);   // every remaining slot is active this sync
+            k = (it != slots.end()) ? it->second.index : -1;
+        }
+        if (k >= 0) {
+            parent_idx[i] = k;
+            auto& sp = world.get<ShadowParent>(shadow[i]);
+            if (sp.value != shadow[k]) sp.value = shadow[k];
         }
     }
 
@@ -1177,9 +1267,11 @@ void EcsSceneBridge::sync_and_run(
     // Every world matrix (re)computed by this sync is marked with one stamp
     // on its Transform, for world-space caches downstream (draw records).
     const uint64_t world_stamp = scene::Transform::NextChangeStamp();
-    const bool incremental =!force_full_tf && reuse_parents && impl_->have_prev_matrices &&
-                             impl_->local.size() == shadow.size() &&
-                             impl_->world_mat.size() == shadow.size() &&
+    // Also across a change of the list itself: every slot keeps its own local
+    // and world matrix, so after entities were added, removed or shifted the
+    // index-aligned arrays are gathered back from the slots (below) and only
+    // the new slots, the stamped transforms and their descendants are redone.
+    const bool incremental = !force_full_tf && impl_->have_prev_matrices &&
                              oop_stamp.size() == shadow.size();
     if (!incremental) {
         next("sync.local_trs");
@@ -1252,6 +1344,7 @@ void EcsSceneBridge::sync_and_run(
             auto publish = [&](size_t i) {
                 ltw_pool.get(shadow[i]).value = world_mat[i];
                 slot_of[i]->world = world_mat[i];
+                slot_of[i]->local = local[i];
                 oop_tf[i]->SetWorldStamp(world_stamp);
             };
             auto& js = gws::jobs::JobSystem::instance();
@@ -1269,21 +1362,36 @@ void EcsSceneBridge::sync_and_run(
         auto& world_mat = impl_->world_mat;
         auto& wst       = impl_->wstate;
         auto& changed   = impl_->changed;
+        auto& js = gws::jobs::JobSystem::instance();
+        if (!reuse_parents || local.size() != n || world_mat.size() != n) {
+            // The list changed shape: re-align last sync's matrices from the
+            // slots (a new slot's are recomputed below anyway).
+            local.resize(n);
+            world_mat.resize(n);
+            auto realign = [&](size_t i) {
+                local[i]     = slot_of[i]->local;
+                world_mat[i] = slot_of[i]->world;
+            };
+            if (js.initialized() && n >= kParallelMirrorMin)
+                js.parallel_for(0, n, [&realign](size_t i) { realign(i); });
+            else
+                for (size_t i = 0; i < n; ++i) realign(i);
+        }
         wst.assign(n, 0);
         changed.clear();
         for (size_t i = 0; i < n; ++i) {
-            if (oop_stamp[i] >= impl_->prev_sync_begin || serial[i]) {
+            if (oop_stamp[i] >= impl_->prev_sync_begin || serial[i] || created_at[i]) {
                 wst[i] = 1;                        // own transform changed
                 changed.push_back(static_cast<uint32_t>(i));
             }
         }
         auto& tf_pool  = world.registry().storage<ecs::Transform>();
         auto& ltw_pool = world.registry().storage<ecs::LocalToWorld>();
-        auto& js = gws::jobs::JobSystem::instance();
         {
             auto compose = [&](size_t k) {
                 const size_t i = changed[k];
                 local[i] = compose_trs(tf_pool.get(shadow[i]));
+                slot_of[i]->local = local[i];
             };
             if (js.initialized() && changed.size() >= kParallelMirrorMin)
                 js.parallel_for(0, changed.size(), [&compose](size_t k) { compose(k); });
@@ -1367,12 +1475,19 @@ void EcsSceneBridge::sync_and_run(
     // Checking all of them every frame cost 2-2.5 ms at 20k entities, in
     // release, to re-confirm a result that only changes when the set or the
     // math does.
+    //
+    // "The set changed" means a LARGE change (an eighth of the scene or more,
+    // which includes the first sync). A scene that spawns and despawns every
+    // frame used to re-verify all of it every frame -- 1.2-2.7 ms at 20k --
+    // for a few new entities; a small change checks those new entities on
+    // top of the usual slice.
     static const bool verify_all = std::getenv("GWS_ECS_VERIFY_ALL") != nullptr;
-    const bool   full   = created_ > 0 || destroyed_ > 0;
     const size_t n_ent  = shadow.size();
+    const size_t churn  = created_ + destroyed_;
+    const bool   full   = churn > 0 && churn * 8 >= n_ent;
     const size_t stride = (full || verify_all) ? 1 : 32;
     const size_t start  = (full || n_ent == 0) ? 0 : (impl_->verify_cursor++ % stride);
-    for (size_t i = start; i < n_ent; i += stride) {
+    auto verify_one = [&](size_t i) {
         ++checked_;
         const glm::mat4 expected = oop_tf[i]->GetWorldMatrix();
         const float* a = &impl_->world_mat[i][0][0];
@@ -1381,6 +1496,11 @@ void EcsSceneBridge::sync_and_run(
         for (int k = 0; k < 16; ++k)
             max_diff = std::max(max_diff, std::fabs(a[k] - b[k]));
         if (max_diff < 1e-3f) ++verified_;
+    };
+    for (size_t i = start; i < n_ent; i += stride) verify_one(i);
+    if (!full && stride > 1 && created_ > 0) {
+        for (size_t i = 0; i < n_ent; ++i)
+            if (created_at[i] && (i % stride) != start) verify_one(i);
     }
     if (full) {
         full_checked_  = checked_;

@@ -915,9 +915,36 @@ Verification:
   GWS_DRAW_VERIFY=1`, it is clean at 0 and 20k.
 - `GWS_DRAW_FULL=1` turns reuse off.
 
-**Open:** frames where the active entity *list* changes (spawning, despawning, activation) take the
-full paths, and the slot reconcile alone costs 1.4–1.9 ms at 20k. An incremental reconcile is the
-next step for scenes that spawn every frame.
+**Stage 3: frames where the entity list changes** (spawning, despawning, (de)activation). These took
+every full path: ~6.4 ms of `ecs_sync` at 20k with a few toggles per frame. Four changes:
+
+- **Two-pointer reconcile.** The list is walked against last sync's. A matching run reuses the last
+  slot pointer with no lookup. A mismatch costs one lookup, and the reused slot's previous index
+  resynchronises the walk. Walked-past entries are the only removal candidates; the full-table sweep
+  remains as a safety net.
+- **Per-slot matrices.** Each slot keeps its local and world matrix, so the incremental transform path
+  survives index shifts: the arrays are re-aligned from the slots, and only new slots, stamped
+  transforms and their descendants are redone. The mirror skip is per entity (any reused slot).
+- **Parents by index hint.** The Transform carries its mirror index (`MirrorIndex`), validated against
+  the list before it is trusted; a hash lookup happens only when it is stale. `ShadowParent` is
+  written only when it changes.
+- **Verification scaled to the change.** A full verify pass only for a change of at least an eighth
+  of the scene (the first sync included). A small change verifies its new entities plus the usual
+  slice. Spawning used to re-verify the whole scene every frame (1.2–2.7 ms).
+
+| @ 20k, list changes every frame (`GWS_TEST_SHAKE_LIST=1`) | v0.8.9 | now |
+|---|---|---|
+| `sync.reconcile` | 1.38–1.62 ms | 0.18–0.28 ms |
+| `sync.parents` | 0.76–0.82 ms | 0.33–0.35 ms |
+| `sync.verify` | 1.2–2.75 ms | slice only |
+| `ecs_sync` | ~6.4 ms | **1.75–1.93 ms** |
+
+Both verifiers are clean under it. `ecsincremental_check` gained 150 list-changing frames (toggles,
+moves, removals, creations under parents): every matrix is checked every frame, the frames must stay
+incremental, and a removed entity must never be answered for. Mutation-tested: skipping the
+re-alignment gives 25 bad frames. (Two other mutations are masked by deliberate redundancy: new slots
+also take the serial mirror path, and the sweep still catches unremoved slots.)
+`GWS_ECS_FULL_RECONCILE=1` forces the old reconcile.
 
 
 

@@ -143,6 +143,51 @@ int main() {
           "the incremental path actually ran (" + std::to_string(incremental_frames) + " of " +
           std::to_string(frames) + " frames wrote fewer matrices than entities)");
 
+    std::printf("\nFrames where the entity LIST changes stay incremental and exact:\n");
+    {
+        // Every frame: (de)activate a few, move a few, sometimes remove one
+        // and create one -- the reconcile walks the changed list against the
+        // last one, and the matrices are re-aligned from the slots.
+        size_t lf = 0, lbad = 0, lincr = 0, gone_answered = 0;
+        std::vector<std::shared_ptr<scene::Entity>> removed;
+        for (int frame = 0; frame < 150; ++frame) {
+            for (int k = 0; k < 4; ++k) {
+                auto& e = ents[rng() % ents.size()];
+                e->SetActive(!e->IsActive());
+            }
+            for (int k = 0; k < 6; ++k) {
+                auto* tf = ents[rng() % ents.size()]->GetTransform();
+                tf->SetLocalPosition(tf->GetLocalPosition() + glm::vec3(u(rng), u(rng), u(rng)));
+            }
+            if (frame % 5 == 0) {
+                // Remove a childless one (keeps `ents` honest) and add a new one.
+                for (int tries = 0; tries < 20; ++tries) {
+                    const size_t r = rng() % ents.size();
+                    if (!ents[r]->GetChildren().empty()) continue;
+                    removed.push_back(ents[r]);
+                    scn->RemoveEntity(ents[r]);
+                    ents.erase(ents.begin() + static_cast<long>(r));
+                    break;
+                }
+                auto n = scn->CreateEntity("N" + std::to_string(frame));
+                n->GetTransform()->SetLocalPosition(glm::vec3(u(rng), u(rng), u(rng)) * 10.0f);
+                if (rng() % 2) ents[rng() % ents.size()]->AddChild(n);
+                ents.push_back(n);
+            }
+            br.sync_and_run(scn);
+            ++lf;
+            if (br.matrices_written() < br.entity_count()) ++lincr;
+            if (mismatches(br, ents)) ++lbad;
+            for (const auto& r : removed)
+                if (br.world_matrix(r->GetTransform()) != nullptr) ++gone_answered;
+        }
+        check(lbad == 0, "150 list-changing frames: every matrix matches every frame (" +
+                         std::to_string(lbad) + " bad)");
+        check(lincr > lf * 3 / 4, "and they stayed incremental (" + std::to_string(lincr) + " of " +
+                                  std::to_string(lf) + " wrote fewer matrices than entities)");
+        check(gone_answered == 0, "a removed entity is never answered for again");
+    }
+
     std::printf("\nA deep move propagates to every descendant:\n");
     {
         // Root -> 4 levels; move only the root, nothing else stamped.

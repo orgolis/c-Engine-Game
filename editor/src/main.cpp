@@ -10692,7 +10692,9 @@ int main(int argc, char** argv) {
                         case 5:
                             // Also every 10th frame only: it changes the active
                             // list, which takes the full (non-incremental) paths.
-                            if (frame_count % 10 == 0) e->SetActive(!e->IsActive());
+                            // GWS_TEST_SHAKE_LIST=1: every frame (spawn-heavy scenes).
+                            static const bool shake_list = std::getenv("GWS_TEST_SHAKE_LIST") != nullptr;
+                            if (shake_list || frame_count % 10 == 0) e->SetActive(!e->IsActive());
                             break;
                         default: {
                             // Re-parent under another entity (never into its own subtree).

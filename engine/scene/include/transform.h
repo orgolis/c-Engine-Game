@@ -144,6 +144,13 @@ public:
     /// way as ChangeStamp. Not a change to the transform itself.
     uint64_t WorldStamp() const { return world_stamp_; }
     void     SetWorldStamp(uint64_t s) { world_stamp_ = s; }
+
+    /// This transform's position in the editor ECS mirror's arrays as of the
+    /// last sync that indexed it (-1: never). A hint only -- the mirror checks
+    /// it against its own arrays before trusting it, and falls back to a
+    /// lookup -- which lets a child find its parent without hashing.
+    int  MirrorIndex() const { return mirror_index_; }
+    void SetMirrorIndex(int i) { mirror_index_ = i; }
     
     /**
      * @brief Detach from parent
@@ -189,6 +196,7 @@ protected:
     Transform* parent_ = nullptr;
     uint64_t change_stamp_ = NextChangeStamp();   // next to parent_: both read every frame
     uint64_t world_stamp_  = 0;
+    int      mirror_index_ = -1;
     std::vector<Transform*> children_;
 
 
