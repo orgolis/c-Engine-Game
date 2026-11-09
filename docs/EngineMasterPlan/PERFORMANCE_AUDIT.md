@@ -1319,7 +1319,18 @@ The only resolution scaling anywhere is the cloud pass's private `resolution_sca
 "match the window" path. Because every resolution-dependent cost scales together, this is the one control
 that could hold a frame rate under any load.
 
-### F8 — The 3D pipeline runs even when the Viewport panel is hidden 🟡
+### F8 — The 3D pipeline runs even when the Viewport panel is hidden 🟡 → fixed (2026-11-09)
+
+**Fixed.** `ShowViewport` records whether the panel is actually on screen this frame
+(`ImGui::Begin` returns false when it's closed, collapsed or a background tab). When nothing displays
+the scene and the editor isn't in game-window mode, the frame skips the draw-list build, culling and
+every GPU pass. The occlusion pyramid is marked stale, so the first frame back never tests against
+it. Simulation, scripts, audio and the UI still run. At 20k entities, hidden vs visible: GPU 12.66 ms
+→ 0 (no passes recorded); CPU render prep (`build_draw_items`, `draw_sort`, `hzb_cull`,
+`rt_scene_update`, the stages) ~6 ms → 0. `GWS_TEST_HIDE_VIEWPORT=N` closes the panel for frames
+[0, N) for automation. A hide-then-show run is validation-clean, and its final frame differs from an
+always-visible run by at most 2 levels (auto-exposure adapting since the reopen).
+
 
 `main.cpp:4439` returns early from *drawing* the panel when `show_viewport` is false, but the render graph and
 every effect pass still execute unconditionally (`main.cpp:~9890-10017`). Closing the viewport should cost

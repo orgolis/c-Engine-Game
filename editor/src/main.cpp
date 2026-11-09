@@ -190,6 +190,10 @@ struct EditorState {
     bool show_asset_browser = true;
     bool show_logic_graph = false;   // scene logic-graph node editor
     bool show_viewport = true;
+    // True when the Viewport panel is on screen THIS frame: open, not
+    // collapsed, not a background tab. Set by ShowViewport (which runs before
+    // the frame is recorded); the 3D frame is skipped when nothing shows it.
+    bool viewport_drawn = true;
     bool show_demo_window = false;
     bool show_preferences = false;
     bool show_post_processing = true;   // closable Post-Processing dock panel
@@ -5011,10 +5015,14 @@ void ShowAssetBrowser(EditorState& editor_state) {
 void ShowViewport(EditorState& editor_state) {
     if (!editor_state.show_viewport) {
         editor_state.viewport_input_focused = false;
+        editor_state.viewport_drawn = false;
         return;
     }
 
-    ImGui::Begin("Viewport", &editor_state.show_viewport, ImGuiWindowFlags_NoMove);  // docked window = child; End() must always run
+    // Begin() returns false when the window is collapsed or docked behind
+    // another tab: then nothing displays the 3D image this frame (F8).
+    editor_state.viewport_drawn =
+        ImGui::Begin("Viewport", &editor_state.show_viewport, ImGuiWindowFlags_NoMove);  // docked window = child; End() must always run
     {
         editor_state.viewport_input_focused =
             ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
@@ -9446,6 +9454,15 @@ int main(int argc, char** argv) {
             // spot in its profiler: a panel that costs 30 ms shows up only as
             // frame time nobody can attribute, which is exactly the position
             // "it lags when I click an object" left us in.
+            // GWS_TEST_HIDE_VIEWPORT=N (automation): the Viewport panel is closed
+            // for frames [0, N) and reopened at N, which drives F8's skip path
+            // and the first rendered frame after it.
+            static const long test_hide_vp = [] {
+                const char* v = std::getenv("GWS_TEST_HIDE_VIEWPORT");
+                return v ? std::strtol(v, nullptr, 10) : 0L;
+            }();
+            if (test_hide_vp > 0 && frame_count <= test_hide_vp)
+                editor_state.show_viewport = frame_count >= test_hide_vp;
             { GWS_PROFILE_ZONE("ui_viewport");    ShowViewport(editor_state); }
             { GWS_PROFILE_ZONE("ui_hierarchy");   ShowSceneHierarchy(editor_state); }
             { GWS_PROFILE_ZONE("ui_inspector");   ShowInspector(editor_state); }
@@ -10677,6 +10694,16 @@ int main(int argc, char** argv) {
             }
 
             g_cp.mark("pre_build");
+            // F8: nothing shows the 3D image this frame (Viewport panel closed,
+            // collapsed or behind another tab, and not game-window mode), so
+            // the scene is not rendered at all: no draw lists, no culling, no
+            // GPU passes. Simulation, scripts, audio and the UI all still run.
+            // It used to render the whole frame for nobody.
+            const bool render_scene = editor_state.viewport_drawn || game_window_mode;
+            if (!render_scene) {
+                opaque_draws.clear();
+                transparent_draws.clear();
+            } else
             { GWS_PROFILE_ZONE("build_draw_items");
               schizo::editor::build_draw_items(
                   editor_scene.GetScene(), prim_cache, mat_cache, asset_cache,
@@ -11092,264 +11119,271 @@ int main(int argc, char** argv) {
             g_cp.mark("pre_record");
             gpu_zones.begin_frame(cmd, gpu_frame++);
             graph->begin_frame(cmd);
+            // F8: skipped entirely when nothing displays the scene (see
+            // render_scene). The occlusion pyramid is then not rebuilt, so the
+            // next rendered frame must not test against it.
+            if (render_scene) {
 
-            // RT scene update — build BLAS for any newly-seen meshes and
-            // rebuild the TLAS with this frame's draw list. Has to happen
-            // before any pass that wants to ray-query the TLAS, which
-            // (starting in Phase 3) will be the Lighting stage. Phase 2
-            // runs this for its own sake — verifies the AS builds work and
-            // produces a log line per frame.
-            if (rt_scene) {
-                // NOTE: meshes are owned by the persistent prim_cache /
-                // asset_cache (NOT the scene), so switching scenes does
-                // NOT invalidate the BLAS cache — the Mesh* keys stay
-                // alive. `ensure_blas` additionally validates each cached
-                // entry by source-VBO handle, so even a reused Mesh*
-                // address rebuilds correctly. We therefore do NOT clear
-                // the RT scene on scene switch (doing so previously left
-                // the lighting descriptor pointing at a destroyed TLAS,
-                // which hung the editor on scene load).
-                { GWS_PROFILE_ZONE("rt_scene_update");
-                  rt_scene->update(cmd, opaque_draws.data(), opaque_draws.size()); }
-                // Re-bind the TLAS handle. rebuild_tlas() always produces
-                // a valid handle (empty TLAS for empty scenes), so this is
-                // never null and the descriptor never dangles.
-                lighting->set_tlas(rt_scene->get_tlas_handle());
-                if (ssao && ssao->uses_rt())
-                    ssao->set_tlas(rt_scene->get_tlas_handle());
-                if (ssr && ssr->uses_rt()) {
-                    ssr->set_tlas(rt_scene->get_tlas_handle());
-                    ssr->set_instance_data_buffer(rt_scene->get_instance_data_buffer());
-                    // Must travel WITH the buffer above: it is what stops the
-                    // shader dereferencing a stale instance slot, and a stale
-                    // device address there faults the GPU rather than shading
-                    // something wrong.
-                    ssr->set_instance_count(rt_scene->get_instance_count());
-                    // Feed the RT reflection re-shade the same sun + ambient
-                    // the deferred lighting uses, so reflected geometry is
-                    // lit consistently with what's directly visible.
-                    ssr->set_sun(sun_dir_for_rt, sun_color_for_rt);
-                    ssr->set_ambient(l_cfg.ambient_color, l_cfg.global_ambient);
+                // RT scene update — build BLAS for any newly-seen meshes and
+                // rebuild the TLAS with this frame's draw list. Has to happen
+                // before any pass that wants to ray-query the TLAS, which
+                // (starting in Phase 3) will be the Lighting stage. Phase 2
+                // runs this for its own sake — verifies the AS builds work and
+                // produces a log line per frame.
+                if (rt_scene) {
+                    // NOTE: meshes are owned by the persistent prim_cache /
+                    // asset_cache (NOT the scene), so switching scenes does
+                    // NOT invalidate the BLAS cache — the Mesh* keys stay
+                    // alive. `ensure_blas` additionally validates each cached
+                    // entry by source-VBO handle, so even a reused Mesh*
+                    // address rebuilds correctly. We therefore do NOT clear
+                    // the RT scene on scene switch (doing so previously left
+                    // the lighting descriptor pointing at a destroyed TLAS,
+                    // which hung the editor on scene load).
+                    { GWS_PROFILE_ZONE("rt_scene_update");
+                      rt_scene->update(cmd, opaque_draws.data(), opaque_draws.size()); }
+                    // Re-bind the TLAS handle. rebuild_tlas() always produces
+                    // a valid handle (empty TLAS for empty scenes), so this is
+                    // never null and the descriptor never dangles.
+                    lighting->set_tlas(rt_scene->get_tlas_handle());
+                    if (ssao && ssao->uses_rt())
+                        ssao->set_tlas(rt_scene->get_tlas_handle());
+                    if (ssr && ssr->uses_rt()) {
+                        ssr->set_tlas(rt_scene->get_tlas_handle());
+                        ssr->set_instance_data_buffer(rt_scene->get_instance_data_buffer());
+                        // Must travel WITH the buffer above: it is what stops the
+                        // shader dereferencing a stale instance slot, and a stale
+                        // device address there faults the GPU rather than shading
+                        // something wrong.
+                        ssr->set_instance_count(rt_scene->get_instance_count());
+                        // Feed the RT reflection re-shade the same sun + ambient
+                        // the deferred lighting uses, so reflected geometry is
+                        // lit consistently with what's directly visible.
+                        ssr->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                        ssr->set_ambient(l_cfg.ambient_color, l_cfg.global_ambient);
+                    }
+                    if (ddgi) {
+                        ddgi->set_tlas(rt_scene->get_tlas_handle());
+                        ddgi->set_instance_data_buffer(rt_scene->get_instance_data_buffer());
+                        // Probe-hit shading uses the same sun + ambient as the
+                        // deferred lighting so bounced light matches direct light.
+                        ddgi->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                        ddgi->mutable_config().ambient =
+                            l_cfg.ambient_color * l_cfg.global_ambient;
+                    }
+                    static int rt_log_throttle = 0;
+                    if ((rt_log_throttle++ % 120) == 0) {
+                        // debug level: kept out of the default (info) console + the
+                        // Output panel so it doesn't spam every frame; raise the log
+                        // level to see it.
+                        spdlog::debug("RT scene update: {} instances",
+                                      rt_scene->get_instance_count());
+                    }
                 }
-                if (ddgi) {
-                    ddgi->set_tlas(rt_scene->get_tlas_handle());
-                    ddgi->set_instance_data_buffer(rt_scene->get_instance_data_buffer());
-                    // Probe-hit shading uses the same sun + ambient as the
-                    // deferred lighting so bounced light matches direct light.
-                    ddgi->set_sun(sun_dir_for_rt, sun_color_for_rt);
-                    ddgi->mutable_config().ambient =
-                        l_cfg.ambient_color * l_cfg.global_ambient;
-                }
-                static int rt_log_throttle = 0;
-                if ((rt_log_throttle++ % 120) == 0) {
-                    // debug level: kept out of the default (info) console + the
-                    // Output panel so it doesn't spam every frame; raise the log
-                    // level to see it.
-                    spdlog::debug("RT scene update: {} instances",
-                                  rt_scene->get_instance_count());
-                }
-            }
 
-            // Shadow stage: render casters from the directional light's
-            // POV using the matrix we just built in the scene sync. If no
-            // shadow-casting directional light exists we still run the
-            // stage so the shadow map clears, but with the camera matrix
-            // (acts as a no-op the lighting shader ignores because the
-            // sun's `castsShadow` flag will be 0).
-            // The shadow stage just needs view+proj that, when multiplied,
-            // equal shadow_view_proj. Easiest: pass identity view and
-            // shadow_view_proj as proj — the shadow_map's caster shader
-            // only uses `proj * view * model`, so the split doesn't matter.
-            // Cull shadow casters against the LIGHT'S frustum — a perf-only
-            // filter. Never cull casters with the CAMERA frustum: an object
-            // outside the camera view whose shadow falls INTO the view must
-            // still render into the shadow map.
-            if (shadow_active && graph->is_frustum_culling_enabled()) {
-                GWS_PROFILE_ZONE("shadow_light_cull");
-                gws::renderer::gpu::Frustum light_frustum =
-                    gws::renderer::gpu::Frustum::from_matrix(shadow_view_proj);
-                shadow_draws.clear();
-                gws::renderer::gpu::cull_draw_items_frustum_into(
-                    opaque_draws.data(), opaque_draws.size(), shadow_draws, light_frustum);
-                gws::renderer::gpu::cull_draw_items_frustum_into(
-                    transparent_draws.data(), transparent_draws.size(), shadow_draws, light_frustum);
-            } else {
-                concat_shadow_draws();
-            }
-
-            const glm::mat4 sh_view = glm::mat4(1.0f);
-            const glm::mat4 sh_proj = shadow_active
-                ? shadow_view_proj
-                : graph->get_camera().proj;
-            g_cp.mark("pre_stages");
-            { GWS_PROFILE_ZONE("stage_shadow");
-            graph->execute_stage(cmd, RenderGraphStage::Shadow,
-                [&](VkCommandBuffer rec_cmd) {
-                    uint32_t calls = 0, tris = 0;
-                    shadow_map->draw_items(rec_cmd,
-                                           sh_view,
-                                           sh_proj,
-                                           graph->get_camera().position,
-                                           shadow_draws.data(),
-                                           shadow_draws.size(),
-                                           &calls, &tris);
-                }); }
-            { GWS_PROFILE_ZONE("stage_geometry");
-              graph->execute_stage(cmd, RenderGraphStage::Geometry,   {}); }
-            // HZB occlusion: build the depth pyramid from THIS frame's depth
-            // (compute downsample chain) + copy the readback mip to a host
-            // buffer. pull_readback() next frame feeds test_visibility(), which
-            // ran at the top of THIS frame against the PREVIOUS frame's pyramid.
-            // Without this call the CPU HZB is never populated — the reason the
-            // occlusion test was previously dropping objects (garbage data).
-            if (hzb_culler) {
-                engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "HZB");
-                hzb_culler->build_and_readback(cmd);
-            }
-            // SSAO compute dispatch — runs after the G-Buffer is populated
-            // and before lighting samples the occlusion texture. Outside
-            // the render graph because it's a compute pass and the graph
-            // currently only models render-pass stages.
-            if (ssao) {
-                if (ssao->technique() == gws::renderer::gpu::AoTechnique::VXAO && vxao) {
-                    // VXAO: voxelize this frame's opaque draws, then cone-trace.
-                    vxao->voxelize(cmd, opaque_draws.data(), opaque_draws.size(),
-                                   cam.position);
-                    vxao->compute_ao(cmd);
+                // Shadow stage: render casters from the directional light's
+                // POV using the matrix we just built in the scene sync. If no
+                // shadow-casting directional light exists we still run the
+                // stage so the shadow map clears, but with the camera matrix
+                // (acts as a no-op the lighting shader ignores because the
+                // sun's `castsShadow` flag will be 0).
+                // The shadow stage just needs view+proj that, when multiplied,
+                // equal shadow_view_proj. Easiest: pass identity view and
+                // shadow_view_proj as proj — the shadow_map's caster shader
+                // only uses `proj * view * model`, so the split doesn't matter.
+                // Cull shadow casters against the LIGHT'S frustum — a perf-only
+                // filter. Never cull casters with the CAMERA frustum: an object
+                // outside the camera view whose shadow falls INTO the view must
+                // still render into the shadow map.
+                if (shadow_active && graph->is_frustum_culling_enabled()) {
+                    GWS_PROFILE_ZONE("shadow_light_cull");
+                    gws::renderer::gpu::Frustum light_frustum =
+                        gws::renderer::gpu::Frustum::from_matrix(shadow_view_proj);
+                    shadow_draws.clear();
+                    gws::renderer::gpu::cull_draw_items_frustum_into(
+                        opaque_draws.data(), opaque_draws.size(), shadow_draws, light_frustum);
+                    gws::renderer::gpu::cull_draw_items_frustum_into(
+                        transparent_draws.data(), transparent_draws.size(), shadow_draws, light_frustum);
                 } else {
-                    // No zone opened here: execute() opens one per dispatch
-                    // (AO.<technique> and AO.Blur). A zone here too would nest,
-                    // which GpuZones forbids -- it is a flat timeline.
-                    ssao->execute(cmd, cam.view, cam.proj, &gpu_zones);
+                    concat_shadow_draws();
                 }
-            }
-            // Cloud shadow map — produced before lighting so the deferred
-            // shading + light shafts can sample where clouds occlude the sun.
-            if (clouds) {
-                clouds->compute_shadow_map(cmd, cam.position);
-                lighting->set_cloud_shadow_params(clouds->get_shadow_params());
-            }
-            // DDGI probe trace — rays vs this frame's TLAS (built above),
-            // recorded before Lighting so the composite right after it adds
-            // up-to-date bounce light. The pass itself no-ops until the TLAS
-            // + instance buffer are bound and DDGI is enabled in the panel.
-            if (ddgi && !g_no_ddgi) {
-                engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "DDGI.Trace");
-                ddgi->execute_trace(cmd);
-            }
-            { GWS_PROFILE_ZONE("stage_lighting");
-              graph->execute_stage(cmd, RenderGraphStage::Lighting,   {}); }
-            // DDGI composite — adds probe irradiance (indirect diffuse) onto
-            // the freshly lit HDR before SSR/clouds/shafts/fog layer over it.
-            if (ddgi && !g_no_ddgi) {
-                engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "DDGI.Composite");
-                ddgi->execute_composite(cmd);
-            }
-            // SSR — compute reflections + composite into HDR before
-            // transparent fragments are drawn. Runs outside the render
-            // graph because the graph models only render-pass stages and
-            // SSR is a compute + render-pass pair owned by its own class.
-            if (ssr && !g_no_ssr) {
-                ssr->set_cloud_sky_enabled(clouds && clouds->clouds_visible());
-                { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "SSR");
-                ssr->execute(cmd, cam.view, cam.proj, cam.position); }
-            }
-            // Water surfaces — collect every active WaterComponent and render
-            // them into the HDR target (before clouds/shafts so atmospherics
-            // layer on top of the water).
-            if (water_pass && !g_no_water) {
-                water_pass->begin_frame();
-                if (auto wscene = editor_state.editor_scene->GetScene()) {
-                    // Entities with water or terrain only, in scene order -- the
-                    // union, so an entity with both still adds its standalone
-                    // surface before its terrain water, as the full scan did.
-                    for (const auto& went : wscene->EntitiesWithAny<
-                             schizo::scene::WaterComponent, schizo::scene::TerrainComponent>()) {
-                        if (!went || !went->IsActiveInHierarchy()) continue;
-                        // Standalone water surfaces.
-                        if (auto wc = went->GetComponent<schizo::scene::WaterComponent>()) {
-                            water_pass->add_water(
-                                went->GetTransform()->GetWorldPosition(),
-                                wc->GetSize(), wc->GetDeepColor(), wc->GetShallowColor(),
-                                wc->GetWaveHeight(), wc->GetWaveSpeed(), wc->GetWaveScale(),
-                                wc->GetClarity(), wc->GetReflectivity());
-                        }
-                        // Terrain-integrated water: one surface covering the
-                        // terrain rect at origin.y + water level.
-                        if (auto twc = went->GetComponent<schizo::scene::TerrainComponent>()) {
-                            if (twc->IsWaterEnabled()) {
-                                glm::vec3 base = went->GetTransform()->GetWorldPosition();
-                                base.y += twc->GetWaterLevel();
+
+                const glm::mat4 sh_view = glm::mat4(1.0f);
+                const glm::mat4 sh_proj = shadow_active
+                    ? shadow_view_proj
+                    : graph->get_camera().proj;
+                g_cp.mark("pre_stages");
+                { GWS_PROFILE_ZONE("stage_shadow");
+                graph->execute_stage(cmd, RenderGraphStage::Shadow,
+                    [&](VkCommandBuffer rec_cmd) {
+                        uint32_t calls = 0, tris = 0;
+                        shadow_map->draw_items(rec_cmd,
+                                               sh_view,
+                                               sh_proj,
+                                               graph->get_camera().position,
+                                               shadow_draws.data(),
+                                               shadow_draws.size(),
+                                               &calls, &tris);
+                    }); }
+                { GWS_PROFILE_ZONE("stage_geometry");
+                  graph->execute_stage(cmd, RenderGraphStage::Geometry,   {}); }
+                // HZB occlusion: build the depth pyramid from THIS frame's depth
+                // (compute downsample chain) + copy the readback mip to a host
+                // buffer. pull_readback() next frame feeds test_visibility(), which
+                // ran at the top of THIS frame against the PREVIOUS frame's pyramid.
+                // Without this call the CPU HZB is never populated — the reason the
+                // occlusion test was previously dropping objects (garbage data).
+                if (hzb_culler) {
+                    engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "HZB");
+                    hzb_culler->build_and_readback(cmd);
+                }
+                // SSAO compute dispatch — runs after the G-Buffer is populated
+                // and before lighting samples the occlusion texture. Outside
+                // the render graph because it's a compute pass and the graph
+                // currently only models render-pass stages.
+                if (ssao) {
+                    if (ssao->technique() == gws::renderer::gpu::AoTechnique::VXAO && vxao) {
+                        // VXAO: voxelize this frame's opaque draws, then cone-trace.
+                        vxao->voxelize(cmd, opaque_draws.data(), opaque_draws.size(),
+                                       cam.position);
+                        vxao->compute_ao(cmd);
+                    } else {
+                        // No zone opened here: execute() opens one per dispatch
+                        // (AO.<technique> and AO.Blur). A zone here too would nest,
+                        // which GpuZones forbids -- it is a flat timeline.
+                        ssao->execute(cmd, cam.view, cam.proj, &gpu_zones);
+                    }
+                }
+                // Cloud shadow map — produced before lighting so the deferred
+                // shading + light shafts can sample where clouds occlude the sun.
+                if (clouds) {
+                    clouds->compute_shadow_map(cmd, cam.position);
+                    lighting->set_cloud_shadow_params(clouds->get_shadow_params());
+                }
+                // DDGI probe trace — rays vs this frame's TLAS (built above),
+                // recorded before Lighting so the composite right after it adds
+                // up-to-date bounce light. The pass itself no-ops until the TLAS
+                // + instance buffer are bound and DDGI is enabled in the panel.
+                if (ddgi && !g_no_ddgi) {
+                    engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "DDGI.Trace");
+                    ddgi->execute_trace(cmd);
+                }
+                { GWS_PROFILE_ZONE("stage_lighting");
+                  graph->execute_stage(cmd, RenderGraphStage::Lighting,   {}); }
+                // DDGI composite — adds probe irradiance (indirect diffuse) onto
+                // the freshly lit HDR before SSR/clouds/shafts/fog layer over it.
+                if (ddgi && !g_no_ddgi) {
+                    engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "DDGI.Composite");
+                    ddgi->execute_composite(cmd);
+                }
+                // SSR — compute reflections + composite into HDR before
+                // transparent fragments are drawn. Runs outside the render
+                // graph because the graph models only render-pass stages and
+                // SSR is a compute + render-pass pair owned by its own class.
+                if (ssr && !g_no_ssr) {
+                    ssr->set_cloud_sky_enabled(clouds && clouds->clouds_visible());
+                    { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "SSR");
+                    ssr->execute(cmd, cam.view, cam.proj, cam.position); }
+                }
+                // Water surfaces — collect every active WaterComponent and render
+                // them into the HDR target (before clouds/shafts so atmospherics
+                // layer on top of the water).
+                if (water_pass && !g_no_water) {
+                    water_pass->begin_frame();
+                    if (auto wscene = editor_state.editor_scene->GetScene()) {
+                        // Entities with water or terrain only, in scene order -- the
+                        // union, so an entity with both still adds its standalone
+                        // surface before its terrain water, as the full scan did.
+                        for (const auto& went : wscene->EntitiesWithAny<
+                                 schizo::scene::WaterComponent, schizo::scene::TerrainComponent>()) {
+                            if (!went || !went->IsActiveInHierarchy()) continue;
+                            // Standalone water surfaces.
+                            if (auto wc = went->GetComponent<schizo::scene::WaterComponent>()) {
                                 water_pass->add_water(
-                                    base, glm::vec2(twc->GetSize()),
-                                    twc->GetWaterDeepColor(), twc->GetWaterShallowColor(),
-                                    twc->GetWaterWaveHeight(), twc->GetWaterWaveSpeed(),
-                                    twc->GetWaterWaveScale(), twc->GetWaterClarity(),
-                                    twc->GetWaterReflectivity());
+                                    went->GetTransform()->GetWorldPosition(),
+                                    wc->GetSize(), wc->GetDeepColor(), wc->GetShallowColor(),
+                                    wc->GetWaveHeight(), wc->GetWaveSpeed(), wc->GetWaveScale(),
+                                    wc->GetClarity(), wc->GetReflectivity());
+                            }
+                            // Terrain-integrated water: one surface covering the
+                            // terrain rect at origin.y + water level.
+                            if (auto twc = went->GetComponent<schizo::scene::TerrainComponent>()) {
+                                if (twc->IsWaterEnabled()) {
+                                    glm::vec3 base = went->GetTransform()->GetWorldPosition();
+                                    base.y += twc->GetWaterLevel();
+                                    water_pass->add_water(
+                                        base, glm::vec2(twc->GetSize()),
+                                        twc->GetWaterDeepColor(), twc->GetWaterShallowColor(),
+                                        twc->GetWaterWaveHeight(), twc->GetWaterWaveSpeed(),
+                                        twc->GetWaterWaveScale(), twc->GetWaterClarity(),
+                                        twc->GetWaterReflectivity());
+                                }
                             }
                         }
                     }
+                    static float water_time = 0.0f;
+                    water_time += delta_time;
+                    water_pass->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                    { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "Water");
+                    water_pass->execute(cmd, cam.view, cam.proj, cam.position, water_time); }
                 }
-                static float water_time = 0.0f;
-                water_time += delta_time;
-                water_pass->set_sun(sun_dir_for_rt, sun_color_for_rt);
-                { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "Water");
-                water_pass->execute(cmd, cam.view, cam.proj, cam.position, water_time); }
-            }
 
-            // Volumetric clouds — distant sky layer; composite before the
-            // light shafts so shafts scatter in front of the clouds.
-            if (clouds) {
-                clouds->set_sun(sun_dir_for_rt, sun_color_for_rt);
-                clouds->set_ambient(l_cfg.ambient_color);
-                { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "Clouds");
-                clouds->execute(cmd, cam.view, cam.proj, cam.position); }
-            }
-            // Volumetric sun lighting / light shafts — feed it the same sun +
-            // shadow VP the deferred lighting/shadow stage used, then march.
-            if (volumetric_light) {
-                volumetric_light->set_sun(sun_dir_for_rt, sun_color_for_rt);
-                volumetric_light->set_shadow_matrix(shadow_view_proj);
-                if (clouds) volumetric_light->set_cloud_shadow_params(clouds->get_shadow_params());
-                { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "VolumetricLight");
-                volumetric_light->execute(cmd, cam.view, cam.proj, cam.position); }
-            }
-            // Froxel fog — nearest homogeneous medium; composite last (over the
-            // shafts/clouds) so it fogs everything already lit this frame.
-            if (froxel_fog && froxel_fog->is_enabled() && !g_no_froxel) {
-                froxel_fog->set_sun(sun_dir_for_rt, sun_color_for_rt);
-                froxel_fog->set_shadow_matrix(shadow_view_proj);
-                froxel_fog->set_light_count(lighting->get_light_count());
-                { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "FroxelFog");
-                froxel_fog->execute(cmd, cam.view, cam.proj, cam.position); }
-            }
-            // Transparent stage uses a custom recorder so we can feed it
-            // the back-to-front-sorted transparent draw list directly,
-            // independent of the graph's stored opaque draw_items_.
-            { GWS_PROFILE_ZONE("stage_transparent");
-            graph->execute_stage(cmd, RenderGraphStage::Transparent,
-                [&](VkCommandBuffer rec_cmd) {
-                    transparent->execute(rec_cmd, transparent_draws, graph->get_camera());
+                // Volumetric clouds — distant sky layer; composite before the
+                // light shafts so shafts scatter in front of the clouds.
+                if (clouds) {
+                    clouds->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                    clouds->set_ambient(l_cfg.ambient_color);
+                    { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "Clouds");
+                    clouds->execute(cmd, cam.view, cam.proj, cam.position); }
+                }
+                // Volumetric sun lighting / light shafts — feed it the same sun +
+                // shadow VP the deferred lighting/shadow stage used, then march.
+                if (volumetric_light) {
+                    volumetric_light->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                    volumetric_light->set_shadow_matrix(shadow_view_proj);
+                    if (clouds) volumetric_light->set_cloud_shadow_params(clouds->get_shadow_params());
+                    { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "VolumetricLight");
+                    volumetric_light->execute(cmd, cam.view, cam.proj, cam.position); }
+                }
+                // Froxel fog — nearest homogeneous medium; composite last (over the
+                // shafts/clouds) so it fogs everything already lit this frame.
+                if (froxel_fog && froxel_fog->is_enabled() && !g_no_froxel) {
+                    froxel_fog->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                    froxel_fog->set_shadow_matrix(shadow_view_proj);
+                    froxel_fog->set_light_count(lighting->get_light_count());
+                    { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "FroxelFog");
+                    froxel_fog->execute(cmd, cam.view, cam.proj, cam.position); }
+                }
+                // Transparent stage uses a custom recorder so we can feed it
+                // the back-to-front-sorted transparent draw list directly,
+                // independent of the graph's stored opaque draw_items_.
+                { GWS_PROFILE_ZONE("stage_transparent");
+                graph->execute_stage(cmd, RenderGraphStage::Transparent,
+                    [&](VkCommandBuffer rec_cmd) {
+                        transparent->execute(rec_cmd, transparent_draws, graph->get_camera());
 
-                    // Particles last, so they blend over everything that
-                    // already resolved. The simulation half has existed for a
-                    // while; this is what finally puts it on screen.
-                    if (particles_pass) {
-                        const auto& bb = editor_state.particles.billboards();
-                        if (!bb.empty()) {
-                            // The graph's camera, not the viewport camera's
-                            // getters: this is the exact view the rest of the
-                            // frame was rendered with, so particles cannot end
-                            // up projected through a slightly different matrix
-                            // than the geometry they sit among.
-                            const auto& cam = graph->get_camera();
-                            particles_pass->execute(rec_cmd, bb, cam.proj * cam.view);
+                        // Particles last, so they blend over everything that
+                        // already resolved. The simulation half has existed for a
+                        // while; this is what finally puts it on screen.
+                        if (particles_pass) {
+                            const auto& bb = editor_state.particles.billboards();
+                            if (!bb.empty()) {
+                                // The graph's camera, not the viewport camera's
+                                // getters: this is the exact view the rest of the
+                                // frame was rendered with, so particles cannot end
+                                // up projected through a slightly different matrix
+                                // than the geometry they sit among.
+                                const auto& cam = graph->get_camera();
+                                particles_pass->execute(rec_cmd, bb, cam.proj * cam.view);
+                            }
                         }
-                    }
-                }); }
-            g_cp.mark("pre_post");
-            { GWS_PROFILE_ZONE("stage_post");
-              graph->execute_stage(cmd, RenderGraphStage::PostProcess, {}); }
+                    }); }
+                g_cp.mark("pre_post");
+                { GWS_PROFILE_ZONE("stage_post");
+                  graph->execute_stage(cmd, RenderGraphStage::PostProcess, {}); }
+            } else {
+                hzb_prev_valid = false;
+            }
             graph->end_frame(cmd);
             gpu_zones.end_frame(device.get_device());
             engine::vulkan::GPUProfiler::instance().end_gpu_frame();
