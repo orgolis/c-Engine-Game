@@ -56,14 +56,31 @@ inline void front_to_back_order(const float* depth, const uint64_t* tie, size_t 
     }
 
     // LSD radix sort, 8 bits per pass. Each pass is stable.
+    //
+    // All four byte histograms come from ONE read of the keys (a pass permutes
+    // the keys, never changes them, so every pass's histogram is known up
+    // front). A pass whose byte is the same for every key would be an identity
+    // permutation and is skipped: depths in one scene share their top byte
+    // (sign and high exponent bits) almost always, often the next one too.
+    size_t hist[4][257] = {};
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t k = s.keys[i];
+        ++hist[0][( k        & 0xFFu) + 1];
+        ++hist[1][((k >>  8) & 0xFFu) + 1];
+        ++hist[2][((k >> 16) & 0xFFu) + 1];
+        ++hist[3][( k >> 24         ) + 1];
+    }
     uint32_t* k_in  = s.keys.data();
     uint32_t* k_out = s.keys_tmp.data();
     uint32_t* i_in  = order.data();
     uint32_t* i_out = s.idx_tmp.data();
-    for (int shift = 0; shift < 32; shift += 8) {
-        size_t count[257] = {};
-        for (size_t i = 0; i < n; ++i) ++count[((k_in[i] >> shift) & 0xFFu) + 1];
+    for (int pass = 0; pass < 4; ++pass) {
+        size_t* count = hist[pass];
+        bool trivial = false;
+        for (int b = 1; b <= 256; ++b) if (count[b] == n) { trivial = true; break; }
+        if (trivial) continue;
         for (int b = 0; b < 256; ++b) count[b + 1] += count[b];
+        const int shift = pass * 8;
         for (size_t i = 0; i < n; ++i) {
             const size_t dst = count[(k_in[i] >> shift) & 0xFFu]++;
             k_out[dst] = k_in[i];
@@ -72,7 +89,12 @@ inline void front_to_back_order(const float* depth, const uint64_t* tie, size_t 
         std::swap(k_in, k_out);
         std::swap(i_in, i_out);
     }
-    // Four passes: the result is back in the original buffers (order, keys).
+    // After an odd number of real passes the result sits in the scratch
+    // buffers; swapping the vectors (not copying) puts it in order / keys.
+    if (k_in != s.keys.data()) {
+        s.keys.swap(s.keys_tmp);
+        order.swap(s.idx_tmp);
+    }
 
     // Equal depths are adjacent now; order each such run by material.
     for (size_t a = 0; a < n;) {

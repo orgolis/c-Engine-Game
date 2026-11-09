@@ -10850,9 +10850,14 @@ int main(int argc, char** argv) {
                 gws::renderer::gpu::front_to_back_order(depth_key.data(), tie_key.data(), n,
                                                         order, order_scratch);
                 lap_.reset(); lap_.emplace("sort.gather");
-                sorted.clear();
-                sorted.reserve(n);
-                for (uint32_t idx : order) sorted.push_back(opaque_draws[idx]);
+                // The gather writes each slot exactly once from a distinct
+                // source, so it goes wide too: a random-access copy of the
+                // whole list (~1.9 MB at 20k) was 0.3-0.5 ms on one thread.
+                sorted.resize(n);   // persistent: no construction in steady state
+                if (sort_js.initialized() && n >= 2048)
+                    sort_js.parallel_for(0, n, [&](size_t k) { sorted[k] = opaque_draws[order[k]]; });
+                else
+                    for (size_t k = 0; k < n; ++k) sorted[k] = opaque_draws[order[k]];
                 opaque_draws.swap(sorted);
             }
 

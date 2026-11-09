@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <random>
 #include <string>
 #include <vector>
@@ -115,6 +116,34 @@ int main() {
         std::vector<uint64_t> t(1000);
         for (size_t i = 0; i < t.size(); ++i) t[i] = 999 - i;
         check(agrees(d, t), "all depths +/-0.0: one run, ordered purely by material");
+    }
+    // Passes whose byte is the same for every key are skipped, so the number
+    // of real passes can be odd -- the result then lands in the scratch
+    // buffers and is swapped back. Cover 1, 3 and 4 real passes, with ONE
+    // scratch and output vector reused across calls, as the editor does.
+    {
+        std::vector<uint32_t> got;
+        DrawOrderScratch s;
+        auto agrees_reused = [&](const std::vector<float>& d, const std::vector<uint64_t>& t) {
+            front_to_back_order(d.data(), t.data(), d.size(), got, s);
+            return is_permutation_of_iota(got) && same_order(got, reference(d, t), d, t);
+        };
+        std::vector<float> one(3000), three(3000), four(3000);
+        std::vector<uint64_t> t(3000);
+        std::uniform_real_distribution<float> in12(1.0f, 2.0f), wide(-300.0f, 300.0f);
+        for (size_t i = 0; i < t.size(); ++i) {
+            uint32_t bits = 0x3F800000u + static_cast<uint32_t>(rng() % 256);  // 1.0f + up to 255 ulp
+            std::memcpy(&one[i], &bits, sizeof bits);
+            three[i] = in12(rng);                                            // one exponent
+            four[i]  = wide(rng);
+            t[i]     = rng() % 3;
+        }
+        bool ok = true;
+        for (int round = 0; round < 3; ++round) {
+            ok = ok && agrees_reused(one, t) && agrees_reused(three, t) && agrees_reused(four, t) &&
+                 agrees_reused(three, t) && agrees_reused(one, t);
+        }
+        check(ok, "1, 3 and 4 real radix passes, alternating, one scratch reused (skipped passes)");
     }
     {
         std::vector<float> d;  std::vector<uint64_t> t;

@@ -814,7 +814,13 @@ vector and the new table, including duplicate keys, key 0, draws coming and goin
 to grow. It requires identical keep/drop verdicts and streaks. Mutation-tested: an overwrite that
 doesn't overwrite, and a lookup that misses one slot, are both caught.
 
-**Still serial at 20k:** `sort.radix` 0.40 ms, `sort.gather` 0.3–0.5 ms and `hzb.filter` ~0.57 ms.
+**Follow-up, the sort:** the gather (`sorted[k] = opaque_draws[order[k]]`) goes wide, 0.27–0.34 ->
+0.14–0.20 ms. The radix sort builds all four byte histograms in one read and skips passes whose byte
+is the same for every key (depths share their top byte): 0.40 -> 0.36 ms. Both are pixel-identical.
+`draworder_check` gained a case with 1, 3 and 4 real passes and a reused scratch, since an odd pass
+count leaves the result in the scratch buffers. Mutation-tested: dropping the swap-back is caught.
+
+**Still serial at 20k:** `sort.radix` 0.36 ms and `hzb.filter` ~0.57 ms.
 The last two are order-preserving copies of the ~96-byte `DrawItem`. Passing indices instead of items
 between these stages is the next step there.
 
