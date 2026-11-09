@@ -13,6 +13,10 @@
 
 #include "../render_device.h"
 
+// VMA's handle, declared as vk_mem_alloc.h declares it, so this header does not
+// pull in the 18k-line allocator.
+typedef struct VmaAllocator_T* VmaAllocator;
+
 namespace gws::renderer::gpu {
 
 // ============================================================================
@@ -322,6 +326,15 @@ public:
 
     bool has_ray_tracing() const { return ray_tracing_supported_; }
 
+    /// The device's memory allocator (VMA). Per-asset buffers come from here
+    /// -- sub-allocated out of large blocks -- rather than from a
+    /// vkAllocateMemory each, which counts against maxMemoryAllocationCount
+    /// (commonly 4096). Null before initialize() and after shutdown().
+    VmaAllocator allocator() const { return allocator_; }
+    /// Log how the allocator's sub-allocations map onto device memory blocks
+    /// (what counts against maxMemoryAllocationCount).
+    void log_memory_stats() const;
+
     /// Subgroup vote and ballot are usable in fragment shaders. Optional in
     /// Vulkan (only compute is guaranteed), so the lighting pass only builds
     /// its warp-vote variant when this is true.
@@ -419,6 +432,8 @@ private:
     // were available and the rayQuery + accelerationStructure features
     // were enabled on the logical device. See `has_ray_tracing()`.
     bool ray_tracing_supported_ = false;
+    VmaAllocator allocator_ = nullptr;
+    void create_allocator();
     bool fragment_subgroup_vote_ = false;
     bool bindless_supported_    = false;
     uint32_t max_bindless_textures_ = 0;

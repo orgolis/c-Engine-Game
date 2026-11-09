@@ -111,6 +111,7 @@ target_sources(renderer PRIVATE
     gpu/vulkan/vulkan_texture_manager.cpp
     gpu/vulkan/vulkan_virtual_texture.cpp
     gpu/vulkan/vulkan_scene_mesh.cpp
+    gpu/vulkan/vma_impl.cpp
     gpu/vulkan/vulkan_skinned_mesh.cpp
     gpu/vulkan/skinned_gltf_loader.cpp
     gpu/vulkan/vulkan_scene_material.cpp

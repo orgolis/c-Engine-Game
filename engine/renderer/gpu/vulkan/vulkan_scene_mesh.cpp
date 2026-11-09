@@ -24,6 +24,7 @@
 #include <chrono>
 #include "vulkan_scene_mesh.h"
 #include "vulkan_device.h"
+#include "vk_mem_alloc.h"
 #include "culling.h"
 
 #include <meshoptimizer.h>
@@ -45,45 +46,28 @@ namespace {
 void create_device_buffer(VulkanDevice* device, VkBufferUsageFlags usage,
                           VkDeviceSize size, const void* src,
                           MeshUploadBatch& batch,
-                          VkBuffer& out_buf, VkDeviceMemory& out_mem) {
-    VkDevice vkdev = device->get_device();
-
+                          VkBuffer& out_buf, VmaAllocation& out_alloc) {
     VkBufferCreateInfo bi{};
     bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bi.size        = size;
     // TRANSFER_DST: the only way into device-local memory is a copy.
     bi.usage       = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(vkdev, &bi, nullptr, &out_buf) != VK_SUCCESS) {
-        throw std::runtime_error("Mesh: vkCreateBuffer failed");
-    }
 
-    VkMemoryRequirements req;
-    vkGetBufferMemoryRequirements(vkdev, out_buf, &req);
-
-    // When the buffer will be referenced by device address (RT path uses
-    // buffer_reference to fetch vertices/indices in the reflection
-    // shader), the backing memory MUST be allocated with the
-    // device-address flag — otherwise getBufferDeviceAddress is invalid
-    // and the shader dereference hangs the GPU.
-    VkMemoryAllocateFlagsInfo flags_info{};
-    flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-    flags_info.flags = (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
-                          ? VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT
-                          : 0;
-
-    VkMemoryAllocateInfo ai{};
-    ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.pNext           = (flags_info.flags != 0) ? &flags_info : nullptr;
-    ai.allocationSize  = req.size;
-    ai.memoryTypeIndex = device->find_memory_type(
-        req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(vkdev, &ai, nullptr, &out_mem) != VK_SUCCESS) {
-        vkDestroyBuffer(vkdev, out_buf, nullptr);
+    // Sub-allocated from the device's VMA: one vkAllocateMemory per mesh
+    // buffer counted against maxMemoryAllocationCount (commonly 4096), a
+    // project-size ceiling. A buffer used by device address (the RT path
+    // fetches vertices/indices through buffer_reference) needs its memory
+    // allocated with the device-address flag; the allocator was created with
+    // BUFFER_DEVICE_ADDRESS when ray tracing is on, so VMA adds it.
+    VmaAllocationCreateInfo ai{};
+    ai.usage         = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    ai.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    if (vmaCreateBuffer(device->allocator(), &bi, &ai, &out_buf, &out_alloc, nullptr) != VK_SUCCESS) {
         out_buf = VK_NULL_HANDLE;
-        throw std::runtime_error("Mesh: vkAllocateMemory failed");
+        out_alloc = nullptr;
+        throw std::runtime_error("Mesh: vmaCreateBuffer failed");
     }
-    vkBindBufferMemory(vkdev, out_buf, out_mem, 0);
 
     batch.stage(out_buf, src, size);
 }
@@ -121,8 +105,8 @@ bool MeshUploadBatch::flush() {
     VkDevice vkdev = device_->get_device();
 
     // ---- One staging buffer for the whole batch ---------------------------
-    VkBuffer       staging     = VK_NULL_HANDLE;
-    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    VkBuffer      staging       = VK_NULL_HANDLE;
+    VmaAllocation staging_alloc = nullptr;
     bool ok = true;
 
     VkBufferCreateInfo bi{};
@@ -130,28 +114,17 @@ bool MeshUploadBatch::flush() {
     bi.size        = static_cast<VkDeviceSize>(blob_.size());
     bi.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(vkdev, &bi, nullptr, &staging) != VK_SUCCESS) ok = false;
-
-    if (ok) {
-        VkMemoryRequirements req;
-        vkGetBufferMemoryRequirements(vkdev, staging, &req);
-        VkMemoryAllocateInfo ai{};
-        ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        ai.allocationSize  = req.size;
-        ai.memoryTypeIndex = device_->find_memory_type(
-            req.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (vkAllocateMemory(vkdev, &ai, nullptr, &staging_mem) != VK_SUCCESS) ok = false;
-    }
-    if (ok) {
-        vkBindBufferMemory(vkdev, staging, staging_mem, 0);
-        void* mapped = nullptr;
-        if (vkMapMemory(vkdev, staging_mem, 0, bi.size, 0, &mapped) == VK_SUCCESS) {
-            std::memcpy(mapped, blob_.data(), blob_.size());
-            vkUnmapMemory(vkdev, staging_mem);
-        } else {
-            ok = false;
-        }
+    VmaAllocationCreateInfo ai{};
+    ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+    ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VmaAllocationInfo info{};
+    if (vmaCreateBuffer(device_->allocator(), &bi, &ai, &staging, &staging_alloc, &info) != VK_SUCCESS ||
+        info.pMappedData == nullptr) {
+        ok = false;
+    } else {
+        std::memcpy(info.pMappedData, blob_.data(), blob_.size());
+        // A no-op on host-coherent memory, required on memory that is not.
+        vmaFlushAllocation(device_->allocator(), staging_alloc, 0, VK_WHOLE_SIZE);
     }
 
     // ---- One command buffer, one submit, one wait -------------------------
@@ -219,8 +192,7 @@ bool MeshUploadBatch::flush() {
                       copies_.size(), blob_.size() / 1048576.0);
     }
 
-    if (staging_mem != VK_NULL_HANDLE) vkFreeMemory(vkdev, staging_mem, nullptr);
-    if (staging     != VK_NULL_HANDLE) vkDestroyBuffer(vkdev, staging, nullptr);
+    if (staging != VK_NULL_HANDLE) vmaDestroyBuffer(device_->allocator(), staging, staging_alloc);
     copies_.clear();
     blob_.clear();
     return ok;
@@ -230,8 +202,8 @@ Mesh::~Mesh() { destroy(); }
 
 Mesh::Mesh(Mesh&& other) noexcept
     : device_(other.device_),
-      vbo_(other.vbo_), vbo_memory_(other.vbo_memory_),
-      ibo_(other.ibo_), ibo_memory_(other.ibo_memory_),
+      vbo_(other.vbo_), vbo_alloc_(other.vbo_alloc_),
+      ibo_(other.ibo_), ibo_alloc_(other.ibo_alloc_),
       vertex_count_(other.vertex_count_),
       index_count_(other.index_count_),
       double_sided_(other.double_sided_),
@@ -240,9 +212,9 @@ Mesh::Mesh(Mesh&& other) noexcept
       bounding_box_(other.bounding_box_) {
     other.device_     = nullptr;
     other.vbo_        = VK_NULL_HANDLE;
-    other.vbo_memory_ = VK_NULL_HANDLE;
+    other.vbo_alloc_  = nullptr;
     other.ibo_        = VK_NULL_HANDLE;
-    other.ibo_memory_ = VK_NULL_HANDLE;
+    other.ibo_alloc_  = nullptr;
     other.vertex_count_ = 0;
     other.index_count_  = 0;
 }
@@ -252,9 +224,9 @@ Mesh& Mesh::operator=(Mesh&& other) noexcept {
         destroy();
         device_       = other.device_;
         vbo_          = other.vbo_;
-        vbo_memory_   = other.vbo_memory_;
+        vbo_alloc_    = other.vbo_alloc_;
         ibo_          = other.ibo_;
-        ibo_memory_   = other.ibo_memory_;
+        ibo_alloc_    = other.ibo_alloc_;
         vertex_count_ = other.vertex_count_;
         index_count_  = other.index_count_;
         double_sided_    = other.double_sided_;
@@ -263,9 +235,9 @@ Mesh& Mesh::operator=(Mesh&& other) noexcept {
         bounding_box_ = other.bounding_box_;
         other.device_       = nullptr;
         other.vbo_          = VK_NULL_HANDLE;
-        other.vbo_memory_   = VK_NULL_HANDLE;
+        other.vbo_alloc_    = nullptr;
         other.ibo_          = VK_NULL_HANDLE;
-        other.ibo_memory_   = VK_NULL_HANDLE;
+        other.ibo_alloc_    = nullptr;
         other.vertex_count_ = 0;
         other.index_count_  = 0;
     }
@@ -274,11 +246,9 @@ Mesh& Mesh::operator=(Mesh&& other) noexcept {
 
 void Mesh::destroy() {
     if (!device_) return;
-    VkDevice vkdev = device_->get_device();
-    if (vbo_        != VK_NULL_HANDLE) { vkDestroyBuffer(vkdev, vbo_, nullptr);      vbo_ = VK_NULL_HANDLE; }
-    if (vbo_memory_ != VK_NULL_HANDLE) { vkFreeMemory(vkdev, vbo_memory_, nullptr);  vbo_memory_ = VK_NULL_HANDLE; }
-    if (ibo_        != VK_NULL_HANDLE) { vkDestroyBuffer(vkdev, ibo_, nullptr);      ibo_ = VK_NULL_HANDLE; }
-    if (ibo_memory_ != VK_NULL_HANDLE) { vkFreeMemory(vkdev, ibo_memory_, nullptr);  ibo_memory_ = VK_NULL_HANDLE; }
+    VmaAllocator vma = device_->allocator();
+    if (vbo_ != VK_NULL_HANDLE) { vmaDestroyBuffer(vma, vbo_, vbo_alloc_); vbo_ = VK_NULL_HANDLE; vbo_alloc_ = nullptr; }
+    if (ibo_ != VK_NULL_HANDLE) { vmaDestroyBuffer(vma, ibo_, ibo_alloc_); ibo_ = VK_NULL_HANDLE; ibo_alloc_ = nullptr; }
     device_ = nullptr;
 }
 
@@ -444,11 +414,11 @@ std::unique_ptr<Mesh> Mesh::create(VulkanDevice* device,
         create_device_buffer(device, vbo_usage,
                              sizeof(SceneVertex) * vertices.size(),
                              vertices.data(), up,
-                             out->vbo_, out->vbo_memory_);
+                             out->vbo_, out->vbo_alloc_);
         create_device_buffer(device, ibo_usage,
                              sizeof(uint32_t) * mutable_indices.size(),
                              mutable_indices.data(), up,
-                             out->ibo_, out->ibo_memory_);
+                             out->ibo_, out->ibo_alloc_);
     } catch (const std::exception& e) {
         spdlog::error("Mesh::create: {}", e.what());
         return nullptr;

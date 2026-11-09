@@ -13,6 +13,7 @@
 #  define VK_USE_PLATFORM_WIN32_KHR
 #endif
 
+#include "vk_mem_alloc.h"
 #include <cstring>
 
 #include "vulkan_rt_functions.h"
@@ -84,6 +85,9 @@ void VulkanDevice::initialize(const RenderConfig& config) {
     // Create logical device
     create_logical_device();
 
+    // Memory allocator -- needs the logical device, before anything allocates.
+    create_allocator();
+
     // Create command pool
     create_command_pool();
 
@@ -94,6 +98,41 @@ void VulkanDevice::initialize(const RenderConfig& config) {
 
     GWS_LOG_INFO("✅ Vulkan device initialized successfully");
     GWS_LOG_INFO("   GPU: {}", get_device_name());
+}
+
+void VulkanDevice::create_allocator() {
+    VmaVulkanFunctions fns{};
+    fns.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+    fns.vkGetDeviceProcAddr   = vkGetDeviceProcAddr;
+    VmaAllocatorCreateInfo ci{};
+    ci.vulkanApiVersion = VK_API_VERSION_1_3;
+    ci.instance         = instance;
+    ci.physicalDevice   = physical_device;
+    ci.device           = device;
+    ci.pVulkanFunctions = &fns;
+    // Ray tracing enables bufferDeviceAddress, and its buffers are created
+    // with SHADER_DEVICE_ADDRESS usage; their memory must be allocated with
+    // the matching flag, which VMA then adds itself.
+    if (ray_tracing_supported_) ci.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    if (vmaCreateAllocator(&ci, &allocator_) != VK_SUCCESS) {
+        throw std::runtime_error("vmaCreateAllocator failed");
+    }
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physical_device, &props);
+    // Logged because it is the ceiling one-allocation-per-asset ran into, and
+    // nothing in the engine used to know it.
+    GWS_LOG_INFO("✅ Memory allocator (VMA) created; driver allows {} live device allocations",
+                 props.limits.maxMemoryAllocationCount);
+}
+
+void VulkanDevice::log_memory_stats() const {
+    if (allocator_ == nullptr) return;
+    VmaTotalStatistics st{};
+    vmaCalculateStatistics(allocator_, &st);
+    GWS_LOG_INFO("[memory] VMA: {} allocations in {} device blocks, {:.1f} MB used of {:.1f} MB reserved",
+                 st.total.statistics.allocationCount, st.total.statistics.blockCount,
+                 st.total.statistics.allocationBytes / 1048576.0,
+                 st.total.statistics.blockBytes / 1048576.0);
 }
 
 void VulkanDevice::shutdown() {
@@ -132,6 +171,13 @@ void VulkanDevice::shutdown() {
         fences.clear();
         semaphores.clear();
         command_buffers.clear();
+
+        // Every VMA allocation must be freed by now; vmaDestroyAllocator
+        // asserts (and leaks the blocks) otherwise.
+        if (allocator_ != nullptr) {
+            vmaDestroyAllocator(allocator_);
+            allocator_ = nullptr;
+        }
 
         // Cleanup device
         vkDestroyDevice(device, nullptr);

@@ -1243,7 +1243,7 @@ that could hold a frame rate under any load.
 every effect pass still execute unconditionally (`main.cpp:~9890-10017`). Closing the viewport should cost
 nothing and currently costs a full frame. Minor next to F1, and nearly free to fix.
 
-### F9 — No suballocator: one device allocation per texture and per mesh 🟠
+### F9 — No suballocator: one device allocation per texture and per mesh 🟠 → meshes and textures fixed (v0.8.8)
 
 No VMA and no custom suballocator. **62 raw `vkAllocateMemory` call sites**, including 4 in
 `vulkan_texture.cpp` and 3 in `vulkan_scene_mesh.cpp` — the per-asset paths.
@@ -1253,6 +1253,31 @@ This is not a bug today; it is an **asset-count ceiling the engine does not know
 cap allocations at 4096, and a project with a few thousand textures and meshes will meet it — as an
 allocation failure on a user's machine, not during development. Each allocation also carries alignment
 padding, so real footprint consistently exceeds the sum of the resources.
+
+**Fixed for the per-asset paths (2026-11-09).** `third_party/vma/include/vma.h` was a placeholder of
+forward declarations, never the library. The real Vulkan Memory Allocator (v3.1.0, MIT, AMD; already
+listed in THIRD_PARTY_NOTICES) is now vendored as `vk_mem_alloc.h` and compiled once
+(`vma_impl.cpp`). `VulkanDevice` owns a `VmaAllocator`, created with device addresses when ray
+tracing is on, and logs `maxMemoryAllocationCount` at startup. Moved onto it:
+
+- **meshes**: vertex and index buffers, and the upload batch's staging buffer;
+- **textures**: images and staging, in all three builders. (Image memory uses
+  `VMA_MEMORY_USAGE_UNKNOWN` + `DEVICE_LOCAL`: the `AUTO` usages need the create-info, which
+  `vmaAllocateMemoryForImage` does not see. The first attempt used `AUTO`, every texture failed,
+  and that exposed the next bug.)
+
+MyGame: **191 mesh and texture allocations in 2 device memory blocks** (27.9 MB in 64 MB), where each
+was its own `vkAllocateMemory`. The renders are pixel-identical (0 px) to before, with zero validation
+messages at N = 0 and N = 20k. On this RTX 3060 the driver allows 4,294,967,295 allocations, so the
+ceiling never showed here. AMD and Intel commonly allow 4,096.
+
+**Found on the way:** when default textures could not be built, `Material::create` dereferenced a
+null fallback and the editor **segfaulted at startup**. It now reports the failure and returns no
+material, which every caller but the cooked-mesh loader already handled.
+
+**Still raw:** render targets and per-pass resources (fixed count, created at startup), and the
+remaining passes' own buffers. They are bounded by the number of passes, not by project size. Moving
+them is cleanup rather than a ceiling.
 
 ### F10 — Render targets are never aliased, and all are sized for 1920×1080 🟠
 

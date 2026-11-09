@@ -11436,6 +11436,7 @@ int main(int argc, char** argv) {
             }
             if (frame_limit > 0 && frame_count >= frame_limit) {
                 spdlog::info("[frames] rendered {} frame(s); exiting as requested", frame_count);
+                device.log_memory_stats();
                 break;
             }
 

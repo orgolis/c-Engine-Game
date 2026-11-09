@@ -8,6 +8,7 @@
 #include <stb_image.h>
 
 #include "vulkan_texture.h"
+#include "vk_mem_alloc.h"
 #include "vulkan_device.h"
 
 #include <spdlog/spdlog.h>
@@ -101,36 +102,54 @@ void transition_image_layout(VkCommandBuffer cmd, VkImage img,
 }
 
 // Allocate a host-visible staging buffer, upload `size` bytes from `src`, and
-// return the buffer + memory (caller frees). Returns false on failure.
+// return the buffer + allocation (free with free_staging). Returns false on
+// failure. Staging and images come from the device's VMA: a vkAllocateMemory per
+// texture counted against maxMemoryAllocationCount (commonly 4096).
 bool make_staging(VulkanDevice* device, const void* src, VkDeviceSize size,
-                  VkBuffer& out_buf, VkDeviceMemory& out_mem) {
-    VkDevice vkdev = device->get_device();
+                  VkBuffer& out_buf, VmaAllocation& out_alloc) {
     VkBufferCreateInfo bi{};
     bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bi.size        = size;
     bi.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(vkdev, &bi, nullptr, &out_buf) != VK_SUCCESS) return false;
-
-    VkMemoryRequirements req;
-    vkGetBufferMemoryRequirements(vkdev, out_buf, &req);
-    VkMemoryAllocateInfo ai{};
-    ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.allocationSize  = req.size;
-    ai.memoryTypeIndex = device->find_memory_type(
-        req.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (vkAllocateMemory(vkdev, &ai, nullptr, &out_mem) != VK_SUCCESS) {
-        vkDestroyBuffer(vkdev, out_buf, nullptr);
+    VmaAllocationCreateInfo ai{};
+    ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+    ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VmaAllocationInfo info{};
+    if (vmaCreateBuffer(device->allocator(), &bi, &ai, &out_buf, &out_alloc, &info) != VK_SUCCESS ||
+        info.pMappedData == nullptr) {
+        if (out_buf != VK_NULL_HANDLE) vmaDestroyBuffer(device->allocator(), out_buf, out_alloc);
         out_buf = VK_NULL_HANDLE;
+        out_alloc = nullptr;
         return false;
     }
-    vkBindBufferMemory(vkdev, out_buf, out_mem, 0);
+    std::memcpy(info.pMappedData, src, static_cast<size_t>(size));
+    vmaFlushAllocation(device->allocator(), out_alloc, 0, VK_WHOLE_SIZE);
+    return true;
+}
 
-    void* mapped = nullptr;
-    vkMapMemory(vkdev, out_mem, 0, size, 0, &mapped);
-    std::memcpy(mapped, src, static_cast<size_t>(size));
-    vkUnmapMemory(vkdev, out_mem);
+void free_staging(VulkanDevice* device, VkBuffer buf, VmaAllocation alloc) {
+    if (buf != VK_NULL_HANDLE) vmaDestroyBuffer(device->allocator(), buf, alloc);
+}
+
+// Device-local memory for `image`, bound. Returns false (nothing allocated) on
+// failure.
+bool alloc_image_memory(VulkanDevice* device, VkImage image, VmaAllocation& out) {
+    // NOT VMA_MEMORY_USAGE_AUTO*: those need the create-info (vmaCreateImage),
+    // which vmaAllocateMemoryForImage does not see -- it rejects them, and every
+    // texture in the engine failed to build. State the requirement instead.
+    VmaAllocationCreateInfo ai{};
+    ai.usage         = VMA_MEMORY_USAGE_UNKNOWN;
+    ai.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    if (vmaAllocateMemoryForImage(device->allocator(), image, &ai, &out, nullptr) != VK_SUCCESS) {
+        out = nullptr;
+        return false;
+    }
+    if (vmaBindImageMemory(device->allocator(), out, image) != VK_SUCCESS) {
+        vmaFreeMemory(device->allocator(), out);
+        out = nullptr;
+        return false;
+    }
     return true;
 }
 
@@ -153,7 +172,7 @@ Texture::Texture(Texture&& other) noexcept
     other.image_        = VK_NULL_HANDLE;
     other.view_         = VK_NULL_HANDLE;
     other.sampler_      = VK_NULL_HANDLE;
-    other.memory_       = VK_NULL_HANDLE;
+    other.memory_       = nullptr;
     other.width_        = 0;
     other.height_       = 0;
     other.mip_levels_   = 1;
@@ -177,7 +196,7 @@ Texture& Texture::operator=(Texture&& other) noexcept {
         other.image_        = VK_NULL_HANDLE;
         other.view_         = VK_NULL_HANDLE;
         other.sampler_      = VK_NULL_HANDLE;
-        other.memory_       = VK_NULL_HANDLE;
+        other.memory_       = nullptr;
         other.width_        = 0;
         other.height_       = 0;
         other.mip_levels_   = 1;
@@ -198,7 +217,7 @@ void Texture::destroy() {
     sampler_ = VK_NULL_HANDLE;
     if (view_   != VK_NULL_HANDLE) { vkDestroyImageView(vkdev, view_, nullptr); view_   = VK_NULL_HANDLE; }
     if (image_  != VK_NULL_HANDLE) { vkDestroyImage(vkdev, image_, nullptr);    image_  = VK_NULL_HANDLE; }
-    if (memory_ != VK_NULL_HANDLE) { vkFreeMemory(vkdev, memory_, nullptr);     memory_ = VK_NULL_HANDLE; }
+    if (memory_ != nullptr) { vmaFreeMemory(device_->allocator(), memory_); memory_ = nullptr; }
     device_ = nullptr;
 }
 
@@ -207,7 +226,7 @@ void Texture::destroy_image_only_() {
     VkDevice vkdev = device_->get_device();
     if (view_   != VK_NULL_HANDLE) { vkDestroyImageView(vkdev, view_, nullptr); view_   = VK_NULL_HANDLE; }
     if (image_  != VK_NULL_HANDLE) { vkDestroyImage(vkdev, image_, nullptr);    image_  = VK_NULL_HANDLE; }
-    if (memory_ != VK_NULL_HANDLE) { vkFreeMemory(vkdev, memory_, nullptr);     memory_ = VK_NULL_HANDLE; }
+    if (memory_ != nullptr) { vmaFreeMemory(device_->allocator(), memory_); memory_ = nullptr; }
 }
 
 bool Texture::build_rgba_(const uint8_t* rgba, uint32_t width, uint32_t height,
@@ -237,7 +256,7 @@ bool Texture::build_rgba_(const uint8_t* rgba, uint32_t width, uint32_t height,
     const VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4;
 
     VkBuffer       staging     = VK_NULL_HANDLE;
-    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    VmaAllocation  staging_mem = nullptr;
     if (!make_staging(device_, rgba, size, staging, staging_mem)) return false;
 
     // Device-local image (mipLevels = mips; TRANSFER_SRC needed when we blit
@@ -258,23 +277,15 @@ bool Texture::build_rgba_(const uint8_t* rgba, uint32_t width, uint32_t height,
     ii.samples       = VK_SAMPLE_COUNT_1_BIT;
     ii.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateImage(vkdev, &ii, nullptr, &image_) != VK_SUCCESS) {
-        vkFreeMemory(vkdev, staging_mem, nullptr); vkDestroyBuffer(vkdev, staging, nullptr);
+        free_staging(device_, staging, staging_mem);
         return false;
     }
 
-    VkMemoryRequirements ireq;
-    vkGetImageMemoryRequirements(vkdev, image_, &ireq);
-    VkMemoryAllocateInfo ialloc{};
-    ialloc.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ialloc.allocationSize  = ireq.size;
-    ialloc.memoryTypeIndex = device_->find_memory_type(ireq.memoryTypeBits,
-                                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(vkdev, &ialloc, nullptr, &memory_) != VK_SUCCESS) {
+    if (!alloc_image_memory(device_, image_, memory_)) {
         vkDestroyImage(vkdev, image_, nullptr); image_ = VK_NULL_HANDLE;
-        vkFreeMemory(vkdev, staging_mem, nullptr); vkDestroyBuffer(vkdev, staging, nullptr);
+        free_staging(device_, staging, staging_mem);
         return false;
     }
-    vkBindImageMemory(vkdev, image_, memory_, 0);
 
     run_one_time_command(device_, [&](VkCommandBuffer cmd) {
         // All mips -> TRANSFER_DST, then copy the base level from staging.
@@ -359,8 +370,7 @@ bool Texture::build_rgba_(const uint8_t* rgba, uint32_t width, uint32_t height,
         }
     });
 
-    vkFreeMemory(vkdev, staging_mem, nullptr);
-    vkDestroyBuffer(vkdev, staging, nullptr);
+    free_staging(device_, staging, staging_mem);
 
     // View over all mips.
     VkImageViewCreateInfo vi{};
@@ -451,7 +461,7 @@ std::unique_ptr<Texture> Texture::create_from_float_pixels(VulkanDevice* device,
     const VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4 * sizeof(float);
 
     VkBuffer       staging     = VK_NULL_HANDLE;
-    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    VmaAllocation  staging_mem = nullptr;
     if (!make_staging(device, rgba_pixels, size, staging, staging_mem)) return nullptr;
 
     VkImageCreateInfo ii{};
@@ -467,21 +477,13 @@ std::unique_ptr<Texture> Texture::create_from_float_pixels(VulkanDevice* device,
     ii.samples       = VK_SAMPLE_COUNT_1_BIT;
     ii.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateImage(vkdev, &ii, nullptr, &out->image_) != VK_SUCCESS) {
-        vkFreeMemory(vkdev, staging_mem, nullptr); vkDestroyBuffer(vkdev, staging, nullptr);
+        free_staging(device, staging, staging_mem);
         return nullptr;
     }
-    VkMemoryRequirements ireq;
-    vkGetImageMemoryRequirements(vkdev, out->image_, &ireq);
-    VkMemoryAllocateInfo ialloc{};
-    ialloc.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ialloc.allocationSize  = ireq.size;
-    ialloc.memoryTypeIndex = device->find_memory_type(ireq.memoryTypeBits,
-                                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(vkdev, &ialloc, nullptr, &out->memory_) != VK_SUCCESS) {
-        vkFreeMemory(vkdev, staging_mem, nullptr); vkDestroyBuffer(vkdev, staging, nullptr);
+    if (!alloc_image_memory(device, out->image_, out->memory_)) {
+        free_staging(device, staging, staging_mem);
         return nullptr;
     }
-    vkBindImageMemory(vkdev, out->image_, out->memory_, 0);
 
     run_one_time_command(device, [&](VkCommandBuffer cmd) {
         transition_image_layout(cmd, out->image_,
@@ -497,8 +499,7 @@ std::unique_ptr<Texture> Texture::create_from_float_pixels(VulkanDevice* device,
                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     });
-    vkFreeMemory(vkdev, staging_mem, nullptr);
-    vkDestroyBuffer(vkdev, staging, nullptr);
+    free_staging(device, staging, staging_mem);
 
     VkImageViewCreateInfo vi{};
     vi.sType                       = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -628,7 +629,7 @@ std::unique_ptr<Texture> Texture::create_compressed(VulkanDevice* device,
     const uint32_t bb = bc_vk_block_bytes(format);
 
     VkBuffer       staging     = VK_NULL_HANDLE;
-    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    VmaAllocation  staging_mem = nullptr;
     if (!make_staging(device, block_data, data_size, staging, staging_mem)) return nullptr;
 
     // Device-local compressed image with the full mip chain.
@@ -645,21 +646,13 @@ std::unique_ptr<Texture> Texture::create_compressed(VulkanDevice* device,
     ii.samples       = VK_SAMPLE_COUNT_1_BIT;
     ii.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateImage(vkdev, &ii, nullptr, &out->image_) != VK_SUCCESS) {
-        vkFreeMemory(vkdev, staging_mem, nullptr); vkDestroyBuffer(vkdev, staging, nullptr);
+        free_staging(device, staging, staging_mem);
         return nullptr;
     }
-    VkMemoryRequirements ireq;
-    vkGetImageMemoryRequirements(vkdev, out->image_, &ireq);
-    VkMemoryAllocateInfo ia{};
-    ia.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ia.allocationSize  = ireq.size;
-    ia.memoryTypeIndex = device->find_memory_type(ireq.memoryTypeBits,
-                                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(vkdev, &ia, nullptr, &out->memory_) != VK_SUCCESS) {
-        vkFreeMemory(vkdev, staging_mem, nullptr); vkDestroyBuffer(vkdev, staging, nullptr);
+    if (!alloc_image_memory(device, out->image_, out->memory_)) {
+        free_staging(device, staging, staging_mem);
         return nullptr;
     }
-    vkBindImageMemory(vkdev, out->image_, out->memory_, 0);
 
     // One copy region per mip (compressed: imageExtent is in texels, buffer
     // offset advances by each mip's BC-block byte size).
@@ -689,8 +682,7 @@ std::unique_ptr<Texture> Texture::create_compressed(VulkanDevice* device,
         transition_image_layout(cmd, out->image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mip_count);
     });
-    vkFreeMemory(vkdev, staging_mem, nullptr);
-    vkDestroyBuffer(vkdev, staging, nullptr);
+    free_staging(device, staging, staging_mem);
 
     // View over all mips.
     VkImageViewCreateInfo vi{};

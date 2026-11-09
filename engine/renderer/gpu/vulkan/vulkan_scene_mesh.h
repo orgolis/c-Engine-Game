@@ -19,6 +19,8 @@
 #include <memory>
 #include <vector>
 
+typedef struct VmaAllocation_T* VmaAllocation;   // as vk_mem_alloc.h declares it
+
 namespace gws::renderer::gpu {
 
 class VulkanDevice;
@@ -222,14 +224,6 @@ public:
     /// AS-build usage bits when the device supports ray tracing.
     VkBuffer get_vertex_buffer() const { return vbo_; }
     VkBuffer get_index_buffer()  const { return ibo_; }
-    /// Backing memory of the vertex buffer.
-    ///
-    /// NOT host-visible — this is DEVICE_LOCAL memory, so `vkMapMemory` on it is
-    /// invalid. It used to be mappable, and this accessor's contract said so;
-    /// reading vertices back now requires a copy to a host buffer (see
-    /// `skinning_check` for the pattern). Kept only for callers that need the
-    /// allocation handle itself.
-    VkDeviceMemory get_vertex_memory() const { return vbo_memory_; }
 
     /// Get the mesh's bounding box in local space (computed at load time).
     const AABB& bounding_box() const { return bounding_box_; }
@@ -273,9 +267,9 @@ public:
 private:
     VulkanDevice*  device_      = nullptr;
     VkBuffer       vbo_         = VK_NULL_HANDLE;
-    VkDeviceMemory vbo_memory_  = VK_NULL_HANDLE;
+    VmaAllocation  vbo_alloc_   = nullptr;   // sub-allocated by the device's VMA
     VkBuffer       ibo_         = VK_NULL_HANDLE;
-    VkDeviceMemory ibo_memory_  = VK_NULL_HANDLE;
+    VmaAllocation  ibo_alloc_   = nullptr;
     uint32_t       vertex_count_ = 0;
     uint32_t       index_count_  = 0;
     bool           double_sided_ = false;

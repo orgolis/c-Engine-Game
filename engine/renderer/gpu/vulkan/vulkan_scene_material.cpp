@@ -224,6 +224,19 @@ std::unique_ptr<Material> Material::create(VulkanDevice* device,
     // march outright.
     const Texture* height_tex  = pick(height,        default_white,  out->fallback_white_,  &Texture::create_default_white);
 
+    // Every slot must end up with a texture: the descriptor writes below read
+    // each one's view and sampler. If even the fallbacks could not be built
+    // (out of video memory, a failing allocator), report it and fail the
+    // material instead of dereferencing null -- that segfaulted the editor at
+    // startup when texture creation broke.
+    for (const Texture* t : {base_tex, normal_tex, mr_tex, ao_tex, emis_tex,
+                             dtl_alb_tex, dtl_nrm_tex, height_tex}) {
+        if (t == nullptr) {
+            spdlog::error("Material: no texture for a slot and its fallback could not be created");
+            return nullptr;
+        }
+    }
+
     out->tex_[0] = base_tex;
     out->tex_[1] = normal_tex;
     out->tex_[2] = mr_tex;

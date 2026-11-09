@@ -20,6 +20,8 @@
 #include <memory>
 #include <string>
 
+typedef struct VmaAllocation_T* VmaAllocation;   // as vk_mem_alloc.h declares it
+
 namespace gws::renderer::gpu {
 
 class VulkanDevice;
@@ -119,7 +121,7 @@ private:
     VkImage        image_        = VK_NULL_HANDLE;
     VkImageView    view_         = VK_NULL_HANDLE;
     VkSampler      sampler_      = VK_NULL_HANDLE;
-    VkDeviceMemory memory_       = VK_NULL_HANDLE;
+    VmaAllocation  memory_       = nullptr;   // from the device's VMA
     uint32_t       width_        = 0;
     uint32_t       height_       = 0;
     uint32_t       mip_levels_   = 1;
