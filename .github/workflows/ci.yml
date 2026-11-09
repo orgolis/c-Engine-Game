@@ -101,7 +101,7 @@ jobs:
             shadergraph_check snap_check taskrunner_check texgen_check undo_check \
             vehiclemove_check \
             audiobus_check extension_check docio_check gpuzones_check \
-            rendersettings_check userdirs_check gbuffer_reconstruct_check             shadersource_check terrainmat_check             componentlookup_check ecssync_check scenehooks_check draworder_check assetbrowserpaths_check             primitivelod_check shadowskip_check shadowvote_check rtsync_check presentsync_check hierarchygen_check hzbstreak_check ecsincremental_check componentstamp_check \
+            rendersettings_check userdirs_check gbuffer_reconstruct_check             shadersource_check terrainmat_check             componentlookup_check ecssync_check scenehooks_check draworder_check assetbrowserpaths_check             primitivelod_check shadowskip_check shadowvote_check rtsync_check presentsync_check hierarchygen_check hzbstreak_check ecsincremental_check componentstamp_check gbufferresize_check \
             script_check assetcook dedicated_server editor gws headless docgen projectctl innerloop_check
 
       - name: Run the check suite
@@ -231,7 +231,7 @@ jobs:
             shadergraph_check snap_check taskrunner_check texgen_check undo_check \
             vehiclemove_check \
             audiobus_check extension_check docio_check gpuzones_check \
-            rendersettings_check userdirs_check gbuffer_reconstruct_check             shadersource_check terrainmat_check             componentlookup_check ecssync_check scenehooks_check draworder_check assetbrowserpaths_check             primitivelod_check shadowskip_check shadowvote_check rtsync_check presentsync_check hierarchygen_check hzbstreak_check ecsincremental_check componentstamp_check \
+            rendersettings_check userdirs_check gbuffer_reconstruct_check             shadersource_check terrainmat_check             componentlookup_check ecssync_check scenehooks_check draworder_check assetbrowserpaths_check             primitivelod_check shadowskip_check shadowvote_check rtsync_check presentsync_check hierarchygen_check hzbstreak_check ecsincremental_check componentstamp_check gbufferresize_check \
             script_check assetcook dedicated_server editor gws headless docgen projectctl \
             innerloop_check gws_tests
 

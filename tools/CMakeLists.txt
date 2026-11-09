@@ -883,6 +883,14 @@ target_include_directories(texture_check PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/core/asset_pipeline)
 target_compile_features(texture_check PRIVATE cxx_std_20)
 
+# gbufferresize_check: VulkanGBuffer::resize used to leave its handles in the
+# moved-from G-buffer, whose destructor then destroyed what the resized one
+# owned. Resizes twice on a real device, records a pass into the result, and
+# asserts the validation layers reported nothing.
+add_executable(gbufferresize_check gbufferresize_check/main.cpp)
+target_link_libraries(gbufferresize_check PRIVATE renderer)
+target_compile_features(gbufferresize_check PRIVATE cxx_std_20)
+
 # model_check: headless custom-model load + culling verification — loads models
 # through the editor's own AssetMeshCache (scene_render_bridge.h) and runs the
 # CPU frustum cull over the results. Diagnoses "model falls back to a cube"

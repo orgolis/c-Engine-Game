@@ -335,6 +335,14 @@ public:
     /// (what counts against maxMemoryAllocationCount).
     void log_memory_stats() const;
 
+    /// Validation-layer warnings and errors reported so far in this process
+    /// (0 when the layers are off). Lets a check assert that the layers said
+    /// nothing instead of a person reading the log.
+    static uint32_t validation_message_count();
+    /// Whether the validation layers actually ended up enabled (they are
+    /// skipped when the layer is not installed).
+    bool validation_enabled() const { return config.enable_validation; }
+
     /// Subgroup vote and ballot are usable in fragment shaders. Optional in
     /// Vulkan (only compute is guaranteed), so the lighting pass only builds
     /// its warp-vote variant when this is true.
@@ -426,6 +434,7 @@ private:
 
     // Configuration
     RenderConfig config;
+    bool headless_ = false;   // instance made without a window system (no surface extensions)
     bool debug_enabled = false;
 
     // Set to true at device-creation time if all four RT KHR extensions

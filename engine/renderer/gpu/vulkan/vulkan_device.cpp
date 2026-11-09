@@ -14,6 +14,7 @@
 #endif
 
 #include "vk_mem_alloc.h"
+#include <atomic>
 #include <cstring>
 
 #include "vulkan_rt_functions.h"
@@ -40,6 +41,14 @@ namespace gws::renderer::gpu {
 // Debug Callback
 // ============================================================================
 
+// Warnings and errors the validation layers reported this process -- so a
+// check can assert "the layers said nothing" instead of a person reading logs.
+static std::atomic<uint32_t> g_validation_messages{0};
+
+uint32_t VulkanDevice::validation_message_count() {
+    return g_validation_messages.load(std::memory_order_relaxed);
+}
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
     VkDebugUtilsMessageTypeFlagsEXT message_type,
@@ -47,6 +56,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     void* user_data) {
 
     if (message_severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
+        g_validation_messages.fetch_add(1, std::memory_order_relaxed);
         GWS_LOG_WARN("[Vulkan] {}", callback_data->pMessage);
     } else {
         GWS_LOG_INFO("[Vulkan] {}", callback_data->pMessage);
@@ -699,6 +709,7 @@ void VulkanDevice::create_instance(RenderConfig& config) {
         extensions.assign(glfw_extensions, glfw_extensions + glfw_extension_count);
     } else if (glfwGetError(nullptr) == GLFW_NOT_INITIALIZED) {
         GWS_LOG_INFO("No window system initialised: creating a headless Vulkan instance");
+        headless_ = true;
     } else {
         throw std::runtime_error(
             "GLFW did not provide required Vulkan instance extensions");
@@ -942,9 +953,12 @@ void VulkanDevice::create_logical_device() {
 
     // Device extensions — swapchain is required; the four KHR ray-tracing
     // extensions are added if the physical device advertises all of them.
-    std::vector<const char*> extensions = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-    };
+    // Not on a headless instance: VK_KHR_swapchain requires VK_KHR_surface on
+    // the instance, which a headless one does not enable (the validation
+    // layers flagged every headless device creation), and a device with no
+    // surface has no swapchain to make.
+    std::vector<const char*> extensions;
+    if (!headless_) extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 
     // Enumerate available device extensions so we can opt into the RT set
     // only when the GPU actually supports them.

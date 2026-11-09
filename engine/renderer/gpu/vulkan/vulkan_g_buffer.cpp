@@ -1777,6 +1777,11 @@ void VulkanGBuffer::resize(VulkanDevice* device, uint32_t width, uint32_t height
     auto new_gbuffer = create(device, config_);
     if (new_gbuffer) {
         *this = std::move(*new_gbuffer);
+        // The defaulted move COPIES the raw Vulkan handles and leaves them in
+        // the source too, whose destructor would then destroy every handle
+        // *this now owns (double destroy, then use-after-free on the next
+        // frame). cleanup() does nothing without a device, so detach it.
+        new_gbuffer->device_ = nullptr;
     }
 }
 
