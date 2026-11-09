@@ -34,12 +34,15 @@ TEST_CASE("Character Controller - State Machine", "[character][state]") {
     }
 
     SECTION("Can transition Idle -> Walk") {
+        // Idle allows Walk, and movement input takes it there at once. (This
+        // used to assert CanTransitionTo(Walk) AFTER the input -- true only
+        // while ProcessInput failed to leave Idle, the bug fixed in
+        // character_controller.cpp; from Walk, Walk is not a transition.)
+        REQUIRE(controller.CanTransitionTo(CharacterStateType::Walk));
         InputAction input;
         input.forward = 1.0f;
         controller.ProcessInput(input);
-        
-        // Verify transition is allowed
-        REQUIRE(controller.CanTransitionTo(CharacterStateType::Walk));
+        REQUIRE(controller.IsInState(CharacterStateType::Walk));
     }
 
     SECTION("Can transition Walk -> Sprint") {
@@ -47,8 +50,9 @@ TEST_CASE("Character Controller - State Machine", "[character][state]") {
         input.forward = 1.0f;
         input.sprint = true;
         controller.ProcessInput(input);
-        
-        REQUIRE(controller.CanTransitionTo(CharacterStateType::Sprint));
+
+        // Forward + sprint walks, then sprints, in the same input.
+        REQUIRE(controller.IsInState(CharacterStateType::Sprint));
     }
 
     SECTION("Can transition to Jump from ground") {

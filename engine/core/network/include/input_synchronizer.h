@@ -104,6 +104,9 @@ private:
 
     std::vector<BufferedInput> input_history_;
     uint64_t last_confirmed_tick_ = 0;
+    // Nothing confirmed yet. 0 cannot mean "none": it is a real tick, and using
+    // it as the sentinel made tick 0's input never count as pending.
+    bool     has_confirmed_       = false;
 
     /**
      * Find input by tick using binary search

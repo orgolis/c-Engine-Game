@@ -79,14 +79,17 @@ int main() {
     // ---- Uniform block layout ---------------------------------------------
     // std140: a vec4 is 16 bytes and 16-byte aligned, and an array of vec4 has a
     // 16-byte stride. The shader declares { vec4 tiling; vec4 tint[4];
-    // vec4 mrno[4]; }, so the C++ mirror must be exactly 16 + 64 + 64.
+    // vec4 mrno[4]; vec4 triplanar; }, so the C++ mirror must be exactly
+    // 16 + 64 + 64 + 16. (v0.7.9 added triplanar to both sides and this check
+    // went on expecting 144 -- failing, and read as "pre-existing", for months.)
     std::printf("Uniform block matches the shader's std140 declaration:\n");
     {
-        check(sizeof(TerrainMaterialUniforms) == 144,
-              "block is 144 bytes (vec4 + vec4[4] + vec4[4])");
+        check(sizeof(TerrainMaterialUniforms) == 160,
+              "block is 160 bytes (vec4 + vec4[4] + vec4[4] + vec4)");
         check(offsetof(TerrainMaterialUniforms, tiling) == 0,  "tiling at offset 0");
         check(offsetof(TerrainMaterialUniforms, tint)   == 16, "tint[] at offset 16");
         check(offsetof(TerrainMaterialUniforms, mrno)   == 80, "mrno[] at offset 80");
+        check(offsetof(TerrainMaterialUniforms, triplanar) == 144, "triplanar at offset 144");
         check(sizeof(TerrainMaterialUniforms{}.tint) == 64,
               "tint[] is 4 x vec4 with no padding between elements");
         check(sizeof(TerrainMaterialUniforms{}.mrno) == 64,

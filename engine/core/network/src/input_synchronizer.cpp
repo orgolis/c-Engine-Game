@@ -63,15 +63,16 @@ bool InputSynchronizer::HasInputForTick(uint64_t tick) const {
 }
 
 void InputSynchronizer::ConfirmInputTick(uint64_t confirmed_tick) {
-    if (confirmed_tick > last_confirmed_tick_) {
+    if (!has_confirmed_ || confirmed_tick > last_confirmed_tick_) {
         last_confirmed_tick_ = confirmed_tick;
+        has_confirmed_       = true;
     }
 }
 
 std::vector<uint64_t> InputSynchronizer::GetPendingInputTicks() const {
     std::vector<uint64_t> pending;
     for (const auto& buffered : input_history_) {
-        if (buffered.tick > last_confirmed_tick_) {
+        if (!has_confirmed_ || buffered.tick > last_confirmed_tick_) {
             pending.push_back(buffered.tick);
         }
     }
@@ -79,7 +80,7 @@ std::vector<uint64_t> InputSynchronizer::GetPendingInputTicks() const {
 }
 
 bool InputSynchronizer::IsInputPending(uint64_t tick) const {
-    return tick > last_confirmed_tick_ && HasInputForTick(tick);
+    return (!has_confirmed_ || tick > last_confirmed_tick_) && HasInputForTick(tick);
 }
 
 void InputSynchronizer::PruneOldInputs(uint64_t keep_from_tick) {
@@ -91,6 +92,7 @@ void InputSynchronizer::PruneOldInputs(uint64_t keep_from_tick) {
 void InputSynchronizer::Reset() {
     input_history_.clear();
     last_confirmed_tick_ = 0;
+    has_confirmed_       = false;
 }
 
 } // namespace engine::network

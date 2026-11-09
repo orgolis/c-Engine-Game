@@ -84,11 +84,9 @@ jobs:
           # sharpest case: written after a missing <cstdint> broke the v0.6.0
           # RELEASE build, and never once run by CI.
           #
-          # Two are still absent because they FAIL on main today and predate
-          # this change: shadersource_check (gbuffer_scene.vert/.frag and
-          # shadow_caster.frag no longer compile to the SPIR-V that ships) and
-          # terrainmat_check (one UBO-size assertion). Left out so this does not
-          # turn CI red for faults it did not introduce -- named, not dropped.
+          # shadersource_check and terrainmat_check were left out while they
+          # failed on main; both pass now and are back. The last line adds the
+          # checks written in v0.8.7's performance and correctness work.
           cmake --build build -j $(nproc) --target \
             gameplay_check physics_check net_check repl_check server_check \
             mp_check prediction_check audio_check profiler_check texture_check \
@@ -103,7 +101,7 @@ jobs:
             shadergraph_check snap_check taskrunner_check texgen_check undo_check \
             vehiclemove_check \
             audiobus_check extension_check docio_check gpuzones_check \
-            rendersettings_check userdirs_check gbuffer_reconstruct_check \
+            rendersettings_check userdirs_check gbuffer_reconstruct_check             shadersource_check terrainmat_check             componentlookup_check ecssync_check scenehooks_check draworder_check assetbrowserpaths_check             primitivelod_check shadowskip_check shadowvote_check rtsync_check presentsync_check hierarchygen_check \
             script_check assetcook dedicated_server editor gws headless docgen projectctl innerloop_check
 
       - name: Run the check suite
@@ -233,7 +231,7 @@ jobs:
             shadergraph_check snap_check taskrunner_check texgen_check undo_check \
             vehiclemove_check \
             audiobus_check extension_check docio_check gpuzones_check \
-            rendersettings_check userdirs_check gbuffer_reconstruct_check \
+            rendersettings_check userdirs_check gbuffer_reconstruct_check             shadersource_check terrainmat_check             componentlookup_check ecssync_check scenehooks_check draworder_check assetbrowserpaths_check             primitivelod_check shadowskip_check shadowvote_check rtsync_check presentsync_check hierarchygen_check \
             script_check assetcook dedicated_server editor gws headless docgen projectctl \
             innerloop_check gws_tests
 
