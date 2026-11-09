@@ -121,7 +121,7 @@ private:
     bool create_light_env_resources();
     bool create_wboit_targets();
     bool create_composite_resources(VkImageView hdr_color_view, VkFormat hdr_format);
-    void upload_light_env(const glm::vec3& camera_position);
+    void upload_light_env(VkCommandBuffer cmd, const glm::vec3& camera_position);
     void destroy_wboit_targets();
     void destroy();
 

@@ -4,6 +4,7 @@
  */
 
 #include "vulkan_ddgi_pass.h"
+#include "vulkan_inline_update.h"   // per-frame UBO data in the command stream
 #include "vulkan_device.h"
 #include "vulkan_g_buffer.h"
 #include "ddgi_spirv.h"
@@ -134,7 +135,7 @@ bool VulkanDdgiPass::initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,
         VkBufferCreateInfo bi{};
         bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bi.size  = sizeof(DdgiUBO);
-        bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         if (vkCreateBuffer(vk, &bi, nullptr, &ubo_) != VK_SUCCESS) return false;
         VkMemoryRequirements req;
         vkGetBufferMemoryRequirements(vk, ubo_, &req);
@@ -467,7 +468,7 @@ void VulkanDdgiPass::execute_trace(VkCommandBuffer cmd) {
     u.sun_color = glm::vec4(sun_color_, config_.max_ray_dist);
     u.ambient   = glm::vec4(config_.ambient, 1.0f);   // w = enabled
     u.inv_view_proj = inv_view_proj_;
-    std::memcpy(ubo_mapped_, &u, sizeof(u));
+    cmd_update_uniform(cmd, ubo_, &u, sizeof(u));   // not a memcpy: a frame in flight may read it
     ++frame_index_;
 
     auto atlas_barrier = [&](VkImage img, VkImageLayout old_layout,

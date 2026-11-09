@@ -15,6 +15,7 @@
  */
 
 #include "vulkan_transparent_pass.h"
+#include "vulkan_inline_update.h"   // per-frame UBO data in the command stream
 
 #include "vulkan_device.h"
 #include "vulkan_scene_mesh.h"
@@ -233,7 +234,7 @@ bool VulkanTransparentPass::create_light_env_resources() {
     VkBufferCreateInfo bi{};
     bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bi.size        = sizeof(LightEnvUniform);
-    bi.usage       = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bi.usage       = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(vk, &bi, nullptr, &light_env_buffer_) != VK_SUCCESS) return false;
 
@@ -577,7 +578,7 @@ void VulkanTransparentPass::set_ibl_textures(
     spdlog::info("VulkanTransparentPass[WBOIT]: IBL textures wired (mips={})", prefilter_mips);
 }
 
-void VulkanTransparentPass::upload_light_env(const glm::vec3& camera_position) {
+void VulkanTransparentPass::upload_light_env(VkCommandBuffer cmd, const glm::vec3& camera_position) {
     if (light_env_mapped_ == nullptr) return;
     LightEnvUniform u{};
     u.ambient_color   = glm::vec4(ambient_color_, ambient_intensity_);
@@ -587,7 +588,7 @@ void VulkanTransparentPass::upload_light_env(const glm::vec3& camera_position) {
     u.ibl_params = glm::vec4(mips,
                              ibl_prefilter_mips_ > 0 ? ibl_intensity_ : 0.0f,
                              0.0f, 0.0f);
-    std::memcpy(light_env_mapped_, &u, sizeof(u));
+    cmd_update_uniform(cmd, light_env_buffer_, &u, sizeof(u));   // not a memcpy: a frame in flight may read it
 }
 
 void VulkanTransparentPass::set_ambient(const glm::vec3& color, float intensity) {
@@ -868,7 +869,7 @@ void VulkanTransparentPass::execute(VkCommandBuffer cmd,
                                     const std::vector<DrawItem>& items,
                                     const CameraData& camera) {
     if (cmd == VK_NULL_HANDLE || accum_render_pass_ == VK_NULL_HANDLE) return;
-    upload_light_env(camera.position);
+    upload_light_env(cmd, camera.position);
 
     static size_t last_logged_count = SIZE_MAX;
     if (items.size() != last_logged_count) {

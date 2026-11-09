@@ -4,6 +4,7 @@
  */
 
 #include "vulkan_volumetric_light_pass.h"
+#include "vulkan_inline_update.h"   // per-frame UBO data in the command stream
 #include "vulkan_device.h"
 #include "vulkan_g_buffer.h"
 #include "volumetric_light_spirv.h"
@@ -156,7 +157,7 @@ bool VulkanVolumetricLightPass::create_uniform_buffer() {
     VkBufferCreateInfo bi{};
     bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bi.size        = sizeof(VolUBO);
-    bi.usage       = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bi.usage       = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(vk, &bi, nullptr, &ubo_) != VK_SUCCESS) return false;
 
@@ -504,7 +505,7 @@ void VulkanVolumetricLightPass::execute(VkCommandBuffer cmd,
     ub.misc          = glm::vec4(static_cast<float>(scatter_w_),
                                  static_cast<float>(scatter_h_), 0.0f, 0.0f);
     ub.cloud_params  = cloud_params_;
-    std::memcpy(ubo_mapped_, &ub, sizeof(ub));
+    cmd_update_uniform(cmd, ubo_, &ub, sizeof(ub));   // not a memcpy: a frame in flight may read it
 
     // Transition scatter target to GENERAL for the compute write.
     VkImageMemoryBarrier b{};

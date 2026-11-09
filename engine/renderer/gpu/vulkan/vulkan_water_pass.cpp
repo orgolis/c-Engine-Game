@@ -4,6 +4,7 @@
  */
 
 #include "vulkan_water_pass.h"
+#include "vulkan_inline_update.h"   // per-frame UBO data in the command stream
 #include "vulkan_device.h"
 #include "vulkan_g_buffer.h"
 #include "water_spirv.h"
@@ -74,7 +75,7 @@ bool VulkanWaterPass::initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,
         VkBufferCreateInfo bi{};
         bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bi.size  = sizeof(FrameUBO);
-        bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         if (vkCreateBuffer(vk, &bi, nullptr, &ubo_) != VK_SUCCESS) return false;
         VkMemoryRequirements req;
@@ -313,7 +314,7 @@ void VulkanWaterPass::execute(VkCommandBuffer cmd,
     u.sun_dir    = glm::vec4(sun_direction_, 0.0f);
     u.sun_color  = glm::vec4(sun_color_, 0.0f);
     u.resolution = glm::vec4(static_cast<float>(width_), static_cast<float>(height_), 0, 0);
-    std::memcpy(ubo_mapped_, &u, sizeof(u));
+    cmd_update_uniform(cmd, ubo_, &u, sizeof(u));   // not a memcpy: a frame in flight may read it
 
     VkRenderPassBeginInfo rb{};
     rb.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;

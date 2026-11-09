@@ -1,4 +1,5 @@
 #include "vulkan_vxao_pass.h"
+#include "vulkan_inline_update.h"   // per-frame UBO data in the command stream
 #include "vulkan_device.h"
 #include "vulkan_g_buffer.h"
 #include "vulkan_scene_mesh.h"
@@ -94,7 +95,7 @@ bool VulkanVxaoPass::create_voxel_image() {
 bool VulkanVxaoPass::create_volume_ubo() {
     VkDevice vk = device_->get_device();
     VkBufferCreateInfo bi{}; bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bi.size = sizeof(VolUBO); bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bi.size = sizeof(VolUBO); bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(vk, &bi, nullptr, &vol_ubo_) != VK_SUCCESS) return false;
     VkMemoryRequirements mr{}; vkGetBufferMemoryRequirements(vk, vol_ubo_, &mr);
@@ -309,7 +310,7 @@ void VulkanVxaoPass::voxelize(VkCommandBuffer cmd, const DrawItem* items, size_t
     ubo.vol_min  = glm::vec4(vmin, 0.0f);
     ubo.vol_size = glm::vec4(volume_size_, volume_size_, volume_size_, 0.0f);
     ubo.grid     = glm::vec4(float(kGrid), 0, 0, 0);
-    std::memcpy(vol_ubo_mapped_, &ubo, sizeof(ubo));
+    cmd_update_uniform(cmd, vol_ubo_, &ubo, sizeof(ubo));   // not a memcpy: a frame in flight may read it
 
     auto barrier = [&](VkImageLayout from, VkImageLayout to, VkAccessFlags sa, VkAccessFlags da,
                        VkPipelineStageFlags ss, VkPipelineStageFlags ds) {
