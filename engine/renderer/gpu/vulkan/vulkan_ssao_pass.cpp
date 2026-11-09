@@ -80,6 +80,8 @@ void VulkanSsaoPass::destroy() {
     if (dsl_       != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(vk, dsl_, nullptr); dsl_ = VK_NULL_HANDLE; }
     if (sampler_   != VK_NULL_HANDLE) { vkDestroySampler(vk, sampler_, nullptr); sampler_ = VK_NULL_HANDLE; }
     if (gbuffer_sampler_ != VK_NULL_HANDLE) { vkDestroySampler(vk, gbuffer_sampler_, nullptr); gbuffer_sampler_ = VK_NULL_HANDLE; }
+    if (rt_params_        != VK_NULL_HANDLE) { vkDestroyBuffer(vk, rt_params_, nullptr); rt_params_ = VK_NULL_HANDLE; }
+    if (rt_params_memory_ != VK_NULL_HANDLE) { vkFreeMemory(vk, rt_params_memory_, nullptr); rt_params_memory_ = VK_NULL_HANDLE; }
     destroy_output_image();
     device_ = nullptr;
 }
@@ -129,6 +131,23 @@ bool VulkanSsaoPass::initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,
     }
 
     if (!create_output_image()) return false;
+    {
+        // RT AO parameter UBO (see the header). Tiny and created once.
+        VkDevice vk = device_->get_device();
+        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bi.size        = 3 * sizeof(glm::mat4);
+        bi.usage       = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(vk, &bi, nullptr, &rt_params_) != VK_SUCCESS) return false;
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(vk, rt_params_, &req);
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ai.allocationSize  = req.size;
+        ai.memoryTypeIndex = device_->find_memory_type(req.memoryTypeBits,
+                                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(vk, &ai, nullptr, &rt_params_memory_) != VK_SUCCESS) return false;
+        vkBindBufferMemory(vk, rt_params_, rt_params_memory_, 0);
+    }
     if (!build_compute_for_technique()) return false;
     if (!create_blur_pipeline()) return false;
     if (!create_blur_descriptor_resources()) return false;
@@ -217,7 +236,7 @@ bool VulkanSsaoPass::create_output_image() {
 bool VulkanSsaoPass::create_pipeline() {
     VkDevice vk = device_->get_device();
 
-    std::array<VkDescriptorSetLayoutBinding, 6> b{};
+    std::array<VkDescriptorSetLayoutBinding, 7> b{};
     b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     b[0].descriptorCount = 1; b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -230,17 +249,20 @@ bool VulkanSsaoPass::create_pipeline() {
     b[4].descriptorCount = 1; b[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     b[5].binding = 5; b[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; // RT history
     b[5].descriptorCount = 1; b[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    b[6].binding = 6; b[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;          // RT matrices
+    b[6].descriptorCount = 1; b[6].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     VkDescriptorSetLayoutCreateInfo li{};
     li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    li.bindingCount = (technique_ == AoTechnique::RT) ? 6u : 4u;   // RT adds accel(4) + history(5)
+    li.bindingCount = (technique_ == AoTechnique::RT) ? 7u : 4u;   // RT adds accel(4) + history(5) + UBO(6)
     li.pBindings    = b.data();
     if (vkCreateDescriptorSetLayout(vk, &li, nullptr, &dsl_) != VK_SUCCESS) return false;
 
-    // Push constants: RT needs 2 mat4 (cur+prev view_proj) + ivec2 + 3 floats +
-    // 2 ints = 156B (round to 160); screen-space techniques use 1 mat4 = 96B.
+    // Push constants: screen-space techniques use 1 mat4 + scalars = 96B. RT
+    // keeps only its scalars here (32B); its matrices are in the binding-6 UBO
+    // -- as push constants they were 156B, over the 128B Vulkan guarantees.
     VkPushConstantRange pr{};
     pr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pr.size       = (technique_ == AoTechnique::RT) ? 160u : 96u;
+    pr.size       = (technique_ == AoTechnique::RT) ? 32u : 96u;
     VkPipelineLayoutCreateInfo pli{};
     pli.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pli.setLayoutCount         = 1;
@@ -279,16 +301,17 @@ bool VulkanSsaoPass::create_pipeline() {
 
 bool VulkanSsaoPass::create_descriptor_resources() {
     VkDevice vk = device_->get_device();
-    std::array<VkDescriptorPoolSize, 3> ps{};
+    std::array<VkDescriptorPoolSize, 4> ps{};
     // RT mode has a 4th combined sampler (binding 5 = reprojection history).
     ps[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     ps[0].descriptorCount = (technique_ == AoTechnique::RT) ? 4u : 3u;
     ps[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;              ps[1].descriptorCount = 1;
     ps[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; ps[2].descriptorCount = 1;
+    ps[3].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;             ps[3].descriptorCount = 1;
     VkDescriptorPoolCreateInfo pi{};
     pi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pi.maxSets       = 1;
-    pi.poolSizeCount = (technique_ == AoTechnique::RT) ? 3u : 2u;
+    pi.poolSizeCount = (technique_ == AoTechnique::RT) ? 4u : 2u;
     pi.pPoolSizes    = ps.data();
     if (vkCreateDescriptorPool(vk, &pi, nullptr, &pool_) != VK_SUCCESS) return false;
     VkDescriptorSetAllocateInfo dai{};
@@ -319,7 +342,8 @@ void VulkanSsaoPass::write_descriptor_set() {
     infos[4].imageView   = history_view_;
     infos[4].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-    std::array<VkWriteDescriptorSet, 5> ws{};
+    std::array<VkWriteDescriptorSet, 6> ws{};
+    VkDescriptorBufferInfo rt_bi{rt_params_, 0, 3 * sizeof(glm::mat4)};
     for (uint32_t i = 0; i < 3; ++i) {
         ws[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         ws[i].dstSet          = set_;
@@ -342,7 +366,13 @@ void VulkanSsaoPass::write_descriptor_set() {
         ws[4].descriptorCount = 1;
         ws[4].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         ws[4].pImageInfo      = &infos[4];
-        write_count = 5;
+        ws[5].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        ws[5].dstSet          = set_;
+        ws[5].dstBinding      = 6;
+        ws[5].descriptorCount = 1;
+        ws[5].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        ws[5].pBufferInfo     = &rt_bi;
+        write_count = 6;
     }
     vkUpdateDescriptorSets(vk, write_count, ws.data(), 0, nullptr);
 }
@@ -554,16 +584,29 @@ void VulkanSsaoPass::execute(VkCommandBuffer cmd,
     const int32_t frame_idx = static_cast<int32_t>(frame_counter_ & 0xFFFu); // small for fract()
 
     if (technique_ == AoTechnique::RT) {
-        // RT: current + previous view_proj for convention-proof reprojection.
+        // RT: current + previous view_proj for convention-proof reprojection,
+        // and the current inverse to rebuild world positions from depth (F5).
+        // Written into the binding-6 UBO in-line: after the previous frame's
+        // reads of it, before this dispatch's.
+        const glm::mat4 mats[3] = { vp, prev_view_proj_, glm::inverse(vp) };
+        VkMemoryBarrier pre{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        pre.srcAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+        pre.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 1, &pre, 0, nullptr, 0, nullptr);
+        vkCmdUpdateBuffer(cmd, rt_params_, 0, sizeof(mats), mats);
+        VkMemoryBarrier post{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        post.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        post.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &post, 0, nullptr, 0, nullptr);
         struct RtPC {
-            float   cur_view_proj[16];
-            float   prev_view_proj[16];
             int32_t output_w, output_h;
             float   radius, bias, intensity;
             int32_t frame, accumulate;
+            int32_t pad;
         } pc{};
-        std::memcpy(pc.cur_view_proj,  &vp[0][0],              sizeof(pc.cur_view_proj));
-        std::memcpy(pc.prev_view_proj, &prev_view_proj_[0][0], sizeof(pc.prev_view_proj));
+        static_assert(sizeof(RtPC) == 32, "matches the 32-byte push range");
         pc.output_w   = static_cast<int32_t>(width_);
         pc.output_h   = static_cast<int32_t>(height_);
         pc.radius     = radius_val;

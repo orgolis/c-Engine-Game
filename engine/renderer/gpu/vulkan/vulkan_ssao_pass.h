@@ -141,6 +141,13 @@ private:
     VkDeviceMemory history_memory_ = VK_NULL_HANDLE;
     VkImageView    history_view_   = VK_NULL_HANDLE;
 
+    // RT AO's matrices (binding 6). They used to be push constants: 156 bytes,
+    // past the 128 Vulkan guarantees -- the pipeline layout is invalid on any
+    // device that reports exactly 128 (AMD commonly does). Updated inline in
+    // the command buffer each frame, so no host write races a frame in flight.
+    VkBuffer       rt_params_        = VK_NULL_HANDLE;
+    VkDeviceMemory rt_params_memory_ = VK_NULL_HANDLE;
+
     VkDescriptorSetLayout dsl_      = VK_NULL_HANDLE;
     VkDescriptorPool      pool_     = VK_NULL_HANDLE;
     VkDescriptorSet       set_      = VK_NULL_HANDLE;
