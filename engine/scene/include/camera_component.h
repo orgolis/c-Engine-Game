@@ -38,32 +38,32 @@ public:
 
     // ---- Projection type --------------------------------------------------
     CameraProjection GetProjection() const { return projection_; }
-    void SetProjection(CameraProjection p)  { projection_ = p; }
+    void SetProjection(CameraProjection p)  { MarkChanged(); projection_ = p; }
 
     // ---- Perspective parameters ------------------------------------------
     /// Vertical field-of-view in degrees. Clamped to (1, 179).
     float GetFOV() const { return fov_degrees_; }
-    void  SetFOV(float degrees) { fov_degrees_ = glm::clamp(degrees, 1.0f, 179.0f); }
+    void  SetFOV(float degrees) { MarkChanged(); fov_degrees_ = glm::clamp(degrees, 1.0f, 179.0f); }
 
     // ---- Orthographic parameters -----------------------------------------
     /// Half-height of the orthographic frustum (world units).
     float GetOrthographicSize() const { return ortho_size_; }
-    void  SetOrthographicSize(float size) { ortho_size_ = glm::max(0.001f, size); }
+    void  SetOrthographicSize(float size) { MarkChanged(); ortho_size_ = glm::max(0.001f, size); }
 
     // ---- Clip planes ------------------------------------------------------
     float GetNearPlane() const { return near_plane_; }
-    void  SetNearPlane(float n) {
+    void  SetNearPlane(float n) { MarkChanged();
         near_plane_ = glm::max(0.001f, n);
         if (far_plane_ <= near_plane_) far_plane_ = near_plane_ + 0.1f;
     }
     float GetFarPlane()  const { return far_plane_; }
-    void  SetFarPlane(float f) { far_plane_ = glm::max(near_plane_ + 0.001f, f); }
+    void  SetFarPlane(float f) { MarkChanged(); far_plane_ = glm::max(near_plane_ + 0.001f, f); }
 
     // ---- Clear colour -----------------------------------------------------
     /// RGBA linear background colour used by the renderer when this camera
     /// drives the active viewport. Pre-multiplied alpha not assumed.
     const glm::vec4& GetClearColor() const { return clear_color_; }
-    void SetClearColor(const glm::vec4& c) { clear_color_ = c; }
+    void SetClearColor(const glm::vec4& c) { MarkChanged(); clear_color_ = c; }
 
     // ---- Derived matrices -------------------------------------------------
     /// Returns the projection matrix for the supplied aspect ratio. Aspect

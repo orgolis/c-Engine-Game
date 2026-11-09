@@ -84,7 +84,7 @@ public:
     /**
      * Enable/disable light
      */
-    void SetEnabled(bool enabled) { enabled_ = enabled; }
+    void SetEnabled(bool enabled) { MarkChanged(); enabled_ = enabled; }
     
     // ========== Color & Intensity ==========
     
@@ -96,12 +96,12 @@ public:
     /**
      * Set light color
      */
-    void SetColor(const glm::vec3& color) { color_ = glm::clamp(color, glm::vec3(0.0f), glm::vec3(1.0f)); }
+    void SetColor(const glm::vec3& color) { MarkChanged(); color_ = glm::clamp(color, glm::vec3(0.0f), glm::vec3(1.0f)); }
     
     /**
      * Set light color with individual components
      */
-    void SetColor(float r, float g, float b) { SetColor(glm::vec3(r, g, b)); }
+    void SetColor(float r, float g, float b) { MarkChanged(); SetColor(glm::vec3(r, g, b)); }
     
     /**
      * Get light intensity
@@ -111,7 +111,7 @@ public:
     /**
      * Set light intensity (brightness)
      */
-    void SetIntensity(float intensity) { intensity_ = std::max(0.0f, intensity); }
+    void SetIntensity(float intensity) { MarkChanged(); intensity_ = std::max(0.0f, intensity); }
     
     /**
      * Get light temperature (in Kelvin)
@@ -121,7 +121,7 @@ public:
     /**
      * Set light temperature (in Kelvin)
      */
-    void SetTemperature(float kelvin) { 
+    void SetTemperature(float kelvin) { MarkChanged(); 
         temperature_ = glm::clamp(kelvin, 1000.0f, 10000.0f); 
         UpdateColorFromTemperature();
     }
@@ -136,7 +136,7 @@ public:
     /**
      * Set light range (for point and spot lights)
      */
-    void SetRange(float range) { range_ = std::max(0.1f, range); }
+    void SetRange(float range) { MarkChanged(); range_ = std::max(0.1f, range); }
     
     /**
      * Get spot light angles (inner, outer in degrees)
@@ -146,7 +146,7 @@ public:
     /**
      * Set spot light angles (inner, outer in degrees)
      */
-    void SetSpotAngles(float inner_angle, float outer_angle) {
+    void SetSpotAngles(float inner_angle, float outer_angle) { MarkChanged();
         spot_angles_.x = glm::clamp(inner_angle, 0.0f, 90.0f);
         spot_angles_.y = glm::clamp(outer_angle, spot_angles_.x, 90.0f);
     }
@@ -159,7 +159,7 @@ public:
     /**
      * Set spot light falloff exponent
      */
-    void SetSpotFalloff(float falloff) { spot_falloff_ = std::max(0.1f, falloff); }
+    void SetSpotFalloff(float falloff) { MarkChanged(); spot_falloff_ = std::max(0.1f, falloff); }
     
     /**
      * Get light attenuation (linear, quadratic)
@@ -169,7 +169,7 @@ public:
     /**
      * Set light attenuation (linear, quadratic)
      */
-    void SetAttenuation(float linear, float quadratic) {
+    void SetAttenuation(float linear, float quadratic) { MarkChanged();
         attenuation_.x = std::max(0.0f, linear);
         attenuation_.y = std::max(0.0f, quadratic);
     }
@@ -184,7 +184,7 @@ public:
     /**
      * Enable/disable shadow casting
      */
-    void SetCastShadow(bool cast_shadow) { cast_shadow_ = cast_shadow; }
+    void SetCastShadow(bool cast_shadow) { MarkChanged(); cast_shadow_ = cast_shadow; }
     
     /**
      * Get shadow quality
@@ -194,7 +194,7 @@ public:
     /**
      * Set shadow quality
      */
-    void SetShadowQuality(ShadowQuality quality) { shadow_quality_ = quality; }
+    void SetShadowQuality(ShadowQuality quality) { MarkChanged(); shadow_quality_ = quality; }
     
     /**
      * Get shadow bias (bias, normal_bias)
@@ -204,7 +204,7 @@ public:
     /**
      * Set shadow bias (bias, normal_bias)
      */
-    void SetShadowBias(float bias, float normal_bias = 0.0f) {
+    void SetShadowBias(float bias, float normal_bias = 0.0f) { MarkChanged();
         shadow_bias_.x = std::max(0.0f, bias);
         shadow_bias_.y = normal_bias;
     }
@@ -217,7 +217,7 @@ public:
     /**
      * Set shadow filter radius
      */
-    void SetShadowFilterRadius(float radius) { shadow_filter_radius_ = std::max(0.5f, radius); }
+    void SetShadowFilterRadius(float radius) { MarkChanged(); shadow_filter_radius_ = std::max(0.5f, radius); }
     
     /**
      * Get shadow near/far planes
@@ -227,7 +227,7 @@ public:
     /**
      * Set shadow near/far planes
      */
-    void SetShadowPlanes(float near_plane, float far_plane) {
+    void SetShadowPlanes(float near_plane, float far_plane) { MarkChanged();
         shadow_planes_.x = std::max(0.01f, near_plane);
         shadow_planes_.y = std::max(shadow_planes_.x + 1.0f, far_plane);
     }
@@ -240,7 +240,7 @@ public:
     /**
      * Set cascade count (for directional lights)
      */
-    void SetCascadeCount(uint32_t count) { cascade_count_ = glm::clamp(count, 1u, 4u); }
+    void SetCascadeCount(uint32_t count) { MarkChanged(); cascade_count_ = glm::clamp(count, 1u, 4u); }
     
     // ========== Advanced Features ==========
     
@@ -252,7 +252,7 @@ public:
     /**
      * Set volumetric light intensity
      */
-    void SetVolumetricIntensity(float intensity) {
+    void SetVolumetricIntensity(float intensity) { MarkChanged();
         volumetric_intensity_ = glm::clamp(intensity, 0.0f, 1.0f);
     }
 
@@ -260,19 +260,19 @@ public:
 
     /// Rectangle size (width, height) in world units, for LightType::Area.
     glm::vec2 GetAreaSize() const { return area_size_; }
-    void      SetAreaSize(glm::vec2 s) {
+    void      SetAreaSize(glm::vec2 s) { MarkChanged();
         area_size_ = glm::max(s, glm::vec2(0.01f));
     }
 
     /// Whether the area light emits from both faces (else only its +normal side).
     bool IsTwoSided() const { return two_sided_; }
-    void SetTwoSided(bool b) { two_sided_ = b; }
+    void SetTwoSided(bool b) { MarkChanged(); two_sided_ = b; }
 
     // ========== Cookie / Gobo (spot lights) ==========
 
     /// Texture projected through a spot light (a gobo mask). Empty = no cookie.
     const std::string& GetCookiePath() const { return cookie_path_; }
-    void               SetCookiePath(const std::string& p) { cookie_path_ = p; }
+    void               SetCookiePath(const std::string& p) { MarkChanged(); cookie_path_ = p; }
 
     // ========== Transform Accessors ==========
     
@@ -366,7 +366,7 @@ public:
     /**
      * @brief Set light color
      */
-    void SetColor(const glm::vec3& color) { color_ = color; }
+    void SetColor(const glm::vec3& color) { MarkChanged(); color_ = color; }
     
     /**
      * @brief Get light intensity
@@ -376,7 +376,7 @@ public:
     /**
      * @brief Set light intensity
      */
-    void SetIntensity(float intensity) { intensity_ = std::max(0.0f, intensity); }
+    void SetIntensity(float intensity) { MarkChanged(); intensity_ = std::max(0.0f, intensity); }
     
     /**
      * @brief Get shadow casting state
@@ -386,7 +386,7 @@ public:
     /**
      * @brief Set shadow casting
      */
-    void SetCastShadow(bool cast_shadow) { cast_shadow_ = cast_shadow; }
+    void SetCastShadow(bool cast_shadow) { MarkChanged(); cast_shadow_ = cast_shadow; }
     
     /**
      * @brief Get light direction (from entity's forward vector)
@@ -401,7 +401,7 @@ public:
     /**
      * @brief Set shadow bias
      */
-    void SetShadowBias(float bias) { shadow_bias_ = bias; }
+    void SetShadowBias(float bias) { MarkChanged(); shadow_bias_ = bias; }
     
 protected:
     glm::vec3 color_ = glm::vec3(1.0f);
@@ -442,7 +442,7 @@ public:
     /**
      * @brief Set light color
      */
-    void SetColor(const glm::vec3& color) { color_ = color; }
+    void SetColor(const glm::vec3& color) { MarkChanged(); color_ = color; }
     
     /**
      * @brief Get light intensity
@@ -452,7 +452,7 @@ public:
     /**
      * @brief Set light intensity
      */
-    void SetIntensity(float intensity) { intensity_ = std::max(0.0f, intensity); }
+    void SetIntensity(float intensity) { MarkChanged(); intensity_ = std::max(0.0f, intensity); }
     
 protected:
     glm::vec3 color_ = glm::vec3(0.3f);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "primitive_meshes.h"
+#include <utility>   // std::as_const: reads must not stamp the entity
 #include "material_cache.h"       // .mat assets -> MaterialDesc -> gpu::Material
 #include "vulkan/vulkan_scene_material.h"
 #include "vulkan/vulkan_terrain_material.h"
@@ -1342,7 +1343,7 @@ inline void build_draw_items(
                 r.has_key = true;
             }
         }
-        const auto* mc = ent->GetMeshComponent();
+        const auto* mc = std::as_const(*ent).GetMeshComponent();
         if (mc && !mc->mesh_path.empty()) r.kind = EntityDraw::kAsset;
         else if (mr && r.mesh)            r.kind = EntityDraw::kPrimitive;
     };
@@ -1420,7 +1421,7 @@ inline void build_draw_items(
         const schizo::scene::AlphaMode am = r.am;
 
         if (r.kind == EntityDraw::kAsset) {
-            const auto* mc = ent->GetMeshComponent();
+            const auto* mc = std::as_const(*ent).GetMeshComponent();
             const auto* loaded = asset_cache.get_or_load(
                 mc->mesh_path, device, mat_layout, mat_pool, textures);
             if (loaded && !loaded->draw_items.empty()) {

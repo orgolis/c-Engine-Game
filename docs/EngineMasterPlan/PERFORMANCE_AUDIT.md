@@ -856,9 +856,41 @@ clean at 0 and 20k. `GWS_ECS_FULL_TRANSFORMS=1` forces the old path. `ecsincreme
 confirmed to run. A deep chain must rewrite exactly its five members. Mutation-tested: dropping the
 propagation (206 bad frames) or one setter's stamp (209) is caught.
 
-**Stage 2, not done yet:** the per-component mirror (`sync.entities`, ~1.5 ms) and the draw records
-(`draw.classify`, ~1.4 ms) still visit every entity. They need the same kind of stamp on component
-data, which has more writers (setters, reflection, raw-field inspector widgets).
+**Stage 2a: the component mirror.** Every Entity now carries a **content stamp** on the same counter.
+It's stamped by `Component::MarkChanged()`, which all 123 mutating members of the nine component
+classes call, and by `AddComponent`, `RemoveComponent`, `SetActive` and `SetMesh`. The embedded
+public-field structs (MeshComponent, SkinnedMesh, ParticleEmitter, NpcAgent) are written field by
+field from many places, so their **non-const accessors stamp**: handing out a mutable pointer counts
+as a change. That is conservative; a reader that used one only costs a recompute. Every per-frame
+reader was moved to const access (NPC agents, particle emitters, skinned animation and its prune, the
+skinning scan, the mirror, the draw-list build, net replication); the compiler confirmed none of them
+writes. With an unchanged entity list, the parallel mirror skips any entity whose Transform and
+content stamps predate the last sync, and which isn't ECS-authoritative, without touching its
+components.
+
+The gather pass, which reads every entity for the active test and both stamps, now runs on the job
+system too, into index-aligned scratch compacted serially. Serial, the extra stamp read had made it
+0.85–1.5 ms.
+
+| @ 20k, static | before (stage 0) | after |
+|---|---|---|
+| `sync.entities` | 1.32–1.79 ms | **0.18–0.44 ms** |
+| `sync.gather` | 0.41–0.63 ms | 0.33–0.62 ms (parallel) |
+| `ecs_sync` total | 2.7–4.0 ms | **0.63–1.14 ms** |
+
+Pixel-identical at 0 and 20k. Validation layers and `GWS_ECS_VERIFY_ALL` are clean. A temporary
+counter confirmed 0 transform- and 0 content-stamped entities per still frame. `GWS_ECS_FULL_MIRROR=1`
+turns the skip off. `componentstamp_check` has two halves:
+
+- a source scan holding every component mutator to `MarkChanged()` (123 found);
+- a 1500-entity scene on the skipping path, where one change per kind must reach the ECS (setters,
+  embedded fields via accessors, `SetMesh`, a late `AddComponent`) and a sync must stamp nothing it
+  reads.
+
+Mutation-tested: a setter without `MarkChanged()` fails both halves, and an accessor that doesn't
+stamp fails the behaviour half.
+
+**Stage 2b, open:** the draw records (`draw.classify`, ~1.4 ms parallel) still visit every entity.
 
 ### (q) Shadow rays for surfaces facing away from the light — skipped
 

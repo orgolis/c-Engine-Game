@@ -1,4 +1,5 @@
 #include "ecs_bridge.h"
+#include <utility>   // std::as_const: reads must not stamp the entity
 #include "profiler/profiler.h"
 #include <optional>
 #include "ecs/register_all.h"
@@ -276,8 +277,9 @@ void sync_scene_components(ecs::World& world, ecs::Entity e,
     }
 
     // ---- Particle emitter (POD on both sides) ---------------------------
-    if (auto* pe = oent->GetParticleEmitterComponent()) {
+    if (const auto* cpe = std::as_const(*oent).GetParticleEmitterComponent()) {
         if (ecs_authoritative) {
+            auto* pe = oent->GetParticleEmitterComponent();   // writes below: stamps
             if (const auto* c = world.try_get<ecs::ParticleEmitter>(e)) {
                 pe->spawn_rate    = c->spawn_rate;
                 pe->max_particles = c->max_particles;
@@ -286,14 +288,15 @@ void sync_scene_components(ecs::World& world, ecs::Entity e,
                 pe->enabled       = flag_get(c->flags, 0);
                 pe->emitting      = flag_get(c->flags, 1);
             }
-        } else if (pe->enabled) {
-            world.add<ecs::ParticleEmitter>(e, to_ecs(*pe));
+        } else if (cpe->enabled) {
+            world.add<ecs::ParticleEmitter>(e, to_ecs(*cpe));
         }
     }
 
     // ---- NPC agent ------------------------------------------------------
-    if (auto* na = oent->GetNpcAgentComponent()) {
+    if (const auto* cna = std::as_const(*oent).GetNpcAgentComponent()) {
         if (ecs_authoritative) {
+            auto* na = oent->GetNpcAgentComponent();
             if (const auto* c = world.try_get<ecs::NpcAgent>(e)) {
                 na->sight_range   = c->sight_range;
                 na->sight_fov_deg = c->sight_fov_deg;
@@ -302,14 +305,15 @@ void sync_scene_components(ecs::World& world, ecs::Entity e,
                 na->ability_index = c->ability_index;
                 na->enabled       = flag_get(c->flags, 0);
             }
-        } else if (na->enabled) {
-            world.add<ecs::NpcAgent>(e, to_ecs(*na));
+        } else if (cna->enabled) {
+            world.add<ecs::NpcAgent>(e, to_ecs(*cna));
         }
     }
 
     // ---- Skinned mesh ---------------------------------------------------
-    if (auto* sm = oent->GetSkinnedMeshComponent()) {
+    if (const auto* csm = std::as_const(*oent).GetSkinnedMeshComponent()) {
         if (ecs_authoritative) {
+            auto* sm = oent->GetSkinnedMeshComponent();
             if (const auto* c = world.try_get<ecs::SkinnedMesh>(e)) {
                 sm->clip_index        = c->clip_index;
                 sm->idle_clip         = c->idle_clip;
@@ -319,8 +323,8 @@ void sync_scene_components(ecs::World& world, ecs::Entity e,
                 sm->playing           = flag_get(c->flags, 0);
                 sm->drive_from_motion = flag_get(c->flags, 1);
             }
-        } else if (sm->active()) {
-            world.add<ecs::SkinnedMesh>(e, to_ecs(*sm));
+        } else if (csm->active()) {
+            world.add<ecs::SkinnedMesh>(e, to_ecs(*csm));
         }
     }
 }
@@ -333,7 +337,7 @@ bool mesh_renderer_of(scene::Entity* oent, ecs::MeshRenderer& mr) {
         mr.primitive = static_cast<uint32_t>(m->GetMeshType());
         drawable = true;
     }
-    if (const auto* mc = oent->GetMeshComponent()) {
+    if (const auto* mc = std::as_const(*oent).GetMeshComponent()) {
         if (!mc->mesh_path.empty()) {
             mr.mesh = static_cast<uint64_t>(std::hash<std::string>{}(mc->mesh_path));
             drawable = true;
@@ -420,11 +424,12 @@ bool mirror_in_place(MirrorPools& P, ecs::Entity e, scene::Entity* o,
         if (!put(P.script, to_ecs(*c))) return false;
     if (auto c = o->GetComponent<scene::AudioSourceComponent>())
         if (!put(P.audio, to_ecs(*c))) return false;
-    if (auto* pe = o->GetParticleEmitterComponent(); pe && pe->enabled)
+    const scene::Entity& co = *o;   // reads only: the mutable accessors stamp the entity
+    if (const auto* pe = co.GetParticleEmitterComponent(); pe && pe->enabled)
         if (!put(P.particle, to_ecs(*pe))) return false;
-    if (auto* na = o->GetNpcAgentComponent(); na && na->enabled)
+    if (const auto* na = co.GetNpcAgentComponent(); na && na->enabled)
         if (!put(P.npc, to_ecs(*na))) return false;
-    if (auto* sm = o->GetSkinnedMeshComponent(); sm && sm->active())
+    if (const auto* sm = co.GetSkinnedMeshComponent(); sm && sm->active())
         if (!put(P.skinned, to_ecs(*sm))) return false;
 
     ecs::MeshRenderer mr;
@@ -501,6 +506,8 @@ struct EcsSceneBridge::Impl {
     // above persist across syncs and hold the previous sync's complete result
     // when have_prev_matrices is set.
     std::vector<uint64_t>          oop_stamp;
+    std::vector<uint64_t>          oop_cstamp;     // parallel to oop_tf: Entity::ContentStamp()
+    bool                           have_prev_mirror = false;   // last sync mirrored every entity
     std::vector<uint8_t>           wstate;         // 0 unknown, 1 world changed, 2 unchanged
     std::vector<uint32_t>          changed;        // indices whose world matrix is recomputed
     uint64_t                       prev_sync_begin = 0;
@@ -909,9 +916,11 @@ void EcsSceneBridge::sync_and_run(
     oop_tf.clear();
     oop_ent.clear();
     oop_stamp.clear();
+    impl_->oop_cstamp.clear();
     impl_->oop_parent.clear();
     if (!scene) {
         impl_->have_prev_matrices = false;
+        impl_->have_prev_mirror   = false;
         // Scene gone: tear down all persistent shadow entities.
         for (auto& kv : slots) world.destroy(kv.second.entity);
         destroyed_ = slots.size();
@@ -924,14 +933,49 @@ void EcsSceneBridge::sync_and_run(
     next("sync.gather");
     // --- Pass 1: gather active entities (active-in-hierarchy implies every
     // ancestor is also active, so the parent map below resolves for non-roots).
-    for (const auto& ent : scene->GetEntities()) {
-        if (!ent || !ent->IsActiveInHierarchy()) continue;
-        scene::Transform* tf = ent->GetTransform();
-        if (!tf) continue;
-        oop_tf.push_back(tf);
-        oop_ent.push_back(ent.get());
-        impl_->oop_parent.push_back(tf->GetParent());
-        oop_stamp.push_back(tf->ChangeStamp());   // the Transform is in cache right now
+    //
+    // Each entity's reads (active up the hierarchy, its transform, parent and
+    // change stamps) are a few cache misses on a large scattered object, so
+    // they go wide into index-aligned scratch; a serial pass then compacts the
+    // active ones in scene order. Serial, this loop was ~0.5-1.5 ms at 20k.
+    {
+        const auto& ents = scene->GetEntities();
+        const size_t ne = ents.size();
+        struct Gathered {
+            scene::Entity*    ent;
+            scene::Transform* tf;
+            scene::Transform* parent;
+            uint64_t          tstamp, cstamp;
+        };
+        static std::vector<Gathered> g;   // persistent scratch
+        g.resize(ne);
+        auto read = [&](size_t i) {
+            Gathered& r = g[i];
+            r.ent = nullptr;
+            const auto& ent = ents[i];
+            if (!ent || !ent->IsActiveInHierarchy()) return;
+            scene::Transform* tf = ent->GetTransform();
+            if (!tf) return;
+            r.ent    = ent.get();
+            r.tf     = tf;
+            r.parent = tf->GetParent();
+            r.tstamp = tf->ChangeStamp();
+            r.cstamp = ent->ContentStamp();
+        };
+        auto& gjs = gws::jobs::JobSystem::instance();
+        if (gjs.initialized() && ne >= kParallelMirrorMin)
+            gjs.parallel_for(0, ne, [&read](size_t i) { read(i); });
+        else
+            for (size_t i = 0; i < ne; ++i) read(i);
+        for (size_t i = 0; i < ne; ++i) {
+            const Gathered& r = g[i];
+            if (!r.ent) continue;
+            oop_tf.push_back(r.tf);
+            oop_ent.push_back(r.ent);
+            impl_->oop_parent.push_back(r.parent);
+            oop_stamp.push_back(r.tstamp);
+            impl_->oop_cstamp.push_back(r.cstamp);
+        }
     }
 
     next("sync.reconcile");
@@ -1007,9 +1051,26 @@ void EcsSceneBridge::sync_and_run(
         auto& js = gws::jobs::JobSystem::instance();
         if (js.initialized() && oop_tf.size() >= kParallelMirrorMin) {
             MirrorPools pools = MirrorPools::fetch(world.registry());
+            // Change-driven: with the same entities as last sync (which
+            // mirrored all of them), an entity whose Transform and content
+            // stamps both predate that sync already has exactly these values
+            // in the ECS -- nothing that could change them has run. It is
+            // skipped without touching its components: at 20k entities the
+            // per-entity misses are the whole cost of this pass. ECS-
+            // authoritative entities always take the serial path.
+            static const bool force_full_mirror = std::getenv("GWS_ECS_FULL_MIRROR") != nullptr;
+            const bool may_skip = !force_full_mirror && same_list && impl_->have_prev_mirror &&
+                                  impl_->oop_cstamp.size() == oop_tf.size();
+            const uint64_t since = impl_->prev_sync_begin;
+            const auto& cst = impl_->oop_cstamp;
             auto in_place = [&](size_t i) {
                 const ecs::Entity e = slot_of[i]->entity;
                 shadow[i] = e;
+                if (may_skip && oop_stamp[i] < since && cst[i] < since &&
+                    !pools.authoritative.contains(e)) {
+                    serial[i] = 0;
+                    return;
+                }
                 serial[i] = mirror_in_place(pools, e, oop_ent[i], oop_tf[i]) ? 0 : 1;
             };
             js.parallel_for(0, oop_tf.size(), [&in_place](size_t i) { in_place(i); });
@@ -1070,6 +1131,7 @@ void EcsSceneBridge::sync_and_run(
         else if (world.has<ecs::MeshRenderer>(e)) world.remove<ecs::MeshRenderer>(e);
     }
     entity_count_ = shadow.size();
+    impl_->have_prev_mirror = true;
 
     next("sync.parents");
     // --- Pass 3: wire parents (resolve OOP parent -> shadow index / entity).

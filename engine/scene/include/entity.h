@@ -96,6 +96,14 @@ public:
      */
     class Entity* GetEntity() const { return entity_; }
 
+    /// Record that this component's data changed: stamps the owning entity's
+    /// content (Entity::ContentStamp). Every mutating member of a component
+    /// calls it -- componentstamp_check holds the headers to that -- so caches
+    /// keyed on the stamp (the editor's ECS mirror, the draw records) can skip
+    /// entities nothing touched. A component not attached yet has no entity;
+    /// AddComponent stamps then.
+    void MarkChanged();
+
 protected:
     class Entity* entity_ = nullptr;
 
@@ -197,20 +205,25 @@ public:
     /**
      * @brief Get mesh component
      */
-    MeshComponent* GetMeshComponent() { return &mesh_component_; }
+    // The embedded components are plain structs written field by field, from
+    // many places (inspector, reflection, serializer, gameplay). Handing out a
+    // MUTABLE pointer therefore counts as a change: conservative -- a caller
+    // that only reads through it costs a recompute, never a stale cache.
+    // Per-frame readers use the const overloads.
+    MeshComponent* GetMeshComponent() { TouchContent(); return &mesh_component_; }
     const MeshComponent* GetMeshComponent() const { return &mesh_component_; }
 
     /// Rigged-character data. Empty gltf_path = not a skinned character, which
     /// is what the render path tests. Data only — the GPU-side actor is owned
     /// editor-side and keyed by entity id, so a scene stays loadable without a
     /// device. See skinned_mesh_component.h.
-    NpcAgentComponent* GetNpcAgentComponent() { return &npc_agent_component_; }
+    NpcAgentComponent* GetNpcAgentComponent() { TouchContent(); return &npc_agent_component_; }
     const NpcAgentComponent* GetNpcAgentComponent() const { return &npc_agent_component_; }
 
-    ParticleEmitterComponent* GetParticleEmitterComponent() { return &particle_emitter_component_; }
+    ParticleEmitterComponent* GetParticleEmitterComponent() { TouchContent(); return &particle_emitter_component_; }
     const ParticleEmitterComponent* GetParticleEmitterComponent() const { return &particle_emitter_component_; }
 
-    SkinnedMeshComponent* GetSkinnedMeshComponent() { return &skinned_mesh_component_; }
+    SkinnedMeshComponent* GetSkinnedMeshComponent() { TouchContent(); return &skinned_mesh_component_; }
     const SkinnedMeshComponent* GetSkinnedMeshComponent() const { return &skinned_mesh_component_; }
     
     /**
@@ -218,6 +231,7 @@ public:
      */
     void SetMesh(const std::string& mesh_path) {
         mesh_component_.SetMesh(mesh_path);
+        TouchContent();
     }
     
     // ========== Hierarchy ==========
@@ -266,6 +280,14 @@ public:
      * @brief Check if entity is active
      */
     bool IsActive() const { return is_active_; }
+
+    /// When anything about this entity other than its Transform last changed:
+    /// a component's data (Component::MarkChanged), the component set, the
+    /// active flag, or a mutable pointer handed out to an embedded component.
+    /// Same counter as Transform::ChangeStamp, so one remembered
+    /// Transform::ChangeStampCounter() value answers "changed since" for both.
+    uint64_t ContentStamp() const { return content_stamp_; }
+    void     TouchContent() { content_stamp_ = Transform::NextChangeStamp(); }
     
     /**
      * @brief Set entity active/inactive
@@ -296,6 +318,7 @@ public:
         components_.push_back(component);
         hook_mask_ |= component->hooks_;
         detail::bump_component_set_generation();
+        TouchContent();
         return component;
     }
 
@@ -441,6 +464,10 @@ protected:
     
     // Hierarchy
     std::shared_ptr<Entity> parent_;
+    // Read with parent_ for every entity every frame (IsActiveInHierarchy, the
+    // ECS mirror's change test), so kept on the same cache line as it.
+    bool is_active_ = true;
+    uint64_t content_stamp_ = Transform::NextChangeStamp();   // new: counts as changed
     std::vector<std::shared_ptr<Entity>> children_;
     
     // Transform
@@ -457,10 +484,13 @@ protected:
     uint8_t hook_mask_ = 0;   // OR of components_' hooks_; kept by Add/RemoveComponent
 
     // State
-    bool is_active_ = true;
     bool is_destroyed_ = false;
     
     friend class Scene;
 };
+
+inline void Component::MarkChanged() {
+    if (entity_) entity_->TouchContent();
+}
 
 } // namespace schizo::scene

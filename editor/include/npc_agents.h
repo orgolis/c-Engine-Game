@@ -31,6 +31,7 @@
 // ============================================================================
 
 #include "ai/behavior_tree.h"
+#include <utility>   // std::as_const: reads must not stamp the entity
 #include "ai/navmesh.h"
 #include "ai/path_follow.h"
 #include "ecs/gameplay_abilities.h" // try_activate_ability: the AI picks WHEN, not WHAT
@@ -64,7 +65,7 @@ public:
         std::unordered_map<uint32_t, bool> seen;
         for (const auto& ent : scene->GetEntities()) {
             if (!ent || !ent->IsActive()) continue;
-            auto* ag = ent->GetNpcAgentComponent();
+            const auto* ag = std::as_const(*ent).GetNpcAgentComponent();
             if (!ag || !ag->enabled) continue;
             auto* tf = ent->GetTransform();
             if (!tf) continue;

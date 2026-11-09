@@ -4,6 +4,7 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
+#include <utility>   // std::as_const: reads must not stamp the entity
 #include <vulkan/vulkan.h>
 #include <cstdio>
 // gws Vulkan renderer
@@ -8837,7 +8838,7 @@ int main(int argc, char** argv) {
             if (auto sk_scene = editor_state.editor_scene->GetScene()) {
                 for (const auto& ent : sk_scene->GetEntities()) {
                     if (!ent) continue;
-                    auto* smc = ent->GetSkinnedMeshComponent();
+                    const auto* smc = std::as_const(*ent).GetSkinnedMeshComponent();
                     if (!smc || !smc->active()) continue;
                     auto* actor = skinned_actors.get_or_create(
                         ent->GetId(), smc->gltf_path, &device,
@@ -8873,7 +8874,7 @@ int main(int argc, char** argv) {
                 // first scene with a few skinned characters in it.
                 skinned_actors.prune([&sk_scene](uint32_t id) {
                     if (auto e = sk_scene->GetEntityById(id)) {
-                        auto* c = e->GetSkinnedMeshComponent();
+                        const auto* c = std::as_const(*e).GetSkinnedMeshComponent();
                         return c && c->active();
                     }
                     return false;
@@ -10352,7 +10353,7 @@ int main(int argc, char** argv) {
                 is_skinned.resize(sk_ents.size());
                 auto probe = [&](size_t i) {
                     const auto& ent = sk_ents[i];
-                    const auto* smc = ent ? ent->GetSkinnedMeshComponent() : nullptr;
+                    const auto* smc = ent ? std::as_const(*ent).GetSkinnedMeshComponent() : nullptr;
                     is_skinned[i] = (smc && smc->active()) ? 1u : 0u;
                 };
                 auto& sk_js = gws::jobs::JobSystem::instance();
@@ -10364,7 +10365,7 @@ int main(int argc, char** argv) {
                     if (!is_skinned[i]) continue;
                     const auto& ent = sk_ents[i];
                     if (auto* a = skinned_actors.get_or_create(
-                            ent->GetId(), ent->GetSkinnedMeshComponent()->gltf_path, &device,
+                            ent->GetId(), std::as_const(*ent).GetSkinnedMeshComponent()->gltf_path, &device,
                             mat_layout, mat_pool, &texture_manager)) {
                         a->record_skin(cmd);
                         frame_skinned.push_back(a);

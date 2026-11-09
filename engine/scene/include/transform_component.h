@@ -52,7 +52,7 @@ public:
     /**
      * @brief Set local position
      */
-    void SetLocalPosition(const glm::vec3& position) {
+    void SetLocalPosition(const glm::vec3& position) { MarkChanged();
         if (auto t = GetTransform()) {
             t->SetLocalPosition(position);
         }
@@ -69,7 +69,7 @@ public:
     /**
      * @brief Set local rotation (quaternion)
      */
-    void SetLocalRotation(const glm::quat& rotation) {
+    void SetLocalRotation(const glm::quat& rotation) { MarkChanged();
         if (auto t = GetTransform()) {
             t->SetLocalRotation(rotation);
         }
@@ -86,7 +86,7 @@ public:
     /**
      * @brief Set local scale
      */
-    void SetLocalScale(const glm::vec3& scale) {
+    void SetLocalScale(const glm::vec3& scale) { MarkChanged();
         if (auto t = GetTransform()) {
             t->SetLocalScale(scale);
         }
@@ -103,7 +103,7 @@ public:
     /**
      * @brief Set world position
      */
-    void SetWorldPosition(const glm::vec3& position) {
+    void SetWorldPosition(const glm::vec3& position) { MarkChanged();
         if (auto t = GetTransform()) {
             t->SetWorldPosition(position);
         }
@@ -120,7 +120,7 @@ public:
     /**
      * @brief Set world rotation
      */
-    void SetWorldRotation(const glm::quat& rotation) {
+    void SetWorldRotation(const glm::quat& rotation) { MarkChanged();
         if (auto t = GetTransform()) {
             t->SetWorldRotation(rotation);
         }

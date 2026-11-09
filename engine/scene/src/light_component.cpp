@@ -54,6 +54,7 @@ glm::quat LightComponent::GetRotation() const {
 }
 
 void LightComponent::UpdateColorFromTemperature() {
+    MarkChanged();
     // Tanner Helland's formula: convert Kelvin temperature to RGB
     float temp = temperature_ / 100.0f;
     

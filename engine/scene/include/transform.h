@@ -135,6 +135,8 @@ public:
     /// SetLocalPosition/Rotation/Scale or SetParent, and those stamp.
     uint64_t ChangeStamp() const { return change_stamp_; }
     static uint64_t ChangeStampCounter();
+    /// A fresh stamp from the same counter (entities use it for their content).
+    static uint64_t NextChangeStamp();
     
     /**
      * @brief Detach from parent
@@ -178,10 +180,9 @@ protected:
     // wouldn't invalidate cached child world matrices and child entities
     // (e.g. cameras parented to the player) wouldn't follow.
     Transform* parent_ = nullptr;
+    uint64_t change_stamp_ = NextChangeStamp();   // next to parent_: both read every frame
     std::vector<Transform*> children_;
 
-    static uint64_t NextChangeStamp();
-    uint64_t change_stamp_ = NextChangeStamp();   // a new transform counts as changed
 
     /**
      * @brief Recalculate cached world matrix

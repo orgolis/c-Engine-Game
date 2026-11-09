@@ -159,6 +159,19 @@ if(MINGW)
     target_link_options(ecssync_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# componentstamp_check: the change-driven ECS mirror skips entities whose
+# Transform and content stamps predate the last sync, so every way of changing
+# component data must stamp. Source half: every component mutator calls
+# MarkChanged(). Behaviour half: one change per component kind on the mirror's
+# parallel (skipping) path must reach the ECS; a sync must not stamp what it reads.
+add_executable(componentstamp_check componentstamp_check/main.cpp ../editor/src/ecs_bridge.cpp)
+target_include_directories(componentstamp_check PRIVATE ../editor/include)
+target_link_libraries(componentstamp_check PRIVATE gws_ecs gws_reflection gws_jobs scene gws_logging)
+target_compile_features(componentstamp_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(componentstamp_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # ecsincremental_check: incremental transforms in the ECS mirror (only what was
 # stamped since the last sync, propagated parent to child) must give the same
 # world matrices as the scene, through 300 frames of random edits on a 3000-

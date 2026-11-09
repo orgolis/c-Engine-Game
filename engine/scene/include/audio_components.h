@@ -35,26 +35,26 @@ public:
     // the path auto-derives the GUID (FNV-1a 64 with the low bit set — matches
     // schizo::assets::asset_id_from_path) so the two never drift apart.
     const std::string& GetClipPath() const { return clip_path_; }
-    void               SetClipPath(const std::string& p) {
+    void               SetClipPath(const std::string& p) { MarkChanged();
         clip_path_ = p;
         clip_guid_ = p.empty() ? 0 : guid_from_path(p);
     }
     uint64_t           GetClipGuid() const { return clip_guid_; }
-    void               SetClipGuid(uint64_t g) { clip_guid_ = g; }
+    void               SetClipGuid(uint64_t g) { MarkChanged(); clip_guid_ = g; }
 
     float GetVolume() const { return volume_; }
-    void  SetVolume(float v) { volume_ = v < 0.0f ? 0.0f : v; }
+    void  SetVolume(float v) { MarkChanged(); volume_ = v < 0.0f ? 0.0f : v; }
     float GetPitch() const { return pitch_; }
-    void  SetPitch(float p) { pitch_ = p < 0.01f ? 0.01f : p; }
+    void  SetPitch(float p) { MarkChanged(); pitch_ = p < 0.01f ? 0.01f : p; }
     float GetRadius() const { return radius_; }
-    void  SetRadius(float r) { radius_ = r < 0.0f ? 0.0f : r; }
+    void  SetRadius(float r) { MarkChanged(); radius_ = r < 0.0f ? 0.0f : r; }
 
     bool IsLooping() const { return looping_; }
-    void SetLooping(bool b) { looping_ = b; }
+    void SetLooping(bool b) { MarkChanged(); looping_ = b; }
     bool IsSpatial() const { return spatial_; }
-    void SetSpatial(bool b) { spatial_ = b; }
+    void SetSpatial(bool b) { MarkChanged(); spatial_ = b; }
     bool PlayOnStart() const { return play_on_start_; }
-    void SetPlayOnStart(bool b) { play_on_start_ = b; }
+    void SetPlayOnStart(bool b) { MarkChanged(); play_on_start_ = b; }
 
     // Mix bus, BY NAME (Phase 4.9). The authoring layer stores the name and the
     // runtime resolves it to a BusId every frame, so adding or reordering buses
@@ -62,12 +62,12 @@ public:
     // storing the index here would do silently, and only to already-saved scenes.
     // An unknown name falls back to Master audibly rather than muting the source.
     const std::string& GetBus() const { return bus_; }
-    void               SetBus(const std::string& b) { bus_ = b.empty() ? "Master" : b; }
+    void               SetBus(const std::string& b) { MarkChanged(); bus_ = b.empty() ? "Master" : b; }
 
     // Runtime-only: whether the source should currently sound (edit-mode preview
     // or Play mode). Not serialized.
     bool IsPlaying() const { return playing_; }
-    void SetPlaying(bool b) { playing_ = b; }
+    void SetPlaying(bool b) { MarkChanged(); playing_ = b; }
 
 private:
     static uint64_t guid_from_path(const std::string& p) {
@@ -107,9 +107,9 @@ public:
     AudioListenerComponent& operator=(AudioListenerComponent&&) = default;
 
     float GetMasterGain() const { return master_gain_; }
-    void  SetMasterGain(float g) { master_gain_ = glm::clamp(g, 0.0f, 1.0f); }
+    void  SetMasterGain(float g) { MarkChanged(); master_gain_ = glm::clamp(g, 0.0f, 1.0f); }
     bool  IsActive() const { return active_; }
-    void  SetActive(bool b) { active_ = b; }
+    void  SetActive(bool b) { MarkChanged(); active_ = b; }
 
 private:
     float master_gain_ = 1.0f;

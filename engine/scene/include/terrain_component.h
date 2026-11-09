@@ -44,12 +44,12 @@ public:
     int   GetResolution() const { return resolution_; }
     float GetSize() const { return size_; }
     float GetHeightScale() const { return height_scale_; }
-    void  SetHeightScale(float s) { height_scale_ = s; ++version_; }
+    void  SetHeightScale(float s) { MarkChanged(); height_scale_ = s; ++version_; }
     int   VertsPerSide() const { return resolution_ + 1; }
 
     /// Re-allocate the heightmap to `res` cells / `size` units, cleared flat.
     /// Also clears the hole mask and marks the whole terrain dirty.
-    void Resize(int res, float size) {
+    void Resize(int res, float size) { MarkChanged();
         resolution_ = std::max(1, std::min(res, 2048));
         size_       = (size > 0.1f) ? size : 0.1f;
         const int n = VertsPerSide();
@@ -59,21 +59,21 @@ public:
     }
 
     /// Set every height to `h` (flatten / reset).
-    void Flatten(float h = 0.0f) {
+    void Flatten(float h = 0.0f) { MarkChanged();
         std::fill(heights_.begin(), heights_.end(), h);
         MarkAllDirty();
     }
 
     // ---- Height access (grid coords; row-major z*(res+1)+x) ----
     const std::vector<float>& Heights() const { return heights_; }
-    std::vector<float>&       MutableHeights() { return heights_; }   // caller must MarkDirty()
+    std::vector<float>&       MutableHeights() { MarkChanged(); return heights_; }   // caller must MarkDirty()
 
     float HeightAt(int ix, int iz) const {
         ix = std::clamp(ix, 0, resolution_);
         iz = std::clamp(iz, 0, resolution_);
         return heights_[static_cast<size_t>(iz) * VertsPerSide() + ix];
     }
-    void SetHeightAt(int ix, int iz, float h) {
+    void SetHeightAt(int ix, int iz, float h) { MarkChanged();
         if (ix < 0 || iz < 0 || ix > resolution_ || iz > resolution_) return;
         heights_[static_cast<size_t>(iz) * VertsPerSide() + ix] = h;
     }
@@ -106,14 +106,14 @@ public:
     // chunked mesh cache rebuild only touched chunks. MarkDirty() (legacy)
     // dirties everything; brushes should call MarkDirtyRect with their bounds.
     uint64_t Version() const { return version_; }
-    void     MarkDirty() { MarkAllDirty(); }
-    void MarkAllDirty() {
+    void     MarkDirty() { MarkChanged(); MarkAllDirty(); }
+    void MarkAllDirty() { MarkChanged();
         dirty_min_x_ = 0; dirty_min_z_ = 0;
         dirty_max_x_ = resolution_; dirty_max_z_ = resolution_;
         ++version_;
     }
     /// Accumulate a dirty cell rect (inclusive cell coords, clamped).
-    void MarkDirtyRect(int x0, int z0, int x1, int z1) {
+    void MarkDirtyRect(int x0, int z0, int x1, int z1) { MarkChanged();
         x0 = std::clamp(x0, 0, resolution_); z0 = std::clamp(z0, 0, resolution_);
         x1 = std::clamp(x1, 0, resolution_); z1 = std::clamp(z1, 0, resolution_);
         dirty_min_x_ = std::min(dirty_min_x_, x0);
@@ -139,7 +139,7 @@ public:
         if (cx < 0 || cz < 0 || cx >= resolution_ || cz >= resolution_) return false;
         return holes_[static_cast<size_t>(cz) * resolution_ + cx] != 0;
     }
-    void SetHole(int cx, int cz, bool hole) {
+    void SetHole(int cx, int cz, bool hole) { MarkChanged();
         if (cx < 0 || cz < 0 || cx >= resolution_ || cz >= resolution_) return;
         holes_[static_cast<size_t>(cz) * resolution_ + cx] = hole ? 1 : 0;
     }
@@ -148,32 +148,32 @@ public:
         return false;
     }
     const std::vector<uint8_t>& Holes() const { return holes_; }
-    std::vector<uint8_t>&       MutableHoles() { return holes_; }
+    std::vector<uint8_t>&       MutableHoles() { MarkChanged(); return holes_; }
 
     // ---- Integrated water (Unreal-style: water is part of the terrain) ----
     // One water level per terrain, covering the full terrain rect at
     // origin.y + water_level. `water_physical_` splits PHYSICAL water
     // (buoyancy + swimming volumes in Play mode) from VISUAL-only water.
     bool  IsWaterEnabled() const { return water_enabled_; }
-    void  SetWaterEnabled(bool e) { water_enabled_ = e; }
+    void  SetWaterEnabled(bool e) { MarkChanged(); water_enabled_ = e; }
     bool  IsWaterPhysical() const { return water_physical_; }
-    void  SetWaterPhysical(bool p) { water_physical_ = p; }
+    void  SetWaterPhysical(bool p) { MarkChanged(); water_physical_ = p; }
     float GetWaterLevel() const { return water_level_; }
-    void  SetWaterLevel(float l) { water_level_ = l; }
+    void  SetWaterLevel(float l) { MarkChanged(); water_level_ = l; }
     const glm::vec3& GetWaterDeepColor() const { return water_deep_; }
-    void  SetWaterDeepColor(const glm::vec3& c) { water_deep_ = c; }
+    void  SetWaterDeepColor(const glm::vec3& c) { MarkChanged(); water_deep_ = c; }
     const glm::vec3& GetWaterShallowColor() const { return water_shallow_; }
-    void  SetWaterShallowColor(const glm::vec3& c) { water_shallow_ = c; }
+    void  SetWaterShallowColor(const glm::vec3& c) { MarkChanged(); water_shallow_ = c; }
     float GetWaterWaveHeight() const { return water_wave_height_; }
-    void  SetWaterWaveHeight(float h) { water_wave_height_ = std::clamp(h, 0.0f, 5.0f); }
+    void  SetWaterWaveHeight(float h) { MarkChanged(); water_wave_height_ = std::clamp(h, 0.0f, 5.0f); }
     float GetWaterWaveSpeed() const { return water_wave_speed_; }
-    void  SetWaterWaveSpeed(float s) { water_wave_speed_ = std::clamp(s, 0.0f, 10.0f); }
+    void  SetWaterWaveSpeed(float s) { MarkChanged(); water_wave_speed_ = std::clamp(s, 0.0f, 10.0f); }
     float GetWaterWaveScale() const { return water_wave_scale_; }
-    void  SetWaterWaveScale(float s) { water_wave_scale_ = std::clamp(s, 0.5f, 200.0f); }
+    void  SetWaterWaveScale(float s) { MarkChanged(); water_wave_scale_ = std::clamp(s, 0.5f, 200.0f); }
     float GetWaterClarity() const { return water_clarity_; }
-    void  SetWaterClarity(float c) { water_clarity_ = std::clamp(c, 0.05f, 50.0f); }
+    void  SetWaterClarity(float c) { MarkChanged(); water_clarity_ = std::clamp(c, 0.05f, 50.0f); }
     float GetWaterReflectivity() const { return water_reflectivity_; }
-    void  SetWaterReflectivity(float r) { water_reflectivity_ = std::clamp(r, 0.0f, 1.0f); }
+    void  SetWaterReflectivity(float r) { MarkChanged(); water_reflectivity_ = std::clamp(r, 0.0f, 1.0f); }
 
     // ========================================================================
     // Texture splat painting (Phase C)
@@ -188,7 +188,7 @@ public:
 
     // ---- Layers ----
     const std::string& GetLayerPath(int i) const { return layer_paths_[clamp_layer(i)]; }
-    void SetLayerPath(int i, const std::string& p) { layer_paths_[clamp_layer(i)] = p; ++splat_version_; }
+    void SetLayerPath(int i, const std::string& p) { MarkChanged(); layer_paths_[clamp_layer(i)] = p; ++splat_version_; }
 
     /// A layer's material asset (.mat). When set it supplies the layer's albedo,
     /// normal and metal/rough maps plus its tint and PBR factors, and the plain
@@ -200,7 +200,7 @@ public:
     /// before materials existed is stored that way, and dropping a single
     /// texture onto a layer is still the fastest way to block something out.
     const std::string& GetLayerMaterial(int i) const { return layer_materials_[clamp_layer(i)]; }
-    void SetLayerMaterial(int i, const std::string& p) { layer_materials_[clamp_layer(i)] = p; ++splat_version_; }
+    void SetLayerMaterial(int i, const std::string& p) { MarkChanged(); layer_materials_[clamp_layer(i)] = p; ++splat_version_; }
     bool HasLayerMaterial(int i) const { return !layer_materials_[clamp_layer(i)].empty(); }
 
     /// How many times this layer repeats across the terrain.
@@ -211,7 +211,7 @@ public:
     /// material — putting it in the .mat would make a shared rock unusable on
     /// two terrains of different sizes.
     float GetTiling(int i) const { return tiling_[clamp_layer(i)]; }
-    void  SetTiling(int i, float t) { tiling_[clamp_layer(i)] = std::max(0.01f, t); ++splat_version_; }
+    void  SetTiling(int i, float t) { MarkChanged(); tiling_[clamp_layer(i)] = std::max(0.01f, t); ++splat_version_; }
 
     /// Per-layer surface response, used when the layer has NO material asset.
     ///
@@ -230,12 +230,12 @@ public:
     /// roughness slider stays a 144-byte memcpy instead of rebuilding the splat
     /// texture and the descriptor set.
     float GetLayerMetallic(int i) const { return layer_metallic_[clamp_layer(i)]; }
-    void  SetLayerMetallic(int i, float v) { layer_metallic_[clamp_layer(i)] = std::clamp(v, 0.0f, 1.0f); }
+    void  SetLayerMetallic(int i, float v) { MarkChanged(); layer_metallic_[clamp_layer(i)] = std::clamp(v, 0.0f, 1.0f); }
 
     /// Clamped to a floor rather than 0: a perfectly smooth surface is a mirror
     /// the BRDF divides by, which the material asset loader guards the same way.
     float GetLayerRoughness(int i) const { return layer_roughness_[clamp_layer(i)]; }
-    void  SetLayerRoughness(int i, float v) { layer_roughness_[clamp_layer(i)] = std::clamp(v, 0.02f, 1.0f); }
+    void  SetLayerRoughness(int i, float v) { MarkChanged(); layer_roughness_[clamp_layer(i)] = std::clamp(v, 0.02f, 1.0f); }
 
     /// Triplanar projection for this terrain's layers.
     ///
@@ -249,26 +249,26 @@ public:
     /// Off by default. It triples the texture fetches where the blend is
     /// active, and a flat terrain gains nothing from paying that.
     bool  GetTriplanar() const { return triplanar_; }
-    void  SetTriplanar(bool on) { triplanar_ = on; }
+    void  SetTriplanar(bool on) { MarkChanged(); triplanar_ = on; }
 
     /// How sharply one projection gives way to the next. Higher keeps each
     /// dominant over more of the surface and narrows the cross-fade.
     float GetTriplanarSharpness() const { return triplanar_sharpness_; }
-    void  SetTriplanarSharpness(float v) { triplanar_sharpness_ = std::clamp(v, 1.0f, 16.0f); }
+    void  SetTriplanarSharpness(float v) { MarkChanged(); triplanar_sharpness_ = std::clamp(v, 1.0f, 16.0f); }
 
     float GetLayerNormalScale(int i) const { return layer_normal_scale_[clamp_layer(i)]; }
-    void  SetLayerNormalScale(int i, float v) { layer_normal_scale_[clamp_layer(i)] = std::clamp(v, 0.0f, 4.0f); }
+    void  SetLayerNormalScale(int i, float v) { MarkChanged(); layer_normal_scale_[clamp_layer(i)] = std::clamp(v, 0.0f, 4.0f); }
 
     // ---- Splatmap (RGBA8, row-major; channel = layer weight) ----
     int SplatResolution() const { return splat_res_; }
     const std::vector<uint8_t>& Splat() const { return splat_; }
-    std::vector<uint8_t>&       MutableSplat() { return splat_; }   // caller must ++SplatVersion via MarkSplatDirty
+    std::vector<uint8_t>&       MutableSplat() { MarkChanged(); return splat_; }   // caller must ++SplatVersion via MarkSplatDirty
     uint64_t SplatVersion() const { return splat_version_; }
-    void     MarkSplatDirty() { ++splat_version_; }
+    void     MarkSplatDirty() { MarkChanged(); ++splat_version_; }
 
     /// Re-allocate the splatmap to `res`×`res`, reset so layer 0 has full weight
     /// (R=255, others 0) — i.e. the whole terrain shows the base layer.
-    void ResizeSplat(int res) {
+    void ResizeSplat(int res) { MarkChanged();
         splat_res_ = std::clamp(res, 8, 2048);
         splat_.assign(static_cast<size_t>(splat_res_) * splat_res_ * 4, 0);
         for (size_t t = 0; t < static_cast<size_t>(splat_res_) * splat_res_; ++t)

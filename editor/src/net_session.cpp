@@ -18,6 +18,7 @@
 //   - kMsgPlayerPos  : client -> host, this client's player world position
 
 #include "net_session.h"
+#include <utility>   // std::as_const: reads must not stamp the entity
 
 #include "replication.h"          // write_snapshot / apply_snapshot + kSnapshotMagic
 #include "transport.h"
@@ -75,7 +76,7 @@ glm::vec4 avatar_color(uint64_t netid) {
 // copied — proxies are visual-only.
 void copy_visuals(const std::shared_ptr<schizo::scene::Entity>& src,
                   const std::shared_ptr<schizo::scene::Entity>& dst) {
-    if (auto* mc = src->GetMeshComponent(); mc && !mc->mesh_path.empty())
+    if (const auto* mc = std::as_const(*src).GetMeshComponent(); mc && !mc->mesh_path.empty())
         dst->SetMesh(mc->mesh_path);
     if (auto mr = src->GetComponent<schizo::scene::MeshRendererComponent>()) {
         auto out = dst->AddComponent<schizo::scene::MeshRendererComponent>(
@@ -93,7 +94,7 @@ void copy_visuals(const std::shared_ptr<schizo::scene::Entity>& src,
 }
 
 bool has_visuals(const std::shared_ptr<schizo::scene::Entity>& e) {
-    if (auto* mc = e->GetMeshComponent(); mc && !mc->mesh_path.empty()) return true;
+    if (const auto* mc = std::as_const(*e).GetMeshComponent(); mc && !mc->mesh_path.empty()) return true;
     return e->GetComponent<schizo::scene::MeshRendererComponent>() != nullptr;
 }
 }  // namespace

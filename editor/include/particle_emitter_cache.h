@@ -25,6 +25,7 @@
 // ============================================================================
 
 #include "entity.h"
+#include <utility>   // std::as_const: reads must not stamp the entity
 #include "scene.h"
 #include "transform.h"
 #include "vfx/particle_system.h"
@@ -63,7 +64,7 @@ public:
                 if (!schizo::vfx::load_vfx(p, g)) continue;
                 for (const auto& ent : scene->GetEntities()) {
                     if (!ent) continue;
-                    auto* c = ent->GetParticleEmitterComponent();
+                    const auto* c = std::as_const(*ent).GetParticleEmitterComponent();
                     if (!c || c->vfx_path != p) continue;
                     auto it = systems_.find(ent->GetId());
                     // set_graph deliberately keeps the live particles, so an
@@ -77,7 +78,7 @@ public:
         std::unordered_map<uint32_t, bool> seen;
         for (const auto& ent : scene->GetEntities()) {
             if (!ent || !ent->IsActive()) continue;
-            auto* pe = ent->GetParticleEmitterComponent();
+            const auto* pe = std::as_const(*ent).GetParticleEmitterComponent();
             if (!pe || !pe->enabled) continue;
             auto* tf = ent->GetTransform();
             if (!tf) continue;
@@ -146,7 +147,7 @@ public:
             for (auto it = watched_.begin(); it != watched_.end(); ) {
                 bool still_used = false;
                 for (const auto& ent : scene->GetEntities()) {
-                    auto* c = ent ? ent->GetParticleEmitterComponent() : nullptr;
+                    const auto* c = ent ? std::as_const(*ent).GetParticleEmitterComponent() : nullptr;
                     if (c && c->enabled && c->vfx_path == it->first) { still_used = true; break; }
                 }
                 if (still_used) { ++it; continue; }

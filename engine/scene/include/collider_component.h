@@ -37,7 +37,7 @@ enum class ColliderShape : uint8_t {
 class ColliderComponent final : public Component {
 public:
     explicit ColliderComponent(ColliderShape shape = ColliderShape::Box)
-        : shape_(shape) {}
+        : shape_(shape) { MarkChanged();}
     virtual ~ColliderComponent() = default;
 
     ColliderComponent(const ColliderComponent&) = delete;
@@ -48,29 +48,29 @@ public:
     // ---- Shape selection -------------------------------------------------
 
     ColliderShape GetShape() const { return shape_; }
-    void SetShape(ColliderShape shape) { shape_ = shape; }
+    void SetShape(ColliderShape shape) { MarkChanged(); shape_ = shape; }
 
     // ---- Box dimensions --------------------------------------------------
     // half_extents on each axis. Final world size is 2*half_extents scaled by
     // the entity's transform when the rigid body is built.
 
     const glm::vec3& GetHalfExtents() const { return half_extents_; }
-    void SetHalfExtents(const glm::vec3& he) {
+    void SetHalfExtents(const glm::vec3& he) { MarkChanged();
         half_extents_ = glm::max(he, glm::vec3(0.01f));
     }
 
     // ---- Sphere / Capsule dimensions ------------------------------------
 
     float GetRadius() const { return radius_; }
-    void SetRadius(float r) { radius_ = std::max(0.01f, r); }
+    void SetRadius(float r) { MarkChanged(); radius_ = std::max(0.01f, r); }
 
     float GetHeight() const { return height_; }   // Capsule cylindrical span
-    void SetHeight(float h) { height_ = std::max(0.0f, h); }
+    void SetHeight(float h) { MarkChanged(); height_ = std::max(0.0f, h); }
 
     // ---- Plane normal ----------------------------------------------------
 
     const glm::vec3& GetPlaneNormal() const { return plane_normal_; }
-    void SetPlaneNormal(const glm::vec3& n) {
+    void SetPlaneNormal(const glm::vec3& n) { MarkChanged();
         // Avoid normalising a zero vector — fall back to world up.
         float len2 = glm::dot(n, n);
         plane_normal_ = (len2 > 1e-8f) ? (n / std::sqrt(len2)) : glm::vec3(0, 1, 0);
@@ -79,7 +79,7 @@ public:
     // ---- Local offset from the entity's origin --------------------------
 
     const glm::vec3& GetOffset() const { return offset_; }
-    void SetOffset(const glm::vec3& o) { offset_ = o; }
+    void SetOffset(const glm::vec3& o) { MarkChanged(); offset_ = o; }
 
     // ---- Physics body type (consumed by Phase 2 only) -------------------
     // is_dynamic_ == false  → physics::BodyType::Static (default for level
@@ -87,17 +87,17 @@ public:
     // overrides this to Kinematic.
 
     bool IsDynamic() const { return is_dynamic_; }
-    void SetDynamic(bool dynamic) { is_dynamic_ = dynamic; }
+    void SetDynamic(bool dynamic) { MarkChanged(); is_dynamic_ = dynamic; }
 
     float GetMass() const { return mass_; }
-    void SetMass(float mass) { mass_ = std::max(0.001f, mass); }
+    void SetMass(float mass) { MarkChanged(); mass_ = std::max(0.001f, mass); }
 
     // ---- Trigger (overlap-without-resolve) ------------------------------
     // When true, the body still participates in collision detection (so the
     // engine records contacts that gameplay code can read), but the world's
     // ResolveCollision step is skipped — bodies pass through.
     bool IsTrigger() const { return is_trigger_; }
-    void SetTrigger(bool t) { is_trigger_ = t; }
+    void SetTrigger(bool t) { MarkChanged(); is_trigger_ = t; }
 
     // ---- Collision layers / masks --------------------------------------
     // Each body sits on a single layer (0..31). The mask is a bitfield of
@@ -106,10 +106,10 @@ public:
     // is layer 0 with a mask of "all on" so unconfigured bodies collide
     // with everything.
     uint8_t  GetLayer() const { return layer_; }
-    void     SetLayer(uint8_t layer) { layer_ = (layer & 31u); }
+    void     SetLayer(uint8_t layer) { MarkChanged(); layer_ = (layer & 31u); }
 
     uint32_t GetMask() const { return mask_; }
-    void     SetMask(uint32_t mask) { mask_ = mask; }
+    void     SetMask(uint32_t mask) { MarkChanged(); mask_ = mask; }
 
 private:
     ColliderShape shape_ = ColliderShape::Box;

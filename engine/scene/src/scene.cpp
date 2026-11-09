@@ -126,6 +126,7 @@ void Entity::SetActive(bool active) {
     }
     
     is_active_ = active;
+    TouchContent();
     
     if (active) {
         for (auto& comp : components_) {
@@ -156,6 +157,7 @@ bool Entity::IsActiveInHierarchy() const {
 }
 
 void Entity::RemoveComponent(std::shared_ptr<Component> component) {
+    TouchContent();
     auto it = std::find(components_.begin(), components_.end(), component);
     if (it != components_.end()) {
         (*it)->OnDetach();

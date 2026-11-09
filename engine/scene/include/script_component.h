@@ -28,14 +28,14 @@ public:
     virtual ~ScriptComponent() = default;
 
     const std::string& GetScriptPath() const { return script_path_; }
-    void SetScriptPath(const std::string& p) { script_path_ = p; status_.clear(); }
+    void SetScriptPath(const std::string& p) { MarkChanged(); script_path_ = p; status_.clear(); }
 
     bool IsEnabled() const { return enabled_; }
-    void SetEnabled(bool e) { enabled_ = e; }
+    void SetEnabled(bool e) { MarkChanged(); enabled_ = e; }
 
     // Runtime status for the Inspector (not serialized).
     const std::string& GetStatus() const { return status_; }
-    void SetStatus(const std::string& s) { status_ = s; }
+    void SetStatus(const std::string& s) { MarkChanged(); status_ = s; }
 
     // ---- Public parameters (Stage 12 script fields) ----
     // Values the Inspector authors for the script's `@param` declarations and
@@ -43,12 +43,12 @@ public:
     // (parsed on read); only overrides that differ from the declared default
     // are kept here. Keyed by param name.
     const std::map<std::string, std::string>& Params() const { return params_; }
-    void SetParam(const std::string& name, const std::string& value) { params_[name] = value; }
+    void SetParam(const std::string& name, const std::string& value) { MarkChanged(); params_[name] = value; }
     const std::string* FindParam(const std::string& name) const {
         auto it = params_.find(name);
         return it == params_.end() ? nullptr : &it->second;
     }
-    void ClearParams() { params_.clear(); }
+    void ClearParams() { MarkChanged(); params_.clear(); }
 
 private:
     std::string script_path_;   // e.g. "assets/scripts/spinner.py"

@@ -67,7 +67,7 @@ public:
     /**
      * @brief Set mesh type
      */
-    void SetMeshType(MeshType type) { mesh_type_ = type; }
+    void SetMeshType(MeshType type) { MarkChanged(); mesh_type_ = type; }
     
     /**
      * @brief Get mesh color
@@ -77,29 +77,29 @@ public:
     /**
      * @brief Set mesh color
      */
-    void SetColor(const glm::vec4& color) { color_ = color; }
+    void SetColor(const glm::vec4& color) { MarkChanged(); color_ = color; }
     
     /**
      * @brief Set mesh color with individual components
      */
-    void SetColor(float r, float g, float b, float a = 1.0f) {
+    void SetColor(float r, float g, float b, float a = 1.0f) { MarkChanged();
         color_ = glm::vec4(r, g, b, a);
     }
 
     AlphaMode GetAlphaMode() const { return alpha_mode_; }
-    void      SetAlphaMode(AlphaMode m) { alpha_mode_ = m; }
+    void      SetAlphaMode(AlphaMode m) { MarkChanged(); alpha_mode_ = m; }
 
     // Compatibility wrappers — older call sites and the serializer used to
     // treat transparency as a single bool. Keep them so they still work,
     // mapped onto the new enum.
     bool IsTransparent() const { return alpha_mode_ != AlphaMode::Opaque; }
-    void SetTransparent(bool t) {
+    void SetTransparent(bool t) { MarkChanged();
         if (!t) alpha_mode_ = AlphaMode::Opaque;
         else if (alpha_mode_ == AlphaMode::Opaque) alpha_mode_ = AlphaMode::Cutout;
     }
 
     float GetAlphaCutoff() const { return alpha_cutoff_; }
-    void  SetAlphaCutoff(float c) { alpha_cutoff_ = glm::clamp(c, 0.0f, 1.0f); }
+    void  SetAlphaCutoff(float c) { MarkChanged(); alpha_cutoff_ = glm::clamp(c, 0.0f, 1.0f); }
 
     // ---- PBR factors --------------------------------------------------
     // These feed straight into MaterialUniforms.{metallic,roughness,occlusion,emissive}
@@ -107,22 +107,22 @@ public:
     // editor used to hardcode (slightly dielectric, fairly rough, fully lit).
 
     float GetMetallic() const { return metallic_; }
-    void  SetMetallic(float m) { metallic_ = glm::clamp(m, 0.0f, 1.0f); }
+    void  SetMetallic(float m) { MarkChanged(); metallic_ = glm::clamp(m, 0.0f, 1.0f); }
 
     float GetRoughness() const { return roughness_; }
-    void  SetRoughness(float r) { roughness_ = glm::clamp(r, 0.04f, 1.0f); }
+    void  SetRoughness(float r) { MarkChanged(); roughness_ = glm::clamp(r, 0.04f, 1.0f); }
 
     float GetOcclusion() const { return occlusion_; }
-    void  SetOcclusion(float o) { occlusion_ = glm::clamp(o, 0.0f, 1.0f); }
+    void  SetOcclusion(float o) { MarkChanged(); occlusion_ = glm::clamp(o, 0.0f, 1.0f); }
 
     const glm::vec3& GetEmissive() const { return emissive_; }
-    void  SetEmissive(const glm::vec3& e) { emissive_ = glm::max(e, glm::vec3(0.0f)); }
+    void  SetEmissive(const glm::vec3& e) { MarkChanged(); emissive_ = glm::max(e, glm::vec3(0.0f)); }
 
     /// HDR multiplier on the emissive colour. The bloom threshold is ~1.0,
     /// so an emissive colour at [0,1] barely glows — push this to 2–10 to
     /// make a surface read as a real, blooming light source ("self glow").
     float GetEmissiveIntensity() const { return emissive_intensity_; }
-    void  SetEmissiveIntensity(float i) { emissive_intensity_ = glm::max(i, 0.0f); }
+    void  SetEmissiveIntensity(float i) { MarkChanged(); emissive_intensity_ = glm::max(i, 0.0f); }
 
     /// Emissive colour pre-multiplied by intensity — what the material/
     /// G-Buffer actually receives.
@@ -135,7 +135,7 @@ public:
     // base-colour slot; `color_` then multiplies the sampled texel. Empty = the
     // flat `color_` only (shared white default).
     const std::string& GetAlbedoTexturePath() const { return albedo_texture_path_; }
-    void SetAlbedoTexturePath(const std::string& p) { albedo_texture_path_ = p; }
+    void SetAlbedoTexturePath(const std::string& p) { MarkChanged(); albedo_texture_path_ = p; }
     bool HasAlbedoTexture() const { return !albedo_texture_path_.empty(); }
 
     // ---- Material asset (.mat) ----------------------------------------
@@ -155,7 +155,7 @@ public:
     // half-material systems this replaces; anything past a colour and a base
     // texture is what a .mat is for.
     const std::string& GetMaterialPath() const { return material_path_; }
-    void SetMaterialPath(const std::string& p) { material_path_ = p; }
+    void SetMaterialPath(const std::string& p) { MarkChanged(); material_path_ = p; }
     bool HasMaterial() const { return !material_path_.empty(); }
 
     /// Whether this entity's material should override the materials that came
@@ -165,7 +165,7 @@ public:
     /// authored glTF material the moment someone tints an entity would trade one
     /// missing feature for a worse one.
     bool GetOverrideAssetMaterial() const { return override_asset_material_; }
-    void SetOverrideAssetMaterial(bool o) { override_asset_material_ = o; }
+    void SetOverrideAssetMaterial(bool o) { MarkChanged(); override_asset_material_ = o; }
 
     // ---- Material instance overrides -----------------------------------
     // An assigned .mat normally supplies EVERYTHING. That is the right default
@@ -193,9 +193,9 @@ public:
         kOverrideUv        = 1u << 4,   // tiling + offset together
     };
     uint32_t GetMaterialOverrides() const { return material_overrides_; }
-    void     SetMaterialOverrides(uint32_t m) { material_overrides_ = m; }
+    void     SetMaterialOverrides(uint32_t m) { MarkChanged(); material_overrides_ = m; }
     bool HasMaterialOverride(uint32_t bit) const { return (material_overrides_ & bit) != 0u; }
-    void SetMaterialOverride(uint32_t bit, bool on) {
+    void SetMaterialOverride(uint32_t bit, bool on) { MarkChanged();
         if (on) material_overrides_ |= bit;
         else    material_overrides_ &= ~bit;
     }
@@ -205,8 +205,8 @@ public:
     /// carried a UV transform.
     const glm::vec2& GetUvScale()  const { return uv_scale_; }
     const glm::vec2& GetUvOffset() const { return uv_offset_; }
-    void SetUvScale(const glm::vec2& v)  { uv_scale_  = v; }
-    void SetUvOffset(const glm::vec2& v) { uv_offset_ = v; }
+    void SetUvScale(const glm::vec2& v)  { MarkChanged(); uv_scale_  = v; }
+    void SetUvOffset(const glm::vec2& v) { MarkChanged(); uv_offset_ = v; }
 
 protected:
     MeshType  mesh_type_      = MeshType::Cube;
