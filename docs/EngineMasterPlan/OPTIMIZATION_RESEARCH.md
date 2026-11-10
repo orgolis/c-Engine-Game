@@ -27,7 +27,10 @@ Every number below is one of three kinds, and says which:
    entities the engine's scene work is 4.4 ms of CPU per frame. Rebuilding the
    whole engine with AVX2 changed none of it. Walking the same data in a dense array is 10 to 15
    times faster than walking it through entity pointers. About 2.0 ms of the
-   4.4 ms re-examines a scene in which nothing changed.
+   4.4 ms re-examines a scene in which nothing changed. A sampling profiler
+   found more of the same that no profiler zone covers: 0.7 ms a frame in edit
+   mode and 2.9 ms in play mode, 2.0 ms of it the script system walking 20,000
+   entities that have no scripts.
 3. **On the GPU, ambient occlusion costs a quarter of a fullscreen frame**,
    about 2.4 times the published cost of the reference implementation of the
    same technique.
@@ -47,20 +50,21 @@ evidence.
 | # | Change | Gain | Evidence | Effort |
 |---|--------|------|----------|--------|
 | 1 | Size the frame allocator to what is used (§3.1) | −190 MB of committed memory | measured | S |
-| 2 | One O(1) "nothing changed" check before the per-entity passes (§4.1) | −2.0 ms of 4.4 ms CPU at 20k entities, static scene | measured (zones) | S–M |
-| 3 | Throttle the editor when idle or unfocused (§4.5) | −41% of a core, −30 points of GPU load while idle | measured; estimate for the remedy | S–M |
-| 4 | Terrain chunks share one index buffer (§2.2) | −34.6 MiB VRAM | arithmetic | S–M |
-| 5 | Compact static BLASes and sub-allocate them (§2.2, §2.4) | −66 to −82 MiB VRAM, 261 fewer device allocations, part of the 290 MB process cost | estimate (NVIDIA: 44–55%) | M |
-| 6 | Decide the instruction-set policy: Jolt down to the engine's baseline, or a start-up check (§7.1) | no crash on Play for ~5% of machines | measured (flags), survey | S |
-| 7 | Pass the device's pipeline cache to every pipeline (§6.2) | about −2.2 s on a start with a cold driver cache | measured | S |
-| 8 | Halve the cost of ambient occlusion (§5.2) | about −0.8 ms of 5.1 ms at 1920×1032 | measured cost; estimate for the target | M |
-| 9 | Reversed, zero-to-one depth (§5.6) | depth step at 500 m: 75 mm → 0.02 mm; near clip back to 0.1 m | arithmetic | M |
-| 10 | Slimmer render-target formats (§2.3) | −37 MiB at 1920×1032, less bandwidth in every pass that reads them | arithmetic | M |
-| 11 | Spread the first frame's terrain and BLAS builds; cache imported models (§6.3, §6.4) | −325 ms first-frame hitch; no re-parse of every source model on every start | measured | M |
-| 12 | Terrain vertices at 16 bytes instead of 48 (§2.2) | −35 MiB VRAM | arithmetic | M–L |
-| 13 | Quantized vertex formats and 16-bit indices for all meshes (§2.5) | about half of mesh memory | estimate | L |
-| 14 | Draw lists as compact handles; hot entity data in dense arrays (§3.4, §4.2) | 10–15× on the walks that remain after #2 | measured (microbenchmark) | L |
-| 15 | Clustered light culling, cached shadow maps, temporal upscaling (§5.3, §5.4, §5.7) | scale with lights, static scenes and low-end GPUs | estimate | L each |
+| 2 | One O(1) "nothing changed" check before the per-entity passes, including the terrain prunes and the particle scan, which have no zone (§4.1, §4.6) | −2.0 ms of zoned work and −0.7 ms of unzoned walks at 20k entities, static scene | measured (zones, sampler) | S–M |
+| 3 | The script system keeps a list of scripted entities instead of copying and walking the scene every play frame (§4.6) | −2.0 ms per play-mode frame at 20k entities | measured (sampler) | S |
+| 4 | Throttle the editor when idle or unfocused (§4.5) | −41% of a core, −30 points of GPU load while idle | measured; estimate for the remedy | S–M |
+| 5 | Terrain chunks share one index buffer (§2.2) | −34.6 MiB VRAM | arithmetic | S–M |
+| 6 | Compact static BLASes and sub-allocate them (§2.2, §2.4) | −66 to −82 MiB VRAM, 261 fewer device allocations, part of the 290 MB process cost | estimate (NVIDIA: 44–55%) | M |
+| 7 | Decide the instruction-set policy: Jolt down to the engine's baseline, or a start-up check (§7.1) | no crash on Play for ~5% of machines | measured (flags), survey | S |
+| 8 | Pass the device's pipeline cache to every pipeline (§6.2) | about −2.2 s on a start with a cold driver cache | measured | S |
+| 9 | Halve the cost of ambient occlusion (§5.2) | about −0.8 ms of 5.1 ms at 1920×1032 | measured cost; estimate for the target | M |
+| 10 | Reversed, zero-to-one depth (§5.6) | depth step at 500 m: 75 mm → 0.02 mm; near clip back to 0.1 m | arithmetic | M |
+| 11 | Slimmer render-target formats (§2.3) | −37 MiB at 1920×1032, less bandwidth in every pass that reads them | arithmetic | M |
+| 12 | Spread the first frame's terrain and BLAS builds; cache imported models (§6.3, §6.4) | −325 ms first-frame hitch; no re-parse of every source model on every start | measured | M |
+| 13 | Terrain vertices at 16 bytes instead of 48 (§2.2) | −35 MiB VRAM | arithmetic | M–L |
+| 14 | Quantized vertex formats and 16-bit indices for all meshes (§2.5) | about half of mesh memory | estimate | L |
+| 15 | Draw lists as compact handles; hot entity data in dense arrays (§3.4, §4.2) | 10–15× on the walks that remain after #2 | measured (microbenchmark) | L |
+| 16 | Clustered light culling, cached shadow maps, temporal upscaling (§5.3, §5.4, §5.7) | scale with lights, static scenes and low-end GPUs | estimate | L each |
 
 Things that were checked and are **not** worth doing are in §8, so that nobody
 spends a day re-checking them.
@@ -75,6 +79,7 @@ spends a day re-checking them.
 | Struct sizes and holes | A probe file compiled with the editor's exact flags, then `gdb ptype /o`. |
 | What a layout or a flag is worth | Two microbenchmarks, and a second full build of the editor with `-march=x86-64-v3`, compared in interleaved runs. |
 | Idle cost | Per-thread CPU time over ten seconds, `nvidia-smi`, and a debugger attach to name the threads. |
+| What the engine's own zones miss | `stack_sampler`: from outside, with no debugger, it suspends the main thread every few milliseconds and walks its stack. |
 
 Runs used the MyGame project at a 1920×1032 window, 300 frames, fixed time step.
 "20k" means the same project with `--stress-entities 20000`. Timing runs were
@@ -422,6 +427,9 @@ The guard has to cover everything those passes read that is not an entity:
 an asset finishing its background load, a material edit, a terrain rebuild.
 Each needs to advance a counter the guard checks.
 
+Three more walks of the same kind have no zone at all and so are missing from
+the table; §4.6 measures them. The same guard covers two of them.
+
 The risk is a mutation that does not stamp. The existing verifiers
 (`GWS_ECS_VERIFY_ALL`, `GWS_DRAW_VERIFY`) are the test: run them with the guard
 enabled and they recompute everything and compare.
@@ -550,6 +558,47 @@ simple. Redrawing only on change needs a rule for the effects that animate by
 themselves (clouds, water, TAA convergence): for example, render at full rate
 while anything changed in the last second, then fall to a few frames a second.
 On a laptop this is the difference between the fan running and not.
+
+### 4.6 What the zones do not see: 0.7 ms in edit mode, 2.9 ms in play mode
+
+The profiler's zones account for all but 1.4 ms of an edit-mode frame at
+20,000 entities. In play mode the unaccounted part is 4.1 ms. A sampling
+profiler that takes the main thread's call stack from outside (3,250 samples
+in play mode, 770 in edit mode) shows where it goes. Shares are of wall time
+in a 13.3 ms frame:
+
+| Function | What it does every frame | Edit mode | Play mode |
+|----------|--------------------------|----------:|----------:|
+| `ScriptSystem::update` | Copies the whole entity list (20,000 `shared_ptr` copies), then asks each entity whether it is active in its hierarchy and whether it has a script | not running | 14.8% = 1.96 ms |
+| `TerrainMeshCache::prune` and `TerrainGpuCache::prune` | Each walks every entity, looks its id up in a map of terrains and rebuilds the map | 2.4% = 0.32 ms | 5.2% = 0.69 ms |
+| `EditorParticleEmitters::update` | Walks every entity to find the enabled emitters | 2.7% = 0.36 ms | 2.2% = 0.29 ms |
+| **Total** | | **0.68 ms** | **2.94 ms** |
+
+None of the 20,000 stress entities has a script or an emitter, and the scene
+has one terrain. All of this is the cost of finding that out again, 75 times a
+second. At these sample counts each share is good to about half a percentage
+point in play mode and one point in edit mode.
+
+Three remedies, smallest first:
+
+- Give all three a profiler zone. The profiler reported a frame it had not
+  seen, which is finding F12 of the audit again.
+- The two prunes depend only on which entities exist. The particle pass has
+  to find the emitters only when something changed; the emitters it found last
+  time still need simulating every frame. Both searches can sit behind the
+  guard of §4.1.
+- The script system needs a list of the entities that have a script, rebuilt
+  when the component set changes. It snapshots the entity list because a
+  script may spawn entities while it runs; a snapshot of the scripted entities
+  serves the same purpose and is as long as the number of scripts.
+
+Two side observations from the same runs. The walks the zones do cover are 20%
+to 35% slower in play mode than in edit mode (`ecs_sync` 0.64 → 0.86 ms,
+`sync.gather` 0.31 → 0.41 ms) on the same scene; the cause was not traced.
+And sampling by attaching a debugger gives the wrong answer here: the first
+attempt, 40 attaches, put 30% of the frame in `Profiler::end_frame`, which is
+simply the first code to run after the present call returns while the debugger
+keeps stopping and restarting the process.
 
 ## 5. The GPU frame
 
@@ -830,8 +879,8 @@ strips it.
 
 ## 9. Not examined
 
-- Play mode: physics, scripts, audio, networking. Every number here is edit
-  mode.
+- Play mode beyond the frame profile of §4.6: physics, audio and networking
+  under load, and scenes that do have scripts.
 - A project with real textures, where texture memory would dominate and the
   uncooked RGBA8 path the editor uses would matter.
 - Any GPU other than the RTX 3060, in particular an integrated one, where the
@@ -853,9 +902,12 @@ tools in `tools/perf_research`.
    or rename the executable and time the lighting pass's creation.
 3. **Instruction-set policy.** `compile_commands.json` shows one flag set, or
    the start-up check exists.
-4. **The unchanged-scene guard.** Zones at 20k: `ecs_sync`, `build_draw_items`,
-   `rt_scene_update` and `skinning_scan` go to about zero on a static scene,
-   and the verifiers stay silent while editing.
+4. **The unchanged-scene guard, and zones for the three unzoned walks.** Zones
+   at 20k: `ecs_sync`, `build_draw_items`, `rt_scene_update` and
+   `skinning_scan` go to about zero on a static scene, and the verifiers stay
+   silent while editing. `stack_sampler` shows the terrain prunes and the
+   particle scan gone, and `ScriptSystem::update` near zero in play mode once
+   it walks a list of scripted entities.
 5. **Idle and unfocused throttle.** `thread_cpu.ps1` and `nvidia-smi` with the
    editor idle.
 6. **Terrain: shared index buffer, then BLAS compaction and sub-allocation.**

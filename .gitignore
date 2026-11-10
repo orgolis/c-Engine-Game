@@ -97,3 +97,7 @@ script_cache/
 docs/.obsidian/workspace.json
 docs/.obsidian/workspace-mobile.json
 docs/.obsidian/cache
+
+# Python bytecode caches (the scripts under tools/ are run in place)
+__pycache__/
+*.pyc

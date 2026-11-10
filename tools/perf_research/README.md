@@ -90,6 +90,28 @@ Rebuild them with other flags (`-march=x86-64-v3`, `-DGLM_FORCE_INTRINSICS
 -DGLM_FORCE_DEFAULT_ALIGNED_GENTYPES`) to see what a flag change does to the
 same loops.
 
+## Code the profiler zones miss: `stack_sampler.cpp`, `sample_report.py`
+
+A sampling profiler for the editor's main thread. It runs as a separate
+process, suspends the thread every few milliseconds, walks its stack with
+dbghelp (the unwind tables are in the executable, so no debug info is needed)
+and resumes it.
+
+```sh
+c++ -O2 tools/perf_research/stack_sampler.cpp -o stack_sampler.exe -ldbghelp -lpsapi -lwinmm
+./stack_sampler.exe <pid of editor.exe> 12 samples.txt
+python tools/perf_research/sample_report.py samples.txt 25
+```
+
+The report lists, for each engine function, the share of the main thread's
+wall time spent in or below it. Multiply by the frame time to get
+milliseconds. Time blocked in the present call shows up under
+`VulkanSwapchain::present_image`.
+
+Do not use a debugger attach for this. While it attaches, a debugger stops and
+restarts the process once per thread and module, so the samples pile up on
+whatever runs right after a blocking call returns.
+
 ## Idle cost: `thread_cpu.ps1`
 
 With the editor running and idle, prints the CPU time each of its threads used
