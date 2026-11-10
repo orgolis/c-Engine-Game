@@ -25,9 +25,9 @@ Every number below is one of three kinds, and says which:
    a megabyte.
 2. **The CPU frame is bound by memory, not by instructions.** At 20,000
    entities the engine's scene work is 4.4 ms of CPU per frame. Rebuilding the
-   whole engine with AVX2 changed none of it. Walking the same data in a dense array is 10 to 15
-   times faster than walking it through entity pointers. About 2.0 ms of the
-   4.4 ms re-examines a scene in which nothing changed. A sampling profiler
+   whole engine with AVX2 changed none of it. Walking the same data in a dense
+   array is 10 to 15 times faster than walking it through entity pointers.
+   About 2.0 ms of the 4.4 ms re-examines a scene in which nothing changed. A sampling profiler
    found more of the same that no profiler zone covers: 0.7 ms a frame in edit
    mode and 2.9 ms in play mode, 2.0 ms of it the script system walking 20,000
    entities that have no scripts.
@@ -37,8 +37,9 @@ Every number below is one of three kinds, and says which:
 4. **An idle editor is not idle.** With nothing moving it uses 41% of a CPU
    core and keeps the GPU about 40% busy.
 5. **Two correctness problems turned up.** The shipped binary mixes AVX2 code
-   (Jolt) with SSE2 code (everything else), so it needs an AVX2 processor the
-   moment physics starts, and about 5% of Steam machines have none. And the
+   (Jolt) with SSE2 code (everything else), so by its flags it needs an AVX2
+   processor the moment physics starts, and about 5% of Steam machines have
+   none. And the
    depth buffer resolves 75 mm at 500 m, which every pass that rebuilds
    positions from depth now inherits.
 
