@@ -94,7 +94,11 @@ jobs:
         # added to the engine component — the binaries simply did not exist.
         # A local `cpack` did not catch it because a dev tree already has
         # them built; only a from-scratch build exposes the gap.
-        run: cmake --build build -j --target editor gws headless projectctl docgen assetcook
+        # Parallelism is capped: a bare -j lets Ninja run nproc+2 compilers,
+        # and at -O3 -g the large editor translation units ran the 16 GB
+        # runner out of memory -- v0.8.12's Windows build died with an access
+        # violation (0xC0000005) while CI built the same commit fine.
+        run: cmake --build build -j 3 --target editor gws headless projectctl docgen assetcook
 
       - name: Package the engine (CPack ZIP)
         run: cd build && cpack -G ZIP
