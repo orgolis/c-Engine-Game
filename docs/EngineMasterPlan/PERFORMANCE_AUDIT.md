@@ -5,6 +5,9 @@
 would produce them is itself finding **F2**.
 **Companion research:** the general technique survey (graphics / physics / memory) is an artifact,
 *The Frame Budget Handbook*; this file is the engine-specific half.
+**Byte-level inventory (2026-11-10, v0.8.13):** [OPTIMIZATION_RESEARCH.md](OPTIMIZATION_RESEARCH.md) measures
+GPU memory, the heap, struct layouts, start-up and idle cost, and ranks what is left to do. Its tools are in
+`tools/perf_research/`.
 
 ---
 
