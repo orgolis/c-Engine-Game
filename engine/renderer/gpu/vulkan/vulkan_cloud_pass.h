@@ -104,6 +104,13 @@ public:
     /// call when the resolution scale changes.
     bool rebuild_targets();
 
+    /// Follow a resized scene (F1): the cloud buffers are rebuilt at the new
+    /// size, the composite framebuffer over the lighting pass's new HDR view
+    /// is recreated and the raymarch's depth binding re-read. The sky and
+    /// shadow maps are fixed-size and unaffected. The caller has waited for
+    /// the device to go idle.
+    void resize(VkImageView hdr_color_view, uint32_t width, uint32_t height);
+
 private:
     bool initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,
                     VkImageView hdr_color_view, VkFormat hdr_format,

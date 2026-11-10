@@ -75,6 +75,13 @@ public:
     /// Bind the cloud shadow map so shafts are occluded by clouds (god rays
     /// through gaps). Call once after the cloud pass is created.
     void set_cloud_shadow(VkImageView view, VkSampler sampler);
+
+    /// Follow a resized scene (F1): `hdr_color_view` is the lighting pass's
+    /// new output (the shafts are added into it) and the G-buffer depth was
+    /// recreated. The half-resolution scatter target is recreated. A bound
+    /// cloud shadow map (fixed size, top-down) is kept. The caller has waited
+    /// for the device to go idle.
+    void resize(VkImageView hdr_color_view, uint32_t width, uint32_t height);
     /// (center.x, center.z, half_extent, enabled) — update each frame.
     void set_cloud_shadow_params(const glm::vec4& p) { cloud_params_ = p; }
 

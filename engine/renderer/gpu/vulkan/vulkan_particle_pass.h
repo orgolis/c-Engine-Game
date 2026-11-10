@@ -63,6 +63,11 @@ public:
                  const std::vector<schizo::vfx::BillboardVertex>& verts,
                  const glm::mat4& view_proj);
 
+    /// Follow a resized scene (F1): the HDR target and the depth it tests
+    /// against were recreated. The caller has waited for the device to go idle.
+    void resize(VkImageView hdr_color_view, VkImageView depth_view,
+                uint32_t width, uint32_t height);
+
     /// Indices drawn last frame. build_billboards emits FOUR corner vertices
     /// per particle with no indices, so this pass supplies the two triangles.
     uint32_t last_index_count() const { return last_index_count_; }

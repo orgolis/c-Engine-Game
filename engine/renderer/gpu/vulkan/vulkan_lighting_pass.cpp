@@ -1548,7 +1548,25 @@ void VulkanLightingPass::set_ambient_light(float intensity) {
 }
 
 void VulkanLightingPass::resize(uint32_t width, uint32_t height) {
-    // Will be implemented when output image resizing is needed
+    // Follow a resized scene (F1). The HDR output is recreated (so
+    // get_output_view() changes: every pass that draws into or reads it must
+    // be handed the new one) and the descriptor set re-reads the G-buffer,
+    // which the caller resized first. The caller has waited for idle; an AO
+    // texture that was resized too must be bound again with set_ssao_texture().
+    if (!device_) return;
+    VkDevice vk_device = device_->get_device();
+    if (framebuffer_ != VK_NULL_HANDLE)  { vkDestroyFramebuffer(vk_device, framebuffer_, nullptr); framebuffer_ = VK_NULL_HANDLE; }
+    if (output_view_ != VK_NULL_HANDLE)  { vkDestroyImageView(vk_device, output_view_, nullptr); output_view_ = VK_NULL_HANDLE; }
+    if (output_image_ != VK_NULL_HANDLE) { vkDestroyImage(vk_device, output_image_, nullptr); output_image_ = VK_NULL_HANDLE; }
+    if (output_memory_ != VK_NULL_HANDLE){ vkFreeMemory(vk_device, output_memory_, nullptr); output_memory_ = VK_NULL_HANDLE; }
+    try {
+        create_output_image(width, height);
+        create_framebuffer(width, height);
+    } catch (const std::exception& e) {
+        spdlog::error("VulkanLightingPass::resize failed: {}", e.what());
+        return;
+    }
+    update_descriptor_set();
 }
 
 void VulkanLightingPass::cleanup() {

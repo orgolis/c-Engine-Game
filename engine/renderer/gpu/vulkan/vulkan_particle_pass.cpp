@@ -172,6 +172,15 @@ bool VulkanParticlePass::create_render_pass(VkFormat hdr_format, VkFormat depth_
     return true;
 }
 
+void VulkanParticlePass::resize(VkImageView hdr_color_view, VkImageView depth_view,
+                                uint32_t width, uint32_t height) {
+    if (vk_ == VK_NULL_HANDLE || render_pass_ == VK_NULL_HANDLE) return;
+    if (framebuffer_) { vkDestroyFramebuffer(vk_, framebuffer_, nullptr); framebuffer_ = VK_NULL_HANDLE; }
+    width_  = width;
+    height_ = height;
+    create_framebuffer(hdr_color_view, depth_view);
+}
+
 bool VulkanParticlePass::create_framebuffer(VkImageView hdr_color_view, VkImageView depth_view) {
     const VkImageView views[2] = {hdr_color_view, depth_view};
     VkFramebufferCreateInfo fb{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};

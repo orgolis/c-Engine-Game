@@ -330,6 +330,7 @@ struct EditorState {
 
     // Actual viewport panel size (updated each frame by ShowViewport)
     glm::vec2 viewport_panel_size = glm::vec2(1920.0f, 1080.0f);
+    bool      viewport_panel_size_valid = false;   // set once the panel (or game window) reported a real size
     // Keyboard/mouse movement belongs exclusively to the scene viewport. This
     // prevents typing in Terminal or editing another panel from moving things.
     bool viewport_input_focused = false;
@@ -5094,7 +5095,10 @@ void ShowViewport(EditorState& editor_state) {
         ImVec2 viewport_size = ImGui::GetContentRegionAvail();
         float aspect = viewport_size.x > 0 ? viewport_size.x / viewport_size.y : 1.0f;
         if (viewport_size.x > 50.0f && viewport_size.y > 50.0f)
+        {
             editor_state.viewport_panel_size = {viewport_size.x, viewport_size.y};
+            editor_state.viewport_panel_size_valid = true;
+        }
 
         glm::mat4 view_matrix;
         glm::mat4 proj_matrix;
@@ -7754,6 +7758,84 @@ int main(int argc, char** argv) {
         editor_state.editor_scene       = &editor_scene;
         editor_state.viewport_texture_id = viewport_ds;
 
+        // ----------------------------------------------------------------
+        // Scene render size follows the Viewport panel (F1)
+        // ----------------------------------------------------------------
+        // The 3D targets were sized to the whole window, and ImGui::Image()
+        // shrank the result into the docked Viewport panel -- on the default
+        // layout ~3.7x the pixels that panel shows, every one of them paid
+        // for by every screen-sized pass (MyGame GPU 5.2 -> 2.2 ms at the
+        // panel's size). Every size-dependent pass resizes IN PLACE, so the
+        // pointers the render graph and the editor hold stay valid; only image
+        // views change, and they are handed on here. GWS_NO_VIEWPORT_RESIZE=1
+        // keeps the old window-sized targets (A/B).
+        uint32_t scene_w = kW, scene_h = kH;
+        auto resize_scene = [&](uint32_t w, uint32_t h) {
+            const auto t0 = std::chrono::steady_clock::now();
+            vkDeviceWaitIdle(device.get_device());
+            graph->resize(w, h);                       // G-buffer, lighting, post-processing
+            if (ssao) ssao->resize(w, h);
+            if (vxao) vxao->resize(w, h);
+            const VkImageView hdr   = lighting->get_output_view();
+            const VkImageView depth = g_buffer->get_depth_view();
+            if (transparent)      transparent->resize(hdr, depth, w, h);
+            if (particles_pass)   particles_pass->resize(hdr, depth, w, h);
+            if (ssr) {
+                const bool half = std::getenv("GWS_SSR_HALF") != nullptr;
+                ssr->resize(hdr, half ? w / 2 : w, half ? h / 2 : h);
+            }
+            if (volumetric_light) volumetric_light->resize(hdr, w, h);
+            if (froxel_fog)       froxel_fog->resize(hdr, w, h);
+            if (ddgi)             ddgi->resize(hdr, w, h);
+            if (clouds)           clouds->resize(hdr, w, h);
+            if (water_pass)       water_pass->resize(hdr, w, h);
+            if (hzb_culler)       hzb_culler->resize(depth, w, h);
+            hzb_prev_valid = false;                    // no pyramid at this size yet
+
+            // Hand the new views on.
+            if (ssao) {
+                if (ssao->technique() == gws::renderer::gpu::AoTechnique::VXAO && vxao)
+                    lighting->set_ssao_texture(vxao->get_output_view(), vxao->get_output_sampler());
+                else
+                    lighting->set_ssao_texture(ssao->get_output_view(), ssao->get_output_sampler());
+            }
+            post_processing->set_scene_depth(depth);
+            post_processing->set_input_image(hdr);
+            if (clouds && ssr)
+                ssr->set_cloud_sky(clouds->get_cloud_sky_view(), clouds->get_cloud_sky_sampler());
+            g_buffer->set_graph_pipeline(editor_state.material_pipeline);   // kept across the rebuild
+
+            if (viewport_ds != VK_NULL_HANDLE) ImGui_ImplVulkan_RemoveTexture(viewport_ds);
+            viewport_ds = ImGui_ImplVulkan_AddTexture(post_processing->get_output_image(),
+                                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            editor_state.viewport_texture_id = viewport_ds;
+
+            spdlog::info("[perf] scene targets {}x{} -> {}x{} (follows the Viewport panel; {:.0f} ms)",
+                         scene_w, scene_h, w, h,
+                         std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - t0).count());
+            scene_w = w; scene_h = h;
+        };
+        static const bool no_viewport_resize = std::getenv("GWS_NO_VIEWPORT_RESIZE") != nullptr;
+        // GWS_TEST_RESIZE="WxH@F[,WxH@F...]" (automation): force those sizes at
+        // those frames, instead of following the panel.
+        std::vector<std::pair<int, glm::uvec2>> test_resizes;
+        if (const char* tr = std::getenv("GWS_TEST_RESIZE")) {
+            std::string spec(tr);
+            size_t pos = 0;
+            while (pos < spec.size()) {
+                const size_t end = spec.find(',', pos);
+                const std::string item = spec.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+                unsigned tw = 0, th = 0; int tf = 0;
+                if (std::sscanf(item.c_str(), "%ux%u@%d", &tw, &th, &tf) == 3 && tw >= 16 && th >= 16)
+                    test_resizes.push_back({tf, glm::uvec2(tw, th)});
+                if (end == std::string::npos) break;
+                pos = end + 1;
+            }
+        }
+        uint32_t pending_w = 0, pending_h = 0;
+        int      pending_frames = 0;
+
         // Recent-projects list for the launcher (from the user config dir).
         schizo::project::ProjectsRegistry projects_registry;
         projects_registry.load();
@@ -8635,6 +8717,38 @@ int main(int argc, char** argv) {
         while (!glfwWindowShouldClose(glfw_window)) {
             { GWS_PROFILE_ZONE("poll_events"); glfwPollEvents(); }
 
+            // Scene targets follow the Viewport panel (F1). Only once its size
+            // has held for a few frames and moved by more than a few pixels:
+            // a rebuild idles the device, and dragging a splitter must not
+            // trigger one per frame.
+            {
+                uint32_t want_w = 0, want_h = 0;
+                for (const auto& tr : test_resizes)
+                    if (tr.first == frame_count) { want_w = tr.second.x; want_h = tr.second.y; }
+                if (want_w == 0 && test_resizes.empty() && !no_viewport_resize &&
+                    editor_state.viewport_panel_size_valid) {
+                    const ImVec2 fbs = ImGui::GetIO().DisplayFramebufferScale;
+                    const float scale = render_settings.render_scale;
+                    const float pw = editor_state.viewport_panel_size.x * (fbs.x > 0.0f ? fbs.x : 1.0f) * scale;
+                    const float ph = editor_state.viewport_panel_size.y * (fbs.y > 0.0f ? fbs.y : 1.0f) * scale;
+                    const uint32_t dw = static_cast<uint32_t>(std::clamp(pw + 0.5f, 64.0f, 8192.0f));
+                    const uint32_t dh = static_cast<uint32_t>(std::clamp(ph + 0.5f, 64.0f, 8192.0f));
+                    const bool differs = std::abs(static_cast<int>(dw) - static_cast<int>(scene_w)) > 8 ||
+                                         std::abs(static_cast<int>(dh) - static_cast<int>(scene_h)) > 8;
+                    if (differs) {
+                        if (dw == pending_w && dh == pending_h) ++pending_frames;
+                        else { pending_w = dw; pending_h = dh; pending_frames = 0; }
+                        if (pending_frames >= 6) { want_w = dw; want_h = dh; }
+                    } else {
+                        pending_frames = 0;
+                    }
+                }
+                if (want_w != 0 && (want_w != scene_w || want_h != scene_h)) {
+                    resize_scene(want_w, want_h);
+                    pending_frames = 0;
+                }
+            }
+
             // Poll source-image hot reload ~once/second (not every frame — it
             // stats watched files). Reloads changed textures in place and fires
             // the reload listener registered above. If anything reloaded,
@@ -9280,6 +9394,7 @@ int main(int argc, char** argv) {
                 // ShowViewport is skipped, so feed the camera aspect manually
                 // (the projection reads viewport_panel_size each frame).
                 editor_state.viewport_panel_size = { gio.DisplaySize.x, gio.DisplaySize.y };
+                editor_state.viewport_panel_size_valid = true;
                 if (editor_state.viewport_texture_id != VK_NULL_HANDLE) {
                     ImGui::GetBackgroundDrawList()->AddImage(
                         (ImTextureID)(void*)editor_state.viewport_texture_id,
@@ -9834,7 +9949,7 @@ int main(int argc, char** argv) {
                             "- by far the most expensive thing in the frame. Applies on restart.");
                     ImGui::SameLine();
                     ImGui::TextDisabled(device.has_ray_tracing() ? "(active)" : "(inactive)");
-                    ImGui::TextDisabled("3D renders at %ux%u", kW, kH);
+                    ImGui::TextDisabled("3D renders at %ux%u", scene_w, scene_h);
                     ImGui::Separator();
                 }
                 {
@@ -10412,7 +10527,7 @@ int main(int argc, char** argv) {
             float vp_w = editor_state.viewport_panel_size.x;
             float vp_h = editor_state.viewport_panel_size.y;
             float aspect = (vp_h > 0.0f) ? vp_w / vp_h
-                                          : static_cast<float>(kW) / static_cast<float>(kH);
+                                          : static_cast<float>(scene_w) / static_cast<float>(scene_h);
 
             // Use playback camera if scene is playing, otherwise use editor viewport camera
             if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {

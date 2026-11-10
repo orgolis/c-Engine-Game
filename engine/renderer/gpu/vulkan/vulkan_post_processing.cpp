@@ -1513,18 +1513,45 @@ void VulkanPostProcessing::update_config(const PostProcessingConfig& config) {
 }
 
 void VulkanPostProcessing::resize(uint32_t width, uint32_t height) {
-    if (width == config_.width && height == config_.height) {
+    // Follow a resized scene (F1). Rebuilt through create() -- bloom chain,
+    // TAA history, tone-map output, lazily-built FXAA/colour-FX/auto-exposure
+    // all depend on the size -- into a fresh object whose handles then move
+    // into *this, so every pointer to this object stays valid. The output
+    // view changes (re-register it wherever it is displayed) and the caller
+    // must hand over the new input with set_input_image() and the new depth
+    // with set_scene_depth(). The caller has waited for the device to go idle.
+    //
+    // This used to cleanup() first and then call create(device_, ...) --
+    // after cleanup() had cleared device_ -- and move-assign the result, whose
+    // destructor then destroyed the handles *this had just taken over.
+    if (device_ == nullptr || (width == config_.width && height == config_.height)) return;
+    PostProcessingConfig cfg = config_;     // carries the intensities the setters changed
+    cfg.width  = width;
+    cfg.height = height;
+    auto fresh = create(device_, cfg);
+    if (!fresh) {
+        spdlog::error("VulkanPostProcessing::resize: rebuild at {}x{} failed; keeping {}x{}",
+                      width, height, config_.width, config_.height);
         return;
     }
-    
+    // Runtime state create() derives from the config's defaults instead.
+    const bool bloom = bloom_enabled_, tone = tone_mapping_enabled_, taa = taa_enabled_;
+    const bool chromatic = chromatic_enabled_, vignette = vignette_enabled_,
+               grain = film_grain_enabled_, sharpen = sharpen_enabled_,
+               lens = lens_distortion_enabled_, grade = color_grade_enabled_,
+               posterize = posterize_enabled_, pixelate = pixelate_enabled_,
+               scanlines = scanlines_enabled_, ae = auto_exposure_enabled_,
+               fxaa = fxaa_enabled_;
+    const float dt = delta_time_;
     cleanup();
-    config_.width = width;
-    config_.height = height;
-    
-    auto new_pp = create(device_, config_);
-    if (new_pp) {
-        *this = std::move(*new_pp);
-    }
+    *this = std::move(*fresh);
+    fresh->device_ = nullptr;   // its handles belong to *this now; no second cleanup
+    bloom_enabled_ = bloom; tone_mapping_enabled_ = tone; taa_enabled_ = taa;
+    chromatic_enabled_ = chromatic; vignette_enabled_ = vignette; film_grain_enabled_ = grain;
+    sharpen_enabled_ = sharpen; lens_distortion_enabled_ = lens; color_grade_enabled_ = grade;
+    posterize_enabled_ = posterize; pixelate_enabled_ = pixelate; scanlines_enabled_ = scanlines;
+    auto_exposure_enabled_ = ae; fxaa_enabled_ = fxaa;
+    delta_time_ = dt;
 }
 
 void VulkanPostProcessing::cleanup() {

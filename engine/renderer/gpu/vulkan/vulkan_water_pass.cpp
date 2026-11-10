@@ -343,6 +343,29 @@ void VulkanWaterPass::execute(VkCommandBuffer cmd,
     vkCmdEndRenderPass(cmd);
 }
 
+void VulkanWaterPass::resize(VkImageView hdr_color_view, uint32_t width, uint32_t height) {
+    if (!device_ || render_pass_ == VK_NULL_HANDLE) return;
+    VkDevice vk = device_->get_device();
+    if (framebuffer_) { vkDestroyFramebuffer(vk, framebuffer_, nullptr); framebuffer_ = VK_NULL_HANDLE; }
+    width_ = width; height_ = height;
+    VkFramebufferCreateInfo fb{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fb.renderPass      = render_pass_;
+    fb.attachmentCount = 1;
+    fb.pAttachments    = &hdr_color_view;
+    fb.width           = width;
+    fb.height          = height;
+    fb.layers          = 1;
+    if (vkCreateFramebuffer(vk, &fb, nullptr, &framebuffer_) != VK_SUCCESS)
+        spdlog::error("VulkanWaterPass::resize: framebuffer creation failed");
+    // The G-buffer depth this pass tests against is a new image too.
+    VkDescriptorImageInfo depth{gbuffer_sampler_, g_buffer_->get_depth_view(),
+                                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = set_; w.dstBinding = 1; w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &depth;
+    vkUpdateDescriptorSets(vk, 1, &w, 0, nullptr);
+}
+
 void VulkanWaterPass::destroy() {
     if (!device_) return;
     VkDevice vk = device_->get_device();

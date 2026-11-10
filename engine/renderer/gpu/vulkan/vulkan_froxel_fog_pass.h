@@ -75,6 +75,12 @@ public:
     void set_enabled(bool e) { enabled_ = e; }
     bool is_enabled() const { return enabled_; }
 
+    /// Follow a resized scene (F1): the froxel volumes are fixed-size; the
+    /// composite framebuffer over the lighting pass's new HDR view and the
+    /// G-buffer depth binding are rebuilt. The caller has waited for the
+    /// device to go idle.
+    void resize(VkImageView hdr_color_view, uint32_t width, uint32_t height);
+
 private:
     bool initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,
                     VkImageView hdr_color_view, VkFormat hdr_format,

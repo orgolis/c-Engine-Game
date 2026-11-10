@@ -472,6 +472,53 @@ bool VulkanVolumetricLightPass::create_composite_pipeline(VkImageView hdr_color_
     return res == VK_SUCCESS;
 }
 
+void VulkanVolumetricLightPass::resize(VkImageView hdr_color_view, uint32_t width, uint32_t height) {
+    if (device_ == nullptr || compute_set_ == VK_NULL_HANDLE || composite_set_ == VK_NULL_HANDLE) return;
+    VkDevice vk = device_->get_device();
+    if (composite_framebuffer_ != VK_NULL_HANDLE) { vkDestroyFramebuffer(vk, composite_framebuffer_, nullptr); composite_framebuffer_ = VK_NULL_HANDLE; }
+    if (scatter_view_   != VK_NULL_HANDLE) { vkDestroyImageView(vk, scatter_view_, nullptr); scatter_view_ = VK_NULL_HANDLE; }
+    if (scatter_image_  != VK_NULL_HANDLE) { vkDestroyImage(vk, scatter_image_, nullptr); scatter_image_ = VK_NULL_HANDLE; }
+    if (scatter_memory_ != VK_NULL_HANDLE) { vkFreeMemory(vk, scatter_memory_, nullptr); scatter_memory_ = VK_NULL_HANDLE; }
+    width_  = width;
+    height_ = height;
+    scatter_w_ = (width  + 1) / 2;  // half resolution, as initialize()
+    scatter_h_ = (height + 1) / 2;
+    hdr_color_view_ = hdr_color_view;
+    if (!create_scatter_target()) { spdlog::error("VulkanVolumetricLightPass::resize: scatter target failed"); return; }
+    VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fbi.renderPass      = composite_render_pass_;
+    fbi.attachmentCount = 1;
+    fbi.pAttachments    = &hdr_color_view;
+    fbi.width           = width_; fbi.height = height_; fbi.layers = 1;
+    if (vkCreateFramebuffer(vk, &fbi, nullptr, &composite_framebuffer_) != VK_SUCCESS) {
+        spdlog::error("VulkanVolumetricLightPass::resize: composite framebuffer failed");
+        return;
+    }
+    const VkImageLayout sr = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    const VkImageLayout dr = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    // Compute: 1 (unused, depth), 2 depth, 4 scatter, 5 the cloud-map
+    // placeholder unless a real cloud map is bound. Composite: 0 scatter, 1 depth.
+    VkDescriptorImageInfo depth{ gbuffer_sampler_, g_buffer_->get_depth_view(), dr };
+    VkDescriptorImageInfo scat_st{ VK_NULL_HANDLE, scatter_view_, VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo scat_s{ gbuffer_sampler_, scatter_view_, sr };
+    std::array<VkWriteDescriptorSet, 7> ws{};
+    uint32_t n = 0;
+    auto add = [&](VkDescriptorSet set, uint32_t binding, VkDescriptorType t, const VkDescriptorImageInfo* info) {
+        VkWriteDescriptorSet& w = ws[n++];
+        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet = set; w.dstBinding = binding; w.descriptorCount = 1;
+        w.descriptorType = t; w.pImageInfo = info;
+    };
+    add(compute_set_, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depth);
+    add(compute_set_, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depth);
+    add(compute_set_, 4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &scat_st);
+    if (cloud_shadow_view_ == VK_NULL_HANDLE)
+        add(compute_set_, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depth);
+    add(composite_set_, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &scat_s);
+    add(composite_set_, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depth);
+    vkUpdateDescriptorSets(vk, n, ws.data(), 0, nullptr);
+}
+
 void VulkanVolumetricLightPass::set_cloud_shadow(VkImageView view, VkSampler sampler) {
     cloud_shadow_view_ = view;
     cloud_shadow_sampler_ = sampler;

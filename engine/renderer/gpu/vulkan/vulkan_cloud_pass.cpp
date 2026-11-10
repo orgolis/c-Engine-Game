@@ -691,6 +691,25 @@ void VulkanCloudPass::generate_noise(VkCommandBuffer cmd) {
                 VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 }
 
+void VulkanCloudPass::resize(VkImageView hdr_color_view, uint32_t width, uint32_t height) {
+    if (device_ == nullptr || composite_render_pass_ == VK_NULL_HANDLE) return;
+    VkDevice vk = device_->get_device();
+    width_ = width; height_ = height;
+    if (!rebuild_targets()) { spdlog::error("VulkanCloudPass::resize: target rebuild failed"); return; }
+    if (composite_framebuffer_) { vkDestroyFramebuffer(vk, composite_framebuffer_, nullptr); composite_framebuffer_ = VK_NULL_HANDLE; }
+    VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fbi.renderPass = composite_render_pass_; fbi.attachmentCount = 1; fbi.pAttachments = &hdr_color_view;
+    fbi.width = width_; fbi.height = height_; fbi.layers = 1;
+    if (vkCreateFramebuffer(vk, &fbi, nullptr, &composite_framebuffer_) != VK_SUCCESS)
+        spdlog::error("VulkanCloudPass::resize: composite framebuffer failed");
+    VkDescriptorImageInfo depth{ depth_sampler_, g_buffer_->get_depth_view(),
+                                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = raymarch_set_; w.dstBinding = 3; w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &depth;
+    vkUpdateDescriptorSets(vk, 1, &w, 0, nullptr);
+}
+
 bool VulkanCloudPass::rebuild_targets() {
     if (device_ == nullptr) return false;
     VkDevice vk = device_->get_device();

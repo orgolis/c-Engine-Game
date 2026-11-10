@@ -543,6 +543,36 @@ void VulkanDdgiPass::execute_composite(VkCommandBuffer cmd) {
     vkCmdEndRenderPass(cmd);
 }
 
+void VulkanDdgiPass::resize(VkImageView hdr_color_view, uint32_t width, uint32_t height) {
+    if (!device_ || composite_render_pass_ == VK_NULL_HANDLE || composite_set_ == VK_NULL_HANDLE) return;
+    VkDevice vk = device_->get_device();
+    if (composite_framebuffer_) { vkDestroyFramebuffer(vk, composite_framebuffer_, nullptr); composite_framebuffer_ = VK_NULL_HANDLE; }
+    width_ = width; height_ = height;
+    VkFramebufferCreateInfo fb{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fb.renderPass      = composite_render_pass_;
+    fb.attachmentCount = 1;
+    fb.pAttachments    = &hdr_color_view;
+    fb.width           = width;
+    fb.height          = height;
+    fb.layers          = 1;
+    if (vkCreateFramebuffer(vk, &fb, nullptr, &composite_framebuffer_) != VK_SUCCESS)
+        spdlog::error("VulkanDdgiPass::resize: composite framebuffer failed");
+    const VkImageLayout sr = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    const VkImageLayout dr = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    std::array<VkDescriptorImageInfo, 4> ii{};
+    ii[0] = {gbuffer_sampler_, g_buffer_->get_depth_view(),  dr};
+    ii[1] = {gbuffer_sampler_, g_buffer_->get_normal_view(), sr};
+    ii[2] = {gbuffer_sampler_, g_buffer_->get_albedo_view(), sr};
+    ii[3] = {gbuffer_sampler_, g_buffer_->get_depth_view(),  dr};
+    std::array<VkWriteDescriptorSet, 4> w{};
+    for (uint32_t i = 0; i < 4; ++i) {
+        w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[i].dstSet = composite_set_; w[i].dstBinding = i + 1; w[i].descriptorCount = 1;
+        w[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[i].pImageInfo = &ii[i];
+    }
+    vkUpdateDescriptorSets(vk, 4, w.data(), 0, nullptr);
+}
+
 void VulkanDdgiPass::destroy() {
     if (!device_) return;
     VkDevice vk = device_->get_device();

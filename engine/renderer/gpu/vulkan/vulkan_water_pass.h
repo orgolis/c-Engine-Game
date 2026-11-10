@@ -73,6 +73,11 @@ public:
                  float time_seconds);
 
     void set_enabled(bool e) { enabled_ = e; }
+
+    /// Follow a resized scene (F1): the HDR target this pass draws into and
+    /// the G-buffer depth it reads were recreated. The caller has waited for
+    /// the device to go idle.
+    void resize(VkImageView hdr_color_view, uint32_t width, uint32_t height);
     bool is_enabled() const { return enabled_; }
     size_t surface_count() const { return draws_.size(); }
 

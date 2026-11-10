@@ -519,6 +519,74 @@ void VulkanSsrPass::set_instance_data_buffer(VkBuffer buffer) {
     vkUpdateDescriptorSets(device_->get_device(), 1, &w, 0, nullptr);
 }
 
+void VulkanSsrPass::resize(VkImageView hdr_color_view, uint32_t width, uint32_t height) {
+    if (device_ == nullptr || compute_set_ == VK_NULL_HANDLE || composite_set_ == VK_NULL_HANDLE) return;
+    VkDevice vk = device_->get_device();
+    if (composite_framebuffer_ != VK_NULL_HANDLE) { vkDestroyFramebuffer(vk, composite_framebuffer_, nullptr); composite_framebuffer_ = VK_NULL_HANDLE; }
+    if (reflection_view_   != VK_NULL_HANDLE) { vkDestroyImageView(vk, reflection_view_, nullptr); reflection_view_ = VK_NULL_HANDLE; }
+    if (reflection_image_  != VK_NULL_HANDLE) { vkDestroyImage(vk, reflection_image_, nullptr); reflection_image_ = VK_NULL_HANDLE; }
+    if (reflection_memory_ != VK_NULL_HANDLE) { vkFreeMemory(vk, reflection_memory_, nullptr); reflection_memory_ = VK_NULL_HANDLE; }
+    width_ = width; height_ = height;
+    hdr_color_view_ = hdr_color_view;
+    if (!create_reflection_target()) {
+        spdlog::error("VulkanSsrPass::resize: reflection target failed; SSR disabled");
+        enabled_ = false;
+        return;
+    }
+    // The composite render pass and pipeline do not depend on the size
+    // (dynamic viewport); only the framebuffer over the HDR view does.
+    VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fbi.renderPass      = composite_render_pass_;
+    fbi.attachmentCount = 1;
+    fbi.pAttachments    = &hdr_color_view;
+    fbi.width           = width_; fbi.height = height_; fbi.layers = 1;
+    if (vkCreateFramebuffer(vk, &fbi, nullptr, &composite_framebuffer_) != VK_SUCCESS) {
+        spdlog::error("VulkanSsrPass::resize: composite framebuffer failed; SSR disabled");
+        enabled_ = false;
+        return;
+    }
+    // Compute bindings 0..5: the G-buffer, the lit HDR and the reflection
+    // target are all new images. The env cubemap (6) and the RT bindings
+    // (7, 8) are unaffected.
+    const VkImageLayout sr = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    const VkImageLayout dr = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    std::array<VkDescriptorImageInfo, 6> ii{};
+    ii[0] = { gbuffer_sampler_, g_buffer_->get_depth_view(),  dr };
+    ii[1] = { gbuffer_sampler_, g_buffer_->get_normal_view(), sr };
+    ii[2] = { gbuffer_sampler_, g_buffer_->get_depth_view(),  dr };
+    ii[3] = { gbuffer_sampler_, g_buffer_->get_albedo_view(), sr };
+    ii[4] = { hdr_sampler_,     hdr_color_view_,              sr };
+    ii[5] = { VK_NULL_HANDLE,   reflection_view_,             VK_IMAGE_LAYOUT_GENERAL };
+    std::array<VkWriteDescriptorSet, 7> ws{};
+    for (uint32_t i = 0; i < 6; ++i) {
+        ws[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        ws[i].dstSet          = compute_set_;
+        ws[i].dstBinding      = i;
+        ws[i].descriptorCount = 1;
+        ws[i].descriptorType  = (i == 5) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+                                         : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ws[i].pImageInfo      = &ii[i];
+    }
+    // The composite samples the reflection target.
+    VkDescriptorImageInfo ci{ hdr_sampler_, reflection_view_, sr };
+    ws[6].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    ws[6].dstSet          = composite_set_;
+    ws[6].dstBinding      = 0;
+    ws[6].descriptorCount = 1;
+    ws[6].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    ws[6].pImageInfo      = &ci;
+    vkUpdateDescriptorSets(vk, static_cast<uint32_t>(ws.size()), ws.data(), 0, nullptr);
+    // The RT variant's cloud-map placeholder pointed at the old HDR view.
+    if (use_rt_) {
+        VkDescriptorImageInfo ph{ hdr_sampler_, hdr_color_view_, sr };
+        VkWriteDescriptorSet cw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        cw.dstSet = compute_set_; cw.dstBinding = 9; cw.descriptorCount = 1;
+        cw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; cw.pImageInfo = &ph;
+        vkUpdateDescriptorSets(vk, 1, &cw, 0, nullptr);
+        cloud_sky_view_ = VK_NULL_HANDLE;   // the caller re-binds the cloud map
+    }
+}
+
 void VulkanSsrPass::set_cloud_sky(VkImageView view, VkSampler sampler) {
     if (!use_rt_ || view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE ||
         compute_set_ == VK_NULL_HANDLE) return;

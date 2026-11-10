@@ -95,6 +95,13 @@ public:
     uint32_t get_culled_count()  const { return last_culled_count_; }
     uint32_t get_mip_count() const { return mip_count_; }
 
+    /// Follow a resized scene (F1): the pyramid, its mip views, descriptor
+    /// sets and readback buffer are rebuilt for the new depth size, and the
+    /// CPU pyramid is invalidated (the next test treats everything as
+    /// visible until a fresh readback lands). The caller has waited for the
+    /// device to go idle.
+    void resize(VkImageView depth_view, uint32_t depth_width, uint32_t depth_height);
+
 private:
     bool initialize(VulkanDevice* device, const Config& cfg);
     void destroy();

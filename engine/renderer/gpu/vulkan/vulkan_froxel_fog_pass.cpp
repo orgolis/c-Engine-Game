@@ -502,6 +502,28 @@ void VulkanFroxelFogPass::execute(VkCommandBuffer cmd,
     vkCmdEndRenderPass(cmd);
 }
 
+void VulkanFroxelFogPass::resize(VkImageView hdr_color_view, uint32_t width, uint32_t height) {
+    if (!device_ || composite_render_pass_ == VK_NULL_HANDLE || composite_set_ == VK_NULL_HANDLE) return;
+    VkDevice vk = device_->get_device();
+    if (composite_framebuffer_) { vkDestroyFramebuffer(vk, composite_framebuffer_, nullptr); composite_framebuffer_ = VK_NULL_HANDLE; }
+    width_ = width; height_ = height;
+    VkFramebufferCreateInfo fb{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fb.renderPass      = composite_render_pass_;
+    fb.attachmentCount = 1;
+    fb.pAttachments    = &hdr_color_view;
+    fb.width           = width;
+    fb.height          = height;
+    fb.layers          = 1;
+    if (vkCreateFramebuffer(vk, &fb, nullptr, &composite_framebuffer_) != VK_SUCCESS)
+        spdlog::error("VulkanFroxelFogPass::resize: composite framebuffer failed");
+    VkDescriptorImageInfo depth{gbuffer_sampler_, g_buffer_->get_depth_view(),
+                                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = composite_set_; w.dstBinding = 1; w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &depth;
+    vkUpdateDescriptorSets(vk, 1, &w, 0, nullptr);
+}
+
 void VulkanFroxelFogPass::destroy() {
     if (!device_) return;
     VkDevice vk = device_->get_device();

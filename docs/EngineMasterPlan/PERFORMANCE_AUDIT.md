@@ -1340,7 +1340,7 @@ produced here.
 
 Ranked by expected win per unit of effort. Every claim carries the evidence that produced it.
 
-### F1 — Render targets are pinned at 1920×1080 and never resized 🔴
+### F1 — Render targets are pinned at 1920×1080 and never resized 🔴 → fixed (2026-11-10)
 
 `editor/src/main.cpp:5935` declares `constexpr uint32_t kW = 1920, kH = 1080;`. Those values are assigned to
 the G-buffer config at `main.cpp:6079-6080` and are the **only** assignment to `g_cfg.width/height` in the
@@ -1370,6 +1370,28 @@ that factor. This is the largest single waste found.
 > therefore needs resize paths on seven more passes and is its own piece of work. What ships first is the
 > half that is safe: **sizing the targets from the real framebuffer times a render scale**, which is where
 > most of the win is for a small display anyway.
+
+**Fixed (2026-11-10): the scene targets follow the Viewport panel.** Every pass that owns a full-screen
+target or samples one now has a `resize()`: water, VXAO, SSR (plus its RT variant), volumetric light, froxel
+fog, DDGI, particles, clouds and the HZB culler gained one, and the lighting pass's stub was implemented.
+Post-processing rebuilds itself from its config and keeps its runtime effect toggles. The editor measures
+the panel (in framebuffer pixels, times the render scale, clamped to 64..8192). When that differs from the
+current target size by more than 8 px and has held still for 6 frames, it waits for the device to go idle,
+resizes every pass, rewires the cross-pass bindings (AO into lighting, depth and HDR into post, the cloud
+sky into SSR, the material pipeline into the G-buffer) and swaps the ImGui texture. The HZB's previous
+frame is marked invalid, so the next frame draws everything rather than culling against a stale pyramid.
+A resize takes about 20–30 ms and happens only when the panel settles, not on every frame of a drag.
+
+*Measured* (1920×1032 window, docked panel 1169×454, default settings, interleaved A/B with
+`GWS_NO_VIEWPORT_RESIZE=1` as the control): GPU total **5.1–5.5 ms → 1.97–2.43 ms**, about **−61%**,
+and Lighting 1.61 → 0.48 ms. Screenshots of the same scene match. The resized frame is the panel's native
+resolution instead of a downsampled 1920×1032, so it is slightly sharper. Validation is clean over three forced
+resizes (`GWS_TEST_RESIZE="800x450@20,1600x900@60,1169x455@100"`) with SSR-RT, froxel fog, DDGI and clouds
+on. The first run reported one leaked `VkSampler` per resize: VXAO's `create_ao_image()` creates the sampler
+alongside the image, and the resize re-ran it. That is fixed, and the run is now silent.
+
+`GWS_NO_VIEWPORT_RESIZE=1` restores the old fixed-size behaviour. `GWS_TEST_RESIZE="WxH@frame,..."` forces
+sizes for tests.
 
 ### F2 — The GPU profiler cannot see the expensive passes 🔴
 
@@ -1663,7 +1685,7 @@ Aimed using whatever v0.8.2 reports.
 
 | # | Item | Done when |
 |---|---|---|
-| 1 | **F1 — stop rendering at a hardcoded 1920×1080** | Targets are sized from the real framebuffer times the render scale. (Live viewport-tracking resize needs resize paths on seven more passes — see the correction under F1 — and is tracked separately.) |
+| 1 | **F1 — stop rendering at a hardcoded 1920×1080** | Targets are sized from the real framebuffer times the render scale. Live viewport-tracking resize followed on 2026-11-10 (GPU −61% at a docked 1169×454 panel). |
 | 2 | **F7 — render-scale control** | A slider in the UI; 0.5 quarters the pixel work, visible in the overlay. |
 | 3 | **F3 / F4 / F6 — quality presets in the UI** | A preset control with a real Low; defaults chosen per device type; every `GWS_NO_*` env var has a UI equivalent, reachable from a Hub-launched editor. |
 | 4 | **F0 — ray tracing becomes a setting** | ✅ Per-pixel ray-query shadows in the lighting pass, measured at 10–12 ms, are off at Low and Medium and have a checkbox. Applies at startup. |

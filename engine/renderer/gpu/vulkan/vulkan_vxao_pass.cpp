@@ -367,6 +367,30 @@ void VulkanVxaoPass::voxelize(VkCommandBuffer cmd, const DrawItem* items, size_t
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 }
 
+void VulkanVxaoPass::resize(uint32_t width, uint32_t height) {
+    if (!device_ || cone_set_ == VK_NULL_HANDLE) return;
+    VkDevice vk = device_->get_device();
+    if (ao_view_)   { vkDestroyImageView(vk, ao_view_, nullptr); ao_view_ = VK_NULL_HANDLE; }
+    if (ao_image_)  { vkDestroyImage(vk, ao_image_, nullptr); ao_image_ = VK_NULL_HANDLE; }
+    if (ao_memory_) { vkFreeMemory(vk, ao_memory_, nullptr); ao_memory_ = VK_NULL_HANDLE; }
+    // create_ao_image() makes the sampler along with the image.
+    if (ao_sampler_) { vkDestroySampler(vk, ao_sampler_, nullptr); ao_sampler_ = VK_NULL_HANDLE; }
+    width_ = width; height_ = height;
+    if (!create_ao_image()) { spdlog::error("VulkanVxaoPass::resize: AO image creation failed"); return; }
+    std::array<VkDescriptorImageInfo, 3> ii{};
+    ii[0] = { gbuffer_sampler_, g_buffer_->get_depth_view(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+    ii[1] = { gbuffer_sampler_, g_buffer_->get_normal_view(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    ii[2] = { VK_NULL_HANDLE,   ao_view_,                     VK_IMAGE_LAYOUT_GENERAL };
+    std::array<VkWriteDescriptorSet, 3> w{};
+    for (uint32_t i = 0; i < 3; ++i) {
+        w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[i].dstSet = cone_set_;
+        w[i].dstBinding = i; w[i].descriptorCount = 1; w[i].pImageInfo = &ii[i];
+        w[i].descriptorType = (i == 2) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+                                       : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    }
+    vkUpdateDescriptorSets(vk, 3, w.data(), 0, nullptr);
+}
+
 void VulkanVxaoPass::compute_ao(VkCommandBuffer cmd, const glm::mat4& view_proj) {
     if (cone_pipe_ == VK_NULL_HANDLE) return;
     // AO output → GENERAL for compute write.

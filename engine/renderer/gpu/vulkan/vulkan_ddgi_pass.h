@@ -85,6 +85,12 @@ public:
     const DdgiConfig& config() const { return config_; }
     void set_enabled(bool e) { enabled_ = e; }
     bool is_enabled() const { return enabled_; }
+
+    /// Follow a resized scene (F1): the probe atlases are fixed-size; the
+    /// composite framebuffer over the lighting pass's new HDR view and the
+    /// G-buffer bindings are rebuilt. The caller has waited for the device to
+    /// go idle.
+    void resize(VkImageView hdr_color_view, uint32_t width, uint32_t height);
     uint32_t probe_count() const {
         return static_cast<uint32_t>(config_.counts.x * config_.counts.y * config_.counts.z);
     }

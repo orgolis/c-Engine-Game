@@ -125,6 +125,14 @@ public:
     /// capability nobody can test.
     void set_use_rt(bool on);
 
+    /// Follow a resized scene (F1): `hdr_color_view` is the lighting pass's
+    /// new output (read for hit colour, composited into) and the G-buffer was
+    /// recreated. `width`/`height` are this pass's own size (half the scene
+    /// with GWS_SSR_HALF). The reflection image is recreated. A cloud map
+    /// bound with set_cloud_sky() must be bound again if it was resized too.
+    /// The caller has waited for the device to go idle.
+    void resize(VkImageView hdr_color_view, uint32_t width, uint32_t height);
+
     SsrConfig& mutable_config() { return config_; }
     const SsrConfig& config() const { return config_; }
     void set_enabled(bool enabled) { enabled_ = enabled; }

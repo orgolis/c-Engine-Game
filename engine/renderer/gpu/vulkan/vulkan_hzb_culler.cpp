@@ -303,6 +303,26 @@ void VulkanHzbCuller::write_descriptor_for_mip(uint32_t mip) {
     vkUpdateDescriptorSets(device_->get_device(), 2, ws.data(), 0, nullptr);
 }
 
+void VulkanHzbCuller::resize(VkImageView depth_view, uint32_t depth_width, uint32_t depth_height) {
+    if (device_ == nullptr) return;
+    VulkanDevice* device = device_;
+    Config cfg = config_;
+    cfg.depth_width  = depth_width;
+    cfg.depth_height = depth_height;
+    destroy();
+    // State destroy() leaves alone: a pyramid read back at the old size
+    // means nothing now, and set_depth_view() must write the new sets.
+    depth_view_    = VK_NULL_HANDLE;
+    cpu_hzb_valid_ = false;
+    have_results_  = false;
+    if (!initialize(device, cfg)) {
+        spdlog::error("VulkanHzbCuller::resize: rebuild failed; occlusion culling off");
+        enabled_ = false;
+        return;
+    }
+    set_depth_view(depth_view);
+}
+
 void VulkanHzbCuller::set_depth_view(VkImageView depth_view) {
     if (depth_view == depth_view_) return;
     depth_view_ = depth_view;

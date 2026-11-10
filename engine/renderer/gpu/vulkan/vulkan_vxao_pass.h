@@ -51,6 +51,11 @@ public:
     /// Occlusion output (R8), SHADER_READ_ONLY after compute_ao. Lighting
     /// binds this when the VXAO technique is selected.
     VkImageView get_output_view() const { return ao_view_; }
+
+    /// Follow a resized scene (F1): the AO image is recreated at the new size
+    /// (so get_output_view() changes) and the G-buffer views are re-read. The
+    /// caller has waited for the device to go idle.
+    void resize(uint32_t width, uint32_t height);
     VkSampler   get_output_sampler() const { return ao_sampler_; }
 
 private:
