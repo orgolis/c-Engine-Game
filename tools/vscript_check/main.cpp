@@ -1,0 +1,601 @@
+// ====================
+// vscript_check -- headless verification of the visual scripting core.
+//
+// Builds graphs in memory, compiles them and runs them on the VM. What is
+// asserted is what an author relies on without seeing it: which wire runs
+// first, when a pure node is evaluated again, what a Delay remembers, that an
+// array read from a variable is the variable's array, and that a broken graph
+// is reported at the node that is wrong instead of crashing at run time.
+//
+// Pure CPU, no device. Prints "vscript_check: ALL OK (N checks)" and exits 0.
+// ====================
+
+#include "vscript/io.h"
+#include "vscript/program.h"
+#include "vscript/vm.h"
+
+#include <chrono>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+using namespace schizo::vs;
+
+namespace {
+
+int g_pass = 0, g_fail = 0;
+void check(bool ok, const std::string& what) {
+    std::printf("  [%s] %s\n", ok ? "OK" : "FAIL", what.c_str());
+    if (ok) ++g_pass; else ++g_fail;
+}
+
+struct TestHost : Host {
+    std::vector<std::string> out, errors;
+    void print(const Instance&, std::string_view t) override { out.emplace_back(t); }
+    void script_error(const Instance&, int, int node, std::string_view t) override {
+        errors.push_back("#" + std::to_string(node) + " " + std::string(t));
+    }
+    std::string joined() const {
+        std::string s;
+        for (const auto& o : out) { if (!s.empty()) s += ","; s += o; }
+        return s;
+    }
+};
+
+struct Rig {
+    Registry reg;
+    Script   script;
+    Program  prog;
+    TestHost host;
+    VM       vm{&host};
+    std::vector<CompileMessage> msgs;
+    std::unique_ptr<Instance>   inst;
+
+    Rig() { register_standard_library(reg); script.name = "test"; }
+    Graph& events() {
+        if (Graph* g = script.find_graph("EventGraph")) return *g;
+        return script.add_graph(GraphKind::Event, "EventGraph");
+    }
+    bool build() {
+        msgs.clear();
+        const bool ok = compile(reg, script, prog, msgs);
+        if (ok) inst = vm.instantiate(prog, 7);
+        return ok;
+    }
+    bool has_error(const std::string& part) const {
+        for (const auto& m : msgs) if (m.error && m.text.find(part) != std::string::npos) return true;
+        return false;
+    }
+    std::string first_error() const {
+        for (const auto& m : msgs) if (m.error) return m.text;
+        return "";
+    }
+    std::string run(const char* event = "event.begin_play") {
+        host.out.clear();
+        vm.fire(*inst, event);
+        return host.joined();
+    }
+};
+
+/// Fires Begin Play three times, in order. (a() + a() + a() does not promise an order.)
+std::string run3(Rig& r) {
+    std::string s = r.run();
+    s += r.run();
+    s += r.run();
+    return s;
+}
+
+// Small helpers so a test graph reads like its picture.
+int node(Graph& g, const char* def, const char* name = "") {
+    Node& n = g.add(def);
+    n.name = name;
+    return n.id;
+}
+void lit(Graph& g, int id, const char* pin, Value v) { g.find(id)->set_default(pin, std::move(v)); }
+int print_node(Graph& g, const char* text = nullptr) {
+    const int p = node(g, "print");
+    if (text) lit(g, p, "Text", Value::string(text));
+    return p;
+}
+// begin -> print(text)... chained by exec in order
+void chain(Graph& g, std::initializer_list<int> ids, const char* out = "Then", const char* in = "In") {
+    int prev = 0;
+    for (int id : ids) {
+        if (prev) g.link(prev, out, id, in);
+        prev = id;
+    }
+}
+
+void test_values() {
+    std::printf("-- values\n");
+    check(sizeof(Value) == 32, "a Value is 32 bytes");
+    Value v;
+    check(parse_literal(kVec3, "1,2.5,-3", v) && v.as_vec3() == glm::vec3(1, 2.5f, -3), "a vec3 literal parses");
+    check(literal_text(Value::number(0.1)) == "0.1" && literal_text(Value::number(2.0)) == "2.0",
+          "numbers print shortest and never look like integers");
+    const Value arr = Value::array(kString, {Value::string("a|b"), Value::string(""), Value::string("c\\")});
+    Value back;
+    check(parse_literal(Type(Kind::String, true), literal_text(arr), back) && equals(arr, back),
+          "a string array survives the text form, separators and empty items included");
+    Value conv;
+    check(convert(Value::integer(3), kFloat, conv) && conv.as_float() == 3.0, "Int converts to Float");
+    check(!can_convert(kString, kInt), "String does not silently become Int");
+    Value a = Value::array(kInt, {Value::integer(1)});
+    Value b = a;
+    b.items().push_back(Value::integer(2));
+    check(a.items().size() == 2, "copying an array value shares it");
+    Value c = clone(a);
+    c.items().clear();
+    check(a.items().size() == 2, "clone() does not");
+    Type t;
+    check(parse_type("vec3[]", t) && t == Type(Kind::Vec3, true) && type_name(t) == "vec3[]", "type names round-trip");
+}
+
+void test_flow() {
+    std::printf("-- flow\n");
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), br = node(g, "flow.branch");
+        const int t = print_node(g, "yes"), f = print_node(g, "no");
+        const int lt = node(g, "math.less");
+        lit(g, lt, "A", Value::integer(2)); lit(g, lt, "B", Value::number(2.5));
+        g.find(lt)->targ = kFloat;
+        g.link(ev, "Then", br, "In"); g.link(lt, "Result", br, "Condition");
+        g.link(br, "True", t, "In"); g.link(br, "False", f, "In");
+        check(r.build() && r.run() == "yes", "Branch takes True, and an Int literal on a Float pin is converted");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), sq = node(g, "flow.sequence");
+        g.find(sq)->extra = 3;
+        const int a = print_node(g, "a"), a2 = print_node(g, "a2"), b = print_node(g, "b"), c = print_node(g, "c");
+        g.link(ev, "Then", sq, "In");
+        g.link(sq, "Then 0", a, "In"); g.link(a, "Then", a2, "In");
+        g.link(sq, "Then 2", c, "In"); g.link(sq, "Then 1", b, "In");
+        check(r.build() && r.run() == "a,a2,b,c", "Sequence finishes each chain before starting the next");
+    }
+    {
+        // for i in 2..5: print(i * 10)   then "done"
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), fl = node(g, "flow.for");
+        lit(g, fl, "First Index", Value::integer(2)); lit(g, fl, "Last Index", Value::integer(5));
+        const int mul = node(g, "math.mul"); lit(g, mul, "B", Value::integer(10));
+        const int p = print_node(g), d = print_node(g, "done");
+        g.link(ev, "Then", fl, "In"); g.link(fl, "Index", mul, "A"); g.link(mul, "Result", p, "Text");
+        g.link(fl, "Loop Body", p, "In"); g.link(fl, "Completed", d, "In");
+        check(r.build() && r.run() == "20,30,40,50,done",
+              "For Loop runs inclusive bounds; the wildcard * takes Int from its wire; Int prints as text");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        r.script.add_variable("n", kInt, Value::integer(0));
+        const int ev = node(g, "event.begin_play"), wh = node(g, "flow.while");
+        const int get = node(g, "var.get", "n"), lt = node(g, "math.less"); lit(g, lt, "B", Value::integer(3));
+        const int add = node(g, "math.add"); lit(g, add, "B", Value::integer(1));
+        const int set = node(g, "var.set", "n"), p = print_node(g);
+        g.link(ev, "Then", wh, "In"); g.link(get, "Value", lt, "A"); g.link(lt, "Result", wh, "Condition");
+        g.link(wh, "Loop Body", set, "In"); g.link(get, "Value", add, "A"); g.link(add, "Result", set, "Value");
+        g.link(set, "Then", p, "In"); g.link(set, "Value", p, "Text");
+        check(r.build() && r.run() == "1,2,3", "While re-evaluates its pure condition every pass");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), mk = node(g, "array.make"), fe = node(g, "flow.for_each");
+        g.find(mk)->extra = 3;
+        lit(g, mk, "0", Value::string("x")); lit(g, mk, "1", Value::string("y")); lit(g, mk, "2", Value::string("z"));
+        g.find(mk)->targ = kString;
+        const int p = print_node(g);
+        g.link(ev, "Then", fe, "In"); g.link(mk, "Array", fe, "Array");
+        g.link(fe, "Loop Body", p, "In"); g.link(fe, "Element", p, "Text");
+        check(r.build() && r.run() == "x,y,z", "For Each takes its element type from the array wired in");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), fl = node(g, "flow.for_break");
+        lit(g, fl, "Last Index", Value::integer(9));
+        const int p = print_node(g), br = node(g, "flow.branch"), eq = node(g, "math.equal");
+        lit(g, eq, "B", Value::integer(2));
+        g.link(ev, "Then", fl, "In"); g.link(fl, "Loop Body", p, "In"); g.link(fl, "Index", p, "Text");
+        g.link(p, "Then", br, "In"); g.link(fl, "Index", eq, "A"); g.link(eq, "Result", br, "Condition");
+        g.link(br, "True", fl, "Break");
+        check(r.build() && r.run() == "0,1,2", "Break stops the loop after the current pass");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), sw = node(g, "flow.switch_string");
+        g.find(sw)->cases = {"red", "green"};
+        lit(g, sw, "Selection", Value::string("green"));
+        const int a = print_node(g, "R"), b = print_node(g, "G"), d = print_node(g, "?");
+        g.link(ev, "Then", sw, "In"); g.link(sw, "red", a, "In"); g.link(sw, "green", b, "In"); g.link(sw, "Default", d, "In");
+        check(r.build() && r.run() == "G", "Switch on String picks the matching case");
+        lit(g, sw, "Selection", Value::string("blue"));
+        check(r.build() && r.run() == "?", "and Default when none matches");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), sel = node(g, "flow.select");
+        g.find(sel)->extra = 3; g.find(sel)->targ = kString;
+        lit(g, sel, "Option 0", Value::string("zero")); lit(g, sel, "Option 2", Value::string("two"));
+        lit(g, sel, "Index", Value::integer(7));
+        const int p = print_node(g);
+        g.link(ev, "Then", p, "In"); g.link(sel, "Result", p, "Text");
+        check(r.build() && r.run() == "two", "Select clamps an index past the end to the last option");
+    }
+}
+
+void test_state_nodes() {
+    std::printf("-- nodes that remember\n");
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), once = node(g, "flow.do_once"), p = print_node(g, "once");
+        const int rs = node(g, "event.custom", "reset");
+        g.link(ev, "Then", once, "In"); g.link(once, "Completed", p, "In"); g.link(rs, "Then", once, "Reset");
+        check(r.build(), "Do Once compiles");
+        std::string s = r.run(); s += "|" + r.run();
+        r.vm.fire(*r.inst, "reset");
+        s += "|" + r.run();
+        check(s == "once||once", "Do Once passes once, blocks, and passes again after Reset");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), ff = node(g, "flow.flip_flop");
+        const int a = print_node(g, "A"), b = print_node(g, "B");
+        g.link(ev, "Then", ff, "In"); g.link(ff, "A", a, "In"); g.link(ff, "B", b, "In");
+        check(r.build() && run3(r) == "ABA", "Flip Flop alternates, starting with A");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), gate = node(g, "flow.gate"), p = print_node(g, "through");
+        lit(g, gate, "Start Closed", Value::boolean(true));
+        const int op = node(g, "event.custom", "open");
+        g.link(ev, "Then", gate, "Enter"); g.link(gate, "Exit", p, "In"); g.link(op, "Then", gate, "Open");
+        check(r.build(), "Gate compiles");
+        std::string s = r.run();
+        r.vm.fire(*r.inst, "open");
+        s += "|" + r.run();
+        check(s == "|through", "a Gate that starts closed passes only after Open");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), dn = node(g, "flow.do_n"), p = print_node(g);
+        lit(g, dn, "N", Value::integer(2));
+        g.link(ev, "Then", dn, "In"); g.link(dn, "Exit", p, "In"); g.link(dn, "Counter", p, "Text");
+        check(r.build() && run3(r) == "12", "Do N passes N times and reports the count");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), mg = node(g, "flow.multi_gate");
+        g.find(mg)->extra = 2; lit(g, mg, "Loop", Value::boolean(true));
+        const int a = print_node(g, "0"), b = print_node(g, "1");
+        g.link(ev, "Then", mg, "In"); g.link(mg, "Out 0", a, "In"); g.link(mg, "Out 1", b, "In");
+        check(r.build() && run3(r) == "010", "Multi Gate steps through its outputs and loops");
+    }
+    {
+        // Two instances of one program do not share node state or variables.
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), ff = node(g, "flow.flip_flop");
+        const int a = print_node(g, "A"), b = print_node(g, "B");
+        g.link(ev, "Then", ff, "In"); g.link(ff, "A", a, "In"); g.link(ff, "B", b, "In");
+        r.build();
+        auto other = r.vm.instantiate(r.prog, 8);
+        r.run();
+        r.host.out.clear();
+        r.vm.fire(*other, "event.begin_play");
+        check(r.host.joined() == "A", "each instance has its own node state");
+    }
+}
+
+void test_pure_and_variables() {
+    std::printf("-- data\n");
+    {
+        // A pure node feeding two consumers is evaluated for each of them.
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), rnd = node(g, "float.random");
+        const int p1 = print_node(g), p2 = print_node(g);
+        g.link(ev, "Then", p1, "In"); g.link(p1, "Then", p2, "In");
+        g.link(rnd, "Result", p1, "Text"); g.link(rnd, "Result", p2, "Text");
+        r.build(); r.run();
+        check(r.host.out.size() == 2 && r.host.out[0] != r.host.out[1],
+              "a pure node is evaluated again for each consumer");
+    }
+    {
+        // ... but once per consumer, even if that consumer uses it twice.
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), rnd = node(g, "float.random"), eq = node(g, "math.equal");
+        const int p = print_node(g);
+        g.link(rnd, "Result", eq, "A"); g.link(rnd, "Result", eq, "B");
+        g.link(ev, "Then", p, "In"); g.link(eq, "Result", p, "Text");
+        check(r.build() && r.run() == "true", "and once per consumer, however many of its pins it feeds");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        r.script.add_variable("list", Type(Kind::Int, true));
+        r.script.add_variable("copy", Type(Kind::Int, true));
+        const int ev = node(g, "event.begin_play"), get = node(g, "var.get", "list"), add = node(g, "array.add");
+        lit(g, add, "Item", Value::integer(5));
+        const int set = node(g, "var.set", "copy"), add2 = node(g, "array.add"); lit(g, add2, "Item", Value::integer(6));
+        const int len = node(g, "array.length"), getc = node(g, "var.get", "copy"), lenc = node(g, "array.length");
+        const int p = print_node(g), pc = print_node(g);
+        chain(g, {ev, add, set, add2, p, pc});
+        g.link(get, "Value", add, "Array"); g.link(get, "Value", set, "Value"); g.link(get, "Value", add2, "Array");
+        g.link(get, "Value", len, "Array"); g.link(len, "Length", p, "Text");
+        g.link(getc, "Value", lenc, "Array"); g.link(lenc, "Length", pc, "Text");
+        check(r.build() && r.run() == "2,1",
+              "Add on a variable's array changes the variable; Set copies, so the copy stays as it was");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), get = node(g, "array.get"), mk = node(g, "array.make");
+        lit(g, mk, "0", Value::integer(4)); g.find(mk)->targ = kInt;
+        lit(g, get, "Index", Value::integer(3));
+        const int p = print_node(g);
+        g.link(ev, "Then", p, "In"); g.link(mk, "Array", get, "Array"); g.link(get, "Element", p, "Text");
+        check(r.build() && r.run() == "0" && r.host.errors.size() == 1 && r.host.errors[0].find("outside") != std::string::npos,
+              "reading past the end of an array gives the default and reports the node");
+    }
+}
+
+void test_functions_and_events() {
+    std::printf("-- functions and events\n");
+    {
+        // factorial(n) = n <= 1 ? 1 : n * factorial(n - 1), as an impure function
+        Rig r;
+        Graph& f = r.script.add_graph(GraphKind::Function, "factorial");
+        f.inputs.push_back(Param{"n", kInt, Value::integer(0)});
+        f.outputs.push_back(Param{"result", kInt, Value::integer(0)});
+        const int en = node(f, "fn.entry"), br = node(f, "flow.branch"), le = node(f, "math.less_equal");
+        lit(f, le, "B", Value::integer(1));
+        const int r1 = node(f, "fn.return"); lit(f, r1, "result", Value::integer(1));
+        const int sub = node(f, "math.sub"); lit(f, sub, "B", Value::integer(1));
+        const int call = node(f, "fn.call", "factorial"), mul = node(f, "math.mul"), r2 = node(f, "fn.return");
+        f.link(en, "Then", br, "In"); f.link(en, "n", le, "A"); f.link(le, "Result", br, "Condition");
+        f.link(br, "True", r1, "In"); f.link(br, "False", call, "In");
+        f.link(en, "n", sub, "A"); f.link(sub, "Result", call, "n");
+        f.link(en, "n", mul, "A"); f.link(call, "result", mul, "B");
+        f.link(call, "Then", r2, "In"); f.link(mul, "Result", r2, "result");
+        Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), c = node(g, "fn.call", "factorial"), p = print_node(g);
+        lit(g, c, "n", Value::integer(10));
+        chain(g, {ev, c, p}); g.link(c, "result", p, "Text");
+        check(r.build() && r.run() == "3628800", "a function calls itself with a fresh frame each time");
+        std::vector<Value> out;
+        const Value arg = Value::integer(5);
+        check(r.vm.call(*r.inst, "factorial", &arg, 1, &out) && out.size() == 1 && out[0].as_int() == 120,
+              "the host can call a script function and read its result");
+    }
+    {
+        // pure function with a local: hyp(a, b) = sqrt(a*a + b*b)
+        Rig r;
+        Graph& f = r.script.add_graph(GraphKind::Function, "hyp");
+        f.pure = true;
+        f.inputs = {Param{"a", kFloat, Value::number(0)}, Param{"b", kFloat, Value::number(0)}};
+        f.outputs = {Param{"h", kFloat, Value::number(0)}};
+        const int en = node(f, "fn.entry"), aa = node(f, "math.mul"), bb = node(f, "math.mul"), add = node(f, "math.add");
+        const int sq = node(f, "float.sqrt"), ret = node(f, "fn.return");
+        f.link(en, "a", aa, "A"); f.link(en, "a", aa, "B"); f.link(en, "b", bb, "A"); f.link(en, "b", bb, "B");
+        f.link(aa, "Result", add, "A"); f.link(bb, "Result", add, "B"); f.link(add, "Result", sq, "A");
+        f.link(sq, "Result", ret, "h");
+        Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), c = node(g, "fn.call", "hyp"), p = print_node(g);
+        lit(g, c, "a", Value::number(3)); lit(g, c, "b", Value::number(4));
+        g.link(ev, "Then", p, "In"); g.link(c, "h", p, "Text");
+        check(r.build() && r.run() == "5.0", "a pure function is used from a data wire, with no flow pins");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), ce = node(g, "event.custom", "hit");
+        g.find(ce)->params = {Param{"damage", kFloat, Value::number(0)}, Param{"who", kString, Value()}};
+        const int call = node(g, "event.call", "hit"), after = print_node(g, "after");
+        lit(g, call, "damage", Value::number(12.5)); lit(g, call, "who", Value::string("orc"));
+        const int p1 = print_node(g), p2 = print_node(g);
+        chain(g, {ev, call, after}); chain(g, {ce, p1, p2});
+        g.link(ce, "who", p1, "Text"); g.link(ce, "damage", p2, "Text");
+        check(r.build() && r.run() == "orc,12.5,after", "a custom event receives its arguments and returns to the caller");
+        const Value args[2] = {Value::number(1.0), Value::string("host")};
+        r.host.out.clear();
+        check(r.vm.fire(*r.inst, "hit", args, 2) && r.host.joined() == "host,1.0", "the host can fire a custom event");
+        check(!r.vm.fire(*r.inst, "nothing"), "firing an event the script does not have reports false");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int tick = node(g, "event.tick"), p = print_node(g);
+        g.link(tick, "Then", p, "In"); g.link(tick, "Delta Seconds", p, "Text");
+        r.build();
+        const Value dt = Value::number(0.25);
+        r.vm.fire(*r.inst, "event.tick", &dt, 1);
+        check(r.host.joined() == "0.25", "a host event passes its parameters to the event node's pins");
+    }
+}
+
+void test_waits() {
+    std::printf("-- waits\n");
+    {
+        Rig r; Graph& g = r.events();
+        r.script.add_variable("who", kString, Value::string("first"));
+        const int ev = node(g, "event.begin_play"), a = print_node(g, "start"), d = node(g, "flow.delay");
+        lit(g, d, "Duration", Value::number(1.0));
+        const int get = node(g, "var.get", "who"), b = print_node(g);
+        chain(g, {ev, a, d}); g.link(d, "Completed", b, "In"); g.link(get, "Value", b, "Text");
+        r.build();
+        std::string s = r.run();
+        r.vm.tick(0.6);
+        s += "|" + r.host.joined();
+        *r.inst->variable("who") = Value::string("later");
+        r.host.out.clear();
+        r.vm.fire(*r.inst, "event.begin_play");   // while waiting: prints start, the Delay ignores it
+        r.vm.tick(0.6);
+        check(s == "start|start" && r.host.joined() == "start,later" && r.vm.pending_waits() == 0,
+              "Delay resumes once, after its time, and reads values as they are then");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), d = node(g, "flow.retriggerable_delay"), p = print_node(g, "fired");
+        lit(g, d, "Duration", Value::number(1.0));
+        g.link(ev, "Then", d, "In"); g.link(d, "Completed", p, "In");
+        r.build(); r.run();
+        r.vm.tick(0.8); r.vm.fire(*r.inst, "event.begin_play"); r.vm.tick(0.8);
+        const bool not_yet = r.host.out.empty();
+        r.vm.tick(0.3);
+        check(not_yet && r.host.joined() == "fired", "a Retriggerable Delay starts over when run again");
+    }
+    {
+        Rig r;
+        Graph& f = r.script.add_graph(GraphKind::Function, "bad");
+        const int en = node(f, "fn.entry"), d = node(f, "flow.delay");
+        f.link(en, "Then", d, "In");
+        check(!r.build() && r.has_error("cannot wait"), "a Delay inside a function is a compile error that says why");
+    }
+}
+
+void test_errors() {
+    std::printf("-- broken graphs\n");
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), br = node(g, "flow.branch"), mk = node(g, "vec3.make");
+        g.link(ev, "Then", br, "In"); g.link(mk, "Result", br, "Condition");
+        check(!r.build() && r.has_error("cannot connect vec3"), "a wire between incompatible types is refused: " + r.first_error());
+    }
+    {
+        Rig r; Graph& g = r.events();
+        node(g, "no.such.node");
+        check(!r.build() && r.has_error("unknown node kind"), "an unknown node kind is an error, not a crash");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), a = print_node(g, "a"), b = print_node(g, "b");
+        g.link(ev, "Then", a, "In"); g.link(ev, "Then", b, "In");
+        check(!r.build() && r.has_error("two wires"), "two wires out of one flow pin are refused");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), a = node(g, "math.add"), b = node(g, "math.add"), p = print_node(g);
+        g.link(a, "Result", b, "A"); g.link(b, "Result", a, "A");
+        g.link(ev, "Then", p, "In"); g.link(a, "Result", p, "Text");
+        check(!r.build() && r.has_error("loop"), "data wires that form a loop are refused");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), wh = node(g, "flow.while"), p = print_node(g, "x");
+        lit(g, wh, "Condition", Value::boolean(true));
+        g.link(ev, "Then", wh, "In"); g.link(wh, "Loop Body", p, "In");
+        r.build();
+        r.vm.instruction_budget = 5000;
+        r.run();
+        check(r.host.errors.size() == 1 && r.host.errors[0].find("never ends") != std::string::npos,
+              "a loop that never ends is stopped and reported");
+        r.host.errors.clear();
+        check(r.vm.fire(*r.inst, "event.begin_play") && r.host.errors.size() == 1, "and the VM is usable afterwards");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), dv = node(g, "math.div"), p = print_node(g);
+        g.find(dv)->targ = kInt; lit(g, dv, "A", Value::integer(5));
+        g.link(ev, "Then", p, "In"); g.link(dv, "Result", p, "Text");
+        check(r.build() && r.run() == "0" && r.host.errors.size() == 1, "dividing by zero gives 0 and reports the node");
+    }
+    {
+        Rig r;
+        Graph& f = r.script.add_graph(GraphKind::Function, "forever");
+        const int en = node(f, "fn.entry"), c = node(f, "fn.call", "forever");
+        f.link(en, "Then", c, "In");
+        Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), c2 = node(g, "fn.call", "forever");
+        g.link(ev, "Then", c2, "In");
+        r.build(); r.run();
+        check(r.host.errors.size() == 1 && r.host.errors[0].find("too deep") != std::string::npos,
+              "a function that calls itself without end is stopped");
+    }
+}
+
+void test_text() {
+    std::printf("-- text format\n");
+    Rig r; Graph& g = r.events();
+    r.script.add_variable("hp", kFloat, Value::number(100)).exposed = true;
+    r.script.add_variable("names", Type(Kind::String, true), Value::array(kString, {Value::string("a\tb")}));
+    const int ev = node(g, "event.begin_play"), sw = node(g, "flow.switch_int");
+    g.find(sw)->cases = {"1", "2"};
+    const int ce = node(g, "event.custom", "go");
+    g.find(ce)->params = {Param{"v", kVec3, Value::vec3({1, 2, 3})}};
+    const int p = print_node(g, "line one\nline two");
+    g.find(p)->comment = "says hello";
+    g.link(ev, "Then", sw, "In"); g.link(sw, "2", p, "In"); g.link(ce, "Then", p, "In");
+    Graph& f = r.script.add_graph(GraphKind::Function, "f");
+    f.inputs = {Param{"x", kInt, Value::integer(3)}};
+    f.locals.push_back(Variable{"tmp", kString, Value::string("t"), false, "", ""});
+    node(f, "fn.entry");
+
+    const std::string text = to_text(r.script);
+    Script back;
+    std::string err;
+    const bool ok = from_text(text, back, &err);
+    check(ok, "a script reads back from its own text" + (ok ? std::string() : ": " + err));
+    check(to_text(back) == text, "and writes the same text again");
+    Program a, b;
+    std::vector<CompileMessage> m;
+    const bool ca = compile(r.reg, r.script, a, m), cb = compile(r.reg, back, b, m);
+    check(ca && cb && disassemble(a) == disassemble(b), "the reloaded script compiles to the same program");
+    Script junk;
+    check(!from_text("LOGIC 3\n", junk, &err) && !err.empty(), "text that is not a script is refused with a reason");
+}
+
+void test_debugger() {
+    std::printf("-- pausing\n");
+    Rig r; Graph& g = r.events();
+    const int ev = node(g, "event.begin_play"), a = print_node(g, "a"), b = print_node(g, "b"), c = print_node(g, "c");
+    chain(g, {ev, a, b, c});
+    r.build();
+    r.vm.set_breakpoint(&r.prog, 0, b, true);
+    r.run();
+    check(r.vm.state() == RunState::Paused && r.vm.paused_at().node == b && r.host.joined() == "a",
+          "a breakpoint stops before its node runs");
+    check(!r.vm.fire(*r.inst, "event.begin_play"), "nothing else runs while paused");
+    r.vm.resume(VM::Step::Over);
+    check(r.vm.state() == RunState::Paused && r.vm.paused_at().node == c && r.host.joined() == "a,b",
+          "Step runs one node and stops at the next");
+    r.vm.resume();
+    check(r.vm.state() == RunState::Idle && r.host.joined() == "a,b,c", "Continue runs to the end");
+    r.vm.clear_breakpoints();
+    check(r.run() == "a,b,c", "with the breakpoint cleared the event runs through");
+}
+
+void test_speed() {
+    std::printf("-- speed (informational)\n");
+    Rig r; Graph& g = r.events();
+    r.script.add_variable("sum", kFloat);
+    const int ev = node(g, "event.begin_play"), fl = node(g, "flow.for");
+    lit(g, fl, "Last Index", Value::integer(199999));
+    const int get = node(g, "var.get", "sum"), add = node(g, "math.add"), set = node(g, "var.set", "sum");
+    g.link(ev, "Then", fl, "In"); g.link(fl, "Loop Body", set, "In");
+    g.link(get, "Value", add, "A"); g.link(fl, "Index", add, "B"); g.link(add, "Result", set, "Value");
+    r.build();
+    r.vm.instruction_budget = 100'000'000;
+    const auto t0 = std::chrono::steady_clock::now();
+    r.run();
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    const double sum = r.inst->variable("sum")->as_float();
+    check(sum == 199999.0 * 200000.0 / 2.0, "200,000 loop passes compute the right sum");
+    std::printf("     200,000 passes (get, convert, add, set) in %.1f ms = %.0f ns per pass\n", ms, ms * 1e6 / 200000.0);
+}
+
+}  // namespace
+
+int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::printf("=== vscript_check: visual scripting core ===\n");
+    test_values();
+    test_flow();
+    test_state_nodes();
+    test_pure_and_variables();
+    test_functions_and_events();
+    test_waits();
+    test_errors();
+    test_text();
+    test_debugger();
+    test_speed();
+    if (g_fail) {
+        std::printf("vscript_check: %d FAILED, %d passed\n", g_fail, g_pass);
+        return 1;
+    }
+    std::printf("vscript_check: ALL OK (%d checks)\n", g_pass);
+    return 0;
+}

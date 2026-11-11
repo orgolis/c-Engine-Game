@@ -27,3 +27,4 @@ add_subdirectory(ui)        # Runtime game-UI framework (widgets/layout/input) â
 add_subdirectory(world)     # World streaming: grid + cell load/unload + floating origin
 add_subdirectory(vfx)       # VFX: CPU particle system + camera-facing billboards
 add_subdirectory(combat)    # Combat: frame-data hitbox windows + dodge/parry/poise
+add_subdirectory(vscript)   # Visual scripting core: graph -> bytecode -> VM (Road to the test game, A1)

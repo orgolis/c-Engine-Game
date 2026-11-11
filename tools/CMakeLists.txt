@@ -1114,3 +1114,10 @@ target_compile_features(assetdrop_check PRIVATE cxx_std_20)
 if(MINGW)
     target_link_options(assetdrop_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
+
+# vscript_check: the visual scripting core (headless, no device) -- flow
+# control, pure-node evaluation, variables, functions, custom events, waits,
+# arrays, the text format, run-time errors and pausing at a breakpoint.
+add_executable(vscript_check vscript_check/main.cpp)
+target_link_libraries(vscript_check PRIVATE gws_vscript)
+target_compile_features(vscript_check PRIVATE cxx_std_20)

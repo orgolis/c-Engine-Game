@@ -92,7 +92,7 @@ jobs:
             mp_check prediction_check audio_check profiler_check texture_check \
             model_check anim_check skinning_check skinned_import_check \
             ai_check ui_check world_check combat_check vfx_check crash_check \
-            vfxgraph_check emitter_check scenereflect_check sceneio_check componentsync_check bindless_check material_check \
+            vscript_check vfxgraph_check emitter_check scenereflect_check sceneio_check componentsync_check bindless_check material_check \
             animgraph_check assetdrop_check assetops_check assetpath_check assetwatch_check \
             canvasview_check cullbench_check curve_check ecsauthority_check editcoalesce_check \
             includes_check leveltools_check locomotion_check materialcache_check navbake_check \
@@ -222,7 +222,7 @@ jobs:
             mp_check prediction_check audio_check profiler_check texture_check \
             model_check anim_check skinning_check skinned_import_check \
             ai_check ui_check world_check combat_check vfx_check crash_check \
-            vfxgraph_check emitter_check scenereflect_check sceneio_check componentsync_check bindless_check material_check \
+            vscript_check vfxgraph_check emitter_check scenereflect_check sceneio_check componentsync_check bindless_check material_check \
             animgraph_check assetdrop_check assetops_check assetpath_check assetwatch_check \
             canvasview_check cullbench_check curve_check ecsauthority_check editcoalesce_check \
             includes_check leveltools_check locomotion_check materialcache_check navbake_check \
