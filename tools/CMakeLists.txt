@@ -360,6 +360,16 @@ if(MINGW)
     target_link_options(shadercompile_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# terrainbrush_check: the sculpting brushes (scene/terrain_brush.h) as plain
+# functions on a heightmap: stay inside the radius, arrive without overshoot,
+# conserve material when eroding, and survive a heightmap file.
+add_executable(terrainbrush_check terrainbrush_check/main.cpp)
+target_link_libraries(terrainbrush_check PRIVATE scene)
+target_compile_features(terrainbrush_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(terrainbrush_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # canvasview_check: the node canvas's coordinate maths. Everything that makes a
 # node editor feel broken lives here -- clicks landing beside the cursor, links
 # attaching to the wrong pin, the graph sliding away as you scroll. None of it

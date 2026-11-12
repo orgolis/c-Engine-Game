@@ -98,7 +98,7 @@ jobs:
             includes_check leveltools_check locomotion_check materialcache_check navbake_check \
             navrebase_check npcagent_check palette_check phase3exit_check physrebase_check \
             playchanges_check prefab_check reflectio_check sequence_check shadercompile_check \
-            shadergraph_check snap_check taskrunner_check texgen_check undo_check \
+            shadergraph_check snap_check taskrunner_check terrainbrush_check texgen_check undo_check \
             vehiclemove_check \
             audiobus_check extension_check docio_check gpuzones_check \
             rendersettings_check userdirs_check gbuffer_reconstruct_check             shadersource_check terrainmat_check             componentlookup_check ecssync_check scenehooks_check draworder_check assetbrowserpaths_check             primitivelod_check shadowskip_check shadowvote_check rtsync_check presentsync_check hierarchygen_check hzbstreak_check ecsincremental_check componentstamp_check gbufferresize_check \
@@ -228,7 +228,7 @@ jobs:
             includes_check leveltools_check locomotion_check materialcache_check navbake_check \
             navrebase_check npcagent_check palette_check phase3exit_check physrebase_check \
             playchanges_check prefab_check reflectio_check sequence_check shadercompile_check \
-            shadergraph_check snap_check taskrunner_check texgen_check undo_check \
+            shadergraph_check snap_check taskrunner_check terrainbrush_check texgen_check undo_check \
             vehiclemove_check \
             audiobus_check extension_check docio_check gpuzones_check \
             rendersettings_check userdirs_check gbuffer_reconstruct_check             shadersource_check terrainmat_check             componentlookup_check ecssync_check scenehooks_check draworder_check assetbrowserpaths_check             primitivelod_check shadowskip_check shadowvote_check rtsync_check presentsync_check hierarchygen_check hzbstreak_check ecsincremental_check componentstamp_check gbufferresize_check \

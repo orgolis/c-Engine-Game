@@ -69,6 +69,14 @@ variables), a UI designer, animation graphs as logic graphs.
 | B5 | **Hydrology.** Water placed at a source runs downhill, fills basins into lakes and falls over drops; rivers have flow direction; swimming and buoyancy follow the current | A spring on a hill becomes a river that reaches the sea |
 | B6 | **Workflow.** World templates, larger worlds | A new world starts from a preset |
 
+**Progress (v0.8.25):** B1 mostly done. The brushes are plain functions in
+`engine/scene/include/terrain_brush.h`, checked by `tools/terrainbrush_check`
+(22 checks): Raise, Lower, Smooth, Flatten (to the height where the stroke
+began), Dig / Fill Hole, and new Noise, Terrace, Ramp and Erode. Whole-terrain
+tools in the Inspector, each one undo step: Generate hills, Erode, and 16-bit
+heightmap Export / Import (.pgm or raw .r16). Still open in B1: more than four
+texture layers, stamps. B2 to B6 not started.
+
 ## Phase C: gameplay modules, finished
 
 Each module is done when it has: an asset type, an editor to author it,

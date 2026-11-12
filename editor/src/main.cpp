@@ -113,6 +113,7 @@
 #include "asset_browser_panel.h"
 #include "asset_inspector.h"
 #include "asset_drop.h"        // one rule table for every drop site
+#include "terrain_brush.h"        // what each sculpting brush does to a heightmap
 #include "logic_script_panel.h"  // graph editor for .lgraph logic scripts
 #include "logic_debug.h"          // a breakpoint in a logic script stops the game
 #include "vscript/value.h"       // literals of a logic graph's Inspector fields
@@ -233,7 +234,18 @@ struct EditorState {
     // Terrain sculpting (Phase A). Brush state shared by the Inspector's
     // Terrain section and the viewport sculpt handler.
     bool  terrain_sculpt_active  = false;  // LMB-drag sculpts the selected terrain
-    int   terrain_brush_mode     = 0;      // 0=Raise 1=Lower 2=Smooth 3=Flatten
+    int   terrain_brush_mode     = 0;      // schizo::scene::TerrainBrush
+    float terrain_brush_step     = 2.0f;   // Terrace: height of one step
+    float terrain_brush_noise    = 4.0f;   // Noise: size of a bump
+    float terrain_brush_talus    = 0.8f;   // Erode: the steepest slope that holds
+    // Where the stroke began: Flatten goes to that height, Ramp runs from there.
+    float terrain_stroke_start_x = 0.0f, terrain_stroke_start_z = 0.0f, terrain_stroke_start_h = 0.0f;
+    // Whole-terrain tools.
+    float terrain_gen_height     = 30.0f;
+    float terrain_gen_feature    = 60.0f;
+    int   terrain_gen_seed       = 1;
+    char  terrain_heightmap_path[260] = "assets/heightmap.pgm";
+    float terrain_import_lo      = 0.0f, terrain_import_hi = 50.0f;
     float terrain_brush_radius   = 6.0f;   // world units
     float terrain_brush_strength = 0.5f;   // per stroke-application
     float terrain_brush_falloff  = 0.6f;   // 0 hard edge .. 1 soft
@@ -510,6 +522,7 @@ struct EditorState {
     // (one at a time, ~17 KB at the default 64-cell resolution); only the
     // rectangle that actually changed is kept in the undo entry.
     bool                 terrain_stroke_active = false;
+    bool                 terrain_stroke_fresh  = false;    // its first application is still to come
     uint32_t             terrain_stroke_entity = 0;
     std::vector<float>   terrain_stroke_heights;   // heightmap at stroke start
     std::vector<uint8_t> terrain_stroke_holes;     // hole mask at stroke start
@@ -4018,15 +4031,100 @@ void ShowInspector(EditorState& editor_state) {
                 }
                 ImGui::SameLine();
                 ImGui::TextDisabled("(Left-drag over terrain)");
-                const char* brushes[] = { "Raise", "Lower", "Smooth", "Flatten",
-                                          "Dig Hole", "Fill Hole" };
-                ImGui::Combo("Brush##terrain", &editor_state.terrain_brush_mode, brushes, 6);
-                if (editor_state.terrain_brush_mode >= 4)
-                    ImGui::TextDisabled("Holes carve the surface + collision —\n"
-                                        "build caves (or underwater entrances) through them.");
+                ImGui::Combo("Brush##terrain", &editor_state.terrain_brush_mode,
+                             schizo::scene::kTerrainBrushNames, schizo::scene::kTerrainBrushCount);
+                switch (static_cast<schizo::scene::TerrainBrush>(editor_state.terrain_brush_mode)) {
+                    case schizo::scene::TerrainBrush::DigHole:
+                    case schizo::scene::TerrainBrush::FillHole:
+                        ImGui::TextDisabled("Holes carve the surface + collision —\n"
+                                            "build caves (or underwater entrances) through them.");
+                        break;
+                    case schizo::scene::TerrainBrush::Flatten:
+                        ImGui::TextDisabled("Levels to the height where the stroke began.");
+                        break;
+                    case schizo::scene::TerrainBrush::Noise:
+                        ImGui::SliderFloat("Bump size##terrain", &editor_state.terrain_brush_noise, 0.5f, 40.0f);
+                        break;
+                    case schizo::scene::TerrainBrush::Terrace:
+                        ImGui::SliderFloat("Step height##terrain", &editor_state.terrain_brush_step, 0.25f, 20.0f);
+                        break;
+                    case schizo::scene::TerrainBrush::Ramp:
+                        ImGui::TextDisabled("Press where the slope starts, drag to where it ends.\n"
+                                            "Radius is the ramp's half-width.");
+                        break;
+                    case schizo::scene::TerrainBrush::Erode:
+                        ImGui::SliderFloat("Slope that holds##terrain", &editor_state.terrain_brush_talus, 0.1f, 3.0f);
+                        ImGui::TextDisabled("Steeper ground slides down until it is this steep.");
+                        break;
+                    default: break;
+                }
                 ImGui::SliderFloat("Radius##terrain",   &editor_state.terrain_brush_radius,   0.5f, 50.0f);
                 ImGui::SliderFloat("Strength##terrain", &editor_state.terrain_brush_strength, 0.01f, 5.0f);
                 ImGui::SliderFloat("Falloff##terrain",  &editor_state.terrain_brush_falloff,  0.0f, 1.0f);
+
+                // ── Whole-terrain tools: each is one undo step ──
+                if (ImGui::TreeNode("Whole terrain##terraintools")) {
+                    // Run `edit` on the terrain and record it as one undoable step.
+                    auto whole = [&](const char* what, const std::function<void()>& edit) {
+                        const std::vector<float> before = terrain_comp->Heights();
+                        const int hres = terrain_comp->GetResolution();
+                        std::vector<uint8_t> holes(static_cast<size_t>(hres) * hres, 0);
+                        for (int hz = 0; hz < hres; ++hz)
+                            for (int hx = 0; hx < hres; ++hx)
+                                holes[static_cast<size_t>(hz) * hres + hx] = terrain_comp->HasHole(hx, hz) ? 1u : 0u;
+                        edit();
+                        PushTerrainStrokeCommand(editor_state, editor_state.editor_scene->GetScene(),
+                                                 selected_entity->GetId(), before, holes);
+                        editor_state.editor_scene->MarkModified();
+                        editor_state.set_status(what);
+                    };
+                    ImGui::SliderFloat("Height##terraingen", &editor_state.terrain_gen_height, 1.0f, 300.0f);
+                    ImGui::SliderFloat("Hill size##terraingen", &editor_state.terrain_gen_feature, 5.0f, 500.0f);
+                    ImGui::InputInt("Seed##terraingen", &editor_state.terrain_gen_seed);
+                    if (ImGui::Button("Generate hills##terraingen"))
+                        whole("Generated hills", [&] {
+                            schizo::scene::generate_terrain_noise(*terrain_comp, editor_state.terrain_gen_height,
+                                                                  editor_state.terrain_gen_feature,
+                                                                  static_cast<uint32_t>(editor_state.terrain_gen_seed));
+                        });
+                    ImGui::SameLine();
+                    if (ImGui::Button("Erode##terraingen"))
+                        whole("Eroded the terrain", [&] {
+                            schizo::scene::erode_terrain(*terrain_comp, 60, editor_state.terrain_brush_talus);
+                        });
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Wears every slope steeper than the Erode brush's\n\"slope that holds\" down toward it. Press again for more.");
+                    ImGui::Separator();
+                    ImGui::InputText("Heightmap file##terrainhm", editor_state.terrain_heightmap_path,
+                                     sizeof editor_state.terrain_heightmap_path);
+                    ImGui::TextDisabled("16-bit greyscale: .pgm, or raw (.r16 / .raw), square.");
+                    if (ImGui::Button("Export##terrainhm")) {
+                        float lo = 0.0f, hi = 0.0f;
+                        if (schizo::scene::save_terrain_heightmap(*terrain_comp, editor_state.terrain_heightmap_path, &lo, &hi)) {
+                            editor_state.terrain_import_lo = lo;
+                            editor_state.terrain_import_hi = hi;
+                            char msg[320];
+                            std::snprintf(msg, sizeof msg, "Exported heightmap (black = %.2f, white = %.2f)", lo, hi);
+                            editor_state.set_status(msg);
+                        } else {
+                            editor_state.set_status("Could not write the heightmap file");
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Import##terrainhm")) {
+                        std::string why;
+                        bool ok = false;
+                        whole("Imported heightmap", [&] {
+                            ok = schizo::scene::load_terrain_heightmap(*terrain_comp, editor_state.terrain_heightmap_path,
+                                                                       editor_state.terrain_import_lo,
+                                                                       editor_state.terrain_import_hi, &why);
+                        });
+                        if (!ok) editor_state.set_status("Heightmap not imported: " + why);
+                    }
+                    ImGui::DragFloatRange2("Black / white height##terrainhm", &editor_state.terrain_import_lo,
+                                           &editor_state.terrain_import_hi, 0.5f);
+                    ImGui::TreePop();
+                }
 
                 // ── Texture splat painting (Phase C) ──
                 ImGui::Separator();
@@ -5466,6 +5564,7 @@ void ShowViewport(EditorState& editor_state) {
                                 // heightmap. Transient and small; only the
                                 // changed rect is kept when the stroke ends.
                                 if (!editor_state.terrain_stroke_active) {
+                                    editor_state.terrain_stroke_fresh  = true;
                                     editor_state.terrain_stroke_active = true;
                                     editor_state.terrain_stroke_entity = sel->GetId();
                                     editor_state.terrain_stroke_heights = tc->Heights();
@@ -5480,60 +5579,32 @@ void ShowViewport(EditorState& editor_state) {
                                 }
                                 const float lx = hitp.x - base.x;
                                 const float lz = hitp.z - base.z;
-                                const float R  = editor_state.terrain_brush_radius;
-                                const int   res = tc->GetResolution();
-                                const int   n   = tc->VertsPerSide();
-                                const float dt  = io.DeltaTime > 0.0f ? io.DeltaTime : 0.016f;
-                                const float scale = tc->GetHeightScale() > 1e-3f ? tc->GetHeightScale() : 1.0f;
-                                const float flat_target = tc->SampleHeightLocal(lx, lz) / scale;
-                                const int cx = (int)std::floor((lx + half) / cell);
-                                const int cz = (int)std::floor((lz + half) / cell);
-                                const int rc = (int)std::ceil(R / cell) + 1;
-                                bool changed = false;
-                                if (editor_state.terrain_brush_mode >= 4) {
-                                    // Hole brushes operate on CELLS: 4 = dig
-                                    // (carve mesh + collision), 5 = fill.
-                                    const bool dig = editor_state.terrain_brush_mode == 4;
-                                    for (int iz = std::max(0, cz - rc); iz < std::min(res, cz + rc + 1); ++iz)
-                                    for (int ix = std::max(0, cx - rc); ix < std::min(res, cx + rc + 1); ++ix) {
-                                        const float ccx = -half + (ix + 0.5f) * cell;
-                                        const float ccz = -half + (iz + 0.5f) * cell;
-                                        const float d = std::sqrt((ccx - lx) * (ccx - lx) + (ccz - lz) * (ccz - lz));
-                                        if (d > R) continue;
-                                        if (tc->HasHole(ix, iz) != dig) {
-                                            tc->SetHole(ix, iz, dig);
-                                            changed = true;
-                                        }
-                                    }
-                                } else {
-                                    auto& H = tc->MutableHeights();
-                                    for (int iz = std::max(0, cz - rc); iz <= std::min(res, cz + rc); ++iz)
-                                    for (int ix = std::max(0, cx - rc); ix <= std::min(res, cx + rc); ++ix) {
-                                        const float vxw = -half + ix * cell;
-                                        const float vzw = -half + iz * cell;
-                                        const float d = std::sqrt((vxw - lx) * (vxw - lx) + (vzw - lz) * (vzw - lz));
-                                        if (d > R) continue;
-                                        const float fall = std::pow(1.0f - d / R,
-                                            0.5f + editor_state.terrain_brush_falloff * 2.0f);
-                                        const float rate = editor_state.terrain_brush_strength;
-                                        float& h = H[(size_t)iz * n + ix];
-                                        switch (editor_state.terrain_brush_mode) {
-                                            case 0: h += rate * fall * dt * 12.0f; break;  // raise
-                                            case 1: h -= rate * fall * dt * 12.0f; break;  // lower
-                                            case 2: { float avg = (tc->HeightAt(ix-1,iz) + tc->HeightAt(ix+1,iz)
-                                                                 + tc->HeightAt(ix,iz-1) + tc->HeightAt(ix,iz+1)) * 0.25f;
-                                                      h += (avg - h) * std::min(1.0f, rate * fall * dt * 6.0f); break; }
-                                            case 3: h += (flat_target - h) * std::min(1.0f, rate * fall * dt * 6.0f); break;
-                                        }
-                                        changed = true;
-                                    }
+                                const float hs = tc->GetHeightScale() > 1e-3f ? tc->GetHeightScale() : 1.0f;
+                                if (editor_state.terrain_stroke_fresh) {
+                                    // Where the stroke began: Flatten's level, Ramp's foot.
+                                    editor_state.terrain_stroke_fresh   = false;
+                                    editor_state.terrain_stroke_start_x = lx;
+                                    editor_state.terrain_stroke_start_z = lz;
+                                    editor_state.terrain_stroke_start_h = tc->SampleHeightLocal(lx, lz) / hs;
                                 }
-                                if (changed) {
-                                    // Report the brushed rect so the chunked mesh
-                                    // cache rebuilds only the touched chunks.
-                                    tc->MarkDirtyRect(cx - rc, cz - rc, cx + rc, cz + rc);
+                                schizo::scene::TerrainStroke st;
+                                st.brush    = static_cast<schizo::scene::TerrainBrush>(editor_state.terrain_brush_mode);
+                                st.x        = lx;
+                                st.z        = lz;
+                                st.radius   = editor_state.terrain_brush_radius;
+                                st.strength = editor_state.terrain_brush_strength;
+                                st.falloff  = editor_state.terrain_brush_falloff;
+                                st.dt       = io.DeltaTime > 0.0f ? io.DeltaTime : 0.016f;
+                                st.target   = editor_state.terrain_stroke_start_h;
+                                st.start_x  = editor_state.terrain_stroke_start_x;
+                                st.start_z  = editor_state.terrain_stroke_start_z;
+                                st.step        = editor_state.terrain_brush_step;
+                                st.noise_scale = editor_state.terrain_brush_noise;
+                                st.talus       = editor_state.terrain_brush_talus;
+                                // The brush reports the cells it touched to the
+                                // terrain itself (see scene/terrain_brush.h).
+                                if (schizo::scene::apply_terrain_brush(*tc, st))
                                     editor_state.editor_scene->MarkModified();
-                                }
                             }
                         }
                     }
@@ -11062,6 +11133,18 @@ int main(int argc, char** argv) {
                         // node of its first graph.
                         if (const char* lb = std::getenv("GWS_TEST_LOGIC_BREAK"))
                             schizo::editor::add_logic_script_breakpoint(ls, 0, std::atoi(lb));
+                    }
+                    // GWS_TEST_TERRAIN_GEN=<seed>: generated, eroded hills on the
+                    // scene's first terrain, to look at the whole-terrain tools.
+                    if (const char* tg = std::getenv("GWS_TEST_TERRAIN_GEN")) {
+                        if (auto ts = editor_state.editor_scene ? editor_state.editor_scene->GetScene() : nullptr)
+                            for (const auto& te : ts->GetEntities())
+                                if (auto tcomp = te ? te->GetComponent<schizo::scene::TerrainComponent>() : nullptr) {
+                                    schizo::scene::generate_terrain_noise(*tcomp, 35.0f, tcomp->GetSize() * 0.25f,
+                                                                          static_cast<uint32_t>(std::atoi(tg)));
+                                    schizo::scene::erode_terrain(*tcomp, 40, 0.9f);
+                                    break;
+                                }
                     }
                     // GWS_TEST_SCRIPT_ENTITY=<file>: an object with that script,
                     // selected, so the Inspector's Script section is on screen.
