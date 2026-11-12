@@ -11,6 +11,7 @@
 //   4. a broken script reports an error status without crashing the system
 
 #include "logic_debug.h"
+#include "logic_nodes.h"
 #include "script_system.h"
 #include "script_api.h"
 #include "script_params.h"
@@ -598,6 +599,7 @@ int main() {
             dss.register_host(".lgraph", editor::make_logic_host());
             editor::LogicDebugger* dbg = editor::logic_debugger();
             bool ok = dbg != nullptr;
+            const std::string dbg_file = editor::logic_script_key("script_check_logic_dbg.lgraph");
             if (dbg) {
                 dbg->set_breakpoints("./script_check_logic_dbg.lgraph", {{0, setp}});   // another spelling of the path
                 dss.update(scn, true, 0.1f, api);
@@ -606,8 +608,8 @@ int main() {
                 const bool stopped = dbg->paused(&where, &pg, &pn);
                 std::string count_text, out_text, none;
                 const bool have_var = dbg->variable_text(ce->GetId(), "count", count_text);
-                const bool have_out = dbg->output_text(ce->GetId(), 0, setv, 0, out_text);
-                const bool pure_none = !dbg->output_text(ce->GetId(), 0, add1, 0, none);
+                const bool have_out = dbg->output_text(ce->GetId(), dbg_file, 0, setv, 0, out_text);
+                const bool pure_none = !dbg->output_text(ce->GetId(), dbg_file, 0, add1, 0, none);
                 const float x_stopped = ce->GetTransform()->GetWorldPosition().x;
                 dss.update(scn, true, 0.1f, api);   // stopped: nothing runs
                 std::string still;
@@ -643,8 +645,8 @@ int main() {
                 dbg->want_tracing();
                 dss.update(scn, true, 0.1f, api);
                 dss.update(scn, true, 0.1f, api);
-                const double ran = dbg->seconds_since_run(ce->GetId(), 0, setp);
-                const double not_run = dbg->seconds_since_run(ce->GetId(), 0, never);
+                const double ran = dbg->seconds_since_run(ce->GetId(), dbg_file, 0, setp);
+                const double not_run = dbg->seconds_since_run(ce->GetId(), dbg_file, 0, never);
                 ok = ok && !dbg->paused() && ran >= 0.0 && ran < 5.0 && not_run < 0.0;
                 dss.update(scn, false, 0.1f, api);
                 std::printf("  logic debugger: stopped=%d at node %d (expected %d), count '%s', pin '%s', x %.1f -> %.1f, "
@@ -713,7 +715,88 @@ int main() {
                         "(expected 8.00) -> %s\n", entered.c_str(), hurt.c_str(), y_mid, y_end, scoped_ok ? "OK" : "FAIL");
             std::remove("script_check_logic_zone.lgraph");
         }
-        logic_ok = moved_right && status_ok && refused && events_ok && button_door_ok && debugger_ok && scoped_ok;
+
+        // A script with a parent, from files: the child replaces Begin Play
+        // and still runs the parent's; a breakpoint set in the PARENT's file
+        // stops the child's object and says so; and a parent that changed on
+        // disk is what the next Play runs.
+        bool inherit_ok = false;
+        {
+            auto write_parent = [&](double height) {
+                Script ps;
+                ps.name = "base";
+                Graph& pg = ps.add_graph(GraphKind::Event, "EventGraph");
+                ps.add_variable("height", kFloat, Value::number(height)).exposed = true;
+                const int bp = pg.add("event.begin_play").id, setp = pg.add("entity.set_position").id, self = pg.add("self").id;
+                const int mk = pg.add("vec3.make").id, get = pg.add("var.get").id;
+                pg.find(get)->name = "height";
+                pg.link(bp, "Then", setp, "In"); pg.link(self, "Self", setp, "Entity");
+                pg.link(get, "Value", mk, "Y"); pg.link(mk, "Result", setp, "Position");
+                write_file("script_check_logic_base.lgraph", to_text(ps).c_str());
+                return setp;
+            };
+            const int parent_setp = write_parent(2.0);
+            Script cs;
+            cs.name = "child";
+            cs.parent = "script_check_logic_base.lgraph";
+            Graph& cg = cs.add_graph(GraphKind::Event, "EventGraph");
+            cs.add_variable("seen", kInt);
+            {
+                const int bp = cg.add("event.begin_play").id, setv = cg.add("var.set").id, up = cg.add("event.call").id;
+                cg.find(setv)->name = "seen";
+                cg.find(setv)->set_default("Value", Value::integer(1));
+                cg.find(up)->name = "Parent::event.begin_play";
+                cg.link(bp, "Then", setv, "In"); cg.link(setv, "Then", up, "In");
+            }
+            write_file("script_check_logic_child.lgraph", to_text(cs).c_str());
+            // The Inspector lists the parent's exposed variables as the child's fields.
+            const auto kid_fields = editor::scan_script_params("script_check_logic_child.lgraph");
+            const bool kid_fields_ok = kid_fields.size() == 1 && kid_fields[0].name == "height" && kid_fields[0].def == "2.0";
+            auto kid = scn->CreateEntity("LogicChild");
+            kid->AddComponent<scene::ScriptComponent>(std::string("script_check_logic_child.lgraph"));
+            editor::ScriptSystem iss;
+            iss.register_host(".lgraph", editor::make_logic_host());
+            editor::LogicDebugger* idb = editor::logic_debugger();
+            const std::string base_key = editor::logic_script_key("script_check_logic_base.lgraph");
+            const std::string child_key = editor::logic_script_key("script_check_logic_child.lgraph");
+            bool ok = idb != nullptr && kid_fields_ok;
+            if (idb) {
+                idb->set_breakpoints("script_check_logic_base.lgraph", {{0, parent_setp}});
+                iss.update(scn, true, 0.1f, api);
+                editor::LogicDebugTarget where;
+                int g = -1, n = 0;
+                const bool stopped = idb->paused(&where, &g, &n);
+                std::string seen;
+                idb->variable_text(kid->GetId(), "seen", seen);
+                bool both_files = false, child_file = false;
+                for (const editor::LogicDebugTarget& tg : idb->targets())
+                    if (tg.entity == kid->GetId()) {
+                        both_files = both_files || tg.path == base_key;
+                        child_file = child_file || tg.path == child_key;
+                    }
+                ok = ok && stopped && where.entity == kid->GetId() && where.path == base_key && g == 0 && n == parent_setp && seen == "1" &&
+                     both_files && child_file;
+                idb->resume(editor::LogicStep::Continue);
+                const float y1 = kid->GetTransform()->GetWorldPosition().y;
+                iss.update(scn, false, 0.1f, api);
+                idb->set_breakpoints("script_check_logic_base.lgraph", {});
+                // The parent changes on disk (a different size, so the change
+                // shows whatever the clock's resolution): the next Play uses it.
+                write_parent(12.5);
+                iss.update(scn, true, 0.1f, api);
+                const float y2 = kid->GetTransform()->GetWorldPosition().y;
+                iss.update(scn, false, 0.1f, api);
+                ok = ok && std::fabs(y1 - 2.0f) < 1e-4f && std::fabs(y2 - 12.5f) < 1e-4f;
+                std::printf("  logic parent script: stopped in '%s' graph %d node %d (expected the parent's, 0, %d), child ran first: seen '%s', "
+                            "y %.1f then %.1f after the parent changed (expected 2.0, 12.5) -> %s\n",
+                            where.path.size() > 30 ? where.path.c_str() + where.path.size() - 30 : where.path.c_str(), g, n, parent_setp,
+                            seen.c_str(), y1, y2, ok ? "OK" : "FAIL");
+            }
+            std::remove("script_check_logic_base.lgraph");
+            std::remove("script_check_logic_child.lgraph");
+            inherit_ok = ok;
+        }
+        logic_ok = moved_right && status_ok && refused && events_ok && button_door_ok && debugger_ok && scoped_ok && inherit_ok;
         std::printf("  logic graph: x=%.2f (expected 7.00), status '%s', bad graph '%.50s' -> %s\n",
                     lp.x, lsc->GetStatus().c_str(), bsc->GetStatus().c_str(), logic_ok ? "OK" : "FAIL");
         std::remove("script_check_logic.lgraph");

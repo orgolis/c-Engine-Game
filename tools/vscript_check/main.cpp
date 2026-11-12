@@ -11,12 +11,14 @@
 // ====================
 
 #include "vscript/io.h"
+#include "vscript/link.h"
 #include "vscript/program.h"
 #include "vscript/vm.h"
 
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -802,6 +804,167 @@ void test_user_types() {
     }
 }
 
+/// Scripts by path, standing in for files; and a script linked, compiled and running.
+struct Files {
+    Registry reg;
+    std::map<std::string, Script> files;
+    TestHost host;
+    VM       vm{&host};
+    Linked   linked;
+    Program  prog;
+    std::vector<CompileMessage> msgs;
+    std::unique_ptr<Instance>   inst;
+    std::string error;
+
+    Files() { register_standard_library(reg); }
+    Script& add(const char* path) {
+        Script& s = files[path];
+        s.name = path;
+        s.add_graph(GraphKind::Event, "EventGraph");
+        return s;
+    }
+    bool build(const char* path) {
+        const ScriptLoader load = [this](const std::string& p, Script& out) {
+            const auto it = files.find(p);
+            if (it == files.end()) return false;
+            out = it->second;
+            return true;
+        };
+        msgs.clear();
+        error.clear();
+        if (!link(reg, files[path], load, linked, &error)) return false;
+        if (!compile(reg, linked.script, prog, msgs)) {
+            for (const auto& m : msgs) if (m.error) { error = m.text; break; }
+            return false;
+        }
+        inst = vm.instantiate(prog, 1);
+        return true;
+    }
+    std::string run(const char* event = "event.begin_play") {
+        host.out.clear();
+        vm.fire(*inst, event);
+        return host.joined();
+    }
+};
+
+void test_linking() {
+    std::printf("-- parent scripts and libraries\n");
+    {
+        Files f;
+        // base: a variable, a function, Begin Play, a custom event.
+        Script& base = f.add("base");
+        base.add_variable("hp", kInt, Value::integer(10));
+        {
+            Graph& fn = base.add_graph(GraphKind::Function, "describe");
+            fn.outputs = {Param{"text", kString, Value()}};
+            const int en = node(fn, "fn.entry"), ret = node(fn, "fn.return");
+            lit(fn, ret, "text", Value::string("base"));
+            fn.link(en, "Then", ret, "In");
+            Graph& g = base.graphs[0];
+            const int ev = node(g, "event.begin_play"), p1 = print_node(g, "parent begin"), call = node(g, "fn.call", "describe"), p2 = print_node(g);
+            chain(g, {ev, p1, call, p2}); g.link(call, "text", p2, "Text");
+            const int open = node(g, "event.custom", "open"), p3 = print_node(g, "parent open");
+            chain(g, {open, p3});
+        }
+        // child: its own describe (which also asks the parent's), its own Begin Play (which also runs the parent's).
+        Script& child = f.add("child");
+        child.parent = "base";
+        child.add_variable("extra", kInt, Value::integer(1));
+        {
+            Graph& fn = child.add_graph(GraphKind::Function, "describe");
+            fn.outputs = {Param{"text", kString, Value()}};
+            const int en = node(fn, "fn.entry"), up = node(fn, "fn.call", "Parent::describe"), cat = node(fn, "math.add"), ret = node(fn, "fn.return");
+            fn.find(cat)->targ = kString;
+            lit(fn, cat, "A", Value::string("child+"));
+            chain(fn, {en, up}); fn.link(up, "Then", ret, "In");
+            fn.link(up, "text", cat, "B"); fn.link(cat, "Result", ret, "text");
+            Graph& g = child.graphs[0];
+            const int ev = node(g, "event.begin_play"), p1 = print_node(g, "child begin"), up2 = node(g, "event.call", "Parent::event.begin_play");
+            const int get = node(g, "var.get", "hp"), p2 = print_node(g);
+            chain(g, {ev, p1, up2, p2}); g.link(get, "Value", p2, "Text");
+        }
+        const bool built = f.build("child");
+        check(built, "a script with a parent links and compiles" + (f.error.empty() ? std::string() : ": " + f.error));
+        const std::string got = built ? f.run() : std::string();
+        check(got == "child begin,parent begin,child+base,10",
+              "the child's event runs, can run the parent's, and the parent's call to a replaced function runs the child's (got '" + got + "')");
+        check(built && f.run("open") == "parent open", "an event only the parent has is inherited");
+        check(built && f.inst->variable("hp") && f.inst->variable("extra") && f.prog.vars.size() == 2 && f.prog.vars[0].name == "hp",
+              "the parent's variables come first, then the child's");
+        check(built && f.linked.origins.size() == 4 && f.linked.origins[0].file.empty() && f.linked.origins[1].file.empty() &&
+                  f.linked.origins[2].file == "base" && f.linked.origins[2].graph == 0 && f.linked.origins[3].graph == 1,
+              "the child's own graphs keep their place; the parent's follow and say where they came from");
+        check(f.build("base") && f.run() == "parent begin,base", "the parent on its own is unchanged by having a child");
+
+        // A grandchild that replaces describe again still reaches both versions above it.
+        Script& grand = f.add("grand");
+        grand.parent = "child";
+        {
+            Graph& fn = grand.add_graph(GraphKind::Function, "describe");
+            fn.outputs = {Param{"text", kString, Value()}};
+            const int en = node(fn, "fn.entry"), up = node(fn, "fn.call", "Parent::describe"), cat = node(fn, "math.add"), ret = node(fn, "fn.return");
+            fn.find(cat)->targ = kString;
+            lit(fn, cat, "A", Value::string("grand+"));
+            chain(fn, {en, up}); fn.link(up, "Then", ret, "In");
+            fn.link(up, "text", cat, "B"); fn.link(cat, "Result", ret, "text");
+        }
+        check(f.build("grand") && f.run() == "child begin,parent begin,grand+child+base,10",
+              "three levels: each replacement can call the one above it");
+    }
+    {
+        // Types: each script's own keep their numbers; the parent's are added after.
+        Files f;
+        Script& base = f.add("base");
+        base.enums.push_back(EnumDef{"Colour", {"Red", "Green"}});
+        base.add_variable("c", Type(Kind::Enum, false, 1), Value::enumeration(1, 1));
+        Script& child = f.add("child");
+        child.parent = "base";
+        child.enums.push_back(EnumDef{"Mode", {"A", "B"}});
+        child.add_variable("m", Type(Kind::Enum, false, 1), Value::enumeration(1, 1));
+        Graph& g = child.graphs[0];
+        const int ev = node(g, "event.begin_play"), gc = node(g, "var.get", "c"), gm = node(g, "var.get", "m"), p1 = print_node(g), p2 = print_node(g);
+        chain(g, {ev, p1, p2}); g.link(gc, "Value", p1, "Text"); g.link(gm, "Value", p2, "Text");
+        check(f.build("child") && f.run() == "Green,B" && f.linked.script.enums.size() == 2 && f.linked.script.enums[0].name == "Mode",
+              "a parent's enum and the child's own enum stay apart after linking");
+        check(f.files["base"].variables[0].type == Type(Kind::Enum, false, 1), "linking leaves the files it read untouched");
+    }
+    {
+        // A library: its functions, callable as the script's own.
+        Files f;
+        Script& lib = f.add("mathlib");
+        {
+            Graph& fn = lib.add_graph(GraphKind::Function, "twice");
+            fn.pure = true;
+            fn.inputs = {Param{"x", kInt, Value::integer(0)}};
+            fn.outputs = {Param{"y", kInt, Value::integer(0)}};
+            const int en = node(fn, "fn.entry"), mul = node(fn, "math.mul"), ret = node(fn, "fn.return");
+            fn.find(mul)->targ = kInt;
+            lit(fn, mul, "B", Value::integer(2));
+            fn.link(en, "x", mul, "A"); fn.link(mul, "Result", ret, "y");
+            const int ev = node(lib.graphs[0], "event.begin_play"), p = print_node(lib.graphs[0], "the library's own event");
+            chain(lib.graphs[0], {ev, p});
+        }
+        Script& s = f.add("user");
+        s.imports = {"mathlib"};
+        Graph& g = s.graphs[0];
+        const int ev = node(g, "event.begin_play"), call = node(g, "fn.call", "twice"), p = print_node(g);
+        lit(g, call, "x", Value::integer(21));
+        g.link(ev, "Then", p, "In"); g.link(call, "y", p, "Text");
+        check(f.build("user") && f.run() == "42", "a library's function is called like the script's own, and its events do not come along");
+        Script back;
+        check(from_text(to_text(s), back) && back.imports.size() == 1 && back.imports[0] == "mathlib" && to_text(back) == to_text(s),
+              "the libraries a script uses survive the file");
+    }
+    {
+        Files f;
+        f.add("a").parent = "b";
+        f.add("b").parent = "a";
+        check(!f.build("a") && f.error.find("circle") != std::string::npos, "scripts that inherit from each other in a circle are refused");
+        f.add("c").parent = "nowhere";
+        check(!f.build("c") && f.error.find("nowhere") != std::string::npos, "a parent that cannot be read is an error that names it");
+    }
+}
+
 void test_errors() {
     std::printf("-- broken graphs\n");
     {
@@ -1103,6 +1266,7 @@ int main() {
     test_waits();
     test_timeline();
     test_user_types();
+    test_linking();
     test_errors();
     test_text();
     test_editing();

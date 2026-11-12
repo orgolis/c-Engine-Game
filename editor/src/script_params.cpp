@@ -2,6 +2,8 @@
 
 #include "vscript/graph.h"
 #include "vscript/io.h"
+#include "vscript/link.h"
+#include "vscript/registry.h"
 
 #include <algorithm>
 #include <cctype>
@@ -88,26 +90,71 @@ bool ends_with(const std::string& s, const char* tail) {
 /// while the object is selected, so the answer is kept until the file changes.
 std::vector<ScriptParam> scan_logic_graph(const std::string& path) {
     namespace fs = std::filesystem;
+    namespace vs = schizo::vs;
+    // The fields are those of the script WITH its parent chain, so the answer
+    // depends on every file in it.
+    struct Stamp {
+        std::string        path;
+        fs::file_time_type time;
+        uintmax_t          size = 0;
+    };
     struct Cached {
-        fs::file_time_type       stamp;
-        uintmax_t                size = 0;
+        std::vector<Stamp>       files;   // the script first
         std::vector<ScriptParam> params;
     };
+    auto stamp_of = [](const std::string& p, Stamp& s) {
+        std::error_code ec;
+        s.path = p;
+        s.time = fs::last_write_time(p, ec);
+        if (ec) return false;
+        s.size = fs::file_size(p, ec);
+        return !ec;
+    };
     static std::unordered_map<std::string, Cached> cache;
-    std::error_code ec;
-    const fs::file_time_type stamp = fs::last_write_time(path, ec);
-    if (ec) return {};
-    const uintmax_t size = fs::file_size(path, ec);
-    if (ec) return {};
+    Stamp self;
+    if (!stamp_of(path, self)) return {};
     const auto hit = cache.find(path);
-    if (hit != cache.end() && hit->second.stamp == stamp && hit->second.size == size) return hit->second.params;
+    if (hit != cache.end()) {
+        bool same = !hit->second.files.empty();
+        for (const Stamp& s : hit->second.files) {
+            Stamp now;
+            if (!stamp_of(s.path, now) || now.time != s.time || now.size != s.size) same = false;
+        }
+        if (same) return hit->second.params;
+    }
 
+    auto read = [](const std::string& p, vs::Script& out) {
+        std::ifstream f(p, std::ios::binary);
+        if (!f) return false;
+        std::stringstream ss;
+        ss << f.rdbuf();
+        return vs::from_text(ss.str(), out);
+    };
     std::vector<ScriptParam> out;
-    std::ifstream f(path, std::ios::binary);
-    std::stringstream ss;
-    ss << f.rdbuf();
-    schizo::vs::Script script;
-    if (f && schizo::vs::from_text(ss.str(), script)) {
+    std::vector<Stamp>       files{self};
+    vs::Script               own;
+    const bool               have = read(path, own);
+    vs::Script               script = own;
+    if (have && (!own.parent.empty() || !own.imports.empty())) {
+        static const vs::Registry* reg = [] {
+            auto* r = new vs::Registry();
+            vs::register_standard_library(*r);
+            return r;
+        }();
+        const vs::ScriptLoader load = [&](const std::string& named, vs::Script& into) {
+            // As written (project-relative), or beside the script that names it.
+            std::error_code ec;
+            std::string     at = named;
+            if (!fs::exists(at, ec)) at = (fs::path(path).parent_path() / named).generic_string();
+            if (!read(at, into)) return false;
+            Stamp s;
+            if (stamp_of(at, s)) files.push_back(s);
+            return true;
+        };
+        vs::Linked linked;
+        if (vs::link(*reg, own, load, linked)) script = std::move(linked.script);
+    }
+    if (have) {
         for (const schizo::vs::Variable& v : script.variables) {
             if (!v.exposed || v.type.array) continue;
             const char* type = nullptr;
@@ -134,7 +181,7 @@ std::vector<ScriptParam> scan_logic_graph(const std::string& path) {
         }
     }
     if (cache.size() > 256) cache.clear();
-    cache[path] = Cached{stamp, size, out};
+    cache[path] = Cached{files, out};
     return out;
 }
 }  // namespace

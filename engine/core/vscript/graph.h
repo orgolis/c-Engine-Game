@@ -183,7 +183,8 @@ struct Graph {
 
 struct Script {
     std::string           name;
-    std::string           parent;      // reserved: the script this one extends
+    std::string           parent;      // the script file this one extends (link.h); empty: none
+    std::vector<std::string> imports;  // library script files whose functions this one may call
     std::vector<EnumDef>  enums;
     std::vector<StructDef> structs;
     std::vector<Variable> variables;

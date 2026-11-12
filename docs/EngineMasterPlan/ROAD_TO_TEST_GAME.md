@@ -40,7 +40,7 @@ The design is in [VISUAL_SCRIPTING.md](VISUAL_SCRIPTING.md).
 | A5 | **Class features.** Function and macro libraries, event dispatchers, interfaces, parent scripts, construction script, timelines, user enums and structs, data tables | Each has a check and a sample |
 | A6 | **Breadth.** Nodes for each system as phases B and C finish it; find references; collapse to function | The test game needs no text script |
 
-**Progress (v0.8.23):** A1 done. A2: logic scripts run on entities, every
+**Progress (v0.8.24):** A1 done. A2: logic scripts run on entities, every
 `ScriptApi` verb is a node, key and gameplay-bus events arrive, Inspector fields
 come from variables, scripts send events to and read variables of other
 entities, and events scoped to the object (On Trigger Enter / Exit, On Event
@@ -51,8 +51,8 @@ edits scripts (tabs, palette, wire suggestions, variables, functions, undo,
 errors on the node, multi-select, copy and paste, comment boxes, knots on
 wires) and opens from the Inspector and the Asset Browser. A4 done: breakpoints,
 Continue and Step, values on pins and variables, live flow, per-object
-selection. A5 partly done: Timeline, event dispatchers, calling another script's functions,
-user enums and structs; still open are macros, interfaces, parent scripts and
+selection. A5 done except macros and formal interfaces: Timeline, event dispatchers,
+calling another script's functions, user enums and structs, parent scripts,
 function libraries. A6 not started.
 
 Deliberately later than this phase: replication (RPC nodes and replicated

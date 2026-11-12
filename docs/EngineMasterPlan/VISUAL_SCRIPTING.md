@@ -1,12 +1,12 @@
 # Visual scripting: how the Logic Graph core works
 
-**Status (v0.8.23):** milestones A1 (the core), A3 (the editor) and A4 (the
+**Status (v0.8.24):** milestones A1 (the core), A3 (the editor) and A4 (the
 debugger) of [ROAD_TO_TEST_GAME.md](ROAD_TO_TEST_GAME.md) are done; A2 (engine
 binding) is partly done.
 The per-scene Logic Graph panel still runs the old `gameplay_logic.h` runtime
 until the rest of A2 replaces it.
 
-Code: `engine/core/vscript/`. Checks: `tools/vscript_check` (115 checks) for the
+Code: `engine/core/vscript/`. Checks: `tools/vscript_check` (128 checks) for the
 core, `tools/script_check` for graphs running on entities.
 
 ## In the editor today
@@ -123,6 +123,23 @@ event argument, a function call) an enum goes by its number and a struct by
 the order of its members. Only the last type in the list can be removed, and
 only when nothing is of that type, because types are told apart by position.
 
+**Parent scripts and libraries** (side panel, "Parent and libraries").
+
+- A script can name a **parent** script file. It then has everything the
+  parent has: variables (they are Inspector fields of the child too), types,
+  dispatchers, functions, events. Where the child defines a function or an
+  event of the same name, the child's runs, and the parent's is still there
+  as **Call parent's X** in the palette. A call inside the parent to a
+  function the child replaced runs the child's. An "archer" and a "brute" can
+  both be children of an "enemy" script and differ only where they need to.
+- A script can list **libraries**: script files whose functions it can call
+  like its own. Only functions come along.
+
+Paths are written like a Script component's (project-relative), or relative to
+the script that names them. A breakpoint set in the parent's file stops every
+child running that graph. A changed parent is used from the next Play (a
+running child reloads only when its own file changes).
+
 **Dispatchers** turn that round: a script announces something without knowing
 who cares. The door's script declares a dispatcher `opened` (side panel,
 "Dispatchers") and runs **Call opened** when it opens. A lamp's script runs
@@ -146,6 +163,7 @@ another object. That object's own Begin Play may not have run yet.
 | `compiler.cpp` | `compile()`: Script to `Program` (bytecode for a register machine), with errors that name the graph and node |
 | `vm.h` | `VM`: runs programs for any number of `Instance`s. An explicit frame stack, so it can pause and resume |
 | `stdlib.cpp` | The nodes that need no engine: flow, variables, functions, events, maths, vectors, strings, arrays |
+| `link.h` | Parent scripts and libraries: several script files become the one script the compiler is given, each graph remembering its file |
 | `io.h` | Text format `VSCRIPT 2`: one record per line, tab-separated. Also copy and paste: a selection is the same text |
 
 ## Rules an author can rely on
@@ -240,8 +258,9 @@ A leading `Context&` parameter is not a pin. Several outputs are a
 
 ## Not built yet
 
-Macros, interfaces, parent scripts, function libraries, maps and sets,
-editing a struct variable's default member by member, collision events, nodes for component properties, watch expressions
+Macros, interfaces (Call Function of Entity and Send Event to Entity already
+reach any script by name, which is what an interface is used for), maps and
+sets, editing a struct variable's default member by member, collision events, nodes for component properties, watch expressions
 and a call stack view in the debugger, collapsing nodes to a function, find in
 graph. `Type::sub` and `Kind::Enum` / `Kind::Struct` are
 reserved for the first group.

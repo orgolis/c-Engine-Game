@@ -10,7 +10,7 @@ add_library(gws_vscript STATIC
     compiler.cpp
     vm.cpp
     stdlib.cpp
-    io.cpp)
+    io.cpp link.cpp)
 
 target_include_directories(gws_vscript PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(gws_vscript PUBLIC glm)

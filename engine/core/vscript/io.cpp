@@ -52,6 +52,7 @@ std::string to_text(const Script& s) {
     std::string o = "VSCRIPT 2\n";
     line(o, {"name", esc(s.name)});
     if (!s.parent.empty()) line(o, {"parent", esc(s.parent)});
+    for (const std::string& lib : s.imports) line(o, {"import", esc(lib)});
     // Types first: everything after may be of one of them.
     for (const EnumDef& e : s.enums) {
         line(o, {"enum", esc(e.name)});
@@ -137,6 +138,7 @@ bool from_text(std::string_view text, Script& out, std::string* error) {
 
         if (k == "name") out.name = field(1);
         else if (k == "parent") out.parent = field(1);
+        else if (k == "import") out.imports.push_back(field(1));
         else if (k == "var") {
             Variable v;
             v.name = field(1);

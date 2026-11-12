@@ -5,6 +5,7 @@
 #include "node_canvas.h"   // CanvasView: the pan/zoom arithmetic
 
 #include "vscript/io.h"
+#include "vscript/link.h"
 #include "vscript/program.h"
 
 #include <imgui.h>
@@ -108,9 +109,7 @@ struct PanelState {
     /// The file by the spelling the logic host uses for it.
     const std::string& file_key() {
         if (key_of != path || key.empty()) {
-            std::error_code ec;
-            const std::filesystem::path c = std::filesystem::weakly_canonical(path, ec);
-            key = ec ? path : c.generic_string();
+            key = logic_script_key(path);
             key_of = path;
         }
         return key;
@@ -142,10 +141,29 @@ struct PanelState {
         graph = std::clamp(graph, 0, static_cast<int>(script.graphs.size()) - 1);
         return &script.graphs[static_cast<size_t>(graph)];
     }
+    /// The script linked with its parent chain and its libraries: what is
+    /// compiled, and what a node's pins are worked out against (a node may
+    /// name a variable or a function that only the parent has). Its first
+    /// graphs are the script's own, in the same order.
+    Linked      linked;
+    bool        link_ok = false;
+    const Script& whole() const { return link_ok ? linked.script : script; }
+
     void recompile() {
         Program p;
         messages.clear();
-        compiled_ok = compile(reg, script, p, messages);
+        std::string why;
+        const ScriptLoader load = [this](const std::string& named, Script& out) {
+            const std::string at = resolve_logic_script(named, path);
+            return !at.empty() && read_logic_script(at, out, nullptr);
+        };
+        link_ok = link(reg, script, load, linked, &why);
+        if (!link_ok) {
+            compiled_ok = false;
+            messages.push_back(CompileMessage{true, -1, 0, why});
+            return;
+        }
+        compiled_ok = compile(reg, linked.script, p, messages);
     }
     /// Call after any edit: records an undo step and recompiles.
     void changed() {
@@ -316,6 +334,20 @@ std::vector<std::string> find_logic_scripts() {
 /// The script whose enums and structs the type lists and the literal editors
 /// offer: the one being drawn. Set at the top of each frame's draw.
 const Script* g_types = nullptr;
+const Registry* g_reg = nullptr;   // ... and its node kinds, for naming a parent's event
+
+/// "Parent::event.begin_play" -> "parent's Begin Play"; "Parent::open" -> "parent's open"; anything else as it is.
+std::string friendly_name(const std::string& name) {
+    const std::string up = parent_name("");
+    if (name.rfind(up, 0) != 0) return name;
+    std::string rest = friendly_name(name.substr(up.size()));
+    if (rest.rfind("parent's ", 0) != 0 && g_reg) {
+        const size_t colon = rest.find(':');
+        if (const NodeDef* d = g_reg->find(rest.substr(0, colon)))
+            rest = d->title + (colon == std::string::npos ? std::string() : ": " + rest.substr(colon + 1));
+    }
+    return "parent's " + rest;
+}
 
 std::function<std::string(uint32_t)>& entity_namer() {
     static std::function<std::string(uint32_t)> f;
@@ -360,9 +392,9 @@ std::string node_title(const NodeDef& d, const Node& n) {
         case Builtin::VarSet: return "Set " + n.name;
         case Builtin::LocalGet: return "Get local " + n.name;
         case Builtin::LocalSet: return "Set local " + n.name;
-        case Builtin::FnCall: return n.name;
+        case Builtin::FnCall: return friendly_name(n.name);
         case Builtin::CustomEvent: return "Event " + n.name;
-        case Builtin::CallEvent: return "Call " + n.name;
+        case Builtin::CallEvent: return "Call " + friendly_name(n.name);
         case Builtin::Timeline: return n.name.empty() ? d.title : d.title + " (" + n.name + ")";
         case Builtin::SwitchEnum: {
             const EnumDef* e = g_types ? g_types->enum_of(n.targ) : nullptr;
@@ -510,7 +542,7 @@ void connect(PanelState& st, Graph& g, PinRef a, PinRef b) {
     Node* on = g.find(out.node);
     Node* in_n = g.find(in.node);
     Shape os, is;
-    if (!on || !in_n || !shape_of(st.reg, st.script, g, *on, os) || !shape_of(st.reg, st.script, g, *in_n, is)) return;
+    if (!on || !in_n || !shape_of(st.reg, st.whole(), g, *on, os) || !shape_of(st.reg, st.whole(), g, *in_n, is)) return;
     const Pin& op = os.pins[static_cast<size_t>(out.pin)];
     const Pin& ip = is.pins[static_cast<size_t>(in.pin)];
     if (!pins_compatible(op, ip)) {
@@ -539,7 +571,9 @@ struct PaletteEntry {
 
 std::vector<PaletteEntry> palette_entries(PanelState& st, const Graph& g) {
     std::vector<PaletteEntry> out;
-    for (const Variable& v : st.script.variables) {
+    const Script& all = st.whole();
+    const std::string up = parent_name("");   // "Parent::"
+    for (const Variable& v : all.variables) {
         out.push_back({"Get " + v.name, "Variables", "var.get", v.name});
         out.push_back({"Set " + v.name, "Variables", "var.set", v.name});
     }
@@ -547,14 +581,20 @@ std::vector<PaletteEntry> palette_entries(PanelState& st, const Graph& g) {
         out.push_back({"Get local " + v.name, "Variables", "local.get", v.name});
         out.push_back({"Set local " + v.name, "Variables", "local.set", v.name});
     }
-    for (const Graph& f : st.script.graphs)
-        if (f.kind == GraphKind::Function) out.push_back({"Call " + f.name, "Functions", "fn.call", f.name});
-    for (const Graph& eg : st.script.graphs)
+    for (const Graph& f : all.graphs) {
+        if (f.kind != GraphKind::Function) continue;
+        const bool parents = f.name.rfind(up, 0) == 0;   // the version this script replaced
+        (void)parents;
+        out.push_back({"Call " + friendly_name(f.name), "Functions", "fn.call", f.name});
+    }
+    for (const Graph& eg : all.graphs)
         if (eg.kind == GraphKind::Event)
             for (const Node& n : eg.nodes)
-                if (n.def == "event.custom" && !n.name.empty())
-                    out.push_back({"Call event " + n.name, "Events", "event.call", n.name});
-    for (const Dispatcher& dp : st.script.dispatchers)
+                if (n.def == "event.custom" && !n.name.empty()) {
+                    const bool parents = n.name.rfind(up, 0) == 0;
+                    out.push_back({parents ? "Call " + friendly_name(n.name) : "Call event " + n.name, "Events", "event.call", n.name});
+                }
+    for (const Dispatcher& dp : all.dispatchers)
         if (!dp.name.empty()) out.push_back({"Call dispatcher " + dp.name, "Events", "dispatch.call", dp.name});
     for (size_t i = 0; i < st.script.enums.size(); ++i) {
         const Type et(Kind::Enum, false, static_cast<uint16_t>(i + 1));
@@ -701,7 +741,69 @@ void draw_side_panel(PanelState& st) {
         }
     }
 
+    ImGui::SeparatorText("Parent and libraries");
+    {
+        // The parent: this script has everything it has, and replaces what it
+        // defines again. A library: its functions can be called from here.
+        static char pbuf[260];
+        static int  pbuf_for = 0;
+        if (pbuf_for != st.uid || !ImGui::IsAnyItemActive()) {
+            std::snprintf(pbuf, sizeof pbuf, "%s", st.script.parent.c_str());
+            pbuf_for = st.uid;
+        }
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::InputTextWithHint("##parent", "parent script (a .lgraph path)", pbuf, sizeof pbuf)) st.script.parent = pbuf;
+        if (ImGui::IsItemDeactivatedAfterEdit()) st.changed();
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SCRIPT_ASSET")) {
+                const char* sp = static_cast<const char*>(pl->Data);
+                if (sp && sp[0]) {
+                    st.script.parent = sp;
+                    st.changed();
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+        if (!st.script.parent.empty()) {
+            const std::string at = resolve_logic_script(st.script.parent, st.path);
+            if (at.empty()) ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "not found");
+            else if (ImGui::SmallButton("Open parent")) open_doc(at);
+        }
+        int rm = -1;
+        for (int i = 0; i < static_cast<int>(st.script.imports.size()); ++i) {
+            ImGui::PushID(8000 + i);
+            char lb[260];
+            std::snprintf(lb, sizeof lb, "%s", st.script.imports[static_cast<size_t>(i)].c_str());
+            ImGui::SetNextItemWidth(190.0f);
+            if (ImGui::InputTextWithHint("##lib", "library (a .lgraph path)", lb, sizeof lb)) st.script.imports[static_cast<size_t>(i)] = lb;
+            if (ImGui::IsItemDeactivatedAfterEdit()) st.changed();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) rm = i;
+            ImGui::PopID();
+        }
+        if (rm >= 0) {
+            st.script.imports.erase(st.script.imports.begin() + rm);
+            st.changed();
+        }
+        if (ImGui::SmallButton("+ Library")) {
+            st.script.imports.emplace_back();
+            st.changed();
+        }
+    }
+
     ImGui::SeparatorText("Variables");
+    // What the parent declares is here to be seen, and is changed in the parent.
+    for (const Variable& iv : st.whole().variables) {
+        if (st.script.find_variable(iv.name)) continue;
+        ImGui::TextDisabled("%s : %s  (parent's)", iv.name.c_str(), type_name(iv.type).c_str());
+        if (st.dbg) {
+            std::string live;
+            if (st.dbg->variable_text(st.debug_entity, iv.name, live)) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.45f, 0.85f, 1.0f, 1.0f), "= %s", live.c_str());
+            }
+        }
+    }
     int remove = -1;
     for (int i = 0; i < static_cast<int>(st.script.variables.size()); ++i) {
         Variable& v = st.script.variables[static_cast<size_t>(i)];
@@ -778,6 +880,10 @@ void draw_side_panel(PanelState& st) {
                 const bool in_use = used(Type(Kind::Enum, false, static_cast<uint16_t>(i + 1)));
                 ImGui::BeginDisabled(in_use);
                 if (ImGui::SmallButton("x")) {
+                    {
+                        const size_t own = st.script.enums.size();
+                        for_each_type(st.script, [&](Type& ty) { if (ty.kind == Kind::Enum && ty.sub > own) --ty.sub; });
+                    }
                     st.script.enums.pop_back();
                     st.changed();
                     ImGui::EndDisabled();
@@ -842,6 +948,10 @@ void draw_side_panel(PanelState& st) {
                 const bool in_use = used(Type(Kind::Struct, false, static_cast<uint16_t>(i + 1)));
                 ImGui::BeginDisabled(in_use);
                 if (ImGui::SmallButton("x")) {
+                    {
+                        const size_t own = st.script.structs.size();
+                        for_each_type(st.script, [&](Type& ty) { if (ty.kind == Kind::Struct && ty.sub > own) --ty.sub; });
+                    }
                     st.script.structs.pop_back();
                     st.changed();
                     ImGui::EndDisabled();
@@ -859,6 +969,9 @@ void draw_side_panel(PanelState& st) {
             EnumDef e;
             e.name = "Enum" + std::to_string(st.script.enums.size() + 1);
             e.entries = {"First", "Second"};
+            // The parent's enums are numbered after this script's own.
+            const size_t own = st.script.enums.size();
+            for_each_type(st.script, [&](Type& ty) { if (ty.kind == Kind::Enum && ty.sub > own) ++ty.sub; });
             st.script.enums.push_back(std::move(e));
             st.changed();
         }
@@ -867,6 +980,8 @@ void draw_side_panel(PanelState& st) {
             StructDef sd;
             sd.name = "Struct" + std::to_string(st.script.structs.size() + 1);
             sd.fields = {Param{"member0", kFloat, Value::number(0.0)}};
+            const size_t own = st.script.structs.size();
+            for_each_type(st.script, [&](Type& ty) { if (ty.kind == Kind::Struct && ty.sub > own) ++ty.sub; });
             st.script.structs.push_back(std::move(sd));
             st.changed();
         }
@@ -1037,7 +1152,7 @@ void draw_side_panel(PanelState& st) {
         Shape sh;
         if (sel->targ.is_exec()) {
             // a knot on a flow wire: nothing to pick
-        } else if ((shape_of(st.reg, st.script, *g, *sel, sh) && sh.has_wildcard()) || !sel->targ.is_none()) {
+        } else if ((shape_of(st.reg, st.whole(), *g, *sel, sh) && sh.has_wildcard()) || !sel->targ.is_none()) {
             Type t = sel->targ.is_none() ? kFloat : sel->targ;
             if (type_combo("type", t)) { sel->targ = t; st.changed(); }
         }
@@ -1128,7 +1243,7 @@ void draw_canvas(PanelState& st) {
     for (Node& n : g.nodes) {
         Shape sh;
         std::string why;
-        const bool ok = shape_of(st.reg, st.script, g, n, sh, &why);
+        const bool ok = shape_of(st.reg, st.whole(), g, n, sh, &why);
         const NodeDef* def = st.reg.find(n.def);
         const bool knot = ok && def && def->builtin == Builtin::Reroute;   // drawn as a knot on the wire
         const std::string title = ok && def ? node_title(*def, n) : ("? " + n.def);
@@ -1184,7 +1299,7 @@ void draw_canvas(PanelState& st) {
         }
         // The running game: a glow on what just ran, a marker where it is stopped.
         if (st.dbg) {
-            const double since = st.dbg->seconds_since_run(st.debug_entity, st.graph, n.id);
+            const double since = st.dbg->seconds_since_run(st.debug_entity, st.file_key(), st.graph, n.id);
             if (since >= 0.0 && since < 0.6) {
                 ran.insert(n.id);
                 const int alpha = static_cast<int>(255.0 * (1.0 - since / 0.6));
@@ -1307,7 +1422,7 @@ void draw_canvas(PanelState& st) {
             for (int i = 0; i < src_pin; ++i)
                 if (!ss.pins[static_cast<size_t>(i)].input && !ss.pins[static_cast<size_t>(i)].type.is_exec()) ++slot;
             std::string text;
-            if (st.dbg->output_text(st.debug_entity, st.graph, src_node, slot, text)) ImGui::SetTooltip("%s = %s", label.c_str(), text.c_str());
+            if (st.dbg->output_text(st.debug_entity, st.file_key(), st.graph, src_node, slot, text)) ImGui::SetTooltip("%s = %s", label.c_str(), text.c_str());
             else if (ss.pure) ImGui::SetTooltip("%s: worked out each time it is used", label.c_str());
         }
     }
@@ -1650,7 +1765,7 @@ void draw_canvas(PanelState& st) {
             Shape ps;
             int   match = -1;
             if (filter_pin) {
-                if (!shape_of(st.reg, st.script, g, probe, ps)) continue;
+                if (!shape_of(st.reg, st.whole(), g, probe, ps)) continue;
                 for (int i = 0; i < static_cast<int>(ps.pins.size()) && match < 0; ++i) {
                     const Pin& q = ps.pins[static_cast<size_t>(i)];
                     if (q.input == from_pin.input) continue;
@@ -1803,7 +1918,8 @@ void draw_logic_script_panel(bool* open) {
 
     d.active = std::clamp(d.active, 0, static_cast<int>(d.list.size()) - 1);
     PanelState& st = *d.list[static_cast<size_t>(d.active)];
-    g_types = &st.script;
+    g_types = &st.whole();
+    g_reg = &st.reg;
     ImGui::PushID(st.uid);
     if (ImGui::Button("Open...")) {
         d.found = find_logic_scripts();
@@ -1834,7 +1950,8 @@ void draw_logic_script_panel(bool* open) {
     if (ImGui::Button(st.dirty ? "Save*" : "Save") || ctrl_s) {
         st.path = st.path_buf;
         if (!st.path.empty() && st.path.find('.') == std::string::npos) st.path += ".lgraph";
-        st.save();
+        if (st.save())
+            for (auto& other : d.list) other->recompile();   // a script open in another tab may have this one as its parent
     }
     ImGui::SameLine();
     if (ImGui::Button("Undo") || (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z) && !ImGui::IsAnyItemActive())) st.do_undo();
@@ -1920,10 +2037,14 @@ void draw_logic_script_panel(bool* open) {
         ImGui::BeginChild("##messages", ImVec2(0.0f, msg_h), true);
         for (const CompileMessage& m : st.messages) {
             if (!m.error) continue;
-            const std::string where = m.graph >= 0 && m.graph < static_cast<int>(st.script.graphs.size())
-                                          ? st.script.graphs[static_cast<size_t>(m.graph)].name : std::string("script");
+            const bool own = m.graph >= 0 && m.graph < static_cast<int>(st.script.graphs.size());
+            std::string where = "script";
+            if (own) where = st.script.graphs[static_cast<size_t>(m.graph)].name;
+            else if (m.graph >= 0 && m.graph < static_cast<int>(st.whole().graphs.size()))
+                where = st.whole().graphs[static_cast<size_t>(m.graph)].name + " (in " +
+                        (st.link_ok ? st.linked.origins[static_cast<size_t>(m.graph)].file : std::string("?")) + ")";
             ImGui::PushID(&m);
-            if (ImGui::Selectable((where + ": " + m.text).c_str()) && m.graph >= 0) {
+            if (ImGui::Selectable((where + ": " + m.text).c_str()) && own) {
                 st.graph = m.graph;
                 st.select_only(m.node);
                 if (const Graph* g = st.cur())
@@ -1939,6 +2060,7 @@ void draw_logic_script_panel(bool* open) {
     ImGui::EndGroup();
     ImGui::PopID();
     g_types = nullptr;
+    g_reg = nullptr;
     ImGui::End();
 }
 

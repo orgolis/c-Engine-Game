@@ -19,7 +19,9 @@
 
 namespace schizo::editor {
 
-/// One running logic script: the object it is on and the file it came from.
+/// A script file an object is running. An object whose script has a parent or
+/// uses libraries is running several files: it is listed once for each, so
+/// that the graphs of any of them can be watched on it.
 struct LogicDebugTarget {
     uint32_t    entity = 0;
     std::string path;
@@ -31,7 +33,7 @@ class LogicDebugger {
 public:
     virtual ~LogicDebugger() = default;
 
-    /// Every logic script that is running, ordered by entity id.
+    /// Every script file that is running, with the object running it.
     virtual std::vector<LogicDebugTarget> targets() const = 0;
 
     /// Replace the breakpoints of one script file: (graph index, node id).
@@ -41,18 +43,21 @@ public:
     /// wanted: tracing switches itself off about a second after the last call.
     virtual void want_tracing() = 0;
 
-    /// Whether a script is stopped at a breakpoint, and where.
+    /// Whether a script is stopped at a breakpoint, and where: the file the
+    /// graph is in (the parent's, when it stopped in an inherited graph) and
+    /// the graph's index in that file.
     virtual bool paused(LogicDebugTarget* where = nullptr, int* graph = nullptr, int* node = nullptr) const = 0;
     /// Continue or step. Returns when the script finishes or stops again.
     virtual void resume(LogicStep how) = 0;
 
     /// Seconds since that node last ran on that object; negative if it has
     /// not run since tracing was switched on.
-    virtual double seconds_since_run(uint32_t entity, int graph, int node) const = 0;
+    /// `path` and `graph` name the graph as its own file does.
+    virtual double seconds_since_run(uint32_t entity, const std::string& path, int graph, int node) const = 0;
     /// The value on a node's data output (`slot` counts its data outputs from
     /// 0), as text. False when there is none to show: a pure node, which is
     /// computed where it is used, or a function that is not the paused one.
-    virtual bool output_text(uint32_t entity, int graph, int node, int slot, std::string& text) const = 0;
+    virtual bool output_text(uint32_t entity, const std::string& path, int graph, int node, int slot, std::string& text) const = 0;
     /// The current value of one of the script's variables on that object.
     virtual bool variable_text(uint32_t entity, const std::string& name, std::string& text) const = 0;
 };

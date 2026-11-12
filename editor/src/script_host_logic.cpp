@@ -16,6 +16,7 @@
 #include "logic_nodes.h"
 
 #include "vscript/io.h"
+#include "vscript/link.h"
 #include "vscript/program.h"
 #include "vscript/vm.h"
 
@@ -325,22 +326,56 @@ struct LogicRuntime : Host, LogicDebugger {
     double   last_tick_time = -1.0;
     std::string last_error;
 
-    // A compiled script, shared by every object that runs that file.
-    struct Compiled {
+    // A compiled script, shared by every object that runs that file. It is
+    // linked from the file, its parent chain and its libraries: `origins`
+    // says which file each of the program's graphs came from, and `deps` is
+    // what has to be unchanged for the program to still be right.
+    struct Unit {
+        Program                  program;
+        std::vector<GraphOrigin> origins;   // file = path_key
+    };
+    struct Dep {
+        std::string                     path;
         std::filesystem::file_time_type stamp;
         uintmax_t                       size = 0;
-        std::shared_ptr<const Program>  program;
+    };
+    struct Compiled {
+        std::vector<Dep>            deps;   // the file itself first
+        std::shared_ptr<const Unit> unit;
     };
     std::unordered_map<std::string, Compiled> programs;   // by path_key
+
+    static bool stamp_of(const std::string& path, Dep& d) {
+        std::error_code ec;
+        d.path = path;
+        d.stamp = std::filesystem::last_write_time(path, ec);
+        if (ec) return false;
+        d.size = std::filesystem::file_size(path, ec);
+        return !ec;
+    }
+    static bool unchanged(const Compiled& c) {
+        if (!c.unit || c.deps.empty()) return false;
+        for (const Dep& d : c.deps) {
+            Dep now;
+            if (!stamp_of(d.path, now) || now.stamp != d.stamp || now.size != d.size) return false;
+        }
+        return true;
+    }
 
     // Which script is on which entity: for the nodes that reach another
     // entity's script (Send Event to Entity, Get / Set Variable of Entity),
     // and for the debugger.
     struct Live {
-        Instance*                      inst = nullptr;
-        std::string                    path;      // path_key of the file
-        std::shared_ptr<const Program> program;
+        Instance*                   inst = nullptr;
+        std::string                 path;      // path_key of the file
+        std::shared_ptr<const Unit> unit;
     };
+    /// The program's graph that is graph `graph` of file `path`; -1 if none.
+    static int program_graph(const Unit& u, const std::string& path, int graph) {
+        for (size_t g = 0; g < u.origins.size(); ++g)
+            if (u.origins[g].graph == graph && u.origins[g].file == path) return static_cast<int>(g);
+        return -1;
+    }
     std::unordered_map<uint32_t, Live> live;
 
     // Breakpoints by script file, kept whether or not anything is running.
@@ -404,9 +439,14 @@ struct LogicRuntime : Host, LogicDebugger {
     void apply_breakpoints() {
         vm.clear_breakpoints();
         for (const auto& [entity, l] : live) {
-            const auto it = breakpoints.find(l.path);
-            if (it == breakpoints.end()) continue;
-            for (const auto& [graph, node] : it->second) vm.set_breakpoint(l.program.get(), graph, node, true);
+            // A breakpoint is kept by the file its graph is in, so one in a
+            // parent's graph reaches every script that inherits it.
+            for (size_t g = 0; g < l.unit->origins.size(); ++g) {
+                const auto it = breakpoints.find(l.unit->origins[g].file);
+                if (it == breakpoints.end()) continue;
+                for (const auto& [graph, node] : it->second)
+                    if (graph == l.unit->origins[g].graph) vm.set_breakpoint(&l.unit->program, static_cast<int>(g), node, true);
+            }
         }
     }
     /// Once a frame: the trace clock, and switching tracing off when nobody
@@ -424,8 +464,13 @@ struct LogicRuntime : Host, LogicDebugger {
     // ---- LogicDebugger ---------------------------------------------------
     std::vector<LogicDebugTarget> targets() const override {
         std::vector<LogicDebugTarget> out;
-        for (const auto& [entity, l] : live)
-            if (l.inst) out.push_back(LogicDebugTarget{entity, l.path});
+        for (const auto& [entity, l] : live) {
+            if (!l.inst) continue;
+            std::vector<std::string> files{l.path};
+            for (const GraphOrigin& o : l.unit->origins)
+                if (std::find(files.begin(), files.end(), o.file) == files.end()) files.push_back(o.file);
+            for (const std::string& f : files) out.push_back(LogicDebugTarget{entity, f});
+        }
         std::sort(out.begin(), out.end(), [](const LogicDebugTarget& a, const LogicDebugTarget& b) { return a.entity < b.entity; });
         return out;
     }
@@ -447,12 +492,14 @@ struct LogicRuntime : Host, LogicDebugger {
         if (vm.state() != RunState::Paused) return false;
         const Instance* pi = vm.paused_instance();
         const Where     w = vm.paused_at();
+        const Live*        l = pi ? find_live(pi->self) : nullptr;
+        const GraphOrigin* o = l && w.graph >= 0 && w.graph < static_cast<int>(l->unit->origins.size())
+                                   ? &l->unit->origins[static_cast<size_t>(w.graph)] : nullptr;
         if (where && pi) {
             where->entity = pi->self;
-            const Live* l = find_live(pi->self);
-            where->path = l ? l->path : std::string();
+            where->path = o ? o->file : (l ? l->path : std::string());
         }
-        if (graph) *graph = w.graph;
+        if (graph) *graph = o ? o->graph : w.graph;
         if (node) *node = w.node;
         return true;
     }
@@ -463,16 +510,18 @@ struct LogicRuntime : Host, LogicDebugger {
                   : how == LogicStep::Out ? VM::Step::Out : VM::Step::Continue);
         finish_frame();
     }
-    double seconds_since_run(uint32_t entity, int graph, int node) const override {
+    double seconds_since_run(uint32_t entity, const std::string& path, int graph, int node) const override {
         const Live* l = find_live(entity);
-        if (!l) return -1.0;
-        const double t = vm.last_run(*l->inst, graph, node);
+        const int   g = l ? program_graph(*l->unit, path, graph) : -1;
+        if (g < 0) return -1.0;
+        const double t = vm.last_run(*l->inst, g, node);
         return t < 0.0 ? -1.0 : std::max(0.0, wall_seconds() - t);
     }
-    bool output_text(uint32_t entity, int graph, int node, int slot, std::string& text) const override {
+    bool output_text(uint32_t entity, const std::string& path, int graph, int node, int slot, std::string& text) const override {
         const Live* l = find_live(entity);
-        if (!l || slot < 0) return false;
-        const NodeOutputs* o = l->program->find_outputs(graph, node);
+        const int   g = l ? program_graph(*l->unit, path, graph) : -1;
+        if (g < 0 || slot < 0) return false;
+        const NodeOutputs* o = l->unit->program.find_outputs(g, node);
         const Value*       v = o ? vm.frame_register(*l->inst, o->fn, o->base + slot) : nullptr;
         if (!v) return false;
         text = display_string(*v);
@@ -522,9 +571,9 @@ int key_code_of(const std::string& s) {
 
 class LogicInstance final : public ScriptInstance, public FrameWork {
 public:
-    LogicInstance(std::shared_ptr<LogicRuntime> rt, std::shared_ptr<const Program> program, std::string path,
+    LogicInstance(std::shared_ptr<LogicRuntime> rt, std::shared_ptr<const LogicRuntime::Unit> unit, std::string path,
                   const ScriptApi* api)
-        : rt_(std::move(rt)), program_(std::move(program)), path_(std::move(path)), api_(api) {}
+        : rt_(std::move(rt)), unit_(std::move(unit)), program_(&unit_->program), path_(std::move(path)), api_(api) {}
     ~LogicInstance() override {
         if (inst_) {
             rt_->shared.api = api_;
@@ -544,7 +593,7 @@ public:
     bool start(uint32_t entity, std::string&) override {
         rt_->shared.api = api_;
         inst_ = rt_->vm.instantiate(*program_, entity);
-        rt_->live[entity] = LogicRuntime::Live{inst_.get(), path_, program_};
+        rt_->live[entity] = LogicRuntime::Live{inst_.get(), path_, unit_};
         rt_->apply_breakpoints();
         apply_inspector_values(entity);
         // Which keys this script listens for, so update() polls only those.
@@ -714,7 +763,8 @@ private:
     }
 
     std::shared_ptr<LogicRuntime>  rt_;
-    std::shared_ptr<const Program> program_;
+    std::shared_ptr<const LogicRuntime::Unit> unit_;
+    const Program*                 program_ = nullptr;   // unit_'s
     std::string                    path_;    // path_key of the file
     const ScriptApi*               api_ = nullptr;
     std::unique_ptr<Instance>     inst_;
@@ -743,46 +793,55 @@ public:
     std::unique_ptr<ScriptInstance> create(const std::string& source_path, const ScriptApi* api,
                                            std::string& err) override {
         // One compiled program per file, shared by every object that runs it
-        // and kept until the file changes.
-        const std::string key = path_key(source_path);
-        std::error_code   ec;
-        const auto        stamp = std::filesystem::last_write_time(source_path, ec);
-        const uintmax_t   size = ec ? 0 : std::filesystem::file_size(source_path, ec);
+        // and kept until the file, its parent or one of its libraries changes.
+        const std::string       key = path_key(source_path);
         LogicRuntime::Compiled& slot = rt_->programs[key];
-        if (!ec && slot.program && slot.stamp == stamp && slot.size == size)
-            return std::make_unique<LogicInstance>(rt_, slot.program, key, api);
-        slot.program.reset();
+        if (LogicRuntime::unchanged(slot)) return std::make_unique<LogicInstance>(rt_, slot.unit, key, api);
+        slot = LogicRuntime::Compiled{};
 
-        std::ifstream f(source_path, std::ios::binary);
-        if (!f) {
-            err = "cannot open '" + source_path + "'";
-            return nullptr;
-        }
-        std::stringstream ss;
-        ss << f.rdbuf();
         Script script;
-        if (!from_text(ss.str(), script, &err)) return nullptr;
+        if (!read_logic_script(source_path, script, &err)) return nullptr;
         if (script.name.empty()) script.name = source_path;
-        auto                        compiled = std::make_shared<Program>();
-        Program&                    program = *compiled;
+        // The parent chain and the libraries, read from beside the project or
+        // beside the file that names them.
+        std::vector<std::string> read_paths;
+        const ScriptLoader load = [&](const std::string& named, Script& out) {
+            const std::string at = resolve_logic_script(named, source_path);
+            if (at.empty() || !read_logic_script(at, out, nullptr)) return false;
+            read_paths.push_back(at);
+            return true;
+        };
+        Linked linked;
+        if (!link(rt_->reg, script, load, linked, &err)) return nullptr;
+
+        auto                        unit = std::make_shared<LogicRuntime::Unit>();
         std::vector<CompileMessage> msgs;
-        if (!compile(rt_->reg, script, program, msgs)) {
+        if (!compile(rt_->reg, linked.script, unit->program, msgs)) {
             // The first error, with where it is: the Inspector shows one line.
             for (const CompileMessage& m : msgs) {
                 if (!m.error) continue;
                 err = m.text;
-                if (m.graph >= 0 && m.graph < static_cast<int>(script.graphs.size()))
-                    err = script.graphs[static_cast<size_t>(m.graph)].name + " node " + std::to_string(m.node) + ": " + err;
+                if (m.graph >= 0 && m.graph < static_cast<int>(linked.script.graphs.size())) {
+                    const GraphOrigin& o = linked.origins[static_cast<size_t>(m.graph)];
+                    err = linked.script.graphs[static_cast<size_t>(m.graph)].name + " node " + std::to_string(m.node) + ": " + err;
+                    if (!o.file.empty()) err = "in " + o.file + ": " + err;
+                }
                 break;
             }
             return nullptr;
         }
-        if (!ec) {
-            slot.stamp = stamp;
-            slot.size = size;
-            slot.program = compiled;
+        for (const GraphOrigin& o : linked.origins)
+            unit->origins.push_back(GraphOrigin{o.file.empty() ? key : path_key(resolve_logic_script(o.file, source_path)), o.graph});
+        LogicRuntime::Dep dep;
+        bool              stamped = LogicRuntime::stamp_of(source_path, dep);
+        slot.deps.push_back(dep);
+        for (const std::string& p : read_paths) {
+            stamped = LogicRuntime::stamp_of(p, dep) && stamped;
+            slot.deps.push_back(dep);
         }
-        return std::make_unique<LogicInstance>(rt_, std::move(compiled), key, api);
+        if (stamped) slot.unit = unit;
+        else slot = LogicRuntime::Compiled{};
+        return std::make_unique<LogicInstance>(rt_, std::move(unit), key, api);
     }
 
 private:
@@ -792,6 +851,28 @@ private:
 }  // namespace
 
 std::unique_ptr<ScriptHost> make_logic_host() { return std::make_unique<LogicHost>(); }
+
+std::string logic_script_key(const std::string& path) { return path_key(path); }
+
+std::string resolve_logic_script(const std::string& named, const std::string& from) {
+    if (named.empty()) return std::string();
+    std::error_code ec;
+    if (std::filesystem::exists(named, ec)) return named;
+    const std::filesystem::path beside = std::filesystem::path(from).parent_path() / named;
+    if (std::filesystem::exists(beside, ec)) return beside.generic_string();
+    return std::string();
+}
+
+bool read_logic_script(const std::string& path, schizo::vs::Script& out, std::string* error) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        if (error) *error = "cannot open '" + path + "'";
+        return false;
+    }
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return schizo::vs::from_text(ss.str(), out, error);
+}
 
 LogicDebugger* logic_debugger() { return g_debug_runtime; }
 
