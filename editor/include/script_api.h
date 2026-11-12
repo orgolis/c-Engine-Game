@@ -148,6 +148,16 @@ struct ScriptApi {
     /// Show a message on the editor's status line -- an extension needs a way to
     /// report what it did that is not the log file.
     void (*set_status)(void* ctx, const char* msg) = nullptr;
+
+    // ---- gameplay event feed (added v0.8.17; new entries go at the end) ----
+    // Gameplay events published since the previous frame (trigger enter/exit,
+    // damage, pickups, anything on the bus). Lets a script REACT to an event
+    // instead of polling flags. Index 0 .. event_count()-1; entity ids are
+    // scene ids, 0 when the event names none.
+    int  (*event_count)(void* ctx) = nullptr;
+    bool (*event_get)(void* ctx, int index, char* name_out, int name_size,
+                      uint32_t* instigator, uint32_t* target, float* value,
+                      char* param_out, int param_size) = nullptr;
 };
 
 }  // namespace schizo::editor

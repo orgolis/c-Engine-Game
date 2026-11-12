@@ -74,6 +74,8 @@ struct NodeDef {
     bool     pure = false;       // no exec pins
     bool     latent = false;     // finishes later (Delay); not allowed in functions
     bool     compact = false;    // draw as an operator ("+") without pin labels
+    bool     named = false;      // an event told apart by Node::name (which key, which bus event)
+    std::string name_label;      // what that name is called in the editor ("Key", "Event")
     Builtin  builtin = Builtin::None;
     NativeFn fn;                 // native nodes
     uint16_t op = 0;             // VM opcode equivalent of `fn`, or 0

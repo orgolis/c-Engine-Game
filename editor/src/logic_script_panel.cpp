@@ -201,7 +201,7 @@ std::string node_title(const NodeDef& d, const Node& n) {
         case Builtin::FnCall: return n.name;
         case Builtin::CustomEvent: return "Event " + n.name;
         case Builtin::CallEvent: return "Call " + n.name;
-        default: return d.title;
+        default: return d.named && !n.name.empty() ? d.title + ": " + n.name : d.title;
     }
 }
 
@@ -486,6 +486,12 @@ void draw_side_panel(PanelState& st) {
         ImGui::SeparatorText("Selected node");
         ImGui::TextUnformatted(d ? d->title.c_str() : sel->def.c_str());
         if (d && !d->tooltip.empty()) ImGui::TextWrapped("%s", d->tooltip.c_str());
+        if (d && d->named) {
+            char eb[64];
+            std::snprintf(eb, sizeof eb, "%s", sel->name.c_str());
+            if (ImGui::InputText(d->name_label.empty() ? "name" : d->name_label.c_str(), eb, sizeof eb)) sel->name = eb;
+            if (ImGui::IsItemDeactivatedAfterEdit()) st.changed();
+        }
         if (d && d->builtin == Builtin::CustomEvent) {
             char eb[64];
             std::snprintf(eb, sizeof eb, "%s", sel->name.c_str());

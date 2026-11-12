@@ -33,6 +33,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 #include <cstdint>
 
 using namespace schizo;
@@ -113,6 +114,11 @@ static void write_file(const char* path, const char* text) {
     std::ofstream f(path, std::ios::trunc);
     f << text;
 }
+
+// What the logic-graph event test feeds the engine table.
+static bool g_space_down = false;
+struct FakeEvent { const char* name; float value; };
+static std::vector<FakeEvent> g_events;
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -439,7 +445,59 @@ int main() {
         ls.update(scn, true, 0.1f, api);
         const bool refused = bsc->GetStatus().find("cannot connect") != std::string::npos;
         ls.update(scn, false, 0.1f, api);
-        logic_ok = moved_right && status_ok && refused;
+
+        // Events: Key Pressed fires once per press, and a gameplay event
+        // arrives with its value.
+        Script es;
+        es.name = "events";
+        Graph& eg = es.add_graph(GraphKind::Event, "EventGraph");
+        es.add_variable("presses", kInt);
+        const int kp = eg.add("event.key_pressed").id;
+        eg.find(kp)->name = "Space";
+        const int get = eg.add("var.get").id, add1 = eg.add("math.add").id, setv = eg.add("var.set").id;
+        eg.find(get)->name = "presses"; eg.find(setv)->name = "presses";
+        eg.find(add1)->set_default("B", Value::integer(1));
+        const int sp = eg.add("entity.set_position").id, s3 = eg.add("self").id, mkv = eg.add("vec3.make").id;
+        eg.link(kp, "Then", setv, "In"); eg.link(get, "Value", add1, "A"); eg.link(add1, "Result", setv, "Value");
+        eg.link(setv, "Then", sp, "In"); eg.link(s3, "Self", sp, "Entity");
+        eg.link(setv, "Value", mkv, "X"); eg.link(mkv, "Result", sp, "Position");
+        const int ge = eg.add("event.gameplay").id;
+        eg.find(ge)->name = "door.open";
+        const int sp2 = eg.add("entity.set_position").id, s4 = eg.add("self").id, mkv2 = eg.add("vec3.make").id;
+        eg.link(ge, "Then", sp2, "In"); eg.link(s4, "Self", sp2, "Entity");
+        eg.link(ge, "Value", mkv2, "Y"); eg.link(mkv2, "Result", sp2, "Position");
+        write_file("script_check_logic_ev.lgraph", to_text(es).c_str());
+        auto ee = scn->CreateEntity("LogicEv");
+        ee->AddComponent<scene::ScriptComponent>(std::string("script_check_logic_ev.lgraph"));
+        api.key_down = [](void*, int key) { return key == 32 && g_space_down; };
+        api.event_count = [](void*) { return static_cast<int>(g_events.size()); };
+        api.event_get = [](void*, int i, char* name, int name_size, uint32_t* inst, uint32_t* tgt, float* value,
+                           char* param, int param_size) {
+            if (i < 0 || i >= static_cast<int>(g_events.size())) return false;
+            std::snprintf(name, static_cast<size_t>(name_size), "%s", g_events[static_cast<size_t>(i)].name);
+            if (param_size > 0) param[0] = 0;
+            *inst = 0; *tgt = 0; *value = g_events[static_cast<size_t>(i)].value;
+            return true;
+        };
+        editor::ScriptSystem evs;
+        evs.register_host(".lgraph", editor::make_logic_host());
+        evs.update(scn, true, 0.1f, api);                       // start
+        g_space_down = true;  evs.update(scn, true, 0.1f, api); // press 1
+        evs.update(scn, true, 0.1f, api);                       // held: no second press
+        g_space_down = false; evs.update(scn, true, 0.1f, api);
+        g_space_down = true;  evs.update(scn, true, 0.1f, api); // press 2
+        const float presses_x = ee->GetTransform()->GetWorldPosition().x;
+        g_space_down = false;
+        g_events = {{"other", 1.0f}, {"door.open", 9.0f}};
+        evs.update(scn, true, 0.1f, api);
+        g_events.clear();
+        const float door_y = ee->GetTransform()->GetWorldPosition().y;
+        evs.update(scn, false, 0.1f, api);
+        const bool events_ok = std::fabs(presses_x - 2.0f) < 1e-4f && std::fabs(door_y - 9.0f) < 1e-4f;
+        std::printf("  logic events: key presses counted %.0f (expected 2), gameplay event value %.0f (expected 9) -> %s\n",
+                    presses_x, door_y, events_ok ? "OK" : "FAIL");
+        std::remove("script_check_logic_ev.lgraph");
+        logic_ok = moved_right && status_ok && refused && events_ok;
         std::printf("  logic graph: x=%.2f (expected 7.00), status '%s', bad graph '%.50s' -> %s\n",
                     lp.x, lsc->GetStatus().c_str(), bsc->GetStatus().c_str(), logic_ok ? "OK" : "FAIL");
         std::remove("script_check_logic.lgraph");

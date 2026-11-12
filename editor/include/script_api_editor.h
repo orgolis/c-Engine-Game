@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 #include <cstdint>
 
 struct GLFWwindow;
@@ -33,6 +34,21 @@ struct EditorScriptCtx {
     EcsSceneBridge*       bridge   = nullptr;   // ECS gameplay components (G0–G4)
     float dt = 0.0f;                            // this frame's delta time (s), for continuous gameplay calls
     float mouse_dx = 0.0f, mouse_dy = 0.0f;   // this frame's cursor delta (px)
+
+    // ---- gameplay event feed (ScriptApi::event_count / event_get) ----
+    // The bus hands events to `feed_incoming` as it flushes; the first query of
+    // a new frame moves them to `feed_current`, which is what scripts read. So
+    // every script sees the same list for the whole frame, one frame after the
+    // event happened.
+    struct FeedEvent {
+        std::string name, param;
+        uint32_t    instigator = 0, target = 0;
+        float       value = 0.0f;
+    };
+    uint64_t               frame = 0;              // main.cpp bumps this once per frame
+    uint64_t               feed_frame = ~0ull;
+    EcsSceneBridge*        feed_bridge = nullptr;  // the bridge the feed is subscribed to
+    std::vector<FeedEvent> feed_incoming, feed_current;
 
     // ---- editor extensions (Phase 4.8) ----
     // Filled only for the EDITOR extension api; a gameplay script's table leaves

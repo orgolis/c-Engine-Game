@@ -42,6 +42,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <cstdint>
@@ -438,6 +439,55 @@ void api_emit_event(void* ctx, const char* name) {
     if (c->bridge && name) { ecs::GameplayEvent ev; ev.name = name; c->bridge->events().publish(ev); }
 }
 
+// ---- gameplay event feed ----
+// ECS entity -> scene id. Events are rare, so a scan of the scene is fine.
+uint32_t scene_id_of(EditorScriptCtx* c, ecs::Entity e) {
+    if (!c->scene || !c->bridge || e == ecs::null_entity) return 0;
+    const uint32_t want = static_cast<uint32_t>(e);
+    for (const auto& ent : c->scene->GetEntities())
+        if (ent && c->bridge->ecs_entity_id(ent->GetTransform()) == want) return ent->GetId();
+    return 0;
+}
+void feed_refresh(EditorScriptCtx* c) {
+    if (c->bridge && c->bridge != c->feed_bridge) {
+        // The bridge keeps its subscribers for its whole life, so once is enough.
+        c->feed_bridge = c->bridge;
+        c->feed_incoming.clear();
+        c->bridge->events().subscribe("*", [c](const ecs::GameplayEvent& ev) {
+            EditorScriptCtx::FeedEvent f;
+            f.name = ev.name;
+            f.param = ev.param;
+            f.value = ev.value;
+            f.instigator = scene_id_of(c, ev.instigator);
+            f.target = scene_id_of(c, ev.target);
+            c->feed_incoming.push_back(std::move(f));
+        });
+    }
+    if (c->feed_frame != c->frame) {
+        c->feed_frame = c->frame;
+        c->feed_current = std::move(c->feed_incoming);
+        c->feed_incoming.clear();
+    }
+}
+int api_event_count(void* ctx) {
+    auto* c = C(ctx);
+    feed_refresh(c);
+    return static_cast<int>(c->feed_current.size());
+}
+bool api_event_get(void* ctx, int index, char* name_out, int name_size, uint32_t* instigator,
+                   uint32_t* target, float* value, char* param_out, int param_size) {
+    auto* c = C(ctx);
+    feed_refresh(c);
+    if (index < 0 || index >= static_cast<int>(c->feed_current.size())) return false;
+    const auto& f = c->feed_current[static_cast<size_t>(index)];
+    if (name_out && name_size > 0) std::snprintf(name_out, static_cast<size_t>(name_size), "%s", f.name.c_str());
+    if (param_out && param_size > 0) std::snprintf(param_out, static_cast<size_t>(param_size), "%s", f.param.c_str());
+    if (instigator) *instigator = f.instigator;
+    if (target) *target = f.target;
+    if (value) *value = f.value;
+    return true;
+}
+
 // ---- spatial helpers ----
 float api_distance(void* ctx, uint32_t a, uint32_t b) {
     auto ea = ent_of(ctx, a), eb = ent_of(ctx, b);
@@ -575,6 +625,8 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.get_flag           = &api_get_flag;
     api.set_flag           = &api_set_flag;
     api.emit_event         = &api_emit_event;
+    api.event_count        = &api_event_count;
+    api.event_get          = &api_event_get;
     api.distance           = &api_distance;
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;

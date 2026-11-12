@@ -18,7 +18,9 @@
 #include "vscript/program.h"
 #include "vscript/vm.h"
 
+#include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -216,6 +218,32 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
     r.pure("time.delta", "Utilities", "Delta Seconds", [s]() { return double(API ? API->dt : 0.0f); }, {"Seconds"});
     r.pure("time.now", "Utilities", "Game Time", [s]() { return API ? API->time : 0.0; }, {"Seconds"});
 
+    // Events the engine raises. Node::name says which key / which bus event,
+    // so one script can have several of each.
+    {
+        NodeDef d;
+        d.id = "event.key_pressed"; d.category = "Events|Input"; d.title = "Key Pressed";
+        d.builtin = Builtin::Event; d.named = true; d.name_label = "Key";
+        d.tooltip = "Runs once when the key goes down. Key: a letter or digit, Space, Enter, Escape, Shift, Ctrl, Tab, Up, Down, Left, Right, or a GLFW key code.";
+        d.out("Then", kExec);
+        r.add(std::move(d));
+    }
+    {
+        NodeDef d;
+        d.id = "event.key_released"; d.category = "Events|Input"; d.title = "Key Released";
+        d.builtin = Builtin::Event; d.named = true; d.name_label = "Key";
+        d.out("Then", kExec);
+        r.add(std::move(d));
+    }
+    {
+        NodeDef d;
+        d.id = "event.gameplay"; d.category = "Events"; d.title = "On Gameplay Event";
+        d.builtin = Builtin::Event; d.named = true; d.name_label = "Event";
+        d.tooltip = "Runs when an event with this name is published on the gameplay bus: a trigger volume's enter or exit event, damage, a pickup, or one sent with Emit Event. It arrives the frame after it happened.";
+        d.out("Then", kExec).out("Instigator", kEntity).out("Target", kEntity).out("Value", kFloat).out("Param", kString);
+        r.add(std::move(d));
+    }
+
     const char* SP = "Script Parameters";
     r.pure("param.float", SP, "Get Float Parameter", [s](EntityId e, std::string n, double def) {
         return double(API && API->get_param_float ? API->get_param_float(API->ctx, e.id, n.c_str(), float(def)) : float(def));
@@ -260,6 +288,26 @@ struct LogicRuntime : Host {
     }
 };
 
+/// "A", "7", "Space", "Up" or a number -> GLFW key code; -1 when unknown.
+int key_code_of(const std::string& s) {
+    if (s.size() == 1) {
+        const char c = static_cast<char>(std::toupper(static_cast<unsigned char>(s[0])));
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return c;
+    }
+    static const struct { const char* name; int code; } kNamed[] = {
+        {"space", 32}, {"escape", 256}, {"enter", 257}, {"tab", 258}, {"backspace", 259},
+        {"right", 262}, {"left", 263}, {"down", 264}, {"up", 265},
+        {"shift", 340}, {"ctrl", 341}, {"alt", 342},
+    };
+    std::string low = s;
+    for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (const auto& k : kNamed)
+        if (low == k.name) return k.code;
+    char* end = nullptr;
+    const long v = std::strtol(s.c_str(), &end, 10);
+    return end != s.c_str() && *end == 0 && v > 0 ? static_cast<int>(v) : -1;
+}
+
 class LogicInstance final : public ScriptInstance {
 public:
     LogicInstance(std::shared_ptr<LogicRuntime> rt, Program program, const ScriptApi* api)
@@ -275,6 +323,21 @@ public:
     bool start(uint32_t entity, std::string&) override {
         rt_->shared.api = api_;
         inst_ = rt_->vm.instantiate(program_, entity);
+        // Which keys this script listens for, so update() polls only those.
+        keys_.clear();
+        for (const EventInfo& e : program_.events) {
+            for (const bool pressed : {true, false}) {
+                const std::string prefix = pressed ? "event.key_pressed:" : "event.key_released:";
+                if (e.name.rfind(prefix, 0) != 0) continue;
+                const int code = key_code_of(e.name.substr(prefix.size()));
+                if (code < 0) continue;
+                Key* k = nullptr;
+                for (Key& x : keys_) if (x.code == code) k = &x;
+                if (!k) { keys_.push_back(Key{}); k = &keys_.back(); k->code = code; }
+                (pressed ? k->on_press : k->on_release) = e.name;
+            }
+            if (e.name.rfind("event.gameplay:", 0) == 0) wants_bus_ = true;
+        }
         rt_->vm.fire(*inst_, "event.begin_play");
         return true;
     }
@@ -285,6 +348,24 @@ public:
         if (api_ && api_->time != rt_->last_tick_time) {
             rt_->last_tick_time = api_->time;
             rt_->vm.tick(static_cast<double>(dt));
+        }
+        for (Key& k : keys_) {
+            const bool down = api_ && api_->key_down && api_->key_down(api_->ctx, k.code);
+            if (down && !k.down && !k.on_press.empty()) rt_->vm.fire(*inst_, k.on_press);
+            if (!down && k.down && !k.on_release.empty()) rt_->vm.fire(*inst_, k.on_release);
+            k.down = down;
+        }
+        if (wants_bus_ && api_ && api_->event_count && api_->event_get) {
+            const int n = api_->event_count(api_->ctx);
+            for (int i = 0; i < n; ++i) {
+                char     name[128] = {}, param[256] = {};
+                uint32_t instigator = 0, target = 0;
+                float    value = 0.0f;
+                if (!api_->event_get(api_->ctx, i, name, sizeof name, &instigator, &target, &value, param, sizeof param)) continue;
+                const Value args[4] = {Value::entity(instigator), Value::entity(target),
+                                       Value::number(static_cast<double>(value)), Value::string(param)};
+                rt_->vm.fire(*inst_, std::string("event.gameplay:") + name, args, 4);
+            }
         }
         const Value d = Value::number(static_cast<double>(dt));
         rt_->vm.fire(*inst_, "event.tick", &d, 1);
@@ -302,6 +383,13 @@ private:
     Program                       program_;
     const ScriptApi*              api_ = nullptr;
     std::unique_ptr<Instance>     inst_;
+    struct Key {
+        int         code = 0;
+        bool        down = false;
+        std::string on_press, on_release;
+    };
+    std::vector<Key> keys_;
+    bool             wants_bus_ = false;
 };
 
 class LogicHost final : public ScriptHost {

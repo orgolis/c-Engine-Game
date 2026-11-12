@@ -111,6 +111,12 @@ typedef struct SchizoScriptApi {
     unsigned (*entity_at)(void* ctx, int index);
     int      (*entity_name)(void* ctx, unsigned e, char* out, int out_size);
     void     (*set_status)(void* ctx, const char* msg);
+    /* Gameplay events published since the previous frame (trigger enter/exit,
+       damage, pickups ...). Entity ids are 0 when the event names none. */
+    int      (*event_count)(void* ctx);
+    bool     (*event_get)(void* ctx, int index, char* name_out, int name_size,
+                          unsigned* instigator, unsigned* target, float* value,
+                          char* param_out, int param_size);
 } SchizoScriptApi;
 
 }  // extern "C"
