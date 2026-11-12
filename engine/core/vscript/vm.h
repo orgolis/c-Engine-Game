@@ -95,6 +95,7 @@ public:
     /// Forget every pending wait of an instance. Call before destroying it.
     void forget(const Instance& inst);
     size_t pending_waits() const { return latent_.size(); }
+    size_t running_timelines() const { return timelines_.size(); }
 
     // ---- deterministic randomness for the standard library ----------------
     void     seed(uint64_t s) { rng_ = s ? s : 0x9E3779B97F4A7C15ull; }
@@ -159,6 +160,13 @@ private:
         int       slot;
         double    remaining;
     };
+    struct RunningTimeline {
+        Instance* inst;
+        int       index;      // Program::timelines
+        double    duration;
+        bool      loop;
+    };
+    void run_timelines(double dt);
 
     void push_event_frame(Instance& inst, int pc, bool top);
     static void store_event_args(Instance& inst, const EventInfo& ev, const Value* args, int nargs);
@@ -175,6 +183,7 @@ private:
     std::vector<Frame>  frames_;
     std::vector<int>    conts_;
     std::vector<Latent> latent_;
+    std::vector<RunningTimeline> timelines_;
     uint64_t            rng_ = 0x9E3779B97F4A7C15ull;
     int64_t             budget_left_ = 0;
 

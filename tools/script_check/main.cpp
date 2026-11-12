@@ -118,7 +118,7 @@ static void write_file(const char* path, const char* text) {
 
 // What the logic-graph event test feeds the engine table.
 static bool g_space_down = false;
-struct FakeEvent { const char* name; float value; };
+struct FakeEvent { const char* name; float value; uint32_t instigator = 0; uint32_t target = 0; };
 static std::vector<FakeEvent> g_events;
 
 int main() {
@@ -477,7 +477,9 @@ int main() {
             if (i < 0 || i >= static_cast<int>(g_events.size())) return false;
             std::snprintf(name, static_cast<size_t>(name_size), "%s", g_events[static_cast<size_t>(i)].name);
             if (param_size > 0) param[0] = 0;
-            *inst = 0; *tgt = 0; *value = g_events[static_cast<size_t>(i)].value;
+            *inst = g_events[static_cast<size_t>(i)].instigator;
+            *tgt = g_events[static_cast<size_t>(i)].target;
+            *value = g_events[static_cast<size_t>(i)].value;
             return true;
         };
         editor::ScriptSystem evs;
@@ -653,7 +655,65 @@ int main() {
             std::remove("script_check_logic_dbg.lgraph");
             debugger_ok = ok;
         }
-        logic_ok = moved_right && status_ok && refused && events_ok && button_door_ok && debugger_ok;
+
+        // Events about the object the script is on: a trigger volume hears the
+        // actor that enters IT, not the one that enters another volume, and a
+        // Timeline it starts moves it over the following frames.
+        bool scoped_ok = false;
+        {
+            Script zs;
+            zs.name = "zone";
+            Graph& zg = zs.add_graph(GraphKind::Event, "EventGraph");
+            zs.add_variable("entered", kInt);
+            zs.add_variable("hurt", kFloat);
+            const int en = zg.add("event.trigger_enter").id, get = zg.add("var.get").id, add1 = zg.add("math.add").id;
+            const int setv = zg.add("var.set").id, tl = zg.add("flow.timeline").id;
+            const int mk = zg.add("vec3.make").id, setp = zg.add("entity.set_position").id, self = zg.add("self").id;
+            const int mul = zg.add("math.mul").id;
+            zg.find(get)->name = "entered"; zg.find(setv)->name = "entered";
+            zg.find(add1)->targ = kInt; zg.find(add1)->set_default("B", Value::integer(1));
+            zg.find(tl)->set_default("Duration", Value::number(0.4));
+            zg.find(mul)->targ = kFloat; zg.find(mul)->set_default("B", Value::number(8.0));
+            zg.link(en, "Then", setv, "In"); zg.link(get, "Value", add1, "A"); zg.link(add1, "Result", setv, "Value");
+            zg.link(setv, "Then", tl, "Play from Start");
+            zg.link(tl, "Update", setp, "In"); zg.link(tl, "Alpha", mul, "A"); zg.link(mul, "Result", mk, "Y");
+            zg.link(self, "Self", setp, "Entity"); zg.link(mk, "Result", setp, "Position");
+            const int ab = zg.add("event.about_me").id, seth = zg.add("var.set").id;
+            zg.find(ab)->name = "damage.dealt"; zg.find(seth)->name = "hurt";
+            zg.link(ab, "Then", seth, "In"); zg.link(ab, "Value", seth, "Value");
+            write_file("script_check_logic_zone.lgraph", to_text(zs).c_str());
+            auto zone = scn->CreateEntity("LogicZone");
+            zone->AddComponent<scene::ScriptComponent>(std::string("script_check_logic_zone.lgraph"));
+            const uint32_t zid = zone->GetId();
+            editor::ScriptSystem zss;
+            zss.register_host(".lgraph", editor::make_logic_host());
+            editor::LogicDebugger* zd = editor::logic_debugger();
+            double script_time = 100.0;
+            auto step = [&](float dt) {
+                script_time += dt;
+                api.time = script_time;   // the host advances waits and timelines once per new time
+                zss.update(scn, true, dt, api);
+            };
+            step(0.1f);
+            g_events = {{"trigger.enter", 0.0f, 77u, zid + 1000u},   // someone else's volume
+                        {"trigger.enter", 0.0f, 77u, zid},           // this one
+                        {"damage.dealt", 3.0f, 5u, 6u},              // not about it
+                        {"damage.dealt", 7.0f, 5u, zid}};            // about it
+            step(0.1f);
+            g_events.clear();
+            std::string entered, hurt;
+            if (zd) { zd->variable_text(zid, "entered", entered); zd->variable_text(zid, "hurt", hurt); }
+            step(0.1f); step(0.1f);
+            const float y_mid = zone->GetTransform()->GetWorldPosition().y;
+            step(0.1f); step(0.1f); step(0.1f);
+            const float y_end = zone->GetTransform()->GetWorldPosition().y;
+            zss.update(scn, false, 0.1f, api);
+            scoped_ok = entered == "1" && hurt == "7.0" && y_mid > 2.0f && y_mid < 6.5f && std::fabs(y_end - 8.0f) < 1e-3f;
+            std::printf("  logic scoped events: entered '%s' (expected 1), hurt '%s' (expected 7.0), timeline y %.2f then %.2f "
+                        "(expected 8.00) -> %s\n", entered.c_str(), hurt.c_str(), y_mid, y_end, scoped_ok ? "OK" : "FAIL");
+            std::remove("script_check_logic_zone.lgraph");
+        }
+        logic_ok = moved_right && status_ok && refused && events_ok && button_door_ok && debugger_ok && scoped_ok;
         std::printf("  logic graph: x=%.2f (expected 7.00), status '%s', bad graph '%.50s' -> %s\n",
                     lp.x, lsc->GetStatus().c_str(), bsc->GetStatus().c_str(), logic_ok ? "OK" : "FAIL");
         std::remove("script_check_logic.lgraph");

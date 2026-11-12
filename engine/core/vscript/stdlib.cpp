@@ -92,6 +92,18 @@ void flow(Registry& r) {
         r.add(std::move(d)).in("In", kExec).in("Duration", kFloat, Value::number(0.2)).out("Completed", kExec)
             .tip("Continues after Duration seconds. Running it again starts the wait over.");
     }
+    {
+        NodeDef d = builtin("flow.timeline", C, "Timeline", Builtin::Timeline);
+        d.latent = true;
+        r.add(std::move(d))
+            .in("Play", kExec).in("Play from Start", kExec).in("Stop", kExec).in("Reverse", kExec).in("Reverse from End", kExec)
+            .in("Duration", kFloat, Value::number(1.0)).in("Loop", kBool)
+            .out("Update", kExec).out("Finished", kExec).out("Alpha", kFloat).out("Time", kFloat)
+            .tip("Runs a value from 0 to 1 over Duration seconds. Update runs every frame while it moves, with Alpha (0 to 1, "
+                 "shaped by the curve) and Time (seconds); Finished runs when it arrives. Reverse runs it back. Feed Alpha to a "
+                 "Lerp to move, fade or turn something.")
+            .keys("animate tween curve lerp over time");
+    }
     r.add(builtin("flow.reroute", C, "Reroute", Builtin::Reroute, true)).in("In", kAny).out("Out", kAny);
 
     r.add(builtin("var.get", "Variables", "Get", Builtin::VarGet, true));

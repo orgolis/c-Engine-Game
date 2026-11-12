@@ -64,6 +64,7 @@ const OpInfo kOps[OP_COUNT_] = {
     {"EQF", oR, oR, oR},     {"NEF", oR, oR, oR},
     {"NOT", oR, oR, oN},     {"AND", oR, oR, oR},     {"OR", oR, oR, oR},      {"XOR", oR, oR, oR},
     {"SENDE", oK, oR, oR},   {"GETVO", oR, oR, oK},   {"SETVO", oR, oR, oK},
+    {"TIMELINE", oR, oR, oI},
 };
 
 struct Endpoint {
@@ -138,6 +139,7 @@ private:
         FnInfo             info;
         std::vector<Instr> code;
         std::vector<Where> where;
+        std::vector<int>   timelines;         // Program::timelines entries whose labels this unit resolves
         std::vector<Where> stmt;              // parallel to code: see Program::stmt
         Where              pending_stmt{};    // marks the next instruction emitted
         std::vector<int>   label_pc;
@@ -969,6 +971,44 @@ void Compiler::emit_block(const GraphInfo& gi, int node, int pin) {
             go(gi, node, "Completed");
             break;
         }
+        case Builtin::Timeline: {
+            // One table entry per node, shared by its five flow inputs. The
+            // Update and Finished continuations are laid out once, after the
+            // first of them.
+            const std::string k = "timeline:" + nkey(gi.index, node);
+            int               index = 0;
+            const auto        it = u.out_regs.find(k);
+            const bool        first = it == u.out_regs.end();
+            if (first) {
+                TimelineInfo ti;
+                ti.slot = node_state(1);
+                ti.out_base = output_block(gi, node);
+                ti.update_pc = new_label();   // label ids until the unit is laid out
+                ti.finish_pc = new_label();
+                ti.curve = n.name == "ease in" ? 1 : n.name == "ease out" ? 2 : n.name == "ease in out" ? 3 : 0;
+                index = static_cast<int>(prog_.timelines.size());
+                prog_.timelines.push_back(ti);
+                u.timelines.push_back(index);
+                u.out_regs.emplace(k, index);
+            } else {
+                index = it->second;
+            }
+            const int cmd = in_name == "Play" ? kTimelinePlay : in_name == "Play from Start" ? kTimelinePlayFromStart
+                          : in_name == "Stop" ? kTimelineStop : in_name == "Reverse" ? kTimelineReverse : kTimelineReverseFromEnd;
+            const int dur = input_named(gi, node, "Duration");
+            const int loop = input_named(gi, node, "Loop");
+            emit(OP_TIMELINE, dur, loop, index, cmd);
+            emit(OP_END);
+            if (first) {
+                const int l_update = prog_.timelines[static_cast<size_t>(index)].update_pc;
+                const int l_finish = prog_.timelines[static_cast<size_t>(index)].finish_pc;
+                place(l_update);
+                go(gi, node, "Update");
+                place(l_finish);
+                go(gi, node, "Finished");
+            }
+            break;
+        }
         case Builtin::VarSet: {
             const int vi = prog_.find_variable(n.name);
             const int v = input_named(gi, node, "Value");
@@ -1093,6 +1133,11 @@ void Compiler::finalize(Unit& u, int fn_index) {
             if (kind[k] == oR) *f[k] = reg(*f[k]);
             else if (kind[k] == oL) *f[k] = base_pc + u.label_pc[static_cast<size_t>(*f[k])];
         }
+    }
+    for (int ti : u.timelines) {
+        TimelineInfo& t = prog_.timelines[static_cast<size_t>(ti)];
+        t.update_pc = base_pc + u.label_pc[static_cast<size_t>(t.update_pc)];
+        t.finish_pc = base_pc + u.label_pc[static_cast<size_t>(t.finish_pc)];
     }
     u.info.entry += base_pc;
     u.info.proto = u.persistent_init;

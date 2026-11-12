@@ -185,6 +185,61 @@ bool VM::call(Instance& inst, std::string_view function, const Value* args, int 
     return true;
 }
 
+namespace {
+/// The shape of a timeline's 0..1 run.
+double ease(int curve, double t) {
+    t = std::min(std::max(t, 0.0), 1.0);
+    switch (curve) {
+        case 1: return t * t;
+        case 2: return 1.0 - (1.0 - t) * (1.0 - t);
+        case 3: return t * t * (3.0 - 2.0 * t);
+        default: return t;
+    }
+}
+}  // namespace
+
+/// Move every running timeline on by `dt`, running its Update output, and its
+/// Finished output when it arrives.
+void VM::run_timelines(double dt) {
+    // By value: an Update may start or stop timelines, this one included.
+    const std::vector<RunningTimeline> now = timelines_;
+    for (const RunningTimeline& r : now) {
+        if (paused_) return;   // a breakpoint: the rest move on next frame
+        const auto live = std::find_if(timelines_.begin(), timelines_.end(), [&](const RunningTimeline& x) {
+            return x.inst == r.inst && x.index == r.index;
+        });
+        if (live == timelines_.end()) continue;   // stopped by an earlier one's Update
+        Instance&           inst = *r.inst;
+        const TimelineInfo& ti = inst.program->timelines[static_cast<size_t>(r.index)];
+        int64_t&            mode = inst.state[static_cast<size_t>(ti.slot)];
+        Value&              time = inst.frame[static_cast<size_t>(ti.out_base + 1)];
+        const double        dur = live->duration;
+        double              t = time.u.f + (mode == 2 ? -dt : dt);
+        bool                arrived = false;
+        if (mode == 1 && t >= dur) {
+            if (live->loop) t = std::fmod(t, dur);
+            else { t = dur; arrived = true; }
+        } else if (mode == 2 && t <= 0.0) {
+            if (live->loop) t = dur + std::fmod(t, dur);
+            else { t = 0.0; arrived = true; }
+        }
+        time = Value::number(t);
+        inst.frame[static_cast<size_t>(ti.out_base)] = Value::number(ease(ti.curve, t / dur));
+        if (arrived) {
+            mode = 0;
+            timelines_.erase(live);
+        }
+        budget_left_ = instruction_budget;
+        push_event_frame(inst, ti.update_pc, true);
+        run();
+        if (arrived && !paused_) {
+            budget_left_ = instruction_budget;
+            push_event_frame(inst, ti.finish_pc, true);
+            run();
+        }
+    }
+}
+
 void VM::tick(double dt) {
     if (paused_) return;
     std::vector<Latent> due;
@@ -207,6 +262,7 @@ void VM::tick(double dt) {
         push_event_frame(*l.inst, l.pc, true);
         run();
     }
+    if (dt > 0.0) run_timelines(dt);
 }
 
 // (the trace keeps a destroyed instance's entries until it is cleared; they
@@ -214,6 +270,8 @@ void VM::tick(double dt) {
 void VM::forget(const Instance& inst) {
     latent_.erase(std::remove_if(latent_.begin(), latent_.end(), [&](const Latent& l) { return l.inst == &inst; }),
                   latent_.end());
+    timelines_.erase(std::remove_if(timelines_.begin(), timelines_.end(), [&](const RunningTimeline& r) { return r.inst == &inst; }),
+                     timelines_.end());
 }
 
 void VM::resume(Step how) {
@@ -357,6 +415,35 @@ void VM::run() {
                         if (l.inst == f->inst && l.slot == in.c) l.remaining = secs;
                 }
                 end_chain();
+                break;
+            }
+            case OP_TIMELINE: {
+                Instance&           inst = *f->inst;
+                const TimelineInfo& ti = p.timelines[static_cast<size_t>(in.c)];
+                int64_t&            mode = inst.state[static_cast<size_t>(ti.slot)];
+                Value&              alpha = inst.frame[static_cast<size_t>(ti.out_base)];
+                Value&              time = inst.frame[static_cast<size_t>(ti.out_base + 1)];
+                const double        dur = std::max(1e-6, R[in.a].u.f);
+                switch (in.d) {
+                    case kTimelinePlay: mode = 1; break;
+                    case kTimelinePlayFromStart: time = Value::number(0.0); mode = 1; break;
+                    case kTimelineStop: mode = 0; break;
+                    case kTimelineReverse: mode = 2; break;
+                    default: time = Value::number(dur); mode = 2; break;
+                }
+                time = Value::number(std::min(std::max(time.u.f, 0.0), dur));
+                alpha = Value::number(ease(ti.curve, time.u.f / dur));
+                auto running = std::find_if(timelines_.begin(), timelines_.end(), [&](const RunningTimeline& r) {
+                    return r.inst == &inst && r.index == in.c;
+                });
+                if (mode == 0) {
+                    if (running != timelines_.end()) timelines_.erase(running);
+                } else if (running == timelines_.end()) {
+                    timelines_.push_back(RunningTimeline{&inst, in.c, dur, R[in.b].u.i != 0});
+                } else {
+                    running->duration = dur;
+                    running->loop = R[in.b].u.i != 0;
+                }
                 break;
             }
             case OP_ALEN: R[in.a] = Value::integer(static_cast<int64_t>(R[in.b].items().size())); break;

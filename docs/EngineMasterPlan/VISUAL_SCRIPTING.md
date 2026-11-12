@@ -1,12 +1,12 @@
 # Visual scripting: how the Logic Graph core works
 
-**Status (v0.8.20):** milestones A1 (the core), A3 (the editor) and A4 (the
+**Status (v0.8.21):** milestones A1 (the core), A3 (the editor) and A4 (the
 debugger) of [ROAD_TO_TEST_GAME.md](ROAD_TO_TEST_GAME.md) are done; A2 (engine
 binding) is partly done.
 The per-scene Logic Graph panel still runs the old `gameplay_logic.h` runtime
 until the rest of A2 replaces it.
 
-Code: `engine/core/vscript/`. Checks: `tools/vscript_check` (90 checks) for the
+Code: `engine/core/vscript/`. Checks: `tools/vscript_check` (96 checks) for the
 core, `tools/script_check` for graphs running on entities.
 
 ## In the editor today
@@ -71,9 +71,22 @@ a breakpoint. Stopping Play while a script is stopped is safe.
 gameplay, items, weapons, world flags and events, script parameters), so adding
 an engine capability to `ScriptApi` needs one more line there.
 
-**Events the engine raises.** Begin Play, Tick, End Play, Key Pressed and Key
-Released (one node per key), and On Gameplay Event (one node per event name:
-trigger enter and exit, damage, pickups, anything sent with Emit Event).
+**Events the engine raises.**
+
+| Node | Runs when |
+|------|-----------|
+| Begin Play, Tick, End Play | The object's life in Play mode |
+| Key Pressed, Key Released | That key goes down or up (one node per key) |
+| On Gameplay Event | An event with that name is published by anyone: damage, pickups, quests, anything sent with Emit Event |
+| On Event About Me | The same, but only when this object is the event's target or instigator |
+| On Trigger Enter, On Trigger Exit | For a script on a trigger volume: an actor enters or leaves it |
+
+**Timeline.** Runs a value from 0 to 1 over a duration: the way to open a door,
+move a platform or fade a light. Flow inputs Play, Play from Start, Stop,
+Reverse, Reverse from End; Update runs every frame while it moves, with Alpha
+(0 to 1, shaped by the node's curve: linear, ease in, ease out, ease in out)
+and Time; Finished runs when it arrives. Feed Alpha to a Lerp. Like Delay, it
+cannot be used in a function.
 
 **Variables in the Inspector.** A variable with "show in Inspector" ticked is a
 field of the Script component, so two objects with the same script can differ.
@@ -125,6 +138,9 @@ transfers.
   returns).
 - **Delay** ignores being run again while it waits. Retriggerable Delay starts
   over. A Sequence does not wait for a Delay inside one of its chains.
+- **Timeline** keeps its position when stopped: Play and Reverse go on from
+  where it is. Its Duration and Loop pins are read when a flow input runs, not
+  every frame.
 - **Arrays** are shared when read and copied when written: `Get list` then
   `Add` changes the variable; `Set other = list` makes an independent copy.
 - **Conversions on a wire:** Int to Float, Bool to Int or Float, anything to

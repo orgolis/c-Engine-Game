@@ -68,6 +68,7 @@ enum Op : uint16_t {
     OP_SENDE,    // run event K[a] on the script of entity R[c], arguments R[b .. b+d)
     OP_GETVO,    // R[a] = variable K[c] of entity R[b]'s script, as type T[d]
     OP_SETVO,    // variable K[c] of entity R[a]'s script = R[b]
+    OP_TIMELINE, // command d on timeline c (Program::timelines): duration R[a], loop R[b]
     OP_COUNT_,
 };
 
@@ -112,6 +113,17 @@ struct Where {
     int32_t node = 0;
 };
 
+/// A Timeline node: a value that runs from 0 to 1 over a duration, with a flow
+/// output every frame while it runs and one when it arrives.
+struct TimelineInfo {
+    int32_t slot = 0;        // state: 0 stopped, 1 running forward, 2 running backward
+    int32_t out_base = 0;    // event unit registers: Alpha, then Time
+    int32_t update_pc = 0;   // where the Update output continues
+    int32_t finish_pc = 0;   // where the Finished output continues
+    int32_t curve = 0;       // 0 linear, 1 ease in, 2 ease out, 3 ease in and out
+};
+enum : uint16_t { kTimelinePlay = 0, kTimelinePlayFromStart, kTimelineStop, kTimelineReverse, kTimelineReverseFromEnd };
+
 /// Debug information: where a node keeps its data outputs. `base` is the
 /// register of its first data output, in function `fn` (0 = the event unit,
 /// whose registers live as long as the instance). Pure nodes have none: they
@@ -140,6 +152,7 @@ struct Program {
     std::vector<std::string> graph_names;
     int                    nstate = 0; // per-instance node state slots
     std::vector<NodeOutputs> outputs;  // debug information, one entry per node that keeps outputs
+    std::vector<TimelineInfo> timelines;
 
     const NodeOutputs* find_outputs(int graph, int node) const {
         for (const NodeOutputs& o : outputs)

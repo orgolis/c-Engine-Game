@@ -587,6 +587,65 @@ void test_waits() {
     }
 }
 
+void test_timeline() {
+    std::printf("-- timeline\n");
+    auto build = [](Rig& r, const char* curve, bool loop) {
+        Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), tl = node(g, "flow.timeline", curve);
+        const int up = print_node(g), fin = print_node(g, "done");
+        lit(g, tl, "Duration", Value::number(2.0));
+        lit(g, tl, "Loop", Value::boolean(loop));
+        g.link(ev, "Then", tl, "Play from Start");
+        g.link(tl, "Update", up, "In"); g.link(tl, "Alpha", up, "Text"); g.link(tl, "Finished", fin, "In");
+        const int rev = node(g, "event.custom", "back"), stop = node(g, "event.custom", "halt"), go = node(g, "event.custom", "go");
+        g.link(rev, "Then", tl, "Reverse"); g.link(stop, "Then", tl, "Stop"); g.link(go, "Then", tl, "Play");
+        return tl;
+    };
+    {
+        Rig r;
+        build(r, "", false);
+        const bool ok = r.build();
+        r.run();
+        const bool quiet = r.host.out.empty() && r.vm.running_timelines() == 1;
+        for (int i = 0; i < 5; ++i) r.vm.tick(0.5);
+        check(ok && quiet && r.host.joined() == "0.25,0.5,0.75,1.0,done" && r.vm.running_timelines() == 0,
+              "a Timeline runs Update every frame with Alpha going 0 to 1, then Finished once, and stops");
+        r.host.out.clear();
+        r.vm.fire(*r.inst, "back");
+        r.vm.tick(0.5); r.vm.tick(0.5);
+        r.vm.fire(*r.inst, "halt");
+        r.vm.tick(0.5);
+        const bool held = r.host.joined() == "0.75,0.5";
+        r.vm.fire(*r.inst, "go");
+        r.vm.tick(0.5); r.vm.tick(0.5); r.vm.tick(0.5);
+        check(held && r.host.joined() == "0.75,0.5,0.75,1.0,done", "Reverse runs it back from where it is, Stop holds it, Play goes on from there");
+    }
+    {
+        Rig r;
+        build(r, "ease in", false);
+        r.build(); r.run();
+        r.vm.tick(1.0);
+        check(r.host.joined() == "0.25", "the curve shapes Alpha: ease in is at a quarter when half the time has passed");
+    }
+    {
+        Rig r;
+        build(r, "", true);
+        r.build(); r.run();
+        for (int i = 0; i < 6; ++i) r.vm.tick(0.5);
+        check(r.host.joined() == "0.25,0.5,0.75,0.0,0.25,0.5" && r.vm.running_timelines() == 1,
+              "a looping Timeline wraps round and never finishes");
+        r.vm.forget(*r.inst);
+        check(r.vm.running_timelines() == 0, "forgetting an instance stops its timelines");
+    }
+    {
+        Rig r;
+        Graph& f = r.script.add_graph(GraphKind::Function, "f");
+        const int en = node(f, "fn.entry"), tl = node(f, "flow.timeline");
+        f.link(en, "Then", tl, "Play");
+        check(!r.build() && r.has_error("cannot wait"), "a Timeline in a function is a compile error, like a Delay");
+    }
+}
+
 void test_errors() {
     std::printf("-- broken graphs\n");
     {
@@ -886,6 +945,7 @@ int main() {
     test_functions_and_events();
     test_between_scripts();
     test_waits();
+    test_timeline();
     test_errors();
     test_text();
     test_editing();

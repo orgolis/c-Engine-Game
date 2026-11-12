@@ -51,6 +51,7 @@ enum class Builtin : uint16_t {
     FnEntry, FnReturn, FnCall, Event, CustomEvent, CallEvent,
     // other entities' scripts
     SendEvent, RemoteGet, RemoteSet,
+    Timeline,
 };
 
 struct PinDef {

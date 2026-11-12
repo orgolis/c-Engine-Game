@@ -357,6 +357,7 @@ std::string node_title(const NodeDef& d, const Node& n) {
         case Builtin::FnCall: return n.name;
         case Builtin::CustomEvent: return "Event " + n.name;
         case Builtin::CallEvent: return "Call " + n.name;
+        case Builtin::Timeline: return n.name.empty() ? d.title : d.title + " (" + n.name + ")";
         case Builtin::SendEvent: return n.name.empty() ? d.title : "Send " + n.name;
         case Builtin::RemoteGet: return n.name.empty() ? d.title : "Get " + n.name + " of";
         case Builtin::RemoteSet: return n.name.empty() ? d.title : "Set " + n.name + " of";
@@ -723,6 +724,17 @@ void draw_side_panel(PanelState& st) {
                         sel->params = n.params;
                         st.changed();
                     }
+        }
+        if (d && d->builtin == Builtin::Timeline) {
+            static const char* const kCurves[] = {"linear", "ease in", "ease out", "ease in out"};
+            int cur = 0;
+            for (int i = 0; i < IM_ARRAYSIZE(kCurves); ++i)
+                if (sel->name == kCurves[i]) cur = i;
+            ImGui::SetNextItemWidth(140.0f);
+            if (ImGui::Combo("curve", &cur, kCurves, IM_ARRAYSIZE(kCurves))) {
+                sel->name = cur == 0 ? "" : kCurves[cur];
+                st.changed();
+            }
         }
         if (d && (d->builtin == Builtin::RemoteGet || d->builtin == Builtin::RemoteSet)) {
             char eb[64];

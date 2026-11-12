@@ -29,6 +29,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -246,6 +247,31 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
         d.builtin = Builtin::Event; d.named = true; d.name_label = "Event";
         d.tooltip = "Runs when an event with this name is published on the gameplay bus: a trigger volume's enter or exit event, damage, a pickup, or one sent with Emit Event. It arrives the frame after it happened.";
         d.out("Then", kExec).out("Instigator", kEntity).out("Target", kEntity).out("Value", kFloat).out("Param", kString);
+        r.add(std::move(d));
+    }
+
+    {
+        NodeDef d;
+        d.id = "event.about_me"; d.category = "Events"; d.title = "On Event About Me";
+        d.builtin = Builtin::Event; d.named = true; d.name_label = "Event";
+        d.tooltip = "Like On Gameplay Event, but only when this object is the event's target or its instigator: damage dealt to it, an item it picked up, an actor entering it when it is a trigger volume.";
+        d.out("Then", kExec).out("Instigator", kEntity).out("Target", kEntity).out("Value", kFloat).out("Param", kString);
+        r.add(std::move(d));
+    }
+    {
+        NodeDef d;
+        d.id = "event.trigger_enter"; d.category = "Events"; d.title = "On Trigger Enter";
+        d.builtin = Builtin::Event;
+        d.tooltip = "For a script on a trigger volume: runs when an actor enters it. (Listens for the volume's default event, trigger.enter; a volume with its own event names needs On Event About Me.)";
+        d.out("Then", kExec).out("Actor", kEntity);
+        r.add(std::move(d));
+    }
+    {
+        NodeDef d;
+        d.id = "event.trigger_exit"; d.category = "Events"; d.title = "On Trigger Exit";
+        d.builtin = Builtin::Event;
+        d.tooltip = "For a script on a trigger volume: runs when an actor leaves it.";
+        d.out("Then", kExec).out("Actor", kEntity);
         r.add(std::move(d));
     }
 
@@ -534,7 +560,9 @@ public:
                 if (!k) { keys_.push_back(Key{}); k = &keys_.back(); k->code = code; }
                 (pressed ? k->on_press : k->on_release) = e.name;
             }
-            if (e.name.rfind("event.gameplay:", 0) == 0) wants_bus_ = true;
+            if (e.name.rfind("event.gameplay:", 0) == 0 || e.name.rfind("event.about_me:", 0) == 0 ||
+                e.name == "event.trigger_enter" || e.name == "event.trigger_exit")
+                wants_bus_ = true;
         }
         return true;
     }
@@ -568,6 +596,7 @@ public:
         key_i_ = 0;
         bus_i_ = 0;
         bus_n_ = -1;
+        bus_step_ = 0;
         dt_ = dt;
     }
     /// Begin Play (first frame), key events, gameplay events, Tick: one event
@@ -611,13 +640,37 @@ public:
                         phase_ = Phase::Tick;
                         break;
                     }
+                    // One bus event can run up to three of this script's events
+                    // (anyone's, about me, trigger): one per pass, so a stop in
+                    // any of them is picked up at the next.
                     char     name[128] = {}, param[256] = {};
                     uint32_t instigator = 0, target = 0;
                     float    value = 0.0f;
-                    if (!api_->event_get(api_->ctx, bus_i_++, name, sizeof name, &instigator, &target, &value, param, sizeof param)) break;
+                    const int step = bus_step_++;
+                    if (step >= 2) {
+                        bus_step_ = 0;
+                        ++bus_i_;
+                    }
+                    const int at = step >= 2 ? bus_i_ - 1 : bus_i_;
+                    if (!api_->event_get(api_->ctx, at, name, sizeof name, &instigator, &target, &value, param, sizeof param)) {
+                        if (step < 2) {
+                            bus_step_ = 0;
+                            ++bus_i_;
+                        }
+                        break;
+                    }
                     const Value args[4] = {Value::entity(instigator), Value::entity(target),
                                            Value::number(static_cast<double>(value)), Value::string(param)};
-                    vm.fire(*inst_, std::string("event.gameplay:") + name, args, 4);
+                    const uint32_t self = inst_->self;
+                    if (step == 0) {
+                        vm.fire(*inst_, std::string("event.gameplay:") + name, args, 4);
+                    } else if (step == 1) {
+                        if (self != 0 && (instigator == self || target == self)) vm.fire(*inst_, std::string("event.about_me:") + name, args, 4);
+                    } else if (self != 0 && target == self) {
+                        const std::string_view n(name);
+                        if (n == "trigger.enter") vm.fire(*inst_, "event.trigger_enter", &args[0], 1);
+                        else if (n == "trigger.exit") vm.fire(*inst_, "event.trigger_exit", &args[0], 1);
+                    }
                     break;
                 }
                 case Phase::Tick: {
@@ -677,7 +730,7 @@ private:
     enum class Phase : uint8_t { BeginPlay, Keys, Bus, Tick, Done };
     Phase  phase_ = Phase::Done;
     size_t key_i_ = 0;
-    int    bus_i_ = 0, bus_n_ = -1;
+    int    bus_i_ = 0, bus_n_ = -1, bus_step_ = 0;
     float  dt_ = 0.0f;
 };
 
