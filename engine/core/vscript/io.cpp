@@ -52,6 +52,15 @@ std::string to_text(const Script& s) {
     std::string o = "VSCRIPT 2\n";
     line(o, {"name", esc(s.name)});
     if (!s.parent.empty()) line(o, {"parent", esc(s.parent)});
+    // Types first: everything after may be of one of them.
+    for (const EnumDef& e : s.enums) {
+        line(o, {"enum", esc(e.name)});
+        for (const std::string& en : e.entries) line(o, {"entry", esc(en)});
+    }
+    for (const StructDef& sd : s.structs) {
+        line(o, {"struct", esc(sd.name)});
+        for (const Param& p : sd.fields) line(o, {"field", esc(p.name), type_name(p.type), esc(literal_text(p.def))});
+    }
     for (const Variable& v : s.variables)
         line(o, {"var", esc(v.name), type_name(v.type), v.exposed ? "1" : "0", esc(literal_text(v.def)),
                  esc(v.category), esc(v.tooltip)});
@@ -137,6 +146,20 @@ bool from_text(std::string_view text, Script& out, std::string* error) {
             v.category = field(5);
             v.tooltip = field(6);
             out.variables.push_back(std::move(v));
+        } else if (k == "enum") {
+            out.enums.push_back(EnumDef{field(1), {}});
+        } else if (k == "entry") {
+            if (out.enums.empty()) return fail("'entry' before any enum");
+            out.enums.back().entries.push_back(field(1));
+        } else if (k == "struct") {
+            out.structs.push_back(StructDef{field(1), {}});
+        } else if (k == "field") {
+            if (out.structs.empty()) return fail("'field' before any struct");
+            Param p;
+            p.name = field(1);
+            if (!type_at(2, p.type)) return fail("unknown type '" + field(2) + "'");
+            value_at(3, p.type, p.def);
+            out.structs.back().fields.push_back(std::move(p));
         } else if (k == "dispatcher") {
             out.dispatchers.push_back(Dispatcher{field(1), {}});
         } else if (k == "dparam") {

@@ -313,6 +313,10 @@ std::vector<std::string> find_logic_scripts() {
     return out;
 }
 
+/// The script whose enums and structs the type lists and the literal editors
+/// offer: the one being drawn. Set at the top of each frame's draw.
+const Script* g_types = nullptr;
+
 std::function<std::string(uint32_t)>& entity_namer() {
     static std::function<std::string(uint32_t)> f;
     return f;
@@ -336,6 +340,8 @@ ImU32 type_color(Type t) {
         case Kind::Color: return IM_COL32(250, 140, 60, 255);
         case Kind::Transform: return IM_COL32(240, 130, 50, 255);
         case Kind::Entity: return IM_COL32(60, 150, 250, 255);
+        case Kind::Enum: return IM_COL32(40, 150, 130, 255);
+        case Kind::Struct: return IM_COL32(60, 90, 200, 255);
         default: return IM_COL32(150, 150, 150, 255);
     }
 }
@@ -358,6 +364,19 @@ std::string node_title(const NodeDef& d, const Node& n) {
         case Builtin::CustomEvent: return "Event " + n.name;
         case Builtin::CallEvent: return "Call " + n.name;
         case Builtin::Timeline: return n.name.empty() ? d.title : d.title + " (" + n.name + ")";
+        case Builtin::SwitchEnum: {
+            const EnumDef* e = g_types ? g_types->enum_of(n.targ) : nullptr;
+            return e ? "Switch on " + e->name : d.title;
+        }
+        case Builtin::StructMake:
+        case Builtin::StructBreak:
+        case Builtin::StructSet: {
+            const StructDef* sd = g_types ? g_types->struct_of(n.targ) : nullptr;
+            if (!sd) return d.title;
+            if (d.builtin == Builtin::StructMake) return "Make " + sd->name;
+            if (d.builtin == Builtin::StructBreak) return "Break " + sd->name;
+            return n.name.empty() ? "Set member of " + sd->name : "Set " + n.name + " in " + sd->name;
+        }
         case Builtin::DispatchCall: return "Call " + n.name;
         case Builtin::DispatchBind: return n.name.empty() ? d.title : "Bind to " + n.name;
         case Builtin::DispatchUnbind: return n.name.empty() ? d.title : "Unbind from " + n.name;
@@ -380,16 +399,30 @@ bool contains_ci(const std::string& hay, const char* needle) {
 const char* kTypeNames[] = {"bool", "int", "float", "string", "vec2", "vec3", "vec4", "quat", "color", "transform", "entity"};
 const Type  kTypes[] = {kBool, kInt, kFloat, kString, kVec2, kVec3, kVec4, kQuat, kColor, kTransform, kEntity};
 
-/// A combo to pick a type (scalar or array). Returns true when it changed.
+/// A combo to pick a type (scalar or array): the built-in types, then the
+/// script's own enums and structs. Returns true when it changed.
 bool type_combo(const char* label, Type& t) {
+    std::vector<std::pair<std::string, Type>> all;
+    for (int i = 0; i < IM_ARRAYSIZE(kTypes); ++i) all.emplace_back(kTypeNames[i], kTypes[i]);
+    if (g_types) {
+        for (size_t i = 0; i < g_types->enums.size(); ++i)
+            all.emplace_back("enum " + g_types->enums[i].name, Type(Kind::Enum, false, static_cast<uint16_t>(i + 1)));
+        for (size_t i = 0; i < g_types->structs.size(); ++i)
+            all.emplace_back("struct " + g_types->structs[i].name, Type(Kind::Struct, false, static_cast<uint16_t>(i + 1)));
+    }
     bool changed = false;
     int  cur = 2;
-    for (int i = 0; i < IM_ARRAYSIZE(kTypes); ++i)
-        if (kTypes[i].kind == t.kind) cur = i;
-    ImGui::SetNextItemWidth(90.0f);
-    if (ImGui::Combo(label, &cur, kTypeNames, IM_ARRAYSIZE(kTypeNames))) {
-        t = Type(kTypes[cur].kind, t.array);
-        changed = true;
+    for (int i = 0; i < static_cast<int>(all.size()); ++i)
+        if (all[static_cast<size_t>(i)].second.kind == t.kind && all[static_cast<size_t>(i)].second.sub == t.sub) cur = i;
+    ImGui::SetNextItemWidth(110.0f);
+    if (ImGui::BeginCombo(label, all[static_cast<size_t>(cur)].first.c_str())) {
+        for (int i = 0; i < static_cast<int>(all.size()); ++i)
+            if (ImGui::Selectable(all[static_cast<size_t>(i)].first.c_str(), i == cur)) {
+                const Type pick = all[static_cast<size_t>(i)].second;
+                t = Type(pick.kind, t.array, pick.sub);
+                changed = true;
+            }
+        ImGui::EndCombo();
     }
     ImGui::SameLine();
     bool arr = t.array;
@@ -437,6 +470,24 @@ bool value_editor(const char* id, Type type, Value& v, float width) {
         case Kind::Vec4:
         case Kind::Quat: changed = ImGui::DragFloat4("##v", v.u.v, 0.01f); break;
         case Kind::Color: changed = ImGui::ColorEdit4("##v", v.u.v, ImGuiColorEditFlags_NoInputs); break;
+        case Kind::Enum: {
+            const EnumDef* e = g_types ? g_types->enum_of(type) : nullptr;
+            if (!e || e->entries.empty()) {
+                ImGui::TextDisabled("-");
+                break;
+            }
+            const int64_t cur = v.as_int();
+            const char*   shown = cur >= 0 && cur < static_cast<int64_t>(e->entries.size()) ? e->entries[static_cast<size_t>(cur)].c_str() : "?";
+            if (ImGui::BeginCombo("##v", shown)) {
+                for (size_t i = 0; i < e->entries.size(); ++i)
+                    if (ImGui::Selectable(e->entries[i].c_str(), static_cast<int64_t>(i) == cur)) {
+                        v = Value::enumeration(type.sub, static_cast<int64_t>(i));
+                        changed = true;
+                    }
+                ImGui::EndCombo();
+            }
+            break;
+        }
         default: ImGui::TextDisabled("-"); break;
     }
     ImGui::PopID();
@@ -483,6 +534,7 @@ void connect(PanelState& st, Graph& g, PinRef a, PinRef b) {
 /// functions and custom events.
 struct PaletteEntry {
     std::string label, category, def, name;
+    Type        targ{};   // the type a new node of this entry starts with
 };
 
 std::vector<PaletteEntry> palette_entries(PanelState& st, const Graph& g) {
@@ -504,11 +556,24 @@ std::vector<PaletteEntry> palette_entries(PanelState& st, const Graph& g) {
                     out.push_back({"Call event " + n.name, "Events", "event.call", n.name});
     for (const Dispatcher& dp : st.script.dispatchers)
         if (!dp.name.empty()) out.push_back({"Call dispatcher " + dp.name, "Events", "dispatch.call", dp.name});
+    for (size_t i = 0; i < st.script.enums.size(); ++i) {
+        const Type et(Kind::Enum, false, static_cast<uint16_t>(i + 1));
+        if (g.kind == GraphKind::Event || true) out.push_back({"Switch on " + st.script.enums[i].name, "Flow", "flow.switch_enum", "", et});
+    }
+    for (size_t i = 0; i < st.script.structs.size(); ++i) {
+        const Type        ty(Kind::Struct, false, static_cast<uint16_t>(i + 1));
+        const std::string& sn = st.script.structs[i].name;
+        out.push_back({"Make " + sn, "Struct", "struct.make", "", ty});
+        out.push_back({"Break " + sn, "Struct", "struct.break", "", ty});
+        const std::string first = st.script.structs[i].fields.empty() ? std::string() : st.script.structs[i].fields[0].name;
+        out.push_back({"Set member of " + sn, "Struct", "struct.set", first, ty});
+    }
     for (const auto& d : st.reg.all()) {
         switch (d->builtin) {
             case Builtin::VarGet: case Builtin::VarSet: case Builtin::LocalGet: case Builtin::LocalSet:
             case Builtin::FnCall: case Builtin::CallEvent: case Builtin::DispatchCall:
-                continue;   // offered per variable / function / dispatcher above
+            case Builtin::SwitchEnum: case Builtin::StructMake: case Builtin::StructBreak: case Builtin::StructSet:
+                continue;   // offered per variable / function / dispatcher / type above
             case Builtin::FnEntry: case Builtin::FnReturn:
                 if (g.kind != GraphKind::Function) continue;
                 break;
@@ -676,6 +741,137 @@ void draw_side_panel(PanelState& st) {
         st.changed();
     }
 
+    ImGui::SeparatorText("Types");
+    {
+        // Enums and structs are told apart by their place in the list, so only
+        // the last one can be removed, and only when nothing is of that type.
+        auto used = [&](Type ty) {
+            auto is = [&](Type x) { return x.kind == ty.kind && x.sub == ty.sub; };
+            for (const Variable& v : st.script.variables) if (is(v.type)) return true;
+            for (const StructDef& sd : st.script.structs) for (const Param& p : sd.fields) if (is(p.type)) return true;
+            for (const Dispatcher& dp : st.script.dispatchers) for (const Param& p : dp.params) if (is(p.type)) return true;
+            for (const Graph& og : st.script.graphs) {
+                for (const Param& p : og.inputs) if (is(p.type)) return true;
+                for (const Param& p : og.outputs) if (is(p.type)) return true;
+                for (const Variable& v : og.locals) if (is(v.type)) return true;
+                for (const Node& n : og.nodes) {
+                    if (is(n.targ)) return true;
+                    for (const Param& p : n.params) if (is(p.type)) return true;
+                    for (const Param& p : n.results) if (is(p.type)) return true;
+                }
+            }
+            return false;
+        };
+        for (int i = 0; i < static_cast<int>(st.script.enums.size()); ++i) {
+            EnumDef& e = st.script.enums[static_cast<size_t>(i)];
+            ImGui::PushID(6000 + i);
+            ImGui::TextDisabled("enum");
+            ImGui::SameLine();
+            char nb[64];
+            std::snprintf(nb, sizeof nb, "%s", e.name.c_str());
+            ImGui::SetNextItemWidth(120.0f);
+            if (ImGui::InputText("##n", nb, sizeof nb) && nb[0]) e.name = nb;
+            if (ImGui::IsItemDeactivatedAfterEdit()) st.changed();
+            const bool last = i + 1 == static_cast<int>(st.script.enums.size());
+            if (last) {
+                ImGui::SameLine();
+                const bool in_use = used(Type(Kind::Enum, false, static_cast<uint16_t>(i + 1)));
+                ImGui::BeginDisabled(in_use);
+                if (ImGui::SmallButton("x")) {
+                    st.script.enums.pop_back();
+                    st.changed();
+                    ImGui::EndDisabled();
+                    ImGui::PopID();
+                    break;
+                }
+                ImGui::EndDisabled();
+                if (in_use && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("something is still of this type");
+            }
+            int rm = -1;
+            for (int k = 0; k < static_cast<int>(e.entries.size()); ++k) {
+                ImGui::PushID(k);
+                char eb[64];
+                std::snprintf(eb, sizeof eb, "%s", e.entries[static_cast<size_t>(k)].c_str());
+                ImGui::SetNextItemWidth(140.0f);
+                // A choice's name is also the name of a Switch output, so it
+                // cannot be empty or repeat another one.
+                if (ImGui::InputText("##e", eb, sizeof eb, ImGuiInputTextFlags_EnterReturnsTrue) && eb[0] &&
+                    std::find(e.entries.begin(), e.entries.end(), std::string(eb)) == e.entries.end()) {
+                    const std::string old = e.entries[static_cast<size_t>(k)];
+                    const Type        et(Kind::Enum, false, static_cast<uint16_t>(i + 1));
+                    for (Graph& og : st.script.graphs) {
+                        std::vector<int> switches;
+                        for (const Node& n : og.nodes)
+                            if (n.def == "flow.switch_enum" && n.targ == et) switches.push_back(n.id);
+                        for (Link& l : og.links)
+                            if (l.from_pin == old && std::find(switches.begin(), switches.end(), l.from) != switches.end()) l.from_pin = eb;
+                    }
+                    e.entries[static_cast<size_t>(k)] = eb;
+                    st.changed();
+                }
+                if (k + 1 == static_cast<int>(e.entries.size())) {   // choices are numbered: only the last can go
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("x")) rm = k;
+                }
+                ImGui::PopID();
+            }
+            if (rm >= 0) { e.entries.erase(e.entries.begin() + rm); st.changed(); }
+            if (ImGui::SmallButton("+ choice")) {
+                int n = static_cast<int>(e.entries.size());
+                std::string name;
+                do name = "Choice" + std::to_string(n++); while (std::find(e.entries.begin(), e.entries.end(), name) != e.entries.end());
+                e.entries.push_back(name);
+                st.changed();
+            }
+            ImGui::Separator();
+            ImGui::PopID();
+        }
+        for (int i = 0; i < static_cast<int>(st.script.structs.size()); ++i) {
+            StructDef& sd = st.script.structs[static_cast<size_t>(i)];
+            ImGui::PushID(7000 + i);
+            ImGui::TextDisabled("struct");
+            ImGui::SameLine();
+            char nb[64];
+            std::snprintf(nb, sizeof nb, "%s", sd.name.c_str());
+            ImGui::SetNextItemWidth(120.0f);
+            if (ImGui::InputText("##n", nb, sizeof nb) && nb[0]) sd.name = nb;
+            if (ImGui::IsItemDeactivatedAfterEdit()) st.changed();
+            const bool last = i + 1 == static_cast<int>(st.script.structs.size());
+            if (last) {
+                ImGui::SameLine();
+                const bool in_use = used(Type(Kind::Struct, false, static_cast<uint16_t>(i + 1)));
+                ImGui::BeginDisabled(in_use);
+                if (ImGui::SmallButton("x")) {
+                    st.script.structs.pop_back();
+                    st.changed();
+                    ImGui::EndDisabled();
+                    ImGui::PopID();
+                    break;
+                }
+                ImGui::EndDisabled();
+                if (in_use && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("something is still of this type");
+            }
+            edit_param_list(st, sd.fields, 7100 + i * 40, "+ member", "member");
+            ImGui::Separator();
+            ImGui::PopID();
+        }
+        if (ImGui::SmallButton("+ Enum")) {
+            EnumDef e;
+            e.name = "Enum" + std::to_string(st.script.enums.size() + 1);
+            e.entries = {"First", "Second"};
+            st.script.enums.push_back(std::move(e));
+            st.changed();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("+ Struct")) {
+            StructDef sd;
+            sd.name = "Struct" + std::to_string(st.script.structs.size() + 1);
+            sd.fields = {Param{"member0", kFloat, Value::number(0.0)}};
+            st.script.structs.push_back(std::move(sd));
+            st.changed();
+        }
+    }
+
     ImGui::SeparatorText("Dispatchers");
     {
         int rm = -1;
@@ -773,6 +969,20 @@ void draw_side_panel(PanelState& st) {
                         sel->params = n.params;
                         st.changed();
                     }
+        }
+        if (d && d->builtin == Builtin::StructSet) {
+            if (const StructDef* sd = st.script.struct_of(sel->targ)) {
+                ImGui::SetNextItemWidth(140.0f);
+                if (ImGui::BeginCombo("member", sel->name.c_str())) {
+                    for (const Param& f : sd->fields)
+                        if (ImGui::Selectable(f.name.c_str(), f.name == sel->name) && f.name != sel->name) {
+                            g->unlink_input(sel->id, sel->name);   // the old member's wire has nowhere to go
+                            sel->name = f.name;
+                            st.changed();
+                        }
+                    ImGui::EndCombo();
+                }
+            }
         }
         if (d && d->builtin == Builtin::RemoteCall) {
             char eb[64];
@@ -928,7 +1138,7 @@ void draw_canvas(PanelState& st) {
         auto has_editor = [&](const Pin& p) {
             const bool linked = std::any_of(g.links.begin(), g.links.end(), [&](const Link& l) { return l.to == n.id && l.to_pin == p.name; });
             return !knot && !linked && !p.type.is_exec() && !p.type.is_any() && !p.type.array && p.type.kind != Kind::Entity &&
-                   p.type.kind != Kind::Transform;
+                   p.type.kind != Kind::Transform && p.type.kind != Kind::Struct;
         };
         // Width: title, or the widest input label + widest output label.
         float w = 26.0f * z, h = row;
@@ -938,7 +1148,7 @@ void draw_canvas(PanelState& st) {
                 const Pin& p = sh.pins[static_cast<size_t>(i)];
                 float pw = ImGui::CalcTextSize(p.name.c_str()).x + 22.0f * z;
                 if (has_editor(p))
-                    pw += (p.type.kind == Kind::Bool ? 26.0f : p.type.kind == Kind::Vec3 ? 150.0f : p.type.kind == Kind::String ? 100.0f : 64.0f) * z;
+                    pw += (p.type.kind == Kind::Bool ? 26.0f : p.type.kind == Kind::Vec3 ? 150.0f : p.type.kind == Kind::String || p.type.kind == Kind::Enum ? 100.0f : 64.0f) * z;
                 w_in = std::max(w_in, pw);
             }
             for (int i : outs) w_out = std::max(w_out, ImGui::CalcTextSize(sh.pins[static_cast<size_t>(i)].name.c_str()).x + 22.0f * z);
@@ -1018,7 +1228,7 @@ void draw_canvas(PanelState& st) {
                     const float pad_y = 2.0f * z;
                     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f * z, pad_y));
                     ImGui::SetCursorScreenPos(ImVec2(c.x + 14.0f * z + ts.x, cy - ImGui::GetTextLineHeight() * 0.5f - pad_y));
-                    const float ww = (p.type.kind == Kind::Vec3 ? 140.0f : p.type.kind == Kind::String ? 92.0f : 56.0f) * z;
+                    const float ww = (p.type.kind == Kind::Vec3 ? 140.0f : p.type.kind == Kind::String || p.type.kind == Kind::Enum ? 92.0f : 56.0f) * z;
                     const std::string wid = std::to_string(n.id) + ":" + p.name;
                     if (value_editor(wid.c_str(), p.type, v, ww)) n.set_default(p.name, v);
                     if (ImGui::IsItemActive()) widget_active = true;
@@ -1436,6 +1646,7 @@ void draw_canvas(PanelState& st) {
             Node probe;
             probe.def = e.def;
             probe.name = e.name;
+            probe.targ = e.targ;
             Shape ps;
             int   match = -1;
             if (filter_pin) {
@@ -1455,6 +1666,7 @@ void draw_canvas(PanelState& st) {
             if (ImGui::Selectable(("  " + e.label).c_str())) {
                 Node& nn = g.add(e.def, st.palette_x, st.palette_y);
                 nn.name = e.name;
+                nn.targ = e.targ;
                 if (e.def == "event.custom") nn.name = "MyEvent" + std::to_string(nn.id);
                 if (e.def == "flow.switch_int") nn.cases = {"0", "1"};
                 if (e.def == "flow.switch_string") nn.cases = {"a", "b"};
@@ -1591,6 +1803,7 @@ void draw_logic_script_panel(bool* open) {
 
     d.active = std::clamp(d.active, 0, static_cast<int>(d.list.size()) - 1);
     PanelState& st = *d.list[static_cast<size_t>(d.active)];
+    g_types = &st.script;
     ImGui::PushID(st.uid);
     if (ImGui::Button("Open...")) {
         d.found = find_logic_scripts();
@@ -1725,6 +1938,7 @@ void draw_logic_script_panel(bool* open) {
     }
     ImGui::EndGroup();
     ImGui::PopID();
+    g_types = nullptr;
     ImGui::End();
 }
 

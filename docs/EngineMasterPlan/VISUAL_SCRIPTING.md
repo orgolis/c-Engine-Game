@@ -1,12 +1,12 @@
 # Visual scripting: how the Logic Graph core works
 
-**Status (v0.8.22):** milestones A1 (the core), A3 (the editor) and A4 (the
+**Status (v0.8.23):** milestones A1 (the core), A3 (the editor) and A4 (the
 debugger) of [ROAD_TO_TEST_GAME.md](ROAD_TO_TEST_GAME.md) are done; A2 (engine
 binding) is partly done.
 The per-scene Logic Graph panel still runs the old `gameplay_logic.h` runtime
 until the rest of A2 replaces it.
 
-Code: `engine/core/vscript/`. Checks: `tools/vscript_check` (104 checks) for the
+Code: `engine/core/vscript/`. Checks: `tools/vscript_check` (115 checks) for the
 core, `tools/script_check` for graphs running on entities.
 
 ## In the editor today
@@ -103,6 +103,25 @@ starts.
 | Call Function of Entity | Calls a function of the target's script and waits for it. The node lists what it hands over and what it expects back; both are converted. Results the function gives beyond what the node lists are dropped |
 | Get Variable of Entity | Reads a variable of the target's script, as the type picked on the node |
 | Set Variable of Entity | Writes one, converted to the variable's own type |
+
+**Your own types** (side panel, "Types").
+
+- An **enum** is a list of named choices: `State` = Idle, Chase, Attack. A
+  variable or pin of it shows the choices as a list, it prints as the choice's
+  name, **Switch on State** has one flow output per choice, and an exposed enum
+  variable is a choice list in the Inspector. A number wired into an enum pin
+  becomes that choice.
+- A **struct** keeps named members together: `Stats` = hp, name. **Make
+  Stats** builds one, **Break Stats** takes it apart, **Set Member** changes
+  one member. A struct nobody filled in has the defaults its definition gives
+  the members. Like an array, a struct read from a variable *is* the variable's
+  struct (Set Member changes the variable) and storing it in a variable copies
+  it.
+
+Types belong to the script that declares them. Sent to another script (an
+event argument, a function call) an enum goes by its number and a struct by
+the order of its members. Only the last type in the list can be removed, and
+only when nothing is of that type, because types are told apart by position.
 
 **Dispatchers** turn that round: a script announces something without knowing
 who cares. The door's script declares a dispatcher `opened` (side panel,
@@ -221,8 +240,8 @@ A leading `Context&` parameter is not a pin. Several outputs are a
 
 ## Not built yet
 
-Macros, interfaces, parent scripts, user enums and structs, maps and sets,
-collision events, nodes for component properties, watch expressions
+Macros, interfaces, parent scripts, function libraries, maps and sets,
+editing a struct variable's default member by member, collision events, nodes for component properties, watch expressions
 and a call stack view in the debugger, collapsing nodes to a function, find in
 graph. `Type::sub` and `Kind::Enum` / `Kind::Struct` are
 reserved for the first group.

@@ -167,6 +167,35 @@ bool shape_of(const Registry& reg, const Script& script, const Graph& graph, con
             out.pins.insert(out.pins.begin() + 2, params.begin(), params.end());
             break;
         }
+        case Builtin::SwitchEnum: {
+            // One flow output per choice of the enum the node was given.
+            if (const EnumDef* e = script.enum_of(node.targ))
+                for (const std::string& en : e->entries) out.pins.push_back(make_pin(en, kExec, false));
+            break;
+        }
+        case Builtin::StructMake:
+        case Builtin::StructBreak:
+        case Builtin::StructSet: {
+            const StructDef* sd = script.struct_of(node.targ);
+            if (!sd) return fail(error, "pick the struct this node works on");
+            if (def->builtin == Builtin::StructMake) {
+                add_params(out, sd->fields, true);
+                out.pins.push_back(make_pin("Struct", node.targ, false));
+            } else if (def->builtin == Builtin::StructBreak) {
+                out.pins.push_back(make_pin("Struct", node.targ, true));
+                add_params(out, sd->fields, false);
+            } else {
+                // In, Struct, the one member being set, Then, the struct again.
+                out.pins.insert(out.pins.begin() + 1, make_pin("Struct", node.targ, true));
+                const Param* member = nullptr;
+                for (const Param& p : sd->fields)
+                    if (p.name == node.name) member = &p;
+                if (!member) return fail(error, node.name.empty() ? "pick the member to set" : "the struct has no member '" + node.name + "'");
+                out.pins.insert(out.pins.begin() + 2, make_pin(member->name, member->type, true, member->def));
+                out.pins.push_back(make_pin("Struct", node.targ, false));
+            }
+            break;
+        }
         case Builtin::DispatchCall: {
             const Dispatcher* d = script.find_dispatcher(node.name);
             if (!d) return fail(error, "no dispatcher named '" + node.name + "'");

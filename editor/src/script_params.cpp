@@ -121,12 +121,14 @@ std::vector<ScriptParam> scan_logic_graph(const std::string& path) {
                 case schizo::vs::Kind::Vec4: type = "vec4"; break;
                 case schizo::vs::Kind::Color: type = "color"; break;
                 case schizo::vs::Kind::Entity: type = "entity"; break;   // kept by name
+                case schizo::vs::Kind::Enum: type = script.enum_of(v.type) ? "enum" : nullptr; break;
                 default: break;
             }
             if (!type) continue;
             ScriptParam p;
             p.name = v.name;
             p.type = type;
+            if (const schizo::vs::EnumDef* e = script.enum_of(v.type)) p.options = e->entries;
             if (v.type.kind != schizo::vs::Kind::Entity) p.def = schizo::vs::literal_text(v.def);
             out.push_back(std::move(p));
         }

@@ -35,6 +35,20 @@ struct Param {
     Value       def;
 };
 
+/// A type the script defines: a list of named choices. A value of it is the
+/// index of one. Type::sub of the type is its position in Script::enums + 1.
+struct EnumDef {
+    std::string              name;
+    std::vector<std::string> entries;
+};
+
+/// A type the script defines: named fields kept together. Type::sub is its
+/// position in Script::structs + 1.
+struct StructDef {
+    std::string        name;
+    std::vector<Param> fields;
+};
+
 /// An event a script announces to whoever bound to it: "the door opened".
 /// Other scripts bind one of their custom events to it; Call runs them all.
 struct Dispatcher {
@@ -170,9 +184,18 @@ struct Graph {
 struct Script {
     std::string           name;
     std::string           parent;      // reserved: the script this one extends
+    std::vector<EnumDef>  enums;
+    std::vector<StructDef> structs;
     std::vector<Variable> variables;
     std::vector<Dispatcher> dispatchers;
     std::vector<Graph>    graphs;
+
+    const EnumDef* enum_of(Type t) const {
+        return t.kind == Kind::Enum && t.sub >= 1 && t.sub <= enums.size() ? &enums[t.sub - 1u] : nullptr;
+    }
+    const StructDef* struct_of(Type t) const {
+        return t.kind == Kind::Struct && t.sub >= 1 && t.sub <= structs.size() ? &structs[t.sub - 1u] : nullptr;
+    }
 
     Dispatcher* find_dispatcher(const std::string& n) {
         for (auto& d : dispatchers)

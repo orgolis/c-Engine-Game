@@ -72,6 +72,10 @@ enum Op : uint16_t {
     OP_DISPATCH, // run every listener bound to dispatcher K[a] of this instance, arguments R[b .. b+d)
     OP_BIND,     // d=1 bind / d=0 unbind: dispatcher K[a] of entity R[b] (0 = this one) -> this script's event named R[c]
     OP_CALLFO,   // call function K[a] of entity R[b]: arguments R[b+1 ..], results to R[c ..]; d = nargs | nresults << 8
+    OP_ENUMSTR,  // R[a] = the name of value R[b] in enum c (Program::enums)
+    OP_MKSTRUCT, // R[a] = struct of type T[c] with fields R[b .. b+d)
+    OP_FIELD,    // R[a] = field c of struct R[b]; the default of T[d] when the struct has no such field yet
+    OP_SETFIELD, // field c of struct R[a] = R[b], in place
     OP_COUNT_,
 };
 
@@ -156,6 +160,7 @@ struct Program {
     int                    nstate = 0; // per-instance node state slots
     std::vector<NodeOutputs> outputs;  // debug information, one entry per node that keeps outputs
     std::vector<TimelineInfo> timelines;
+    std::vector<std::vector<std::string>> enums;   // the names of each enum's choices, for showing a value as text
 
     const NodeOutputs* find_outputs(int graph, int node) const {
         for (const NodeOutputs& o : outputs)

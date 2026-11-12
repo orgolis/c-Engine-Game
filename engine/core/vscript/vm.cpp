@@ -428,6 +428,31 @@ void VM::run() {
                 end_chain();
                 break;
             }
+            case OP_ENUMSTR: {
+                const int64_t i = R[in.b].u.i;
+                const auto&   names = p.enums[static_cast<size_t>(in.c)];
+                R[in.a] = Value::string(i >= 0 && i < static_cast<int64_t>(names.size()) ? names[static_cast<size_t>(i)] : std::to_string(i));
+                break;
+            }
+            case OP_MKSTRUCT: {
+                Value s = Value::default_of(p.types[static_cast<size_t>(in.c)]);
+                s.fields().assign(R + in.b, R + in.b + in.d);
+                R[in.a] = std::move(s);
+                break;
+            }
+            case OP_FIELD: {
+                const auto& fields = R[in.b].fields();
+                const bool  have = in.c >= 0 && static_cast<size_t>(in.c) < fields.size() && !fields[static_cast<size_t>(in.c)].type.is_none();
+                R[in.a] = have ? fields[static_cast<size_t>(in.c)] : Value::default_of(p.types[static_cast<size_t>(in.d)]);
+                break;
+            }
+            case OP_SETFIELD: {
+                auto& fields = R[in.a].fields();
+                if (R[in.a].type.kind != Kind::Struct || !R[in.a].box) break;   // nothing to set a member of
+                if (fields.size() <= static_cast<size_t>(in.c)) fields.resize(static_cast<size_t>(in.c) + 1);
+                fields[static_cast<size_t>(in.c)] = clone(R[in.b]);
+                break;
+            }
             case OP_BIND: {
                 const uint32_t target = R[in.b].u.entity;
                 Instance*      owner = target == 0 || target == f->inst->self ? f->inst

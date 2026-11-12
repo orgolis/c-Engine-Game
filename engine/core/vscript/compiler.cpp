@@ -66,6 +66,7 @@ const OpInfo kOps[OP_COUNT_] = {
     {"SENDE", oK, oR, oR},   {"GETVO", oR, oR, oK},   {"SETVO", oR, oR, oK},
     {"TIMELINE", oR, oR, oI},
     {"DISPATCH", oK, oR, oN}, {"BIND", oK, oR, oR},    {"CALLFO", oK, oR, oR},
+    {"ENUMSTR", oR, oR, oI}, {"MKSTRUCT", oR, oR, oT}, {"FIELD", oR, oR, oI},   {"SETFIELD", oR, oR, oI},
 };
 
 struct Endpoint {
@@ -124,6 +125,22 @@ private:
             if (prog_.types[i] == t) return static_cast<int>(i);
         prog_.types.push_back(t);
         return static_cast<int>(prog_.types.size() - 1);
+    }
+    /// The value a pin or variable of this type starts with. A struct starts
+    /// with the defaults its definition gives each member.
+    Value default_value(Type t, int depth = 0) const {
+        Value v = Value::default_of(t);
+        const StructDef* sd = t.array ? nullptr : script_.struct_of(t);
+        if (!sd || depth > 8) return v;   // (a struct that contains itself stops somewhere)
+        for (const Param& f : sd->fields)
+            v.fields().push_back(f.def.type == f.type && !script_.struct_of(f.type) ? f.def : default_value(f.type, depth + 1));
+        return v;
+    }
+    /// The declared default, unless it is a struct nobody filled in.
+    Value default_or(const Value& def, Type t) const {
+        if (def.type != t) return default_value(t);
+        if (!t.array && t.kind == Kind::Struct && def.fields().empty()) return default_value(t);
+        return def;
     }
     int native_index(const NodeDef* d) {
         for (size_t i = 0; i < prog_.natives.size(); ++i)
@@ -443,7 +460,7 @@ int Compiler::input_reg(const GraphInfo& gi, int node, int pin, int into) {
     const auto it = gi.data_in.find(pin_key(node, pin));
     if (it == gi.data_in.end()) {
         const int r = into >= 0 ? into : new_temp();
-        emit(OP_LOADK, r, const_index(p.def.type == p.type ? p.def : Value::default_of(p.type)));
+        emit(OP_LOADK, r, const_index(default_or(p.def, p.type)));
         return r;
     }
     const Endpoint src = it->second;
@@ -458,7 +475,9 @@ int Compiler::input_reg(const GraphInfo& gi, int node, int pin, int into) {
     }
     if (sp.type != p.type) {
         const int t = into >= 0 ? into : new_temp();
-        emit(OP_CONV, t, r, type_index(p.type));
+        // An enum shown as text is its choice's name, which only the script knows.
+        if (p.type == kString && script_.enum_of(sp.type)) emit(OP_ENUMSTR, t, r, sp.type.sub - 1);
+        else emit(OP_CONV, t, r, type_index(p.type));
         return t;
     }
     if (into >= 0 && into != r) {
@@ -519,6 +538,23 @@ int Compiler::eval_pure(const GraphInfo& gi, int node) {
             if (t.is_any()) error(gi.index, node, "pick the type of the variable to read");
             base = new_temp();
             emit(OP_GETVO, base, target, const_index(Value::string(n->name)), type_index(t));
+            break;
+        }
+        case Builtin::StructMake: {
+            const StructDef* sd = script_.struct_of(n->targ);
+            const int count = sd ? static_cast<int>(sd->fields.size()) : 0;
+            const int items = new_temps(std::max(1, count));
+            for (int i = 0; i < count; ++i) input_named(gi, node, sd->fields[static_cast<size_t>(i)].name.c_str(), items + i);
+            base = new_temp();
+            emit(OP_MKSTRUCT, base, items, type_index(n->targ), count);
+            break;
+        }
+        case Builtin::StructBreak: {
+            const StructDef* sd = script_.struct_of(n->targ);
+            const int count = sd ? static_cast<int>(sd->fields.size()) : 0;
+            const int src = input_named(gi, node, "Struct");
+            base = new_temps(std::max(1, count));
+            for (int i = 0; i < count; ++i) emit(OP_FIELD, base + i, src, i, type_index(sd->fields[static_cast<size_t>(i)].type));
             break;
         }
         case Builtin::MakeArray: {
@@ -593,6 +629,7 @@ void Compiler::emit_native(const GraphInfo& gi, const Node& n, const Shape& s, i
                 t = p.type.array ? p.type.element() : p.type;
                 break;
             }
+        if (t.kind == Kind::Enum) t = kInt;   // compared and counted as the numbers they are
         const Overload* ov = def->find_overload(t);
         if (!ov && !def->overloads.empty()) {
             error(gi.index, n.id, "'" + def->title + "' does not work on " + type_name(t));
@@ -1068,6 +1105,46 @@ void Compiler::emit_block(const GraphInfo& gi, int node, int pin) {
             go(gi, node, "Then");
             break;
         }
+        case Builtin::SwitchEnum: {
+            const EnumDef* e = script_.enum_of(n.targ);
+            if (!e) {
+                error(gi.index, node, "pick the enum this switch is on");
+                emit(OP_END);
+                break;
+            }
+            const int        sel = input_named(gi, node, "Selection");
+            std::vector<int> labels;
+            for (size_t i = 0; i < e->entries.size(); ++i) {
+                const int kr = load_const(Value::integer(static_cast<int64_t>(i)));
+                const int t = new_temp(), l = new_label();
+                emit(OP_EQI, t, sel, kr);
+                emit(OP_JMPT, t, l);
+                labels.push_back(l);
+            }
+            emit(OP_END);   // a value outside the list (a number turned into the enum) runs nothing
+            for (size_t i = 0; i < e->entries.size(); ++i) {
+                place(labels[i]);
+                go(gi, node, e->entries[i]);
+            }
+            break;
+        }
+        case Builtin::StructSet: {
+            const StructDef* sd = script_.struct_of(n.targ);
+            int              index = -1;
+            for (size_t i = 0; sd && i < sd->fields.size(); ++i)
+                if (sd->fields[i].name == n.name) index = static_cast<int>(i);
+            if (index < 0) {
+                error(gi.index, node, "pick the member to set");
+                emit(OP_END);
+                break;
+            }
+            const int st = input_reg(gi, node, 1);   // pins: In, Struct, the member, Then, Struct
+            const int v = input_reg(gi, node, 2);
+            emit(OP_SETFIELD, st, v, index);
+            emit(OP_MOVE, output_block(gi, node), st);
+            go(gi, node, "Then");
+            break;
+        }
         case Builtin::DispatchCall: {
             std::vector<int> ins;
             for (size_t i = 0; i < s.pins.size(); ++i)
@@ -1356,6 +1433,7 @@ void Compiler::compile_function(int graph_index, int fn_index) {
 bool Compiler::run() {
     prog_ = Program{};
     prog_.name = script_.name;
+    for (const EnumDef& e : script_.enums) prog_.enums.push_back(e.entries);
 
     // Variables.
     std::unordered_set<std::string> seen;
@@ -1371,7 +1449,7 @@ bool Compiler::run() {
         VarInfo vi;
         vi.name = v.name;
         vi.type = v.type;
-        vi.def = v.def.type == v.type ? v.def : Value::default_of(v.type);
+        vi.def = default_or(v.def, v.type);
         vi.exposed = v.exposed;
         prog_.vars.push_back(std::move(vi));
     }

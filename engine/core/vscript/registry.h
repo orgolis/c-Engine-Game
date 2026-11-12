@@ -53,6 +53,7 @@ enum class Builtin : uint16_t {
     SendEvent, RemoteGet, RemoteSet,
     Timeline,
     DispatchCall, DispatchBind, DispatchUnbind, RemoteCall,
+    SwitchEnum, StructMake, StructBreak, StructSet,
 };
 
 struct PinDef {

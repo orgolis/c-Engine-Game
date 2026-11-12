@@ -133,6 +133,17 @@ void flow(Registry& r) {
         d.default_any = kFloat;
         r.add(std::move(d)).in("In", kExec).in("Target", kEntity).in("Value", kAny).out("Then", kExec);
     }
+    {
+        NodeDef d = builtin("flow.switch_enum", C, "Switch on Enum", Builtin::SwitchEnum);
+        r.add(std::move(d)).in("In", kExec).in("Selection", kAny)
+            .tip("Runs the output named like the value. Pick the enum as the node's type; it has one output per choice.");
+    }
+    r.add(builtin("struct.make", "Struct", "Make Struct", Builtin::StructMake, true))
+        .tip("Puts values together as one struct. Pick the struct as the node's type.");
+    r.add(builtin("struct.break", "Struct", "Break Struct", Builtin::StructBreak, true))
+        .tip("Takes a struct apart into its members.");
+    r.add(builtin("struct.set", "Struct", "Set Member", Builtin::StructSet)).in("In", kExec).out("Then", kExec)
+        .tip("Changes one member of a struct. Like an array, a struct read from a variable IS the variable's struct, so this changes the variable.");
     r.add(builtin("dispatch.call", "Events", "Call Dispatcher", Builtin::DispatchCall)).in("In", kExec).out("Then", kExec)
         .tip("Runs the event every listener bound to this dispatcher, in the order they bound, then continues.");
     {

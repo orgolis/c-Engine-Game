@@ -33,9 +33,10 @@ namespace schizo::editor {
 struct ScriptParam {
     std::string name;
     std::string type;   // "float" | "int" | "bool" | "string"; a logic graph also
-                        // "vec2" | "vec3" | "vec4" | "color" | "entity"
+                        // "vec2" | "vec3" | "vec4" | "color" | "entity" | "enum"
     std::string def;    // declared default, string form
     std::string label;  // optional friendly label (defaults to name in the UI)
+    std::vector<std::string> options;   // type "enum": the choices; the value is the index of one
 };
 
 // Scan `path` for @param declarations. Returns [] if the file is missing or has

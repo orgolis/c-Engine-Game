@@ -223,6 +223,16 @@ const std::vector<Value>& Value::items() const {
     return empty_items();
 }
 
+std::vector<Value>& Value::fields() {
+    if (!type.array && type.kind == Kind::Struct && box) return static_cast<StructBox*>(box.get())->fields;
+    return empty_items();
+}
+
+const std::vector<Value>& Value::fields() const {
+    if (!type.array && type.kind == Kind::Struct && box) return static_cast<const StructBox*>(box.get())->fields;
+    return empty_items();
+}
+
 // ---------------------------------------------------------------------------
 // clone / equals / convert
 // ---------------------------------------------------------------------------
@@ -312,14 +322,17 @@ bool can_convert(Type from, Type to, bool* lossy) {
     if (from.array || to.array) return false;       // arrays convert to nothing but text
     switch (from.kind) {
         case Kind::Bool: return to.kind == Kind::Int || to.kind == Kind::Float;
-        case Kind::Int: return to.kind == Kind::Float;
+        case Kind::Int: return to.kind == Kind::Float || to.kind == Kind::Enum;   // an enum is a number with names
         case Kind::Float:
             if (to.kind == Kind::Int) {
                 if (lossy) *lossy = true;
                 return true;
             }
             return false;
-        case Kind::Enum: return to.kind == Kind::Int;
+        // Enums and structs of two scripts are told apart only by position in
+        // each script's own list, so between scripts they go by value.
+        case Kind::Enum: return to.kind == Kind::Int || to.kind == Kind::Enum;
+        case Kind::Struct: return to.kind == Kind::Struct;
         case Kind::Color: return to.kind == Kind::Vec4;
         case Kind::Vec4: return to.kind == Kind::Color;
         default: return false;
@@ -350,6 +363,11 @@ bool convert(const Value& v, Type target, Value& out) {
             }
             return true;
         case Kind::Float: out = Value::number(static_cast<double>(v.u.i)); return true;   // Bool, Int
+        case Kind::Enum: out = Value::enumeration(target.sub, v.u.i); return true;         // Int, another enum
+        case Kind::Struct:
+            out = v;
+            out.type = target;
+            return true;
         case Kind::Vec4: out = Value::vec4(v.as_vec4()); return true;
         case Kind::Color: out = Value::color(v.as_vec4()); return true;
         default: break;

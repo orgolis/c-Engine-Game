@@ -201,6 +201,11 @@ public:
     std::vector<Value>&       items();
     const std::vector<Value>& items() const;
     bool is_array() const { return type.array; }
+    /// The fields of a struct value, in the order its definition lists them.
+    /// A fresh struct has none yet: a field that is not there reads as its
+    /// type's default. On a non-struct this is a shared empty vector.
+    std::vector<Value>&       fields();
+    const std::vector<Value>& fields() const;
 };
 
 static_assert(sizeof(Value) == 32, "a Value is 32 bytes: type, 16 bytes inline, one box pointer");

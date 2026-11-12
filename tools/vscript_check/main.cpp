@@ -713,6 +713,95 @@ void test_timeline() {
     }
 }
 
+void test_user_types() {
+    std::printf("-- enums and structs\n");
+    {
+        Rig r;
+        r.script.enums.push_back(EnumDef{"State", {"Idle", "Chase", "Attack"}});
+        const Type state(Kind::Enum, false, 1);
+        r.script.add_variable("state", state, Value::enumeration(1, 1));
+        Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), get = node(g, "var.get", "state"), p = print_node(g);
+        const int sw = node(g, "flow.switch_enum"), pi = print_node(g, "i"), pc = print_node(g, "c"), pa = print_node(g, "a");
+        g.find(sw)->targ = state;
+        chain(g, {ev, p, sw});
+        g.link(get, "Value", p, "Text"); g.link(get, "Value", sw, "Selection");
+        g.link(sw, "Idle", pi, "In"); g.link(sw, "Chase", pc, "In"); g.link(sw, "Attack", pa, "In");
+        const int eq = node(g, "math.equal"), pe = print_node(g);
+        g.find(eq)->targ = state;
+        lit(g, eq, "B", Value::enumeration(1, 2));
+        g.link(get, "Value", eq, "A"); g.link(eq, "Result", pe, "Text");
+        const int set = node(g, "event.custom", "set"), store = node(g, "var.set", "state");
+        g.find(set)->params = {Param{"n", kInt, Value::integer(0)}};
+        chain(g, {set, store, pe}); g.link(set, "n", store, "Value");
+        const int again = node(g, "event.custom", "again");
+        g.link(again, "Then", p, "In");
+        const bool built = r.build();
+        check(built && r.run() == "Chase,c", "an enum prints as its choice's name, and Switch on Enum runs that choice's output");
+        const Value two = Value::integer(2);
+        r.host.out.clear();
+        r.vm.fire(*r.inst, "set", &two, 1);
+        check(r.host.joined() == "true" && r.inst->variable("state")->type == state,
+              "a number becomes the enum's value when stored, and enums compare as equal");
+        check(r.run("again") == "Attack,a", "the stored value is the third choice");
+        const Value nine = Value::integer(9);
+        r.vm.fire(*r.inst, "set", &nine, 1);
+        check(r.run("again") == "9" && r.host.errors.empty(), "a value outside the list prints as its number and runs no output");
+        Script back;
+        check(from_text(to_text(r.script), back) && back.enums.size() == 1 && back.enums[0].entries.size() == 3 &&
+                  back.variables[0].type == state && back.variables[0].def.as_int() == 1 && to_text(back) == to_text(r.script),
+              "an enum, its choices and a variable of it survive the file");
+    }
+    {
+        Rig r;
+        r.script.structs.push_back(StructDef{"Stats", {Param{"hp", kInt, Value::integer(10)}, Param{"name", kString, Value::string("nobody")}}});
+        const Type stats(Kind::Struct, false, 1);
+        r.script.add_variable("s", stats);
+        r.script.add_variable("copy", stats);
+        Graph& g = r.events();
+        // Begin Play: what a struct nobody filled in holds.
+        const int ev = node(g, "event.begin_play"), get = node(g, "var.get", "s"), br = node(g, "struct.break");
+        const int pn = print_node(g), ph = print_node(g);
+        g.find(br)->targ = stats;
+        chain(g, {ev, pn, ph});
+        g.link(get, "Value", br, "Struct"); g.link(br, "name", pn, "Text"); g.link(br, "hp", ph, "Text");
+        // fill: s = Make(hp 5, name orc); copy = s
+        const int fill = node(g, "event.custom", "fill"), mk = node(g, "struct.make"), set = node(g, "var.set", "s");
+        const int setc = node(g, "var.set", "copy");
+        g.find(mk)->targ = stats;
+        lit(g, mk, "hp", Value::integer(5)); lit(g, mk, "name", Value::string("orc"));
+        chain(g, {fill, set, setc});
+        g.link(mk, "Struct", set, "Value"); g.link(get, "Value", setc, "Value");
+        // hit: s.hp = 1
+        const int hit = node(g, "event.custom", "hit"), sm = node(g, "struct.set", "hp");
+        g.find(sm)->targ = stats;
+        lit(g, sm, "hp", Value::integer(1));
+        g.link(hit, "Then", sm, "In"); g.link(get, "Value", sm, "Struct");
+        // show copy
+        const int show = node(g, "event.custom", "show"), getc = node(g, "var.get", "copy"), brc = node(g, "struct.break"), pc = print_node(g);
+        g.find(brc)->targ = stats;
+        g.link(show, "Then", pc, "In"); g.link(getc, "Value", brc, "Struct"); g.link(brc, "hp", pc, "Text");
+
+        const bool built = r.build();
+        check(built && r.run() == "nobody,10", "a struct nobody filled in has the defaults its definition gives the members");
+        r.vm.fire(*r.inst, "fill");
+        check(r.run() == "orc,5", "Make Struct puts values together and Break Struct takes them apart");
+        r.vm.fire(*r.inst, "hit");
+        check(r.run() == "orc,1", "Set Member on a struct read from a variable changes the variable's struct");
+        check(r.run("show") == "5", "a struct stored in another variable was copied, so it did not change");
+        Script back;
+        check(from_text(to_text(r.script), back) && back.structs.size() == 1 && back.structs[0].fields.size() == 2 &&
+                  back.structs[0].fields[0].def.as_int() == 10 && to_text(back) == to_text(r.script),
+              "a struct, its members and their defaults survive the file");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), sw = node(g, "flow.switch_enum"), mk = node(g, "struct.make"), p = print_node(g);
+        chain(g, {ev, sw}); g.link(mk, "Struct", p, "Text");
+        check(!r.build() && r.has_error("pick the enum"), "a Switch on Enum with no enum picked is a compile error");
+    }
+}
+
 void test_errors() {
     std::printf("-- broken graphs\n");
     {
@@ -1013,6 +1102,7 @@ int main() {
     test_between_scripts();
     test_waits();
     test_timeline();
+    test_user_types();
     test_errors();
     test_text();
     test_editing();

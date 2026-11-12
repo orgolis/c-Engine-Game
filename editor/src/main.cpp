@@ -4475,6 +4475,20 @@ void ShowInspector(EditorState& editor_state) {
                                     script_comp->SetParam(pr.name, vs::literal_text(val));
                                     editor_state.editor_scene->MarkModified();
                                 }
+                            } else if (pr.type == "enum") {
+                                // A logic graph's enum variable: one of its choices,
+                                // stored as the choice's index.
+                                int v = std::atoi(cur.c_str());
+                                const int n = static_cast<int>(pr.options.size());
+                                const char* shown = v >= 0 && v < n ? pr.options[static_cast<size_t>(v)].c_str() : "?";
+                                if (ImGui::BeginCombo(label.c_str(), shown)) {
+                                    for (int k = 0; k < n; ++k)
+                                        if (ImGui::Selectable(pr.options[static_cast<size_t>(k)].c_str(), k == v)) {
+                                            script_comp->SetParam(pr.name, std::to_string(k));
+                                            editor_state.editor_scene->MarkModified();
+                                        }
+                                    ImGui::EndCombo();
+                                }
                             } else if (pr.type == "entity") {
                                 // A reference to another object, kept by NAME so
                                 // it survives save and load. Type it, or drag the
