@@ -21,6 +21,7 @@ target_include_directories(editor
 target_link_libraries(editor
     PRIVATE
         engine
+        gws_vscript
         scene
         window
         character
@@ -92,6 +93,7 @@ target_sources(editor
         src/script_host_python.cpp
         src/script_host_cpp.cpp
         src/script_host_cs.cpp
+        src/script_host_logic.cpp
         src/script_api_editor.cpp
         src/script_params.cpp
         src/scene_playback_manager.cpp

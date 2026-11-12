@@ -7982,10 +7982,15 @@ int main(int argc, char** argv) {
         }
         if (auto cs_host = schizo::editor::make_cs_host())
             editor_state.script_system.register_host(".cs", std::move(cs_host));
+        // Logic graphs: a ".lgraph" visual script on a Script component runs
+        // through the same lifecycle as the text backends.
+        editor_state.script_system.register_host(".lgraph",
+            schizo::editor::make_logic_host());
         schizo::editor::bind_editor_script_api(editor_state.script_api,
                                                &editor_state.script_ctx);
         spdlog::info("[script] backends registered: .py (Python/pocketpy), "
-                     ".cpp/.cc (native C++ via g++), .cs (C#/.NET)");
+                     ".cpp/.cc (native C++ via g++), .cs (C#/.NET), "
+                     ".lgraph (Logic Graph)");
 
         // Editor extensions (Phase 4.8): the same three backends, separate
         // instances -- a VM shared with gameplay scripts would let one clobber

@@ -726,11 +726,12 @@ add_executable(script_check script_check/main.cpp
     ${CMAKE_SOURCE_DIR}/editor/src/script_host_python.cpp
     ${CMAKE_SOURCE_DIR}/editor/src/script_host_cpp.cpp
     ${CMAKE_SOURCE_DIR}/editor/src/script_host_cs.cpp
+    ${CMAKE_SOURCE_DIR}/editor/src/script_host_logic.cpp
     ${CMAKE_SOURCE_DIR}/editor/src/script_params.cpp)
 target_include_directories(script_check PRIVATE
     ${CMAKE_SOURCE_DIR}/editor/include
     ${CMAKE_SOURCE_DIR}/third_party/pocketpy)
-target_link_libraries(script_check PRIVATE scene)
+target_link_libraries(script_check PRIVATE scene gws_vscript)
 target_compile_features(script_check PRIVATE cxx_std_20)
 if(MINGW)
     target_link_options(script_check PRIVATE -static -static-libgcc -static-libstdc++)

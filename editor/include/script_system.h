@@ -69,6 +69,9 @@ std::unique_ptr<ScriptHost> make_cpp_host();
 /// Factory for the C# (.NET via hostfxr + dotnet build) backend —
 /// script_host_cs.cpp. Returns nullptr on non-Windows platforms.
 std::unique_ptr<ScriptHost> make_cs_host();
+/// Factory for the logic-graph backend (visual scripts, ".lgraph") --
+/// script_host_logic.cpp. Every ScriptApi entry is a node there.
+std::unique_ptr<ScriptHost> make_logic_host();
 
 class ScriptSystem {
 public:

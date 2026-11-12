@@ -1,11 +1,26 @@
 # Visual scripting: how the Logic Graph core works
 
-**Status:** milestone A1 of [ROAD_TO_TEST_GAME.md](ROAD_TO_TEST_GAME.md), shipped in
-v0.8.14. The core exists and is checked headless. It is not in the editor yet:
-the Logic Graph panel still runs the old `gameplay_logic.h` runtime until A2
-and A3 replace it.
+**Status:** milestones A1 (v0.8.14, the core) and the first half of A2 (v0.8.15,
+logic graphs as a script backend) of [ROAD_TO_TEST_GAME.md](ROAD_TO_TEST_GAME.md).
+The per-scene Logic Graph panel still runs the old `gameplay_logic.h` runtime
+until the rest of A2 and A3 replace it.
 
 Code: `engine/core/vscript/`. Check: `tools/vscript_check` (58 checks).
+
+## In the editor today (v0.8.15)
+
+A file ending in `.lgraph` on an entity's Script component is a logic graph.
+It runs through the same `ScriptSystem` as Python, C++ and C# scripts: Begin
+Play once, Tick every frame, End Play when Play stops, hot reload when the file
+changes, and a compile error shown as the component's status with the node it
+is about. `editor/src/script_host_logic.cpp` registers every `ScriptApi` entry
+as a node (entity, input, physics, rendering, audio, gameplay, items, weapons,
+world flags and events, script parameters), so adding an engine capability to
+`ScriptApi` needs one more line there.
+
+There is no graph editor for these files yet (milestone A3). Until then a
+graph is built in code and written with `to_text()`, as `tools/script_check`
+does.
 
 ## The pieces
 

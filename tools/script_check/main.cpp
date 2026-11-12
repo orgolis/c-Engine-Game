@@ -14,6 +14,8 @@
 #include "script_api.h"
 #include "script_params.h"
 
+#include "vscript/io.h"
+
 #include "scene.h"
 #include "entity.h"
 #include "transform.h"
@@ -388,10 +390,66 @@ int main() {
         std::remove("script_check_api2.py");
     }
 
+    // ================= logic graph backend (.lgraph) =================
+    // A visual script through the same ScriptSystem: Begin Play places the
+    // entity, Tick moves it along X by 2 * dt, and a broken graph reports the
+    // node instead of running.
+    bool logic_ok = false;
+    {
+        using namespace schizo::vs;
+        Script s;
+        s.name = "mover";
+        Graph& g = s.add_graph(GraphKind::Event, "EventGraph");
+        auto mk = [&](const char* def) { return g.add(def).id; };
+        const int begin = mk("event.begin_play"), self1 = mk("self"), set = mk("entity.set_position");
+        g.find(set)->set_default("Position", Value::vec3({5.0f, 0.0f, 0.0f}));
+        g.link(begin, "Then", set, "In"); g.link(self1, "Self", set, "Entity");
+        const int tick = mk("event.tick"), self2 = mk("self"), mv = mk("entity.translate");
+        const int mul = mk("math.mul"), vec = mk("vec3.make");
+        g.find(mul)->set_default("B", Value::number(2.0));
+        g.link(tick, "Then", mv, "In"); g.link(self2, "Self", mv, "Entity");
+        g.link(tick, "Delta Seconds", mul, "A"); g.link(mul, "Result", vec, "X"); g.link(vec, "Result", mv, "Delta");
+        write_file("script_check_logic.lgraph", to_text(s).c_str());
+
+        auto le = scn->CreateEntity("LogicObj");
+        auto lsc = le->AddComponent<scene::ScriptComponent>(std::string("script_check_logic.lgraph"));
+        // translate is not in the mini table by default: give it one.
+        api.translate = [](void* c, uint32_t e, const float d[3]) {
+            auto* m = static_cast<MiniCtx*>(c);
+            if (auto ent = m->scn->GetEntityById(e)) {
+                const glm::vec3 p = ent->GetTransform()->GetWorldPosition();
+                ent->GetTransform()->SetLocalPosition(p + glm::vec3(d[0], d[1], d[2]));
+            }
+        };
+        editor::ScriptSystem ls;
+        ls.register_host(".lgraph", editor::make_logic_host());
+        for (int i = 0; i < 10; ++i) ls.update(scn, true, 0.1f, api);
+        const glm::vec3 lp = le->GetTransform()->GetWorldPosition();
+        const bool moved_right = std::fabs(lp.x - 7.0f) < 1e-3f;   // 5 + 10 * (2 * 0.1)
+        const bool status_ok = lsc->GetStatus() == "running";
+
+        // A graph with a type error must be refused with a message.
+        Script bad;
+        Graph& bg = bad.add_graph(GraphKind::Event, "EventGraph");
+        const int bb = bg.add("event.begin_play").id, br = bg.add("flow.branch").id, bv = bg.add("vec3.make").id;
+        bg.link(bb, "Then", br, "In"); bg.link(bv, "Result", br, "Condition");
+        write_file("script_check_logic_bad.lgraph", to_text(bad).c_str());
+        auto be = scn->CreateEntity("LogicBad");
+        auto bsc = be->AddComponent<scene::ScriptComponent>(std::string("script_check_logic_bad.lgraph"));
+        ls.update(scn, true, 0.1f, api);
+        const bool refused = bsc->GetStatus().find("cannot connect") != std::string::npos;
+        ls.update(scn, false, 0.1f, api);
+        logic_ok = moved_right && status_ok && refused;
+        std::printf("  logic graph: x=%.2f (expected 7.00), status '%s', bad graph '%.50s' -> %s\n",
+                    lp.x, lsc->GetStatus().c_str(), bsc->GetStatus().c_str(), logic_ok ? "OK" : "FAIL");
+        std::remove("script_check_logic.lgraph");
+        std::remove("script_check_logic_bad.lgraph");
+    }
+
     std::remove("script_check_tmp.py");
     std::remove("script_check_bad.py");
     const bool ok = moved && spawned && running && reloaded && errored && torn_down &&
-                    cpp_ok && cs_ok && params_ok && fields_ok && api2_ok;
+                    cpp_ok && cs_ok && params_ok && fields_ok && api2_ok && logic_ok;
     std::printf("script_check: %s\n", ok ? "ALL OK" : "FAIL");
     return ok ? 0 : 1;
 }
