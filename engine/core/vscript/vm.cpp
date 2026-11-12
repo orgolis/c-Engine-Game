@@ -50,6 +50,19 @@ const Value* VM::paused_register(int reg) const {
     return reg < static_cast<int>(fn.proto.size()) ? &f.regs[reg] : nullptr;
 }
 
+/// Copy arguments into an event's parameter registers, converted to the
+/// parameter types. An argument that cannot be converted leaves the
+/// parameter at its default, so a mismatched sender cannot put a value of
+/// the wrong type on a pin.
+void VM::store_event_args(Instance& inst, const EventInfo& ev, const Value* args, int nargs) {
+    for (size_t i = 0; i < ev.param_regs.size(); ++i) {
+        Value& dst = inst.frame[static_cast<size_t>(ev.param_regs[i])];
+        const Type want = i < ev.param_types.size() ? ev.param_types[i] : dst.type;
+        if (static_cast<int>(i) < nargs && args) convert(args[i], want, dst);
+        else dst = Value::default_of(want);
+    }
+}
+
 void VM::push_event_frame(Instance& inst, int pc, bool top) {
     Frame f;
     f.inst = &inst;
@@ -119,8 +132,7 @@ bool VM::fire(Instance& inst, std::string_view event, const Value* args, int nar
     const int e = inst.program->find_event(event);
     if (e < 0) return false;
     const EventInfo& ev = inst.program->events[static_cast<size_t>(e)];
-    for (size_t i = 0; i < ev.param_regs.size() && static_cast<int>(i) < nargs; ++i)
-        inst.frame[static_cast<size_t>(ev.param_regs[i])] = args[i];
+    store_event_args(inst, ev, args, nargs);
     const bool outermost = frames_.empty();
     if (outermost) budget_left_ = instruction_budget;
     push_event_frame(inst, ev.entry, true);
@@ -277,8 +289,7 @@ void VM::run() {
                 break;
             case OP_CALLE: {
                 const EventInfo& ev = p.events[static_cast<size_t>(in.a)];
-                for (size_t i = 0; i < ev.param_regs.size(); ++i)
-                    f->inst->frame[static_cast<size_t>(ev.param_regs[i])] = R[in.b + static_cast<int>(i)];
+                store_event_args(*f->inst, ev, R + in.b, static_cast<int>(ev.param_regs.size()));
                 if (static_cast<int>(frames_.size()) >= max_call_depth) {
                     fail("the call chain is too deep (an event that calls itself without end?)");
                     return;
@@ -378,6 +389,38 @@ void VM::run() {
             case OP_AND: R[in.a] = Value::boolean(R[in.b].u.i != 0 && R[in.c].u.i != 0); break;
             case OP_OR: R[in.a] = Value::boolean(R[in.b].u.i != 0 || R[in.c].u.i != 0); break;
             case OP_XOR: R[in.a] = Value::boolean((R[in.b].u.i != 0) != (R[in.c].u.i != 0)); break;
+            case OP_SENDE: {
+                Instance* other = host_ ? host_->find_instance(R[in.c].u.entity) : nullptr;
+                if (!other || !other->program) break;   // no script there: nothing to run
+                const int e = other->program->find_event(p.consts[static_cast<size_t>(in.a)].str());
+                if (e < 0) break;
+                const EventInfo& ev = other->program->events[static_cast<size_t>(e)];
+                store_event_args(*other, ev, R + in.b, in.d);
+                if (static_cast<int>(frames_.size()) >= max_call_depth) {
+                    fail("the call chain is too deep (scripts sending events to each other without end?)");
+                    return;
+                }
+                push_event_frame(*other, ev.entry, false);
+                break;
+            }
+            case OP_GETVO: {
+                const Type want = p.types[static_cast<size_t>(in.d)];
+                Instance*  other = host_ ? host_->find_instance(R[in.b].u.entity) : nullptr;
+                Value*     v = other ? other->variable(p.consts[static_cast<size_t>(in.c)].str()) : nullptr;
+                Value      out;
+                if (v) convert(*v, want, out);
+                else out = Value::default_of(want);
+                R[in.a] = std::move(out);
+                break;
+            }
+            case OP_SETVO: {
+                Instance* other = host_ ? host_->find_instance(R[in.a].u.entity) : nullptr;
+                Value*    v = other ? other->variable(p.consts[static_cast<size_t>(in.c)].str()) : nullptr;
+                if (!v) break;
+                Value conv;
+                if (convert(R[in.b], v->type, conv)) *v = clone(conv);
+                break;
+            }
             default: fail("internal: unknown instruction"); return;
         }
     }

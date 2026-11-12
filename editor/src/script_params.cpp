@@ -1,9 +1,15 @@
 #include "script_params.h"
 
+#include "vscript/graph.h"
+#include "vscript/io.h"
+
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace schizo::editor {
@@ -71,11 +77,70 @@ bool parse_py_field(const std::string& raw, ScriptParam& out) {
     out.name = name; out.type = has_dot ? "float" : "int"; out.def = val;
     return true;
 }
+
+bool ends_with(const std::string& s, const char* tail) {
+    const size_t n = std::char_traits<char>::length(tail);
+    return s.size() >= n && s.compare(s.size() - n, n, tail) == 0;
+}
+
+/// A logic graph's fields are the variables marked "show in Inspector". The
+/// file is parsed with the format's own reader; the Inspector asks every frame
+/// while the object is selected, so the answer is kept until the file changes.
+std::vector<ScriptParam> scan_logic_graph(const std::string& path) {
+    namespace fs = std::filesystem;
+    struct Cached {
+        fs::file_time_type       stamp;
+        uintmax_t                size = 0;
+        std::vector<ScriptParam> params;
+    };
+    static std::unordered_map<std::string, Cached> cache;
+    std::error_code ec;
+    const fs::file_time_type stamp = fs::last_write_time(path, ec);
+    if (ec) return {};
+    const uintmax_t size = fs::file_size(path, ec);
+    if (ec) return {};
+    const auto hit = cache.find(path);
+    if (hit != cache.end() && hit->second.stamp == stamp && hit->second.size == size) return hit->second.params;
+
+    std::vector<ScriptParam> out;
+    std::ifstream f(path, std::ios::binary);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    schizo::vs::Script script;
+    if (f && schizo::vs::from_text(ss.str(), script)) {
+        for (const schizo::vs::Variable& v : script.variables) {
+            if (!v.exposed || v.type.array) continue;
+            const char* type = nullptr;
+            switch (v.type.kind) {
+                case schizo::vs::Kind::Bool: type = "bool"; break;
+                case schizo::vs::Kind::Int: type = "int"; break;
+                case schizo::vs::Kind::Float: type = "float"; break;
+                case schizo::vs::Kind::String: type = "string"; break;
+                case schizo::vs::Kind::Vec2: type = "vec2"; break;
+                case schizo::vs::Kind::Vec3: type = "vec3"; break;
+                case schizo::vs::Kind::Vec4: type = "vec4"; break;
+                case schizo::vs::Kind::Color: type = "color"; break;
+                case schizo::vs::Kind::Entity: type = "entity"; break;   // kept by name
+                default: break;
+            }
+            if (!type) continue;
+            ScriptParam p;
+            p.name = v.name;
+            p.type = type;
+            if (v.type.kind != schizo::vs::Kind::Entity) p.def = schizo::vs::literal_text(v.def);
+            out.push_back(std::move(p));
+        }
+    }
+    if (cache.size() > 256) cache.clear();
+    cache[path] = Cached{stamp, size, out};
+    return out;
+}
 }  // namespace
 
 std::vector<ScriptParam> scan_script_params(const std::string& path) {
     std::vector<ScriptParam> out;
     if (path.empty()) return out;
+    if (ends_with(path, ".lgraph")) return scan_logic_graph(path);
     std::ifstream f(path);
     if (!f) return out;
 

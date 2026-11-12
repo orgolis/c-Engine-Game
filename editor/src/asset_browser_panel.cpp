@@ -3,6 +3,8 @@
 // ============================================================
 
 #include "asset_browser_panel.h"
+
+#include "logic_script_panel.h"
 #include "asset_browser_paths.h"
 #include "doc_io.h"        // Phase 4 document templates + the .matgraph/.animgraph/.seq types
 
@@ -165,13 +167,23 @@ void draw_entry_icon(ImDrawList* dl, ImVec2 tl, float h, const AssetEntry& e) {
 
 }  // namespace
 
+namespace {
+/// Files the editor opens in a panel of its own instead of handing to the OS:
+/// the authoring documents, and logic scripts (a "Script" by type, since they
+/// attach to objects like one, but edited as a graph).
+bool has_own_editor(const AssetEntry& e) {
+    return 0 == std::strcmp(e.type, "Document") || e.ext == ".lgraph";
+}
+}  // namespace
+
 const char* AssetBrowserPanel::classify(const std::string& e) {
     if (e == ".obj" || e == ".gltf" || e == ".glb" || e == ".fbx" ||
         e == ".usd" || e == ".usda" || e == ".usdc" || e == ".usdz") return "Mesh";
     if (e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".bmp" ||
         e == ".tga" || e == ".hdr" || e == ".dds" || e == ".ktx")    return "Texture";
     if (e == ".wav" || e == ".mp3" || e == ".ogg" || e == ".flac")   return "Audio";
-    if (e == ".py" || e == ".cpp" || e == ".cc" || e == ".cs")       return "Script";
+    if (e == ".py" || e == ".cpp" || e == ".cc" || e == ".cs" ||
+        e == ".lgraph")                                              return "Script";
     if (e == ".scene")                                               return "Scene";
     if (e == ".mat")                                                 return "Material";
     if (e == ".prefab")                                              return "Prefab";
@@ -654,7 +666,7 @@ void AssetBrowserPanel::render_entries() {
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     if (e.is_dir) { navigate(e.abs_path); navigated = true; ImGui::PopID(); break; }
                     else if (0 == std::strcmp(e.type, "Scene") && on_open_scene) on_open_scene(e.rel_path);
-                    else if (0 == std::strcmp(e.type, "Document") && on_open_document &&
+                    else if (has_own_editor(e) && on_open_document &&
                              on_open_document(e)) { /* handled in-editor */ }
                     else os_open(e.abs_path);
                 }
@@ -720,7 +732,7 @@ void AssetBrowserPanel::render_entries() {
                         break;   // entries_ changed — stop iterating
                     } else if (0 == std::strcmp(e.type, "Scene") && on_open_scene) {
                         on_open_scene(e.rel_path);
-                    } else if (0 == std::strcmp(e.type, "Document") && on_open_document &&
+                    } else if (has_own_editor(e) && on_open_document &&
                                on_open_document(e)) {
                         // opened in its own editor panel
                     } else {
@@ -833,7 +845,9 @@ void AssetBrowserPanel::render_context_menu(const AssetEntry& e) {
     if (ImGui::BeginPopupContextItem("##ab_item")) {
         ImGui::TextDisabled("%s", e.name.c_str());
         ImGui::Separator();
-        if (!e.is_dir && ImGui::MenuItem("Open", "Enter")) os_open(e.abs_path);
+        if (!e.is_dir && ImGui::MenuItem("Open", "Enter")) {
+            if (!(has_own_editor(e) && on_open_document && on_open_document(e))) os_open(e.abs_path);
+        }
         if (e.is_dir && ImGui::MenuItem("Open Folder", "Enter")) navigate(e.abs_path);
         ImGui::Separator();
         render_edit_items(&e);
@@ -979,6 +993,12 @@ void AssetBrowserPanel::render_new_menu() {
     }
     ImGui::Separator();
     if (ImGui::BeginMenu("Script")) {
+        // A logic graph is written by the format's own writer, like a material.
+        if (ImGui::MenuItem("Logic Graph (.lgraph)")) {
+            std::snprintf(new_file_buf_, sizeof new_file_buf_, "%s", "new_logic.lgraph");
+            new_file_template_ = new_logic_script_text("new_logic");
+            want_new_file_ = true;
+        }
         file("Python (.py)", "new_script.py",  kTemplatePy);
         file("C# (.cs)",     "new_script.cs",  kTemplateCs);
         file("C++ (.cpp)",   "new_script.cpp", kTemplateCpp);

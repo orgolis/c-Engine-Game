@@ -107,6 +107,20 @@ void flow(Registry& r) {
     r.add(builtin("fn.call", "Functions", "Call Function", Builtin::FnCall));
     r.add(builtin("event.custom", "Events", "Custom Event", Builtin::CustomEvent)).out("Then", kExec);
     r.add(builtin("event.call", "Events", "Call Event", Builtin::CallEvent)).in("In", kExec).out("Then", kExec);
+    r.add(builtin("event.send", "Events", "Send Event to Entity", Builtin::SendEvent))
+        .in("In", kExec).in("Target", kEntity).out("Then", kExec)
+        .tip("Runs the custom event with this name on another entity's logic script, now. Nothing happens if that entity has no such event. Arguments are matched to the event's parameters by position.");
+    {
+        NodeDef d = builtin("var.remote_get", "Variables", "Get Variable of Entity", Builtin::RemoteGet, true);
+        d.default_any = kFloat;
+        r.add(std::move(d)).in("Target", kEntity).out("Value", kAny)
+            .tip("Reads a variable of another entity's logic script. Gives the type's default if there is none.");
+    }
+    {
+        NodeDef d = builtin("var.remote_set", "Variables", "Set Variable of Entity", Builtin::RemoteSet);
+        d.default_any = kFloat;
+        r.add(std::move(d)).in("In", kExec).in("Target", kEntity).in("Value", kAny).out("Then", kExec);
+    }
     r.add(builtin("event.begin_play", "Events", "Begin Play", Builtin::Event)).out("Then", kExec)
         .tip("Runs once when play starts for this entity.");
     r.add(builtin("event.tick", "Events", "Tick", Builtin::Event)).out("Then", kExec).out("Delta Seconds", kFloat)

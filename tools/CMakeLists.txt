@@ -781,7 +781,7 @@ add_executable(extension_check
 target_include_directories(extension_check PRIVATE
     ${CMAKE_SOURCE_DIR}/editor/include
     ${CMAKE_SOURCE_DIR}/third_party/pocketpy)
-target_link_libraries(extension_check PRIVATE scene spdlog::spdlog)
+target_link_libraries(extension_check PRIVATE scene spdlog::spdlog gws_vscript)
 target_compile_features(extension_check PRIVATE cxx_std_20)
 if(MINGW)
     target_link_options(extension_check PRIVATE -static -static-libgcc -static-libstdc++)

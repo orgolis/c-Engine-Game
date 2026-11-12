@@ -19,6 +19,11 @@
 //
 // `type` is one of: float, int, bool, string. The authored values live on the
 // entity's ScriptComponent and are read back at runtime via engine.get_param_*.
+//
+// A logic graph (".lgraph") declares nothing in comments: its fields are the
+// variables marked "show in Inspector". Those add the types vec2, vec3, vec4,
+// color (stored as "1,2,3") and entity (stored as the object's NAME), and the
+// logic host puts the authored values into the variables when the script starts.
 
 #include <string>
 #include <vector>
@@ -27,7 +32,8 @@ namespace schizo::editor {
 
 struct ScriptParam {
     std::string name;
-    std::string type;   // "float" | "int" | "bool" | "string"
+    std::string type;   // "float" | "int" | "bool" | "string"; a logic graph also
+                        // "vec2" | "vec3" | "vec4" | "color" | "entity"
     std::string def;    // declared default, string form
     std::string label;  // optional friendly label (defaults to name in the UI)
 };

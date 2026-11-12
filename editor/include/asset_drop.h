@@ -45,7 +45,7 @@ inline Kind kind_of(const std::string& path) {
     if (e == ".scene")  return Kind::Scene;
     if (e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".bmp" ||
         e == ".tga" || e == ".dds" || e == ".ktx")   return Kind::Texture;
-    if (e == ".py" || e == ".cs" || e == ".cpp" || e == ".lua") return Kind::Script;
+    if (e == ".py" || e == ".cs" || e == ".cpp" || e == ".lua" || e == ".lgraph") return Kind::Script;
     if (e == ".obj" || e == ".gltf" || e == ".glb" || e == ".fbx" ||
         e == ".usd" || e == ".usda" || e == ".usdc" || e == ".usdz") return Kind::Mesh;
     if (e == ".wav" || e == ".mp3" || e == ".ogg" || e == ".flac")   return Kind::Audio;

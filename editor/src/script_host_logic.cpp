@@ -25,6 +25,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace schizo::editor {
@@ -269,6 +270,14 @@ struct LogicRuntime : Host {
     VM       vm{this};
     double   last_tick_time = -1.0;
     std::string last_error;
+    // Which script is on which entity, for the nodes that reach another
+    // entity's script (Send Event to Entity, Get / Set Variable of Entity).
+    std::unordered_map<uint32_t, Instance*> by_entity;
+
+    Instance* find_instance(uint32_t entity) override {
+        const auto it = by_entity.find(entity);
+        return it == by_entity.end() ? nullptr : it->second;
+    }
 
     LogicRuntime() {
         register_standard_library(reg);
@@ -315,14 +324,20 @@ public:
     ~LogicInstance() override {
         if (inst_) {
             rt_->shared.api = api_;
-            rt_->vm.fire(*inst_, "event.end_play");
+            if (begun_) rt_->vm.fire(*inst_, "event.end_play");
             rt_->vm.forget(*inst_);
+            // Only if the entry is still this script: on a hot reload the new
+            // instance may already have taken the entity's slot.
+            const auto it = rt_->by_entity.find(inst_->self);
+            if (it != rt_->by_entity.end() && it->second == inst_.get()) rt_->by_entity.erase(it);
         }
     }
 
     bool start(uint32_t entity, std::string&) override {
         rt_->shared.api = api_;
         inst_ = rt_->vm.instantiate(program_, entity);
+        rt_->by_entity[entity] = inst_.get();
+        apply_inspector_values(entity);
         // Which keys this script listens for, so update() polls only those.
         keys_.clear();
         for (const EventInfo& e : program_.events) {
@@ -338,11 +353,17 @@ public:
             }
             if (e.name.rfind("event.gameplay:", 0) == 0) wants_bus_ = true;
         }
-        rt_->vm.fire(*inst_, "event.begin_play");
         return true;
     }
     bool update(uint32_t, float dt, std::string&) override {
         rt_->shared.api = api_;
+        // Begin Play runs on the first update, not in start(): the script
+        // system starts every script before it updates any, so an event sent
+        // from Begin Play finds the other entity's script already there.
+        if (!begun_) {
+            begun_ = true;
+            rt_->vm.fire(*inst_, "event.begin_play");
+        }
         // Waits belong to the shared VM: advance them once per frame, not once
         // per script.
         if (api_ && api_->time != rt_->last_tick_time) {
@@ -379,6 +400,28 @@ public:
     }
 
 private:
+    /// Variables marked "show in Inspector" take the value authored on this
+    /// entity's Script component, when there is one. Stored as text: the
+    /// graph format's literal, or for an entity reference the object's name.
+    void apply_inspector_values(uint32_t entity) {
+        if (!api_ || !api_->get_param_string) return;
+        static const char kUnset[] = "\x01";
+        for (size_t i = 0; i < program_.vars.size(); ++i) {
+            const VarInfo& v = program_.vars[i];
+            if (!v.exposed || v.type.array) continue;
+            char text[512] = {};
+            api_->get_param_string(api_->ctx, entity, v.name.c_str(), text, sizeof text, kUnset);
+            if (text[0] == kUnset[0]) continue;   // nothing authored: keep the default
+            Value val;
+            if (v.type.kind == Kind::Entity) {
+                val = Value::entity(text[0] && api_->find_entity ? api_->find_entity(api_->ctx, text) : 0u);
+            } else if (!parse_literal(v.type, text, val)) {
+                continue;
+            }
+            inst_->vars[i] = std::move(val);
+        }
+    }
+
     std::shared_ptr<LogicRuntime> rt_;
     Program                       program_;
     const ScriptApi*              api_ = nullptr;
@@ -390,6 +433,7 @@ private:
     };
     std::vector<Key> keys_;
     bool             wants_bus_ = false;
+    bool             begun_ = false;
 };
 
 class LogicHost final : public ScriptHost {

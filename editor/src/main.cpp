@@ -114,6 +114,7 @@
 #include "asset_inspector.h"
 #include "asset_drop.h"        // one rule table for every drop site
 #include "logic_script_panel.h"  // graph editor for .lgraph logic scripts
+#include "vscript/value.h"       // literals of a logic graph's Inspector fields
 #include "logic_graph_panel.h"   // visual node editor for the scene logic graph
 #include "material_editor_panel.h"
 #include "asset_import_dialog.h"
@@ -4336,8 +4337,46 @@ void ShowInspector(EditorState& editor_state) {
                     }
                     ImGui::EndDragDropTarget();
                 }
-                ImGui::TextDisabled(".py = Python, .cpp = C++ (g++), .cs = C# (.NET)\n"
-                                    "hooks: on_start(e), on_update(e, dt)");
+                {
+                    // A logic graph is edited in the engine, so the way into
+                    // its editor is here, next to the file it names.
+                    const std::string sp_now = script_comp->GetScriptPath();
+                    const bool is_graph = sp_now.size() > 7 && sp_now.compare(sp_now.size() - 7, 7, ".lgraph") == 0;
+                    if (is_graph) {
+                        if (ImGui::Button("Edit Graph##script"))
+                            schizo::editor::open_logic_script(sp_now, &editor_state.show_logic_script);
+                    } else if (sp_now.empty()) {
+                        if (ImGui::Button("New Logic Graph##script")) {
+                            // assets/scripts/<object name>.lgraph, numbered if taken.
+                            namespace fs = std::filesystem;
+                            std::string stem;
+                            for (char c : selected_entity->GetName())
+                                stem += (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-') ? c : '_';
+                            if (stem.empty()) stem = "logic";
+                            std::error_code fec;
+                            fs::create_directories("assets/scripts", fec);
+                            std::string made = "assets/scripts/" + stem + ".lgraph";
+                            for (int n = 2; fs::exists(made, fec) && n < 1000; ++n)
+                                made = "assets/scripts/" + stem + "_" + std::to_string(n) + ".lgraph";
+                            std::ofstream nf(made, std::ios::binary | std::ios::trunc);
+                            if (nf) {
+                                nf << schizo::editor::new_logic_script_text(stem);
+                                nf.close();
+                                script_comp->SetScriptPath(made);
+                                std::snprintf(scr_path_buf, sizeof scr_path_buf, "%s", made.c_str());
+                                editor_state.script_system.force_reload(selected_entity->GetId());
+                                editor_state.editor_scene->MarkModified();
+                                schizo::editor::open_logic_script(made, &editor_state.show_logic_script);
+                            } else {
+                                editor_state.set_status("Could not create " + made);
+                            }
+                        }
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("a visual script, no code");
+                    }
+                }
+                ImGui::TextDisabled(".lgraph = Logic Graph (visual), .py = Python,\n"
+                                    ".cpp = C++ (g++), .cs = C# (.NET)");
 
                 bool s_enabled = script_comp->IsEnabled();
                 if (ImGui::Checkbox("Enabled##script", &s_enabled)) {
@@ -4384,8 +4423,12 @@ void ShowInspector(EditorState& editor_state) {
                         ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.35f, 1.0f),
                                            "Script not found (relative to project):\n  %s", spath.c_str());
                     } else if (params.empty()) {
-                        ImGui::TextDisabled("No public fields. Add a top-level variable\n"
-                                            "(e.g.  speed = 5.0 ), or  # @param name type default.");
+                        if (spath.size() > 7 && spath.compare(spath.size() - 7, 7, ".lgraph") == 0)
+                            ImGui::TextDisabled("No fields. In the graph editor, tick\n"
+                                                "\"show in Inspector\" on a variable.");
+                        else
+                            ImGui::TextDisabled("No public fields. Add a top-level variable\n"
+                                                "(e.g.  speed = 5.0 ), or  # @param name type default.");
                     } else {
                         for (const auto& pr : params) {
                             const std::string* ov = script_comp->FindParam(pr.name);
@@ -4410,6 +4453,43 @@ void ShowInspector(EditorState& editor_state) {
                                 if (ImGui::Checkbox(label.c_str(), &v)) {
                                     script_comp->SetParam(pr.name, v ? "1" : "0");
                                     editor_state.editor_scene->MarkModified();
+                                }
+                            } else if (pr.type == "vec2" || pr.type == "vec3" || pr.type == "vec4" ||
+                                       pr.type == "color") {
+                                // A logic graph's vector variables. Stored as
+                                // the graph format's own literal ("1,2,3").
+                                namespace vs = schizo::vs;
+                                const vs::Type vt = pr.type == "vec2" ? vs::kVec2 : pr.type == "vec3" ? vs::kVec3
+                                                  : pr.type == "vec4" ? vs::kVec4 : vs::kColor;
+                                vs::Value val;
+                                if (!vs::parse_literal(vt, cur, val)) val = vs::Value::default_of(vt);
+                                bool ch = false;
+                                if (pr.type == "vec2")      ch = ImGui::DragFloat2(label.c_str(), val.u.v, 0.05f);
+                                else if (pr.type == "vec3") ch = ImGui::DragFloat3(label.c_str(), val.u.v, 0.05f);
+                                else if (pr.type == "vec4") ch = ImGui::DragFloat4(label.c_str(), val.u.v, 0.05f);
+                                else                        ch = ImGui::ColorEdit4(label.c_str(), val.u.v);
+                                if (ch) {
+                                    script_comp->SetParam(pr.name, vs::literal_text(val));
+                                    editor_state.editor_scene->MarkModified();
+                                }
+                            } else if (pr.type == "entity") {
+                                // A reference to another object, kept by NAME so
+                                // it survives save and load. Type it, or drag the
+                                // object here from the Hierarchy.
+                                char b[256]; std::snprintf(b, sizeof b, "%s", cur.c_str());
+                                if (ImGui::InputTextWithHint(label.c_str(), "object name (or drag one here)", b, sizeof b)) {
+                                    script_comp->SetParam(pr.name, b);
+                                    editor_state.editor_scene->MarkModified();
+                                }
+                                if (ImGui::BeginDragDropTarget()) {
+                                    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("ENTITY_NODE")) {
+                                        const uint32_t dropped = *static_cast<const uint32_t*>(pl->Data);
+                                        if (auto de = editor_state.editor_scene->GetScene()->GetEntityById(dropped)) {
+                                            script_comp->SetParam(pr.name, de->GetName());
+                                            editor_state.editor_scene->MarkModified();
+                                        }
+                                    }
+                                    ImGui::EndDragDropTarget();
                                 }
                             } else {  // string
                                 char b[256]; std::snprintf(b, sizeof b, "%s", cur.c_str());
@@ -7885,6 +7965,14 @@ int main(int argc, char** argv) {
                 namespace ed = schizo::editor;
                 const std::string ext = std::filesystem::path(e.abs_path).extension().string();
 
+                // A logic script opens in the graph editor, under the path a
+                // Script component would name it by.
+                if (ext == ".lgraph") {
+                    ed::open_logic_script(e.rel_path.empty() ? e.abs_path : e.rel_path, &editor_state.show_logic_script);
+                    editor_state.set_status("Opened " + e.name);
+                    return true;
+                }
+
                 auto opened = [&](ed::DocumentFile& doc, const std::string& fresh, bool ok) {
                     if (!ok) {
                         editor_state.set_status("Could not open " + e.name);
@@ -10916,6 +11004,15 @@ int main(int argc, char** argv) {
                     logic_script_env_done = true;
                     if (const char* ls = std::getenv("GWS_TEST_LOGIC_SCRIPT"))
                         schizo::editor::open_logic_script(ls, &editor_state.show_logic_script);
+                    // GWS_TEST_SCRIPT_ENTITY=<file>: an object with that script,
+                    // selected, so the Inspector's Script section is on screen.
+                    if (const char* se = std::getenv("GWS_TEST_SCRIPT_ENTITY")) {
+                        if (auto ts = editor_state.editor_scene ? editor_state.editor_scene->GetScene() : nullptr) {
+                            auto te = ts->CreateEntity("ScriptTest");
+                            te->AddComponent<schizo::scene::ScriptComponent>(std::string(se));
+                            editor_state.selected_entity_id = te->GetId();
+                        }
+                    }
                 }
             }
             if (editor_state.show_logic_script)

@@ -40,6 +40,15 @@ The design is in [VISUAL_SCRIPTING.md](VISUAL_SCRIPTING.md).
 | A5 | **Class features.** Function and macro libraries, event dispatchers, interfaces, parent scripts, construction script, timelines, user enums and structs, data tables | Each has a check and a sample |
 | A6 | **Breadth.** Nodes for each system as phases B and C finish it; find references; collapse to function | The test game needs no text script |
 
+**Progress (v0.8.18):** A1 done. A2: logic scripts run on entities, every
+`ScriptApi` verb is a node, key and gameplay-bus events arrive, Inspector fields
+come from variables, scripts send events to and read variables of other
+entities; still open are collision events, component-property nodes and moving
+the per-scene Logic Graph onto the new VM. A3: the graph editor builds and
+edits scripts (tabs, palette, wire suggestions, variables, functions, undo,
+errors on the node) and opens from the Inspector and the Asset Browser; still
+open are comments, copy and paste, and box select. A4 to A6 not started.
+
 Deliberately later than this phase: replication (RPC nodes and replicated
 variables), a UI designer, animation graphs as logic graphs.
 

@@ -64,6 +64,10 @@ enum Op : uint16_t {
     OP_LTF, OP_LEF, OP_GTF, OP_GEF, OP_EQF, OP_NEF,
     // Bool
     OP_NOT, OP_AND, OP_OR, OP_XOR,
+    // other instances (found through Host::find_instance)
+    OP_SENDE,    // run event K[a] on the script of entity R[c], arguments R[b .. b+d)
+    OP_GETVO,    // R[a] = variable K[c] of entity R[b]'s script, as type T[d]
+    OP_SETVO,    // variable K[c] of entity R[a]'s script = R[b]
     OP_COUNT_,
 };
 
@@ -90,6 +94,7 @@ struct EventInfo {
     std::string      name;
     int              entry = 0;       // instruction to start at, in the event unit
     std::vector<int> param_regs;      // event unit registers the arguments are copied into
+    std::vector<Type> param_types;    // and the type each one must have
     bool             custom = false;  // a Custom Event node, as opposed to a host event
     int              graph = 0;
     int              node = 0;

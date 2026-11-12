@@ -155,6 +155,14 @@ bool shape_of(const Registry& reg, const Script& script, const Graph& graph, con
         case Builtin::CustomEvent:
             add_params(out, node.params, false);
             break;
+        case Builtin::SendEvent: {
+            // In, Target are in the definition; the sender's own parameter
+            // list follows Target, Then stays last.
+            std::vector<Pin> params;
+            for (const Param& p : node.params) params.push_back(make_pin(p.name, p.type, true, p.def));
+            out.pins.insert(out.pins.begin() + 2, params.begin(), params.end());
+            break;
+        }
         case Builtin::CallEvent: {
             const Node* ev = find_custom_event(reg, script, node.name);
             if (!ev) return fail(error, "no custom event named '" + node.name + "'");

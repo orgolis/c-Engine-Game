@@ -15,7 +15,9 @@
 #include "vscript/vm.h"
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -407,6 +409,144 @@ void test_functions_and_events() {
     }
 }
 
+/// Several scripts on one VM, each on its own entity (1, 2, ...), the way a
+/// scene has them.
+struct World : TestHost {
+    struct Unit {
+        Script                    script;
+        Program                   prog;
+        std::unique_ptr<Instance> inst;
+    };
+    Registry reg;
+    VM       vm{this};
+    std::vector<std::unique_ptr<Unit>> units;
+    std::vector<CompileMessage>        msgs;
+
+    World() { register_standard_library(reg); }
+    Graph& add() {
+        units.push_back(std::make_unique<Unit>());
+        units.back()->script.name = "script" + std::to_string(units.size());
+        return units.back()->script.add_graph(GraphKind::Event, "EventGraph");
+    }
+    Script& script(int entity) { return units[static_cast<size_t>(entity - 1)]->script; }
+    Instance& inst(int entity) { return *units[static_cast<size_t>(entity - 1)]->inst; }
+    bool build() {
+        msgs.clear();
+        bool ok = true;
+        for (size_t i = 0; i < units.size(); ++i) {
+            if (!compile(reg, units[i]->script, units[i]->prog, msgs)) { ok = false; continue; }
+            units[i]->inst = vm.instantiate(units[i]->prog, static_cast<uint32_t>(i + 1));
+        }
+        return ok;
+    }
+    Instance* find_instance(uint32_t e) override {
+        return e >= 1 && e <= units.size() ? units[e - 1]->inst.get() : nullptr;
+    }
+    std::string fire(int entity, const char* event, const Value* args = nullptr, int nargs = 0) {
+        out.clear();
+        vm.fire(inst(entity), event, args, nargs);
+        return joined();
+    }
+    bool has_error(const std::string& part) const {
+        for (const auto& m : msgs) if (m.error && m.text.find(part) != std::string::npos) return true;
+        return false;
+    }
+};
+
+void test_between_scripts() {
+    std::printf("-- scripts talking to each other\n");
+    {
+        // Entity 1 sends "hit" to entity 2, which prints what it was given.
+        World w;
+        Graph& a = w.add();
+        const int go = node(a, "event.custom", "go"), send = node(a, "event.send", "hit"), sent = print_node(a, "sent");
+        a.find(send)->params = {Param{"amount", kInt, Value::integer(0)}, Param{"who", kString, Value()}};
+        lit(a, send, "Target", Value::entity(2));
+        lit(a, send, "amount", Value::integer(5)); lit(a, send, "who", Value::string("orc"));
+        chain(a, {go, send, sent});
+        const int miss = node(a, "event.custom", "miss"), send2 = node(a, "event.send", "hit"), sent2 = print_node(a, "nobody");
+        lit(a, send2, "Target", Value::entity(9));
+        chain(a, {miss, send2, sent2});
+        const int other = node(a, "event.custom", "other"), send3 = node(a, "event.send", "no such event"), sent3 = print_node(a, "ignored");
+        lit(a, send3, "Target", Value::entity(2));
+        chain(a, {other, send3, sent3});
+
+        Graph& b = w.add();
+        const int hit = node(b, "event.custom", "hit"), p1 = print_node(b), p2 = print_node(b);
+        b.find(hit)->params = {Param{"amount", kFloat, Value::number(0)}, Param{"who", kString, Value()}};
+        chain(b, {hit, p1, p2});
+        b.link(hit, "who", p1, "Text"); b.link(hit, "amount", p2, "Text");
+
+        check(w.build() && w.fire(1, "go") == "orc,5.0,sent",
+              "Send Event runs the other entity's event at once, then the sender continues; an Int arrives as the receiver's Float");
+        check(w.fire(1, "miss") == "nobody" && w.errors.empty(), "sending to an entity with no script does nothing, without an error");
+        check(w.fire(1, "other") == "ignored" && w.errors.empty(), "sending an event the receiver does not have does nothing");
+        const Value wrong[2] = {Value::string("x"), Value::string("elf")};
+        check(w.fire(2, "hit", wrong, 2) == "elf,0.0", "an argument of the wrong type leaves the parameter at its default");
+        w.fire(2, "hit");
+        check(w.out.size() == 2 && w.out[0].empty() && w.out[1] == "0.0",
+              "arguments that were not given are defaults, not what the last call left behind");
+
+        // The node and its parameter list survive the file.
+        Script again;
+        check(from_text(to_text(w.script(1)), again) && to_text(again) == to_text(w.script(1)), "a Send Event node round-trips through the file");
+    }
+    {
+        // Reading and writing another script's variable.
+        World w;
+        Graph& a = w.add();
+        const int poke = node(a, "event.custom", "poke"), set = node(a, "var.remote_set", "hp");
+        a.find(set)->targ = kInt;
+        lit(a, set, "Target", Value::entity(2)); lit(a, set, "Value", Value::integer(42));
+        const int get = node(a, "var.remote_get", "hp"), p = print_node(a);
+        a.find(get)->targ = kFloat;
+        lit(a, get, "Target", Value::entity(2));
+        chain(a, {poke, set, p}); a.link(get, "Value", p, "Text");
+        const int peek = node(a, "event.custom", "peek"), get2 = node(a, "var.remote_get", "nothing"), p2 = print_node(a);
+        a.find(get2)->targ = kInt;
+        lit(a, get2, "Target", Value::entity(2));
+        a.link(peek, "Then", p2, "In"); a.link(get2, "Value", p2, "Text");
+        const int bad = node(a, "event.custom", "bad"), set2 = node(a, "var.remote_set", "hp");
+        a.find(set2)->targ = kString;
+        lit(a, set2, "Target", Value::entity(2)); lit(a, set2, "Value", Value::string("lots"));
+        a.link(bad, "Then", set2, "In");
+
+        w.add();
+        w.script(2).add_variable("hp", kFloat, Value::number(10.0));
+
+        check(w.build() && w.fire(1, "poke") == "42.0", "a variable of another entity's script can be set and read back");
+        const Value* hp = w.inst(2).variable("hp");
+        check(hp && hp->type == kFloat && hp->as_float() == 42.0, "it keeps its own type: the Int became a Float");
+        check(w.fire(1, "peek") == "0", "reading a variable the other script does not have gives the default");
+        w.fire(1, "bad");
+        check(hp->type == kFloat && hp->as_float() == 42.0 && w.errors.empty(), "a value that cannot become the variable's type is not written");
+    }
+    {
+        // Two scripts that send to each other for ever are stopped.
+        World w;
+        Graph& a = w.add();
+        const int e1 = node(a, "event.custom", "ping"), s1 = node(a, "event.send", "ping");
+        lit(a, s1, "Target", Value::entity(2)); chain(a, {e1, s1});
+        const int ok1 = node(a, "event.custom", "ok"), okp = print_node(a, "fine");
+        chain(a, {ok1, okp});
+        Graph& b = w.add();
+        const int e2 = node(b, "event.custom", "ping"), s2 = node(b, "event.send", "ping");
+        lit(b, s2, "Target", Value::entity(1)); chain(b, {e2, s2});
+        w.build();
+        w.fire(1, "ping");
+        check(w.errors.size() == 1 && w.errors[0].find("too deep") != std::string::npos, "two scripts sending to each other without end are stopped with an error");
+        check(w.fire(1, "ok") == "fine", "and the scripts still run afterwards");
+    }
+    {
+        World w;
+        Graph& a = w.add();
+        const int ev = node(a, "event.begin_play"), s = node(a, "event.send"), g = node(a, "var.remote_get"), p = print_node(a);
+        chain(a, {ev, s, p}); a.link(g, "Value", p, "Text");
+        check(!w.build() && w.has_error("name the event") && w.has_error("name the variable"),
+              "a Send Event with no event name and a remote Get with no variable name are compile errors");
+    }
+}
+
 void test_waits() {
     std::printf("-- waits\n");
     {
@@ -587,6 +727,7 @@ int main() {
     test_state_nodes();
     test_pure_and_variables();
     test_functions_and_events();
+    test_between_scripts();
     test_waits();
     test_errors();
     test_text();

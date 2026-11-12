@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -56,8 +57,11 @@ struct PanelState {
     std::vector<std::string> undo, redo;
     std::string  last_snapshot;
     std::string  status;
+    int          uid = 0;         // names this script's tab for ImGui
 
     PanelState() {
+        static int next_uid = 1;
+        uid = next_uid++;
         register_standard_library(reg);
         register_engine_logic_nodes(reg, &slot);
         new_script();
@@ -149,6 +153,9 @@ struct PanelState {
             status = "give the script a file name first";
             return false;
         }
+        std::error_code ec;
+        const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent, ec);
         std::ofstream f(path, std::ios::binary | std::ios::trunc);
         if (!f) {
             status = "could not write " + path;
@@ -159,11 +166,93 @@ struct PanelState {
         status = "saved " + path;
         return true;
     }
+    std::string tab_name() const {
+        return path.empty() ? std::string("untitled") : std::filesystem::path(path).filename().string();
+    }
+    /// The tab the panel starts with, before anything was done in it.
+    bool untouched() const { return path.empty() && !dirty && undo.empty(); }
 };
 
-PanelState& state() {
-    static PanelState s;
-    return s;
+/// Every script open in the panel, one tab each.
+struct Docs {
+    std::vector<std::unique_ptr<PanelState>> list;
+    int  active = 0;
+    int  select = -1;    // tab to bring forward on the next frame
+    int  closing = -1;   // tab whose close waits for "save the changes?"
+    std::vector<std::string> found;   // .lgraph files offered by Open
+    char open_buf[260] = {};
+};
+
+Docs& docs() {
+    static Docs d;
+    if (d.list.empty()) d.list.push_back(std::make_unique<PanelState>());
+    d.active = std::clamp(d.active, 0, static_cast<int>(d.list.size()) - 1);
+    return d;
+}
+
+bool same_file(const std::string& a, const std::string& b) {
+    if (a.empty() || b.empty()) return false;
+    std::error_code ea, eb;
+    const std::filesystem::path pa = std::filesystem::weakly_canonical(a, ea);
+    const std::filesystem::path pb = std::filesystem::weakly_canonical(b, eb);
+    return ea || eb ? a == b : pa == pb;
+}
+
+/// Bring `path` up in a tab: the one that already has it, or a new one. A
+/// path with no file behind it becomes a new script that will be saved there.
+PanelState& open_doc(const std::string& path) {
+    Docs& d = docs();
+    for (size_t i = 0; i < d.list.size(); ++i)
+        if (same_file(d.list[i]->path, path)) {
+            d.select = static_cast<int>(i);
+            return *d.list[i];
+        }
+    int at = d.active;
+    if (!d.list[static_cast<size_t>(at)]->untouched()) {
+        d.list.push_back(std::make_unique<PanelState>());
+        at = static_cast<int>(d.list.size()) - 1;
+    }
+    PanelState&     st = *d.list[static_cast<size_t>(at)];
+    std::error_code ec;
+    const bool      exists = std::filesystem::exists(path, ec);
+    if (st.load(path)) {
+        std::snprintf(st.path_buf, sizeof st.path_buf, "%s", path.c_str());
+    } else if (!exists) {
+        st.new_script();
+        st.path = path;
+        st.script.name = std::filesystem::path(path).stem().string();
+        st.last_snapshot = to_text(st.script);
+        st.status = "new script: " + path;
+        st.dirty = true;   // not on disk until it is saved
+        std::snprintf(st.path_buf, sizeof st.path_buf, "%s", path.c_str());
+    }
+    // A file that is there but cannot be read stays untouched on disk: the tab
+    // keeps no path, so Save cannot write an empty script over it.
+    d.select = at;
+    return st;
+}
+
+void close_doc(int index) {
+    Docs& d = docs();
+    if (index < 0 || index >= static_cast<int>(d.list.size())) return;
+    d.list.erase(d.list.begin() + index);
+    if (d.list.empty()) d.list.push_back(std::make_unique<PanelState>());
+    if (d.active >= index && d.active > 0) --d.active;
+    d.active = std::clamp(d.active, 0, static_cast<int>(d.list.size()) - 1);
+    d.select = d.active;
+}
+
+/// The project's logic scripts, for the Open list.
+std::vector<std::string> find_logic_scripts() {
+    std::vector<std::string> out;
+    std::error_code          ec;
+    std::filesystem::recursive_directory_iterator it("assets", std::filesystem::directory_options::skip_permission_denied, ec), end;
+    for (; !ec && it != end && out.size() < 500; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        if (it->path().extension() == ".lgraph") out.push_back(it->path().generic_string());
+    }
+    std::sort(out.begin(), out.end());
+    return out;
 }
 
 ImU32 type_color(Type t) {
@@ -201,6 +290,9 @@ std::string node_title(const NodeDef& d, const Node& n) {
         case Builtin::FnCall: return n.name;
         case Builtin::CustomEvent: return "Event " + n.name;
         case Builtin::CallEvent: return "Call " + n.name;
+        case Builtin::SendEvent: return n.name.empty() ? d.title : "Send " + n.name;
+        case Builtin::RemoteGet: return n.name.empty() ? d.title : "Get " + n.name + " of";
+        case Builtin::RemoteSet: return n.name.empty() ? d.title : "Set " + n.name + " of";
         default: return d.named && !n.name.empty() ? d.title + ": " + n.name : d.title;
     }
 }
@@ -356,6 +448,29 @@ std::vector<PaletteEntry> palette_entries(PanelState& st, const Graph& g) {
     return out;
 }
 
+/// The parameter list of a custom event, or of the event a node sends.
+void edit_params(PanelState& st, Node& node) {
+    int rm = -1;
+    for (int i = 0; i < static_cast<int>(node.params.size()); ++i) {
+        Param& p = node.params[static_cast<size_t>(i)];
+        ImGui::PushID(2000 + i);
+        char pb[64];
+        std::snprintf(pb, sizeof pb, "%s", p.name.c_str());
+        ImGui::SetNextItemWidth(90.0f);
+        if (ImGui::InputText("##n", pb, sizeof pb) && pb[0]) { p.name = pb; st.changed(); }
+        ImGui::SameLine();
+        if (type_combo("##t", p.type)) { p.def = Value::default_of(p.type); st.changed(); }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) rm = i;
+        ImGui::PopID();
+    }
+    if (rm >= 0) { node.params.erase(node.params.begin() + rm); st.changed(); }
+    if (ImGui::SmallButton("+ parameter")) {
+        node.params.push_back(Param{"p" + std::to_string(node.params.size()), kFloat, Value::number(0.0)});
+        st.changed();
+    }
+}
+
 void draw_side_panel(PanelState& st) {
     ImGui::TextUnformatted("Graphs");
     for (int i = 0; i < static_cast<int>(st.script.graphs.size()); ++i) {
@@ -502,25 +617,29 @@ void draw_side_panel(PanelState& st) {
                 sel->name = eb;
                 st.changed();
             }
-            int rm = -1;
-            for (int i = 0; i < static_cast<int>(sel->params.size()); ++i) {
-                Param& p = sel->params[static_cast<size_t>(i)];
-                ImGui::PushID(2000 + i);
-                char pb[64];
-                std::snprintf(pb, sizeof pb, "%s", p.name.c_str());
-                ImGui::SetNextItemWidth(90.0f);
-                if (ImGui::InputText("##n", pb, sizeof pb) && pb[0]) { p.name = pb; st.changed(); }
-                ImGui::SameLine();
-                if (type_combo("##t", p.type)) { p.def = Value::default_of(p.type); st.changed(); }
-                ImGui::SameLine();
-                if (ImGui::SmallButton("x")) rm = i;
-                ImGui::PopID();
-            }
-            if (rm >= 0) { sel->params.erase(sel->params.begin() + rm); st.changed(); }
-            if (ImGui::SmallButton("+ parameter")) {
-                sel->params.push_back(Param{"p" + std::to_string(sel->params.size()), kFloat, Value::number(0.0)});
-                st.changed();
-            }
+            edit_params(st, *sel);
+        }
+        if (d && d->builtin == Builtin::SendEvent) {
+            char eb[64];
+            std::snprintf(eb, sizeof eb, "%s", sel->name.c_str());
+            if (ImGui::InputText("event", eb, sizeof eb)) sel->name = eb;
+            if (ImGui::IsItemDeactivatedAfterEdit()) st.changed();
+            ImGui::TextDisabled("what it sends (same order as the event's parameters)");
+            edit_params(st, *sel);
+            // Fill the list in from a custom event of this script with that name.
+            for (const Graph& og : st.script.graphs)
+                for (const Node& n : og.nodes)
+                    if (n.def == "event.custom" && n.name == sel->name && !n.params.empty() && n.id != sel->id &&
+                        sel->params.empty() && ImGui::SmallButton("use this script's parameters")) {
+                        sel->params = n.params;
+                        st.changed();
+                    }
+        }
+        if (d && (d->builtin == Builtin::RemoteGet || d->builtin == Builtin::RemoteSet)) {
+            char eb[64];
+            std::snprintf(eb, sizeof eb, "%s", sel->name.c_str());
+            if (ImGui::InputText("variable", eb, sizeof eb)) sel->name = eb;
+            if (ImGui::IsItemDeactivatedAfterEdit()) st.changed();
         }
         if (d && (d->builtin == Builtin::Sequence || d->builtin == Builtin::MultiGate || d->builtin == Builtin::Select ||
                   d->builtin == Builtin::MakeArray)) {
@@ -810,30 +929,125 @@ void draw_canvas(PanelState& st) {
 
 }  // namespace
 
+std::string new_logic_script_text(const std::string& name) {
+    Script s;
+    s.name = name;
+    Graph& g = s.add_graph(GraphKind::Event, "EventGraph");
+    g.add("event.begin_play", 60.0f, 60.0f);
+    g.add("event.tick", 60.0f, 220.0f);
+    return to_text(s);
+}
+
 void open_logic_script(const std::string& path, bool* open_flag) {
-    PanelState& st = state();
-    if (!st.load(path)) {
-        st.new_script();
-        st.path = path;
-        st.status = "new script: " + path;
-    }
-    std::snprintf(st.path_buf, sizeof st.path_buf, "%s", path.c_str());
+    open_doc(path);
     if (open_flag) *open_flag = true;
 }
 
+bool logic_scripts_unsaved() {
+    for (const auto& s : docs().list)
+        if (s->dirty) return true;
+    return false;
+}
+
 void draw_logic_script_panel(bool* open) {
-    PanelState& st = state();
+    Docs& d = docs();
     ImGui::SetNextWindowSize(ImVec2(1100.0f, 680.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Logic Script", open, ImGuiWindowFlags_NoScrollbar)) {
         ImGui::End();
         return;
     }
-    if (ImGui::Button("New")) { st.new_script(); st.path.clear(); st.path_buf[0] = 0; }
+
+    // One tab per open script.
+    int close = -1;
+    const int want = d.select;
+    d.select = -1;
+    if (ImGui::BeginTabBar("##lg_docs", ImGuiTabBarFlags_FittingPolicyScroll)) {
+        for (int i = 0; i < static_cast<int>(d.list.size()); ++i) {
+            PanelState&       s = *d.list[static_cast<size_t>(i)];
+            bool              keep = true;
+            ImGuiTabItemFlags f = s.dirty ? ImGuiTabItemFlags_UnsavedDocument : 0;
+            if (want == i) f |= ImGuiTabItemFlags_SetSelected;
+            const std::string label = s.tab_name() + "###lgdoc" + std::to_string(s.uid);
+            if (ImGui::BeginTabItem(label.c_str(), &keep, f)) {
+                d.active = i;
+                ImGui::EndTabItem();
+            }
+            if (!s.path.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", s.path.c_str());
+            if (!keep) close = i;
+        }
+        if (ImGui::TabItemButton("+", ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip)) {
+            d.list.push_back(std::make_unique<PanelState>());
+            d.select = static_cast<int>(d.list.size()) - 1;
+        }
+        ImGui::EndTabBar();
+    }
+    if (want >= 0 && want < static_cast<int>(d.list.size())) d.active = want;
+    if (close >= 0) {
+        if (d.list[static_cast<size_t>(close)]->dirty) {
+            d.closing = close;
+            ImGui::OpenPopup("Unsaved changes##lg");
+        } else {
+            close_doc(close);
+        }
+    }
+    if (ImGui::BeginPopupModal("Unsaved changes##lg", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        PanelState* c = d.closing >= 0 && d.closing < static_cast<int>(d.list.size()) ? d.list[static_cast<size_t>(d.closing)].get() : nullptr;
+        if (!c) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            ImGui::Text("%s has changes that are not saved.", c->tab_name().c_str());
+            if (ImGui::Button("Save")) {
+                if (c->path.empty()) {
+                    c->status = "give the script a file name, then save";
+                    d.select = d.closing;
+                } else if (c->save()) {
+                    close_doc(d.closing);
+                }
+                d.closing = -1;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Discard")) {
+                close_doc(d.closing);
+                d.closing = -1;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) {
+                d.closing = -1;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    d.active = std::clamp(d.active, 0, static_cast<int>(d.list.size()) - 1);
+    PanelState& st = *d.list[static_cast<size_t>(d.active)];
+    ImGui::PushID(st.uid);
+    if (ImGui::Button("Open...")) {
+        d.found = find_logic_scripts();
+        d.open_buf[0] = 0;
+        ImGui::OpenPopup("##lg_open");
+    }
+    if (ImGui::BeginPopup("##lg_open")) {
+        ImGui::SetNextItemWidth(300.0f);
+        const bool enter = ImGui::InputTextWithHint("##p", "a path, or pick one below", d.open_buf, sizeof d.open_buf,
+                                                    ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        if ((ImGui::Button("Open") || enter) && d.open_buf[0]) {
+            open_doc(d.open_buf);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::Separator();
+        if (d.found.empty()) ImGui::TextDisabled("no .lgraph files under assets/ yet");
+        for (const std::string& f : d.found)
+            if (ImGui::Selectable(f.c_str())) open_doc(f);
+        ImGui::EndPopup();
+    }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(320.0f);
     ImGui::InputTextWithHint("##path", "assets/scripts/my_script.lgraph", st.path_buf, sizeof st.path_buf);
-    ImGui::SameLine();
-    if (ImGui::Button("Open") && st.path_buf[0]) st.load(st.path_buf);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The file this script is saved to.");
     ImGui::SameLine();
     const bool ctrl_s = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S);
     if (ImGui::Button(st.dirty ? "Save*" : "Save") || ctrl_s) {
@@ -885,6 +1099,7 @@ void draw_logic_script_panel(bool* open) {
         ImGui::EndChild();
     }
     ImGui::EndGroup();
+    ImGui::PopID();
     ImGui::End();
 }
 

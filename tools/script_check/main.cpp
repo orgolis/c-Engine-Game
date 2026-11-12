@@ -497,7 +497,76 @@ int main() {
         std::printf("  logic events: key presses counted %.0f (expected 2), gameplay event value %.0f (expected 9) -> %s\n",
                     presses_x, door_y, events_ok ? "OK" : "FAIL");
         std::remove("script_check_logic_ev.lgraph");
-        logic_ok = moved_right && status_ok && refused && events_ok;
+
+        // A button and a door, the way a level wires them: the button's graph
+        // holds a reference to the door (set in the Inspector, by name) and
+        // sends it an event from Begin Play; the door's graph multiplies what
+        // it is sent by its own Inspector value. The button is created FIRST,
+        // so this only works if the door's script exists before any Begin Play.
+        bool button_door_ok = false;
+        {
+        Script bs;
+        bs.name = "button";
+        Graph& bg = bs.add_graph(GraphKind::Event, "EventGraph");
+        bs.add_variable("door", kEntity).exposed = true;
+        bs.add_variable("push", kFloat, Value::number(1.0)).exposed = true;
+        {
+            const int bp = bg.add("event.begin_play").id, send = bg.add("event.send").id;
+            const int door = bg.add("var.get").id, push = bg.add("var.get").id;
+            bg.find(send)->name = "open";
+            bg.find(send)->params = {Param{"amount", kFloat, Value::number(0.0)}};
+            bg.find(door)->name = "door"; bg.find(push)->name = "push";
+            bg.link(bp, "Then", send, "In"); bg.link(door, "Value", send, "Target"); bg.link(push, "Value", send, "amount");
+        }
+        write_file("script_check_logic_button.lgraph", to_text(bs).c_str());
+        Script ds;
+        ds.name = "door";
+        Graph& dg = ds.add_graph(GraphKind::Event, "EventGraph");
+        ds.add_variable("height", kFloat, Value::number(1.0)).exposed = true;
+        ds.add_variable("offset", kVec3).exposed = true;
+        ds.add_variable("hidden", kFloat, Value::number(5.0));   // not exposed: not a field
+        {
+            const int op = dg.add("event.custom").id, mul = dg.add("math.mul").id, h = dg.add("var.get").id;
+            const int mk = dg.add("vec3.make").id, off = dg.add("var.get").id, addv = dg.add("math.add").id;
+            const int setp = dg.add("entity.set_position").id, self = dg.add("self").id;
+            dg.find(op)->name = "open";
+            dg.find(op)->params = {Param{"amount", kFloat, Value::number(0.0)}};
+            dg.find(h)->name = "height"; dg.find(off)->name = "offset";
+            dg.find(mul)->targ = kFloat; dg.find(addv)->targ = kVec3;
+            dg.link(op, "amount", mul, "A"); dg.link(h, "Value", mul, "B"); dg.link(mul, "Result", mk, "Y");
+            dg.link(mk, "Result", addv, "A"); dg.link(off, "Value", addv, "B");
+            dg.link(op, "Then", setp, "In"); dg.link(self, "Self", setp, "Entity"); dg.link(addv, "Result", setp, "Position");
+        }
+        write_file("script_check_logic_door.lgraph", to_text(ds).c_str());
+        auto button = scn->CreateEntity("LogicButton");
+        auto btn_sc = button->AddComponent<scene::ScriptComponent>(std::string("script_check_logic_button.lgraph"));
+        auto door = scn->CreateEntity("LogicDoor");
+        auto dsc = door->AddComponent<scene::ScriptComponent>(std::string("script_check_logic_door.lgraph"));
+        btn_sc->SetParam("door", "LogicDoor");
+        btn_sc->SetParam("push", "2");
+        dsc->SetParam("height", "3");
+        dsc->SetParam("offset", "10,0,-4");
+        const auto fields = editor::scan_script_params("script_check_logic_door.lgraph");
+        const bool fields_ok = fields.size() == 2 && fields[0].name == "height" && fields[0].type == "float" &&
+                               fields[0].def == "1.0" && fields[1].name == "offset" && fields[1].type == "vec3";
+        const auto bfields = editor::scan_script_params("script_check_logic_button.lgraph");
+        const bool bfields_ok = bfields.size() == 2 && bfields[0].type == "entity" && bfields[1].type == "float";
+        editor::ScriptSystem bds;
+        bds.register_host(".lgraph", editor::make_logic_host());
+        bds.update(scn, true, 0.1f, api);
+        const glm::vec3 dpos = door->GetTransform()->GetWorldPosition();
+        bds.update(scn, false, 0.1f, api);
+        const bool door_ok = std::fabs(dpos.x - 10.0f) < 1e-4f && std::fabs(dpos.y - 6.0f) < 1e-4f &&
+                             std::fabs(dpos.z + 4.0f) < 1e-4f;
+        std::printf("  logic button -> door: door at (%.1f, %.1f, %.1f) (expected 10.0, 6.0, -4.0), "
+                    "Inspector fields %s -> %s\n",
+                    dpos.x, dpos.y, dpos.z, fields_ok && bfields_ok ? "listed" : "WRONG",
+                    door_ok && fields_ok && bfields_ok ? "OK" : "FAIL");
+        std::remove("script_check_logic_button.lgraph");
+        std::remove("script_check_logic_door.lgraph");
+        button_door_ok = door_ok && fields_ok && bfields_ok;
+        }
+        logic_ok = moved_right && status_ok && refused && events_ok && button_door_ok;
         std::printf("  logic graph: x=%.2f (expected 7.00), status '%s', bad graph '%.50s' -> %s\n",
                     lp.x, lsc->GetStatus().c_str(), bsc->GetStatus().c_str(), logic_ok ? "OK" : "FAIL");
         std::remove("script_check_logic.lgraph");

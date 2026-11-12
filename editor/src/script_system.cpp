@@ -11,8 +11,10 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cctype>
+#include <memory>
 #include <system_error>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -71,6 +73,11 @@ void ScriptSystem::update(const std::shared_ptr<schizo::scene::Scene>& scene,
     // iterator. Newly spawned entities are picked up next frame.
     const std::vector<std::shared_ptr<schizo::scene::Entity>> ents = scene->GetEntities();
 
+    // Two passes: every script is loaded and started before any script is
+    // updated. A script that reaches for another one in its first update (a
+    // logic graph sending an event from Begin Play, a Python script looking a
+    // neighbour up) then finds it there whatever order the scene lists them in.
+    std::vector<std::pair<uint32_t, std::shared_ptr<schizo::scene::ScriptComponent>>> live;
     std::unordered_set<uint32_t> seen;
     for (const auto& ent : ents) {
         if (!ent || !ent->IsActiveInHierarchy()) continue;
@@ -133,6 +140,14 @@ void ScriptSystem::update(const std::shared_ptr<schizo::scene::Scene>& scene,
             slot.started = true;
             sc->SetStatus("running");
         }
+        live.emplace_back(eid, std::move(sc));
+    }
+
+    for (const auto& [eid, sc] : live) {
+        const auto it = slots_.find(eid);
+        if (it == slots_.end() || !it->second.inst || !it->second.started) continue;
+        Slot&       slot = it->second;
+        std::string err;
         if (!slot.inst->update(eid, dt, err)) {
             slot.failed = true;
             slot.inst.reset();

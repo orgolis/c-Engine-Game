@@ -49,6 +49,8 @@ enum class Builtin : uint16_t {
     VarGet, VarSet, LocalGet, LocalSet, MakeArray, Self,
     // functions and events
     FnEntry, FnReturn, FnCall, Event, CustomEvent, CallEvent,
+    // other entities' scripts
+    SendEvent, RemoteGet, RemoteSet,
 };
 
 struct PinDef {

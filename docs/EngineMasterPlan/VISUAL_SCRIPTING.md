@@ -1,26 +1,62 @@
 # Visual scripting: how the Logic Graph core works
 
-**Status:** milestones A1 (v0.8.14, the core) and the first half of A2 (v0.8.15,
-logic graphs as a script backend) of [ROAD_TO_TEST_GAME.md](ROAD_TO_TEST_GAME.md).
+**Status (v0.8.18):** milestone A1 (the core) is done; A2 (engine binding) and
+A3 (the editor) of [ROAD_TO_TEST_GAME.md](ROAD_TO_TEST_GAME.md) are partly done.
 The per-scene Logic Graph panel still runs the old `gameplay_logic.h` runtime
-until the rest of A2 and A3 replace it.
+until the rest of A2 replaces it.
 
-Code: `engine/core/vscript/`. Check: `tools/vscript_check` (58 checks).
+Code: `engine/core/vscript/`. Checks: `tools/vscript_check` (71 checks) for the
+core, `tools/script_check` for graphs running on entities.
 
-## In the editor today (v0.8.15)
+## In the editor today
 
-A file ending in `.lgraph` on an entity's Script component is a logic graph.
-It runs through the same `ScriptSystem` as Python, C++ and C# scripts: Begin
-Play once, Tick every frame, End Play when Play stops, hot reload when the file
-changes, and a compile error shown as the component's status with the node it
-is about. `editor/src/script_host_logic.cpp` registers every `ScriptApi` entry
-as a node (entity, input, physics, rendering, audio, gameplay, items, weapons,
-world flags and events, script parameters), so adding an engine capability to
-`ScriptApi` needs one more line there.
+**A logic script is a file.** A file ending in `.lgraph` on an entity's Script
+component is a logic graph. It runs through the same `ScriptSystem` as Python,
+C++ and C# scripts: Begin Play once, Tick every frame, End Play when Play
+stops, hot reload when the file changes, and a compile error shown as the
+component's status with the node it is about.
 
-There is no graph editor for these files yet (milestone A3). Until then a
-graph is built in code and written with `to_text()`, as `tools/script_check`
-does.
+**Getting to the graph editor.** Any of these opens the script in a tab of the
+Logic Script panel (View > Logic Script Editor):
+
+- double-click a `.lgraph` in the Asset Browser, or right-click > Open;
+- "Edit Graph" in the Inspector's Script section;
+- "New Logic Graph" in the Inspector, on a Script component with no file: it
+  creates `assets/scripts/<object name>.lgraph`, assigns it and opens it;
+- New > Script > Logic Graph in the Asset Browser;
+- "Open..." in the panel, which lists every `.lgraph` under `assets/`.
+
+Each script has its own tab, its own undo history and its own compile result.
+Closing a tab with changes asks first.
+
+**Nodes for the engine.** `editor/src/script_host_logic.cpp` registers every
+`ScriptApi` entry as a node (entity, input, physics, rendering, audio,
+gameplay, items, weapons, world flags and events, script parameters), so adding
+an engine capability to `ScriptApi` needs one more line there.
+
+**Events the engine raises.** Begin Play, Tick, End Play, Key Pressed and Key
+Released (one node per key), and On Gameplay Event (one node per event name:
+trigger enter and exit, damage, pickups, anything sent with Emit Event).
+
+**Variables in the Inspector.** A variable with "show in Inspector" ticked is a
+field of the Script component, so two objects with the same script can differ.
+Bool, int, float, string, vec2, vec3, vec4, color and entity are supported. An
+entity field is kept as the object's **name** (type it, or drag the object from
+the Hierarchy), so it survives save and load; it is looked up when the script
+starts.
+
+**Scripts talking to each other.** Three nodes take a Target entity:
+
+| Node | What it does |
+|------|--------------|
+| Send Event to Entity | Runs the custom event with that name on the target's script, now, then continues. The node lists what it sends; the values are matched to the event's parameters by position and converted to their types |
+| Get Variable of Entity | Reads a variable of the target's script, as the type picked on the node |
+| Set Variable of Entity | Writes one, converted to the variable's own type |
+
+A target with no logic script, or without that event or variable, is not an
+error: nothing happens, and a read gives the type's default. Every script in
+the scene is loaded before any Begin Play runs, so Begin Play may send to
+another object. That object's own Begin Play may not have run yet.
 
 ## The pieces
 
@@ -59,7 +95,11 @@ transfers.
 - **Run-time mistakes do not stop the game.** A bad array index or a division
   by zero gives the default value and reports the node. A loop that never ends
   is stopped after `instruction_budget` steps; a runaway recursion after
-  `max_call_depth` frames.
+  `max_call_depth` frames (two scripts sending events to each other without
+  end are stopped the same way).
+- **An event's parameters always have their declared types.** Whoever fires it
+  (the engine, another script) has its arguments converted; one that cannot be
+  converted, or was not given, is the type's default.
 
 ## How a graph becomes code
 
@@ -104,5 +144,7 @@ nothing. The editor UI for this is milestone A4.
 ## Not built yet
 
 Macros, event dispatchers, interfaces, parent scripts, timelines, user enums
-and structs, maps and sets, calling events and functions on other entities.
-`Type::sub` and `Kind::Enum` / `Kind::Struct` are reserved for them.
+and structs, maps and sets, calling a function (with results) on another
+entity, collision events, nodes for component properties, the debugger UI,
+comments, copy and paste. `Type::sub` and `Kind::Enum` / `Kind::Struct` are
+reserved for the first group.

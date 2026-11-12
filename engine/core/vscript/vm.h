@@ -44,6 +44,12 @@ struct Host {
     virtual ~Host() = default;
     /// "Print" nodes.
     virtual void print(const Instance&, std::string_view text) { (void)text; }
+    /// The script instance on an entity, for nodes that reach another entity's
+    /// script (Send Event, Get / Set its variables). nullptr when it has none.
+    virtual Instance* find_instance(uint32_t entity) {
+        (void)entity;
+        return nullptr;
+    }
     /// A script did something wrong at run time (bad index, runaway loop).
     /// `graph` and `node` say where; the script keeps running where it can.
     virtual void script_error(const Instance&, int graph, int node, std::string_view text) {
@@ -139,6 +145,7 @@ private:
     };
 
     void push_event_frame(Instance& inst, int pc, bool top);
+    static void store_event_args(Instance& inst, const EventInfo& ev, const Value* args, int nargs);
     bool push_function_frame(Instance& inst, int fn, const Value* args, int nargs, Value* ret_to, bool top);
     void pop_frame();
     void run();

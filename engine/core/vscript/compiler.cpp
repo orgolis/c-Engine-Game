@@ -62,6 +62,7 @@ const OpInfo kOps[OP_COUNT_] = {
     {"LTF", oR, oR, oR},     {"LEF", oR, oR, oR},     {"GTF", oR, oR, oR},     {"GEF", oR, oR, oR},
     {"EQF", oR, oR, oR},     {"NEF", oR, oR, oR},
     {"NOT", oR, oR, oN},     {"AND", oR, oR, oR},     {"OR", oR, oR, oR},      {"XOR", oR, oR, oR},
+    {"SENDE", oK, oR, oR},   {"GETVO", oR, oR, oK},   {"SETVO", oR, oR, oK},
 };
 
 struct Endpoint {
@@ -502,6 +503,16 @@ int Compiler::eval_pure(const GraphInfo& gi, int node) {
             emit(OP_SELF, base);
             break;
         case Builtin::Reroute: base = input_named(gi, node, "In"); break;
+        case Builtin::RemoteGet: {
+            const int target = input_named(gi, node, "Target");
+            const int vp = s->find("Value", false);
+            const Type t = vp >= 0 ? s->pins[static_cast<size_t>(vp)].type : Type();
+            if (n->name.empty()) error(gi.index, node, "name the variable to read");
+            if (t.is_any()) error(gi.index, node, "pick the type of the variable to read");
+            base = new_temp();
+            emit(OP_GETVO, base, target, const_index(Value::string(n->name)), type_index(t));
+            break;
+        }
         case Builtin::MakeArray: {
             const int count = std::max(1, n->extra);
             const int items = new_temps(count);
@@ -990,6 +1001,26 @@ void Compiler::emit_block(const GraphInfo& gi, int node, int pin) {
             go(gi, node, "Then");
             break;
         }
+        case Builtin::SendEvent: {
+            if (n.name.empty()) error(gi.index, node, "name the event to send");
+            const int target = input_named(gi, node, "Target");
+            std::vector<int> ins;
+            for (size_t i = 0; i < s.pins.size(); ++i)
+                if (s.pins[i].input && !s.pins[i].type.is_exec() && s.pins[i].name != "Target") ins.push_back(static_cast<int>(i));
+            const int args = new_temps(std::max<int>(1, static_cast<int>(ins.size())));
+            for (size_t i = 0; i < ins.size(); ++i) input_reg(gi, node, ins[i], args + static_cast<int>(i));
+            emit(OP_SENDE, const_index(Value::string(n.name)), args, target, static_cast<int>(ins.size()));
+            go(gi, node, "Then");
+            break;
+        }
+        case Builtin::RemoteSet: {
+            if (n.name.empty()) error(gi.index, node, "name the variable to write");
+            const int target = input_named(gi, node, "Target");
+            const int v = input_named(gi, node, "Value");
+            emit(OP_SETVO, target, v, const_index(Value::string(n.name)));
+            go(gi, node, "Then");
+            break;
+        }
         case Builtin::CallEvent: {
             const auto e = event_index_.find(n.name);
             if (e == event_index_.end()) {
@@ -1109,7 +1140,10 @@ void Compiler::compile_event_unit() {
             const int base = output_block(gi, n.id);
             int       slot = 0;
             for (const Pin& p : s->pins)
-                if (!p.input && !p.type.is_exec()) e.param_regs.push_back(base + slot++);
+                if (!p.input && !p.type.is_exec()) {
+                    e.param_regs.push_back(base + slot++);
+                    e.param_types.push_back(p.type);
+                }
             const int label = new_label();
             entries.push_back(Entry{gi.index, n.id, label});
             event_index_[e.name] = static_cast<int>(prog_.events.size());
