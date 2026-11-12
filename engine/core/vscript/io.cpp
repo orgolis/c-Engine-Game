@@ -1,5 +1,6 @@
 #include "vscript/io.h"
 
+#include <unordered_map>
 #include <algorithm>
 #include <cstdlib>
 #include <vector>
@@ -71,6 +72,9 @@ std::string to_text(const Script& s) {
         }
         for (const Link& l : g.links)
             line(o, {"link", std::to_string(l.from), esc(l.from_pin), std::to_string(l.to), esc(l.to_pin)});
+        for (const CommentBox& b : g.boxes)
+            line(o, {"box", std::to_string(b.id), num(b.x), num(b.y), num(b.w), num(b.h), esc(b.text), num(b.color[0]),
+                     num(b.color[1]), num(b.color[2])});
         line(o, {"end"});
     }
     return o;
@@ -182,12 +186,71 @@ bool from_text(std::string_view text, Script& out, std::string* error) {
             if (Node* n = node_at(1)) n->set_default(field(2), std::move(v));
         } else if (k == "link") {
             g->link(std::atoi(field(1).c_str()), field(2), std::atoi(field(3).c_str()), field(4));
+        } else if (k == "box") {
+            CommentBox b;
+            b.id = std::atoi(field(1).c_str());
+            float* const dst[7] = {&b.x, &b.y, &b.w, &b.h, &b.color[0], &b.color[1], &b.color[2]};
+            const size_t at[7] = {2, 3, 4, 5, 7, 8, 9};
+            for (int i = 0; i < 7; ++i) {
+                Value v;
+                if (!field(at[i]).empty() && parse_literal(kFloat, field(at[i]), v)) *dst[i] = static_cast<float>(v.as_float());
+            }
+            b.text = field(6);
+            if (b.id <= 0) return fail("a comment box needs a positive id");
+            g->boxes.push_back(std::move(b));
+            g->next_id = std::max(g->next_id, g->boxes.back().id + 1);
         } else {
             return fail("unknown record '" + k + "'");
         }
     }
     if (!header) return fail("empty file");
     return true;
+}
+
+namespace {
+/// The name a copied selection carries, so that other text is not taken for one.
+const char* const kClipName = "#logic-script-selection";
+}  // namespace
+
+std::string selection_text(const Graph& g, const std::vector<int>& node_ids) {
+    Script s;
+    s.name = kClipName;
+    Graph& c = s.add_graph(g.kind, "selection");
+    auto in = [&](int id) { return std::find(node_ids.begin(), node_ids.end(), id) != node_ids.end(); };
+    for (const Node& n : g.nodes)
+        if (in(n.id)) c.nodes.push_back(n);
+    for (const Link& l : g.links)
+        if (in(l.from) && in(l.to)) c.links.push_back(l);
+    c.next_id = g.next_id;
+    return to_text(s);
+}
+
+std::vector<int> paste_selection(Graph& g, std::string_view text, float x, float y) {
+    std::vector<int> made;
+    Script           s;
+    if (!from_text(text, s) || s.name != kClipName || s.graphs.empty() || s.graphs[0].nodes.empty()) return made;
+    const Graph& c = s.graphs[0];
+    float minx = c.nodes[0].x, miny = c.nodes[0].y;
+    for (const Node& n : c.nodes) {
+        minx = std::min(minx, n.x);
+        miny = std::min(miny, n.y);
+    }
+    std::unordered_map<int, int> remap;
+    for (Node n : c.nodes) {
+        if (n.def == "fn.entry") continue;
+        const int old = n.id;
+        n.id = g.next_id++;
+        n.x += x - minx;
+        n.y += y - miny;
+        remap[old] = n.id;
+        made.push_back(n.id);
+        g.nodes.push_back(std::move(n));
+    }
+    for (const Link& l : c.links) {
+        const auto a = remap.find(l.from), b = remap.find(l.to);
+        if (a != remap.end() && b != remap.end()) g.link(a->second, l.from_pin, b->second, l.to_pin);
+    }
+    return made;
 }
 
 }  // namespace schizo::vs

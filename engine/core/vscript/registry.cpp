@@ -155,6 +155,10 @@ bool shape_of(const Registry& reg, const Script& script, const Graph& graph, con
         case Builtin::CustomEvent:
             add_params(out, node.params, false);
             break;
+        case Builtin::Reroute:
+            // On a flow wire it is a flow node that passes control along.
+            if (node.targ.is_exec()) out.pure = false;
+            break;
         case Builtin::SendEvent: {
             // In, Target are in the definition; the sender's own parameter
             // list follows Target, Then stays last.

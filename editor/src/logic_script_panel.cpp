@@ -36,6 +36,9 @@ struct PinRef {
     bool valid() const { return node != 0 && pin >= 0; }
 };
 
+/// What a held left mouse button is doing on the canvas.
+enum class Drag { None, Nodes, Band, MoveBox, ResizeBox };
+
 struct PanelState {
     Registry     reg;
     LogicApiSlot slot;            // never pointed at an engine: the editor only needs shapes
@@ -44,8 +47,16 @@ struct PanelState {
     bool         dirty = false;
     int          graph = 0;
     CanvasView   view;
-    int          selected = 0;
-    int          dragging = 0;
+    int          selected = 0;    // the node the side panel shows (the last one picked)
+    std::vector<int> sel;         // every selected node
+    int          sel_box = 0;     // the selected comment box
+    Drag         drag = Drag::None;
+    bool         drag_moved = false;
+    bool         press_additive = false;
+    int          press_node = 0;
+    float        band_x = 0.0f, band_y = 0.0f;   // where a box selection started (canvas units)
+    std::vector<int> band_base;   // what was selected before it
+    std::vector<int> carry;       // nodes a moving comment box takes along
     PinRef       link_from;
     bool         palette_open = false;
     float        palette_x = 0.0f, palette_y = 0.0f;   // canvas position for the new node
@@ -73,12 +84,30 @@ struct PanelState {
         g.add("event.begin_play", 60.0f, 60.0f);
         g.add("event.tick", 60.0f, 220.0f);
         graph = 0;
-        selected = 0;
+        clear_selection();
         undo.clear();
         redo.clear();
         last_snapshot = to_text(script);
         dirty = false;
         recompile();
+    }
+    bool is_selected(int id) const { return std::find(sel.begin(), sel.end(), id) != sel.end(); }
+    void clear_selection() {
+        sel.clear();
+        selected = 0;
+        sel_box = 0;
+    }
+    void select_only(int id) {
+        sel.assign(1, id);
+        selected = id;
+        sel_box = 0;
+    }
+    void toggle(int id) {
+        const auto it = std::find(sel.begin(), sel.end(), id);
+        if (it != sel.end()) sel.erase(it);
+        else sel.push_back(id);
+        selected = sel.empty() ? 0 : sel.back();
+        sel_box = 0;
     }
     Graph* cur() {
         if (script.graphs.empty()) return nullptr;
@@ -139,7 +168,7 @@ struct PanelState {
         if (script.graphs.empty()) script.add_graph(GraphKind::Event, "EventGraph");
         path = p;
         graph = 0;
-        selected = 0;
+        clear_selection();
         undo.clear();
         redo.clear();
         last_snapshot = to_text(script);
@@ -479,7 +508,7 @@ void draw_side_panel(PanelState& st) {
         const std::string label = (g.kind == GraphKind::Function ? "f  " : "ev ") + g.name;
         if (ImGui::Selectable(label.c_str(), st.graph == i)) {
             st.graph = i;
-            st.selected = 0;
+            st.clear_selection();
         }
         ImGui::PopID();
     }
@@ -552,7 +581,7 @@ void draw_side_panel(PanelState& st) {
         if (st.script.graphs.size() > 1 && ImGui::SmallButton("Delete this graph")) {
             st.script.graphs.erase(st.script.graphs.begin() + st.graph);
             st.graph = 0;
-            st.selected = 0;
+            st.clear_selection();
             st.changed();
             return;
         }
@@ -594,13 +623,31 @@ void draw_side_panel(PanelState& st) {
         st.changed();
     }
 
+    if (CommentBox* box = g ? g->find_box(st.sel_box) : nullptr) {
+        ImGui::SeparatorText("Comment box");
+        char cb[512];
+        std::snprintf(cb, sizeof cb, "%s", box->text.c_str());
+        if (ImGui::InputTextMultiline("##boxtext", cb, sizeof cb, ImVec2(-1.0f, 60.0f))) box->text = cb;
+        if (ImGui::IsItemDeactivatedAfterEdit()) st.changed();
+        ImGui::ColorEdit3("colour", box->color, ImGuiColorEditFlags_NoInputs);
+        if (ImGui::IsItemDeactivatedAfterEdit()) st.changed();
+    }
+
     // Details of the selected node: the things that are not pins.
     Node* sel = g ? g->find(st.selected) : nullptr;
     if (sel) {
         const NodeDef* d = st.reg.find(sel->def);
-        ImGui::SeparatorText("Selected node");
+        ImGui::SeparatorText(st.sel.size() > 1 ? "Selected nodes" : "Selected node");
+        if (st.sel.size() > 1) ImGui::TextDisabled("%d selected; showing the last one", static_cast<int>(st.sel.size()));
         ImGui::TextUnformatted(d ? d->title.c_str() : sel->def.c_str());
         if (d && !d->tooltip.empty()) ImGui::TextWrapped("%s", d->tooltip.c_str());
+        {
+            char nb[256];
+            std::snprintf(nb, sizeof nb, "%s", sel->comment.c_str());
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::InputTextWithHint("##nodecomment", "a note shown above the node", nb, sizeof nb)) sel->comment = nb;
+            if (ImGui::IsItemDeactivatedAfterEdit()) st.changed();
+        }
         if (d && d->named) {
             char eb[64];
             std::snprintf(eb, sizeof eb, "%s", sel->name.c_str());
@@ -665,7 +712,9 @@ void draw_side_panel(PanelState& st) {
             }
         }
         Shape sh;
-        if ((shape_of(st.reg, st.script, *g, *sel, sh) && sh.has_wildcard()) || !sel->targ.is_none()) {
+        if (sel->targ.is_exec()) {
+            // a knot on a flow wire: nothing to pick
+        } else if ((shape_of(st.reg, st.script, *g, *sel, sh) && sh.has_wildcard()) || !sel->targ.is_none()) {
             Type t = sel->targ.is_none() ? kFloat : sel->targ;
             if (type_combo("type", t)) { sel->targ = t; st.changed(); }
         }
@@ -674,6 +723,11 @@ void draw_side_panel(PanelState& st) {
                 ImGui::TextColored(m.error ? ImVec4(1, 0.4f, 0.4f, 1) : ImVec4(1, 0.8f, 0.3f, 1), "%s", m.text.c_str());
     }
 }
+
+struct NodeRect {
+    int    id;
+    ImVec2 a, b;   // screen corners
+};
 
 void draw_canvas(PanelState& st) {
     Graph* gp = st.cur();
@@ -705,55 +759,112 @@ void draw_canvas(PanelState& st) {
 
     const float row = ImGui::GetTextLineHeight() + 6.0f * z;
     const float pin_r = 5.0f * z;
+    auto sx = [&](float world_x) { return st.view.to_screen_x(world_x, origin.x); };
+    auto sy = [&](float world_y) { return st.view.to_screen_y(world_y, origin.y); };
+    auto wx = [&](float screen_x) { return st.view.to_world_x(screen_x, origin.x); };
+    auto wy = [&](float screen_y) { return st.view.to_world_y(screen_y, origin.y); };
+    auto mouse_in = [&](ImVec2 a, ImVec2 b) {
+        return io.MousePos.x >= a.x && io.MousePos.x <= b.x && io.MousePos.y >= a.y && io.MousePos.y <= b.y;
+    };
     std::unordered_map<uint64_t, ImVec2> pin_pos;   // (node, pin) -> screen centre
     auto key = [](int node, int pin) { return (static_cast<uint64_t>(static_cast<uint32_t>(node)) << 32) | static_cast<uint32_t>(pin); };
     std::unordered_map<int, Shape> shapes;
+    std::vector<NodeRect>          rects;
     PinRef hover_pin;
     int    hover_node = 0;
     bool   widget_active = false;
 
+    // ---- comment boxes, behind everything ----------------------------------
+    // Only the title bar and the corner grip take the mouse: the body is
+    // canvas, so a box selection can start inside a comment.
+    int  hover_box = 0;
+    bool hover_grip = false;
+    for (const CommentBox& b : g.boxes) {
+        const ImVec2 a(sx(b.x), sy(b.y)), c(a.x + b.w * z, a.y + b.h * z);
+        const ImU32  fill = ImGui::ColorConvertFloat4ToU32(ImVec4(b.color[0], b.color[1], b.color[2], 0.16f));
+        const ImU32  bar = ImGui::ColorConvertFloat4ToU32(ImVec4(b.color[0], b.color[1], b.color[2], 0.80f));
+        dl->AddRectFilled(a, c, fill, 4.0f * z);
+        dl->AddRectFilled(a, ImVec2(c.x, a.y + row), bar, 4.0f * z, ImDrawFlags_RoundCornersTop);
+        dl->PushClipRect(a, ImVec2(c.x, a.y + row), true);
+        dl->AddText(ImVec2(a.x + 8.0f * z, a.y + 3.0f * z), IM_COL32(255, 255, 255, 255), b.text.c_str());
+        dl->PopClipRect();
+        dl->AddRect(a, c, b.id == st.sel_box ? IM_COL32(255, 200, 60, 255) : bar, 4.0f * z, 0, b.id == st.sel_box ? 2.0f : 1.0f);
+        const float gs = 14.0f * z;
+        dl->AddTriangleFilled(ImVec2(c.x - gs, c.y), ImVec2(c.x, c.y - gs), c, bar);
+        if (hovered && mouse_in(ImVec2(c.x - gs, c.y - gs), c)) {
+            hover_box = b.id;
+            hover_grip = true;
+        } else if (hovered && mouse_in(a, ImVec2(c.x, a.y + row))) {
+            hover_box = b.id;
+            hover_grip = false;
+        }
+    }
+
+    // ---- nodes -------------------------------------------------------------
     for (Node& n : g.nodes) {
         Shape sh;
         std::string why;
         const bool ok = shape_of(st.reg, st.script, g, n, sh, &why);
         const NodeDef* def = st.reg.find(n.def);
+        const bool knot = ok && def && def->builtin == Builtin::Reroute;   // drawn as a knot on the wire
         const std::string title = ok && def ? node_title(*def, n) : ("? " + n.def);
         std::vector<int> ins, outs;
         if (ok)
             for (int i = 0; i < static_cast<int>(sh.pins.size()); ++i) (sh.pins[static_cast<size_t>(i)].input ? ins : outs).push_back(i);
-        // Width: title, or the widest input label + widest output label.
-        float w_in = 0.0f, w_out = 0.0f;
-        for (int i : ins) {
-            const Pin& p = sh.pins[static_cast<size_t>(i)];
-            float w = ImGui::CalcTextSize(p.name.c_str()).x + 22.0f * z;
+        auto has_editor = [&](const Pin& p) {
             const bool linked = std::any_of(g.links.begin(), g.links.end(), [&](const Link& l) { return l.to == n.id && l.to_pin == p.name; });
-            if (!linked && !p.type.is_exec() && !p.type.is_any() && !p.type.array && p.type.kind != Kind::Entity && p.type.kind != Kind::Transform)
-                w += (p.type.kind == Kind::Bool ? 26.0f : p.type.kind == Kind::Vec3 ? 150.0f : p.type.kind == Kind::String ? 100.0f : 64.0f) * z;
-            w_in = std::max(w_in, w);
+            return !knot && !linked && !p.type.is_exec() && !p.type.is_any() && !p.type.array && p.type.kind != Kind::Entity &&
+                   p.type.kind != Kind::Transform;
+        };
+        // Width: title, or the widest input label + widest output label.
+        float w = 26.0f * z, h = row;
+        if (!knot) {
+            float w_in = 0.0f, w_out = 0.0f;
+            for (int i : ins) {
+                const Pin& p = sh.pins[static_cast<size_t>(i)];
+                float pw = ImGui::CalcTextSize(p.name.c_str()).x + 22.0f * z;
+                if (has_editor(p))
+                    pw += (p.type.kind == Kind::Bool ? 26.0f : p.type.kind == Kind::Vec3 ? 150.0f : p.type.kind == Kind::String ? 100.0f : 64.0f) * z;
+                w_in = std::max(w_in, pw);
+            }
+            for (int i : outs) w_out = std::max(w_out, ImGui::CalcTextSize(sh.pins[static_cast<size_t>(i)].name.c_str()).x + 22.0f * z);
+            w = std::max(ImGui::CalcTextSize(title.c_str()).x + 20.0f * z, w_in + w_out + 12.0f * z);
+            h = row * (1.0f + static_cast<float>(std::max(ins.size(), outs.size()))) + 6.0f * z;
         }
-        for (int i : outs) w_out = std::max(w_out, ImGui::CalcTextSize(sh.pins[static_cast<size_t>(i)].name.c_str()).x + 22.0f * z);
-        const float w = std::max(ImGui::CalcTextSize(title.c_str()).x + 20.0f * z, w_in + w_out + 12.0f * z);
-        const float h = row * (1.0f + static_cast<float>(std::max(ins.size(), outs.size()))) + 6.0f * z;
-        const ImVec2 p0(st.view.to_screen_x(n.x, origin.x), st.view.to_screen_y(n.y, origin.y));
+        const ImVec2 p0(sx(n.x), sy(n.y));
         const ImVec2 p1(p0.x + w, p0.y + h);
+        rects.push_back(NodeRect{n.id, p0, p1});
 
         bool has_error = !ok;
         std::string err_text = why;
         for (const CompileMessage& m : st.messages)
             if (m.graph == st.graph && m.node == n.id && m.error) { has_error = true; err_text = m.text; }
 
-        dl->AddRectFilled(p0, p1, IM_COL32(48, 48, 54, 240), 5.0f * z);
-        dl->AddRectFilled(p0, ImVec2(p1.x, p0.y + row), def ? title_color(*def) : IM_COL32(120, 40, 40, 255), 5.0f * z, ImDrawFlags_RoundCornersTop);
-        dl->AddText(ImVec2(p0.x + 8.0f * z, p0.y + 3.0f * z), IM_COL32(255, 255, 255, 255), title.c_str());
-        dl->AddRect(p0, p1, has_error ? IM_COL32(255, 70, 70, 255) : n.id == st.selected ? IM_COL32(255, 200, 60, 255) : IM_COL32(20, 20, 20, 255),
-                    5.0f * z, 0, has_error || n.id == st.selected ? 2.0f : 1.0f);
-        const bool over_node = hovered && io.MousePos.x >= p0.x && io.MousePos.x <= p1.x && io.MousePos.y >= p0.y && io.MousePos.y <= p1.y;
+        const bool  is_sel = st.is_selected(n.id);
+        const ImU32 edge = has_error ? IM_COL32(255, 70, 70, 255) : is_sel ? IM_COL32(255, 200, 60, 255) : IM_COL32(20, 20, 20, 255);
+        const float edge_w = has_error || is_sel ? 2.0f : 1.0f;
+        if (knot) {
+            dl->AddRectFilled(p0, p1, IM_COL32(62, 62, 70, 240), h * 0.5f);
+            dl->AddRect(p0, p1, edge, h * 0.5f, 0, edge_w);
+        } else {
+            dl->AddRectFilled(p0, p1, IM_COL32(48, 48, 54, 240), 5.0f * z);
+            dl->AddRectFilled(p0, ImVec2(p1.x, p0.y + row), def ? title_color(*def) : IM_COL32(120, 40, 40, 255), 5.0f * z, ImDrawFlags_RoundCornersTop);
+            dl->AddText(ImVec2(p0.x + 8.0f * z, p0.y + 3.0f * z), IM_COL32(255, 255, 255, 255), title.c_str());
+            dl->AddRect(p0, p1, edge, 5.0f * z, 0, edge_w);
+        }
+        if (!n.comment.empty()) {   // the node's own note, above it
+            const ImVec2 ts = ImGui::CalcTextSize(n.comment.c_str());
+            const ImVec2 c0(p0.x, p0.y - ts.y - 10.0f * z), c1(p0.x + ts.x + 12.0f * z, p0.y - 4.0f * z);
+            dl->AddRectFilled(c0, c1, IM_COL32(74, 70, 40, 235), 4.0f * z);
+            dl->AddText(ImVec2(c0.x + 6.0f * z, c0.y + 3.0f * z), IM_COL32(255, 240, 180, 255), n.comment.c_str());
+        }
+        const bool over_node = hovered && mouse_in(p0, p1);
         if (over_node) hover_node = n.id;
         if (over_node && has_error && !err_text.empty()) ImGui::SetTooltip("%s", err_text.c_str());
 
         auto draw_pin = [&](int idx, bool input, int slot) {
             const Pin& p = sh.pins[static_cast<size_t>(idx)];
-            const float cy = p0.y + row * (1.5f + static_cast<float>(slot));
+            const float cy = knot ? p0.y + h * 0.5f : p0.y + row * (1.5f + static_cast<float>(slot));
             const ImVec2 c(input ? p0.x : p1.x, cy);
             pin_pos[key(n.id, idx)] = c;
             const ImU32 col = type_color(p.type);
@@ -762,18 +873,22 @@ void draw_canvas(PanelState& st) {
             else dl->AddCircleFilled(c, pin_r, col);
             const float dx = io.MousePos.x - c.x, dy = io.MousePos.y - c.y;
             if (hovered && dx * dx + dy * dy <= (pin_r * 2.2f) * (pin_r * 2.2f)) hover_pin = PinRef{n.id, idx, input};
+            if (knot) return;
             const ImVec2 ts = ImGui::CalcTextSize(p.name.c_str());
             if (input) {
                 dl->AddText(ImVec2(c.x + 10.0f * z, cy - ts.y * 0.5f), IM_COL32(220, 220, 220, 255), p.name.c_str());
-                const bool linked = std::any_of(g.links.begin(), g.links.end(), [&](const Link& l) { return l.to == n.id && l.to_pin == p.name; });
-                if (!linked && !p.type.is_exec() && !p.type.is_any() && !p.type.array && p.type.kind != Kind::Entity && p.type.kind != Kind::Transform) {
+                if (has_editor(p)) {
                     Value v = p.def;
-                    ImGui::SetCursorScreenPos(ImVec2(c.x + 14.0f * z + ts.x, cy - row * 0.5f + 2.0f * z));
+                    // The editor's frame is sized to the row, whatever the theme's padding is.
+                    const float pad_y = 2.0f * z;
+                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f * z, pad_y));
+                    ImGui::SetCursorScreenPos(ImVec2(c.x + 14.0f * z + ts.x, cy - ImGui::GetTextLineHeight() * 0.5f - pad_y));
                     const float ww = (p.type.kind == Kind::Vec3 ? 140.0f : p.type.kind == Kind::String ? 92.0f : 56.0f) * z;
                     const std::string wid = std::to_string(n.id) + ":" + p.name;
                     if (value_editor(wid.c_str(), p.type, v, ww)) n.set_default(p.name, v);
                     if (ImGui::IsItemActive()) widget_active = true;
                     if (ImGui::IsItemDeactivatedAfterEdit()) st.changed();
+                    ImGui::PopStyleVar();
                 }
             } else {
                 dl->AddText(ImVec2(c.x - 10.0f * z - ts.x, cy - ts.y * 0.5f), IM_COL32(220, 220, 220, 255), p.name.c_str());
@@ -784,21 +899,131 @@ void draw_canvas(PanelState& st) {
         if (ok) shapes.emplace(n.id, std::move(sh));
     }
 
-    // Wires.
+    // ---- wires -------------------------------------------------------------
     auto wire = [&](ImVec2 a, ImVec2 b, ImU32 col, float thick) {
         const float d = std::max(40.0f * z, std::fabs(b.x - a.x) * 0.5f);
         dl->AddBezierCubic(a, ImVec2(a.x + d, a.y), ImVec2(b.x - d, b.y), b, col, thick);
     };
-    for (const Link& l : g.links) {
+    // How near the mouse is to a wire: the curve is walked in short pieces.
+    auto near_wire = [&](ImVec2 a, ImVec2 b) {
+        const float  d = std::max(40.0f * z, std::fabs(b.x - a.x) * 0.5f);
+        const ImVec2 c1(a.x + d, a.y), c2(b.x - d, b.y);
+        ImVec2       prev = a;
+        for (int s = 1; s <= 24; ++s) {
+            const float  t = static_cast<float>(s) / 24.0f, u = 1.0f - t;
+            const float  k0 = u * u * u, k1 = 3.0f * u * u * t, k2 = 3.0f * u * t * t, k3 = t * t * t;
+            const ImVec2 q(k0 * a.x + k1 * c1.x + k2 * c2.x + k3 * b.x, k0 * a.y + k1 * c1.y + k2 * c2.y + k3 * b.y);
+            const float  ex = q.x - prev.x, ey = q.y - prev.y, len2 = ex * ex + ey * ey;
+            float        f = len2 > 0.0f ? ((io.MousePos.x - prev.x) * ex + (io.MousePos.y - prev.y) * ey) / len2 : 0.0f;
+            f = std::clamp(f, 0.0f, 1.0f);
+            const float  mx = io.MousePos.x - (prev.x + ex * f), my = io.MousePos.y - (prev.y + ey * f);
+            if (mx * mx + my * my <= 36.0f) return true;
+            prev = q;
+        }
+        return false;
+    };
+    int hover_wire = -1;
+    for (size_t li = 0; li < g.links.size(); ++li) {
+        const Link& l = g.links[li];
         const auto fs = shapes.find(l.from), ts = shapes.find(l.to);
         if (fs == shapes.end() || ts == shapes.end()) continue;
         const int fp = fs->second.find(l.from_pin, false), tp = ts->second.find(l.to_pin, true);
         if (fp < 0 || tp < 0) continue;
-        const Type t = fs->second.pins[static_cast<size_t>(fp)].type;
-        wire(pin_pos[key(l.from, fp)], pin_pos[key(l.to, tp)], type_color(t), (t.is_exec() ? 3.0f : 2.0f) * z);
+        const Type   t = fs->second.pins[static_cast<size_t>(fp)].type;
+        const ImVec2 a = pin_pos[key(l.from, fp)], b = pin_pos[key(l.to, tp)];
+        const bool   hot = hovered && !hover_pin.valid() && !hover_node && hover_wire < 0 && st.drag == Drag::None &&
+                           !st.link_from.valid() && near_wire(a, b);
+        if (hot) hover_wire = static_cast<int>(li);
+        wire(a, b, type_color(t), (t.is_exec() ? 3.0f : 2.0f) * z + (hot ? 2.0f : 0.0f));
     }
+    if (hover_wire >= 0) ImGui::SetTooltip("double-click: add a knot   Alt-click: cut");
 
-    // ---- interaction ------------------------------------------------------
+    // ---- what the keys and menus do ----------------------------------------
+    auto world_rect = [&](const NodeRect& r, float& x0, float& y0, float& x1, float& y1, bool& any) {
+        const float ax = wx(r.a.x), ay = wy(r.a.y), bx = wx(r.b.x), by = wy(r.b.y);
+        if (!any) { x0 = ax; y0 = ay; x1 = bx; y1 = by; any = true; return; }
+        x0 = std::min(x0, ax); y0 = std::min(y0, ay); x1 = std::max(x1, bx); y1 = std::max(y1, by);
+    };
+    auto do_delete = [&]() {
+        bool any = false;
+        for (int id : st.sel) { g.remove(id); any = true; }
+        if (st.sel_box) {
+            g.boxes.erase(std::remove_if(g.boxes.begin(), g.boxes.end(), [&](const CommentBox& b) { return b.id == st.sel_box; }), g.boxes.end());
+            any = true;
+        }
+        st.clear_selection();
+        if (any) st.changed();
+    };
+    auto do_copy = [&]() {
+        if (st.sel.empty()) return;
+        ImGui::SetClipboardText(selection_text(g, st.sel).c_str());
+        st.status = std::to_string(st.sel.size()) + (st.sel.size() == 1 ? " node copied" : " nodes copied");
+    };
+    auto do_paste_text = [&](const std::string& text, float x, float y) {
+        const std::vector<int> made = paste_selection(g, text, x, y);
+        if (made.empty()) return false;
+        st.sel = made;
+        st.selected = made.back();
+        st.sel_box = 0;
+        st.changed();
+        return true;
+    };
+    auto do_paste = [&](float x, float y) {
+        const char* clip = ImGui::GetClipboardText();
+        if (!clip || !do_paste_text(clip, x, y)) st.status = "nothing to paste (copy some nodes first)";
+    };
+    auto do_duplicate = [&]() {
+        if (st.sel.empty()) return;
+        float minx = 0.0f, miny = 0.0f;
+        bool  any = false;
+        for (int id : st.sel)
+            if (const Node* n = g.find(id)) {
+                minx = any ? std::min(minx, n->x) : n->x;
+                miny = any ? std::min(miny, n->y) : n->y;
+                any = true;
+            }
+        if (any) do_paste_text(selection_text(g, st.sel), minx + 30.0f, miny + 30.0f);
+    };
+    auto add_comment = [&](float at_x, float at_y) {
+        CommentBox b;
+        b.id = g.next_id++;
+        b.text = "Comment";
+        float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        bool  any = false;
+        for (const NodeRect& r : rects)
+            if (st.is_selected(r.id)) world_rect(r, x0, y0, x1, y1, any);
+        if (any) {   // wrap the selection, with room for the title
+            const float bar = row / z;
+            b.x = x0 - 24.0f;
+            b.y = y0 - 24.0f - bar;
+            b.w = (x1 - x0) + 48.0f;
+            b.h = (y1 - y0) + 48.0f + bar;
+        } else {
+            b.x = at_x;
+            b.y = at_y;
+        }
+        g.boxes.push_back(b);
+        st.clear_selection();
+        st.sel_box = b.id;
+        st.changed();
+    };
+    auto frame = [&](bool only_selected) {
+        float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        bool  any = false;
+        for (const NodeRect& r : rects)
+            if (!only_selected || st.is_selected(r.id)) world_rect(r, x0, y0, x1, y1, any);
+        if (!only_selected)
+            for (const CommentBox& b : g.boxes) world_rect(NodeRect{0, ImVec2(sx(b.x), sy(b.y)), ImVec2(sx(b.x + b.w), sy(b.y + b.h))}, x0, y0, x1, y1, any);
+        if (!any) return;
+        const float bw = std::max(1.0f, x1 - x0), bh = std::max(1.0f, y1 - y0);
+        const float nz = std::clamp(std::min(size.x / (bw + 120.0f), size.y / (bh + 120.0f)), 0.3f, 1.0f);
+        st.view.zoom = nz;
+        st.view.pan_x = (size.x / nz - bw) * 0.5f - x0;
+        st.view.pan_y = (size.y / nz - bh) * 0.5f - y0;
+    };
+
+    // ---- mouse -------------------------------------------------------------
+    const bool additive = io.KeyShift || io.KeyCtrl;
     const bool lmb_click = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !widget_active && !ImGui::IsAnyItemActive();
     if (lmb_click) {
         if (hover_pin.valid()) {
@@ -813,21 +1038,110 @@ void draw_canvas(PanelState& st) {
                 st.link_from = hover_pin;
             }
         } else if (hover_node) {
-            st.selected = hover_node;
-            st.dragging = hover_node;
+            if (additive) st.toggle(hover_node);
+            else if (!st.is_selected(hover_node)) st.select_only(hover_node);
+            else { st.selected = hover_node; st.sel_box = 0; }   // keeps the group, for dragging it
+            st.drag = Drag::Nodes;
+            st.drag_moved = false;
+            st.press_additive = additive;
+            st.press_node = hover_node;
+        } else if (hover_wire >= 0 && io.KeyAlt) {
+            g.links.erase(g.links.begin() + hover_wire);
+            st.changed();
+        } else if (hover_wire >= 0 && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            // A knot on the wire, to route it around something.
+            const Link l = g.links[static_cast<size_t>(hover_wire)];
+            const auto fs = shapes.find(l.from);
+            const int  fp = fs != shapes.end() ? fs->second.find(l.from_pin, false) : -1;
+            if (fp >= 0) {
+                const Type t = fs->second.pins[static_cast<size_t>(fp)].type;
+                Node& kn = g.add("flow.reroute", wx(io.MousePos.x) - 13.0f, wy(io.MousePos.y) - row / z * 0.5f);
+                kn.targ = t;
+                const int kid = kn.id;
+                g.links.erase(g.links.begin() + hover_wire);
+                g.link(l.from, l.from_pin, kid, "In");
+                g.link(kid, "Out", l.to, l.to_pin);
+                st.select_only(kid);
+                st.changed();
+            }
+        } else if (hover_box) {
+            st.clear_selection();
+            st.sel_box = hover_box;
+            st.drag = hover_grip ? Drag::ResizeBox : Drag::MoveBox;
+            st.drag_moved = false;
+            st.carry.clear();
+            if (const CommentBox* b = g.find_box(hover_box))
+                for (const Node& n : g.nodes)
+                    if (n.x >= b->x && n.x <= b->x + b->w && n.y >= b->y && n.y <= b->y + b->h) st.carry.push_back(n.id);
         } else {
-            st.selected = 0;
+            if (!additive) st.clear_selection();
+            st.sel_box = 0;
+            st.drag = Drag::Band;
+            st.band_x = wx(io.MousePos.x);
+            st.band_y = wy(io.MousePos.y);
+            st.band_base = st.sel;
         }
     }
-    if (st.dragging && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-        if (Node* n = g.find(st.dragging)) {
-            n->x += io.MouseDelta.x / z;
-            n->y += io.MouseDelta.y / z;
-        }
-    } else if (st.dragging) {
-        st.dragging = 0;
-        st.changed();
+
+    const bool  lmb_down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    const float mdx = io.MouseDelta.x / z, mdy = io.MouseDelta.y / z;
+    const bool  moved_now = mdx != 0.0f || mdy != 0.0f;
+    switch (st.drag) {
+        case Drag::None: break;
+        case Drag::Nodes:
+            if (lmb_down) {
+                if (moved_now) {
+                    st.drag_moved = true;
+                    for (int id : st.sel)
+                        if (Node* n = g.find(id)) { n->x += mdx; n->y += mdy; }
+                }
+            } else {
+                // A plain click on one node of a group picks just that node.
+                if (!st.drag_moved && !st.press_additive && st.sel.size() > 1) st.select_only(st.press_node);
+                st.drag = Drag::None;
+                if (st.drag_moved) st.changed();
+            }
+            break;
+        case Drag::MoveBox:
+        case Drag::ResizeBox:
+            if (lmb_down) {
+                CommentBox* b = g.find_box(st.sel_box);
+                if (b && moved_now) {
+                    st.drag_moved = true;
+                    if (st.drag == Drag::MoveBox) {
+                        b->x += mdx;
+                        b->y += mdy;
+                        for (int id : st.carry)
+                            if (Node* n = g.find(id)) { n->x += mdx; n->y += mdy; }
+                    } else {
+                        b->w = std::max(120.0f, b->w + mdx);
+                        b->h = std::max(60.0f, b->h + mdy);
+                    }
+                }
+            } else {
+                st.drag = Drag::None;
+                if (st.drag_moved) st.changed();
+            }
+            break;
+        case Drag::Band:
+            if (lmb_down) {
+                const ImVec2 s0(sx(st.band_x), sy(st.band_y));
+                const ImVec2 a(std::min(s0.x, io.MousePos.x), std::min(s0.y, io.MousePos.y));
+                const ImVec2 b(std::max(s0.x, io.MousePos.x), std::max(s0.y, io.MousePos.y));
+                if (b.x - a.x > 3.0f || b.y - a.y > 3.0f) {
+                    dl->AddRectFilled(a, b, IM_COL32(255, 200, 60, 30));
+                    dl->AddRect(a, b, IM_COL32(255, 200, 60, 200));
+                    st.sel = st.band_base;
+                    for (const NodeRect& r : rects)
+                        if (r.a.x <= b.x && r.b.x >= a.x && r.a.y <= b.y && r.b.y >= a.y && !st.is_selected(r.id)) st.sel.push_back(r.id);
+                    st.selected = st.sel.empty() ? 0 : st.sel.back();
+                }
+            } else {
+                st.drag = Drag::None;
+            }
+            break;
     }
+
     if (st.link_from.valid()) {
         const ImVec2 a = pin_pos[key(st.link_from.node, st.link_from.pin)];
         if (st.link_from.input) wire(io.MousePos, a, IM_COL32(255, 255, 255, 180), 2.0f * z);
@@ -838,39 +1152,70 @@ void draw_canvas(PanelState& st) {
             } else if (hovered && !hover_node) {
                 // Dropped on empty canvas: offer nodes, and wire the chosen one up.
                 st.palette_for = st.link_from;
-                st.palette_x = st.view.to_world_x(io.MousePos.x, origin.x);
-                st.palette_y = st.view.to_world_y(io.MousePos.y, origin.y);
+                st.palette_x = wx(io.MousePos.x);
+                st.palette_y = wy(io.MousePos.y);
                 st.search[0] = 0;
                 ImGui::OpenPopup("##palette");
             }
             st.link_from = PinRef{};
         }
     }
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !hover_node) {
-        st.palette_for = PinRef{};
-        st.palette_x = st.view.to_world_x(io.MousePos.x, origin.x);
-        st.palette_y = st.view.to_world_y(io.MousePos.y, origin.y);
-        st.search[0] = 0;
-        ImGui::OpenPopup("##palette");
-    }
-    if (st.selected && hovered && !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Delete)) {
-        g.remove(st.selected);
-        st.selected = 0;
-        st.changed();
-    }
-    if (hovered && !ImGui::IsAnyItemActive() && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D)) {
-        if (const Node* src = g.find(st.selected)) {
-            Node copy = *src;
-            copy.id = g.next_id++;
-            copy.x += 30.0f;
-            copy.y += 30.0f;
-            g.nodes.push_back(copy);
-            st.selected = copy.id;
-            st.changed();
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        st.palette_x = wx(io.MousePos.x);
+        st.palette_y = wy(io.MousePos.y);
+        if (hover_node) {
+            if (!st.is_selected(hover_node)) st.select_only(hover_node);
+            ImGui::OpenPopup("##nodemenu");
+        } else if (hover_box) {
+            st.clear_selection();
+            st.sel_box = hover_box;
+            ImGui::OpenPopup("##boxmenu");
+        } else {
+            st.palette_for = PinRef{};
+            st.search[0] = 0;
+            ImGui::OpenPopup("##palette");
         }
     }
 
+    // ---- keys --------------------------------------------------------------
+    if (hovered && !ImGui::IsAnyItemActive()) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete)) do_delete();
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D)) do_duplicate();
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C)) do_copy();
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_X)) { do_copy(); do_delete(); }
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V)) do_paste(wx(io.MousePos.x), wy(io.MousePos.y));
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A)) {
+            st.sel.clear();
+            for (const Node& n : g.nodes) st.sel.push_back(n.id);
+            st.selected = st.sel.empty() ? 0 : st.sel.back();
+            st.sel_box = 0;
+        }
+        if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C)) add_comment(wx(io.MousePos.x), wy(io.MousePos.y));
+        if (ImGui::IsKeyPressed(ImGuiKey_Home)) frame(false);
+        if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F)) frame(!st.sel.empty());
+    }
+
     ImGui::SetWindowFontScale(1.0f);
+    if (ImGui::BeginPopup("##nodemenu")) {
+        const bool many = st.sel.size() > 1;
+        if (ImGui::MenuItem(many ? "Delete nodes" : "Delete node", "Del")) do_delete();
+        if (ImGui::MenuItem("Duplicate", "Ctrl+D")) do_duplicate();
+        if (ImGui::MenuItem("Copy", "Ctrl+C")) do_copy();
+        if (ImGui::MenuItem("Cut", "Ctrl+X")) { do_copy(); do_delete(); }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Break all wires")) {
+            g.links.erase(std::remove_if(g.links.begin(), g.links.end(), [&](const Link& l) { return st.is_selected(l.from) || st.is_selected(l.to); }),
+                          g.links.end());
+            st.changed();
+        }
+        if (ImGui::MenuItem("Comment box around", "C")) add_comment(st.palette_x, st.palette_y);
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopup("##boxmenu")) {
+        if (ImGui::MenuItem("Delete comment box", "Del")) do_delete();
+        ImGui::TextDisabled("its text and colour are in the side panel");
+        ImGui::EndPopup();
+    }
     if (ImGui::BeginPopup("##palette")) {
         if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         ImGui::SetNextItemWidth(260.0f);
@@ -882,6 +1227,17 @@ void draw_canvas(PanelState& st) {
         if (st.palette_for.valid()) {
             const auto it = shapes.find(st.palette_for.node);
             if (it != shapes.end()) { from_pin = it->second.pins[static_cast<size_t>(st.palette_for.pin)]; filter_pin = true; }
+        }
+        if (!filter_pin && !st.search[0]) {
+            if (ImGui::Selectable("  Paste")) {
+                do_paste(st.palette_x, st.palette_y);
+                ImGui::CloseCurrentPopup();
+            }
+            if (ImGui::Selectable("  Comment box")) {
+                add_comment(st.palette_x, st.palette_y);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::Separator();
         }
         std::string last_cat;
         std::vector<PaletteEntry> entries = palette_entries(st, g);
@@ -914,7 +1270,7 @@ void draw_canvas(PanelState& st) {
                 if (e.def == "flow.switch_int") nn.cases = {"0", "1"};
                 if (e.def == "flow.switch_string") nn.cases = {"a", "b"};
                 const int new_id = nn.id;
-                st.selected = new_id;
+                st.select_only(new_id);
                 if (filter_pin && match >= 0) connect(st, g, st.palette_for, PinRef{new_id, match, !from_pin.input});
                 st.changed();
                 ImGui::CloseCurrentPopup();
@@ -1087,7 +1443,7 @@ void draw_logic_script_panel(bool* open) {
             ImGui::PushID(&m);
             if (ImGui::Selectable((where + ": " + m.text).c_str()) && m.graph >= 0) {
                 st.graph = m.graph;
-                st.selected = m.node;
+                st.select_only(m.node);
                 if (const Graph* g = st.cur())
                     if (const Node* n = g->find(m.node)) {   // bring the node into view
                         st.view.pan_x = 200.0f - n->x;

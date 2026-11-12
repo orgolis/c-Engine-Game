@@ -1,11 +1,11 @@
 # Visual scripting: how the Logic Graph core works
 
-**Status (v0.8.18):** milestone A1 (the core) is done; A2 (engine binding) and
+**Status (v0.8.19):** milestone A1 (the core) is done; A2 (engine binding) and
 A3 (the editor) of [ROAD_TO_TEST_GAME.md](ROAD_TO_TEST_GAME.md) are partly done.
 The per-scene Logic Graph panel still runs the old `gameplay_logic.h` runtime
 until the rest of A2 replaces it.
 
-Code: `engine/core/vscript/`. Checks: `tools/vscript_check` (71 checks) for the
+Code: `engine/core/vscript/`. Checks: `tools/vscript_check` (80 checks) for the
 core, `tools/script_check` for graphs running on entities.
 
 ## In the editor today
@@ -28,6 +28,24 @@ Logic Script panel (View > Logic Script Editor):
 
 Each script has its own tab, its own undo history and its own compile result.
 Closing a tab with changes asks first.
+
+**Working on the canvas.**
+
+| To | Do |
+|----|----|
+| Add a node | Right-click empty canvas, or drag a wire off a pin and drop it |
+| Select | Click; Shift- or Ctrl-click adds or removes; drag on empty canvas for a box |
+| Move | Drag a selected node: the whole selection moves |
+| Copy, cut, paste, duplicate | Ctrl+C, Ctrl+X, Ctrl+V (at the mouse), Ctrl+D. Works between graphs, tabs and editors: the clipboard holds text |
+| Delete | Del |
+| Cut a wire | Alt-click the wire, or Alt-click a pin for all of its wires |
+| Route a wire | Double-click it: a knot appears that can be dragged. Works on flow and data wires |
+| Comment a group | Select nodes and press C: a titled box wraps them. Drag its title to move it with the nodes inside, its corner to resize. Text and colour are in the side panel |
+| Note on one node | The text field under "Selected node"; shown above the node |
+| Find the graph again | Home frames everything, F frames the selection |
+| Pan, zoom | Middle-drag, wheel |
+
+Right-clicking a node gives the same commands as a menu.
 
 **Nodes for the engine.** `editor/src/script_host_logic.cpp` registers every
 `ScriptApi` entry as a node (entity, input, physics, rendering, audio,
@@ -68,7 +86,7 @@ another object. That object's own Begin Play may not have run yet.
 | `compiler.cpp` | `compile()`: Script to `Program` (bytecode for a register machine), with errors that name the graph and node |
 | `vm.h` | `VM`: runs programs for any number of `Instance`s. An explicit frame stack, so it can pause and resume |
 | `stdlib.cpp` | The nodes that need no engine: flow, variables, functions, events, maths, vectors, strings, arrays |
-| `io.h` | Text format `VSCRIPT 2`: one record per line, tab-separated |
+| `io.h` | Text format `VSCRIPT 2`: one record per line, tab-separated. Also copy and paste: a selection is the same text |
 
 ## Rules an author can rely on
 
@@ -146,5 +164,5 @@ nothing. The editor UI for this is milestone A4.
 Macros, event dispatchers, interfaces, parent scripts, timelines, user enums
 and structs, maps and sets, calling a function (with results) on another
 entity, collision events, nodes for component properties, the debugger UI,
-comments, copy and paste. `Type::sub` and `Kind::Enum` / `Kind::Struct` are
+collapsing nodes to a function, find in graph. `Type::sub` and `Kind::Enum` / `Kind::Struct` are
 reserved for the first group.

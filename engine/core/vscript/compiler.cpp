@@ -1045,6 +1045,7 @@ void Compiler::emit_block(const GraphInfo& gi, int node, int pin) {
             emit(OP_RET);
             break;
         }
+        case Builtin::Reroute: go(gi, node, "Out"); break;
         case Builtin::None: {
             if (s.pure) {
                 error(gi.index, node, "internal: a pure node was reached by a flow wire");

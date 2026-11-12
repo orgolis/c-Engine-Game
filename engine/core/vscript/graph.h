@@ -71,6 +71,15 @@ struct Node {
     }
 };
 
+/// A titled rectangle behind a group of nodes. Says what the group is for;
+/// the compiler never sees it.
+struct CommentBox {
+    int         id = 0;       // shares the graph's id counter with nodes
+    float       x = 0.0f, y = 0.0f, w = 320.0f, h = 180.0f;
+    std::string text;
+    float       color[3] = {0.30f, 0.50f, 0.80f};
+};
+
 struct Link {
     int         from = 0;
     std::string from_pin;
@@ -85,6 +94,7 @@ struct Graph {
     GraphKind         kind = GraphKind::Event;
     std::vector<Node> nodes;
     std::vector<Link> links;
+    std::vector<CommentBox> boxes;
     int               next_id = 1;
 
     // Functions only.
@@ -131,6 +141,11 @@ struct Graph {
         links.erase(std::remove_if(links.begin(), links.end(),
                                    [&](const Link& l) { return l.to == to && l.to_pin == to_pin; }),
                     links.end());
+    }
+    CommentBox* find_box(int id) {
+        for (auto& b : boxes)
+            if (b.id == id) return &b;
+        return nullptr;
     }
     Variable* find_local(const std::string& n) {
         for (auto& v : locals)

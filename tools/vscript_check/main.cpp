@@ -678,6 +678,80 @@ void test_text() {
     check(!from_text("LOGIC 3\n", junk, &err) && !err.empty(), "text that is not a script is refused with a reason");
 }
 
+void test_editing() {
+    std::printf("-- editing: knots, comment boxes, copy and paste\n");
+    {
+        // A knot on a flow wire passes control along; one on a data wire passes the value.
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), k1 = node(g, "flow.reroute"), p = print_node(g);
+        g.find(k1)->targ = kExec;
+        const int add = node(g, "math.add"), k2 = node(g, "flow.reroute");
+        g.find(add)->targ = kInt; g.find(k2)->targ = kInt;
+        lit(g, add, "A", Value::integer(2)); lit(g, add, "B", Value::integer(3));
+        g.link(ev, "Then", k1, "In"); g.link(k1, "Out", p, "In");
+        g.link(add, "Result", k2, "In"); g.link(k2, "Out", p, "Text");
+        check(r.build() && r.run() == "5", "a knot passes flow on a flow wire and the value on a data wire");
+    }
+    {
+        Rig r; Graph& g = r.events();
+        const int ev = node(g, "event.begin_play"), p = print_node(g, "x");
+        chain(g, {ev, p});
+        CommentBox b;
+        b.id = g.next_id++;
+        b.x = 10; b.y = -20.5f; b.w = 400; b.h = 220;
+        b.text = "what this\tgroup does\nsecond line";
+        b.color[0] = 0.9f; b.color[1] = 0.2f; b.color[2] = 0.1f;
+        g.boxes.push_back(b);
+        Script back;
+        const std::string text = to_text(r.script);
+        const bool read = from_text(text, back);
+        const bool same = read && back.graphs.size() == 1 && back.graphs[0].boxes.size() == 1 &&
+                          back.graphs[0].boxes[0].text == b.text && back.graphs[0].boxes[0].y == b.y &&
+                          back.graphs[0].boxes[0].w == 400 && back.graphs[0].boxes[0].color[0] == 0.9f && to_text(back) == text;
+        check(same, "a comment box survives the file: place, size, colour, text with a tab and a line break");
+        check(back.graphs[0].next_id > b.id, "its id is not handed out again after loading");
+        check(r.build() && r.run() == "x", "and the compiler does not see it");
+    }
+    {
+        // Copy two wired nodes out of one graph and paste them into another script.
+        Rig a; Graph& g = a.events();
+        const int ev = node(g, "event.begin_play"), add = node(g, "math.add"), p = print_node(g);
+        g.find(add)->targ = kInt;
+        lit(g, add, "A", Value::integer(40)); lit(g, add, "B", Value::integer(2));
+        g.find(add)->x = 300; g.find(add)->y = 100; g.find(p)->x = 500; g.find(p)->y = 80;
+        chain(g, {ev, p}); g.link(add, "Result", p, "Text");
+        const std::string clip = selection_text(g, {add, p});
+
+        Rig b; Graph& h = b.events();
+        const int ev2 = node(h, "event.begin_play");
+        node(h, "math.add"); node(h, "math.add");   // so the ids in the target differ from the source's
+        const std::vector<int> made = paste_selection(h, clip, 1000.0f, 2000.0f);
+        bool placed = made.size() == 2;
+        int  new_print = 0;
+        if (placed) {
+            const Node* n0 = h.find(made[0]);
+            const Node* n1 = h.find(made[1]);
+            placed = n0 && n1 && n0->x == 1000.0f && n0->y == 2020.0f && n1->x == 1200.0f && n1->y == 2000.0f && made[0] != add;
+            new_print = n1 && n1->def == "print" ? n1->id : 0;
+        }
+        check(placed, "pasted nodes get new ids and keep their layout, top-left corner where asked");
+        if (new_print) h.link(ev2, "Then", new_print, "In");
+        check(b.build() && b.run() == "42", "the wire between the copied nodes and their literals came along; the wire to a node left behind did not");
+        check(paste_selection(h, "hello", 0, 0).empty() && paste_selection(h, to_text(a.script), 0, 0).empty(),
+              "other clipboard text, or a whole script, is not pasted");
+        const std::vector<int> twice = paste_selection(h, clip, 0, 0);
+        check(twice.size() == 2 && twice[0] != made[0] && twice[1] != made[1], "pasting again makes another copy");
+    }
+    {
+        Rig r;
+        Graph& f = r.script.add_graph(GraphKind::Function, "f");
+        const int en = node(f, "fn.entry"), ret = node(f, "fn.return");
+        const size_t before = f.nodes.size();
+        const std::vector<int> made = paste_selection(f, selection_text(f, {en, ret}), 0, 0);
+        check(made.size() == 1 && f.nodes.size() == before + 1, "a function's entry node is not duplicated by paste");
+    }
+}
+
 void test_debugger() {
     std::printf("-- pausing\n");
     Rig r; Graph& g = r.events();
@@ -731,6 +805,7 @@ int main() {
     test_waits();
     test_errors();
     test_text();
+    test_editing();
     test_debugger();
     test_speed();
     if (g_fail) {
