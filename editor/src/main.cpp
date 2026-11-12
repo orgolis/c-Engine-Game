@@ -114,6 +114,7 @@
 #include "asset_inspector.h"
 #include "asset_drop.h"        // one rule table for every drop site
 #include "logic_script_panel.h"  // graph editor for .lgraph logic scripts
+#include "logic_debug.h"          // a breakpoint in a logic script stops the game
 #include "vscript/value.h"       // literals of a logic graph's Inspector fields
 #include "logic_graph_panel.h"   // visual node editor for the scene logic graph
 #include "material_editor_panel.h"
@@ -192,6 +193,8 @@ struct EditorState {
     bool show_inspector = true;
     bool show_asset_browser = true;
     bool show_logic_script = false;  // .lgraph logic script editor
+    bool logic_break_active = false;       // a logic script is stopped at a breakpoint
+    bool logic_break_paused_play = false;  // ... and that is what paused the game
     bool show_logic_graph = false;   // scene logic-graph node editor
     bool show_viewport = true;
     // True when the Viewport panel is on screen THIS frame: open, not
@@ -9372,8 +9375,9 @@ int main(int argc, char** argv) {
             {
                 const bool script_play = editor_state.scene_playback_manager &&
                                          editor_state.scene_playback_manager->IsPlaying();
-                editor_state.script_play_time =
-                    script_play ? editor_state.script_play_time + delta_time : 0.0;
+                if (!script_play) editor_state.script_play_time = 0.0;
+                else if (!editor_state.scene_playback_manager->IsPaused())
+                    editor_state.script_play_time += delta_time;   // script time stands still while paused
 
                 auto& ctx    = editor_state.script_ctx;
                 ctx.scene    = editor_state.editor_scene->GetScene();
@@ -9395,8 +9399,38 @@ int main(int argc, char** argv) {
                 }
                 editor_state.script_api.dt   = delta_time;
                 editor_state.script_api.time = editor_state.script_play_time;
-                editor_state.script_system.update(ctx.scene, script_play,
-                                                  delta_time, editor_state.script_api);
+                // A paused game does not run its scripts. (Still called when
+                // Play has ended, which is what releases them.)
+                const bool script_paused = script_play &&
+                                           editor_state.scene_playback_manager->IsPaused();
+                if (!script_paused)
+                    editor_state.script_system.update(ctx.scene, script_play,
+                                                      delta_time, editor_state.script_api);
+
+                // A logic script stopped at a breakpoint stops the game with it
+                // and lets go of the mouse; continuing the script continues the
+                // game. Only a pause this code made is undone by it.
+                if (auto* ldbg = schizo::editor::logic_debugger()) {
+                    auto&      pm = *editor_state.scene_playback_manager;
+                    const bool stopped = ldbg->paused();
+                    if (stopped && !editor_state.logic_break_active) {
+                        editor_state.logic_break_active = true;
+                        editor_state.show_logic_script  = true;
+                        if (script_play && !pm.IsPaused()) {
+                            pm.SetPaused(true);
+                            editor_state.logic_break_paused_play = true;
+                        }
+                        if (pm.IsCursorCaptured()) {
+                            pm.SetCursorCaptured(false);
+                            editor_state.play_cursor_released_by_escape = true;
+                        }
+                        editor_state.set_status("Stopped at a breakpoint in a logic script");
+                    } else if (!stopped && editor_state.logic_break_active) {
+                        editor_state.logic_break_active = false;
+                        if (editor_state.logic_break_paused_play && pm.IsPlaying()) pm.SetPaused(false);
+                        editor_state.logic_break_paused_play = false;
+                    }
+                }
 
                 // Editor extensions run in EDIT mode, so their ctx is refreshed
                 // every frame regardless of play state.
@@ -11002,8 +11036,19 @@ int main(int argc, char** argv) {
                 static bool logic_script_env_done = false;
                 if (!logic_script_env_done) {
                     logic_script_env_done = true;
-                    if (const char* ls = std::getenv("GWS_TEST_LOGIC_SCRIPT"))
+                    // The graph editor's debugger names objects through the scene.
+                    schizo::editor::set_logic_entity_namer([&editor_state](uint32_t id) {
+                        auto sc = editor_state.editor_scene ? editor_state.editor_scene->GetScene() : nullptr;
+                        auto en = sc ? sc->GetEntityById(id) : nullptr;
+                        return en ? en->GetName() : std::string();
+                    });
+                    if (const char* ls = std::getenv("GWS_TEST_LOGIC_SCRIPT")) {
                         schizo::editor::open_logic_script(ls, &editor_state.show_logic_script);
+                        // GWS_TEST_LOGIC_BREAK=<node id>: a breakpoint on that
+                        // node of its first graph.
+                        if (const char* lb = std::getenv("GWS_TEST_LOGIC_BREAK"))
+                            schizo::editor::add_logic_script_breakpoint(ls, 0, std::atoi(lb));
+                    }
                     // GWS_TEST_SCRIPT_ENTITY=<file>: an object with that script,
                     // selected, so the Inspector's Script section is on screen.
                     if (const char* se = std::getenv("GWS_TEST_SCRIPT_ENTITY")) {

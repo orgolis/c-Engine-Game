@@ -25,6 +25,7 @@
 
 #include "vscript/program.h"
 
+#include <cstdlib>
 #include <algorithm>
 #include <cstdint>
 #include <charconv>
@@ -137,6 +138,8 @@ private:
         FnInfo             info;
         std::vector<Instr> code;
         std::vector<Where> where;
+        std::vector<Where> stmt;              // parallel to code: see Program::stmt
+        Where              pending_stmt{};    // marks the next instruction emitted
         std::vector<int>   label_pc;
         std::vector<Type>  persistent;        // type of each persistent register
         std::vector<Value> persistent_init;   // and its initial value
@@ -188,6 +191,8 @@ private:
         i.d = static_cast<uint16_t>(d);
         unit_->code.push_back(i);
         unit_->where.push_back(unit_->cur);
+        unit_->stmt.push_back(unit_->pending_stmt);
+        unit_->pending_stmt = Where{};
     }
     void start_block_scope() {
         unit_->temp_top = 0;
@@ -206,7 +211,7 @@ private:
     void emit_block(const GraphInfo& gi, int node, int pin);
     void emit_native(const GraphInfo& gi, const Node& n, const Shape& s, int dst_base, bool is_pure);
     void drain(Unit& u);
-    void finalize(Unit& u);
+    void finalize(Unit& u, int fn_index);
     void compile_event_unit();
     void compile_function(int graph_index, int fn_index);
     int  load_const(const Value& v) {
@@ -630,6 +635,7 @@ void Compiler::emit_block(const GraphInfo& gi, int node, int pin) {
     Unit& u = *unit_;
     start_block_scope();
     u.cur = Where{gi.index, node};
+    u.pending_stmt = u.cur;   // this node's run starts with whatever is emitted next
     const Shape* sp = gi.shape(node);
     const Node*  np = gi.nodes.count(node) ? gi.nodes.at(node) : nullptr;
     if (!sp || !np) {
@@ -1075,7 +1081,7 @@ void Compiler::drain(Unit& u) {
 
 /// Turn labels into instruction indices and temporaries into real registers,
 /// then append the unit to the program.
-void Compiler::finalize(Unit& u) {
+void Compiler::finalize(Unit& u, int fn_index) {
     const int npersist = static_cast<int>(u.persistent.size());
     auto reg = [&](int r) { return r >= kTempBase ? npersist + (r - kTempBase) : r; };
     const int base_pc = static_cast<int>(prog_.code.size());
@@ -1097,6 +1103,20 @@ void Compiler::finalize(Unit& u) {
             u.info.boxed.push_back(i);
     prog_.code.insert(prog_.code.end(), u.code.begin(), u.code.end());
     prog_.where.insert(prog_.where.end(), u.where.begin(), u.where.end());
+    prog_.stmt.insert(prog_.stmt.end(), u.stmt.begin(), u.stmt.end());
+    // Debug information: the "graph:node" entries are nodes' output blocks
+    // (the others, "state:graph:node" and the like, are private registers).
+    for (const auto& [k, base] : u.out_regs) {
+        const size_t colon = k.find(':');
+        if (colon == std::string::npos || k.find(':', colon + 1) != std::string::npos) continue;
+        if (k.empty() || k[0] < '0' || k[0] > '9') continue;
+        NodeOutputs o;
+        o.graph = std::atoi(k.c_str());
+        o.node = std::atoi(k.c_str() + colon + 1);
+        o.fn = fn_index;
+        o.base = base;
+        prog_.outputs.push_back(o);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1158,6 +1178,7 @@ void Compiler::compile_event_unit() {
         place(en.label);
         start_block_scope();
         u.cur = Where{en.graph, en.node};
+        u.pending_stmt = u.cur;   // a breakpoint on the event node itself
         go(gi, en.node, "Then");
     }
     drain(u);
@@ -1172,7 +1193,7 @@ void Compiler::compile_event_unit() {
         prog_.events[static_cast<size_t>(ev)].entry = base_pc + u.label_pc[static_cast<size_t>(en.label)];
     }
     u.info.entry = 0;
-    finalize(u);
+    finalize(u, 0);
     prog_.fns[0] = std::move(u.info);
 }
 
@@ -1233,12 +1254,13 @@ void Compiler::compile_function(int graph_index, int fn_index) {
             error(graph_index, 0, "the function '" + g.name + "' has no entry node");
             emit(OP_RET);
         } else {
+            u.pending_stmt = u.cur;   // a breakpoint on the entry node
             go(gi, entry->id, "Then");
         }
         drain(u);
     }
     u.info.entry = 0;
-    finalize(u);
+    finalize(u, fn_index);
     prog_.fns[static_cast<size_t>(fn_index)] = std::move(u.info);
 }
 

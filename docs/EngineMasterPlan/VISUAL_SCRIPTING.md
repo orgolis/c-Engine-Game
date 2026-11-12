@@ -1,11 +1,12 @@
 # Visual scripting: how the Logic Graph core works
 
-**Status (v0.8.19):** milestone A1 (the core) is done; A2 (engine binding) and
-A3 (the editor) of [ROAD_TO_TEST_GAME.md](ROAD_TO_TEST_GAME.md) are partly done.
+**Status (v0.8.20):** milestones A1 (the core), A3 (the editor) and A4 (the
+debugger) of [ROAD_TO_TEST_GAME.md](ROAD_TO_TEST_GAME.md) are done; A2 (engine
+binding) is partly done.
 The per-scene Logic Graph panel still runs the old `gameplay_logic.h` runtime
 until the rest of A2 replaces it.
 
-Code: `engine/core/vscript/`. Checks: `tools/vscript_check` (80 checks) for the
+Code: `engine/core/vscript/`. Checks: `tools/vscript_check` (90 checks) for the
 core, `tools/script_check` for graphs running on entities.
 
 ## In the editor today
@@ -46,6 +47,24 @@ Closing a tab with changes asks first.
 | Pan, zoom | Middle-drag, wheel |
 
 Right-clicking a node gives the same commands as a menu.
+
+**Debugging, while the game plays.** With a script open in the graph editor
+and an object running it:
+
+- The nodes that just ran glow, and the flow wires the run took light up.
+- Each variable shows what it holds now. Hovering a pin shows the value on it.
+- **F9** on a node with flow pins sets a breakpoint (a red dot). They can be
+  set before Play, belong to the file, and so apply to every object running
+  it.
+- When one is hit the game pauses, the mouse is released and the editor brings
+  the node up, marked in orange. **Continue**, **Step** (F10: run this node,
+  stop at the next), **Step Into** (F11: follow a function or event call),
+  **Step Out** (Shift+F11).
+- "Running on" picks which object is shown when several run the script.
+
+Continuing finishes the frame the breakpoint interrupted: the stopped script's
+other events, then the scripts whose turn had not come. Nobody loses a Tick to
+a breakpoint. Stopping Play while a script is stopped is safe.
 
 **Nodes for the engine.** `editor/src/script_host_logic.cpp` registers every
 `ScriptApi` entry as a node (entity, input, physics, rendering, audio,
@@ -152,17 +171,34 @@ reg.fn("entity.set_position", "Entity", "Set Position",
 A leading `Context&` parameter is not a pin. Several outputs are a
 `std::tuple`. Supported C++ types are in `detail::Marshal` in `registry.h`.
 
-## Debugging support already in the VM
+## How the debugger works
 
-`set_breakpoint(program, graph, node)`, `state()`, `paused_at()`,
-`paused_register()`, `resume(Step::Continue | Into | Over | Out)`. A
-breakpoint stops before its node runs; while paused, `fire()` and `tick()` do
-nothing. The editor UI for this is milestone A4.
+- **Where a stop can happen.** A flow node's code is interleaved with the pure
+  nodes that feed it, so "the node changed" is true several times while one
+  node runs. The compiler therefore marks the instruction where each flow
+  node's run *starts* (`Program::stmt`), and breakpoints and steps look only at
+  those. A pure node cannot have a breakpoint: it has no such moment.
+- **The VM** (`vm.h`): `set_breakpoint`, `state()`, `paused_at()`,
+  `resume(Step)`, `abort()` (drop a paused run when its script is going away),
+  `frame_register()` and tracing (`trace`, `last_run()`), which costs nothing
+  while off.
+- **Debug information** (`Program::outputs`): where each flow node keeps its
+  data outputs. An event graph's registers live as long as the instance, so
+  its pins can be read at any time; a function's only while it is the paused
+  frame.
+- **The host** (`script_host_logic.cpp`) implements `LogicDebugger`
+  (`editor/include/logic_debug.h`), which is all the graph editor sees.
+  Compiled programs are shared per file, so a breakpoint on the file reaches
+  every object running it.
+- **The game.** `main.cpp` pauses playback when the VM stops and resumes it
+  when the VM continues. A paused game does not update its scripts, in any
+  language.
 
 ## Not built yet
 
 Macros, event dispatchers, interfaces, parent scripts, timelines, user enums
 and structs, maps and sets, calling a function (with results) on another
-entity, collision events, nodes for component properties, the debugger UI,
-collapsing nodes to a function, find in graph. `Type::sub` and `Kind::Enum` / `Kind::Struct` are
+entity, collision events, nodes for component properties, watch expressions
+and a call stack view in the debugger, collapsing nodes to a function, find in
+graph. `Type::sub` and `Kind::Enum` / `Kind::Struct` are
 reserved for the first group.

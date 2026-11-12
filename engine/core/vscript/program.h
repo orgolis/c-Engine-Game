@@ -112,10 +112,25 @@ struct Where {
     int32_t node = 0;
 };
 
+/// Debug information: where a node keeps its data outputs. `base` is the
+/// register of its first data output, in function `fn` (0 = the event unit,
+/// whose registers live as long as the instance). Pure nodes have none: they
+/// are computed where they are used.
+struct NodeOutputs {
+    int32_t graph = -1;
+    int32_t node = 0;
+    int32_t fn = 0;
+    int32_t base = 0;
+};
+
 struct Program {
     std::string            name;
     std::vector<Instr>     code;
     std::vector<Where>     where;      // per instruction: the node it was compiled from
+    std::vector<Where>     stmt;       // per instruction: the flow node whose run STARTS here (node 0: none).
+                                       // Breakpoints and steps stop only at these: a node's own code is
+                                       // interleaved with the pure nodes that feed it, so "the node changed"
+                                       // happens several times while one node runs.
     std::vector<Value>     consts;
     std::vector<Type>      types;
     std::vector<const NodeDef*> natives;
@@ -124,6 +139,13 @@ struct Program {
     std::vector<VarInfo>   vars;
     std::vector<std::string> graph_names;
     int                    nstate = 0; // per-instance node state slots
+    std::vector<NodeOutputs> outputs;  // debug information, one entry per node that keeps outputs
+
+    const NodeOutputs* find_outputs(int graph, int node) const {
+        for (const NodeOutputs& o : outputs)
+            if (o.graph == graph && o.node == node) return &o;
+        return nullptr;
+    }
 
     int find_event(std::string_view n) const {
         for (size_t i = 0; i < events.size(); ++i)

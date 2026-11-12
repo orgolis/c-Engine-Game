@@ -1,5 +1,6 @@
 #include "logic_script_panel.h"
 
+#include "logic_debug.h"
 #include "logic_nodes.h"
 #include "node_canvas.h"   // CanvasView: the pan/zoom arithmetic
 
@@ -16,8 +17,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -57,6 +60,17 @@ struct PanelState {
     float        band_x = 0.0f, band_y = 0.0f;   // where a box selection started (canvas units)
     std::vector<int> band_base;   // what was selected before it
     std::vector<int> carry;       // nodes a moving comment box takes along
+
+    // Debugging. Breakpoints are (graph index, node id); they belong to the
+    // file and are handed to the logic host whenever they change.
+    std::set<std::pair<int, int>> bps;
+    uint32_t     debug_entity = 0;      // the object whose run is shown while the game plays
+    int          want_center = 0;       // a node to bring to the middle of the canvas
+    // The running game as this script sees it, refreshed every frame.
+    LogicDebugger* dbg = nullptr;       // set while an object is running this file
+    bool         stopped_here = false;  // ... and that object is stopped at a breakpoint in it
+    int          stopped_graph = -1, stopped_node = 0;
+    std::string  key_of, key;           // `path` as the logic host spells it, cached
     PinRef       link_from;
     bool         palette_open = false;
     float        palette_x = 0.0f, palette_y = 0.0f;   // canvas position for the new node
@@ -90,6 +104,20 @@ struct PanelState {
         last_snapshot = to_text(script);
         dirty = false;
         recompile();
+    }
+    /// The file by the spelling the logic host uses for it.
+    const std::string& file_key() {
+        if (key_of != path || key.empty()) {
+            std::error_code ec;
+            const std::filesystem::path c = std::filesystem::weakly_canonical(path, ec);
+            key = ec ? path : c.generic_string();
+            key_of = path;
+        }
+        return key;
+    }
+    void push_breakpoints() {
+        LogicDebugger* d = logic_debugger();
+        if (d && !path.empty()) d->set_breakpoints(path, std::vector<std::pair<int, int>>(bps.begin(), bps.end()));
     }
     bool is_selected(int id) const { return std::find(sel.begin(), sel.end(), id) != sel.end(); }
     void clear_selection() {
@@ -193,6 +221,7 @@ struct PanelState {
         f << to_text(script);
         dirty = false;
         status = "saved " + path;
+        push_breakpoints();   // the file may have just got its name
         return true;
     }
     std::string tab_name() const {
@@ -282,6 +311,15 @@ std::vector<std::string> find_logic_scripts() {
     }
     std::sort(out.begin(), out.end());
     return out;
+}
+
+std::function<std::string(uint32_t)>& entity_namer() {
+    static std::function<std::string(uint32_t)> f;
+    return f;
+}
+std::string entity_label(uint32_t e) {
+    const std::string n = entity_namer() ? entity_namer()(e) : std::string();
+    return (n.empty() ? std::string("object") : n) + "  #" + std::to_string(e);
 }
 
 ImU32 type_color(Type t) {
@@ -607,6 +645,10 @@ void draw_side_panel(PanelState& st) {
         if (ImGui::SmallButton("x")) remove = i;
         if (type_combo("##t", v.type)) { v.def = Value::default_of(v.type); st.changed(); }
         if (value_editor("def", v.type, v.def, 160.0f)) st.changed();
+        if (st.dbg) {
+            std::string live;
+            if (st.dbg->variable_text(st.debug_entity, v.name, live)) ImGui::TextColored(ImVec4(0.45f, 0.85f, 1.0f, 1.0f), "now: %s", live.c_str());
+        }
         if (ImGui::Checkbox("show in Inspector", &v.exposed)) st.changed();
         ImGui::Separator();
         ImGui::PopID();
@@ -773,6 +815,7 @@ void draw_canvas(PanelState& st) {
     PinRef hover_pin;
     int    hover_node = 0;
     bool   widget_active = false;
+    std::set<int> ran;   // nodes that ran a moment ago on the watched object
 
     // ---- comment boxes, behind everything ----------------------------------
     // Only the title bar and the corner grip take the mouse: the body is
@@ -858,6 +901,27 @@ void draw_canvas(PanelState& st) {
             dl->AddRectFilled(c0, c1, IM_COL32(74, 70, 40, 235), 4.0f * z);
             dl->AddText(ImVec2(c0.x + 6.0f * z, c0.y + 3.0f * z), IM_COL32(255, 240, 180, 255), n.comment.c_str());
         }
+        // The running game: a glow on what just ran, a marker where it is stopped.
+        if (st.dbg) {
+            const double since = st.dbg->seconds_since_run(st.debug_entity, st.graph, n.id);
+            if (since >= 0.0 && since < 0.6) {
+                ran.insert(n.id);
+                const int alpha = static_cast<int>(255.0 * (1.0 - since / 0.6));
+                dl->AddRect(ImVec2(p0.x - 3.0f, p0.y - 3.0f), ImVec2(p1.x + 3.0f, p1.y + 3.0f), IM_COL32(110, 215, 255, alpha),
+                            (knot ? h * 0.5f : 5.0f * z) + 3.0f, 0, 3.0f);
+            }
+        }
+        if (st.stopped_here && st.stopped_graph == st.graph && st.stopped_node == n.id) {
+            dl->AddRect(ImVec2(p0.x - 4.0f, p0.y - 4.0f), ImVec2(p1.x + 4.0f, p1.y + 4.0f), IM_COL32(255, 150, 40, 255), 5.0f * z + 4.0f, 0, 4.0f);
+            const float ay = p0.y + row * 0.5f, as = 9.0f * z;
+            dl->AddTriangleFilled(ImVec2(p0.x - 8.0f - as * 1.6f, ay - as), ImVec2(p0.x - 8.0f, ay), ImVec2(p0.x - 8.0f - as * 1.6f, ay + as),
+                                  IM_COL32(255, 150, 40, 255));
+        }
+        if (st.bps.count({st.graph, n.id})) {
+            const ImVec2 c(p0.x + 1.0f, p0.y + 1.0f);
+            dl->AddCircleFilled(c, 7.0f * z, IM_COL32(225, 45, 45, 255));
+            dl->AddCircle(c, 7.0f * z, IM_COL32(20, 20, 20, 255), 0, 1.5f);
+        }
         const bool over_node = hovered && mouse_in(p0, p1);
         if (over_node) hover_node = n.id;
         if (over_node && has_error && !err_text.empty()) ImGui::SetTooltip("%s", err_text.c_str());
@@ -934,9 +998,46 @@ void draw_canvas(PanelState& st) {
         const bool   hot = hovered && !hover_pin.valid() && !hover_node && hover_wire < 0 && st.drag == Drag::None &&
                            !st.link_from.valid() && near_wire(a, b);
         if (hot) hover_wire = static_cast<int>(li);
-        wire(a, b, type_color(t), (t.is_exec() ? 3.0f : 2.0f) * z + (hot ? 2.0f : 0.0f));
+        // A flow wire whose two ends both just ran is the path the run took.
+        const bool taken = t.is_exec() && ran.count(l.from) && ran.count(l.to);
+        wire(a, b, taken ? IM_COL32(110, 215, 255, 255) : type_color(t), (t.is_exec() ? 3.0f : 2.0f) * z + (hot ? 2.0f : 0.0f) + (taken ? 1.5f : 0.0f));
     }
     if (hover_wire >= 0) ImGui::SetTooltip("double-click: add a knot   Alt-click: cut");
+
+    // What is on a pin, while the game runs: an output's own value, an input's
+    // source. A pure node keeps nothing (it is computed where it is used).
+    if (st.dbg && hover_pin.valid() && !st.link_from.valid()) {
+        int         src_node = hover_pin.node, src_pin = hover_pin.pin;
+        const auto  hs = shapes.find(hover_pin.node);
+        std::string label = hs != shapes.end() ? hs->second.pins[static_cast<size_t>(hover_pin.pin)].name : std::string();
+        bool        have = hs != shapes.end() && !hs->second.pins[static_cast<size_t>(hover_pin.pin)].type.is_exec();
+        if (have && hover_pin.input) {
+            have = false;
+            for (const Link& l : g.links)
+                if (l.to == hover_pin.node && l.to_pin == label) {
+                    const auto ss = shapes.find(l.from);
+                    const int  sp = ss != shapes.end() ? ss->second.find(l.from_pin, false) : -1;
+                    if (sp >= 0) { src_node = l.from; src_pin = sp; have = true; }
+                }
+        }
+        if (have) {
+            const Shape& ss = shapes[src_node];
+            int          slot = 0;
+            for (int i = 0; i < src_pin; ++i)
+                if (!ss.pins[static_cast<size_t>(i)].input && !ss.pins[static_cast<size_t>(i)].type.is_exec()) ++slot;
+            std::string text;
+            if (st.dbg->output_text(st.debug_entity, st.graph, src_node, slot, text)) ImGui::SetTooltip("%s = %s", label.c_str(), text.c_str());
+            else if (ss.pure) ImGui::SetTooltip("%s: worked out each time it is used", label.c_str());
+        }
+    }
+    if (st.want_center) {
+        for (const NodeRect& r : rects)
+            if (r.id == st.want_center) {
+                st.view.pan_x += (origin.x + size.x * 0.5f - (r.a.x + r.b.x) * 0.5f) / z;
+                st.view.pan_y += (origin.y + size.y * 0.5f - (r.a.y + r.b.y) * 0.5f) / z;
+            }
+        st.want_center = 0;
+    }
 
     // ---- what the keys and menus do ----------------------------------------
     auto world_rect = [&](const NodeRect& r, float& x0, float& y0, float& x1, float& y1, bool& any) {
@@ -953,6 +1054,20 @@ void draw_canvas(PanelState& st) {
         }
         st.clear_selection();
         if (any) st.changed();
+    };
+    auto toggle_breakpoints = [&]() {
+        // A stop happens where a node with flow pins starts to run; a pure
+        // node has no such moment.
+        bool any = false;
+        for (int id : st.sel) {
+            const auto s = shapes.find(id);
+            if (s == shapes.end() || s->second.pure) continue;
+            const std::pair<int, int> k{st.graph, id};
+            if (!st.bps.erase(k)) st.bps.insert(k);
+            any = true;
+        }
+        if (any) st.push_breakpoints();
+        else if (!st.sel.empty()) st.status = "a breakpoint needs a node with flow pins";
     };
     auto do_copy = [&]() {
         if (st.sel.empty()) return;
@@ -1191,6 +1306,7 @@ void draw_canvas(PanelState& st) {
             st.sel_box = 0;
         }
         if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C)) add_comment(wx(io.MousePos.x), wy(io.MousePos.y));
+        if (ImGui::IsKeyPressed(ImGuiKey_F9)) toggle_breakpoints();
         if (ImGui::IsKeyPressed(ImGuiKey_Home)) frame(false);
         if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F)) frame(!st.sel.empty());
     }
@@ -1209,6 +1325,8 @@ void draw_canvas(PanelState& st) {
             st.changed();
         }
         if (ImGui::MenuItem("Comment box around", "C")) add_comment(st.palette_x, st.palette_y);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Toggle breakpoint", "F9")) toggle_breakpoints();
         ImGui::EndPopup();
     }
     if (ImGui::BeginPopup("##boxmenu")) {
@@ -1299,6 +1417,14 @@ void open_logic_script(const std::string& path, bool* open_flag) {
     if (open_flag) *open_flag = true;
 }
 
+void set_logic_entity_namer(std::function<std::string(uint32_t)> name_of) { entity_namer() = std::move(name_of); }
+
+void add_logic_script_breakpoint(const std::string& path, int graph, int node) {
+    PanelState& st = open_doc(path);
+    st.bps.insert({graph, node});
+    st.push_breakpoints();
+}
+
 bool logic_scripts_unsaved() {
     for (const auto& s : docs().list)
         if (s->dirty) return true;
@@ -1312,6 +1438,21 @@ void draw_logic_script_panel(bool* open) {
         ImGui::End();
         return;
     }
+
+    // A script that stops at a breakpoint is brought up, at the node it stopped at.
+    LogicDebugger*   dbg = logic_debugger();
+    LogicDebugTarget stop_at;
+    int              stop_graph = -1, stop_node = 0;
+    const bool       stopped = dbg && dbg->paused(&stop_at, &stop_graph, &stop_node);
+    static bool      s_shown_stop = false;
+    if (stopped && !s_shown_stop && !stop_at.path.empty()) {
+        PanelState& ps = open_doc(stop_at.path);
+        if (stop_graph >= 0 && stop_graph < static_cast<int>(ps.script.graphs.size())) ps.graph = stop_graph;
+        ps.select_only(stop_node);
+        ps.want_center = stop_node;
+        ps.debug_entity = stop_at.entity;
+    }
+    s_shown_stop = stopped;
 
     // One tab per open script.
     int close = -1;
@@ -1423,6 +1564,63 @@ void draw_logic_script_panel(bool* open) {
     if (!st.status.empty()) {
         ImGui::SameLine();
         ImGui::TextDisabled("%s", st.status.c_str());
+    }
+
+    // ---- the running game ------------------------------------------------
+    st.dbg = nullptr;
+    st.stopped_here = false;
+    std::vector<uint32_t> running;   // the objects that run this file right now
+    if (dbg && !st.path.empty()) {
+        const std::string& fk = st.file_key();
+        for (const LogicDebugTarget& tg : dbg->targets())
+            if (tg.path == fk) running.push_back(tg.entity);
+        if (!running.empty()) {
+            dbg->want_tracing();
+            if (std::find(running.begin(), running.end(), st.debug_entity) == running.end()) st.debug_entity = running.front();
+            st.dbg = dbg;
+            if (stopped && stop_at.path == fk && stop_at.entity == st.debug_entity) {
+                st.stopped_here = true;
+                st.stopped_graph = stop_graph;
+                st.stopped_node = stop_node;
+            }
+        }
+    }
+    if (st.dbg || stopped) {
+        auto go = [&](LogicStep how) {
+            dbg->resume(how);
+            s_shown_stop = false;   // the next stop is brought up again, wherever it is
+        };
+        if (st.dbg) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("Running on");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::BeginCombo("##dbgobj", entity_label(st.debug_entity).c_str())) {
+                for (uint32_t e : running)
+                    if (ImGui::Selectable(entity_label(e).c_str(), e == st.debug_entity)) st.debug_entity = e;
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+        }
+        if (stopped) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), st.stopped_here ? "Stopped at a breakpoint" : "Stopped in another script or object");
+            ImGui::SameLine();
+            const bool keys = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !ImGui::IsAnyItemActive();
+            if (ImGui::Button("Continue")) go(LogicStep::Continue);
+            ImGui::SameLine();
+            if (ImGui::Button("Step") || (keys && ImGui::IsKeyPressed(ImGuiKey_F10))) go(LogicStep::Over);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Run this node and stop at the next one (F10)");
+            ImGui::SameLine();
+            if (ImGui::Button("Step Into") || (keys && !ImGui::GetIO().KeyShift && ImGui::IsKeyPressed(ImGuiKey_F11))) go(LogicStep::Into);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Like Step, but goes into a function or an event this node calls (F11)");
+            ImGui::SameLine();
+            if (ImGui::Button("Step Out") || (keys && ImGui::GetIO().KeyShift && ImGui::IsKeyPressed(ImGuiKey_F11))) go(LogicStep::Out);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Run to the end of this function or event (Shift+F11)");
+        } else {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("F9 on a node: breakpoint.  Hover a pin: its value.");
+        }
     }
 
     ImGui::BeginChild("##side", ImVec2(250.0f, 0.0f), true);

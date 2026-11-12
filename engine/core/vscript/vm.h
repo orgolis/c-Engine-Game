@@ -18,6 +18,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -121,6 +122,21 @@ public:
     void resume(Step how = Step::Continue);
     /// Called when execution pauses.
     std::function<void(VM&)> on_pause;
+    /// Drop a paused run without finishing it. For when the script that is
+    /// paused is about to go away (Play stopped, the file reloaded).
+    void abort();
+    /// A register of an instance, to show what is on a pin (Program::outputs
+    /// says which). The event unit's registers (fn 0) are always there; a
+    /// function's only while that function is the paused frame.
+    const Value* frame_register(const Instance& inst, int fn, int reg) const;
+
+    /// Tracing: remember when each node of each instance last ran, on the
+    /// clock the host keeps in `trace_time`. Costs nothing while off.
+    bool   trace = false;
+    double trace_time = 0.0;
+    /// When that node last ran, on the trace clock; negative if it has not.
+    double last_run(const Instance& inst, int graph, int node) const;
+    void   clear_trace() { trace_last_.clear(); }
 
     Host* host() const { return host_; }
 
@@ -151,6 +167,7 @@ private:
     void run();
     void fail(std::string_view text);
     uint64_t bp_key(const Program* p, int graph, int node) const;
+    static uint64_t trace_key(const Instance* inst, int graph, int node);
 
     Host*               host_ = nullptr;
     std::vector<Value>  stack_;
@@ -169,6 +186,7 @@ private:
     Where    step_from_{};
     bool     skip_break_once_ = false;
     std::vector<Value> call_results_;
+    std::unordered_map<uint64_t, double> trace_last_;
 };
 
 }  // namespace schizo::vs

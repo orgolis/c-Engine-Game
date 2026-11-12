@@ -12,15 +12,19 @@
 // ScriptApi needs one more line in register_engine_nodes().
 
 #include "script_system.h"
+#include "logic_debug.h"
 #include "logic_nodes.h"
 
 #include "vscript/io.h"
 #include "vscript/program.h"
 #include "vscript/vm.h"
 
+#include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -262,27 +266,200 @@ namespace {
 
 using namespace schizo::vs;
 
+struct LogicRuntime;
+LogicRuntime* g_debug_runtime = nullptr;   // what logic_debugger() hands out
+
+/// A script's work for one frame, in steps, so that a frame a breakpoint
+/// interrupted can go on from where it stopped.
+struct FrameWork {
+    virtual ~FrameWork() = default;
+    /// Do (the rest of) this frame's work. False when a breakpoint stopped it.
+    virtual bool run_frame() = 0;
+    /// Start a frame that never began because another script was stopped.
+    virtual void begin_frame(float dt) = 0;
+};
+
+/// A script file by one spelling, however the caller wrote the path.
+std::string path_key(const std::string& path) {
+    std::error_code ec;
+    const std::filesystem::path c = std::filesystem::weakly_canonical(path, ec);
+    return ec ? path : c.generic_string();
+}
+
+double wall_seconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 /// One registry and one VM for every logic script: programs are small, the
-/// VM's stack is not.
-struct LogicRuntime : Host {
+/// VM's stack is not. Also the debugger the graph editor talks to.
+struct LogicRuntime : Host, LogicDebugger {
     Registry reg;
     Shared   shared;
     VM       vm{this};
     double   last_tick_time = -1.0;
     std::string last_error;
-    // Which script is on which entity, for the nodes that reach another
-    // entity's script (Send Event to Entity, Get / Set Variable of Entity).
-    std::unordered_map<uint32_t, Instance*> by_entity;
+
+    // A compiled script, shared by every object that runs that file.
+    struct Compiled {
+        std::filesystem::file_time_type stamp;
+        uintmax_t                       size = 0;
+        std::shared_ptr<const Program>  program;
+    };
+    std::unordered_map<std::string, Compiled> programs;   // by path_key
+
+    // Which script is on which entity: for the nodes that reach another
+    // entity's script (Send Event to Entity, Get / Set Variable of Entity),
+    // and for the debugger.
+    struct Live {
+        Instance*                      inst = nullptr;
+        std::string                    path;      // path_key of the file
+        std::shared_ptr<const Program> program;
+    };
+    std::unordered_map<uint32_t, Live> live;
+
+    // Breakpoints by script file, kept whether or not anything is running.
+    std::unordered_map<std::string, std::vector<std::pair<int, int>>> breakpoints;
+    // The frame a breakpoint interrupted: the script whose work was cut short,
+    // and the scripts whose turn had not come. Continue finishes it, so a
+    // breakpoint costs nobody their Tick.
+    FrameWork* interrupted = nullptr;
+    struct Waiting {
+        FrameWork* work;
+        float      dt;
+    };
+    std::vector<Waiting> waiting;
+
+    void wait_turn(FrameWork* w, float dt) {
+        for (const Waiting& x : waiting)
+            if (x.work == w) return;
+        if (w != interrupted) waiting.push_back(Waiting{w, dt});
+    }
+    void gone(FrameWork* w) {
+        if (interrupted == w) interrupted = nullptr;
+        waiting.erase(std::remove_if(waiting.begin(), waiting.end(), [&](const Waiting& x) { return x.work == w; }), waiting.end());
+    }
+    /// After a run continued and finished: the rest of the interrupted frame.
+    void finish_frame() {
+        while (vm.state() != RunState::Paused) {
+            FrameWork* w = interrupted;
+            interrupted = nullptr;
+            if (!w) {
+                if (waiting.empty()) break;
+                w = waiting.front().work;
+                w->begin_frame(waiting.front().dt);
+                waiting.erase(waiting.begin());
+            }
+            if (!w->run_frame()) {
+                interrupted = w;
+                break;
+            }
+        }
+    }
+    double trace_until = 0.0;   // tracing stays on until this wall-clock time
 
     Instance* find_instance(uint32_t entity) override {
-        const auto it = by_entity.find(entity);
-        return it == by_entity.end() ? nullptr : it->second;
+        const auto it = live.find(entity);
+        return it == live.end() ? nullptr : it->second.inst;
+    }
+    const Live* find_live(uint32_t entity) const {
+        const auto it = live.find(entity);
+        return it == live.end() || !it->second.inst ? nullptr : &it->second;
     }
 
     LogicRuntime() {
         register_standard_library(reg);
         register_engine_logic_nodes(reg, &shared);
     }
+    ~LogicRuntime() override {
+        if (g_debug_runtime == this) g_debug_runtime = nullptr;
+    }
+
+    /// Put the per-file breakpoints on the programs that are running now.
+    void apply_breakpoints() {
+        vm.clear_breakpoints();
+        for (const auto& [entity, l] : live) {
+            const auto it = breakpoints.find(l.path);
+            if (it == breakpoints.end()) continue;
+            for (const auto& [graph, node] : it->second) vm.set_breakpoint(l.program.get(), graph, node, true);
+        }
+    }
+    /// Once a frame: the trace clock, and switching tracing off when nobody
+    /// has asked for it lately.
+    void frame() {
+        if (!vm.trace) return;
+        const double now = wall_seconds();
+        vm.trace_time = now;
+        if (now > trace_until) {
+            vm.trace = false;
+            vm.clear_trace();
+        }
+    }
+
+    // ---- LogicDebugger ---------------------------------------------------
+    std::vector<LogicDebugTarget> targets() const override {
+        std::vector<LogicDebugTarget> out;
+        for (const auto& [entity, l] : live)
+            if (l.inst) out.push_back(LogicDebugTarget{entity, l.path});
+        std::sort(out.begin(), out.end(), [](const LogicDebugTarget& a, const LogicDebugTarget& b) { return a.entity < b.entity; });
+        return out;
+    }
+    void set_breakpoints(const std::string& path, const std::vector<std::pair<int, int>>& graph_node) override {
+        const std::string key = path_key(path);
+        if (graph_node.empty()) breakpoints.erase(key);
+        else breakpoints[key] = graph_node;
+        apply_breakpoints();
+    }
+    void want_tracing() override {
+        const double now = wall_seconds();
+        trace_until = now + 1.0;
+        if (!vm.trace) {
+            vm.trace = true;
+            vm.trace_time = now;
+        }
+    }
+    bool paused(LogicDebugTarget* where, int* graph, int* node) const override {
+        if (vm.state() != RunState::Paused) return false;
+        const Instance* pi = vm.paused_instance();
+        const Where     w = vm.paused_at();
+        if (where && pi) {
+            where->entity = pi->self;
+            const Live* l = find_live(pi->self);
+            where->path = l ? l->path : std::string();
+        }
+        if (graph) *graph = w.graph;
+        if (node) *node = w.node;
+        return true;
+    }
+    void resume(LogicStep how) override {
+        if (vm.state() != RunState::Paused) return;
+        vm.trace_time = wall_seconds();
+        vm.resume(how == LogicStep::Into ? VM::Step::Into : how == LogicStep::Over ? VM::Step::Over
+                  : how == LogicStep::Out ? VM::Step::Out : VM::Step::Continue);
+        finish_frame();
+    }
+    double seconds_since_run(uint32_t entity, int graph, int node) const override {
+        const Live* l = find_live(entity);
+        if (!l) return -1.0;
+        const double t = vm.last_run(*l->inst, graph, node);
+        return t < 0.0 ? -1.0 : std::max(0.0, wall_seconds() - t);
+    }
+    bool output_text(uint32_t entity, int graph, int node, int slot, std::string& text) const override {
+        const Live* l = find_live(entity);
+        if (!l || slot < 0) return false;
+        const NodeOutputs* o = l->program->find_outputs(graph, node);
+        const Value*       v = o ? vm.frame_register(*l->inst, o->fn, o->base + slot) : nullptr;
+        if (!v) return false;
+        text = display_string(*v);
+        return true;
+    }
+    bool variable_text(uint32_t entity, const std::string& name, std::string& text) const override {
+        const Live* l = find_live(entity);
+        const Value* v = l ? l->inst->variable(name) : nullptr;
+        if (!v) return false;
+        text = display_string(*v);
+        return true;
+    }
+
     void print(const Instance&, std::string_view text) override {
         if (shared.api && shared.api->log) shared.api->log(shared.api->ctx, std::string(text).c_str());
     }
@@ -317,30 +494,36 @@ int key_code_of(const std::string& s) {
     return end != s.c_str() && *end == 0 && v > 0 ? static_cast<int>(v) : -1;
 }
 
-class LogicInstance final : public ScriptInstance {
+class LogicInstance final : public ScriptInstance, public FrameWork {
 public:
-    LogicInstance(std::shared_ptr<LogicRuntime> rt, Program program, const ScriptApi* api)
-        : rt_(std::move(rt)), program_(std::move(program)), api_(api) {}
+    LogicInstance(std::shared_ptr<LogicRuntime> rt, std::shared_ptr<const Program> program, std::string path,
+                  const ScriptApi* api)
+        : rt_(std::move(rt)), program_(std::move(program)), path_(std::move(path)), api_(api) {}
     ~LogicInstance() override {
         if (inst_) {
             rt_->shared.api = api_;
+            // A run that is stopped at a breakpoint may be standing in this
+            // script: it cannot be finished once the script is gone.
+            if (rt_->vm.state() == RunState::Paused) rt_->vm.abort();
+            rt_->gone(this);
             if (begun_) rt_->vm.fire(*inst_, "event.end_play");
             rt_->vm.forget(*inst_);
             // Only if the entry is still this script: on a hot reload the new
             // instance may already have taken the entity's slot.
-            const auto it = rt_->by_entity.find(inst_->self);
-            if (it != rt_->by_entity.end() && it->second == inst_.get()) rt_->by_entity.erase(it);
+            const auto it = rt_->live.find(inst_->self);
+            if (it != rt_->live.end() && it->second.inst == inst_.get()) rt_->live.erase(it);
         }
     }
 
     bool start(uint32_t entity, std::string&) override {
         rt_->shared.api = api_;
-        inst_ = rt_->vm.instantiate(program_, entity);
-        rt_->by_entity[entity] = inst_.get();
+        inst_ = rt_->vm.instantiate(*program_, entity);
+        rt_->live[entity] = LogicRuntime::Live{inst_.get(), path_, program_};
+        rt_->apply_breakpoints();
         apply_inspector_values(entity);
         // Which keys this script listens for, so update() polls only those.
         keys_.clear();
-        for (const EventInfo& e : program_.events) {
+        for (const EventInfo& e : program_->events) {
             for (const bool pressed : {true, false}) {
                 const std::string prefix = pressed ? "event.key_pressed:" : "event.key_released:";
                 if (e.name.rfind(prefix, 0) != 0) continue;
@@ -357,40 +540,95 @@ public:
     }
     bool update(uint32_t, float dt, std::string&) override {
         rt_->shared.api = api_;
-        // Begin Play runs on the first update, not in start(): the script
-        // system starts every script before it updates any, so an event sent
-        // from Begin Play finds the other entity's script already there.
-        if (!begun_) {
-            begun_ = true;
-            rt_->vm.fire(*inst_, "event.begin_play");
+        VM& vm = rt_->vm;
+        // Another script is stopped at a breakpoint: this one takes its turn
+        // when that run continues.
+        if (vm.state() == RunState::Paused) {
+            rt_->wait_turn(this, dt);
+            return true;
         }
         // Waits belong to the shared VM: advance them once per frame, not once
         // per script.
         if (api_ && api_->time != rt_->last_tick_time) {
             rt_->last_tick_time = api_->time;
-            rt_->vm.tick(static_cast<double>(dt));
-        }
-        for (Key& k : keys_) {
-            const bool down = api_ && api_->key_down && api_->key_down(api_->ctx, k.code);
-            if (down && !k.down && !k.on_press.empty()) rt_->vm.fire(*inst_, k.on_press);
-            if (!down && k.down && !k.on_release.empty()) rt_->vm.fire(*inst_, k.on_release);
-            k.down = down;
-        }
-        if (wants_bus_ && api_ && api_->event_count && api_->event_get) {
-            const int n = api_->event_count(api_->ctx);
-            for (int i = 0; i < n; ++i) {
-                char     name[128] = {}, param[256] = {};
-                uint32_t instigator = 0, target = 0;
-                float    value = 0.0f;
-                if (!api_->event_get(api_->ctx, i, name, sizeof name, &instigator, &target, &value, param, sizeof param)) continue;
-                const Value args[4] = {Value::entity(instigator), Value::entity(target),
-                                       Value::number(static_cast<double>(value)), Value::string(param)};
-                rt_->vm.fire(*inst_, std::string("event.gameplay:") + name, args, 4);
+            rt_->frame();
+            vm.tick(static_cast<double>(dt));
+            if (vm.state() == RunState::Paused) {   // a wait ran into a breakpoint
+                rt_->wait_turn(this, dt);
+                return true;
             }
         }
-        const Value d = Value::number(static_cast<double>(dt));
-        rt_->vm.fire(*inst_, "event.tick", &d, 1);
+        begin_frame(dt);
+        if (!run_frame()) rt_->interrupted = this;
         return true;
+    }
+
+    void begin_frame(float dt) override {
+        phase_ = Phase::BeginPlay;
+        key_i_ = 0;
+        bus_i_ = 0;
+        bus_n_ = -1;
+        dt_ = dt;
+    }
+    /// Begin Play (first frame), key events, gameplay events, Tick: one event
+    /// at a time, and a stop between any two of them is picked up again here.
+    bool run_frame() override {
+        rt_->shared.api = api_;
+        VM& vm = rt_->vm;
+        for (;;) {
+            if (vm.state() == RunState::Paused) return false;
+            switch (phase_) {
+                case Phase::BeginPlay:
+                    // On the first update, not in start(): the script system
+                    // starts every script before it updates any, so an event
+                    // sent from Begin Play finds the other script there.
+                    phase_ = Phase::Keys;
+                    if (!begun_) {
+                        begun_ = true;
+                        vm.fire(*inst_, "event.begin_play");
+                    }
+                    break;
+                case Phase::Keys: {
+                    if (key_i_ >= keys_.size()) {
+                        phase_ = Phase::Bus;
+                        break;
+                    }
+                    Key&       k = keys_[key_i_++];
+                    const bool down = api_ && api_->key_down && api_->key_down(api_->ctx, k.code);
+                    const bool was = k.down;
+                    k.down = down;
+                    if (down && !was && !k.on_press.empty()) vm.fire(*inst_, k.on_press);
+                    else if (!down && was && !k.on_release.empty()) vm.fire(*inst_, k.on_release);
+                    break;
+                }
+                case Phase::Bus: {
+                    if (!wants_bus_ || !api_ || !api_->event_count || !api_->event_get) {
+                        phase_ = Phase::Tick;
+                        break;
+                    }
+                    if (bus_n_ < 0) bus_n_ = api_->event_count(api_->ctx);
+                    if (bus_i_ >= bus_n_) {
+                        phase_ = Phase::Tick;
+                        break;
+                    }
+                    char     name[128] = {}, param[256] = {};
+                    uint32_t instigator = 0, target = 0;
+                    float    value = 0.0f;
+                    if (!api_->event_get(api_->ctx, bus_i_++, name, sizeof name, &instigator, &target, &value, param, sizeof param)) break;
+                    const Value args[4] = {Value::entity(instigator), Value::entity(target),
+                                           Value::number(static_cast<double>(value)), Value::string(param)};
+                    vm.fire(*inst_, std::string("event.gameplay:") + name, args, 4);
+                    break;
+                }
+                case Phase::Tick: {
+                    phase_ = Phase::Done;
+                    const Value d = Value::number(static_cast<double>(dt_));
+                    vm.fire(*inst_, "event.tick", &d, 1);
+                    break;
+                }
+                case Phase::Done: return true;
+            }
+        }
     }
     bool invoke(const char* token, std::string& err) override {
         rt_->shared.api = api_;
@@ -406,8 +644,8 @@ private:
     void apply_inspector_values(uint32_t entity) {
         if (!api_ || !api_->get_param_string) return;
         static const char kUnset[] = "\x01";
-        for (size_t i = 0; i < program_.vars.size(); ++i) {
-            const VarInfo& v = program_.vars[i];
+        for (size_t i = 0; i < program_->vars.size(); ++i) {
+            const VarInfo& v = program_->vars[i];
             if (!v.exposed || v.type.array) continue;
             char text[512] = {};
             api_->get_param_string(api_->ctx, entity, v.name.c_str(), text, sizeof text, kUnset);
@@ -422,9 +660,10 @@ private:
         }
     }
 
-    std::shared_ptr<LogicRuntime> rt_;
-    Program                       program_;
-    const ScriptApi*              api_ = nullptr;
+    std::shared_ptr<LogicRuntime>  rt_;
+    std::shared_ptr<const Program> program_;
+    std::string                    path_;    // path_key of the file
+    const ScriptApi*               api_ = nullptr;
     std::unique_ptr<Instance>     inst_;
     struct Key {
         int         code = 0;
@@ -434,14 +673,33 @@ private:
     std::vector<Key> keys_;
     bool             wants_bus_ = false;
     bool             begun_ = false;
+    // Where this frame's work is (run_frame).
+    enum class Phase : uint8_t { BeginPlay, Keys, Bus, Tick, Done };
+    Phase  phase_ = Phase::Done;
+    size_t key_i_ = 0;
+    int    bus_i_ = 0, bus_n_ = -1;
+    float  dt_ = 0.0f;
 };
 
 class LogicHost final : public ScriptHost {
 public:
     const char* language() const override { return "Logic Graph"; }
 
+    LogicHost() { g_debug_runtime = rt_.get(); }
+
     std::unique_ptr<ScriptInstance> create(const std::string& source_path, const ScriptApi* api,
                                            std::string& err) override {
+        // One compiled program per file, shared by every object that runs it
+        // and kept until the file changes.
+        const std::string key = path_key(source_path);
+        std::error_code   ec;
+        const auto        stamp = std::filesystem::last_write_time(source_path, ec);
+        const uintmax_t   size = ec ? 0 : std::filesystem::file_size(source_path, ec);
+        LogicRuntime::Compiled& slot = rt_->programs[key];
+        if (!ec && slot.program && slot.stamp == stamp && slot.size == size)
+            return std::make_unique<LogicInstance>(rt_, slot.program, key, api);
+        slot.program.reset();
+
         std::ifstream f(source_path, std::ios::binary);
         if (!f) {
             err = "cannot open '" + source_path + "'";
@@ -452,7 +710,8 @@ public:
         Script script;
         if (!from_text(ss.str(), script, &err)) return nullptr;
         if (script.name.empty()) script.name = source_path;
-        Program                     program;
+        auto                        compiled = std::make_shared<Program>();
+        Program&                    program = *compiled;
         std::vector<CompileMessage> msgs;
         if (!compile(rt_->reg, script, program, msgs)) {
             // The first error, with where it is: the Inspector shows one line.
@@ -465,7 +724,12 @@ public:
             }
             return nullptr;
         }
-        return std::make_unique<LogicInstance>(rt_, std::move(program), api);
+        if (!ec) {
+            slot.stamp = stamp;
+            slot.size = size;
+            slot.program = compiled;
+        }
+        return std::make_unique<LogicInstance>(rt_, std::move(compiled), key, api);
     }
 
 private:
@@ -475,5 +739,7 @@ private:
 }  // namespace
 
 std::unique_ptr<ScriptHost> make_logic_host() { return std::make_unique<LogicHost>(); }
+
+LogicDebugger* logic_debugger() { return g_debug_runtime; }
 
 }  // namespace schizo::editor

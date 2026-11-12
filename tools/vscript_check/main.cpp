@@ -770,6 +770,89 @@ void test_debugger() {
     check(r.vm.state() == RunState::Idle && r.host.joined() == "a,b,c", "Continue runs to the end");
     r.vm.clear_breakpoints();
     check(r.run() == "a,b,c", "with the breakpoint cleared the event runs through");
+
+    // Stepping off the end of an event is "continue": the next event runs through.
+    r.vm.set_breakpoint(&r.prog, 0, c, true);
+    r.run();
+    r.vm.resume(VM::Step::Over);
+    r.vm.clear_breakpoints();
+    check(r.vm.state() == RunState::Idle && r.run() == "a,b,c", "stepping past the last node does not stop the next event at its first");
+
+    // A paused run can be dropped (the script is going away).
+    r.vm.set_breakpoint(&r.prog, 0, b, true);
+    r.run();
+    r.vm.abort();
+    r.vm.clear_breakpoints();
+    check(r.vm.state() == RunState::Idle && r.run() == "a,b,c", "a paused run can be aborted, and the VM is usable afterwards");
+
+    {
+        // A node fed by pure nodes: its code is interleaved with theirs, and
+        // it must still stop once, and step to the NEXT node.
+        Rig q; Graph& h = q.events();
+        const int e2 = node(h, "event.begin_play"), p1 = print_node(h), p2 = print_node(h, "z");
+        const int add = node(h, "math.add"), mul = node(h, "math.mul"), cat = node(h, "math.add");
+        h.find(add)->targ = kInt; h.find(mul)->targ = kInt; h.find(cat)->targ = kString;
+        lit(h, add, "A", Value::integer(1)); lit(h, add, "B", Value::integer(2));
+        lit(h, mul, "B", Value::integer(5));
+        lit(h, cat, "A", Value::string("n="));
+        chain(h, {e2, p1, p2});
+        h.link(add, "Result", mul, "A"); h.link(mul, "Result", cat, "B"); h.link(cat, "Result", p1, "Text");
+        const bool built = q.build();
+        q.vm.set_breakpoint(&q.prog, 0, p1, true);
+        q.run();
+        const bool once = q.vm.state() == RunState::Paused && q.vm.paused_at().node == p1 && q.host.joined().empty();
+        q.vm.resume(VM::Step::Over);
+        check(built && once && q.vm.state() == RunState::Paused && q.vm.paused_at().node == p2 && q.host.joined() == "n=15",
+              "a node fed by pure nodes stops once, before any of it runs, and Step goes to the next node");
+        q.vm.resume();
+        check(q.vm.state() == RunState::Idle && q.host.joined() == "n=15,z", "Continue from there finishes the run");
+        q.vm.clear_breakpoints();
+        q.vm.set_breakpoint(&q.prog, 0, e2, true);
+        q.run();
+        check(q.vm.state() == RunState::Paused && q.vm.paused_at().node == e2 && q.host.joined().empty(),
+              "a breakpoint on the event node itself stops before anything runs");
+        q.vm.resume(VM::Step::Over);
+        check(q.vm.state() == RunState::Paused && q.vm.paused_at().node == p1, "and Step from it goes to the first node");
+        q.vm.resume();
+    }
+    {
+        // What is on a pin: a flow node's outputs are readable through the debug information.
+        Rig q; Graph& h = q.events();
+        q.script.add_variable("n", kInt, Value::integer(4));
+        const int e2 = node(h, "event.custom", "go"), set = node(h, "var.set", "n"), p2 = print_node(h, "done");
+        h.find(e2)->params = {Param{"amount", kInt, Value::integer(0)}};
+        chain(h, {e2, set, p2}); h.link(e2, "amount", set, "Value");
+        q.build();
+        q.vm.set_breakpoint(&q.prog, 0, p2, true);
+        const Value arg = Value::integer(31);
+        q.vm.fire(*q.inst, "go", &arg, 1);
+        const NodeOutputs* ev_out = q.prog.find_outputs(0, e2);
+        const NodeOutputs* set_out = q.prog.find_outputs(0, set);
+        const Value* amount = ev_out ? q.vm.frame_register(*q.inst, ev_out->fn, ev_out->base) : nullptr;
+        const Value* stored = set_out ? q.vm.frame_register(*q.inst, set_out->fn, set_out->base) : nullptr;
+        check(q.vm.state() == RunState::Paused && amount && amount->type == kInt && amount->as_int() == 31 && stored &&
+                  stored->as_int() == 31,
+              "while paused, the values on a flow node's output pins can be read");
+        q.vm.resume();
+        check(q.host.joined() == "done" && q.vm.frame_register(*q.inst, ev_out->fn, ev_out->base)->as_int() == 31,
+              "and after the run too: an event graph keeps them");
+    }
+    {
+        // Tracing: which nodes ran, and when.
+        Rig q; Graph& h = q.events();
+        const int e2 = node(h, "event.begin_play"), br = node(h, "flow.branch"), yes = print_node(h, "yes"), no = print_node(h, "no");
+        lit(h, br, "Condition", Value::boolean(true));
+        h.link(e2, "Then", br, "In"); h.link(br, "True", yes, "In"); h.link(br, "False", no, "In");
+        q.build();
+        q.run();
+        check(q.vm.last_run(*q.inst, 0, yes) < 0.0, "nothing is traced while tracing is off");
+        q.vm.trace = true;
+        q.vm.trace_time = 5.0;
+        q.run();
+        q.vm.trace_time = 9.0;
+        check(q.vm.last_run(*q.inst, 0, br) == 5.0 && q.vm.last_run(*q.inst, 0, yes) == 5.0 && q.vm.last_run(*q.inst, 0, no) < 0.0,
+              "with tracing on, the nodes that ran are stamped and the branch not taken is not");
+    }
 }
 
 void test_speed() {

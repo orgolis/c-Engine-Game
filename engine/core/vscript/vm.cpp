@@ -37,10 +37,41 @@ void VM::set_breakpoint(const Program* p, int graph, int node, bool on) {
     else breakpoints_.erase(bp_key(p, graph, node));
 }
 
+uint64_t VM::trace_key(const Instance* inst, int graph, int node) {
+    return (reinterpret_cast<uintptr_t>(inst) * 0x9E3779B97F4A7C15ull) ^
+           (static_cast<uint64_t>(static_cast<uint32_t>(graph)) << 40) ^ static_cast<uint32_t>(node);
+}
+
+double VM::last_run(const Instance& inst, int graph, int node) const {
+    const auto it = trace_last_.find(trace_key(&inst, graph, node));
+    return it == trace_last_.end() ? -1.0 : it->second;
+}
+
+const Value* VM::frame_register(const Instance& inst, int fn, int reg) const {
+    if (reg < 0 || !inst.program) return nullptr;
+    if (fn == 0) return reg < static_cast<int>(inst.frame.size()) ? &inst.frame[static_cast<size_t>(reg)] : nullptr;
+    if (!paused_ || frames_.empty()) return nullptr;
+    const Frame& f = frames_.back();
+    if (f.inst != &inst || f.fn != fn) return nullptr;
+    const FnInfo& info = inst.program->fns[static_cast<size_t>(fn)];
+    return reg < static_cast<int>(info.proto.size()) ? &f.regs[reg] : nullptr;
+}
+
+void VM::abort() {
+    while (!frames_.empty()) pop_frame();
+    conts_.clear();
+    stack_top_ = 0;
+    paused_ = false;
+    state_ = RunState::Idle;
+    step_ = Step::Continue;
+}
+
 Where VM::paused_at() const {
     if (!paused_ || frames_.empty()) return Where{};
-    const Frame& f = frames_.back();
-    return f.inst->program->where[static_cast<size_t>(f.pc)];
+    const Frame&   f = frames_.back();
+    const Program& p = *f.inst->program;
+    const Where    s = p.stmt[static_cast<size_t>(f.pc)];
+    return s.node != 0 ? s : p.where[static_cast<size_t>(f.pc)];
 }
 
 const Value* VM::paused_register(int reg) const {
@@ -178,6 +209,8 @@ void VM::tick(double dt) {
     }
 }
 
+// (the trace keeps a destroyed instance's entries until it is cleared; they
+// are only ever read for an instance that is alive)
 void VM::forget(const Instance& inst) {
     latent_.erase(std::remove_if(latent_.begin(), latent_.end(), [&](const Latent& l) { return l.inst == &inst; }),
                   latent_.end());
@@ -195,6 +228,9 @@ void VM::resume(Step how) {
     // The C++ callers that started these frames returned when the VM paused,
     // so finish every frame that is still there, innermost first.
     while (!frames_.empty() && !paused_) run();
+    // Stepping off the end of what was running is "continue": the next event
+    // the engine fires must not stop at its first node.
+    if (!paused_) step_ = Step::Continue;
 }
 
 void VM::run() {
@@ -206,7 +242,8 @@ void VM::run() {
             floor = i;
             break;
         }
-    Where prev = step_from_;
+    Where           traced{};
+    const Instance* traced_inst = nullptr;
 
     while (frames_.size() > floor) {
         Frame*         f = &frames_.back();
@@ -215,11 +252,11 @@ void VM::run() {
         const Instr&   in = p.code[static_cast<size_t>(f->pc)];
 
         // ---- debugger ---------------------------------------------------
+        // Stops happen only where a flow node's run starts (Program::stmt).
         if (!breakpoints_.empty() || step_ != Step::Continue) {
-            const Where w = p.where[static_cast<size_t>(f->pc)];
-            const bool  new_node = w.node != 0 && (w.node != prev.node || w.graph != prev.graph);
-            if (new_node && !skip_break_once_) {
-                bool stop = breakpoints_.count(bp_key(&p, w.graph, w.node)) != 0;
+            const Where s = p.stmt[static_cast<size_t>(f->pc)];
+            if (s.node != 0 && !skip_break_once_) {
+                bool stop = breakpoints_.count(bp_key(&p, s.graph, s.node)) != 0;
                 if (step_ == Step::Into) stop = true;
                 if (step_ == Step::Over && frames_.size() <= step_depth_) stop = true;
                 if (step_ == Step::Out && frames_.size() < step_depth_) stop = true;
@@ -227,13 +264,21 @@ void VM::run() {
                     paused_ = true;
                     state_ = RunState::Paused;
                     step_ = Step::Continue;
-                    step_from_ = w;
+                    step_from_ = s;
                     if (on_pause) on_pause(*this);
                     return;
                 }
             }
             skip_break_once_ = false;
-            prev = w;
+        }
+        if (trace) {
+            const Where w = p.where[static_cast<size_t>(f->pc)];
+            if (w.node != 0 && (w.node != traced.node || w.graph != traced.graph || f->inst != traced_inst)) {
+                if (trace_last_.size() > 200000) trace_last_.clear();
+                trace_last_[trace_key(f->inst, w.graph, w.node)] = trace_time;
+                traced = w;
+                traced_inst = f->inst;
+            }
         }
 
         if (--budget_left_ < 0) {

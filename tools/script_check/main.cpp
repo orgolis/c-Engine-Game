@@ -10,6 +10,7 @@
 //      globals + on_start re-runs) and the new behavior takes effect
 //   4. a broken script reports an error status without crashing the system
 
+#include "logic_debug.h"
 #include "script_system.h"
 #include "script_api.h"
 #include "script_params.h"
@@ -566,7 +567,93 @@ int main() {
         std::remove("script_check_logic_door.lgraph");
         button_door_ok = door_ok && fields_ok && bfields_ok;
         }
-        logic_ok = moved_right && status_ok && refused && events_ok && button_door_ok;
+
+        // The debugger, the way the graph editor uses it: a breakpoint set by
+        // FILE before Play, a stop, values read, a step, and Play ending while
+        // a script is still stopped.
+        bool debugger_ok = false;
+        {
+            Script cs;
+            cs.name = "counter";
+            Graph& cg = cs.add_graph(GraphKind::Event, "EventGraph");
+            cs.add_variable("count", kInt);
+            const int tick = cg.add("event.tick").id, get = cg.add("var.get").id, add1 = cg.add("math.add").id;
+            const int setv = cg.add("var.set").id, mk = cg.add("vec3.make").id, setp = cg.add("entity.set_position").id;
+            const int self = cg.add("self").id, never = cg.add("print").id;
+            cg.find(get)->name = "count"; cg.find(setv)->name = "count";
+            cg.find(add1)->targ = kInt;
+            cg.find(add1)->set_default("B", Value::integer(1));
+            cg.link(tick, "Then", setv, "In"); cg.link(get, "Value", add1, "A"); cg.link(add1, "Result", setv, "Value");
+            cg.link(setv, "Then", setp, "In"); cg.link(self, "Self", setp, "Entity");
+            cg.link(setv, "Value", mk, "X"); cg.link(mk, "Result", setp, "Position");
+            (void)never;
+            write_file("script_check_logic_dbg.lgraph", to_text(cs).c_str());
+            auto ce = scn->CreateEntity("LogicCounter");
+            ce->AddComponent<scene::ScriptComponent>(std::string("script_check_logic_dbg.lgraph"));
+            auto ce2 = scn->CreateEntity("LogicCounter2");   // the same file on a second object
+            ce2->AddComponent<scene::ScriptComponent>(std::string("script_check_logic_dbg.lgraph"));
+            editor::ScriptSystem dss;
+            dss.register_host(".lgraph", editor::make_logic_host());
+            editor::LogicDebugger* dbg = editor::logic_debugger();
+            bool ok = dbg != nullptr;
+            if (dbg) {
+                dbg->set_breakpoints("./script_check_logic_dbg.lgraph", {{0, setp}});   // another spelling of the path
+                dss.update(scn, true, 0.1f, api);
+                editor::LogicDebugTarget where;
+                int pg = -1, pn = 0;
+                const bool stopped = dbg->paused(&where, &pg, &pn);
+                std::string count_text, out_text, none;
+                const bool have_var = dbg->variable_text(ce->GetId(), "count", count_text);
+                const bool have_out = dbg->output_text(ce->GetId(), 0, setv, 0, out_text);
+                const bool pure_none = !dbg->output_text(ce->GetId(), 0, add1, 0, none);
+                const float x_stopped = ce->GetTransform()->GetWorldPosition().x;
+                dss.update(scn, true, 0.1f, api);   // stopped: nothing runs
+                std::string still;
+                dbg->variable_text(ce->GetId(), "count", still);
+                ok = ok && stopped && where.entity == ce->GetId() && pg == 0 && pn == setp && have_var && count_text == "1" &&
+                     have_out && out_text == "1" && pure_none && std::fabs(x_stopped) < 1e-4f && still == "1";
+                dbg->resume(editor::LogicStep::Continue);
+                const float x_after = ce->GetTransform()->GetWorldPosition().x;
+                editor::LogicDebugTarget after;
+                const uint32_t second_stop_entity = dbg->paused(&after) ? after.entity : 0u;
+                ok = ok && std::fabs(x_after - 1.0f) < 1e-4f;
+                // Continuing the first object let the frame go on: the second
+                // object runs the same file, so it stopped at the same node,
+                // in the SAME frame (its Tick was not lost to the breakpoint).
+                editor::LogicDebugTarget second;
+                const bool stopped2 = stopped && second_stop_entity == ce2->GetId();
+                int same_file = 0;
+                for (const editor::LogicDebugTarget& tg : dbg->targets())
+                    if (tg.path.size() >= 29 && tg.path.compare(tg.path.size() - 29, 29, "script_check_logic_dbg.lgraph") == 0) ++same_file;
+                (void)second;
+                ok = ok && stopped2 && same_file == 2;
+                // Stepping the second object off the end of its Tick ends the frame.
+                dbg->resume(editor::LogicStep::Over);
+                ok = ok && !dbg->paused() && std::fabs(ce2->GetTransform()->GetWorldPosition().x - 1.0f) < 1e-4f;
+                // A new frame stops at the first object again.
+                dss.update(scn, true, 0.1f, api);
+                ok = ok && dbg->paused(&second) && second.entity == ce->GetId();
+                // Stop Play while stopped at a breakpoint: nothing may be left hanging.
+                dss.update(scn, false, 0.1f, api);
+                ok = ok && !dbg->paused() && dbg->targets().empty();
+                // Tracing, with the breakpoint gone.
+                dbg->set_breakpoints("script_check_logic_dbg.lgraph", {});
+                dbg->want_tracing();
+                dss.update(scn, true, 0.1f, api);
+                dss.update(scn, true, 0.1f, api);
+                const double ran = dbg->seconds_since_run(ce->GetId(), 0, setp);
+                const double not_run = dbg->seconds_since_run(ce->GetId(), 0, never);
+                ok = ok && !dbg->paused() && ran >= 0.0 && ran < 5.0 && not_run < 0.0;
+                dss.update(scn, false, 0.1f, api);
+                std::printf("  logic debugger: stopped=%d at node %d (expected %d), count '%s', pin '%s', x %.1f -> %.1f, "
+                            "second object stopped=%d, traced %.3fs / %.0f -> %s\n",
+                            stopped ? 1 : 0, pn, setp, count_text.c_str(), out_text.c_str(), x_stopped, x_after,
+                            stopped2 ? 1 : 0, ran, not_run, ok ? "OK" : "FAIL");
+            }
+            std::remove("script_check_logic_dbg.lgraph");
+            debugger_ok = ok;
+        }
+        logic_ok = moved_right && status_ok && refused && events_ok && button_door_ok && debugger_ok;
         std::printf("  logic graph: x=%.2f (expected 7.00), status '%s', bad graph '%.50s' -> %s\n",
                     lp.x, lsc->GetStatus().c_str(), bsc->GetStatus().c_str(), logic_ok ? "OK" : "FAIL");
         std::remove("script_check_logic.lgraph");
