@@ -113,6 +113,7 @@
 #include "asset_browser_panel.h"
 #include "asset_inspector.h"
 #include "asset_drop.h"        // one rule table for every drop site
+#include "logic_script_panel.h"  // graph editor for .lgraph logic scripts
 #include "logic_graph_panel.h"   // visual node editor for the scene logic graph
 #include "material_editor_panel.h"
 #include "asset_import_dialog.h"
@@ -189,6 +190,7 @@ struct EditorState {
     bool show_scene_hierarchy = true;
     bool show_inspector = true;
     bool show_asset_browser = true;
+    bool show_logic_script = false;  // .lgraph logic script editor
     bool show_logic_graph = false;   // scene logic-graph node editor
     bool show_viewport = true;
     // True when the Viewport panel is on screen THIS frame: open, not
@@ -1988,6 +1990,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             ImGui::MenuItem("Inspector", nullptr, &editor_state.show_inspector);
             ImGui::MenuItem("Asset Browser", nullptr, &editor_state.show_asset_browser);
             ImGui::MenuItem("Logic Graph", nullptr, &editor_state.show_logic_graph);
+            ImGui::MenuItem("Logic Script Editor", nullptr, &editor_state.show_logic_script);
             ImGui::MenuItem("Viewport", nullptr, &editor_state.show_viewport);
             ImGui::Separator();
             ImGui::MenuItem("Playback Controls", nullptr, &editor_state.show_playback_controls);
@@ -10904,6 +10907,18 @@ int main(int argc, char** argv) {
             // entity a script opened via "ui.*" intent tags. Scripts can't draw ImGui,
             // so they set the intent tags and the engine renders it here.
             schizo::editor::draw_gameplay_ui(ecs_bridge);
+            {
+                // GWS_TEST_LOGIC_SCRIPT=<file>: open that logic script in the
+                // editor panel at start-up, for screenshots and automation.
+                static bool logic_script_env_done = false;
+                if (!logic_script_env_done) {
+                    logic_script_env_done = true;
+                    if (const char* ls = std::getenv("GWS_TEST_LOGIC_SCRIPT"))
+                        schizo::editor::open_logic_script(ls, &editor_state.show_logic_script);
+                }
+            }
+            if (editor_state.show_logic_script)
+                schizo::editor::draw_logic_script_panel(&editor_state.show_logic_script);
             if (editor_state.show_logic_graph)
                 schizo::editor::draw_logic_graph_panel(
                     ecs_bridge, &editor_state.show_logic_graph,

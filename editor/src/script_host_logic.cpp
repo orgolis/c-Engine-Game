@@ -12,6 +12,7 @@
 // ScriptApi needs one more line in register_engine_nodes().
 
 #include "script_system.h"
+#include "logic_nodes.h"
 
 #include "vscript/io.h"
 #include "vscript/program.h"
@@ -30,14 +31,14 @@ namespace {
 
 using namespace schizo::vs;
 
-/// What every node needs at run time: the engine table of the current frame.
-struct Shared {
-    const ScriptApi* api = nullptr;
-};
+using Shared = LogicApiSlot;
 
 glm::vec3 v3(const float f[3]) { return glm::vec3(f[0], f[1], f[2]); }
 
-void register_engine_nodes(Registry& r, Shared* s) {
+}  // namespace
+
+void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
+    using namespace schizo::vs;
     // The lambdas hold `s`, not the table: the table pointer is refreshed every
     // frame, and a missing entry (a test harness fills only some) is a no-op.
 #define API (s->api)
@@ -228,6 +229,10 @@ void register_engine_nodes(Registry& r, Shared* s) {
 #undef API
 }
 
+namespace {
+
+using namespace schizo::vs;
+
 /// One registry and one VM for every logic script: programs are small, the
 /// VM's stack is not.
 struct LogicRuntime : Host {
@@ -239,7 +244,7 @@ struct LogicRuntime : Host {
 
     LogicRuntime() {
         register_standard_library(reg);
-        register_engine_nodes(reg, &shared);
+        register_engine_logic_nodes(reg, &shared);
     }
     void print(const Instance&, std::string_view text) override {
         if (shared.api && shared.api->log) shared.api->log(shared.api->ctx, std::string(text).c_str());

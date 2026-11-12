@@ -58,6 +58,7 @@ target_sources(editor
         src/play_mode_changes.cpp
         src/edit_coalescer.cpp
         src/logic_graph_panel.cpp
+        src/logic_script_panel.cpp
         src/command_palette.cpp
         src/curve_editor.cpp
         src/node_canvas.cpp
