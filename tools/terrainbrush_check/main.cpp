@@ -13,7 +13,9 @@
 // ====================
 
 #include "terrain_brush.h"
+#include "terrain_hydrology.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -256,6 +258,96 @@ int main() {
         check(hi - lo > 80, "noise breaks a rule's layer into patches instead of a solid band");
         check(std::fabs(terrain_slope_degrees(t, 40.0f, 0.0f) - 63.4f) < 3.0f && terrain_slope_degrees(t, 110.0f, 0.0f) < 1.0f,
               "the slope the rules see is the slope of the ground");
+    }
+    {
+        // A valley tilted toward +x with a basin halfway down: water from the
+        // top runs down, fills the basin to its rim, spills, and leaves at the edge.
+        TerrainComponent t(128, 128.0f);   // 1 unit cells, local -64..64
+        for (int z = 0; z <= 128; ++z)
+            for (int x = 0; x <= 128; ++x) {
+                const float lx = x - 64.0f, lz = z - 64.0f;
+                float h = 40.0f - lx * 0.25f + std::fabs(lz) * 0.5f;   // downhill toward +x, a V across z
+                const float bd = std::sqrt((lx - 0.0f) * (lx - 0.0f) + lz * lz);
+                if (bd < 10.0f) h -= (10.0f - bd) * 0.8f;              // a bowl at the middle, 8 deep
+                t.SetHeightAt(x, z, h);
+            }
+        const WaterRun run = trace_water(t, -60.0f, 0.0f);
+        bool downhill = true;
+        for (size_t i = 1; i < run.river.size(); ++i) {
+            const bool after_lake = std::find(run.breaks.begin(), run.breaks.end(), i) != run.breaks.end();
+            if (!after_lake && run.river[i].bed > run.river[i - 1].bed + 1e-4f) downhill = false;
+        }
+        check(downhill && run.river.size() > 20, "water runs downhill, never up, between lakes");
+        check(run.lakes.size() == 1 && std::fabs(run.lakes[0].deepest_x) < 2.0f && std::fabs(run.lakes[0].deepest_z) < 2.0f,
+              "it fills the basin it reaches into a lake, deepest at the bowl's centre");
+        const float rim = 40.0f - 10.0f * 0.25f;   // the ground just past the bowl on the downhill side
+        check(!run.lakes.empty() && run.lakes[0].level > rim - 1.5f && run.lakes[0].level < rim + 1.0f,
+              "the lake rises to the lowest point of its rim, no higher");
+        check(run.reached_edge && !run.reached_sea && run.river.back().x > 60.0f, "then it spills over and runs on to the edge of the land");
+
+        HydrologySettings sea;
+        sea.has_sea = true;
+        sea.sea_level = 30.0f;
+        const WaterRun to_sea = trace_water(t, -60.0f, 0.0f, sea);
+        check(to_sea.reached_sea && to_sea.river.back().bed <= 30.0f + 1e-4f && to_sea.river.back().x < 60.0f,
+              "with a sea it stops where the ground goes below the sea level");
+
+        WaterRun cut = run;
+        TerrainComponent& tt = t;
+        const float before = tt.SampleHeightLocal(30.0f, 0.0f);
+        const bool carved = carve_river(tt, cut, 3.0f, 1.5f);
+        bool bed_down = true;
+        for (size_t i = 1; i < cut.river.size(); ++i) {
+            const bool after_lake = std::find(cut.breaks.begin(), cut.breaks.end(), i) != cut.breaks.end();
+            if (!after_lake && cut.river[i].bed > cut.river[i - 1].bed + 1e-4f) bed_down = false;
+        }
+        check(carved && tt.SampleHeightLocal(30.0f, 0.0f) < before - 1.0f && tt.SampleHeightLocal(30.0f, 20.0f) == t.SampleHeightLocal(30.0f, 20.0f),
+              "carving cuts a bed along the river and leaves the land beside it");
+        check(bed_down, "the carved bed only ever goes down");
+
+        const std::vector<WaterSurface> surf = river_surfaces(cut, 3.0f, 1.0f, 0.5f);
+        int lakes = 0;
+        bool stepping = true, outflow_below_lake = true;
+        float prev = 1e9f;
+        int   stretch = -1;
+        for (const WaterSurface& s : surf) {
+            if (s.lake) { ++lakes; continue; }
+            if (s.stretch != stretch) { stretch = s.stretch; prev = 1e9f; }
+            if (s.level > prev + 1e-4f) stepping = false;
+            if (s.stretch == 1 && !cut.lakes.empty() && s.level > cut.lakes[0].level + 1e-3f) outflow_below_lake = false;
+            prev = s.level;
+        }
+        check(lakes == 1 && surf.size() > 5 && stepping, "the water to show is the lake and a chain along each stretch of river, each lower than the one before");
+        check(outflow_below_lake, "the river leaving the lake stands no higher than the lake");
+    }
+    {
+        // A closed bowl with no way out: the run ends in a lake and does not loop.
+        TerrainComponent t(64, 64.0f);
+        for (int z = 0; z <= 64; ++z)
+            for (int x = 0; x <= 64; ++x) {
+                const float d = std::sqrt(static_cast<float>((x - 32) * (x - 32) + (z - 32) * (z - 32)));
+                t.SetHeightAt(x, z, d * 0.5f);
+            }
+        const WaterRun run = trace_water(t, 20.0f, 0.0f);
+        check(!run.lakes.empty() && !run.reached_edge && run.river.size() < 200,
+              "water in a bowl whose rim is the edge of the world fills toward it and stops");
+    }
+    {
+        // Real, bumpy ground: water from the highest point finds its way off
+        // the land without ever going back into a lake it left.
+        for (uint32_t seed : {3u, 7u, 11u}) {
+            TerrainComponent t(128, 256.0f);
+            generate_terrain_noise(t, 35.0f, 64.0f, seed);
+            erode_terrain(t, 40, 0.9f);
+            size_t top = 0;
+            for (size_t i = 0; i < t.Heights().size(); ++i)
+                if (t.Heights()[i] > t.Heights()[top]) top = i;
+            const float sx = -128.0f + static_cast<float>(top % 129) * 2.0f, sz = -128.0f + static_cast<float>(top / 129) * 2.0f;
+            const WaterRun run = trace_water(t, sx, sz);
+            check(run.reached_edge && run.river.size() < 2000,
+                  "seed " + std::to_string(seed) + ": water from the summit reaches the edge in " + std::to_string(run.river.size()) +
+                      " steps through " + std::to_string(run.lakes.size()) + " hollows");
+        }
     }
     if (g_fail) {
         std::printf("terrainbrush_check: %d FAILED, %d passed\n", g_fail, g_pass);

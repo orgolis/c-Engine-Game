@@ -114,6 +114,7 @@
 #include "asset_inspector.h"
 #include "asset_drop.h"        // one rule table for every drop site
 #include "terrain_brush.h"        // what each sculpting brush does to a heightmap
+#include "terrain_hydrology.h"    // water let out on a terrain: rivers and lakes
 #include "logic_script_panel.h"  // graph editor for .lgraph logic scripts
 #include "logic_debug.h"          // a breakpoint in a logic script stops the game
 #include "vscript/value.h"       // literals of a logic graph's Inspector fields
@@ -255,6 +256,11 @@ struct EditorState {
     // Terrain texture splat painting (Phase C). When paint mode is on, LMB-drag
     // paints the active layer's weight into the splatmap instead of sculpting.
     bool  terrain_paint_active   = false;  // paint splat layers (mutually excl. w/ sculpt)
+    bool  terrain_water_active   = false;  // a click on the terrain lets water out there
+    float terrain_river_width    = 3.0f;
+    float terrain_river_depth    = 1.5f;
+    bool  terrain_river_carve    = true;
+    int   terrain_river_count    = 0;      // for naming them
     int   terrain_paint_layer    = 0;      // active layer 0..3
     float terrain_paint_strength = 0.5f;   // 0..1 per stroke-application
 
@@ -4027,7 +4033,10 @@ void ShowInspector(EditorState& editor_state) {
 
                 ImGui::Separator();
                 if (ImGui::Checkbox("Sculpt Mode##terrain", &editor_state.terrain_sculpt_active)) {
-                    if (editor_state.terrain_sculpt_active) editor_state.terrain_paint_active = false;
+                    if (editor_state.terrain_sculpt_active) {
+                        editor_state.terrain_paint_active = false;
+                        editor_state.terrain_water_active = false;
+                    }
                 }
                 ImGui::SameLine();
                 ImGui::TextDisabled("(Left-drag over terrain)");
@@ -4061,6 +4070,24 @@ void ShowInspector(EditorState& editor_state) {
                 ImGui::SliderFloat("Radius##terrain",   &editor_state.terrain_brush_radius,   0.5f, 50.0f);
                 ImGui::SliderFloat("Strength##terrain", &editor_state.terrain_brush_strength, 0.01f, 5.0f);
                 ImGui::SliderFloat("Falloff##terrain",  &editor_state.terrain_brush_falloff,  0.0f, 1.0f);
+
+                // ── Water: let it out at a spring and see where it goes ──
+                ImGui::Separator();
+                if (ImGui::Checkbox("Water Source Mode##terrain", &editor_state.terrain_water_active)) {
+                    if (editor_state.terrain_water_active) {
+                        editor_state.terrain_sculpt_active = false;
+                        editor_state.terrain_paint_active = false;
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(click a spot on the terrain)");
+                if (editor_state.terrain_water_active) {
+                    ImGui::TextDisabled("The water runs downhill, fills hollows into lakes up to\n"
+                                        "their rim, and runs on to the sea or the edge of the land.");
+                    ImGui::SliderFloat("River width##terrainwater", &editor_state.terrain_river_width, 0.5f, 20.0f);
+                    ImGui::SliderFloat("Bed depth##terrainwater", &editor_state.terrain_river_depth, 0.1f, 10.0f);
+                    ImGui::Checkbox("Cut the bed into the terrain##terrainwater", &editor_state.terrain_river_carve);
+                }
 
                 // ── Whole-terrain tools: each is one undo step ──
                 if (ImGui::TreeNode("Whole terrain##terraintools")) {
@@ -4129,6 +4156,7 @@ void ShowInspector(EditorState& editor_state) {
                 // ── Texture splat painting (Phase C) ──
                 ImGui::Separator();
                 if (ImGui::Checkbox("Paint Mode##terrain", &editor_state.terrain_paint_active)) {
+                    if (editor_state.terrain_paint_active) editor_state.terrain_water_active = false;
                     if (editor_state.terrain_paint_active) editor_state.terrain_sculpt_active = false;
                 }
                 ImGui::SameLine();
@@ -5666,6 +5694,92 @@ void ShowViewport(EditorState& editor_state) {
                                     editor_state.editor_scene->MarkModified();
                             }
                         }
+                    }
+                }
+            }
+
+            // ---- Water source: a click lets water out on the terrain ----
+            if (editor_state.terrain_water_active && scene && image_drawn &&
+                editor_state.selected_entity_id != 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+                ImGui::IsWindowHovered()) {
+                auto sel = scene->GetEntityById(editor_state.selected_entity_id);
+                auto tc  = sel ? sel->GetComponent<schizo::scene::TerrainComponent>() : nullptr;
+                const float vx = io.MousePos.x - image_min.x, vy = io.MousePos.y - image_min.y;
+                if (tc && vx >= 0 && vy >= 0 && vx < viewport_size.x && vy < viewport_size.y) {
+                    auto [ro, rd] = editor_state.viewport_camera.GetPickingRay(vx, vy, viewport_size.x, viewport_size.y);
+                    const glm::vec3 base = sel->GetTransform()->GetWorldPosition();
+                    const float half = tc->GetSize() * 0.5f;
+                    const float step = std::max(0.2f, tc->CellSize() * 0.5f);
+                    const float maxT = tc->GetSize() * 4.0f + 200.0f;
+                    bool hit = false; glm::vec3 hitp(0.0f);
+                    for (float rt = 0.0f; rt < maxT; rt += step) {
+                        const glm::vec3 lp = (ro + rd * rt) - base;
+                        if (lp.x < -half || lp.x > half || lp.z < -half || lp.z > half) continue;
+                        if (lp.y <= tc->SampleHeightLocal(lp.x, lp.z)) { hit = true; hitp = ro + rd * rt; break; }
+                    }
+                    if (hit) {
+                        schizo::scene::HydrologySettings hs;
+                        hs.has_sea = tc->IsWaterEnabled();
+                        hs.sea_level = tc->GetWaterLevel();
+                        schizo::scene::WaterRun run = schizo::scene::trace_water(*tc, hitp.x - base.x, hitp.z - base.z, hs);
+                        const std::vector<float> before = tc->Heights();
+                        if (editor_state.terrain_river_carve)
+                            schizo::scene::carve_river(*tc, run, editor_state.terrain_river_width, editor_state.terrain_river_depth);
+                        const std::vector<float> after = tc->Heights();
+                        const float fill = editor_state.terrain_river_carve ? editor_state.terrain_river_depth * 0.7f : 0.15f;
+                        const std::vector<schizo::scene::WaterSurface> surf =
+                            schizo::scene::river_surfaces(run, editor_state.terrain_river_width, fill, 0.6f, 240);
+                        const uint32_t tid = sel->GetId();
+                        const std::string name = "River " + std::to_string(++editor_state.terrain_river_count);
+                        auto made = std::make_shared<std::vector<uint32_t>>();
+                        auto set_heights = [scene, tid, &editor_state](const std::vector<float>& h) {
+                            auto e = FindEntityById(scene, tid);
+                            auto t2 = e ? e->GetComponent<schizo::scene::TerrainComponent>() : nullptr;
+                            if (!t2 || t2->Heights().size() != h.size()) return;   // resized since: leave it
+                            t2->MutableHeights() = h;
+                            t2->MarkAllDirty();
+                            editor_state.editor_scene->MarkModified();
+                        };
+                        auto create = [scene, made, surf, base, name, &editor_state]() {
+                            made->clear();
+                            auto river = scene->CreateEntity(name);
+                            if (!river) return;
+                            river->GetTransform()->SetWorldPosition(base);
+                            made->push_back(river->GetId());
+                            int k = 0;
+                            for (const schizo::scene::WaterSurface& s : surf) {
+                                auto w = scene->CreateEntity(name + (s.lake ? " lake " : " water ") + std::to_string(++k));
+                                if (!w) continue;
+                                river->AddChild(w);
+                                w->GetTransform()->SetWorldPosition(base + glm::vec3(s.x, s.level, s.z));
+                                if (auto wc = w->AddComponent<schizo::scene::WaterComponent>()) {
+                                    wc->SetSize(glm::vec2(s.size_x, s.size_z));
+                                    // A river is calmer and clearer than the sea.
+                                    wc->SetWaveHeight(s.lake ? 0.05f : 0.02f);
+                                    wc->SetWaveScale(s.lake ? 8.0f : 3.0f);
+                                    wc->SetClarity(s.lake ? 3.0f : 1.5f);
+                                }
+                                made->push_back(w->GetId());
+                            }
+                            editor_state.editor_scene->MarkModified();
+                        };
+                        auto remove = [scene, made, &editor_state]() {
+                            for (auto it = made->rbegin(); it != made->rend(); ++it)
+                                if (auto e = FindEntityById(scene, *it)) scene->RemoveEntity(e);
+                            made->clear();
+                            editor_state.editor_scene->MarkModified();
+                        };
+                        create();
+                        editor_state.undo_redo_manager.PushExecuted(std::make_unique<schizo::editor::FunctionCommand>(
+                            [set_heights, after, create] { set_heights(after); create(); },
+                            [set_heights, before, remove] { remove(); set_heights(before); },
+                            "Let water out on the terrain"));
+                        char msg[200];
+                        std::snprintf(msg, sizeof msg, "%s: %d points, %d lake%s, %s", name.c_str(),
+                                      static_cast<int>(run.river.size()), static_cast<int>(run.lakes.size()),
+                                      run.lakes.size() == 1 ? "" : "s",
+                                      run.reached_sea ? "reaches the sea" : run.reached_edge ? "runs off the edge" : "ends in a lake");
+                        editor_state.set_status(msg);
                     }
                 }
             }
@@ -11202,6 +11316,34 @@ int main(int argc, char** argv) {
                                     schizo::scene::generate_terrain_noise(*tcomp, 35.0f, tcomp->GetSize() * 0.25f,
                                                                           static_cast<uint32_t>(std::atoi(tg)));
                                     schizo::scene::erode_terrain(*tcomp, 40, 0.9f);
+                                    // GWS_TEST_TERRAIN_RIVER=1: let water out at the highest
+                                    // point, carve it, show it, and look at it from above.
+                                    if (std::getenv("GWS_TEST_TERRAIN_RIVER")) {
+                                        const glm::vec3 tb = te->GetTransform()->GetWorldPosition();
+                                        const int tn = tcomp->VertsPerSide();
+                                        size_t top = 0;
+                                        for (size_t hi = 0; hi < tcomp->Heights().size(); ++hi)
+                                            if (tcomp->Heights()[hi] > tcomp->Heights()[top]) top = hi;
+                                        const float th = tcomp->GetSize() * 0.5f;
+                                        const float sx = -th + static_cast<float>(top % tn) * tcomp->CellSize();
+                                        const float sz = -th + static_cast<float>(top / tn) * tcomp->CellSize();
+                                        schizo::scene::WaterRun trun = schizo::scene::trace_water(*tcomp, sx, sz);
+                                        schizo::scene::carve_river(*tcomp, trun, 2.5f, 1.5f);
+                                        int wi = 0;
+                                        for (const auto& s : schizo::scene::river_surfaces(trun, 2.5f, 1.0f, 0.6f, 240)) {
+                                            auto w = ts->CreateEntity("TestRiver " + std::to_string(++wi));
+                                            w->GetTransform()->SetWorldPosition(tb + glm::vec3(s.x, s.level, s.z));
+                                            if (auto wc = w->AddComponent<schizo::scene::WaterComponent>()) {
+                                                wc->SetSize(glm::vec2(s.size_x, s.size_z));
+                                                wc->SetWaveHeight(0.02f);
+                                                wc->SetClarity(1.5f);
+                                            }
+                                        }
+                                        spdlog::info("[test] river: {} points, {} lakes, {} surfaces, edge={} ", trun.river.size(),
+                                                     trun.lakes.size(), wi, trun.reached_edge);
+                                        const glm::vec3 mid = tb + glm::vec3(0.0f, 10.0f, 0.0f);
+                                        editor_state.viewport_camera.FollowTarget(mid, glm::vec3(tcomp->GetSize() * 0.15f, tcomp->GetSize() * 0.55f, tcomp->GetSize() * 0.45f));
+                                    }
                                     break;
                                 }
                     }

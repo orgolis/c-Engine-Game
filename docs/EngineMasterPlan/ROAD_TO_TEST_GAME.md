@@ -69,7 +69,7 @@ variables), a UI designer, animation graphs as logic graphs.
 | B5 | **Hydrology.** Water placed at a source runs downhill, fills basins into lakes and falls over drops; rivers have flow direction; swimming and buoyancy follow the current | A spring on a hill becomes a river that reaches the sea |
 | B6 | **Workflow.** World templates, larger worlds | A new world starts from a preset |
 
-**Progress (v0.8.26):** B1 mostly done, B2 done. The brushes are plain functions in
+**Progress (v0.8.27):** B1 mostly done, B2 done, B5 first part. The brushes are plain functions in
 `engine/scene/include/terrain_brush.h`, checked by `tools/terrainbrush_check`
 (22 checks): Raise, Lower, Smooth, Flatten (to the height where the stroke
 began), Dig / Fill Hole, and new Noise, Terrace, Ramp and Erode. Whole-terrain
@@ -78,7 +78,12 @@ heightmap Export / Import (.pgm or raw .r16). Still open in B1: more than four
 texture layers, stamps. B2: each layer can have a placement rule (height range,
 slope range, noise break-up, weight), kept in the scene; "Apply layer rules"
 rewrites the splatmap from them as one undo step, and painting goes on top.
-B3 to B6 not started.
+B5: "Water Source Mode" -- click the terrain and the water runs downhill, fills
+hollows into lakes up to their rim, spills on and ends at the sea (the
+terrain's water level) or the edge; the bed is carved and water surfaces are
+placed along it (`engine/scene/include/terrain_hydrology.h`). Still open in
+B5: flowing water (current direction on the surface, swimming and buoyancy
+following it), waterfalls drawn as falls. B3, B4, B6 not started.
 
 ## Phase C: gameplay modules, finished
 
