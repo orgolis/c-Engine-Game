@@ -358,6 +358,10 @@ std::string node_title(const NodeDef& d, const Node& n) {
         case Builtin::CustomEvent: return "Event " + n.name;
         case Builtin::CallEvent: return "Call " + n.name;
         case Builtin::Timeline: return n.name.empty() ? d.title : d.title + " (" + n.name + ")";
+        case Builtin::DispatchCall: return "Call " + n.name;
+        case Builtin::DispatchBind: return n.name.empty() ? d.title : "Bind to " + n.name;
+        case Builtin::DispatchUnbind: return n.name.empty() ? d.title : "Unbind from " + n.name;
+        case Builtin::RemoteCall: return n.name.empty() ? d.title : "Call " + n.name + " of";
         case Builtin::SendEvent: return n.name.empty() ? d.title : "Send " + n.name;
         case Builtin::RemoteGet: return n.name.empty() ? d.title : "Get " + n.name + " of";
         case Builtin::RemoteSet: return n.name.empty() ? d.title : "Set " + n.name + " of";
@@ -498,11 +502,13 @@ std::vector<PaletteEntry> palette_entries(PanelState& st, const Graph& g) {
             for (const Node& n : eg.nodes)
                 if (n.def == "event.custom" && !n.name.empty())
                     out.push_back({"Call event " + n.name, "Events", "event.call", n.name});
+    for (const Dispatcher& dp : st.script.dispatchers)
+        if (!dp.name.empty()) out.push_back({"Call dispatcher " + dp.name, "Events", "dispatch.call", dp.name});
     for (const auto& d : st.reg.all()) {
         switch (d->builtin) {
             case Builtin::VarGet: case Builtin::VarSet: case Builtin::LocalGet: case Builtin::LocalSet:
-            case Builtin::FnCall: case Builtin::CallEvent:
-                continue;   // offered per variable / function above
+            case Builtin::FnCall: case Builtin::CallEvent: case Builtin::DispatchCall:
+                continue;   // offered per variable / function / dispatcher above
             case Builtin::FnEntry: case Builtin::FnReturn:
                 if (g.kind != GraphKind::Function) continue;
                 break;
@@ -516,12 +522,13 @@ std::vector<PaletteEntry> palette_entries(PanelState& st, const Graph& g) {
     return out;
 }
 
-/// The parameter list of a custom event, or of the event a node sends.
-void edit_params(PanelState& st, Node& node) {
+/// A list of named, typed values: a custom event's parameters, what a node
+/// sends, what a call expects back, a dispatcher's parameters.
+void edit_param_list(PanelState& st, std::vector<Param>& list, int id_base, const char* add_label, const char* prefix) {
     int rm = -1;
-    for (int i = 0; i < static_cast<int>(node.params.size()); ++i) {
-        Param& p = node.params[static_cast<size_t>(i)];
-        ImGui::PushID(2000 + i);
+    for (int i = 0; i < static_cast<int>(list.size()); ++i) {
+        Param& p = list[static_cast<size_t>(i)];
+        ImGui::PushID(id_base + i);
         char pb[64];
         std::snprintf(pb, sizeof pb, "%s", p.name.c_str());
         ImGui::SetNextItemWidth(90.0f);
@@ -532,12 +539,15 @@ void edit_params(PanelState& st, Node& node) {
         if (ImGui::SmallButton("x")) rm = i;
         ImGui::PopID();
     }
-    if (rm >= 0) { node.params.erase(node.params.begin() + rm); st.changed(); }
-    if (ImGui::SmallButton("+ parameter")) {
-        node.params.push_back(Param{"p" + std::to_string(node.params.size()), kFloat, Value::number(0.0)});
+    if (rm >= 0) { list.erase(list.begin() + rm); st.changed(); }
+    ImGui::PushID(id_base);
+    if (ImGui::SmallButton(add_label)) {
+        list.push_back(Param{prefix + std::to_string(list.size()), kFloat, Value::number(0.0)});
         st.changed();
     }
+    ImGui::PopID();
 }
+void edit_params(PanelState& st, Node& node) { edit_param_list(st, node.params, 2000, "+ parameter", "p"); }
 
 void draw_side_panel(PanelState& st) {
     ImGui::TextUnformatted("Graphs");
@@ -666,6 +676,45 @@ void draw_side_panel(PanelState& st) {
         st.changed();
     }
 
+    ImGui::SeparatorText("Dispatchers");
+    {
+        int rm = -1;
+        for (int i = 0; i < static_cast<int>(st.script.dispatchers.size()); ++i) {
+            Dispatcher& dp = st.script.dispatchers[static_cast<size_t>(i)];
+            ImGui::PushID(5000 + i);
+            char db[64];
+            std::snprintf(db, sizeof db, "%s", dp.name.c_str());
+            ImGui::SetNextItemWidth(130.0f);
+            if (ImGui::InputText("##n", db, sizeof db, ImGuiInputTextFlags_EnterReturnsTrue) && db[0] && !st.script.find_dispatcher(db)) {
+                // The nodes of THIS script that name it follow the rename;
+                // other scripts that bind to it by name have to be changed by hand.
+                for (Graph& og : st.script.graphs)
+                    for (Node& n : og.nodes)
+                        if (n.def == "dispatch.call" && n.name == dp.name) n.name = db;
+                dp.name = db;
+                st.changed();
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) rm = i;
+            edit_param_list(st, dp.params, 5100 + i * 40, "+ parameter", "p");
+            ImGui::Separator();
+            ImGui::PopID();
+        }
+        if (rm >= 0) {
+            st.script.dispatchers.erase(st.script.dispatchers.begin() + rm);
+            st.changed();
+        }
+        if (ImGui::SmallButton("+ Dispatcher")) {
+            int n = 1;
+            std::string name;
+            do name = "OnSomething" + std::to_string(n++); while (st.script.find_dispatcher(name));
+            st.script.dispatchers.push_back(Dispatcher{name, {}});
+            st.changed();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("An event this script announces. Other scripts bind one of their events to it;\nCall runs them all.");
+    }
+
     if (CommentBox* box = g ? g->find_box(st.sel_box) : nullptr) {
         ImGui::SeparatorText("Comment box");
         char cb[512];
@@ -724,6 +773,16 @@ void draw_side_panel(PanelState& st) {
                         sel->params = n.params;
                         st.changed();
                     }
+        }
+        if (d && d->builtin == Builtin::RemoteCall) {
+            char eb[64];
+            std::snprintf(eb, sizeof eb, "%s", sel->name.c_str());
+            if (ImGui::InputText("function", eb, sizeof eb)) sel->name = eb;
+            if (ImGui::IsItemDeactivatedAfterEdit()) st.changed();
+            ImGui::TextDisabled("what it hands over");
+            edit_params(st, *sel);
+            ImGui::TextDisabled("what it expects back");
+            edit_param_list(st, sel->results, 2400, "+ result", "r");
         }
         if (d && d->builtin == Builtin::Timeline) {
             static const char* const kCurves[] = {"linear", "ease in", "ease out", "ease in out"};

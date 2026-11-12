@@ -65,6 +65,7 @@ const OpInfo kOps[OP_COUNT_] = {
     {"NOT", oR, oR, oN},     {"AND", oR, oR, oR},     {"OR", oR, oR, oR},      {"XOR", oR, oR, oR},
     {"SENDE", oK, oR, oR},   {"GETVO", oR, oR, oK},   {"SETVO", oR, oR, oK},
     {"TIMELINE", oR, oR, oI},
+    {"DISPATCH", oK, oR, oN}, {"BIND", oK, oR, oR},    {"CALLFO", oK, oR, oR},
 };
 
 struct Endpoint {
@@ -1064,6 +1065,49 @@ void Compiler::emit_block(const GraphInfo& gi, int node, int pin) {
             const int target = input_named(gi, node, "Target");
             const int v = input_named(gi, node, "Value");
             emit(OP_SETVO, target, v, const_index(Value::string(n.name)));
+            go(gi, node, "Then");
+            break;
+        }
+        case Builtin::DispatchCall: {
+            std::vector<int> ins;
+            for (size_t i = 0; i < s.pins.size(); ++i)
+                if (s.pins[i].input && !s.pins[i].type.is_exec()) ins.push_back(static_cast<int>(i));
+            const int args = new_temps(std::max<int>(1, static_cast<int>(ins.size())));
+            for (size_t i = 0; i < ins.size(); ++i) input_reg(gi, node, ins[i], args + static_cast<int>(i));
+            emit(OP_DISPATCH, const_index(Value::string(n.name)), args, 0, static_cast<int>(ins.size()));
+            go(gi, node, "Then");
+            break;
+        }
+        case Builtin::DispatchBind:
+        case Builtin::DispatchUnbind: {
+            if (n.name.empty()) error(gi.index, node, "name the dispatcher");
+            const int target = input_named(gi, node, "Target");
+            const int ev = input_named(gi, node, "Event");
+            emit(OP_BIND, const_index(Value::string(n.name)), target, ev, b == Builtin::DispatchBind ? 1 : 0);
+            go(gi, node, "Then");
+            break;
+        }
+        case Builtin::RemoteCall: {
+            if (n.name.empty()) error(gi.index, node, "name the function to call");
+            std::vector<int> ins;
+            std::vector<Type> outs;
+            for (size_t i = 0; i < s.pins.size(); ++i) {
+                const Pin& p = s.pins[i];
+                if (p.type.is_exec()) continue;
+                if (!p.input) outs.push_back(p.type);
+                else if (p.name != "Target") ins.push_back(static_cast<int>(i));
+            }
+            if (ins.size() > 255 || outs.size() > 255) error(gi.index, node, "too many pins");
+            // The target, then the arguments, side by side.
+            const int args = new_temps(1 + static_cast<int>(ins.size()));
+            input_named(gi, node, "Target", args);
+            for (size_t i = 0; i < ins.size(); ++i) input_reg(gi, node, ins[i], args + 1 + static_cast<int>(i));
+            // What the results are when the function is not there.
+            const int out = output_block(gi, node);
+            for (size_t i = 0; i < outs.size(); ++i)
+                emit(OP_LOADK, out + static_cast<int>(i), const_index(Value::default_of(outs[i])));
+            emit(OP_CALLFO, const_index(Value::string(n.name)), args, out,
+                 static_cast<int>(ins.size()) | (static_cast<int>(outs.size()) << 8));
             go(gi, node, "Then");
             break;
         }

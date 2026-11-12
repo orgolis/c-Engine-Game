@@ -1,5 +1,6 @@
 #include "vscript/vm.h"
 
+#include <utility>
 #include <algorithm>
 #include <cstdint>
 #include <cmath>
@@ -135,8 +136,18 @@ void VM::pop_frame() {
     frames_.pop_back();
     if (f.fn != 0) {
         const FnInfo& info = f.inst->program->fns[static_cast<size_t>(f.fn)];
-        if (f.ret_to)
-            for (int i = 0; i < info.nresults; ++i) f.ret_to[i] = f.regs[info.result_base + i];
+        if (f.ret_to) {
+            const int n = f.ret_limit >= 0 ? std::min(info.nresults, f.ret_limit) : info.nresults;
+            for (int i = 0; i < n; ++i) {
+                const Value& src = f.regs[info.result_base + i];
+                if (!f.ret_convert) {
+                    f.ret_to[i] = src;
+                } else {   // the caller's register already holds a default of the type it declared
+                    Value conv;
+                    if (convert(src, f.ret_to[i].type, conv)) f.ret_to[i] = std::move(conv);
+                }
+            }
+        }
         // Drop what the frame held so arrays and strings are freed now.
         for (size_t i = 0; i < info.proto.size(); ++i) f.regs[i] = Value();
         stack_top_ = f.stack_base;
@@ -415,6 +426,63 @@ void VM::run() {
                         if (l.inst == f->inst && l.slot == in.c) l.remaining = secs;
                 }
                 end_chain();
+                break;
+            }
+            case OP_BIND: {
+                const uint32_t target = R[in.b].u.entity;
+                Instance*      owner = target == 0 || target == f->inst->self ? f->inst
+                                       : (host_ ? host_->find_instance(target) : nullptr);
+                if (!owner) break;   // no script there: nothing to bind to
+                const std::string& disp = p.consts[static_cast<size_t>(in.a)].str();
+                const std::string& ev = R[in.c].str();
+                const uint32_t     me = f->inst->self;
+                const auto it = std::find_if(owner->bindings.begin(), owner->bindings.end(), [&](const Instance::Binding& x) {
+                    return x.listener == me && x.dispatcher == disp && x.event == ev;
+                });
+                if (in.d) {
+                    if (it == owner->bindings.end()) owner->bindings.push_back(Instance::Binding{disp, me, ev});
+                } else if (it != owner->bindings.end()) {
+                    owner->bindings.erase(it);
+                }
+                break;
+            }
+            case OP_DISPATCH: {
+                Instance&          owner = *f->inst;
+                const std::string& disp = p.consts[static_cast<size_t>(in.a)].str();
+                std::vector<std::pair<Instance*, const EventInfo*>> listeners;
+                for (const Instance::Binding& x : owner.bindings) {
+                    if (x.dispatcher != disp) continue;
+                    Instance* l = x.listener == owner.self ? &owner : (host_ ? host_->find_instance(x.listener) : nullptr);
+                    if (!l || !l->program) continue;   // the listener is gone
+                    const int e = l->program->find_event(x.event);
+                    if (e >= 0) listeners.emplace_back(l, &l->program->events[static_cast<size_t>(e)]);
+                }
+                if (static_cast<int>(frames_.size() + listeners.size()) >= max_call_depth) {
+                    fail("the call chain is too deep (a dispatcher whose listener calls it again without end?)");
+                    return;
+                }
+                for (const auto& [l, ev] : listeners) store_event_args(*l, *ev, R + in.b, in.d);
+                // Pushed last to first, so they run in the order they bound.
+                for (size_t i = listeners.size(); i-- > 0;) push_event_frame(*listeners[i].first, listeners[i].second->entry, false);
+                break;
+            }
+            case OP_CALLFO: {
+                const int      nargs = in.d & 0xFF, nres = in.d >> 8;
+                const uint32_t target = R[in.b].u.entity;
+                Instance*      other = target != 0 && target == f->inst->self ? f->inst : (host_ ? host_->find_instance(target) : nullptr);
+                if (!other || !other->program) break;   // the results keep their defaults
+                const int fn = other->program->find_function(p.consts[static_cast<size_t>(in.a)].str());
+                if (fn <= 0) break;
+                const FnInfo&      info = other->program->fns[static_cast<size_t>(fn)];
+                std::vector<Value> args(static_cast<size_t>(info.nparams));
+                for (int i = 0; i < info.nparams; ++i) {
+                    const Value& proto = info.proto[static_cast<size_t>(i)];
+                    if (i < nargs) convert(R[in.b + 1 + i], proto.type, args[static_cast<size_t>(i)]);
+                    else args[static_cast<size_t>(i)] = proto;
+                }
+                if (!push_function_frame(*other, fn, args.data(), info.nparams, R + in.c, false)) return;
+                frames_.back().ret_limit = nres;
+                frames_.back().ret_convert = true;
                 break;
             }
             case OP_TIMELINE: {

@@ -55,6 +55,10 @@ std::string to_text(const Script& s) {
     for (const Variable& v : s.variables)
         line(o, {"var", esc(v.name), type_name(v.type), v.exposed ? "1" : "0", esc(literal_text(v.def)),
                  esc(v.category), esc(v.tooltip)});
+    for (const Dispatcher& d : s.dispatchers) {
+        line(o, {"dispatcher", esc(d.name)});
+        for (const Param& p : d.params) line(o, {"dparam", esc(p.name), type_name(p.type), esc(literal_text(p.def))});
+    }
     for (const Graph& g : s.graphs) {
         line(o, {"graph", g.kind == GraphKind::Function ? "function" : "event", esc(g.name), g.pure ? "1" : "0",
                  std::to_string(g.next_id)});
@@ -67,6 +71,8 @@ std::string to_text(const Script& s) {
             for (const std::string& c : n.cases) line(o, {"case", std::to_string(n.id), esc(c)});
             for (const Param& p : n.params)
                 line(o, {"param", std::to_string(n.id), esc(p.name), type_name(p.type), esc(literal_text(p.def))});
+            for (const Param& p : n.results)
+                line(o, {"result", std::to_string(n.id), esc(p.name), type_name(p.type), esc(literal_text(p.def))});
             for (const auto& d : n.defaults)
                 line(o, {"pin", std::to_string(n.id), esc(d.first), type_name(d.second.type), esc(literal_text(d.second))});
         }
@@ -131,6 +137,15 @@ bool from_text(std::string_view text, Script& out, std::string* error) {
             v.category = field(5);
             v.tooltip = field(6);
             out.variables.push_back(std::move(v));
+        } else if (k == "dispatcher") {
+            out.dispatchers.push_back(Dispatcher{field(1), {}});
+        } else if (k == "dparam") {
+            if (out.dispatchers.empty()) return fail("'dparam' before any dispatcher");
+            Param p;
+            p.name = field(1);
+            if (!type_at(2, p.type)) return fail("unknown type '" + field(2) + "'");
+            value_at(3, p.type, p.def);
+            out.dispatchers.back().params.push_back(std::move(p));
         } else if (k == "graph") {
             out.graphs.emplace_back();
             g = &out.graphs.back();
@@ -172,12 +187,12 @@ bool from_text(std::string_view text, Script& out, std::string* error) {
             g->next_id = std::max(g->next_id, g->nodes.back().id + 1);
         } else if (k == "case") {
             if (Node* n = node_at(1)) n->cases.push_back(field(2));
-        } else if (k == "param") {
+        } else if (k == "param" || k == "result") {
             Param p;
             p.name = field(2);
             if (!type_at(3, p.type)) return fail("unknown type '" + field(3) + "'");
             value_at(4, p.type, p.def);
-            if (Node* n = node_at(1)) n->params.push_back(std::move(p));
+            if (Node* n = node_at(1)) (k == "param" ? n->params : n->results).push_back(std::move(p));
         } else if (k == "pin") {
             Type t;
             if (!type_at(3, t)) return fail("unknown type '" + field(3) + "'");

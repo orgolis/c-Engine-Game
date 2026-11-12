@@ -69,6 +69,9 @@ enum Op : uint16_t {
     OP_GETVO,    // R[a] = variable K[c] of entity R[b]'s script, as type T[d]
     OP_SETVO,    // variable K[c] of entity R[a]'s script = R[b]
     OP_TIMELINE, // command d on timeline c (Program::timelines): duration R[a], loop R[b]
+    OP_DISPATCH, // run every listener bound to dispatcher K[a] of this instance, arguments R[b .. b+d)
+    OP_BIND,     // d=1 bind / d=0 unbind: dispatcher K[a] of entity R[b] (0 = this one) -> this script's event named R[c]
+    OP_CALLFO,   // call function K[a] of entity R[b]: arguments R[b+1 ..], results to R[c ..]; d = nargs | nresults << 8
     OP_COUNT_,
 };
 

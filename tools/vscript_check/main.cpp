@@ -538,6 +538,73 @@ void test_between_scripts() {
         check(w.fire(1, "ok") == "fine", "and the scripts still run afterwards");
     }
     {
+        // A dispatcher: the door announces, the lamp and the bell listen.
+        World w;
+        Graph& door = w.add();
+        w.script(1).dispatchers.push_back(Dispatcher{"opened", {Param{"who", kString, Value()}}});
+        const int open = node(door, "event.custom", "open"), call = node(door, "dispatch.call", "opened"), after = print_node(door, "after");
+        lit(door, call, "who", Value::string("door"));
+        chain(door, {open, call, after});
+        auto listener = [&](const char* tag) {
+            Graph& g = w.add();
+            const int bp = node(g, "event.begin_play"), bind = node(g, "dispatch.bind", "opened");
+            lit(g, bind, "Target", Value::entity(1)); lit(g, bind, "Event", Value::string("heard"));
+            const int again = node(g, "dispatch.bind", "opened");   // binding twice is binding once
+            lit(g, again, "Target", Value::entity(1)); lit(g, again, "Event", Value::string("heard"));
+            chain(g, {bp, bind, again});
+            const int heard = node(g, "event.custom", "heard"), cat = node(g, "math.add"), p = print_node(g);
+            g.find(heard)->params = {Param{"who", kString, Value()}};
+            g.find(cat)->targ = kString;
+            lit(g, cat, "A", Value::string(tag));
+            g.link(heard, "who", cat, "B"); g.link(cat, "Result", p, "Text"); g.link(heard, "Then", p, "In");
+            const int leave = node(g, "event.custom", "leave"), unbind = node(g, "dispatch.unbind", "opened");
+            lit(g, unbind, "Target", Value::entity(1)); lit(g, unbind, "Event", Value::string("heard"));
+            chain(g, {leave, unbind});
+        };
+        listener("lamp:");
+        listener("bell:");
+        const bool built = w.build();
+        check(built && w.fire(1, "open") == "after", "calling a dispatcher nobody bound to does nothing");
+        w.fire(2, "event.begin_play");
+        w.fire(3, "event.begin_play");
+        check(w.fire(1, "open") == "lamp:door,bell:door,after",
+              "every listener's event runs, in the order they bound, with the call's arguments; then the caller continues");
+        w.fire(2, "leave");
+        check(w.fire(1, "open") == "bell:door,after", "a listener that unbound is not called");
+        w.units[2]->inst.reset();   // the bell's object is gone
+        check(w.fire(1, "open") == "after" && w.errors.empty(), "a listener that no longer exists is skipped");
+        Script again;
+        check(from_text(to_text(w.script(1)), again) && again.dispatchers.size() == 1 && again.dispatchers[0].params.size() == 1 &&
+                  to_text(again) == to_text(w.script(1)),
+              "a dispatcher and its parameters survive the file");
+    }
+    {
+        // Calling a function of another object's script, and getting its results.
+        World w;
+        Graph& a = w.add();
+        const int ask = node(a, "event.custom", "ask"), call = node(a, "fn.call_remote", "area"), p = print_node(a);
+        a.find(call)->params = {Param{"w", kInt, Value::integer(0)}, Param{"h", kInt, Value::integer(0)}};
+        a.find(call)->results = {Param{"a", kInt, Value::integer(0)}};
+        lit(a, call, "Target", Value::entity(2)); lit(a, call, "w", Value::integer(3)); lit(a, call, "h", Value::integer(4));
+        chain(a, {ask, call, p}); a.link(call, "a", p, "Text");
+        const int miss = node(a, "event.custom", "miss"), call2 = node(a, "fn.call_remote", "nothing"), p2 = print_node(a);
+        a.find(call2)->results = {Param{"r", kString, Value()}, Param{"n", kInt, Value::integer(0)}};
+        lit(a, call2, "Target", Value::entity(2));
+        chain(a, {miss, call2, p2}); a.link(call2, "n", p2, "Text");
+        w.add();
+        Graph& f = w.script(2).add_graph(GraphKind::Function, "area");
+        f.inputs = {Param{"w", kFloat, Value::number(0)}, Param{"h", kFloat, Value::number(0)}};
+        f.outputs = {Param{"a", kFloat, Value::number(0)}, Param{"extra", kString, Value::string("x")}};   // one more than the caller asks for
+        const int en = node(f, "fn.entry"), mul = node(f, "math.mul"), ret = node(f, "fn.return");
+        f.find(mul)->targ = kFloat;
+        f.link(en, "Then", ret, "In"); f.link(en, "w", mul, "A"); f.link(en, "h", mul, "B"); f.link(mul, "Result", ret, "a");
+        check(w.build() && w.fire(1, "ask") == "12",
+              "a function of another script is called with converted arguments, and its result comes back as the caller's type");
+        check(w.fire(1, "miss") == "0" && w.errors.empty(), "calling a function the other script does not have gives the defaults");
+        Script again;
+        check(from_text(to_text(w.script(1)), again) && to_text(again) == to_text(w.script(1)), "the node's results survive the file");
+    }
+    {
         World w;
         Graph& a = w.add();
         const int ev = node(a, "event.begin_play"), s = node(a, "event.send"), g = node(a, "var.remote_get"), p = print_node(a);

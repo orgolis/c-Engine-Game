@@ -35,6 +35,13 @@ struct Param {
     Value       def;
 };
 
+/// An event a script announces to whoever bound to it: "the door opened".
+/// Other scripts bind one of their custom events to it; Call runs them all.
+struct Dispatcher {
+    std::string        name;
+    std::vector<Param> params;   // what a Call hands to every listener
+};
+
 struct Variable {
     std::string name;
     Type        type;
@@ -53,6 +60,7 @@ struct Node {
     int         extra = 0;    // number of variadic pins: Sequence outputs, Make Array inputs
     std::vector<std::string> cases;                        // Switch: one label per case output
     std::vector<Param>       params;                       // Custom Event: its parameters
+    std::vector<Param>       results;                      // Call Function of Entity: what it gives back
     std::vector<std::pair<std::string, Value>> defaults;   // literals on unlinked input pins
     std::string comment;
 
@@ -163,8 +171,19 @@ struct Script {
     std::string           name;
     std::string           parent;      // reserved: the script this one extends
     std::vector<Variable> variables;
+    std::vector<Dispatcher> dispatchers;
     std::vector<Graph>    graphs;
 
+    Dispatcher* find_dispatcher(const std::string& n) {
+        for (auto& d : dispatchers)
+            if (d.name == n) return &d;
+        return nullptr;
+    }
+    const Dispatcher* find_dispatcher(const std::string& n) const {
+        for (const auto& d : dispatchers)
+            if (d.name == n) return &d;
+        return nullptr;
+    }
     Graph& add_graph(GraphKind kind, std::string graph_name) {
         Graph g;
         g.kind = kind;

@@ -52,6 +52,7 @@ enum class Builtin : uint16_t {
     // other entities' scripts
     SendEvent, RemoteGet, RemoteSet,
     Timeline,
+    DispatchCall, DispatchBind, DispatchUnbind, RemoteCall,
 };
 
 struct PinDef {

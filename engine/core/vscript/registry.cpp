@@ -167,6 +167,22 @@ bool shape_of(const Registry& reg, const Script& script, const Graph& graph, con
             out.pins.insert(out.pins.begin() + 2, params.begin(), params.end());
             break;
         }
+        case Builtin::DispatchCall: {
+            const Dispatcher* d = script.find_dispatcher(node.name);
+            if (!d) return fail(error, "no dispatcher named '" + node.name + "'");
+            std::vector<Pin> params;
+            for (const Param& p : d->params) params.push_back(make_pin(p.name, p.type, true, p.def));
+            out.pins.insert(out.pins.begin() + 1, params.begin(), params.end());
+            break;
+        }
+        case Builtin::RemoteCall: {
+            // In, Target; then what the caller hands over; Then; then what comes back.
+            std::vector<Pin> params;
+            for (const Param& p : node.params) params.push_back(make_pin(p.name, p.type, true, p.def));
+            out.pins.insert(out.pins.begin() + 2, params.begin(), params.end());
+            add_params(out, node.results, false);
+            break;
+        }
         case Builtin::CallEvent: {
             const Node* ev = find_custom_event(reg, script, node.name);
             if (!ev) return fail(error, "no custom event named '" + node.name + "'");

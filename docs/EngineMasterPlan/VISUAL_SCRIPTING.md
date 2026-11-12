@@ -1,12 +1,12 @@
 # Visual scripting: how the Logic Graph core works
 
-**Status (v0.8.21):** milestones A1 (the core), A3 (the editor) and A4 (the
+**Status (v0.8.22):** milestones A1 (the core), A3 (the editor) and A4 (the
 debugger) of [ROAD_TO_TEST_GAME.md](ROAD_TO_TEST_GAME.md) are done; A2 (engine
 binding) is partly done.
 The per-scene Logic Graph panel still runs the old `gameplay_logic.h` runtime
 until the rest of A2 replaces it.
 
-Code: `engine/core/vscript/`. Checks: `tools/vscript_check` (96 checks) for the
+Code: `engine/core/vscript/`. Checks: `tools/vscript_check` (104 checks) for the
 core, `tools/script_check` for graphs running on entities.
 
 ## In the editor today
@@ -95,13 +95,22 @@ entity field is kept as the object's **name** (type it, or drag the object from
 the Hierarchy), so it survives save and load; it is looked up when the script
 starts.
 
-**Scripts talking to each other.** Three nodes take a Target entity:
+**Scripts talking to each other.** These nodes take a Target entity:
 
 | Node | What it does |
 |------|--------------|
 | Send Event to Entity | Runs the custom event with that name on the target's script, now, then continues. The node lists what it sends; the values are matched to the event's parameters by position and converted to their types |
+| Call Function of Entity | Calls a function of the target's script and waits for it. The node lists what it hands over and what it expects back; both are converted. Results the function gives beyond what the node lists are dropped |
 | Get Variable of Entity | Reads a variable of the target's script, as the type picked on the node |
 | Set Variable of Entity | Writes one, converted to the variable's own type |
+
+**Dispatchers** turn that round: a script announces something without knowing
+who cares. The door's script declares a dispatcher `opened` (side panel,
+"Dispatchers") and runs **Call opened** when it opens. A lamp's script runs
+**Bind to Dispatcher** once, naming the door, the dispatcher and one of its own
+custom events; from then on that event runs whenever the door calls. Listeners
+run in the order they bound; **Unbind** stops one; a listener whose object is
+gone is skipped. Bind and Unbind with Target unwired mean this object.
 
 A target with no logic script, or without that event or variable, is not an
 error: nothing happens, and a read gives the type's default. Every script in
@@ -212,9 +221,8 @@ A leading `Context&` parameter is not a pin. Several outputs are a
 
 ## Not built yet
 
-Macros, event dispatchers, interfaces, parent scripts, timelines, user enums
-and structs, maps and sets, calling a function (with results) on another
-entity, collision events, nodes for component properties, watch expressions
+Macros, interfaces, parent scripts, user enums and structs, maps and sets,
+collision events, nodes for component properties, watch expressions
 and a call stack view in the debugger, collapsing nodes to a function, find in
 graph. `Type::sub` and `Kind::Enum` / `Kind::Struct` are
 reserved for the first group.

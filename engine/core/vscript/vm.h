@@ -34,6 +34,15 @@ struct Instance {
     std::vector<int64_t> state;           // per-node state
     void*                user = nullptr;  // the host's own data
 
+    /// Who listens to this script's dispatchers: the listener's entity and
+    /// the custom event of its script to run.
+    struct Binding {
+        std::string dispatcher;
+        uint32_t    listener = 0;
+        std::string event;
+    };
+    std::vector<Binding> bindings;
+
     Value* variable(std::string_view name) {
         const int i = program ? program->find_variable(name) : -1;
         return i < 0 ? nullptr : &vars[static_cast<size_t>(i)];
@@ -152,6 +161,8 @@ private:
         size_t    stack_base = 0;    // function frames: where their registers start on stack_
         size_t    cont_base = 0;
         Value*    ret_to = nullptr;  // caller registers receiving the results
+        int       ret_limit = -1;    // a call into another script: no more results than the caller has room for,
+        bool      ret_convert = false; // and each converted to the type the caller declared
         bool      top = false;       // pushed by the host: its end finishes the run
     };
     struct Latent {

@@ -133,6 +133,29 @@ void flow(Registry& r) {
         d.default_any = kFloat;
         r.add(std::move(d)).in("In", kExec).in("Target", kEntity).in("Value", kAny).out("Then", kExec);
     }
+    r.add(builtin("dispatch.call", "Events", "Call Dispatcher", Builtin::DispatchCall)).in("In", kExec).out("Then", kExec)
+        .tip("Runs the event every listener bound to this dispatcher, in the order they bound, then continues.");
+    {
+        NodeDef d = builtin("dispatch.bind", "Events", "Bind to Dispatcher", Builtin::DispatchBind);
+        d.named = true;
+        d.name_label = "Dispatcher";
+        r.add(std::move(d)).in("In", kExec).in("Target", kEntity).in("Event", kString).out("Then", kExec)
+            .tip("From now on, when Target's script calls that dispatcher, the custom event of THIS script named in Event runs. "
+                 "Target left unwired means this object. Binding the same event twice does nothing.")
+            .keys("listen subscribe delegate");
+    }
+    {
+        NodeDef d = builtin("dispatch.unbind", "Events", "Unbind from Dispatcher", Builtin::DispatchUnbind);
+        d.named = true;
+        d.name_label = "Dispatcher";
+        r.add(std::move(d)).in("In", kExec).in("Target", kEntity).in("Event", kString).out("Then", kExec)
+            .keys("stop listening unsubscribe");
+    }
+    r.add(builtin("fn.call_remote", "Functions", "Call Function of Entity", Builtin::RemoteCall))
+        .in("In", kExec).in("Target", kEntity).out("Then", kExec)
+        .tip("Calls the function with this name in another object's logic script and waits for it. The node lists what it hands "
+             "over and what it expects back; both are matched by position and converted. If the object has no such function "
+             "the results are their defaults.");
     r.add(builtin("event.begin_play", "Events", "Begin Play", Builtin::Event)).out("Then", kExec)
         .tip("Runs once when play starts for this entity.");
     r.add(builtin("event.tick", "Events", "Tick", Builtin::Event)).out("Then", kExec).out("Delta Seconds", kFloat)
