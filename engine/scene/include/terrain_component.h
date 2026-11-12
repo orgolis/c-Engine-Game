@@ -15,6 +15,20 @@ namespace schizo::scene {
 /// Number of blendable terrain texture layers (one per splatmap channel).
 inline constexpr int kTerrainLayers = 4;
 
+/// Where a texture layer belongs by itself: between two heights, between two
+/// slopes, broken up by noise. Layer 0 is what shows where no rule claims the
+/// ground. See terrain_brush.h, apply_terrain_layer_rules().
+struct TerrainLayerRule {
+    bool  enabled = false;
+    float min_height = -1000.0f, max_height = 1000.0f;   // stored heights times height scale
+    float height_blend = 2.0f;                           // how far outside the range it fades
+    float min_slope = 0.0f, max_slope = 90.0f;           // degrees from flat
+    float slope_blend = 5.0f;
+    float noise = 0.0f;                                  // 0 = solid, 1 = heavily broken up
+    float noise_scale = 12.0f;                           // world size of a patch
+    float weight = 1.0f;                                 // against the other layers' rules
+};
+
 // ============================================================================
 // Terrain Component (heightmap landscape)
 // ============================================================================
@@ -256,6 +270,9 @@ public:
     float GetTriplanarSharpness() const { return triplanar_sharpness_; }
     void  SetTriplanarSharpness(float v) { MarkChanged(); triplanar_sharpness_ = std::clamp(v, 1.0f, 16.0f); }
 
+    const TerrainLayerRule& GetLayerRule(int i) const { return layer_rules_[clamp_layer(i)]; }
+    void SetLayerRule(int i, const TerrainLayerRule& r) { MarkChanged(); layer_rules_[clamp_layer(i)] = r; }
+
     float GetLayerNormalScale(int i) const { return layer_normal_scale_[clamp_layer(i)]; }
     void  SetLayerNormalScale(int i, float v) { MarkChanged(); layer_normal_scale_[clamp_layer(i)] = std::clamp(v, 0.0f, 4.0f); }
 
@@ -354,6 +371,7 @@ private:
     std::array<float, kTerrainLayers>       layer_metallic_{ 0.0f, 0.0f, 0.0f, 0.0f };
     std::array<float, kTerrainLayers>       layer_roughness_{ 0.95f, 0.95f, 0.95f, 0.95f };
     std::array<float, kTerrainLayers>       layer_normal_scale_{ 1.0f, 1.0f, 1.0f, 1.0f };
+    std::array<TerrainLayerRule, kTerrainLayers> layer_rules_{};
     bool                                   triplanar_ = false;
     float                                  triplanar_sharpness_ = 4.0f;
     int                  splat_res_     = 256;

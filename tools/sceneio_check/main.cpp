@@ -93,6 +93,15 @@ int main() {
         tc->SetTiling(0, 48.0f);
         tc->SetTriplanar(true);
         tc->SetTriplanarSharpness(9.5f);
+        {
+            // A layer rule, every field away from its default.
+            schizo::scene::TerrainLayerRule lr;
+            lr.enabled = true;
+            lr.min_height = 12.5f; lr.max_height = 80.25f; lr.height_blend = 3.5f;
+            lr.min_slope = 20.0f; lr.max_slope = 70.0f; lr.slope_blend = 7.5f;
+            lr.noise = 0.4f; lr.noise_scale = 33.0f; lr.weight = 2.5f;
+            tc->SetLayerRule(2, lr);
+        }
         tc->SetLayerMetallic(2, 0.30f);
         tc->SetLayerRoughness(2, 0.60f);
 
@@ -185,6 +194,16 @@ int main() {
             check(std::fabs(tc->GetLayerMetallic(0)    - 0.80f) < 1e-3f, "layer 0 metallic survives");
             check(std::fabs(tc->GetLayerRoughness(0)   - 0.15f) < 1e-3f, "layer 0 roughness survives");
             check(std::fabs(tc->GetLayerNormalScale(0) - 2.50f) < 1e-3f, "layer 0 normal scale survives");
+            {
+                const schizo::scene::TerrainLayerRule& lr = tc->GetLayerRule(2);
+                check(lr.enabled && std::fabs(lr.min_height - 12.5f) < 1e-3f && std::fabs(lr.max_height - 80.25f) < 1e-3f &&
+                          std::fabs(lr.height_blend - 3.5f) < 1e-3f && std::fabs(lr.min_slope - 20.0f) < 1e-3f &&
+                          std::fabs(lr.max_slope - 70.0f) < 1e-3f && std::fabs(lr.slope_blend - 7.5f) < 1e-3f &&
+                          std::fabs(lr.noise - 0.4f) < 1e-3f && std::fabs(lr.noise_scale - 33.0f) < 1e-3f &&
+                          std::fabs(lr.weight - 2.5f) < 1e-3f,
+                      "a layer's placement rule survives, every field");
+                check(!tc->GetLayerRule(1).enabled, "a layer with no rule still has none");
+            }
             check(std::fabs(tc->GetLayerMetallic(2)    - 0.30f) < 1e-3f, "layer 2 metallic survives");
             check(std::fabs(tc->GetLayerRoughness(2)   - 0.60f) < 1e-3f, "layer 2 roughness survives");
 

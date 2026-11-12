@@ -4144,6 +4144,37 @@ void ShowInspector(EditorState& editor_state) {
                 ImGui::SliderFloat("Paint Strength##terrain", &editor_state.terrain_paint_strength, 0.01f, 1.0f);
                 ImGui::SliderFloat("Paint Radius##terrain",   &editor_state.terrain_brush_radius,   0.5f, 50.0f);
 
+                // Layers by rule: rewrite the splatmap from each layer's rule
+                // (set under the layer). One undo step; paint on top after.
+                {
+                    bool any_rule = false;
+                    for (int ri = 0; ri < schizo::scene::kTerrainLayers; ++ri)
+                        any_rule = any_rule || terrain_comp->GetLayerRule(ri).enabled;
+                    ImGui::BeginDisabled(!any_rule);
+                    if (ImGui::Button("Apply layer rules##terrain")) {
+                        const uint32_t eid = selected_entity->GetId();
+                        const std::vector<uint8_t> before = terrain_comp->Splat();
+                        schizo::scene::apply_terrain_layer_rules(*terrain_comp);
+                        const std::vector<uint8_t> after = terrain_comp->Splat();
+                        auto set = [&editor_state, eid](const std::vector<uint8_t>& px) {
+                            auto sc = editor_state.editor_scene->GetScene();
+                            auto en = sc ? sc->GetEntityById(eid) : nullptr;
+                            auto tcx = en ? en->GetComponent<schizo::scene::TerrainComponent>() : nullptr;
+                            if (!tcx || tcx->Splat().size() != px.size()) return;   // resized since: leave it
+                            tcx->MutableSplat() = px;
+                            tcx->MarkSplatDirty();
+                            editor_state.editor_scene->MarkModified();
+                        };
+                        editor_state.undo_redo_manager.PushExecuted(std::make_unique<schizo::editor::FunctionCommand>(
+                            [set, after] { set(after); }, [set, before] { set(before); }, "Apply terrain layer rules"));
+                        editor_state.editor_scene->MarkModified();
+                        editor_state.set_status("Layers placed by rule");
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    ImGui::TextDisabled(any_rule ? "(replaces what was painted)" : "(give a layer a rule first)");
+                }
+
                 // Triplanar. Sits above the per-layer list because it is a
                 // property of the terrain surface, not of any one layer.
                 {
@@ -4273,6 +4304,34 @@ void ShowInspector(EditorState& editor_state) {
                     if (has_mat && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                         ImGui::SetTooltip("The material above supplies this layer's surface.\n"
                                           "Clear it to go back to a single texture.");
+
+                    {
+                        // Where this layer belongs by itself. Applied with the
+                        // button under the layers, not while dragging: the
+                        // rules REPLACE what was painted.
+                        schizo::scene::TerrainLayerRule lr = terrain_comp->GetLayerRule(i);
+                        bool rule_changed = false;
+                        if (ImGui::TreeNode(i == 0 ? "Placed by rule (base layer: also fills the rest)##rule"
+                                                   : "Placed by rule##rule")) {
+                            rule_changed |= ImGui::Checkbox("Use a rule##rule", &lr.enabled);
+                            ImGui::BeginDisabled(!lr.enabled);
+                            rule_changed |= ImGui::DragFloatRange2("Height##rule", &lr.min_height, &lr.max_height, 0.5f,
+                                                                   -1000.0f, 1000.0f, "from %.1f", "to %.1f");
+                            rule_changed |= ImGui::SliderFloat("Height fade##rule", &lr.height_blend, 0.0f, 50.0f);
+                            rule_changed |= ImGui::DragFloatRange2("Slope##rule", &lr.min_slope, &lr.max_slope, 0.5f,
+                                                                   0.0f, 90.0f, "from %.0f deg", "to %.0f deg");
+                            rule_changed |= ImGui::SliderFloat("Slope fade##rule", &lr.slope_blend, 0.0f, 30.0f);
+                            rule_changed |= ImGui::SliderFloat("Break up##rule", &lr.noise, 0.0f, 1.0f);
+                            rule_changed |= ImGui::SliderFloat("Patch size##rule", &lr.noise_scale, 1.0f, 100.0f);
+                            rule_changed |= ImGui::SliderFloat("Weight##rule", &lr.weight, 0.0f, 4.0f);
+                            ImGui::EndDisabled();
+                            ImGui::TreePop();
+                        }
+                        if (rule_changed) {
+                            terrain_comp->SetLayerRule(i, lr);
+                            editor_state.editor_scene->MarkModified();
+                        }
+                    }
 
                     float t = terrain_comp->GetTiling(i);
                     ImGui::SetNextItemWidth(-70.0f);

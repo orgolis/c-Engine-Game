@@ -320,6 +320,13 @@ void write_entity_block(std::ofstream& file,
             file << "TERRAIN_LAYERMETAL"  << i << "=" << tc->GetLayerMetallic(i)    << "\n";
             file << "TERRAIN_LAYERROUGH"  << i << "=" << tc->GetLayerRoughness(i)   << "\n";
             file << "TERRAIN_LAYERNSCALE" << i << "=" << tc->GetLayerNormalScale(i) << "\n";
+            // Where the layer belongs by rule. Written only when it has one, so
+            // a scene without rules is byte-for-byte what it was.
+            const schizo::scene::TerrainLayerRule& lr = tc->GetLayerRule(i);
+            if (lr.enabled)
+                file << "TERRAIN_RULE" << i << "=" << lr.min_height << " " << lr.max_height << " " << lr.height_blend << " "
+                     << lr.min_slope << " " << lr.max_slope << " " << lr.slope_blend << " " << lr.noise << " "
+                     << lr.noise_scale << " " << lr.weight << "\n";
         }
         file << "TERRAIN_TRIPLANAR=" << (tc->GetTriplanar() ? 1 : 0) << "\n";
         file << "TERRAIN_TRISHARP=" << tc->GetTriplanarSharpness() << "\n";
@@ -601,6 +608,7 @@ struct ParsedEntity {
     float       terrain_layer_metal[schizo::scene::kTerrainLayers]  = {0.0f, 0.0f, 0.0f, 0.0f};
     float       terrain_layer_rough[schizo::scene::kTerrainLayers]  = {0.95f, 0.95f, 0.95f, 0.95f};
     float       terrain_layer_nscale[schizo::scene::kTerrainLayers] = {1.0f, 1.0f, 1.0f, 1.0f};
+    schizo::scene::TerrainLayerRule terrain_rule[schizo::scene::kTerrainLayers];
     bool        terrain_triplanar = false;
     float       terrain_tri_sharp = 4.0f;
     std::string terrain_splat_file;
@@ -840,6 +848,14 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
         const std::string ek = "TERRAIN_LAYERMETAL"  + std::to_string(i);
         const std::string rk = "TERRAIN_LAYERROUGH"  + std::to_string(i);
         const std::string nk = "TERRAIN_LAYERNSCALE" + std::to_string(i);
+        const std::string uk = "TERRAIN_RULE" + std::to_string(i);
+        if (starts_with(line, uk.c_str(), v)) {
+            schizo::scene::TerrainLayerRule& lr = p.terrain_rule[i];
+            std::istringstream rs(v);
+            lr.enabled = static_cast<bool>(rs >> lr.min_height >> lr.max_height >> lr.height_blend >> lr.min_slope >>
+                                           lr.max_slope >> lr.slope_blend >> lr.noise >> lr.noise_scale >> lr.weight);
+            return;
+        }
         if (starts_with(line, mk.c_str(), v)) { p.terrain_layer_mat[i] = v; return; }
         if (starts_with(line, ek.c_str(), v)) { p.terrain_layer_metal[i]  = std::stof(v); return; }
         if (starts_with(line, rk.c_str(), v)) { p.terrain_layer_rough[i]  = std::stof(v); return; }
@@ -1051,6 +1067,7 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
                 tc->SetLayerMetallic(i,    p.terrain_layer_metal[i]);
                 tc->SetLayerRoughness(i,   p.terrain_layer_rough[i]);
                 tc->SetLayerNormalScale(i, p.terrain_layer_nscale[i]);
+                tc->SetLayerRule(i, p.terrain_rule[i]);
             }
             // Holes (caves).
             if (!p.terrain_holes_file.empty()) {

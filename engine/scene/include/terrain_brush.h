@@ -273,6 +273,74 @@ inline void generate_terrain_noise(TerrainComponent& tc, float amplitude, float 
 }
 
 // ---------------------------------------------------------------------------
+// Layers by rule
+// ---------------------------------------------------------------------------
+
+/// The slope of the surface at a local position, in degrees from flat.
+inline float terrain_slope_degrees(const TerrainComponent& tc, float lx, float lz) {
+    const float e = tc.CellSize();
+    const float dx = (tc.SampleHeightLocal(lx + e, lz) - tc.SampleHeightLocal(lx - e, lz)) / (2.0f * e);
+    const float dz = (tc.SampleHeightLocal(lx, lz + e) - tc.SampleHeightLocal(lx, lz - e)) / (2.0f * e);
+    return std::atan(std::sqrt(dx * dx + dz * dz)) * 57.29578f;
+}
+
+/// How strongly a rule claims a spot: 0 (not at all) to its weight.
+inline float terrain_rule_fit(const TerrainLayerRule& r, float height, float slope_deg, float lx, float lz, uint32_t seed) {
+    if (!r.enabled) return 0.0f;
+    auto band = [](float v, float lo, float hi, float blend) {
+        if (v >= lo && v <= hi) return 1.0f;
+        const float d = v < lo ? lo - v : v - hi;
+        return blend > 1e-4f ? std::max(0.0f, 1.0f - d / blend) : 0.0f;
+    };
+    float fit = band(height, r.min_height, r.max_height, r.height_blend) * band(slope_deg, r.min_slope, r.max_slope, r.slope_blend);
+    if (r.noise > 0.0f && fit > 0.0f) {
+        const float sc = std::max(0.25f, r.noise_scale);
+        const float n = terrain_detail::fbm(lx / sc, lz / sc, seed) * 0.5f + 0.5f;   // 0..1
+        fit *= std::clamp(1.0f - r.noise * 2.0f * n, 0.0f, 1.0f);
+    }
+    return fit * std::max(0.0f, r.weight);
+}
+
+/// Rewrite the splatmap from the terrain's layer rules. Layers 1..3 take the
+/// ground their rules claim; layer 0 takes what is left (and its own rule, if
+/// it has one, competes like the others). Everything painted by hand is
+/// replaced: rules first, then paint on top.
+inline void apply_terrain_layer_rules(TerrainComponent& tc, uint32_t seed = 1) {
+    const int   res = tc.SplatResolution();
+    const float size = tc.GetSize(), half = size * 0.5f;
+    std::vector<uint8_t>& splat = tc.MutableSplat();
+    for (int z = 0; z < res; ++z)
+        for (int x = 0; x < res; ++x) {
+            const float lx = -half + (x + 0.5f) / res * size, lz = -half + (z + 0.5f) / res * size;
+            const float h = tc.SampleHeightLocal(lx, lz);
+            const float slope = terrain_slope_degrees(tc, lx, lz);
+            float       w[kTerrainLayers];
+            float       claimed = 0.0f;
+            for (int l = 1; l < kTerrainLayers; ++l) {
+                w[l] = terrain_rule_fit(tc.GetLayerRule(l), h, slope, lx, lz, seed + static_cast<uint32_t>(l) * 101u);
+                claimed += w[l];
+            }
+            // The base layer: its rule if it has one, and always whatever the
+            // others leave unclaimed, so no ground is ever without a texture.
+            w[0] = terrain_rule_fit(tc.GetLayerRule(0), h, slope, lx, lz, seed) + std::max(0.0f, 1.0f - claimed);
+            float sum = 0.0f;
+            for (float v : w) sum += v;
+            uint8_t* px = &splat[(static_cast<size_t>(z) * res + x) * 4];
+            int      used = 0;
+            for (int l = 0; l < kTerrainLayers; ++l) {
+                px[l] = static_cast<uint8_t>(std::clamp(w[l] / sum, 0.0f, 1.0f) * 255.0f + 0.5f);
+                used += px[l];
+            }
+            // Rounding must not leave the weights short of, or past, a whole.
+            int big = 0;
+            for (int l = 1; l < kTerrainLayers; ++l)
+                if (px[l] > px[big]) big = l;
+            px[big] = static_cast<uint8_t>(std::clamp(static_cast<int>(px[big]) + 255 - used, 0, 255));
+        }
+    tc.MarkSplatDirty();
+}
+
+// ---------------------------------------------------------------------------
 // Heightmap files: 16-bit greyscale, the format every terrain tool reads.
 // PGM (P5, maxval 65535, big-endian) is self-describing; RAW (.r16, little-
 // endian, square) is what World Machine, Gaea and Unreal exchange.

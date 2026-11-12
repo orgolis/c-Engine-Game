@@ -206,6 +206,57 @@ int main() {
         std::string why;
         check(!load_terrain_heightmap(bad, "no_such_file.r16", 0.0f, 1.0f, &why) && !why.empty(), "a file that is not there is refused with a reason");
     }
+    {
+        // Layers by rule: a mountain with grass low, rock on the steep flank, snow on top.
+        TerrainComponent t(128, 256.0f);
+        for (int z = 0; z <= 128; ++z)
+            for (int x = 0; x <= 128; ++x) {
+                const float d = std::sqrt(static_cast<float>((x - 64) * (x - 64) + (z - 64) * (z - 64))) * 2.0f;   // world units from the peak
+                t.SetHeightAt(x, z, d < 20.0f ? 80.0f : std::max(0.0f, 80.0f - (d - 20.0f) * 2.0f));           // plateau, 63 degree flank, plain
+            }
+        TerrainLayerRule rock;
+        rock.enabled = true;
+        rock.min_slope = 35.0f;
+        TerrainLayerRule snow;
+        snow.enabled = true;
+        snow.min_height = 70.0f;
+        snow.max_slope = 30.0f;
+        snow.slope_blend = 2.0f;
+        t.SetLayerRule(1, rock);
+        t.SetLayerRule(2, snow);
+        const uint64_t v0 = t.SplatVersion();
+        apply_terrain_layer_rules(t);
+        const int res = t.SplatResolution();
+        auto px = [&](float lx, float lz) {
+            const int x = static_cast<int>((lx + 128.0f) / 256.0f * res), z = static_cast<int>((lz + 128.0f) / 256.0f * res);
+            return &t.Splat()[(static_cast<size_t>(z) * res + x) * 4];
+        };
+        const uint8_t* plain = px(110.0f, 0.0f);
+        const uint8_t* flank = px(40.0f, 0.0f);
+        const uint8_t* peak = px(2.0f, 2.0f);
+        check(plain[0] == 255 && plain[1] == 0 && plain[2] == 0, "flat low ground is left to the base layer");
+        check(flank[1] > 200 && flank[2] < 30, "the steep flank is claimed by the slope rule");
+        check(peak[2] > 200 && peak[1] < 30, "the flat top is claimed by the height rule");
+        bool whole = true;
+        for (size_t i = 0; i < t.Splat().size(); i += 4)
+            whole = whole && (t.Splat()[i] + t.Splat()[i + 1] + t.Splat()[i + 2] + t.Splat()[i + 3]) == 255;
+        check(whole, "every texel's weights add up to exactly one whole");
+        check(t.SplatVersion() != v0, "applying rules tells the renderer the splatmap changed");
+
+        rock.noise = 1.0f;
+        rock.noise_scale = 6.0f;
+        t.SetLayerRule(1, rock);
+        apply_terrain_layer_rules(t);
+        int lo = 255, hi = 0;
+        for (float a = 0.0f; a < 6.2f; a += 0.05f) {
+            const uint8_t* p = px(std::cos(a) * 40.0f, std::sin(a) * 40.0f);
+            lo = std::min<int>(lo, p[1]);
+            hi = std::max<int>(hi, p[1]);
+        }
+        check(hi - lo > 80, "noise breaks a rule's layer into patches instead of a solid band");
+        check(std::fabs(terrain_slope_degrees(t, 40.0f, 0.0f) - 63.4f) < 3.0f && terrain_slope_degrees(t, 110.0f, 0.0f) < 1.0f,
+              "the slope the rules see is the slope of the ground");
+    }
     if (g_fail) {
         std::printf("terrainbrush_check: %d FAILED, %d passed\n", g_fail, g_pass);
         return 1;
