@@ -16,7 +16,11 @@
 #include "authorable_components.h"
 #include "component_serialize.h"
 
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -78,6 +82,64 @@ struct SaveGame {
         }
         flush();
         return sg;
+    }
+};
+
+// Keys the engine gives itself (a game's own SaveIds start above them).
+inline constexpr uint64_t kSaveKeyWorldFlags = 1;
+inline constexpr uint64_t kSaveKeyPlayer     = 2;
+
+// A save made in Play: where the player stands and looks, and the game state
+// (every entity with a SaveId -- the player and the world flags among them).
+struct PlaySave {
+    bool      has_player = false;
+    glm::vec3 position{0.0f};
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};   // the player's
+    glm::quat camera{1.0f, 0.0f, 0.0f, 0.0f};     // the camera's, relative to the player (the look up/down)
+    double    play_time = 0.0;
+    SaveGame  game;
+
+    std::string to_text() const {
+        char buf[256];
+        std::string s = "GWSPLAY 1\n";
+        std::snprintf(buf, sizeof buf, "TIME %.9g\n", play_time);
+        s += buf;
+        if (has_player) {
+            std::snprintf(buf, sizeof buf, "PLAYER %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n", position.x, position.y, position.z,
+                          rotation.x, rotation.y, rotation.z, rotation.w);
+            s += buf;
+            std::snprintf(buf, sizeof buf, "CAMERA %.9g %.9g %.9g %.9g\n", camera.x, camera.y, camera.z, camera.w);
+            s += buf;
+        }
+        return s + game.to_text();
+    }
+    static bool from_text(const std::string& text, PlaySave& out) {
+        out = PlaySave{};
+        std::istringstream in(text);
+        std::string line;
+        if (!std::getline(in, line) || line.compare(0, 9, "GWSPLAY 1") != 0) return false;
+        std::string rest;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.compare(0, 9, "SAVEGAME ") == 0) {
+                rest = line + "\n";
+                std::string more;
+                while (std::getline(in, more)) rest += more + "\n";
+                break;
+            }
+            std::istringstream ls(line);
+            std::string key;
+            ls >> key;
+            if (key == "TIME") ls >> out.play_time;
+            else if (key == "PLAYER") {
+                ls >> out.position.x >> out.position.y >> out.position.z >> out.rotation.x >> out.rotation.y >> out.rotation.z >> out.rotation.w;
+                out.has_player = static_cast<bool>(ls);
+            } else if (key == "CAMERA") {
+                ls >> out.camera.x >> out.camera.y >> out.camera.z >> out.camera.w;
+            }
+        }
+        out.game = SaveGame::from_text(rest);
+        return true;
     }
 };
 

@@ -574,6 +574,16 @@ void EcsSceneBridge::set_world_flag(const std::string& key, int value) {
     ecs::set_world_flag(impl_->world.get<ecs::WorldFlags>(impl_->world_flags_entity), key, value);
 }
 
+uint32_t EcsSceneBridge::world_flags_holder() {
+    if (impl_->world_flags_entity == ecs::null_entity || !impl_->world.valid(impl_->world_flags_entity)) {
+        impl_->world_flags_entity = impl_->world.create();
+        impl_->world.add<ecs::WorldFlags>(impl_->world_flags_entity, ecs::WorldFlags{});
+    } else if (!impl_->world.has<ecs::WorldFlags>(impl_->world_flags_entity)) {
+        impl_->world.add<ecs::WorldFlags>(impl_->world_flags_entity, ecs::WorldFlags{});
+    }
+    return static_cast<uint32_t>(impl_->world_flags_entity);
+}
+
 void EcsSceneBridge::stop_logic()          { impl_->logic_runtime.stop(); }
 void EcsSceneBridge::logic_tick(float dt)  { if (impl_->logic_runtime.running()) impl_->logic_runtime.tick(dt); }
 void EcsSceneBridge::logic_on_key(int key) { if (impl_->logic_runtime.running()) impl_->logic_runtime.on_key(key); }

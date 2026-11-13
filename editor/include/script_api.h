@@ -165,6 +165,13 @@ struct ScriptApi {
     // returns its index, or -1 (name "") where there is none. `weight`, when
     // given, is how much of that biome is there (0..1).
     int  (*biome_at)(void* ctx, uint32_t e, char* name_out, int name_size, float* weight) = nullptr;
+
+    // ---- saving in Play (added v0.8.36; new entries go at the end) ----
+    // Save the game to a named slot (saves/<slot>.sav: the player's place and
+    // every entity with a SaveId), or load one. False outside Play or when
+    // the file cannot be written / read.
+    bool (*save_game)(void* ctx, const char* slot) = nullptr;
+    bool (*load_game)(void* ctx, const char* slot) = nullptr;
 };
 
 }  // namespace schizo::editor

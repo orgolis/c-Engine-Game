@@ -3,6 +3,7 @@
 // ============================================================
 
 #include "script_api_editor.h"
+#include "play_save.h"           // save_game / load_game
 #include "biome_water.h"
 #include "command_palette.h"
 #include "editor_extensions.h"
@@ -469,6 +470,18 @@ int api_biome_at(void* ctx, uint32_t e, char* name_out, int name_size, float* we
     return -1;
 }
 
+// ---- saving in Play ----
+bool api_save_game(void* ctx, const char* slot) {
+    auto* c = C(ctx);
+    if (!c->playback || !c->bridge) return false;
+    return schizo::editor::save_play(slot ? slot : "quick", *c->playback, *c->bridge);
+}
+bool api_load_game(void* ctx, const char* slot) {
+    auto* c = C(ctx);
+    if (!c->playback || !c->bridge) return false;
+    return schizo::editor::load_play(slot ? slot : "quick", *c->playback, *c->bridge);
+}
+
 // ---- gameplay event feed ----
 // ECS entity -> scene id. Events are rare, so a scan of the scene is fine.
 uint32_t scene_id_of(EditorScriptCtx* c, ecs::Entity e) {
@@ -658,6 +671,8 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.event_count        = &api_event_count;
     api.event_get          = &api_event_get;
     api.biome_at           = &api_biome_at;
+    api.save_game          = &api_save_game;
+    api.load_game          = &api_load_game;
     api.distance           = &api_distance;
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;

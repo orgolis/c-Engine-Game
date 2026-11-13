@@ -302,6 +302,41 @@ int main() {
         check("insufficient cost prevents activation", !ecs::try_activate_ability(aw, caster, 0, target));
     }
 
+    // C6: a save made in Play -- the player's place and the game state.
+    {
+        ecs::register_persistence_components();
+        ecs::World w;
+        const ecs::Entity pl = w.create();
+        w.add<ecs::SaveId>(pl, ecs::SaveId{ecs::kSaveKeyPlayer});
+        w.add<ecs::AttributeSet>(pl, ecs::AttributeSet{});
+        w.get<ecs::AttributeSet>(pl).define("Health", 100, 0, 100);
+        w.get<ecs::AttributeSet>(pl).set("Health", 35.0f);
+        const ecs::Entity fl = w.create();
+        w.add<ecs::SaveId>(fl, ecs::SaveId{ecs::kSaveKeyWorldFlags});
+        w.add<ecs::WorldFlags>(fl, ecs::WorldFlags{});
+        ecs::set_world_flag(w.get<ecs::WorldFlags>(fl), "door.open", 1);
+        ecs::PlaySave s;
+        s.has_player = true;
+        s.position = glm::vec3(1.5f, -2.25f, 1000.125f);
+        s.rotation = glm::normalize(glm::quat(0.9f, 0.0f, 0.43f, 0.0f));
+        s.camera = glm::normalize(glm::quat(0.98f, 0.2f, 0.0f, 0.0f));
+        s.play_time = 12.5;
+        s.game = ecs::SaveGame::capture(w);
+        ecs::PlaySave r;
+        const bool parsed = ecs::PlaySave::from_text(s.to_text(), r);
+        check("play save: the player's place and look come back exactly",
+              parsed && r.has_player && r.position == s.position && r.rotation == s.rotation && r.camera == s.camera &&
+              r.play_time == 12.5);
+        // Changed after the save, then loaded: back as it was.
+        w.get<ecs::AttributeSet>(pl).set("Health", 90.0f);
+        ecs::set_world_flag(w.get<ecs::WorldFlags>(fl), "door.open", 0);
+        r.game.apply(w);
+        check("play save: loading puts the game state back (health, world flags)",
+              w.get<ecs::AttributeSet>(pl).get("Health") == 35.0f && ecs::world_flag(w.get<ecs::WorldFlags>(fl), "door.open") == 1);
+        ecs::PlaySave bad;
+        check("play save: not a save is refused", !ecs::PlaySave::from_text("SAVEGAME 0\n", bad));
+    }
+
     // C5: casting -- cast time, channel, targeting, the bar, abilities as data.
     {
         ecs::register_items_text(

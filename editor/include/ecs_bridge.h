@@ -68,6 +68,9 @@ public:
     // visual logic and code can drive each other. Ensures the holder entity.
     int  world_flag(const std::string& key);
     void set_world_flag(const std::string& key, int value);
+    // The entity holding the world flags (created when there is none), as a
+    // raw ECS id -- saving gives it a SaveId so the flags are saved too.
+    uint32_t world_flags_holder();
     // G10 multiplayer-social session state (parties/guilds/trades/leaderboard).
     schizo::ecs::SocialState&      social();
 

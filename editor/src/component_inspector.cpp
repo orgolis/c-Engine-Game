@@ -1129,7 +1129,7 @@ void hud_bar(const char* label, float v, float max, ImU32 col) {
 
 }  // namespace
 
-void draw_gameplay_ui(EcsSceneBridge& bridge) {
+void draw_gameplay_ui(EcsSceneBridge& bridge, float hud_x, float hud_y) {
     draw_inventory_ui(bridge);
     ecs::World& w = bridge.world();
 
@@ -1144,7 +1144,7 @@ void draw_gameplay_ui(EcsSceneBridge& bridge) {
     // --- HUD overlay (top-left, non-interactive) ---
     for (ecs::Entity e : hud) {
         char id[48]; std::snprintf(id, sizeof(id), "HUD###hud_%u", static_cast<unsigned>(e));
-        ImGui::SetNextWindowPos(ImVec2(14, 14), ImGuiCond_Always);
+        ImGui::SetNextWindowPos(ImVec2(hud_x, hud_y), ImGuiCond_Always);
         ImGui::SetNextWindowBgAlpha(0.55f);
         if (ImGui::Begin(id, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
@@ -1153,6 +1153,7 @@ void draw_gameplay_ui(EcsSceneBridge& bridge) {
             if (auto* a = w.try_get<ecs::AttributeSet>(e)) {
                 if (auto* h = a->find("Health"))  hud_bar("HP",  h->current, h->max, IM_COL32(200, 60, 60, 255));
                 if (auto* s = a->find("Stamina")) hud_bar("SP",  s->current, s->max, IM_COL32(70, 190, 90, 255));
+                if (auto* m = a->find("Mana"))    hud_bar("MP",  m->current, m->max, IM_COL32(70, 120, 230, 255));
                 if (auto* b = a->find("Boost"))   hud_bar("Boost", b->current, b->max, IM_COL32(230, 200, 60, 255));
             }
             if (auto* s = w.try_get<ecs::Sanity>(e))   hud_bar("Sanity", s->value, s->max, IM_COL32(150, 110, 220, 255));

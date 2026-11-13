@@ -219,6 +219,13 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
     r.fn("world.set_flag", W, "Set Flag", [s](std::string key, int64_t v) {
         if (API && API->set_flag) API->set_flag(API->ctx, key.c_str(), int(v));
     }, {"Key", "Value"});
+    r.fn("world.save_game", W, "Save Game", [s](std::string slot) {
+        return API && API->save_game && API->save_game(API->ctx, slot.c_str());
+    }, {"Slot", "Saved"}).tip("Saves to saves/<slot>.sav: where the player is, and every object with a Save Id "
+                               "(the player and the world flags among them) with its gameplay components. Play only.");
+    r.fn("world.load_game", W, "Load Game", [s](std::string slot) {
+        return API && API->load_game && API->load_game(API->ctx, slot.c_str());
+    }, {"Slot", "Loaded"}).tip("Loads a slot saved with Save Game (or F6, the slot \"quick\").");
     r.fn("world.emit_event", W, "Emit Event", [s](std::string name) {
         if (API && API->emit_event) API->emit_event(API->ctx, name.c_str());
     }, {"Name"}).tip("Publishes a named event on the gameplay bus.");

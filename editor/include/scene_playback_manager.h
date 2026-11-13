@@ -204,6 +204,10 @@ public:
         camera_rig_ = *rig;
         camera_rig_.cur_distance = d; camera_rig_.cur_shoulder = s; camera_rig_.aim = a;   // keep the runtime part
     }
+    /// Put the player somewhere (a loaded save, a checkpoint): the transform,
+    /// the physics capsule, and optionally the camera's look up/down. The
+    /// player stops moving.
+    void TeleportPlayer(const glm::vec3& position, const glm::quat& rotation, const glm::quat* camera_local = nullptr);
     /// Test hook: input for the player instead of the keyboard (GWS_TEST_MOVES).
     void SetScriptedMoveInput(const schizo::ecs::MoveInput* in) {
         scripted_input_set_ = in != nullptr;

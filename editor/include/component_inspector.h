@@ -62,6 +62,7 @@ void draw_inventory_ui(EcsSceneBridge& bridge);
 // can't draw ImGui, so they set the intent tags and the engine renders.
 //   ui.hud            -> HUD overlay              ui.inventory_open -> inventory
 //   ui.character_open -> character/stats sheet    ui.quest_open     -> quest journal
-void draw_gameplay_ui(EcsSceneBridge& bridge);
+// The HUD goes at (hud_x, hud_y): the game view's top-left corner, inset.
+void draw_gameplay_ui(EcsSceneBridge& bridge, float hud_x = 14.0f, float hud_y = 14.0f);
 
 }  // namespace schizo::editor

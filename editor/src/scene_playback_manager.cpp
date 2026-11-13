@@ -621,6 +621,20 @@ void ScenePlaybackManager::DriveMovement(float delta_time) {
     }
 }
 
+void ScenePlaybackManager::TeleportPlayer(const glm::vec3& position, const glm::quat& rotation,
+                                          const glm::quat* camera_local) {
+    if (!player_entity_) return;
+    auto t = player_entity_->GetTransform();
+    t->SetWorldPosition(position);
+    t->SetWorldRotation(rotation);
+    if (camera_local && playback_camera_) playback_camera_->GetTransform()->SetLocalRotation(*camera_local);
+    if (physics_world_ && player_char_id_ != 0xFFFFFFFFu)
+        physics_world_->set_character_position(player_char_id_, position + player_collider_offset_);
+    player_movement_.state.velocity = glm::vec3(0.0f);
+    player_movement_.state.mode = schizo::ecs::MoveMode::Air;   // lands where it is put
+    if (player_controller_) player_controller_->SetVelocity(glm::vec3(0.0f));
+}
+
 void ScenePlaybackManager::ApplyOriginShift(const glm::vec3& shift) {
     if (shift == glm::vec3(0.0f) || !is_playing_) return;
 

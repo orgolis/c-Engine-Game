@@ -185,6 +185,17 @@ off. In third person, abilities and weapons now leave the player's chest
 towards what the crosshair is on. Checked by gameplay_check and Play
 screenshots (docs/systems/ABILITIES.md).
 
+**Progress (v0.8.36):** C6 glue, and with it phase C. Create > Player has
+templates (first person, third person, shooter, action RPG, bare) that come
+with their gameplay components and starter data (`assets/gameplay/
+starter.items`, written on first use). In Play F6 saves and F9 loads; logic
+scripts have Save Game / Load Game nodes (and the C API save_game /
+load_game) for checkpoints. A save (`ecs::PlaySave`) is the player's place
+and look plus every entity with a SaveId; the player and the world flags get
+theirs automatically. The HUD (HP / SP / now MP) sits in the game view's
+corner instead of the window's. Open in C: projected decals, weapon models in
+the hand, saving other objects' positions.
+
 ## Phase D: the test game
 
 A small game built only with the editor and logic graphs: a terrain with

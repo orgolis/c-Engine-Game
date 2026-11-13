@@ -123,6 +123,8 @@
 #include "world_preset.h"         // a whole landscape from one choice
 #include "player_weapon.h"        // the player's gun in Play: input, recoil, aim, tracers, impacts
 #include "player_abilities.h"     // the player's abilities in Play: keys 1..8, hotbar (C5)
+#include "player_templates.h"     // Create > Player templates (C6)
+#include "play_save.h"            // F6 / F9 and scripts save and load in Play (C6)
 #include "ecs/gameplay_movement.h" // the player's moves in Play (C4)
 #include "ecs/gameplay_camera.h"   // the player's third-person camera rig
 #include "ecs/gameplay_tags.h"     // surface.climbable
@@ -489,6 +491,8 @@ struct EditorState {
     schizo::editor::ScriptSystem    script_system;
     schizo::editor::PlayerWeapon    player_weapon;   // the player's gun in Play (C3)
     schizo::editor::PlayerAbilities player_abilities; // the player's ability bar in Play (C5)
+    // Player templates waiting for the bridge to mirror their new entity.
+    std::vector<std::pair<uint32_t, schizo::editor::PlayerTemplate>> pending_player_templates;
     schizo::editor::ShotEffects     shot_effects;    // muzzle flashes, tracers, impact marks
     schizo::editor::EditorScriptCtx script_ctx;
     schizo::editor::ScriptApi       script_api;
@@ -2810,14 +2814,19 @@ void ShowSceneHierarchy(EditorState& editor_state) {
             ImGui::Separator();
 
             // Special entities
-            if (ImGui::MenuItem("Player")) {
+            if (ImGui::BeginMenu("Player")) {
+              using schizo::editor::PlayerTemplate;
+              for (PlayerTemplate pt : {PlayerTemplate::FirstPerson, PlayerTemplate::ThirdPerson, PlayerTemplate::Shooter,
+                                        PlayerTemplate::ActionRpg, PlayerTemplate::Bare})
+              if (ImGui::MenuItem(schizo::editor::player_template_name(pt))) {
                 auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, &editor_state, created_id]() {
+                    [scene, &editor_state, created_id, pt]() {
                         auto ent = schizo::scene::EntityFactory::CreatePlayer(scene);
                         *created_id = ent ? ent->GetId() : 0;
+                        if (ent) editor_state.pending_player_templates.push_back({ent->GetId(), pt});
                         editor_state.editor_scene->MarkModified();
-                        spdlog::info("Created Player entity");
+                        spdlog::info("Created Player entity ({})", schizo::editor::player_template_name(pt));
                     },
                     [scene, &editor_state, created_id]() {
                         auto ent = FindEntityById(scene, *created_id);
@@ -2830,6 +2839,8 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 );
                 editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
                 ImGui::CloseCurrentPopup();
+              }
+              ImGui::EndMenu();
             }
 
             if (ImGui::MenuItem("Camera")) {
@@ -10343,6 +10354,91 @@ int main(int argc, char** argv) {
                 editor_state.net_autoplay_failed  = false;
             }
 
+            // Player templates: their gameplay components, once the bridge has
+            // mirrored the new entity (a frame after it was made).
+            // GWS_TEST_TEMPLATE=<0..4> (with GWS_TEST_PLAY): give the scene's
+            // Player that template before Play starts.
+            {
+                static bool tt_done = false;
+                if (!tt_done && frame_count > 2) {
+                    tt_done = true;
+                    if (const char* tt = std::getenv("GWS_TEST_TEMPLATE"))
+                        if (auto sc = editor_state.editor_scene->GetScene())
+                            if (auto pl = sc->GetEntityByName("Player"))
+                                editor_state.pending_player_templates.push_back(
+                                    {pl->GetId(), static_cast<schizo::editor::PlayerTemplate>(std::clamp(std::atoi(tt), 0, 4))});
+                }
+            }
+            if (!editor_state.pending_player_templates.empty()) {
+                auto sc = editor_state.editor_scene->GetScene();
+                auto& pend = editor_state.pending_player_templates;
+                for (size_t i = 0; i < pend.size();) {
+                    auto ent = sc ? sc->GetEntityById(pend[i].first) : nullptr;
+                    if (!ent) { pend.erase(pend.begin() + i); continue; }
+                    if (schizo::editor::apply_player_template(ecs_bridge, ent->GetTransform(), pend[i].second)) {
+                        spdlog::info("Player template '{}' applied to '{}'",
+                                     schizo::editor::player_template_name(pend[i].second), ent->GetName());
+                        pend.erase(pend.begin() + i);
+                        continue;
+                    }
+                    ++i;
+                }
+            }
+            // F6 saves the game in Play, F9 loads it (slot "quick").
+            if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
+                auto& pm = *editor_state.scene_playback_manager;
+                static bool prev_f6 = false, prev_f9 = false;
+                const bool f6 = pm.HasInputFocus() && glfwGetKey(glfw_window, GLFW_KEY_F6) == GLFW_PRESS;
+                const bool f9 = pm.HasInputFocus() && glfwGetKey(glfw_window, GLFW_KEY_F9) == GLFW_PRESS;
+                // GWS_TEST_SAVE=1 (with GWS_TEST_PLAY): save after 1 s, walk on,
+                // load after 2 s -- the log says where the player was each time.
+                static const bool test_save = std::getenv("GWS_TEST_SAVE") != nullptr;
+                bool do_save = f6 && !prev_f6, do_load = f9 && !prev_f9;
+                if (test_save) {
+                    static int sv_frames = 0;
+                    ++sv_frames;
+                    auto* pl = pm.GetPlayerEntity();
+                    if (sv_frames == 60) {
+                        ecs_bridge.set_world_flag("test.saved", 7);
+                        do_save = true;
+                    }
+                    if (sv_frames > 60 && sv_frames < 120) {
+                        schizo::ecs::MoveInput mi; mi.move.y = 1.0f;
+                        pm.SetScriptedMoveInput(&mi);
+                    } else {
+                        pm.SetScriptedMoveInput(nullptr);
+                    }
+                    if (sv_frames == 120) {
+                        ecs_bridge.set_world_flag("test.saved", 99);
+                        if (pl) spdlog::info("[test] save: before the load the player is at ({:.2f}, {:.2f}, {:.2f}), flag {}",
+                                             pl->GetTransform()->GetWorldPosition().x, pl->GetTransform()->GetWorldPosition().y,
+                                             pl->GetTransform()->GetWorldPosition().z, ecs_bridge.world_flag("test.saved"));
+                        do_load = true;
+                    }
+                    if (sv_frames == 121 && pl)
+                        spdlog::info("[test] save: after the load the player is at ({:.2f}, {:.2f}, {:.2f}), flag {}",
+                                     pl->GetTransform()->GetWorldPosition().x, pl->GetTransform()->GetWorldPosition().y,
+                                     pl->GetTransform()->GetWorldPosition().z, ecs_bridge.world_flag("test.saved"));
+                }
+                if (do_save) {
+                    std::string where;
+                    const bool ok = schizo::editor::save_play("quick", pm, ecs_bridge, &where);
+                    editor_state.set_status(ok ? "Saved (" + where + ")" : std::string("Could not save"));
+                    if (auto* pl = pm.GetPlayerEntity(); ok && pl)
+                        spdlog::info("Saved the game to {} at ({:.2f}, {:.2f}, {:.2f})", where, pl->GetTransform()->GetWorldPosition().x,
+                                     pl->GetTransform()->GetWorldPosition().y, pl->GetTransform()->GetWorldPosition().z);
+                }
+                if (do_load) {
+                    std::string where;
+                    const bool ok = schizo::editor::load_play("quick", pm, ecs_bridge, &where);
+                    editor_state.set_status(ok ? "Loaded (" + where + ")" : std::string("No save to load"));
+                    if (ok) spdlog::info("Loaded the game from {}", where);
+                    else    spdlog::info("Could not load {}", schizo::editor::play_save_path("quick"));
+                }
+                prev_f6 = f6;
+                prev_f9 = f9;
+            }
+
             // The player's moves: the settings are its Movement component
             // (defaults without one); surfaces tagged surface.climbable can be
             // climbed.
@@ -12286,7 +12382,8 @@ int main(int argc, char** argv) {
             // Draw the gameplay UI (HUD + inventory/character/quest windows) for any
             // entity a script opened via "ui.*" intent tags. Scripts can't draw ImGui,
             // so they set the intent tags and the engine renders it here.
-            schizo::editor::draw_gameplay_ui(ecs_bridge);
+            schizo::editor::draw_gameplay_ui(ecs_bridge, editor_state.viewport_image_min.x + 14.0f,
+                                             editor_state.viewport_image_min.y + 14.0f);
             {
                 // GWS_TEST_LOGIC_SCRIPT=<file>: open that logic script in the
                 // editor panel at start-up, for screenshots and automation.

@@ -119,6 +119,9 @@ typedef struct SchizoScriptApi {
                           char* param_out, int param_size);
     /* The biome an entity stands in (-1 and "" where none), and its weight. */
     int      (*biome_at)(void* ctx, unsigned e, char* name_out, int name_size, float* weight);
+    /* Save the game to a slot (saves/<slot>.sav), or load one. Play only. */
+    bool     (*save_game)(void* ctx, const char* slot);
+    bool     (*load_game)(void* ctx, const char* slot);
 } SchizoScriptApi;
 
 }  // extern "C"
