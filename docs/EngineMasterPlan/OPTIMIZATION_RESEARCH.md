@@ -66,6 +66,7 @@ evidence.
 | 14 | Quantized vertex formats and 16-bit indices for all meshes (§2.5) | about half of mesh memory | estimate | L |
 | 15 | Draw lists as compact handles; hot entity data in dense arrays (§3.4, §4.2) | 10–15× on the walks that remain after #2 | measured (microbenchmark) | L |
 | 16 | Clustered light culling, cached shadow maps, temporal upscaling (§5.3, §5.4, §5.7) | scale with lights, static scenes and low-end GPUs | estimate | L each |
+| 17 | A GPU-instanced foliage pass: instances in a buffer, culled on the GPU, drawn into the G-buffer and the shadow map without a draw item per tree (added v0.8.28; see ROAD_TO_TEST_GAME.md, B3) | 100,000 trees placed: today the nearest 40,000 cost ~11 ms CPU (foliage 2.4, HZB cull 3.6, sort 2.7, shadow); all 96,000 visible were 50 ms CPU / 39 ms GPU | measured | L |
 
 Things that were checked and are **not** worth doing are in §8, so that nobody
 spends a day re-checking them.
