@@ -18,6 +18,7 @@
 #include "ecs/gameplay_camera.h"
 #include "ecs/gameplay_inventory.h"
 #include "ecs/gameplay_item_file.h"
+#include "ecs/gameplay_life.h"
 #include "ecs/gameplay_movement.h"
 #include "ecs/gameplay_savegame.h"
 #include "ecs/gameplay_tags.h"
@@ -159,6 +160,9 @@ inline bool apply_player_template(EcsSceneBridge& bridge, const schizo::scene::T
     tags.add("team.player");
     put(tags);
     put(ecs::SaveId{ecs::kSaveKeyPlayer});
+    ecs::Mortal mortal;
+    mortal.respawns = true;   // from the last save, or where Play started
+    put(mortal);
     ecs::Inventory inv;
     inv.max_slots = 24;
     put(ecs::Movement{});

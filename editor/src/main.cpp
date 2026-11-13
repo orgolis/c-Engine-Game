@@ -125,6 +125,7 @@
 #include "player_abilities.h"     // the player's abilities in Play: keys 1..8, hotbar (C5)
 #include "player_templates.h"     // Create > Player templates (C6)
 #include "play_save.h"            // F6 / F9 and scripts save and load in Play (C6)
+#include "play_loop.h"            // death, loot, interacting, respawning in Play (D0)
 #include "ecs/gameplay_movement.h" // the player's moves in Play (C4)
 #include "ecs/gameplay_camera.h"   // the player's third-person camera rig
 #include "ecs/gameplay_tags.h"     // surface.climbable
@@ -493,6 +494,7 @@ struct EditorState {
     schizo::editor::PlayerAbilities player_abilities; // the player's ability bar in Play (C5)
     // Player templates waiting for the bridge to mirror their new entity.
     std::vector<std::pair<uint32_t, schizo::editor::PlayerTemplate>> pending_player_templates;
+    schizo::editor::PlayGameLoop    play_loop;        // death, loot, E to interact, respawn (D0)
     schizo::editor::ShotEffects     shot_effects;    // muzzle flashes, tracers, impact marks
     schizo::editor::EditorScriptCtx script_ctx;
     schizo::editor::ScriptApi       script_api;
@@ -622,6 +624,12 @@ struct EditorState {
     schizo::editor::PlayModeChanges  play_changes;
     schizo::editor::PlayChangeReport pending_play_changes;
     bool show_play_changes_popup = false;
+
+    // What Play must give back on Stop: the entities that existed before it
+    // (Play may create more -- loot, script spawns) and every gameplay
+    // component's value (health, ammunition, inventory...).
+    std::vector<uint32_t> play_baseline_ids;
+    std::string           play_gameplay_snapshot;
 };
 
 // ============================================================================
@@ -632,6 +640,25 @@ static void BeginPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::
     if (!st.scene_playback_manager || !scene) return;
     st.play_cursor_released_by_escape = false;
     st.play_changes.Capture(scene, st.ecs_bridge);        // baseline BEFORE play mutates anything
+    // Stop gives back what Play changes: the entities and the gameplay values.
+    st.play_baseline_ids.clear();
+    for (const auto& e : scene->GetEntities()) if (e) st.play_baseline_ids.push_back(e->GetId());
+    st.play_gameplay_snapshot.clear();
+    if (st.ecs_bridge) {
+        std::error_code ec;
+        const auto snap = std::filesystem::temp_directory_path(ec) / "gws_play_snapshot.gameplay";
+        if (!ec && st.ecs_bridge->save_gameplay(scene, snap.string())) st.play_gameplay_snapshot = snap.string();
+    }
+    // Agents walk the navmesh: bake it now when there are agents and none.
+    if (st.scene_navmesh.empty()) {
+        bool agents = false;
+        for (const auto& e : scene->GetEntities())
+            if (e) if (const auto* ag = std::as_const(*e).GetNpcAgentComponent(); ag && ag->enabled) { agents = true; break; }
+        if (agents) {
+            st.nav_stats = schizo::editor::bake_navmesh_from_scene(scene, st.scene_navmesh);
+            spdlog::info("Play: baked the navmesh for the scene's agents ({} triangles)", st.nav_stats.triangles);
+        }
+    }
     if (!st.scene_playback_manager->StartPlayback(scene)) {
         spdlog::warn("Failed to start scene playback (no entity named 'Player'?)");
         st.play_changes.Clear();
@@ -649,6 +676,22 @@ static void EndPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::Sc
         st.pending_play_changes = {};
 
     st.scene_playback_manager->StopPlayback();
+    // What Play hid comes back, what it made goes, the gameplay values are
+    // as they were (the entity list is back to its order, so the snapshot's
+    // index keys match).
+    st.play_loop.end(scene);
+    if (scene && !st.play_baseline_ids.empty()) {
+        std::vector<std::shared_ptr<schizo::scene::Entity>> made;
+        for (const auto& e : scene->GetEntities())
+            if (e && std::find(st.play_baseline_ids.begin(), st.play_baseline_ids.end(), e->GetId()) == st.play_baseline_ids.end())
+                made.push_back(e);
+        for (auto& e : made) scene->RemoveEntity(e);
+        if (!made.empty()) spdlog::info("Stop: removed {} object(s) made during Play", made.size());
+    }
+    if (scene && st.ecs_bridge && !st.play_gameplay_snapshot.empty())
+        st.ecs_bridge->load_gameplay(scene, st.play_gameplay_snapshot);
+    st.play_baseline_ids.clear();
+    st.play_gameplay_snapshot.clear();
     st.play_changes.Clear();
     st.show_play_changes_popup = !st.pending_play_changes.empty();
 }
@@ -5944,6 +5987,27 @@ void ShowViewport(EditorState& editor_state) {
                         dl->AddText(ImVec2(p0.x + (w - ts.x) * 0.5f, p0.y - ts.y - 2), IM_COL32(235, 240, 250, 240), ah.cast_name.c_str());
                     }
                 }
+                // What E would do, and the death notice.
+                if (viewport_playing) {
+                    const auto& lh = editor_state.play_loop.hud();
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    const float cx = (image_min.x + image_max.x) * 0.5f;
+                    if (!lh.prompt.empty()) {
+                        const ImVec2 ts = ImGui::CalcTextSize(lh.prompt.c_str());
+                        const ImVec2 p(cx - ts.x * 0.5f, (image_min.y + image_max.y) * 0.5f + 40.0f);
+                        dl->AddRectFilled(ImVec2(p.x - 10, p.y - 5), ImVec2(p.x + ts.x + 10, p.y + ts.y + 5), IM_COL32(10, 14, 20, 180), 4.0f);
+                        dl->AddText(p, IM_COL32(245, 240, 220, 255), lh.prompt.c_str());
+                    }
+                    if (lh.player_dead) {
+                        dl->AddRectFilled(image_min, image_max, IM_COL32(60, 0, 0, 90));
+                        const char* msg = "You died";
+                        ImGui::SetWindowFontScale(2.0f);
+                        const ImVec2 ts = ImGui::CalcTextSize(msg);
+                        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(cx - ts.x * 0.5f, (image_min.y + image_max.y) * 0.5f - ts.y),
+                                    IM_COL32(255, 220, 220, 255), msg);
+                        ImGui::SetWindowFontScale(1.0f);
+                    }
+                }
                 // Stamina, when the player's Movement limits it and it is not full.
                 if (viewport_playing) {
                     const auto& ms = editor_state.scene_playback_manager->GetPlayerMovementSettings();
@@ -10668,7 +10732,143 @@ int main(int argc, char** argv) {
                         spdlog::info("[test] abilities: casting {} ({})", ah.cast_name, ah.channelling ? "channel" : "wind-up");
                     }
                 }
+                // GWS_TEST_LIFE=1 (with GWS_TEST_PLAY and GWS_TEST_TEMPLATE=3): an
+                // enemy 6 m ahead is shot dead, drops a potion, its body goes;
+                // the player walks to the potion and takes it with E; then Stop,
+                // and everything Play changed must be back.
+                static const bool test_life = std::getenv("GWS_TEST_LIFE") != nullptr;
+                bool life_e = false;
+                if (test_life) {
+                    static int lf = 0;           // frames since the hook started
+                    static uint32_t foe_id = 0, loot_seen = 0;
+                    static bool foe_ready = false, logged_dead = false, took = false, stopped = false;
+                    auto sc = editor_state.editor_scene->GetScene();
+                    ++lf;
+                    auto foe_ecs = [&]() -> schizo::ecs::Entity {
+                        auto fe = sc ? sc->GetEntityById(foe_id) : nullptr;
+                        const uint32_t id = fe ? ecs_bridge.ecs_entity_id(fe->GetTransform()) : schizo::editor::kNoEcsEntity;
+                        return id == schizo::editor::kNoEcsEntity ? schizo::ecs::null_entity : static_cast<schizo::ecs::Entity>(id);
+                    };
+                    if (foe_id == 0 && sc && !pm.IsPlaying()) {
+                        if (auto pl = sc->GetEntityByName("Player")) {
+                            const auto* ptf = pl->GetTransform();
+                            glm::vec3 f = ptf->GetForward(); f.y = 0.0f; f = glm::normalize(f);
+                            auto foe = schizo::scene::EntityFactory::CreateCapsule(sc, "TestFoe", 0.4f, 1.8f, glm::vec4(0.3f, 0.6f, 0.25f, 1.0f));
+                            if (foe) {
+                                foe->GetTransform()->SetWorldPosition(ptf->GetWorldPosition() + f * 6.0f);
+                                foe_id = foe->GetId();
+                                spdlog::info("[test] life: an enemy 6 m ahead");
+                            }
+                        }
+                    }
+                    if (foe_id && !foe_ready) {
+                        const auto fe = foe_ecs();
+                        if (fe != schizo::ecs::null_entity && ecs_bridge.world().valid(fe)) {
+                            auto& w = ecs_bridge.world();
+                            schizo::ecs::AttributeSet a; a.define("Health", 30, 0, 30);
+                            w.add<schizo::ecs::AttributeSet>(fe, a);
+                            schizo::ecs::CombatActor ca; ca.hurt_height = 0.6f; ca.hurt_radius = 0.6f;
+                            w.add<schizo::ecs::CombatActor>(fe, ca);
+                            schizo::ecs::Mortal m; m.corpse_time = 2.0f;
+                            m.loot.push_back({"health_potion", 1.0f, 1.0f, 1, 1, 0});
+                            w.add<schizo::ecs::Mortal>(fe, m);
+                            foe_ready = true;
+                        }
+                    }
+                    if (pm.IsPlaying() && foe_ready) {
+                        static int pf = 0;
+                        ++pf;
+                        auto& w = ecs_bridge.world();
+                        const auto fe = foe_ecs();
+                        const bool dead = fe != schizo::ecs::null_entity && schizo::ecs::is_dead(w, fe);
+                        // Before Play the player had not landed: stand the enemy
+                        // on the player's ground once it has (and drop the body
+                        // physics built where it floated).
+                        if (pf == 25) {
+                            if (auto fe0 = sc->GetEntityById(foe_id); fe0 && pm.GetPlayerEntity()) {
+                                glm::vec3 p = fe0->GetTransform()->GetWorldPosition();
+                                p.y = pm.GetPlayerEntity()->GetTransform()->GetWorldPosition().y;
+                                fe0->GetTransform()->SetWorldPosition(p);
+                                pm.RemoveBodyForEntity(foe_id);
+                            }
+                        }
+                        if (pf > 30 && !dead) { in.fire_held = true; in.fire_pressed = pf == 31; }
+                        if (dead && !logged_dead) {
+                            logged_dead = true;
+                            spdlog::info("[test] life: the enemy died at play frame {}", pf);
+                        }
+                        auto fent = sc->GetEntityById(foe_id);
+                        static bool logged_gone = false;
+                        if (logged_dead && fent && !fent->IsActive() && !logged_gone) {
+                            logged_gone = true;
+                            spdlog::info("[test] life: its body is gone at play frame {}", pf);
+                        }
+                        uint32_t loot = 0;
+                        for (const auto& e : sc->GetEntities()) if (e && e->GetName().rfind("loot_", 0) == 0) ++loot;
+                        if (loot != loot_seen) { loot_seen = loot; spdlog::info("[test] life: {} loot on the ground", loot); }
+                        const auto& lh = editor_state.play_loop.hud();
+                        if (logged_gone && !took) {
+                            schizo::ecs::MoveInput mi; mi.move.y = lh.prompt.empty() ? 1.0f : 0.0f;
+                            pm.SetScriptedMoveInput(&mi);
+                            if (!lh.prompt.empty()) {
+                                spdlog::info("[test] life: prompt \"{}\"", lh.prompt);
+                                life_e = true;
+                                took = true;
+                            }
+                        } else {
+                            pm.SetScriptedMoveInput(nullptr);
+                        }
+                        if (took && !stopped) {
+                            static int after = 0;
+                            ++after;
+                            if (after == 5) {
+                                if (auto* pl = pm.GetPlayerEntity()) {
+                                    const uint32_t pid = ecs_bridge.ecs_entity_id(pl->GetTransform());
+                                    if (auto* inv = w.try_get<schizo::ecs::Inventory>(static_cast<schizo::ecs::Entity>(pid)))
+                                        spdlog::info("[test] life: the player carries {} potion(s); {} loot left visible",
+                                                     schizo::ecs::inventory_count(*inv, "health_potion"),
+                                                     [&] { int n = 0; for (const auto& e : sc->GetEntities())
+                                                               if (e && e->IsActive() && e->GetName().rfind("loot_", 0) == 0) ++n; return n; }());
+                                }
+                            }
+                            // Then the player dies: the notice, and back at the start.
+                            if (after == 10)
+                                if (auto* pl = pm.GetPlayerEntity()) {
+                                    const auto pe = static_cast<schizo::ecs::Entity>(ecs_bridge.ecs_entity_id(pl->GetTransform()));
+                                    if (auto* pa = w.try_get<schizo::ecs::AttributeSet>(pe)) pa->set("Health", 0.0f);
+                                    spdlog::info("[test] life: the player's health is 0 at ({:.2f}, {:.2f}, {:.2f})",
+                                                 pl->GetTransform()->GetWorldPosition().x, pl->GetTransform()->GetWorldPosition().y,
+                                                 pl->GetTransform()->GetWorldPosition().z);
+                                }
+                            if (after == 30) spdlog::info("[test] life: 'You died' showing: {}", editor_state.play_loop.hud().player_dead);
+                            if (after == 260) {
+                                if (auto* pl = pm.GetPlayerEntity()) {
+                                    const auto pe = static_cast<schizo::ecs::Entity>(ecs_bridge.ecs_entity_id(pl->GetTransform()));
+                                    const auto* pa = w.try_get<schizo::ecs::AttributeSet>(pe);
+                                    spdlog::info("[test] life: respawned at ({:.2f}, {:.2f}, {:.2f}) with health {}, notice {}",
+                                                 pl->GetTransform()->GetWorldPosition().x, pl->GetTransform()->GetWorldPosition().y,
+                                                 pl->GetTransform()->GetWorldPosition().z, pa ? pa->get("Health") : -1.0f,
+                                                 editor_state.play_loop.hud().player_dead);
+                                }
+                                stopped = true;
+                                EndPlayMode(editor_state, sc);
+                                size_t loot_after = 0;
+                                for (const auto& e : sc->GetEntities()) if (e && e->GetName().rfind("loot_", 0) == 0) ++loot_after;
+                                auto fe2 = sc->GetEntityById(foe_id);
+                                const auto fid = fe2 ? ecs_bridge.ecs_entity_id(fe2->GetTransform()) : schizo::editor::kNoEcsEntity;
+                                const auto* fa = fid != schizo::editor::kNoEcsEntity
+                                                     ? ecs_bridge.world().try_get<schizo::ecs::AttributeSet>(static_cast<schizo::ecs::Entity>(fid)) : nullptr;
+                                spdlog::info("[test] life: after Stop -- enemy {}, health {}, loot objects {}",
+                                             fe2 && fe2->IsActive() ? "back" : "missing", fa ? fa->get("Health") : -1.0f, loot_after);
+                            }
+                        }
+                    }
+                }
                 if (pm.IsPlaying()) {
+                    static bool prev_e = false;
+                    const bool ek = (focus && glfwGetKey(glfw_window, GLFW_KEY_E) == GLFW_PRESS) || life_e;
+                    editor_state.play_loop.update(delta_time, pm, ecs_bridge, editor_state.editor_scene->GetScene(), ek && !prev_e);
+                    prev_e = ek;
                     if (auto* pc = pm.GetPlaybackCamera()) {
                         const auto* ct = pc->GetTransform();
                         editor_state.player_weapon.update(delta_time, pm, ecs_bridge, ct->GetWorldPosition(),

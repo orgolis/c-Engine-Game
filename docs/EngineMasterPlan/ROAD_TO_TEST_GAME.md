@@ -204,6 +204,19 @@ guns and melee, abilities, enemies. Its purpose is to be the scene the
 optimization upgrade is measured on, and to find what the first three phases
 missed.
 
+**Progress (v0.8.37):** D0, the game loop's glue the test game needs, found
+missing on the way in: nothing acted on health reaching zero (enemies kept
+fighting, the player kept playing), Play had no interact key, and Stop put
+back transforms only -- health, ammunition and inventory spent in Play stayed
+spent in the editor, and objects Play made stayed. Now: a Mortal component
+(`ecs/gameplay_life.h`): death tags, a "died" event, loot dropped as pickups,
+bodies removed after a while, the player respawning from the last save or the
+start; E interacts with an on-screen prompt; an empty magazine reloads on the
+trigger; agents ignore the dead; Play bakes the navmesh when there are agents;
+Stop removes what Play made, shows what it hid and restores every gameplay
+value. Checked by gameplay_check and a Play run (GWS_TEST_LIFE) that kills an
+enemy, picks up its loot, dies, respawns and stops.
+
 ## Then: the optimization upgrade
 
 The 16 ranked candidates of OPTIMIZATION_RESEARCH.md, re-measured on the test

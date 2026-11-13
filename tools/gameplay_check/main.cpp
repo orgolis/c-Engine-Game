@@ -10,6 +10,7 @@
 #include "ecs/gameplay_effects.h"
 #include "ecs/gameplay_abilities.h"
 #include "ecs/gameplay_ability_cast.h"
+#include "ecs/gameplay_life.h"
 #include "ecs/gameplay_damage.h"
 #include "ecs/gameplay_events.h"
 #include "ecs/gameplay_triggers.h"
@@ -300,6 +301,63 @@ int main() {
         // insufficient cost gates activation
         aw.get<ecs::AttributeSet>(caster).set("Stamina", 10.0f);
         check("insufficient cost prevents activation", !ecs::try_activate_ability(aw, caster, 0, target));
+    }
+
+    // D0: life and death.
+    {
+        ecs::World w;
+        ecs::GameplayEventBus bus;
+        int died_events = 0;
+        bus.subscribe("died", [&died_events](const ecs::GameplayEvent&) { ++died_events; });
+        ecs::Rng rng(7);
+        auto creature = [&](float hp, bool respawns) {
+            const ecs::Entity e = w.create();
+            w.add<ecs::AttributeSet>(e, ecs::AttributeSet{});
+            w.get<ecs::AttributeSet>(e).define("Health", 100, 0, 100);
+            w.get<ecs::AttributeSet>(e).set("Health", hp);
+            ecs::Mortal m;
+            m.corpse_time = 1.0f;
+            m.respawns = respawns;
+            m.loot.push_back({"d0_coin", 1.0f, 1.0f, 2, 2, 0});
+            w.add<ecs::Mortal>(e, m);
+            return e;
+        };
+        const ecs::Entity foe = creature(10.0f, false);
+        const ecs::Entity me = creature(50.0f, true);
+        std::vector<ecs::LifeEvent> ev;
+        ecs::tick_life(w, 0.1f, &bus, rng, ev);
+        bus.flush();
+        const bool alive = ev.empty() && !ecs::is_dead(w, foe);
+        ecs::apply_damage(w, foe, ecs::DamageInfo{25.0f, "kinetic"});
+        ecs::tick_life(w, 0.1f, &bus, rng, ev);
+        bus.flush();
+        check("life: health at zero is death -- tagged, announced, its loot dropped",
+              alive && ev.size() == 1 && ev[0].kind == ecs::LifeEvent::Kind::Died && ev[0].entity == foe &&
+              ecs::is_dead(w, foe) && died_events == 1 && ev[0].loot.size() == 1 && ev[0].loot[0].def_id == "d0_coin" &&
+              ev[0].loot[0].quantity == 2);
+        ev.clear();
+        for (int i = 0; i < 8; ++i) ecs::tick_life(w, 0.1f, &bus, rng, ev);
+        const bool not_yet = ev.empty();
+        for (int i = 0; i < 5; ++i) ecs::tick_life(w, 0.1f, &bus, rng, ev);
+        check("life: the body is removed after its corpse time, once", not_yet && ev.size() == 1 &&
+              ev[0].kind == ecs::LifeEvent::Kind::Removed && died_events == 1);
+        ev.clear();
+        w.get<ecs::AttributeSet>(me).set("Health", 0.0f);
+        ecs::tick_life(w, 0.1f, &bus, rng, ev);
+        const bool me_dead = ecs::is_dead(w, me);
+        for (int i = 0; i < 30; ++i) ecs::tick_life(w, 0.1f, &bus, rng, ev);
+        bool respawned = false;
+        for (const auto& e : ev) respawned |= e.kind == ecs::LifeEvent::Kind::Respawn && e.entity == me;
+        check("life: one who respawns comes back with full health, not removed",
+              me_dead && respawned && !ecs::is_dead(w, me) && w.get<ecs::AttributeSet>(me).get("Health") == 100.0f);
+        std::vector<uint8_t> buf;
+        ecs::serialize_mortal(&w.get<ecs::Mortal>(foe), buf);
+        ecs::Mortal back;
+        ecs::deserialize_mortal(&back, buf.data(), buf.size());
+        ecs::register_life_components();
+        check("life: Mortal saves its settings, not its death; authorable",
+              back.corpse_time == 1.0f && !back.respawns && back.loot.size() == 1 && back.loot[0].min_qty == 2 &&
+              !back.dead && ecs::find_authorable("Mortal") != nullptr);
     }
 
     // C6: a save made in Play -- the player's place and the game state.

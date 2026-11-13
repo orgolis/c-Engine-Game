@@ -35,6 +35,7 @@
 #include "gameplay_movement.h"
 #include "gameplay_camera.h"
 #include "gameplay_ability_cast.h"
+#include "gameplay_life.h"
 #include "gameplay_vehicles.h"
 #include "gameplay_building.h"
 #include "gameplay_survival.h"
@@ -64,6 +65,7 @@ inline void register_all_components() {
     register_movement_components();      // Movement, Move Animation (C4)
     register_camera_components();        // Camera Rig (C4)
     register_ability_cast_components();  // Ability Bar (C5)
+    register_life_components();          // Mortal (D0)
     register_vehicle_components();       // G13 Vehicle / Race Progress
     register_building_components();      // G14 Building / Extractor / Machine / Generator / Conveyor
     register_survival_components();      // G15 Needs / Sanity / Flashlight / Light Source / Fear Source

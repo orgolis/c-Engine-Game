@@ -36,6 +36,7 @@
 #include "ai/path_follow.h"
 #include "ecs/gameplay_abilities.h" // try_activate_ability: the AI picks WHEN, not WHAT
 #include "ecs/gameplay_stealth.h"   // can_see: one perception rule, not two
+#include "ecs/gameplay_tags.h"      // state.dead
 #include "ecs_bridge.h"             // OOP entity -> ECS entity, for casting
 #include "entity.h"
 #include "scene.h"
@@ -50,6 +51,14 @@ namespace schizo::editor {
 
 class EditorNpcAgents {
 public:
+    /// Tagged state.dead by the life system (ecs/gameplay_life.h).
+    static bool dead(EcsSceneBridge& bridge, const schizo::scene::Transform* tf) {
+        const uint32_t id = bridge.ecs_entity_id(tf);
+        if (id == kNoEcsEntity) return false;
+        const auto* tags = bridge.world().try_get<schizo::ecs::GameplayTags>(static_cast<schizo::ecs::Entity>(id));
+        return tags && tags->has("state.dead");
+    }
+
     /// Tick every agent entity against `nav`. Does nothing without a baked
     /// navmesh — an agent with nowhere to walk should stand still, not
     /// teleport in straight lines, because that would hide a missing bake.
@@ -69,6 +78,7 @@ public:
             if (!ag || !ag->enabled) continue;
             auto* tf = ent->GetTransform();
             if (!tf) continue;
+            if (bridge && dead(*bridge, tf)) continue;   // the dead do nothing
 
             const uint32_t id = ent->GetId();
             seen[id] = true;
@@ -79,7 +89,7 @@ public:
             glm::vec3 target_pos(0.0f);
             bool has_target = false;
             if (auto tgt = scene->GetEntityByName(ag->target_name)) {
-                if (tgt->IsActive() && tgt.get() != ent.get()) {
+                if (tgt->IsActive() && tgt.get() != ent.get() && !(bridge && dead(*bridge, tgt->GetTransform()))) {
                     if (auto* ttf = tgt->GetTransform()) {
                         target_pos = ttf->GetWorldPosition();
                         has_target = true;

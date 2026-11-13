@@ -247,7 +247,8 @@ public:
 
         if (auto* inv = w.try_get<ecs::Inventory>(e)) ecs::sync_ammo_with_inventory(*ws, *inv);
         ws->aiming = in.aim_held;
-        if (in.reload_pressed) ecs::reload_weapon(*ws);
+        // R reloads; so does pulling the trigger on an empty magazine.
+        if (in.reload_pressed || ((in.fire_pressed || in.fire_held) && ws->ammo_in_mag <= 0)) ecs::reload_weapon(*ws);
 
         // Rounds stop on level geometry: the physics world's ray.
         const ecs::WorldRayFn world = physics_world_ray(play.GetPhysicsWorld());

@@ -19,6 +19,29 @@ Double-click it to change them in the Items editor. Everything a template adds
 is a normal gameplay component in the Inspector, so a template is a start, not
 a limit.
 
+## Life, death and loot
+
+Give anything that can die **Inspector > Gameplay Components > Mortal**
+(the templates give it to the player). When its health reaches zero:
+
+- it is tagged `state.dead` and a `died` gameplay event goes out (scripts
+  count kills on it); enemies (NPC agents) stop, and stop seeing a dead player;
+- its **loot** list is rolled (item, weight, chance, how many) and what drops
+  lies on the ground as small glowing pickups;
+- after its **corpse time** the body disappears;
+- the player instead sees "You died" and comes back after a moment: from the
+  last quick save (F6) when there is one, otherwise where Play started, with
+  full health.
+
+**E** picks up loot and uses anything with an Interactable; the view shows
+what E would do ("E  Pick up Health Potion") when something is in reach.
+Pulling the trigger on an empty magazine reloads.
+
+Stop puts the scene back as it was before Play: objects Play created (loot,
+things scripts spawned) are removed, hidden ones come back, and every gameplay
+value (health, ammunition, inventory, flags) returns to what it was. Play also
+bakes the navmesh by itself when the scene has agents and no navmesh yet.
+
 ## Saving and loading in Play
 
 - **F6** saves, **F9** loads (the slot "quick").
