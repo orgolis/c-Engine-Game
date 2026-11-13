@@ -76,6 +76,7 @@
 #include "snapping.h"
 #include "anim_graph.h"                       // state machine document (4.6)
 #include "anim_graph_panel.h"                 // and its editor
+#include "items_panel.h"                      // .items files as a form (C1/C3)
 #include "sequence.h"                        // the timeline model (4.4)
 #include "timeline_panel.h"                   // keyframed sequencer (4.4)
 #include "level_tools_panel.h"                // arrays / scatter / splines / greybox (4.7)                         // grid / angle / scale snapping (4.7)
@@ -366,6 +367,8 @@ struct EditorState {
     schizo::editor::AnimGraph   anim_graph;
     schizo::editor::NodeCanvas  anim_canvas;
     bool show_anim_graph = false;
+    bool show_items = false;
+    schizo::editor::ItemsPanelState items_panel;
 
     schizo::editor::CommandRegistry commands;
     bool show_command_palette = false;
@@ -505,6 +508,7 @@ struct EditorState {
     // three panels said so.
     schizo::editor::DocumentFile material_graph_doc;
     schizo::editor::DocumentFile anim_graph_doc;
+    schizo::editor::DocumentFile items_doc;
     schizo::editor::DocumentFile sequence_doc;
     double script_play_time = 0.0;   // seconds since Play started
 
@@ -2046,6 +2050,7 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             ImGui::MenuItem("Level Tools", nullptr, &editor_state.show_level_tools);
             ImGui::MenuItem("Timeline", nullptr, &editor_state.show_timeline);
             ImGui::MenuItem("Animation State Machine", nullptr, &editor_state.show_anim_graph);
+            ImGui::MenuItem("Items and Weapons", nullptr, &editor_state.show_items);
             ImGui::MenuItem("Performance (Stage 14)", nullptr, &editor_state.show_performance);
             ImGui::MenuItem("Debug Panels (Phase 6)", nullptr, &editor_state.show_debug_panels);
             ImGui::MenuItem("Audio Mixer", nullptr, &editor_state.show_audio_mixer);
@@ -8908,6 +8913,13 @@ int main(int argc, char** argv) {
                     return opened(editor_state.material_graph_doc,
                                   ed::material_graph_to_text(editor_state.material_graph), ok);
                 }
+                if (ext == ed::kItemsExtension) {
+                    const bool ok = ed::load_items_doc(e.abs_path, editor_state.items_panel.doc);
+                    editor_state.items_panel.selected = 0;
+                    editor_state.show_items = true;
+                    return opened(editor_state.items_doc,
+                                  schizo::ecs::items_doc_to_text(editor_state.items_panel.doc), ok);
+                }
                 if (ext == ed::kAnimGraphExtension) {
                     const bool ok = ed::load_anim_graph(e.abs_path, editor_state.anim_graph);
                     editor_state.show_anim_graph = true;
@@ -10969,6 +10981,8 @@ int main(int argc, char** argv) {
                 mark(editor_state.material_graph_doc, mg_now);
                 mark(editor_state.anim_graph_doc,     ag_now);
                 mark(editor_state.sequence_doc,       sq_now);
+                if (editor_state.show_items || editor_state.items_doc.dirty)
+                    mark(editor_state.items_doc, schizo::ecs::items_doc_to_text(editor_state.items_panel.doc));
             }
 
             // Animation state machine (4.6).
@@ -10977,6 +10991,28 @@ int main(int argc, char** argv) {
                 schizo::editor::draw_anim_graph_panel(
                     editor_state.show_anim_graph, editor_state.anim_graph,
                     editor_state.anim_canvas, changed, &editor_state.anim_graph_doc);
+            }
+
+            // Items and weapons (.items files as a form).
+            {
+                // GWS_TEST_ITEMS=<file.items>: open it in the Items editor at
+                // start -- for a screenshot.
+                static bool test_items_done = false;
+                if (!test_items_done) {
+                    test_items_done = true;
+                    if (const char* ti = std::getenv("GWS_TEST_ITEMS")) {
+                        if (schizo::editor::load_items_doc(ti, editor_state.items_panel.doc)) {
+                            editor_state.items_doc.path = ti;
+                            editor_state.items_doc.saved_text = schizo::ecs::items_doc_to_text(editor_state.items_panel.doc);
+                            editor_state.show_items = true;
+                            const char* sel = std::getenv("GWS_TEST_ITEMS_SELECT");
+                            editor_state.items_panel.selected = sel ? std::atoi(sel) : 0;
+                        }
+                    }
+                }
+                if (editor_state.show_items)
+                    schizo::editor::draw_items_panel(editor_state.show_items, editor_state.items_panel,
+                                                     &editor_state.items_doc);
             }
 
             // Timeline (4.4).
@@ -11013,6 +11049,12 @@ int main(int argc, char** argv) {
                         editor_state.anim_graph_doc.path, editor_state.anim_graph);
                     finish(editor_state.anim_graph_doc, ok,
                            schizo::editor::anim_graph_to_text(editor_state.anim_graph));
+                }
+                if (editor_state.items_doc.save_requested) {
+                    const bool ok = schizo::editor::save_items_doc(
+                        editor_state.items_doc.path, editor_state.items_panel.doc);
+                    finish(editor_state.items_doc, ok,
+                           schizo::ecs::items_doc_to_text(editor_state.items_panel.doc));
                 }
                 if (editor_state.sequence_doc.save_requested) {
                     const bool ok = schizo::editor::save_sequence(

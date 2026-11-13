@@ -64,6 +64,7 @@ target_sources(editor
         src/node_canvas.cpp
         src/anim_graph.cpp
         src/anim_graph_panel.cpp
+        src/items_panel.cpp
         src/sequence.cpp
         src/vfx_stack_panel.cpp
         src/timeline_panel.cpp

@@ -160,6 +160,17 @@ jump/fall, slide, dash, mantle, glide, wall run, climb, swim), falling back
 to a close move's clip or the model's own idle/move choice. Without a rig the
 authored camera is used exactly as before.
 
+**Progress (v0.8.34):** the item and weapon editor. A `.items` file opens
+from the Asset Browser (or View > Items and Weapons) as a form: the file's
+items and weapons in a list (add, duplicate, delete, reorder, filter; clashing
+ids in red), every setting of the selected one beside it, a damage-per-second
+readout for weapons, and the ammunition picked from the known items. Saving
+writes the file back (`ecs::items_doc_to_text`: blocks keep their order, the
+comment lines at the top stay) and registers it at once. Checked by
+gameplay_check (the file read, written and read again is identical; every
+setting survives). Still open in C3: real projected decals, weapon models in
+the hand.
+
 ## Phase D: the test game
 
 A small game built only with the editor and logic graphs: a terrain with

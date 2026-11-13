@@ -1370,6 +1370,39 @@ int main() {
         ecs::inventory_add(inv, rounds);
         ecs::sync_ammo_with_inventory(pl, inv);
         check("rounds picked up count at once", pl.reserve == 32);
+
+        // The Items editor: a .items file as a document, written back.
+        {
+            const std::string src = std::string("# My items\n# for the test\n\n") + ecs::item_file_template() +
+                "\nweapon shotgun\n  fire semi\n  damage 9 pellet\n  rpm 70\n  magazine 6\n  pellets 8\n  reload 0.55\n"
+                "  spread 6.5\n  tracer 1 0.2 0.9 1\n  projectile 120\n  ammo shells\nend\n";
+            const ecs::ItemsDoc d1 = ecs::parse_items_doc(src);
+            const std::string t1 = ecs::items_doc_to_text(d1);
+            const ecs::ItemsDoc d2 = ecs::parse_items_doc(t1);
+            const std::string t2 = ecs::items_doc_to_text(d2);
+            check("items doc: blocks in file order, comments above them kept",
+                  d1.entries.size() == 4 && !d1.entries[0].is_weapon && d1.entries[1].is_weapon &&
+                  d1.entries[2].id() == "my_sword" && d1.entries[3].id() == "shotgun" &&
+                  d1.header == "# My items\n# for the test\n\n# Item definitions (.items). One 'item <id>' block per item; the editor\n"
+                               "# loads every .items file under the project at startup / on reload.\n");
+            check("items doc: written back and read again is the same file", t1 == t2);
+            const auto& r = d2.entries[1].weapon;
+            const auto& sg = d2.entries[3].weapon;
+            const auto& sw = d2.entries[2].item;
+            const auto& po = d2.entries[0].item;
+            check("items doc: every weapon setting survives",
+                  r.fire_mode == ecs::FireMode::Auto && r.damage == 20.0f && r.rpm == 600.0f && r.mag_size == 30 &&
+                  r.spread_deg == 0.6f && r.spread_bloom == 0.35f && r.spread_max == 5.0f && r.recoil_pitch == 0.8f &&
+                  r.recoil_yaw == 0.4f && r.ads_fov_scale == 0.75f && r.ads_spread == 0.3f && r.tracer_every == 3 &&
+                  r.impact_size == 0.12f && r.muzzle_flash &&
+                  sg.pellets == 8 && sg.reload_time == 0.55f && sg.damage_type == "pellet" && sg.projectile_speed == 120.0f &&
+                  sg.tracer_color == glm::vec3(0.2f, 0.9f, 1.0f) && sg.ammo_item == "shells" && sg.name == "shotgun");
+            check("items doc: every item setting survives",
+                  po.kind == ecs::ItemKind::Consumable && po.max_stack == 10 && po.weight == 0.1f && po.on_use.size() == 1 &&
+                  po.on_use[0].modifiers[0].attribute == "Health" && po.on_use[0].modifiers[0].magnitude == 25.0f &&
+                  sw.kind == ecs::ItemKind::Weapon && sw.equip_slot == "weapon" && sw.modifiers.size() == 1 &&
+                  sw.affix_pool.size() == 1 && sw.affix_pool[0].name == "of Power" && sw.affix_pool[0].max_roll == 4.0f);
+        }
     }
 
     // G13: vehicles & racing — arcade drive model + checkpoints/laps/ranking.

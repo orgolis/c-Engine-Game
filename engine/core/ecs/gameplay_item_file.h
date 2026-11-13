@@ -35,6 +35,8 @@
 #include "gameplay_weapons.h"
 
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -190,6 +192,140 @@ inline int load_items_dir(const std::string& dir) {
             total += load_items_file(it->path().string());
     }
     return total;
+}
+
+// ---- A .items file as a document (the Items editor) ---------------------------
+// The blocks in file order, and the comment lines above the first block. A
+// file written back from it keeps its blocks and their order; comments between
+// blocks are not kept.
+struct ItemsDoc {
+    struct Entry {
+        bool      is_weapon = false;
+        ItemDef   item;
+        WeaponDef weapon;
+        const std::string& id() const { return is_weapon ? weapon.id : item.id; }
+        const std::string& name() const { return is_weapon ? weapon.name : item.name; }
+    };
+    std::string        header;   // leading '#' lines, kept verbatim
+    std::vector<Entry> entries;
+};
+
+inline ItemsDoc parse_items_doc(const std::string& text) {
+    ItemsDoc doc;
+    std::istringstream in(text);
+    std::string line, block;
+    bool in_header = true, in_block = false;
+    auto flush = [&] {
+        if (!in_block) return;
+        in_block = false;
+        for (const auto& d : parse_items_text(block)) { ItemsDoc::Entry e; e.item = d; doc.entries.push_back(e); }
+        for (const auto& d : parse_weapons_text(block)) { ItemsDoc::Entry e; e.is_weapon = true; e.weapon = d; doc.entries.push_back(e); }
+        block.clear();
+    };
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        std::istringstream ls(line);
+        std::string key;
+        ls >> key;
+        if (key == "item" || key == "weapon") {
+            flush();
+            in_header = false;
+            in_block = true;
+            block = line + "\n";
+            continue;
+        }
+        if (in_header) {
+            if (key.empty() || key[0] == '#') doc.header += line + "\n";
+            continue;
+        }
+        if (!in_block) continue;
+        block += line + "\n";
+        if (key == "end") flush();
+    }
+    flush();
+    // Trailing blank lines of the header are the writer's to add.
+    while (doc.header.size() >= 2 && doc.header[doc.header.size() - 1] == '\n' && doc.header[doc.header.size() - 2] == '\n')
+        doc.header.pop_back();
+    return doc;
+}
+
+namespace detail {
+// Shortest text that reads back as the same float.
+inline std::string num(float v) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.9g", static_cast<double>(v));
+    for (int prec = 1; prec <= 9; ++prec) {
+        char t[32];
+        std::snprintf(t, sizeof t, "%.*g", prec, static_cast<double>(v));
+        if (std::strtof(t, nullptr) == v) return t;
+    }
+    return buf;
+}
+}  // namespace detail
+
+inline std::string item_def_text(const ItemDef& d) {
+    using detail::num;
+    std::string s = "item " + d.id + "\n";
+    if (!d.name.empty()) s += "  name " + d.name + "\n";
+    if (d.kind != ItemKind::Misc) s += std::string("  kind ") + item_kind_name(d.kind) + "\n";
+    if (d.rarity != 0) s += "  rarity " + std::to_string(d.rarity) + "\n";
+    if (d.max_stack != 1) s += "  max_stack " + std::to_string(d.max_stack) + "\n";
+    if (d.weight != 0.0f) s += "  weight " + num(d.weight) + "\n";
+    if (d.value != 0.0f) s += "  value " + num(d.value) + "\n";
+    if (!d.equip_slot.empty()) s += "  slot " + d.equip_slot + "\n";
+    if (!d.set_id.empty()) s += "  set " + d.set_id + "\n";
+    for (const auto& t : d.granted_tags) s += "  tag " + t + "\n";
+    for (const auto& m : d.modifiers) s += "  mod " + m.attribute + " " + num(m.amount) + "\n";
+    for (const auto& fx : d.on_use)
+        for (const auto& m : fx.modifiers) s += "  on_use " + m.attribute + " " + num(m.magnitude) + "\n";
+    for (const auto& a : d.affix_pool) {
+        s += "  affix " + a.attribute + " " + num(a.min_roll) + " " + num(a.max_roll);
+        if (!a.name.empty()) s += " " + a.name;
+        s += "\n";
+    }
+    return s + "end\n";
+}
+
+inline std::string weapon_def_text(const WeaponDef& w) {
+    using detail::num;
+    const WeaponDef def;
+    std::string s = "weapon " + w.id + "\n";
+    if (!w.name.empty() && w.name != w.id) s += "  name " + w.name + "\n";
+    s += std::string("  fire ") + (w.fire_mode == FireMode::Auto ? "auto" : w.fire_mode == FireMode::Burst ? "burst" : "semi") + "\n";
+    if (w.fire_mode == FireMode::Burst || w.burst != def.burst) s += "  burst " + std::to_string(w.burst) + "\n";
+    s += "  damage " + num(w.damage) + (w.damage_type.empty() ? "" : " " + w.damage_type) + "\n";
+    s += "  rpm " + num(w.rpm) + "\n";
+    s += "  magazine " + std::to_string(w.mag_size) + "\n";
+    if (w.reload_time != def.reload_time) s += "  reload " + num(w.reload_time) + "\n";
+    if (w.pellets != def.pellets) s += "  pellets " + std::to_string(w.pellets) + "\n";
+    s += "  spread " + num(w.spread_deg) + "\n";
+    if (w.spread_bloom != def.spread_bloom || w.spread_max != def.spread_max || w.bloom_recovery != def.bloom_recovery)
+        s += "  bloom " + num(w.spread_bloom) + " " + num(w.spread_max) + " " + num(w.bloom_recovery) + "\n";
+    if (w.recoil_pitch != def.recoil_pitch || w.recoil_yaw != def.recoil_yaw)
+        s += "  recoil " + num(w.recoil_pitch) + " " + num(w.recoil_yaw) + "\n";
+    if (w.ads_fov_scale != def.ads_fov_scale || w.ads_spread != def.ads_spread || w.ads_time != def.ads_time)
+        s += "  aim " + num(w.ads_fov_scale) + " " + num(w.ads_spread) + " " + num(w.ads_time) + "\n";
+    if (w.range != def.range) s += "  range " + num(w.range) + "\n";
+    if (w.projectile_speed != def.projectile_speed) s += "  projectile " + num(w.projectile_speed) + "\n";
+    if (w.tracer_every != 0) {
+        s += "  tracer " + std::to_string(w.tracer_every);
+        if (w.tracer_color != def.tracer_color)
+            s += " " + num(w.tracer_color.r) + " " + num(w.tracer_color.g) + " " + num(w.tracer_color.b);
+        s += "\n";
+    }
+    if (w.impact_size != 0.0f) s += "  impact " + num(w.impact_size) + "\n";
+    if (w.muzzle_flash) s += "  flash\n";
+    if (!w.ammo_item.empty()) s += "  ammo " + w.ammo_item + "\n";
+    return s + "end\n";
+}
+
+inline std::string items_doc_to_text(const ItemsDoc& doc) {
+    std::string s = doc.header;
+    for (const auto& e : doc.entries) {
+        if (!s.empty()) s += "\n";
+        s += e.is_weapon ? weapon_def_text(e.weapon) : item_def_text(e.item);
+    }
+    return s;
 }
 
 // A starter .items file for the "New Item Definitions" editor action.
