@@ -149,8 +149,16 @@ surfaces tagged `surface.climbable`, swimming and stamina. Settings are the
 Movement component (Inspector), every optional move can be turned off; keys
 in docs/systems/MOVEMENT.md. Checked by movement_check (59 checks against box
 geometry) and a scripted Play run in Jolt (GWS_TEST_MOVES: sprint, slide,
-dash, jumps, mantle onto a 1.8 m ledge). Still open in C4: third-person and
-aim cameras, and animation driven by the move.
+dash, jumps, mantle onto a 1.8 m ledge).
+
+**Progress (v0.8.33):** C4 done. A Camera Rig component gives the player a
+third-person camera (distance, shoulder, pivot height) that comes in over the
+shoulder while aiming and is pulled in front of walls, easing back out
+(`ecs/gameplay_camera.h`, pure, checked in movement_check). A Move Animation
+component picks the player's rigged-model clip for each move (sprint, crouch,
+jump/fall, slide, dash, mantle, glide, wall run, climb, swim), falling back
+to a close move's clip or the model's own idle/move choice. Without a rig the
+authored camera is used exactly as before.
 
 ## Phase D: the test game
 

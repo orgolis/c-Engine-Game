@@ -3,6 +3,7 @@
 #include "ecs_bridge.h"
 #include "ecs/world.h"
 #include "ecs/gameplay_movement.h"
+#include "ecs/gameplay_camera.h"
 #include "ecs/authorable_components.h"
 #include "ecs/gameplay_attributes.h"   // custom drawer for the data-driven AttributeSet
 #include "ecs/gameplay_tags.h"         // custom drawer for data-driven GameplayTags
@@ -580,6 +581,49 @@ bool draw_movement(void* comp) {
     return changed;
 }
 
+// Camera Rig (C4): a third-person camera for the player.
+bool draw_camera_rig(void* comp) {
+    auto& r = *static_cast<ecs::CameraRig*>(comp);
+    bool changed = false;
+    auto f = [&](const char* label, float* v, float speed, float lo, float hi, const char* fmt = "%.2f") {
+        if (ImGui::DragFloat(label, v, speed, lo, hi, fmt)) changed = true;
+    };
+    if (ImGui::Checkbox("third person", &r.third_person)) changed = true;
+    ImGui::SetItemTooltip("Off: the player's camera is used as placed (first person).");
+    f("distance", &r.distance, 0.02f, 0.0f, 50.0f, "%.2f m");
+    f("pivot height", &r.height, 0.01f, -5.0f, 5.0f, "%.2f m");
+    ImGui::SetItemTooltip("Above the middle of the player's capsule.");
+    f("shoulder", &r.shoulder, 0.01f, -5.0f, 5.0f, "%.2f m");
+    ImGui::SetItemTooltip("To the right; negative is the left shoulder.");
+    f("aim distance", &r.aim_distance, 0.02f, 0.0f, 50.0f, "%.2f m");
+    f("aim shoulder", &r.aim_shoulder, 0.01f, -5.0f, 5.0f, "%.2f m");
+    f("aim time", &r.aim_time, 0.005f, 0.0f, 2.0f, "%.3f s");
+    f("wall clearance", &r.collision_radius, 0.01f, 0.0f, 2.0f, "%.2f m");
+    f("closest", &r.min_distance, 0.01f, 0.0f, 10.0f, "%.2f m");
+    f("return speed", &r.return_speed, 0.05f, 0.1f, 100.0f, "%.1f m/s");
+    return changed;
+}
+
+// Move Animation (C4): the clip of the player's rigged model for each move.
+bool draw_move_animation(void* comp) {
+    auto& a = *static_cast<ecs::MoveAnimation*>(comp);
+    bool changed = false;
+    ImGui::TextDisabled("Clip numbers of the rigged model; -1 = its own idle / move clip.");
+    auto c = [&](const char* label, int* v) { if (ImGui::DragInt(label, v, 0.05f, -1, 255)) changed = true; };
+    c("sprint", &a.sprint);
+    c("crouch", &a.crouch);
+    c("crouch walk", &a.crouch_move);
+    c("jump / fall", &a.air);
+    c("slide", &a.slide);
+    c("dash", &a.dash);
+    c("mantle", &a.mantle);
+    c("glide", &a.glide);
+    c("wall run", &a.wall_run);
+    c("climb", &a.climb);
+    c("swim", &a.swim);
+    return changed;
+}
+
 // G13 · Vehicle: pick a vehicle def + live speed/heading/boost readout.
 bool draw_vehicle(void* comp) {
     auto& v = *static_cast<ecs::Vehicle*>(comp);
@@ -848,6 +892,10 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_weapon(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Movement") == 0) {
                         if (draw_movement(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Camera Rig") == 0) {
+                        if (draw_camera_rig(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Move Animation") == 0) {
+                        if (draw_move_animation(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Vehicle") == 0) {
                         if (draw_vehicle(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Race Progress") == 0) {

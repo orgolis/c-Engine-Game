@@ -357,6 +357,7 @@ void ScenePlaybackManager::Update(float delta_time) {
     }
 
     playback_time_ += delta_time;
+    last_dt_ = delta_time;
 
     UpdateMouseLook();
     DriveCharacterController(delta_time);
@@ -411,8 +412,30 @@ bool ScenePlaybackManager::AttachCharacterController() {
 void ScenePlaybackManager::UpdateCamera() {
     if (!playback_camera_) return;
     if (auto camera_transform = playback_camera_->GetTransform()) {
-        // Playback observes the camera transform; it does not impose a camera
-        // mode or move the camera to a hard-coded gameplay offset.
+        // Without a Camera Rig, playback observes the camera transform; it does
+        // not impose a camera mode or a hard-coded gameplay offset. With one
+        // (third person), the camera goes behind and beside the player, looking
+        // the way it looks, kept in front of walls.
+        if (rig_set_ && camera_rig_.third_person && player_entity_ && physics_world_) {
+            auto pt = player_entity_->GetTransform();
+            const glm::vec3 centre = player_char_id_ != 0xFFFFFFFFu
+                                         ? physics_world_->character_position(player_char_id_)
+                                         : pt->GetWorldPosition();
+            const glm::vec3 pivot = centre + glm::vec3(0.0f, camera_rig_.height, 0.0f);
+            const glm::vec3 view = glm::normalize(camera_transform->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f));
+            glm::vec3 right = pt->GetRight();
+            right.y = 0.0f;
+            right = glm::length(right) > 1e-4f ? glm::normalize(right) : glm::vec3(1.0f, 0.0f, 0.0f);
+            physics::PhysicsWorld& pw = *physics_world_;
+            const glm::vec3 pos = schizo::ecs::place_camera_rig(
+                camera_rig_, pivot, view, right, rig_aiming_,
+                [&pw](const glm::vec3& o, const glm::vec3& d, float m) {
+                    const physics::RayHit h = pw.raycast(o, d, m);
+                    return h.hit ? h.distance : -1.0f;
+                },
+                last_dt_);
+            camera_transform->SetWorldPosition(pos);
+        }
         camera_position_ = camera_transform->GetWorldPosition();
     }
 }

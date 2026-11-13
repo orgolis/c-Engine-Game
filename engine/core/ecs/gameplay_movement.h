@@ -596,6 +596,55 @@ inline MoveResult step_movement(Movement& mv, const MoveInput& in, const MoveBod
     return r;
 }
 
+// ---- animation ---------------------------------------------------------------
+// Which clip of the player's rigged model plays for each move, by clip index.
+// -1 leaves it to the model (its own idle / move clips by speed).
+struct MoveAnimation {
+    int sprint = -1, crouch = -1, crouch_move = -1, air = -1, slide = -1, dash = -1,
+        mantle = -1, glide = -1, wall_run = -1, climb = -1, swim = -1;
+};
+
+/// The clip for the move now; `fallback` is the model's own choice.
+inline int move_animation_clip(const MoveAnimation& a, const MovementState& st, bool moving, int fallback) {
+    auto pick = [fallback](int c) { return c >= 0 ? c : fallback; };
+    switch (st.mode) {
+        case MoveMode::Walk:
+            if (st.crouched) return pick(moving && a.crouch_move >= 0 ? a.crouch_move : a.crouch);
+            if (st.sprinting && moving) return pick(a.sprint);
+            return fallback;
+        case MoveMode::Air:     return pick(a.air);
+        case MoveMode::Slide:   return pick(a.slide >= 0 ? a.slide : a.crouch);
+        case MoveMode::Dash:    return pick(a.dash >= 0 ? a.dash : a.sprint);
+        case MoveMode::Mantle:  return pick(a.mantle >= 0 ? a.mantle : a.climb);
+        case MoveMode::Glide:   return pick(a.glide >= 0 ? a.glide : a.air);
+        case MoveMode::WallRun: return pick(a.wall_run >= 0 ? a.wall_run : a.sprint);
+        case MoveMode::Climb:   return pick(a.climb);
+        case MoveMode::Swim:    return pick(a.swim);
+    }
+    return fallback;
+}
+
+inline void serialize_move_animation(const void* obj, std::vector<uint8_t>& out) {
+    const auto& a = *static_cast<const MoveAnimation*>(obj);
+    const int v[] = {a.sprint, a.crouch, a.crouch_move, a.air, a.slide, a.dash, a.mantle, a.glide, a.wall_run, a.climb, a.swim};
+    detail::put_i32(out, 1);
+    detail::put_i32(out, static_cast<int32_t>(sizeof v / sizeof v[0]));
+    for (int x : v) detail::put_i32(out, x);
+}
+inline void deserialize_move_animation(void* obj, const uint8_t* data, size_t n) {
+    auto& a = *static_cast<MoveAnimation*>(obj);
+    a = MoveAnimation{};
+    int* f[] = {&a.sprint, &a.crouch, &a.crouch_move, &a.air, &a.slide, &a.dash, &a.mantle, &a.glide, &a.wall_run, &a.climb, &a.swim};
+    const uint8_t* p = data; const uint8_t* e = data + n;
+    int32_t ver = 0, count = 0;
+    if (!detail::get_i32(p, e, ver) || ver < 1 || !detail::get_i32(p, e, count)) return;
+    for (int i = 0; i < count; ++i) {
+        int32_t v = -1;
+        if (!detail::get_i32(p, e, v)) return;
+        if (i < static_cast<int>(sizeof f / sizeof f[0])) *f[i] = v;
+    }
+}
+
 // ---- saving ------------------------------------------------------------------
 // Version, then the settings in order. A field added later goes at the end and
 // reads its default from older files.
@@ -652,6 +701,7 @@ inline void deserialize_movement(void* obj, const uint8_t* data, size_t n) {
 }
 inline void register_movement_components() {
     register_authorable(make_authorable_custom<Movement>("Movement", &serialize_movement, &deserialize_movement));
+    register_authorable(make_authorable_custom<MoveAnimation>("Move Animation", &serialize_move_animation, &deserialize_move_animation));
 }
 
 }  // namespace schizo::ecs

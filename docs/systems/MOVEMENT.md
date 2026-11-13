@@ -45,6 +45,26 @@ setting is grouped by move, and a move a game does not want can be turned off.
   a dash costs it, and it comes back after a short rest. A bar shows while it
   is not full.
 
+## Third-person camera
+
+By default Play looks through the player's camera as you placed it (first
+person). Add **Inspector > Gameplay Components > Camera Rig** to the Player
+for a third-person camera: behind the player by *distance*, to the right by
+*shoulder* (negative for the left), looking where the player looks. Holding
+the aim button with a weapon brings it in over the shoulder (*aim distance*,
+*aim shoulder*). A wall between the player and the camera pulls the camera in
+front of it at once; when the wall is gone it eases back out. Untick *third
+person* to keep the component but use the placed camera.
+
+## Animation for each move
+
+If the player (or its rigged model) has **Move Animation**, the model plays a
+clip for each move: sprint, crouch, crouch walk, jump/fall, slide, dash,
+mantle, glide, wall run, climb, swim. Numbers are the model's clip numbers;
+-1 leaves it to the model's own idle / move clip. A move without a clip of
+its own borrows a close one (slide uses crouch, mantle uses climb, glide uses
+jump/fall, dash and wall run use sprint).
+
 ## For programmers
 
 The moves live in `engine/core/ecs/gameplay_movement.h`: settings, state and

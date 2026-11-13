@@ -122,6 +122,7 @@
 #include "world_preset.h"         // a whole landscape from one choice
 #include "player_weapon.h"        // the player's gun in Play: input, recoil, aim, tracers, impacts
 #include "ecs/gameplay_movement.h" // the player's moves in Play (C4)
+#include "ecs/gameplay_camera.h"   // the player's third-person camera rig
 #include "ecs/gameplay_tags.h"     // surface.climbable
 #include "logic_script_panel.h"  // graph editor for .lgraph logic scripts
 #include "logic_debug.h"          // a breakpoint in a logic script stops the game
@@ -10026,6 +10027,30 @@ int main(int argc, char** argv) {
                             loco, sk_tf->GetWorldPosition(), delta_time, smc->move_threshold);
                         want_clip = mv ? smc->move_clip : smc->idle_clip;
                     }
+                    // The player's model plays the clip for its move (jump, slide,
+                    // climb...) when it has a Move Animation, on it or on the player.
+                    if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
+                        auto& pm = *editor_state.scene_playback_manager;
+                        const schizo::scene::Entity* player = pm.GetPlayerEntity();
+                        bool is_player = false;
+                        for (const schizo::scene::Entity* p = ent.get(); p && player; p = p->GetParent().get())
+                            if (p == player) { is_player = true; break; }
+                        if (is_player) {
+                            auto& w = ecs_bridge.world();
+                            auto find_ma = [&](const schizo::scene::Entity* e) -> const schizo::ecs::MoveAnimation* {
+                                const uint32_t id = ecs_bridge.ecs_entity_id(e->GetTransform());
+                                const auto ee = static_cast<schizo::ecs::Entity>(id);
+                                return id != schizo::editor::kNoEcsEntity && w.valid(ee) ? w.try_get<schizo::ecs::MoveAnimation>(ee) : nullptr;
+                            };
+                            const schizo::ecs::MoveAnimation* ma = find_ma(ent.get());
+                            if (!ma) ma = find_ma(player);
+                            if (ma) {
+                                const auto& st = pm.GetPlayerMovementState();
+                                const bool moving = glm::length(glm::vec2(st.velocity.x, st.velocity.z)) > smc->move_threshold;
+                                want_clip = schizo::ecs::move_animation_clip(*ma, st, moving, want_clip);
+                            }
+                        }
+                    }
                     if (static_cast<size_t>(want_clip) != actor->clip_index())
                         actor->set_clip(static_cast<size_t>(want_clip));
                     if (smc->playing) actor->advance(delta_time * smc->speed);
@@ -10370,6 +10395,22 @@ int main(int argc, char** argv) {
                     }
                 }
                 pm.SetPlayerMovementSettings(ms);
+                // The Camera Rig on the player, if it has one (third person).
+                const schizo::ecs::CameraRig* rig = nullptr;
+                if (auto* pl = pm.GetPlayerEntity()) {
+                    const uint32_t pid = ecs_bridge.ecs_entity_id(pl->GetTransform());
+                    const auto pe = static_cast<schizo::ecs::Entity>(pid);
+                    if (pid != schizo::editor::kNoEcsEntity && ecs_bridge.world().valid(pe))
+                        rig = ecs_bridge.world().try_get<schizo::ecs::CameraRig>(pe);
+                }
+                // GWS_TEST_RIG=1 (with GWS_TEST_PLAY): a third-person rig on the
+                // player, aiming for a while -- for a screenshot.
+                static const bool test_rig = std::getenv("GWS_TEST_RIG") != nullptr;
+                static schizo::ecs::CameraRig test_rig_c;
+                if (test_rig && !rig) rig = &test_rig_c;
+                const bool rig_aim = editor_state.player_weapon.hud().aiming ||
+                                     (test_rig && std::getenv("GWS_TEST_RIG_AIM") != nullptr);
+                pm.SetCameraRig(rig, rig_aim);
             }
 
             if (editor_state.scene_playback_manager &&

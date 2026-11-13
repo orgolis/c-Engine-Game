@@ -179,6 +179,7 @@ public:
         bool  armed = false;
         float spread_deg = 0.0f;          // the crosshair's gap
         float view_zoom = 1.0f;           // field-of-view scale while aiming
+        bool  aiming = false;             // the aim button is held (a camera rig moves in)
         float hit_marker = 0.0f;          // seconds the hit marker still shows
         int   ammo = 0, reserve = 0;
         bool  reloading = false;
@@ -191,6 +192,7 @@ public:
                 const Input& in, ShotEffects& fx) {
         namespace ecs = schizo::ecs;
         hud_.armed = false;
+        hud_.aiming = false;
         hud_.hit_marker = std::max(0.0f, hud_.hit_marker - dt);
         auto* player = play.GetPlayerEntity();
         if (!player || !play.IsPlaying() || play.IsPaused()) return;
@@ -252,6 +254,7 @@ public:
         hud_.armed = true;
         hud_.spread_deg = ecs::current_spread(*wd, *ws);
         hud_.view_zoom = 1.0f + (wd->ads_fov_scale - 1.0f) * ws->aim;
+        hud_.aiming = ws->aiming;
         hud_.ammo = ws->ammo_in_mag;
         hud_.reserve = ws->reserve;
         hud_.reloading = ws->reloading > 0.0f;

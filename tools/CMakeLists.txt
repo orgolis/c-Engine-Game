@@ -663,7 +663,8 @@ endif()
 
 # movement_check: every move of ecs/gameplay_movement.h (walk, sprint, crouch,
 # jump with coyote time and buffer, air jumps, slide, dash, mantle, glide, wall
-# run, climb, swim, stamina) against boxes and a ground plane.
+# run, climb, swim, stamina) against boxes and a ground plane; the third-person
+# camera rig (ecs/gameplay_camera.h) and the per-move animation clips.
 add_executable(movement_check movement_check/main.cpp)
 target_link_libraries(movement_check PRIVATE gws_ecs gws_reflection)
 target_compile_features(movement_check PRIVATE cxx_std_20)

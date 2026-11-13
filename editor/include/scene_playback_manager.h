@@ -2,6 +2,7 @@
 
 #include <memory>
 #include "ecs/gameplay_movement.h"   // the player's moves (C4)
+#include "ecs/gameplay_camera.h"     // third-person camera rig (C4)
 #include <functional>
 #include <cstdint>
 #include <unordered_map>
@@ -193,6 +194,16 @@ public:
     /// Whether a scene entity's surface can be climbed (the host answers from
     /// its gameplay tags: surface.climbable).
     void SetClimbableQuery(std::function<bool(uint32_t entity_id)> q) { climbable_query_ = std::move(q); }
+    /// The player's Camera Rig for this frame (null: the authored camera as it
+    /// is), and whether the player is aiming (the rig moves in over the shoulder).
+    void SetCameraRig(const schizo::ecs::CameraRig* rig, bool aiming) {
+        rig_set_ = rig != nullptr;
+        rig_aiming_ = aiming;
+        if (!rig) return;
+        const float d = camera_rig_.cur_distance, s = camera_rig_.cur_shoulder, a = camera_rig_.aim;
+        camera_rig_ = *rig;
+        camera_rig_.cur_distance = d; camera_rig_.cur_shoulder = s; camera_rig_.aim = a;   // keep the runtime part
+    }
     /// Test hook: input for the player instead of the keyboard (GWS_TEST_MOVES).
     void SetScriptedMoveInput(const schizo::ecs::MoveInput* in) {
         scripted_input_set_ = in != nullptr;
@@ -256,6 +267,10 @@ private:
     std::unordered_map<uint32_t, bool>     climbable_bodies_;   // body -> climbable (memo, per play)
     bool                                   scripted_input_set_ = false;
     schizo::ecs::MoveInput                 scripted_input_;
+    schizo::ecs::CameraRig                 camera_rig_;
+    bool                                   rig_set_ = false;
+    bool                                   rig_aiming_ = false;
+    float                                  last_dt_ = 0.016f;
 
     // Cached world position of the playback camera (profiling/rebase use).
     glm::vec3 camera_position_ = glm::vec3(0.0f);

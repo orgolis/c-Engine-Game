@@ -5,6 +5,7 @@
 // motor only sees rays and the body, so the moves are the same).
 // ============================================================================
 #include "ecs/gameplay_movement.h"
+#include "ecs/gameplay_camera.h"
 
 #include <cmath>
 #include <cstdint>
@@ -427,6 +428,74 @@ int main() {
                                                           c.settings.mantle && c.settings.dash_speed == 18.0f);
         register_movement_components();
         check("Movement is an authorable component", find_authorable("Movement") != nullptr);
+    }
+
+    // ---- camera rig ---------------------------------------------------------------
+    {
+        Sim w;   // only for its rays
+        auto ray = [&w](const glm::vec3& o, const glm::vec3& d, float m) {
+            const MoveHit h = w.ray(o, d, m);
+            return h.hit ? h.distance : -1.0f;
+        };
+        const glm::vec3 pivot(0.0f, 1.5f, 0.0f), view(0.0f, 0.0f, -1.0f), right(1.0f, 0.0f, 0.0f);
+        CameraRig r;
+        glm::vec3 p = place_camera_rig(r, pivot, view, right, false, ray, 1.0f / 60.0f);
+        check("rig: behind the player and over the shoulder",
+              std::fabs(p.z - 3.2f) < 1e-3f && std::fabs(p.x - 0.45f) < 1e-3f && std::fabs(p.y - 1.5f) < 1e-3f);
+        for (int i = 0; i < 30; ++i) p = place_camera_rig(r, pivot, view, right, true, ray, 1.0f / 60.0f);
+        check("rig: aiming comes in over the shoulder", std::fabs(p.z - 1.4f) < 1e-3f && std::fabs(p.x - 0.75f) < 1e-3f);
+        for (int i = 0; i < 30; ++i) p = place_camera_rig(r, pivot, view, right, false, ray, 1.0f / 60.0f);
+        check("rig: and goes back out", std::fabs(p.z - 3.2f) < 1e-3f);
+        // A wall 1.5 m behind: the camera is pulled in at once, clear of it.
+        w.boxes.push_back({glm::vec3(-5, 0, 1.5f), glm::vec3(5, 5, 2.0f)});
+        p = place_camera_rig(r, pivot, view, right, false, ray, 1.0f / 60.0f);
+        check("rig: a wall behind pulls the camera in front of it", std::fabs(p.z - (1.5f - 0.25f)) < 1e-3f);
+        w.boxes.clear();
+        p = place_camera_rig(r, pivot, view, right, false, ray, 0.1f);
+        const float eased = p.z;
+        for (int i = 0; i < 60; ++i) p = place_camera_rig(r, pivot, view, right, false, ray, 1.0f / 60.0f);
+        check("rig: and lets go gently once it is gone", eased < 2.0f && eased > 1.25f && std::fabs(p.z - 3.2f) < 1e-3f);
+        // A wall to the right: the shoulder shrinks.
+        w.boxes.push_back({glm::vec3(0.4f, 0, -5), glm::vec3(1.0f, 5, 5)});
+        CameraRig r2;
+        p = place_camera_rig(r2, pivot, view, right, false, ray, 1.0f / 60.0f);
+        check("rig: a wall at the shoulder keeps the camera off it", p.x < 0.4f - 0.24f && p.x > -1e-3f);
+        w.boxes.clear();
+        CameraRig a;
+        a.third_person = false; a.distance = 5.0f; a.shoulder = -0.3f;
+        std::vector<uint8_t> buf;
+        serialize_camera_rig(&a, buf);
+        CameraRig b;
+        deserialize_camera_rig(&b, buf.data(), buf.size());
+        check("rig: saves and loads", !b.third_person && b.distance == 5.0f && b.shoulder == -0.3f && b.aim_time == a.aim_time);
+        register_camera_components();
+        check("Camera Rig is an authorable component", find_authorable("Camera Rig") != nullptr);
+    }
+    // ---- move animation -------------------------------------------------------------
+    {
+        MoveAnimation a;
+        a.air = 3; a.crouch = 4; a.climb = 6; a.sprint = 2;
+        MovementState st;
+        st.mode = MoveMode::Air;
+        const bool air = move_animation_clip(a, st, true, 1) == 3;
+        st.mode = MoveMode::Walk; st.crouched = true;
+        const bool crouch = move_animation_clip(a, st, true, 1) == 4;
+        st.crouched = false; st.sprinting = true;
+        const bool sprint = move_animation_clip(a, st, true, 1) == 2 && move_animation_clip(a, st, false, 0) == 0;
+        st.mode = MoveMode::Slide;
+        const bool slide = move_animation_clip(a, st, true, 1) == 4;   // no slide clip: the crouch one
+        st.mode = MoveMode::Mantle;
+        const bool mantle = move_animation_clip(a, st, true, 1) == 6;  // no mantle clip: the climb one
+        st.mode = MoveMode::Swim;
+        const bool swim = move_animation_clip(a, st, true, 1) == 1;    // none: the model's own
+        check("move animation: each move picks its clip, or a near one, or the model's own",
+              air && crouch && sprint && slide && mantle && swim);
+        std::vector<uint8_t> buf;
+        serialize_move_animation(&a, buf);
+        MoveAnimation b;
+        deserialize_move_animation(&b, buf.data(), buf.size());
+        check("move animation: saves and loads", b.air == 3 && b.crouch == 4 && b.climb == 6 && b.sprint == 2 && b.swim == -1);
+        check("Move Animation is an authorable component", find_authorable("Move Animation") != nullptr);
     }
 
     std::printf("\nmovement_check: %d passed, %d failed\n", g_pass, g_fail);
