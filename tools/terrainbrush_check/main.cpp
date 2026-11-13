@@ -16,6 +16,8 @@
 #include "terrain_hydrology.h"
 #include "foliage.h"
 #include "biome.h"
+#include "world_preset.h"
+#include "scene.h"
 
 #include <algorithm>
 #include <cmath>
@@ -504,6 +506,47 @@ int main() {
         bc.Map(t, {WaterRect{50.0f, -10.0f, 70.0f, 10.0f, 100.0f}}, 1);
         check(kept && bc.MapVersion() == v + 1 && bc.MoistureMap()[64 * 128 + 94] > 0.95f,
               "the map is kept until something it depends on changes; new water makes the ground around it wet");
+    }
+    {
+        // Every preset builds a world that has what it promises.
+        for (const WorldPreset& p : world_presets()) {
+            Scene scene("worldcheck");
+            const BuiltWorld w = build_world(scene, p, 7u, std::string());
+            auto tc = w.terrain ? w.terrain->GetComponent<TerrainComponent>() : nullptr;
+            auto fc = w.terrain ? w.terrain->GetComponent<FoliageComponent>() : nullptr;
+            auto bc = w.terrain ? w.terrain->GetComponent<BiomeComponent>() : nullptr;
+            bool ok = tc && fc && bc && tc->GetSize() == p.size;
+            float lo = 1e9f, hi = -1e9f;
+            if (tc)
+                for (float h : tc->Heights()) { lo = std::min(lo, h); hi = std::max(hi, h); }
+            ok = ok && hi - lo > p.height * 0.3f && hi <= p.height + 1e-3f;
+            ok = ok && w.rivers == p.rivers;
+            size_t trees = 0;
+            if (ok)
+                for (const auto& s : fc->Scatter(*tc)) trees += s.count;
+            ok = ok && trees > 1000;
+            int used = 0;
+            if (ok) {
+                std::vector<int> share(bc->Biomes().size(), 0);
+                for (int z = 0; z < 32; ++z)
+                    for (int x = 0; x < 32; ++x) {
+                        const int d = bc->DominantAt(*tc, -p.size * 0.5f + (x + 0.5f) * p.size / 32.0f, -p.size * 0.5f + (z + 0.5f) * p.size / 32.0f);
+                        if (d >= 0) ++share[static_cast<size_t>(d)];
+                    }
+                for (int s : share) used += s > 0 ? 1 : 0;
+            }
+            const int want = std::min<int>(static_cast<int>(p.biomes.size()), 2);
+            ok = ok && used >= want;
+            check(ok, p.name + ": ground from 0 to " + std::to_string(static_cast<int>(hi)) + ", " + std::to_string(w.rivers) +
+                          " river(s), " + std::to_string(trees) + " plants, " + std::to_string(used) + " biomes in use");
+        }
+        Scene a("a"), b("b");
+        const WorldPreset hills = world_presets()[0];
+        const BuiltWorld wa = build_world(a, hills, 3u, std::string()), wb = build_world(b, hills, 3u, std::string());
+        const BuiltWorld wc = build_world(b, hills, 4u, std::string());
+        check(wa.terrain->GetComponent<TerrainComponent>()->Heights() == wb.terrain->GetComponent<TerrainComponent>()->Heights() &&
+                  wa.terrain->GetComponent<TerrainComponent>()->Heights() != wc.terrain->GetComponent<TerrainComponent>()->Heights(),
+              "the same preset and seed build the same world; another seed another");
     }
     if (g_fail) {
         std::printf("terrainbrush_check: %d FAILED, %d passed\n", g_fail, g_pass);

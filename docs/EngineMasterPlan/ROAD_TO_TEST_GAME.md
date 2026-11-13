@@ -69,7 +69,7 @@ variables), a UI designer, animation graphs as logic graphs.
 | B5 | **Hydrology.** Water placed at a source runs downhill, fills basins into lakes and falls over drops; rivers have flow direction; swimming and buoyancy follow the current | A spring on a hill becomes a river that reaches the sea |
 | B6 | **Workflow.** World templates, larger worlds | A new world starts from a preset |
 
-**Progress (v0.8.29):** B1 mostly done, B2 done, B3 first part, B4 mostly done, B5 first part. The brushes are plain functions in
+**Progress (v0.8.30):** B1 mostly done, B2 done, B3 first part, B4 mostly done, B5 first part, B6 first part. The brushes are plain functions in
 `engine/scene/include/terrain_brush.h`, checked by `tools/terrainbrush_check`
 (22 checks): Raise, Lower, Smooth, Flatten (to the height where the stroke
 began), Dig / Fill Hole, and new Noise, Terrace, Ramp and Erode. Whole-terrain
@@ -104,7 +104,11 @@ atmosphere blends live under the camera; scripts get "Biome At" and a
 "biome.enter" gameplay event (`engine/scene/include/biome.h`). Checked: the
 valley-to-peak walk crosses marsh, forest and alpine. Not yet: ambient sound per
 biome (scripts can do it with biome.enter), sections for streaming (the world
-streaming that exists is separate). B6 not started.
+streaming that exists is separate). B6: Create > World from a preset (Rolling
+hills, Mountains, Islands, Plain) builds ground, erosion, rivers, biomes,
+ground colours and foliage in one undo step (`engine/scene/include/world_preset.h`);
+every preset is built and checked headlessly. Still open in B6: larger worlds
+(several terrains tiled, streamed).
 
 ## Phase C: gameplay modules, finished
 

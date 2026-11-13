@@ -119,6 +119,7 @@
 #include "foliage_render.h"       // ... and drawn: visible cells only, instanced
 #include "biome.h"                // regions by altitude and moisture: ground, foliage, atmosphere
 #include "biome_water.h"          // the water a biome map treats as wet
+#include "world_preset.h"         // a whole landscape from one choice
 #include "logic_script_panel.h"  // graph editor for .lgraph logic scripts
 #include "logic_debug.h"          // a breakpoint in a logic script stops the game
 #include "vscript/value.h"       // literals of a logic graph's Inspector fields
@@ -2634,6 +2635,54 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 );
                 editor_state.undo_redo_manager.ExecuteCommand(std::move(create_cmd));
                 ImGui::CloseCurrentPopup();
+            }
+
+            if (editor_state.feature_on(schizo::project::Feature::Terrain) &&
+                ImGui::BeginMenu("World from a preset")) {
+                // A whole landscape in one step: ground, rivers, biomes,
+                // textures, foliage. One undo removes all of it.
+                static int  preset = 0;
+                static int  seed = 1;
+                const auto  presets = schizo::scene::world_presets();
+                for (int pi = 0; pi < static_cast<int>(presets.size()); ++pi) {
+                    if (ImGui::RadioButton(presets[static_cast<size_t>(pi)].name.c_str(), preset == pi)) preset = pi;
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", presets[static_cast<size_t>(pi)].description.c_str());
+                }
+                ImGui::SetNextItemWidth(120.0f);
+                ImGui::InputInt("Seed##world", &seed);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Random##world")) seed = static_cast<int>(std::rand() % 100000);
+                ImGui::TextDisabled("Ground colours are saved as materials in assets/materials/world.");
+                if (ImGui::Button("Create##world")) {
+                    const schizo::scene::WorldPreset p = presets[static_cast<size_t>(std::clamp(preset, 0, static_cast<int>(presets.size()) - 1))];
+                    const uint32_t s = static_cast<uint32_t>(std::max(0, seed));
+                    auto made = std::make_shared<std::vector<uint32_t>>();
+                    auto create = [scene, &editor_state, made, p, s]() {
+                        made->clear();
+                        const schizo::scene::BuiltWorld w = schizo::scene::build_world(*scene, p, s, "assets/materials/world");
+                        for (const auto& e : w.made) made->push_back(e->GetId());
+                        if (w.terrain) {
+                            editor_state.selected_entity_id = w.terrain->GetId();
+                            // Look at it from above, a little to the side.
+                            editor_state.viewport_camera.FollowTarget(w.terrain->GetTransform()->GetWorldPosition() + glm::vec3(0, p.height * 0.3f, 0),
+                                                                      glm::vec3(p.size * 0.15f, p.size * 0.45f, p.size * 0.45f));
+                        }
+                        editor_state.editor_scene->MarkModified();
+                        editor_state.set_status("Created \"" + p.name + "\": " + std::to_string(w.rivers) + " river(s), " +
+                                                std::to_string(w.lakes) + " lake(s)");
+                    };
+                    auto remove = [scene, &editor_state, made]() {
+                        for (auto it = made->rbegin(); it != made->rend(); ++it)
+                            if (auto e = FindEntityById(scene, *it)) scene->RemoveEntity(e);
+                        made->clear();
+                        editor_state.editor_scene->MarkModified();
+                    };
+                    editor_state.undo_redo_manager.ExecuteCommand(
+                        std::make_unique<schizo::editor::FunctionCommand>(create, remove, "Create world"));
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndMenu();
             }
 
             if (editor_state.feature_on(schizo::project::Feature::Terrain) &&
@@ -11856,6 +11905,22 @@ int main(int argc, char** argv) {
                         // node of its first graph.
                         if (const char* lb = std::getenv("GWS_TEST_LOGIC_BREAK"))
                             schizo::editor::add_logic_script_breakpoint(ls, 0, std::atoi(lb));
+                    }
+                    // GWS_TEST_WORLD=<preset index>: build that world preset (seed 7)
+                    // beside whatever the scene has, and look at it from above.
+                    if (const char* tw = std::getenv("GWS_TEST_WORLD")) {
+                        if (auto ts = editor_state.editor_scene ? editor_state.editor_scene->GetScene() : nullptr) {
+                            const auto presets = schizo::scene::world_presets();
+                            const auto& wp = presets[static_cast<size_t>(std::clamp(std::atoi(tw), 0, static_cast<int>(presets.size()) - 1))];
+                            const schizo::scene::BuiltWorld bw = schizo::scene::build_world(*ts, wp, 7u,
+                                (std::filesystem::temp_directory_path() / "gws_test_world").generic_string());
+                            if (bw.terrain) {
+                                bw.terrain->GetTransform()->SetWorldPosition(glm::vec3(0.0f, -0.5f, -wp.size * 0.5f - 40.0f));
+                                editor_state.viewport_camera.FollowTarget(bw.terrain->GetTransform()->GetWorldPosition() + glm::vec3(0, wp.height * 0.3f, 0),
+                                                                          glm::vec3(wp.size * 0.1f, wp.size * 0.42f, wp.size * 0.5f));
+                            }
+                            spdlog::info("[test] world '{}': {} rivers, {} lakes, {} objects", wp.name, bw.rivers, bw.lakes, bw.made.size());
+                        }
                     }
                     // GWS_TEST_TERRAIN_GEN=<seed>: generated, eroded hills on the
                     // scene's first terrain, to look at the whole-terrain tools.
