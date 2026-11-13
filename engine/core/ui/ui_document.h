@@ -53,6 +53,7 @@ struct UiSlot {
     std::string name;     // what is in it ("" empty)
     int         count = 0;
     std::string detail;   // a second line: kind, equipped...
+    std::string info;     // a description, for {<grid>.info} (not drawn in the cell)
 };
 
 /// A grid of slots (an inventory, a stash): cells drawn in rows, the
@@ -294,7 +295,7 @@ inline void refresh_ui_bindings(UiDocument& doc, const UiLookup& game_lookup, co
         if (slot_lookup && !g.source.empty()) g.grid->slots = slot_lookup(g.source);
         if (g.grid->selected >= g.grid->cols * g.grid->rows) g.grid->selected = -1;
     }
-    // {<slots id>.name / .count / .detail / .index}: the selected cell.
+    // {<slots id>.name / .count / .detail / .info / .index}: the selected cell.
     const UiLookup lookup = [&](const std::string& src) {
         for (const auto& g : doc.grids) {
             if (src.rfind(g.id + ".", 0) != 0) continue;
@@ -307,6 +308,7 @@ inline void refresh_ui_bindings(UiDocument& doc, const UiLookup& game_lookup, co
             else if (what == "count") v.value = s ? s->count : 0;
             else if (what == "name") v.text = s && !s->name.empty() ? s->name : std::string(" ");
             else if (what == "detail") v.text = s && !s->detail.empty() ? s->detail : std::string(" ");
+            else if (what == "info") v.text = s && !s->info.empty() ? s->info : std::string(" ");
             else v.found = false;
             return v;
         }

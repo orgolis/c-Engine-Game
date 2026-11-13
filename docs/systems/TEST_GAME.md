@@ -11,20 +11,27 @@ it in the editor.
 - **The world** (`scenes/main.scene`): rolling hills with rivers, forests of
   grown broadleaf and conifer trees, grass and rocks.
 - **The player**: first person, the full movement set (sprint, crouch, slide,
-  dash, mantle, climb), a rifle with 120 rounds, Firebolt on key 1, health
-  and mana potions; mortal, comes back from the last checkpoint.
-- **Levels and a skill tree**: each creature gives 100 XP (and 20 rounds); each
+  dash, mantle, climb), a rifle and a pistol (mouse wheel or Q to switch),
+  two frag grenades (G), Firebolt on key 1, health and mana potions; mortal,
+  comes back from the last checkpoint.
+- **Guns and gear** (`assets/gameplay/arsenal.items`): pistol, rifle,
+  shotgun and marksman rifle, each with its own ammunition; a combat helmet or
+  a mage hood (head) and a kevlar vest (chest) that raise health or mana and
+  take off damage; frag grenades. The shotgun, marksman rifle, armour and
+  more grenades are in the supply caches.
+- **Levels and a skill tree**: each creature gives 100 XP (and ammunition); each
   level gives a skill point. The tree (K) has three branches -- Spells (Frost
   Nova, Lightning, Archmage), Body (Toughness, Mend, Iron Skin) and Mind (Focus,
   Clarity, Veteran). Learned abilities go on the next keys (2, 3, 4); the
   others raise health or mana. One point to start; a full run gives five.
-- **Inventory** (I): the bag as a grid; pick an item, then Use (potions).
+- **Inventory** (I): the guns carried (click one to draw it), what is worn
+  (click to take it off) and the bag (pick an item, then Use / wear).
 - **Creature camps**: creatures patrol around their camp, notice the player
   in front of them, close by or when hurt, chase it along the navmesh and
   claw; every third camp spits from range. They die, drop rounds and potions,
   and their bodies go after a few seconds.
-- **Supply caches** to open with E, **two checkpoints** that save, and **a
-  beacon** on the far side.
+- **Supply caches** to open with E (guns, armour, grenades), **two
+  checkpoints** that save, and **a beacon** on the far side.
 - **Screens** (`ui/`): a title menu, the HUD (health and mana, the objective,
   level, XP and skill points, the keys as bound), the inventory, the skill
   tree, a pause menu on Esc (resume, save, load, settings, quit),
@@ -57,14 +64,17 @@ in the Items editor). The inventory and skills keys are in `input.cfg`.
 ## Keys
 
 WASD move, Shift sprint, Space jump / mantle, Ctrl crouch / slide, V dash,
-left mouse fire, right mouse aim, R reload, 1–4 abilities, E open / pick up,
-I inventory, K skill tree, Esc menu, F6 save, F9 load, Shift+F1 free the
+left mouse fire, right mouse aim, R reload, mouse wheel / Q switch gun, G
+grenade, 1–4 abilities, E open / pick up, I inventory, K skill tree, Esc menu, F6 save, F9 load, Shift+F1 free the
 mouse. All but Esc can be rebound in Settings.
 
 ## Known limits
 
 - Creatures are capsules (no rigged models yet) and walk by their transform:
   they pass through trees.
+- Guns have no models in the hand yet (the HUD names the one held), and a
+  grenade goes off at once where the crosshair lands -- there is no thrown
+  grenade to see; trees do not stop it.
 - Spit and claw take health at once; there is no projectile to see.
 - Trees are grown from flat leaf and needle cards without textures: they have
   trunks, branches and crowns, but up close they are not photographic. An

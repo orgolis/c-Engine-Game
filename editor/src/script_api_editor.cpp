@@ -348,7 +348,8 @@ int api_item_count(void* ctx, uint32_t e, const char* def_id) {
 bool api_equip_item(void* ctx, uint32_t e, const char* def_id) {
     ecs::World* w; ecs::Entity ent;
     if (!gp_entity(ctx, e, w, ent) || !def_id) return false;
-    if (auto* inv = w->try_get<ecs::Inventory>(ent)) ecs::inventory_remove(*inv, def_id, 1);
+    // From the bag (what was worn goes back into it); without a bag, it is simply put on.
+    if (w->has<ecs::Inventory>(ent)) return ecs::equip_from_inventory(*w, ent, def_id, &C(ctx)->bridge->events());
     return ecs::equip_item(*w, ent, ecs::ItemInstance{def_id, 1, 0, {}}, &C(ctx)->bridge->events());
 }
 bool api_use_item(void* ctx, uint32_t e, const char* def_id) {
@@ -559,6 +560,41 @@ int api_skill_points(void* ctx, uint32_t e) {
 }
 int api_ui_selected(void*, const char* path, const char* id) {
     return path && id ? schizo::editor::play_ui().selected(path, id) : -1;
+}
+bool api_give_weapon(void* ctx, uint32_t e, const char* weapon) {
+    ecs::World* w; ecs::Entity ent;
+    return weapon && gp_entity(ctx, e, w, ent) && ecs::give_weapon(*w, ent, weapon, &C(ctx)->bridge->events());
+}
+bool api_select_weapon(void* ctx, uint32_t e, int index) {
+    ecs::World* w; ecs::Entity ent;
+    return gp_entity(ctx, e, w, ent) && ecs::select_weapon(*w, ent, index, &C(ctx)->bridge->events());
+}
+int api_current_weapon(void* ctx, uint32_t e, char* id_out, int id_size) {
+    if (id_out && id_size > 0) id_out[0] = 0;
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return -1;
+    const auto* ws = w->try_get<ecs::WeaponState>(ent);
+    if (!ws || ws->weapon_id.empty()) return -1;
+    copy_out(ws->weapon_id, id_out, id_size);
+    const ecs::WeaponLoadout* l = ecs::ensure_loadout(*w, ent);
+    return l ? l->current : 0;
+}
+bool api_unequip_item(void* ctx, uint32_t e, const char* slot) {
+    ecs::World* w; ecs::Entity ent;
+    return slot && gp_entity(ctx, e, w, ent) && ecs::unequip_to_inventory(*w, ent, slot, &C(ctx)->bridge->events());
+}
+bool api_equipped_item(void* ctx, uint32_t e, const char* slot, char* id_out, int id_size, char* name_out, int name_size) {
+    if (id_out && id_size > 0) id_out[0] = 0;
+    if (name_out && name_size > 0) name_out[0] = 0;
+    ecs::World* w; ecs::Entity ent;
+    if (!slot || !gp_entity(ctx, e, w, ent)) return false;
+    const auto* eq = w->try_get<ecs::Equipment>(ent);
+    const ecs::ItemInstance* it = eq ? ecs::equipped_in(*eq, slot) : nullptr;
+    if (!it) return false;
+    const auto* d = ecs::find_item(it->def_id);
+    copy_out(it->def_id, id_out, id_size);
+    copy_out(d ? d->name : it->def_id, name_out, name_size);
+    return true;
 }
 bool api_item_in_slot(void* ctx, uint32_t e, int index, char* id_out, int id_size, char* name_out, int name_size, int* count) {
     if (id_out && id_size > 0) id_out[0] = 0;
@@ -787,6 +823,11 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.skill_points       = &api_skill_points;
     api.ui_selected        = &api_ui_selected;
     api.item_in_slot       = &api_item_in_slot;
+    api.give_weapon        = &api_give_weapon;
+    api.select_weapon      = &api_select_weapon;
+    api.current_weapon     = &api_current_weapon;
+    api.unequip_item       = &api_unequip_item;
+    api.equipped_item      = &api_equipped_item;
     api.distance           = &api_distance;
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;

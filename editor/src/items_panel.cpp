@@ -89,6 +89,8 @@ void draw_item(ecs::ItemDef& it, const ecs::ItemsDoc& d) {
     ImGui::DragFloat("value", &it.value, 0.1f, 0.0f, 1e7f, "%.1f");
     input_str("equip slot", it.equip_slot, "none (weapon, head, chest...)");
     input_str("set", it.set_id, "not part of a set");
+    input_str("about", it.description, "a line for the player (inventory screens)");
+    input_str("casts", it.cast_ability, "an ability that goes off when used (a grenade)");
 
     if (ImGui::TreeNodeEx("Bonuses while equipped", ImGuiTreeNodeFlags_DefaultOpen)) {
         int remove = -1;
@@ -175,6 +177,8 @@ void draw_weapon(ecs::WeaponDef& w, const ecs::ItemsDoc& d) {
         input_id("damage type", w.damage_type);
         ImGui::DragFloat("rounds per minute", &w.rpm, 1.0f, 1.0f, 6000.0f, "%.0f");
         ImGui::DragInt("magazine", &w.mag_size, 0.2f, 1, 10000);
+        ImGui::DragFloat("draw (s)", &w.draw_time, 0.01f, 0.0f, 5.0f, "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Seconds from switching to this gun until it fires");
         ImGui::DragInt("pellets", &w.pellets, 0.05f, 1, 64);
         ImGui::SetItemTooltip("More than 1: a shotgun.");
         ImGui::DragFloat("reload", &w.reload_time, 0.01f, 0.0f, 30.0f, "%.2f s");

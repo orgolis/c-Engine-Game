@@ -18,6 +18,8 @@
 //     max_stack 10
 //     weight 0.1
 //     on_use Health 40         # apply an instant effect (attribute, amount) on use
+//     about Restores 40 health # a line for the player (inventory screens)
+//     casts frag               # used: this ability goes off from the view (grenades)
 //   end
 //
 //   item sword_iron
@@ -105,6 +107,8 @@ inline std::vector<ItemDef> parse_items_text(const std::string& text) {
         else if (key == "tag")       { std::string t; ls >> t; if (!t.empty()) cur.granted_tags.push_back(t); }
         else if (key == "mod")       { ItemModifier m; ls >> m.attribute >> m.amount; if (!m.attribute.empty()) cur.modifiers.push_back(m); }
         else if (key == "on_use")    { std::string a; float amt = 0; ls >> a >> amt; if (!a.empty()) cur.on_use.push_back(make_instant("Use", a, amt)); }
+        else if (key == "about")     { std::string rest; std::getline(ls, rest); cur.description = detail::trim(rest); }
+        else if (key == "casts")     { ls >> cur.cast_ability; }
         else if (key == "affix")     { ItemAffix af; ls >> af.attribute >> af.min_roll >> af.max_roll; std::string rest; std::getline(ls, rest); af.name = detail::trim(rest); cur.affix_pool.push_back(af); }
     }
     flush();
@@ -149,6 +153,7 @@ inline std::vector<WeaponDef> parse_weapons_text(const std::string& text) {
         else if (key == "damage")   { ls >> cur.damage; std::string ty; if (ls >> ty) cur.damage_type = ty; }
         else if (key == "rpm")      { ls >> cur.rpm; }
         else if (key == "magazine") { ls >> cur.mag_size; }
+        else if (key == "draw")     { ls >> cur.draw_time; }
         else if (key == "pellets")  { ls >> cur.pellets; }
         else if (key == "reload")   { ls >> cur.reload_time; }
         else if (key == "spread")   { ls >> cur.spread_deg; }
@@ -353,6 +358,8 @@ inline std::string item_def_text(const ItemDef& d) {
     for (const auto& m : d.modifiers) s += "  mod " + m.attribute + " " + num(m.amount) + "\n";
     for (const auto& fx : d.on_use)
         for (const auto& m : fx.modifiers) s += "  on_use " + m.attribute + " " + num(m.magnitude) + "\n";
+    if (!d.cast_ability.empty()) s += "  casts " + d.cast_ability + "\n";
+    if (!d.description.empty()) s += "  about " + d.description + "\n";
     for (const auto& a : d.affix_pool) {
         s += "  affix " + a.attribute + " " + num(a.min_roll) + " " + num(a.max_roll);
         if (!a.name.empty()) s += " " + a.name;
@@ -371,6 +378,7 @@ inline std::string weapon_def_text(const WeaponDef& w) {
     s += "  damage " + num(w.damage) + (w.damage_type.empty() ? "" : " " + w.damage_type) + "\n";
     s += "  rpm " + num(w.rpm) + "\n";
     s += "  magazine " + std::to_string(w.mag_size) + "\n";
+    if (w.draw_time != def.draw_time) s += "  draw " + num(w.draw_time) + "\n";
     if (w.reload_time != def.reload_time) s += "  reload " + num(w.reload_time) + "\n";
     if (w.pellets != def.pellets) s += "  pellets " + std::to_string(w.pellets) + "\n";
     s += "  spread " + num(w.spread_deg) + "\n";

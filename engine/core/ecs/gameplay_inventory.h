@@ -88,11 +88,23 @@ inline int inventory_remove(Inventory& inv, const std::string& def_id, int qty) 
 }
 
 // Use a consumable at `index`: apply its on-use effects + decrement/remove.
+/// Abilities asked for by items (`casts`): the game fires them from the
+/// user's view (Play: the player's camera) and empties this.
+struct AbilityRequests { std::vector<std::string> ids; };
+
+inline bool equip_from_inventory(World& w, Entity e, const std::string& def_id, GameplayEventBus* bus);
+
 inline bool use_item(World& w, Entity e, Inventory& inv, size_t index, GameplayEventBus* bus = nullptr) {
     if (index >= inv.items.size()) return false;
     const ItemDef* d = find_item(inv.items[index].def_id);
+    if (d && !d->equip_slot.empty() && d->kind != ItemKind::Consumable)
+        return equip_from_inventory(w, e, d->id, bus);   // gear: using it puts it on
     if (!d || d->kind != ItemKind::Consumable) return false;
     for (const auto& fx : d->on_use) apply_effect(w, e, fx);
+    if (!d->cast_ability.empty()) {
+        if (!w.has<AbilityRequests>(e)) w.add<AbilityRequests>(e, AbilityRequests{});
+        w.get<AbilityRequests>(e).ids.push_back(d->cast_ability);
+    }
     if (bus) { GameplayEvent ev; ev.name = "item.used"; ev.target = e; ev.param = d->id; bus->publish(ev); }
     if (--inv.items[index].quantity <= 0) inv.items.erase(inv.items.begin() + index);
     return true;
@@ -159,11 +171,13 @@ inline void recompute_equipment(World& w, Entity e) {
                 for (const auto& t : sb.tags)      agg_tags.push_back(t);
             }
 
-    if (attrs) for (const auto& m : agg)
-        if (Attribute* a = attrs->find(m.attribute)) {
-            a->max += m.amount; a->current += m.amount;
-            a->current = std::max(a->min, std::min(a->max, a->current));
-        }
+    if (attrs) for (const auto& m : agg) {
+        // An attribute the wearer lacks starts at 0 (armour's resist.<type> on anyone).
+        Attribute* a = attrs->find(m.attribute);
+        if (!a) a = &attrs->define(m.attribute, 0.0f, 0.0f, 0.0f);
+        a->max += m.amount; a->current += m.amount;
+        a->current = std::max(a->min, std::min(a->max, a->current));
+    }
     if (!agg_tags.empty()) {
         if (!w.has<GameplayTags>(e)) w.add<GameplayTags>(e, GameplayTags{});
         auto& g = w.get<GameplayTags>(e);
@@ -197,6 +211,42 @@ inline bool unequip_slot(World& w, Entity e, const std::string& slot, GameplayEv
             return true;
         }
     return false;
+}
+
+/// Put on an item from the bag: it leaves the bag, and what was in its slot
+/// goes back into the bag. False if it is not in the bag or is not gear.
+inline bool equip_from_inventory(World& w, Entity e, const std::string& def_id, GameplayEventBus* bus) {
+    const ItemDef* d = find_item(def_id);
+    Inventory* inv = w.try_get<Inventory>(e);
+    if (!d || d->equip_slot.empty() || !inv) return false;
+    size_t at = inv->items.size();
+    for (size_t i = 0; i < inv->items.size(); ++i)
+        if (inv->items[i].def_id == def_id) { at = i; break; }
+    if (at == inv->items.size()) return false;
+    ItemInstance item = inv->items[at];
+    item.quantity = 1;
+    if (--inv->items[at].quantity <= 0) inv->items.erase(inv->items.begin() + static_cast<std::ptrdiff_t>(at));
+    if (const Equipment* eq = w.try_get<Equipment>(e))
+        if (const ItemInstance* old = equipped_in(*eq, d->equip_slot)) {
+            const ItemInstance back = *old;
+            inventory_add(*inv, back);
+        }
+    return equip_item(w, e, item, bus);
+}
+
+/// Take off what is in a slot, into the bag. False when nothing is there or
+/// the bag has no room (it stays on).
+inline bool unequip_to_inventory(World& w, Entity e, const std::string& slot, GameplayEventBus* bus = nullptr) {
+    const Equipment* eq = w.try_get<Equipment>(e);
+    const ItemInstance* on = eq ? equipped_in(*eq, slot) : nullptr;
+    if (!on) return false;
+    const ItemInstance item = *on;
+    if (!w.has<Inventory>(e)) w.add<Inventory>(e, Inventory{});
+    Inventory& inv = w.get<Inventory>(e);
+    Inventory trial = inv;
+    if (inventory_add(trial, item) > 0) return false;
+    inv = std::move(trial);
+    return unequip_slot(w, e, slot, bus);
 }
 
 // ---------------- custom serialization ----------------

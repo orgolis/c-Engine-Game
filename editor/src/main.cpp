@@ -714,6 +714,15 @@ static void EndPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::Sc
 static EditorState* g_editor_state = nullptr;
 
 // GLFW drop callback for drag-and-drop file support
+// The mouse wheel for the game's controls (Wheel Up / Wheel Down), passed on
+// to whoever listened before (ImGui).
+static GLFWscrollfun g_prev_scroll_callback = nullptr;
+static double        g_wheel_notches = 0.0;   // + up, - down, not yet read by Play
+static void ScrollCallback(GLFWwindow* window, double dx, double dy) {
+    g_wheel_notches += dy;
+    if (g_prev_scroll_callback) g_prev_scroll_callback(window, dx, dy);
+}
+
 static void DropCallback(GLFWwindow* window, int count, const char** paths) {
     if (!g_editor_state) return;
 
@@ -9014,6 +9023,7 @@ int main(int argc, char** argv) {
 
         g_editor_state = &editor_state;
         glfwSetDropCallback(glfw_window, DropCallback);
+        g_prev_scroll_callback = glfwSetScrollCallback(glfw_window, ScrollCallback);
 
         // One-time dock-layout migration. editor.ini persists the dock layout,
         // but a layout saved before a panel existed (e.g. Terminal / Output)
@@ -10562,8 +10572,24 @@ int main(int argc, char** argv) {
                 // The controls, once a frame, by action.
                 auto& ps = schizo::editor::play_settings();
                 static int test_press_key = 0, test_press_frames = 0;   // GWS_TEST_UI press:<action>
+                // The wheel: each notch one press (down a frame, up a frame), only while the game has the mouse.
+                static int  wheel_up_left = 0, wheel_down_left = 0;
+                static bool wheel_up_now = false, wheel_down_now = false;
+                {
+                    const int steps = static_cast<int>(g_wheel_notches);
+                    g_wheel_notches -= steps;
+                    if (!pm.IsCursorCaptured()) { g_wheel_notches = 0.0; wheel_up_left = wheel_down_left = 0; }
+                    else if (steps > 0) wheel_up_left = std::min(4, wheel_up_left + steps);
+                    else if (steps < 0) wheel_down_left = std::min(4, wheel_down_left - steps);
+                    wheel_up_now = !wheel_up_now && wheel_up_left > 0;
+                    if (wheel_up_now) --wheel_up_left;
+                    wheel_down_now = !wheel_down_now && wheel_down_left > 0;
+                    if (wheel_down_now) --wheel_down_left;
+                }
                 auto key_held = [&](int code) {
                     if (test_press_frames > 0 && code == test_press_key) return true;
+                    if (code == schizo::input::kMouseWheelUp) return wheel_up_now;
+                    if (code == schizo::input::kMouseWheelDown) return wheel_down_now;
                     if (code >= schizo::input::kMouseButton)
                         return glfwGetMouseButton(glfw_window, code - schizo::input::kMouseButton) == GLFW_PRESS;
                     return code > 0 && glfwGetKey(glfw_window, code) == GLFW_PRESS;
@@ -10582,7 +10608,7 @@ int main(int argc, char** argv) {
                         waiting_for = ps.rebinding;
                         held_at_start.clear();
                         if (!waiting_for.empty())
-                            for (int c = 32; c < schizo::input::kMouseButton + 8; ++c) {
+                            for (int c = 32; c <= schizo::input::kMouseWheelDown; ++c) {
                                 if (c == 349) c = schizo::input::kMouseButton;
                                 if (key_held(c)) held_at_start.push_back(c);
                             }
@@ -10591,7 +10617,7 @@ int main(int argc, char** argv) {
                         held_at_start.erase(std::remove_if(held_at_start.begin(), held_at_start.end(),
                                                            [&](int c) { return !key_held(c); }), held_at_start.end());
                         int got = 0;
-                        for (int c = 32; c < schizo::input::kMouseButton + 8 && !got; ++c) {
+                        for (int c = 32; c <= schizo::input::kMouseWheelDown && !got; ++c) {
                             if (c == 349) c = schizo::input::kMouseButton;
                             if (schizo::input::key_name(c) == "None") continue;
                             if (key_held(c) && std::find(held_at_start.begin(), held_at_start.end(), c) == held_at_start.end()) got = c;
@@ -10682,6 +10708,24 @@ int main(int argc, char** argv) {
                         else { v.value = pr->xp; v.max = pr->curve.threshold(pr->level + 1); }
                         return v;
                     }
+                    if (what.rfind("item.", 0) == 0) {
+                        // item.<id>: how many the bag holds.
+                        v.found = true;
+                        if (const auto* inv = w.try_get<schizo::ecs::Inventory>(pe)) v.value = schizo::ecs::inventory_count(*inv, what.substr(5));
+                        return v;
+                    }
+                    if (what.rfind("equipped.", 0) == 0) {
+                        // equipped.<slot>: the name of what is worn there ("-" none; value 1 when worn).
+                        v.found = true;
+                        v.text = "-";
+                        const auto* eq = w.try_get<schizo::ecs::Equipment>(pe);
+                        if (const auto* it = eq ? schizo::ecs::equipped_in(*eq, what.substr(9)) : nullptr) {
+                            const auto* d = schizo::ecs::find_item(it->def_id);
+                            v.text = d ? d->name : it->def_id;
+                            v.value = 1;
+                        }
+                        return v;
+                    }
                     if (what.rfind("ability.", 0) == 0) {
                         // ability.<n>: the name on the bar's slot n (from 1), its cooldown left of its whole.
                         const int slot = std::atoi(what.c_str() + 8) - 1;
@@ -10701,15 +10745,35 @@ int main(int argc, char** argv) {
                 }, [&](const std::string& src) {
                     // A slots grid bound to the player's inventory.
                     std::vector<schizo::ui::UiSlot> out;
-                    if (src != "player.inventory") return out;
+                    if (src != "player.inventory" && src != "player.weapons") return out;
                     auto* pl = pm.GetPlayerEntity();
                     const uint32_t pid = pl ? ecs_bridge.ecs_entity_id(pl->GetTransform()) : schizo::editor::kNoEcsEntity;
                     const auto pe = static_cast<schizo::ecs::Entity>(pid);
                     if (pid == schizo::editor::kNoEcsEntity || !ecs_bridge.world().valid(pe)) return out;
-                    if (const auto* inv = ecs_bridge.world().try_get<schizo::ecs::Inventory>(pe))
+                    auto& gw = ecs_bridge.world();
+                    if (src == "player.weapons") {
+                        // The guns carried: the rounds in each magazine; the one in hand marked.
+                        const auto* l = schizo::ecs::ensure_loadout(gw, pe);
+                        const auto* ws = gw.try_get<schizo::ecs::WeaponState>(pe);
+                        if (l)
+                            for (size_t i = 0; i < l->slots.size(); ++i) {
+                                const bool held = static_cast<int>(i) == l->current;
+                                const auto* d = schizo::ecs::find_weapon(l->slots[i].weapon_id);
+                                schizo::ui::UiSlot s{d ? d->name : l->slots[i].weapon_id,
+                                                     held && ws ? ws->ammo_in_mag : l->slots[i].ammo_in_mag, held ? "in hand" : ""};
+                                if (d) s.info = std::to_string(static_cast<int>(d->damage)) + " damage" +
+                                                (d->pellets > 1 ? " x" + std::to_string(d->pellets) : std::string()) + ", " +
+                                                std::to_string(d->mag_size) + " rounds, " + std::to_string(static_cast<int>(d->rpm)) + " rpm";
+                                out.push_back(std::move(s));
+                            }
+                        return out;
+                    }
+                    if (const auto* inv = gw.try_get<schizo::ecs::Inventory>(pe))
                         for (const auto& it : inv->items) {
                             const auto* d = schizo::ecs::find_item(it.def_id);
-                            out.push_back({d ? d->name : it.def_id, it.quantity, d ? schizo::ecs::item_kind_name(d->kind) : ""});
+                            schizo::ui::UiSlot s{d ? d->name : it.def_id, it.quantity, d ? schizo::ecs::item_kind_name(d->kind) : ""};
+                            if (d) s.info = d->description;
+                            out.push_back(std::move(s));
                         }
                     return out;
                 });
@@ -11042,6 +11106,12 @@ int main(int argc, char** argv) {
                 in.fire_held = lmb;
                 in.aim_held = rmb;
                 in.reload_pressed = rk && !prev_r;
+                if (focus) {
+                    in.cycle = acts.pressed("next_weapon") ? 1 : acts.pressed("prev_weapon") ? -1 : 0;
+                    in.last = acts.pressed("last_weapon");
+                    for (int i = 1; i <= 4; ++i)
+                        if (acts.pressed("weapon_" + std::to_string(i))) in.select = i - 1;
+                }
                 prev_lmb = lmb;
                 prev_r = rk;
                 // GWS_TEST_GUN=1 (with GWS_TEST_PLAY): arm the player with a

@@ -20,7 +20,7 @@ int main() {
     // Every named key reads back as itself.
     bool round = true;
     int named = 0;
-    for (int c = 1; c < kMouseButton + 8; ++c) {
+    for (int c = 1; c <= kMouseWheelDown; ++c) {
         if (c == 400) c = kMouseButton;
         const std::string n = key_name(c);
         if (n == "None") continue;
@@ -35,6 +35,9 @@ int main() {
     check("defaults: WASD, Space, mouse buttons, 1-8, F6 / F9",
           m.key("move_forward") == 'W' && m.key("jump") == 32 && m.key("fire") == kMouseButton &&
           m.key("aim") == kMouseButton + 1 && m.key("ability_3") == '3' && m.key("quick_save") == 295 && m.key("quick_load") == 298);
+    check("defaults: the wheel changes guns, Q the last one; Weapon 1-4 unbound",
+          m.key("next_weapon") == kMouseWheelDown && m.key("prev_weapon") == kMouseWheelUp && m.key("last_weapon") == 'Q' &&
+          m.has("weapon_1") && m.key("weapon_1") == 0 && key_name(kMouseWheelUp) == "Wheel Up" && key_code("wheel down") == kMouseWheelDown);
     std::set<int> keys;
     bool unique = true;
     for (const auto& b : m.bindings()) if (b.key && !keys.insert(b.key).second) unique = false;

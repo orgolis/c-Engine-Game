@@ -41,6 +41,7 @@ struct WeaponDef {
     std::string damage_type = "kinetic";
     float       rpm = 600.0f;             // rounds/min -> cooldown = 60/rpm
     int         mag_size = 30;
+    float       draw_time = 0.4f;         // seconds from switching to it until it fires
     int         pellets = 1;              // >1 = shotgun
     float       spread_deg = 1.0f;
     float       range = 100.0f;

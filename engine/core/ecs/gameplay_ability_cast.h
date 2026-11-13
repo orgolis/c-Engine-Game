@@ -185,6 +185,12 @@ inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot,
         }
         case AbilityTargeting::AreaAtAim:
             centre = in.origin + aim * (wall ? wall_t : d.range);
+            if (!wall && world && *world) {
+                // Aimed at nothing (the sky): it comes down on the ground below.
+                float down_t = 0.0f;
+                glm::vec3 dn(0.0f, 1.0f, 0.0f);
+                if ((*world)(centre, glm::vec3(0.0f, -1.0f, 0.0f), 200.0f, down_t, dn)) centre.y -= down_t;
+            }
             [[fallthrough]];
         case AbilityTargeting::AreaAroundSelf: {
             f.point = centre;

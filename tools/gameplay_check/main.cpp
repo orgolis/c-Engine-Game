@@ -29,6 +29,7 @@
 #include "ecs/gameplay_savegame.h"
 #include "ecs/gameplay_social.h"
 #include "ecs/gameplay_weapons.h"
+#include "ecs/gameplay_loadout.h"
 #include "ecs/gameplay_vehicles.h"
 #include "ecs/gameplay_building.h"
 #include "ecs/gameplay_survival.h"
@@ -361,6 +362,130 @@ int main() {
               written.find("skill sk_c\n  name Nova\n  tree sk_test\n  cost 1\n  requires sk_a\n") != std::string::npos);
     }
 
+    // Guns carried: giving, switching (each magazine kept, a draw time),
+    // picking one up, saving the loadout.
+    {
+        ecs::register_items_text(
+            "item lo_rounds\n  kind material\n  max_stack 500\nend\n"
+            "item lo_shells\n  kind material\n  max_stack 100\nend\n"
+            "weapon lo_rifle\n  fire auto\n  damage 20\n  magazine 30\n  ammo lo_rounds\nend\n"
+            "weapon lo_shotgun\n  damage 12\n  pellets 8\n  magazine 6\n  draw 0.7\n  ammo lo_shells\nend\n"
+            "weapon lo_pistol\n  damage 25\n  magazine 12\n  ammo lo_rounds\nend\n");
+        ecs::World w;
+        const ecs::Entity me = w.create();
+        w.add<ecs::Transform>(me, ecs::Transform{});
+        w.add<ecs::Inventory>(me, ecs::Inventory{});
+        ecs::inventory_add(w.get<ecs::Inventory>(me), ecs::ItemInstance{"lo_rounds", 100, 0, {}});
+        const bool first = ecs::give_weapon(w, me, "lo_rifle") && w.has<ecs::WeaponState>(me) &&
+                           w.get<ecs::WeaponState>(me).weapon_id == "lo_rifle" && w.get<ecs::WeaponState>(me).ammo_in_mag == 30;
+        const bool second = ecs::give_weapon(w, me, "lo_shotgun") && w.get<ecs::WeaponState>(me).weapon_id == "lo_rifle";
+        const bool again = !ecs::give_weapon(w, me, "lo_shotgun") && !ecs::give_weapon(w, me, "no_such_gun");
+        check("loadout: the first gun goes into the hand, the next is carried; no gun twice",
+              first && second && again && w.get<ecs::WeaponLoadout>(me).slots.size() == 2);
+        // Fire 5 rounds' worth, switch away and back: the magazine is as it was left.
+        w.get<ecs::WeaponState>(me).ammo_in_mag = 25;
+        const bool to_shotgun = ecs::cycle_weapon(w, me, +1);
+        const auto& ws = w.get<ecs::WeaponState>(me);
+        const bool drawn = ws.weapon_id == "lo_shotgun" && ws.ammo_in_mag == 6 && ws.cooldown > 0.69f;
+        const bool shot_while_drawing = ecs::fire_weapon(w, me, glm::vec3(0), glm::vec3(0, 0, -1), w.get<ecs::WeaponState>(me));
+        const bool back = ecs::last_weapon(w, me) && w.get<ecs::WeaponState>(me).weapon_id == "lo_rifle" &&
+                          w.get<ecs::WeaponState>(me).ammo_in_mag == 25;
+        const bool wrap = ecs::cycle_weapon(w, me, -1) && w.get<ecs::WeaponState>(me).weapon_id == "lo_shotgun";
+        check("switching: each magazine kept, the drawn gun waits its draw time, round the list, back to the last",
+              to_shotgun && drawn && !shot_while_drawing && back && wrap && !ecs::select_weapon(w, me, 7));
+        // Rounds loaded but not yet taken from the bag leave it when the gun is put away.
+        ecs::select_weapon(w, me, 0);
+        auto& rifle = w.get<ecs::WeaponState>(me);
+        ecs::sync_ammo_with_inventory(rifle, w.get<ecs::Inventory>(me));
+        const int bag_before = ecs::inventory_count(w.get<ecs::Inventory>(me), "lo_rounds");
+        rifle.reserve -= 5;
+        rifle.ammo_in_mag += 5;
+        ecs::select_weapon(w, me, 1);
+        check("switching settles the ammunition: no free rounds",
+              ecs::inventory_count(w.get<ecs::Inventory>(me), "lo_rounds") == bag_before - 5);
+        // A gun on the ground: picked up, carried; picked up again, its ammunition instead.
+        auto pickup = [&](const char* id) {
+            const ecs::Entity p = w.create();
+            w.add<ecs::Transform>(p, ecs::Transform{});
+            w.add<ecs::Interactable>(p, ecs::Interactable{});
+            w.add<ecs::Pickup>(p, ecs::Pickup{id, 1});
+            return ecs::interact(w, me, p);
+        };
+        const int shells_before = ecs::inventory_count(w.get<ecs::Inventory>(me), "lo_shells");
+        const bool got_pistol = pickup("lo_pistol") && w.get<ecs::WeaponLoadout>(me).slots.size() == 3 &&
+                                ecs::inventory_count(w.get<ecs::Inventory>(me), "lo_pistol") == 0;
+        const bool shells = pickup("lo_shotgun") && w.get<ecs::WeaponLoadout>(me).slots.size() == 3 &&
+                            ecs::inventory_count(w.get<ecs::Inventory>(me), "lo_shells") == shells_before + 6;
+        check("pickups: a gun joins those carried; one already carried gives a magazine of its ammunition",
+              got_pistol && shells);
+        // A bare gun in hand (no loadout yet) is the loadout's first; the loadout saves.
+        ecs::World w2;
+        const ecs::Entity other = w2.create();
+        ecs::WeaponState lone; lone.weapon_id = "lo_pistol"; lone.ammo_in_mag = 3;
+        w2.add<ecs::WeaponState>(other, lone);
+        const bool made = ecs::give_weapon(w2, other, "lo_rifle") && w2.get<ecs::WeaponLoadout>(other).slots[0].weapon_id == "lo_pistol" &&
+                          w2.get<ecs::WeaponLoadout>(other).slots[0].ammo_in_mag == 3;
+        std::vector<uint8_t> buf;
+        ecs::serialize_loadout(&w.get<ecs::WeaponLoadout>(me), buf);
+        ecs::WeaponLoadout back_l;
+        ecs::deserialize_loadout(&back_l, buf.data(), buf.size());
+        const auto& l = w.get<ecs::WeaponLoadout>(me);
+        check("loadout: made from the gun in hand; saved and read back",
+              made && back_l.slots.size() == l.slots.size() && back_l.current == l.current && back_l.last == l.last &&
+              back_l.slots[0].ammo_in_mag == l.slots[0].ammo_in_mag);
+    }
+
+    // Gear: worn from the bag, swapped back into it, armour that takes damage
+    // off, items with a description and an ability.
+    {
+        const char* data =
+            "item gr_helmet\n  name Helmet\n  kind armor\n  slot head\n  mod Health 20\n  mod resist.physical 0.25\n"
+            "  about +20 health, a quarter less damage\nend\n"
+            "item gr_hood\n  name Hood\n  kind armor\n  slot head\n  mod Mana 40\nend\n"
+            "item gr_bomb\n  name Bomb\n  kind consumable\n  max_stack 5\n  casts gr_blast\nend\n";
+        ecs::register_items_text(data);
+        ecs::World w;
+        const ecs::Entity me = w.create();
+        w.add<ecs::AttributeSet>(me, ecs::AttributeSet{});
+        w.get<ecs::AttributeSet>(me).define("Health", 100, 0, 100);
+        w.get<ecs::AttributeSet>(me).define("Mana", 50, 0, 50);
+        w.add<ecs::Inventory>(me, ecs::Inventory{});
+        auto& inv = w.get<ecs::Inventory>(me);
+        ecs::inventory_add(inv, ecs::ItemInstance{"gr_helmet", 1, 0, {}});
+        ecs::inventory_add(inv, ecs::ItemInstance{"gr_hood", 1, 0, {}});
+        ecs::inventory_add(inv, ecs::ItemInstance{"gr_bomb", 2, 0, {}});
+        const bool worn = ecs::use_item(w, me, w.get<ecs::Inventory>(me), 0) &&
+                          ecs::inventory_count(w.get<ecs::Inventory>(me), "gr_helmet") == 0 &&
+                          w.get<ecs::AttributeSet>(me).find("Health")->max == 120.0f;
+        const float dealt = ecs::apply_damage(w, me, ecs::DamageInfo{40.0f, "physical"});
+        check("gear: Use puts it on from the bag; its bonuses and armour (an attribute it lacked) apply",
+              worn && std::fabs(dealt - 30.0f) < 0.01f);
+        const bool swap = ecs::equip_from_inventory(w, me, "gr_hood", nullptr) &&
+                          ecs::inventory_count(w.get<ecs::Inventory>(me), "gr_helmet") == 1 &&
+                          ecs::inventory_count(w.get<ecs::Inventory>(me), "gr_hood") == 0 &&
+                          w.get<ecs::AttributeSet>(me).find("Health")->max == 100.0f &&
+                          w.get<ecs::AttributeSet>(me).find("Mana")->max == 90.0f &&
+                          w.get<ecs::AttributeSet>(me).get("resist.physical") == 0.0f;
+        const bool off = ecs::unequip_to_inventory(w, me, "head") && ecs::inventory_count(w.get<ecs::Inventory>(me), "gr_hood") == 1 &&
+                         w.get<ecs::AttributeSet>(me).find("Mana")->max == 50.0f && !ecs::unequip_to_inventory(w, me, "head");
+        const bool not_owned = !ecs::equip_from_inventory(w, me, "gr_nothing", nullptr);
+        check("gear: another in the same slot sends the first back to the bag; taking it off returns it; nothing from nowhere",
+              swap && off && not_owned);
+        size_t bomb = 0;
+        for (size_t i = 0; i < w.get<ecs::Inventory>(me).items.size(); ++i)
+            if (w.get<ecs::Inventory>(me).items[i].def_id == "gr_bomb") bomb = i;
+        const bool thrown = ecs::use_item(w, me, w.get<ecs::Inventory>(me), bomb) && w.has<ecs::AbilityRequests>(me) &&
+                            w.get<ecs::AbilityRequests>(me).ids.size() == 1 && w.get<ecs::AbilityRequests>(me).ids[0] == "gr_blast" &&
+                            ecs::inventory_count(w.get<ecs::Inventory>(me), "gr_bomb") == 1;
+        const ecs::ItemDef* h = ecs::find_item("gr_helmet");
+        const std::string text = ecs::item_def_text(*ecs::find_item("gr_bomb")) + ecs::item_def_text(*h) +
+                                 ecs::weapon_def_text(*ecs::find_weapon("lo_shotgun"));
+        check("items: an ability asked for when used; about, casts and draw written back",
+              thrown && h->description == "+20 health, a quarter less damage" &&
+              text.find("  casts gr_blast\n") != std::string::npos && text.find("  about +20 health") != std::string::npos &&
+              text.find("  draw 0.7\n") != std::string::npos);
+    }
+
     // D0: life and death.
     {
         ecs::World w;
@@ -562,6 +687,22 @@ int main() {
         for (int i = 0; i < 6; ++i) { ecs::step_ability_bar(w, me, bar, in, &wall, &bus, dt, &fl); in.pressed = -1; }
         check("a wall stops an aimed ability, and it says where", hp(ahead) == hp_before && fl.size() == 1 &&
                                                                  std::fabs(fl[0].point.z + 4.0f) < 1e-3f && fl[0].vfx == "bolt");
+        // Aimed at the sky, an area at the aim comes down on the ground below (a grenade).
+        {
+            ecs::World sky;
+            const ecs::Entity thrower = sky.create();
+            ecs::AbilityCastInput up;
+            up.origin = glm::vec3(0.0f, 1.6f, 0.0f);
+            up.aim = glm::normalize(glm::vec3(0.0f, 1.0f, -1.0f));
+            const ecs::WorldRayFn ground = [](const glm::vec3& o, const glm::vec3& d, float max_t, float& t, glm::vec3& n) {
+                if (d.y > -0.5f) return false;   // only the ground below
+                t = o.y; n = glm::vec3(0.0f, 1.0f, 0.0f);
+                return t <= max_t;
+            };
+            const ecs::AbilityFired f = ecs::ability_detail::fire(sky, thrower, *ecs::find_ability_def("c5_blast"), -1, up, &ground, nullptr);
+            check("area at the aim, aimed at the sky: it comes down on the ground below",
+                  std::fabs(f.point.y) < 1e-3f && f.point.z < -8.0f);
+        }
         // The bar saves its slots.
         std::vector<uint8_t> buf;
         ecs::serialize_ability_bar(&bar, buf);

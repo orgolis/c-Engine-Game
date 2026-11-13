@@ -14,6 +14,7 @@
 // ============================================================================
 
 #include "ecs/gameplay_item_file.h"   // weapon blocks in .items files
+#include "ecs/gameplay_loadout.h"     // the guns carried
 #include "ecs/gameplay_weapons.h"
 #include "ecs_bridge.h"
 #include "material_cache.h"
@@ -215,6 +216,9 @@ class PlayerWeapon {
 public:
     struct Input {
         bool fire_pressed = false, fire_held = false, aim_held = false, reload_pressed = false;
+        int  cycle = 0;         // +1 next gun, -1 previous
+        bool last = false;      // the gun in hand before
+        int  select = -1;       // the gun carried at this place
     };
     struct Hud {
         bool  armed = false;
@@ -241,6 +245,10 @@ public:
         ecs::World&    w = bridge.world();
         const ecs::Entity e = static_cast<ecs::Entity>(id);
         if (id == kNoEcsEntity || !w.valid(e)) return;
+        // Another gun carried: the one in hand goes away, that one is drawn.
+        if (in.cycle != 0) ecs::cycle_weapon(w, e, in.cycle, &bridge.events());
+        else if (in.last) ecs::last_weapon(w, e, &bridge.events());
+        else if (in.select >= 0) ecs::select_weapon(w, e, in.select, &bridge.events());
         auto* ws = w.try_get<ecs::WeaponState>(e);
         const ecs::WeaponDef* wd = ws ? ecs::find_weapon(ws->weapon_id) : nullptr;
         if (!ws || !wd) return;

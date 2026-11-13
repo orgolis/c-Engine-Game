@@ -217,6 +217,17 @@ struct ScriptApi {
     // What is in an entity's inventory at `index`: its item id, name, count.
     bool (*item_in_slot)(void* ctx, uint32_t e, int index, char* id_out, int id_size, char* name_out, int name_size,
                          int* count) = nullptr;
+
+    // ---- guns carried and gear worn (added v0.8.42; new entries go at the end) ----
+    bool (*give_weapon)(void* ctx, uint32_t e, const char* weapon) = nullptr;
+    bool (*select_weapon)(void* ctx, uint32_t e, int index) = nullptr;
+    // The gun in hand: its place among those carried (-1 none) and its id.
+    int  (*current_weapon)(void* ctx, uint32_t e, char* id_out, int id_size) = nullptr;
+    // Take off what is in a gear slot, into the bag.
+    bool (*unequip_item)(void* ctx, uint32_t e, const char* slot) = nullptr;
+    // What is worn in a gear slot: item id and name.
+    bool (*equipped_item)(void* ctx, uint32_t e, const char* slot, char* id_out, int id_size, char* name_out,
+                          int name_size) = nullptr;
 };
 
 }  // namespace schizo::editor

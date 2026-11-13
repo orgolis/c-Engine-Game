@@ -15,12 +15,14 @@
 #include "components.h"           // Transform
 #include "gameplay_items.h"
 #include "gameplay_inventory.h"
+#include "gameplay_loadout.h"     // a picked-up gun joins the ones carried
 #include "gameplay_events.h"
 #include "authorable_components.h"
 #include "component_serialize.h"
 
 #include <glm/glm.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 
@@ -57,7 +59,13 @@ inline bool interact(World& w, Entity interactor, Entity target, GameplayEventBu
                ev.param = it->prompt; bus->publish(ev); }
     if (Pickup* p = w.try_get<Pickup>(target)) {
         if (!w.has<Inventory>(interactor)) w.add<Inventory>(interactor, Inventory{});
-        inventory_add(w.get<Inventory>(interactor), ItemInstance{p->item_id, p->quantity, 0, {}});
+        if (const WeaponDef* wd = find_weapon(p->item_id)) {
+            // A gun: carried from now on -- or, already carried, a magazine of its ammunition.
+            if (!give_weapon(w, interactor, wd->id, bus) && !wd->ammo_item.empty())
+                inventory_add(w.get<Inventory>(interactor), ItemInstance{wd->ammo_item, std::max(1, wd->mag_size), 0, {}});
+        } else {
+            inventory_add(w.get<Inventory>(interactor), ItemInstance{p->item_id, p->quantity, 0, {}});
+        }
         if (bus) { GameplayEvent ev; ev.name = "pickup"; ev.instigator = interactor; ev.target = target;
                    ev.value = static_cast<float>(p->quantity); ev.param = p->item_id; bus->publish(ev); }
     }

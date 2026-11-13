@@ -200,6 +200,26 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
         if (API && API->item_in_slot) API->item_in_slot(API->ctx, e.id, int(index), id, sizeof id, name, sizeof name, &count);
         return std::make_tuple(std::string(id), std::string(name), int64_t(count));
     }, {"Entity", "Index", "Item", "Name", "Count"}).tip("What is in the entity's inventory at that place (empty when nothing).");
+    r.fn("weapons.give", "Gameplay|Weapons", "Give Weapon", [s](EntityId e, std::string weapon) {
+        return API && API->give_weapon && API->give_weapon(API->ctx, e.id, weapon.c_str());
+    }, {"Entity", "Weapon", "Given"}).tip("The entity carries this gun from now on (a weapon block's id), with a full "
+                                         "magazine; its first gun goes into its hand. False if it already has it.");
+    r.fn("weapons.select", "Gameplay|Weapons", "Select Weapon", [s](EntityId e, int64_t index) {
+        return API && API->select_weapon && API->select_weapon(API->ctx, e.id, int(index));
+    }, {"Entity", "Index", "Switched"}).tip("Draws the gun carried at that place (from 0, in the order they came).");
+    r.pure("weapons.current", "Gameplay|Weapons", "Current Weapon", [s](EntityId e) {
+        char id[96] = {};
+        const int i = API && API->current_weapon ? API->current_weapon(API->ctx, e.id, id, sizeof id) : -1;
+        return std::make_tuple(std::string(id), int64_t(i));
+    }, {"Entity", "Weapon", "Index"});
+    r.fn("items.unequip", "Gameplay|Items", "Unequip Item", [s](EntityId e, std::string slot) {
+        return API && API->unequip_item && API->unequip_item(API->ctx, e.id, slot.c_str());
+    }, {"Entity", "Slot", "Unequipped"}).tip("Takes off what is worn in that slot (head, chest...), into the bag.");
+    r.pure("items.equipped", "Gameplay|Items", "Equipped Item", [s](EntityId e, std::string slot) {
+        char id[96] = {}, name[96] = {};
+        if (API && API->equipped_item) API->equipped_item(API->ctx, e.id, slot.c_str(), id, sizeof id, name, sizeof name);
+        return std::make_tuple(std::string(id), std::string(name));
+    }, {"Entity", "Slot", "Item", "Name"});
     r.fn("gameplay.send_state_event", G, "Send State Event", [s](EntityId e, std::string ev) {
         return API && API->send_state_event && API->send_state_event(API->ctx, e.id, ev.c_str());
     }, {"Entity", "Event", "Changed"});

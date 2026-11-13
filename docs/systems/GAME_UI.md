@@ -21,7 +21,8 @@ button id=quit    anchor=center x=0 y=170 w=400 h=66 text="Quit" size=28
   still while shown), `layer=N` (higher is drawn on top).
 - **Widgets:** `panel` (a coloured box), `label` (text), `button` (text that can
   be clicked; needs an `id`), `bar` (a fill bar), `slots` (a grid of cells, for
-  an inventory: `cols=`, `rows=`, `bind=player.inventory`; needs an `id`).
+  an inventory: `cols=`, `rows=`, `bind=player.inventory` or
+  `bind=player.weapons` -- the guns carried; needs an `id`).
 - **Placement:** in a 1920×1080 reference screen, scaled to the real one.
   `anchor` is the point of the screen the widget hangs from, and the point of
   the widget that sits there: `top_left`, `top`, `top_right`, `left`, `center`,
@@ -35,14 +36,16 @@ button id=quit    anchor=center x=0 y=170 w=400 h=66 text="Quit" size=28
   maximum), `player.ammo`, `player.reserve`, `player.weapon`, `player.level`,
   `player.xp` (a bar shows it against the next level), `player.skill_points`,
   `player.ability.<n>` (the name on the Ability Bar's slot n, from 1; a bar
-  shows its cooldown), `skill.<id>` ("Learned", "Learn (1 pt)" or "Locked"),
+  shows its cooldown), `player.item.<id>` (how many the bag holds),
+  `player.equipped.<slot>` (what is worn there), `skill.<id>` ("Learned",
+  "Learn (1 pt)" or "Locked"),
   `flag.<key>`, `time`. Example: `text="{player.ammo} / {player.reserve}"`.
 - **Enabled by a value:** `enabled=<value>` on a button greys it out (and it
   cannot be clicked) while the value is 0 -- `enabled=skill.<id>.can` (1 when
   that skill can be learned now), `enabled=bag.count` (an item is picked).
 - **Slots:** a click on a cell picks it. `{<slots id>.name}`, `.count`,
-  `.detail` (the item's kind) and `.index` are the picked cell's, e.g.
-  `text="{bag.name}"`.
+  `.detail` (the item's kind), `.info` (its `about` line) and `.index` are the
+  picked cell's, e.g. `text="{bag.name}"`.
 
 A line that cannot be read is reported (with its line number) when the
 document is shown; the rest still shows.
@@ -74,8 +77,11 @@ its param (and a grid's cell as its value).
 The player's controls are **actions**, each bound to a key or mouse button:
 `move_forward`, `move_back`, `move_left`, `move_right`, `jump`, `sprint`,
 `crouch`, `dash`, `fire`, `aim`, `reload`, `interact`, `ability_1` .. `ability_8`,
+`next_weapon`, `prev_weapon`, `last_weapon`, `weapon_1` .. `weapon_4`,
 `quick_save`, `quick_load`. The engine has defaults (WASD, Space, Left Shift,
-Left Ctrl, V, the mouse buttons, R, E, 1-8, F6, F9). A project changes them and
+Left Ctrl, V, the mouse buttons, R, E, 1-8, the mouse wheel, Q, F6, F9; the
+weapon keys unbound). `Wheel Up` / `Wheel Down` can be bound like keys. Guns
+and gear: docs/systems/WEAPONS_AND_GEAR.md. A project changes them and
 adds its own in `input.cfg` in the project folder:
 
 ```

@@ -17,6 +17,7 @@
 #include "physics/jolt_physics.h"
 
 #include <glm/glm.hpp>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -56,6 +57,29 @@ public:
         ecs::World& w = bridge.world();
         const ecs::Entity e = static_cast<ecs::Entity>(id);
         if (id == kNoEcsEntity || !w.valid(e)) return;
+        // Abilities asked for by items (`casts`): they go off at once, from the view.
+        if (auto* req = w.try_get<ecs::AbilityRequests>(e); req && !req->ids.empty()) {
+            const std::vector<std::string> ids = std::move(req->ids);
+            req->ids.clear();
+            const ecs::WorldRayFn world = physics_world_ray(play.GetPhysicsWorld());
+            for (const auto& aid : ids) {
+                const ecs::AbilityDef* d = ecs::find_ability_def(aid);
+                if (!d) continue;
+                ecs::AbilityCastInput ci;
+                aim_from_view(play, cam_pos, cam_fwd, d->range, world, ci.origin, ci.aim);
+                ci.caster_pos = player->GetTransform()->GetWorldPosition();
+                const ecs::AbilityFired f = ecs::ability_detail::fire(w, e, *d, -1, ci, &world, &bridge.events());
+                spdlog::debug("[abilities] {} went off at ({:.1f}, {:.1f}, {:.1f}), reached {}", aid, f.point.x, f.point.y, f.point.z, f.targets);
+                ShotEffects::Effect burst;
+                burst.kind = ShotEffects::Effect::Kind::Flash;
+                burst.a = burst.b = f.point;
+                burst.color = glm::vec3(1.0f, 0.6f, 0.25f);
+                burst.life = 0.35f;
+                burst.glow = 3.0f;
+                burst.size = d->targeting == ecs::AbilityTargeting::Aimed ? 0.35f : std::max(0.3f, d->radius * 0.5f);
+                fx.push(burst);
+            }
+        }
         auto* bar = w.try_get<ecs::AbilityBar>(e);
         if (!bar || bar->slots.empty()) return;
 

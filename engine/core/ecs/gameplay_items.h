@@ -45,6 +45,8 @@ struct ItemDef {
     std::vector<GameplayEffect> on_use;      // consumable use effects
     std::vector<ItemAffix>      affix_pool;  // rollable affixes (procedural gen)
     std::string set_id;                      // "" = not part of a set (set bonuses)
+    std::string description;                 // a line for the player ("+20 health, takes less damage")
+    std::string cast_ability;                // used: this ability goes off from the user's view (a grenade)
 };
 
 // ---- global item catalog (seeded by the game/scripts) ----

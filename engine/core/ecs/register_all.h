@@ -65,6 +65,7 @@ inline void register_all_components() {
     register_movement_components();      // Movement, Move Animation (C4)
     register_camera_components();        // Camera Rig (C4)
     register_ability_cast_components();  // Ability Bar (C5)
+    register_loadout_components();       // Weapon Loadout (the guns carried)
     register_life_components();          // Mortal (D0)
     register_vehicle_components();       // G13 Vehicle / Race Progress
     register_building_components();      // G14 Building / Extractor / Machine / Generator / Conveyor

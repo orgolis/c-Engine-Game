@@ -11,7 +11,8 @@
 // user and project). Scripts ask for actions, not keys (Action Pressed), so a
 // rebinding reaches them too.
 //
-// Codes are GLFW key codes; mouse buttons are kMouseButton + 0..7.
+// Codes are GLFW key codes; mouse buttons are kMouseButton + 0..7; the mouse
+// wheel is kMouseWheelUp / kMouseWheelDown (one press per notch).
 //
 //   # input.cfg / controls.txt
 //   jump = Space
@@ -34,6 +35,7 @@
 namespace schizo::input {
 
 inline constexpr int kMouseButton = 1000;   // + 0 left, 1 right, 2 middle, 3.. extra
+inline constexpr int kMouseWheelUp = 1008, kMouseWheelDown = 1009;
 
 /// "Space", "Left Shift", "Mouse Left", "F6", "A"...; "None" for 0 / unknown.
 inline std::string key_name(int code) {
@@ -41,6 +43,8 @@ inline std::string key_name(int code) {
         static const char* m[] = {"Mouse Left", "Mouse Right", "Mouse Middle", "Mouse 4", "Mouse 5", "Mouse 6", "Mouse 7", "Mouse 8"};
         return m[code - kMouseButton];
     }
+    if (code == kMouseWheelUp) return "Wheel Up";
+    if (code == kMouseWheelDown) return "Wheel Down";
     if ((code >= 'A' && code <= 'Z') || (code >= '0' && code <= '9')) return std::string(1, static_cast<char>(code));
     if (code >= 290 && code <= 314) return "F" + std::to_string(code - 289);
     if (code >= 320 && code <= 329) return "Numpad " + std::to_string(code - 320);
@@ -62,7 +66,7 @@ inline int key_code(const std::string& name) {
     for (char c : name) n += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     while (!n.empty() && std::isspace(static_cast<unsigned char>(n.back()))) n.pop_back();
     if (n.empty() || n == "none") return 0;
-    for (int c = 1; c < kMouseButton + 8; ++c) {
+    for (int c = 1; c <= kMouseWheelDown; ++c) {
         if (c == 400) c = kMouseButton;   // skip the gap between keys and mouse buttons
         const std::string kn = key_name(c);
         if (kn == "None") continue;
@@ -108,6 +112,11 @@ public:
         add("interact", 'E', "Use / pick up");
         for (int i = 1; i <= 8; ++i)
             b_.push_back({"ability_" + std::to_string(i), '0' + i, "Ability " + std::to_string(i)});
+        add("next_weapon", kMouseWheelDown, "Next weapon");
+        add("prev_weapon", kMouseWheelUp, "Previous weapon");
+        add("last_weapon", 'Q', "Last weapon");
+        for (int i = 1; i <= 4; ++i)
+            b_.push_back({"weapon_" + std::to_string(i), 0, "Weapon " + std::to_string(i)});
         add("quick_save", 295, "Quick save");    // F6
         add("quick_load", 298, "Quick load");    // F9
         mouse_sensitivity = 1.0f;

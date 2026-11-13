@@ -91,10 +91,11 @@ int main() {
         auto inv = parse_ui_document(
             "slots id=bag anchor=top_left x=0 y=0 w=600 h=200 cols=6 rows=2 bind=player.inventory\n"
             "label id=picked anchor=top_left x=0 y=300 w=400 h=40 text=\"{bag.name} ({bag.count})\"\n"
+            "label id=about anchor=top_left x=0 y=350 w=400 h=40 text=\"{bag.info}\"\n"
             "button id=use anchor=top_left x=0 y=400 w=200 h=50 text=\"Use\" enabled=bag.count\n");
         auto slots = [](const std::string& s) {
             std::vector<UiSlot> v;
-            if (s == "player.inventory") { v.push_back({"Potion", 3, ""}); v.push_back({"Rounds", 120, ""}); }
+            if (s == "player.inventory") { v.push_back({"Potion", 3, ""}); v.push_back({"Rounds", 120, "", "For the rifle"}); }
             return v;
         };
         auto none = [](const std::string&) { return UiValue{}; };
@@ -111,8 +112,9 @@ int main() {
         refresh_ui_bindings(*inv, none, slots);
         check("slots: filled from the game; a click picks the cell and reports it",
               before && clicked == 1 && grid->selected == 1);
-        check("slots: the selection's {name} and {count}, and a button enabled by it",
-              dynamic_cast<Label*>(inv->ids["picked"])->text == "Rounds (120)" && use->interactive);
+        check("slots: the selection's {name}, {count} and {info}, and a button enabled by it",
+              dynamic_cast<Label*>(inv->ids["picked"])->text == "Rounds (120)" &&
+              dynamic_cast<Label*>(inv->ids["about"])->text == "For the rifle" && use->interactive);
     }
 
     // Lines it cannot read.
