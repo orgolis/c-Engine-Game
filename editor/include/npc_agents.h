@@ -42,7 +42,14 @@
 #include "scene.h"
 #include "transform.h"
 
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -100,8 +107,26 @@ public:
             // entity in the editor really does change what it can see.
             const glm::vec3 fwd = glm::normalize(
                 glm::vec3(tf->GetWorldMatrix() * glm::vec4(0, 0, 1, 0)));
-            const bool visible = has_target &&
+            const bool in_view = has_target &&
                 schizo::ecs::can_see(pos, fwd, ag->sight_fov_deg, ag->sight_range, target_pos);
+            // Close by, an agent notices the target whichever way it faces (it
+            // hears it), and being hurt alerts it. Alerted, it keeps after the
+            // target for a while after losing sight -- an agent that only sees
+            // a cone ahead ignores whoever walks up beside it or shoots it.
+            const bool heard = has_target && glm::length(target_pos - pos) <= ag->sight_range * 0.4f;
+            bool hurt = false;
+            if (bridge) {
+                const uint32_t me = bridge->ecs_entity_id(tf);
+                if (me != kNoEcsEntity)
+                    if (const auto* a = bridge->world().try_get<schizo::ecs::AttributeSet>(static_cast<schizo::ecs::Entity>(me))) {
+                        const float h = a->get("Health", -1.0f);
+                        hurt = st.last_health >= 0.0f && h < st.last_health;
+                        st.last_health = h;
+                    }
+            }
+            if (in_view || heard || hurt) st.alert = 5.0f;
+            else st.alert = std::max(0.0f, st.alert - dt);
+            const bool visible = has_target && (in_view || heard || st.alert > 0.0f);
 
             const float range_xz = [&]{
                 glm::vec3 d = target_pos - pos; d.y = 0.0f;
@@ -163,6 +188,18 @@ public:
                 tf->SetLocalPosition(tf->GetLocalPosition() + steer.velocity * dt);
                 ++active_;
             }
+            // Face the way it walks, or the target it is attacking: sight is a
+            // cone along the agent's forward (+Z), so an agent that never turns
+            // only ever sees one way.
+            {
+                glm::vec3 look = (in_range || (visible && !steer.moving)) ? (target_pos - pos) : steer.velocity;
+                look.y = 0.0f;
+                if (glm::dot(look, look) > 1e-4f) {
+                    const glm::quat want = glm::angleAxis(std::atan2(look.x, look.z), glm::vec3(0.0f, 1.0f, 0.0f));
+                    const glm::quat now = tf->GetWorldRotation();
+                    tf->SetWorldRotation(glm::slerp(now, want, std::min(1.0f, 8.0f * dt)));
+                }
+            }
             if (st.follower.arrived() && !st.chase_requested) advance_patrol(st, ag->patrol_radius);
         }
 
@@ -211,6 +248,8 @@ private:
         glm::vec3 last_goal{1e9f};     // forces a path on the first tick
         int       patrol_leg = 0;
         bool      chase_requested = false;
+        float     alert = 0.0f;          // seconds it keeps after the target unseen
+        float     last_health = -1.0f;   // to notice being hurt
     };
 
     Agent& state(uint32_t id, const glm::vec3& pos) {
@@ -226,7 +265,10 @@ private:
         // rather than keep closing. When the ability is on cooldown the action
         // returns Failure, so the Selector falls through to chase and the agent
         // keeps position instead of freezing mid-fight.
-        auto attack = std::make_unique<schizo::ai::Sequence>();
+        // Reactive nodes: every tick decides afresh. (The plain Selector
+        // remembers its running child, so an agent that had started its
+        // never-ending patrol never looked at chase or attack again.)
+        auto attack = std::make_unique<schizo::ai::ReactiveSequence>();
         attack->add(std::make_unique<schizo::ai::Condition>(
             [](schizo::ai::Blackboard& bb) { return bb.get<bool>("in_range", false); }));
         attack->add(std::make_unique<schizo::ai::Action>(
@@ -236,7 +278,7 @@ private:
             }));
 
         // Chase pre-empts patrol because it is first in the Selector.
-        auto chase = std::make_unique<schizo::ai::Sequence>();
+        auto chase = std::make_unique<schizo::ai::ReactiveSequence>();
         chase->add(std::make_unique<schizo::ai::Condition>(
             [](schizo::ai::Blackboard& bb) { return bb.get<bool>("can_see", false); }));
         chase->add(std::make_unique<schizo::ai::Action>(
@@ -245,7 +287,7 @@ private:
                 return schizo::ai::BtStatus::Running;   // chasing never "completes"
             }));
 
-        auto root = std::make_unique<schizo::ai::Selector>();
+        auto root = std::make_unique<schizo::ai::ReactiveSelector>();
         root->add(std::move(attack));
         root->add(std::move(chase));
         root->add(std::make_unique<schizo::ai::Action>(

@@ -217,6 +217,24 @@ Stop removes what Play made, shows what it hid and restores every gameplay
 value. Checked by gameplay_check and a Play run (GWS_TEST_LIFE) that kills an
 enemy, picks up its loot, dies, respawns and stops.
 
+**Progress (v0.8.38):** D1, the test game. Create > Test Game builds it into
+the open scene (docs/systems/TEST_GAME.md): the Rolling hills world, the
+player (third person, rifle, abilities), creature camps that patrol, chase,
+claw or spit, die and drop loot, supply caches, two checkpoints and a
+beacon. The rules are logic scripts it writes (GameRules, Checkpoint, Goal):
+a kill count from the "died" events, Save Game at checkpoints, a win at the
+beacon. A new Show Message node puts text in the game view. Playing it found
+two engine bugs: NPC agents never turned (their sight is a cone ahead, so
+they saw one way only), and their behaviour tree used the plain Selector,
+which remembers its running child -- once patrolling (always Running) an
+agent never looked at chase again; the check had passed only because the
+target was in sight on the first tick. Agents now face where they walk,
+notice what is close or hurts them, and use new ReactiveSelector /
+ReactiveSequence nodes. Checked in Play: the rules (checkpoint save, the
+count, "You win!"), a fight (creatures close in and kill a player who stands
+still), a run across the map (3 ms CPU, 3-5 ms GPU). Found for the
+optimization upgrade: the navmesh bake at Play start (2.2 M triangles, 4.7 s).
+
 ## Then: the optimization upgrade
 
 The 16 ranked candidates of OPTIMIZATION_RESEARCH.md, re-measured on the test

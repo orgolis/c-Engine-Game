@@ -226,6 +226,9 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
     r.fn("world.load_game", W, "Load Game", [s](std::string slot) {
         return API && API->load_game && API->load_game(API->ctx, slot.c_str());
     }, {"Slot", "Loaded"}).tip("Loads a slot saved with Save Game (or F6, the slot \"quick\").");
+    r.fn("ui.show_message", "UI", "Show Message", [s](std::string text, double seconds) {
+        if (API && API->show_message) API->show_message(API->ctx, text.c_str(), float(seconds));
+    }, {"Text", "Seconds"}).tip("Shows the text across the game view for that many seconds; a newer message replaces it.");
     r.fn("world.emit_event", W, "Emit Event", [s](std::string name) {
         if (API && API->emit_event) API->emit_event(API->ctx, name.c_str());
     }, {"Name"}).tip("Publishes a named event on the gameplay bus.");

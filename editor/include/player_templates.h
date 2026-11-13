@@ -22,6 +22,7 @@
 #include "ecs/gameplay_movement.h"
 #include "ecs/gameplay_savegame.h"
 #include "ecs/gameplay_tags.h"
+#include "ecs/gameplay_triggers.h"
 #include "ecs/gameplay_weapons.h"
 #include "ecs_bridge.h"
 
@@ -135,13 +136,10 @@ inline void ensure_starter_data(std::string dir = "assets/gameplay") {
 
 /// Give the player's gameplay entity what the template plays with. False if
 /// the bridge has not mirrored the entity yet (try again next frame).
-inline bool apply_player_template(EcsSceneBridge& bridge, const schizo::scene::Transform* tf, PlayerTemplate t) {
+/// The template's gameplay components on a gameplay entity.
+inline void outfit_player(schizo::ecs::World& w, schizo::ecs::Entity e, PlayerTemplate t) {
     namespace ecs = schizo::ecs;
-    if (t == PlayerTemplate::Bare) return true;
-    const uint32_t id = bridge.ecs_entity_id(tf);
-    ecs::World& w = bridge.world();
-    const auto e = static_cast<ecs::Entity>(id);
-    if (id == kNoEcsEntity || !w.valid(e)) return false;
+    if (t == PlayerTemplate::Bare) return;
     ensure_starter_data();
 
     auto put = [&](auto comp) {
@@ -187,6 +185,19 @@ inline bool apply_player_template(EcsSceneBridge& bridge, const schizo::scene::T
         ecs::inventory_add(inv, pot);
     }
     put(inv);
+    put(ecs::TriggerActor{});   // checkpoints and other trigger volumes notice the player
+}
+
+/// Give the player's gameplay entity what the template plays with. False if
+/// the bridge has not mirrored the entity yet (try again next frame).
+inline bool apply_player_template(EcsSceneBridge& bridge, const schizo::scene::Transform* tf, PlayerTemplate t) {
+    namespace ecs = schizo::ecs;
+    if (t == PlayerTemplate::Bare) return true;
+    const uint32_t id = bridge.ecs_entity_id(tf);
+    ecs::World& w = bridge.world();
+    const auto e = static_cast<ecs::Entity>(id);
+    if (id == kNoEcsEntity || !w.valid(e)) return false;
+    outfit_player(w, e, t);
     return true;
 }
 

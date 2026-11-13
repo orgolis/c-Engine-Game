@@ -172,6 +172,10 @@ struct ScriptApi {
     // the file cannot be written / read.
     bool (*save_game)(void* ctx, const char* slot) = nullptr;
     bool (*load_game)(void* ctx, const char* slot) = nullptr;
+
+    // ---- messages in the game view (added v0.8.38; new entries go at the end) ----
+    // Text shown across the game view for `seconds` (the newest replaces the last).
+    void (*show_message)(void* ctx, const char* text, float seconds) = nullptr;
 };
 
 }  // namespace schizo::editor

@@ -27,6 +27,13 @@
 
 namespace schizo::editor {
 
+/// The message across the game view (Show Message): the text and until when.
+struct PlayMessage {
+    std::string text;
+    double      until = 0.0;   // play time
+};
+inline PlayMessage& play_message() { static PlayMessage m; return m; }
+
 /// saves/<slot>.sav, the slot reduced to letters, digits, '-' and '_'.
 inline std::string play_save_path(const std::string& slot) {
     std::string s;

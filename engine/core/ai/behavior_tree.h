@@ -89,6 +89,48 @@ private:
     size_t current_ = 0;
 };
 
+/// A Selector without memory: every tick starts again at the first child, so
+/// a higher-priority branch takes over the moment it can run -- an agent
+/// patrolling (a child that is always Running) still turns to chase when it
+/// sees a target. A lower child that was running is reset when a higher one
+/// takes over.
+class ReactiveSelector : public BtNode {
+public:
+    ReactiveSelector& add(BtNodePtr c) { children_.push_back(std::move(c)); return *this; }
+    BtStatus tick(Blackboard& bb, float dt) override {
+        for (size_t i = 0; i < children_.size(); ++i) {
+            const BtStatus s = children_[i]->tick(bb, dt);
+            if (s == BtStatus::Failure) continue;
+            for (size_t j = i + 1; j < children_.size(); ++j) children_[j]->reset();
+            return s;
+        }
+        return BtStatus::Failure;
+    }
+    void reset() override { for (auto& c : children_) c->reset(); }
+private:
+    std::vector<BtNodePtr> children_;
+};
+
+/// A Sequence without memory: every tick checks its children from the first,
+/// so a condition in front of a long action is checked again each tick (a
+/// chase stops when the target is no longer seen).
+class ReactiveSequence : public BtNode {
+public:
+    ReactiveSequence& add(BtNodePtr c) { children_.push_back(std::move(c)); return *this; }
+    BtStatus tick(Blackboard& bb, float dt) override {
+        for (auto& c : children_) {
+            const BtStatus s = c->tick(bb, dt);
+            if (s == BtStatus::Success) continue;
+            if (s == BtStatus::Failure) reset();
+            return s;
+        }
+        return BtStatus::Success;
+    }
+    void reset() override { for (auto& c : children_) c->reset(); }
+private:
+    std::vector<BtNodePtr> children_;
+};
+
 /// Ticks all children each tick. Succeeds once `success_threshold` children
 /// have succeeded; fails if enough have failed that the threshold is
 /// unreachable; otherwise Running.

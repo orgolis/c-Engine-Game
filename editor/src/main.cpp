@@ -126,6 +126,7 @@
 #include "player_templates.h"     // Create > Player templates (C6)
 #include "play_save.h"            // F6 / F9 and scripts save and load in Play (C6)
 #include "play_loop.h"            // death, loot, interacting, respawning in Play (D0)
+#include "test_game.h"            // Create > Test Game (phase D)
 #include "ecs/gameplay_movement.h" // the player's moves in Play (C4)
 #include "ecs/gameplay_camera.h"   // the player's third-person camera rig
 #include "ecs/gameplay_tags.h"     // surface.climbable
@@ -495,6 +496,8 @@ struct EditorState {
     // Player templates waiting for the bridge to mirror their new entity.
     std::vector<std::pair<uint32_t, schizo::editor::PlayerTemplate>> pending_player_templates;
     schizo::editor::PlayGameLoop    play_loop;        // death, loot, E to interact, respawn (D0)
+    // Gameplay components for new scene entities, given once the bridge has them.
+    std::vector<schizo::editor::PendingOutfit> pending_outfits;
     schizo::editor::ShotEffects     shot_effects;    // muzzle flashes, tracers, impact marks
     schizo::editor::EditorScriptCtx script_ctx;
     schizo::editor::ScriptApi       script_api;
@@ -2884,6 +2887,28 @@ void ShowSceneHierarchy(EditorState& editor_state) {
                 ImGui::CloseCurrentPopup();
               }
               ImGui::EndMenu();
+            }
+            if (ImGui::MenuItem("Test Game")) {
+                // One undo step: the world, the player, camps, caches, rules.
+                auto made = std::make_shared<std::vector<uint32_t>>();
+                auto cmd = std::make_unique<schizo::editor::FunctionCommand>(
+                    [scene, &editor_state, made]() {
+                        auto b = schizo::editor::build_test_game(scene);
+                        made->clear();
+                        for (const auto& e : b.made) if (e) made->push_back(e->GetId());
+                        for (auto& of : b.outfits) editor_state.pending_outfits.push_back(std::move(of));
+                        editor_state.editor_scene->MarkModified();
+                        editor_state.set_status(b.ok ? "Test game built: " + std::to_string(b.enemies) +
+                                                           " creatures in camps, caches, checkpoints and a beacon. Press Play."
+                                                     : "Test game: " + b.error);
+                    },
+                    [scene, made]() {
+                        for (auto it = made->rbegin(); it != made->rend(); ++it)
+                            if (auto e = FindEntityById(scene, *it)) scene->RemoveEntity(e);
+                    },
+                    "Create Test Game");
+                editor_state.undo_redo_manager.ExecuteCommand(std::move(cmd));
+                ImGui::CloseCurrentPopup();
             }
 
             if (ImGui::MenuItem("Camera")) {
@@ -5985,6 +6010,20 @@ void ShowViewport(EditorState& editor_state) {
                                           ah.channelling ? IM_COL32(120, 200, 255, 230) : IM_COL32(240, 200, 90, 230), 3.0f);
                         const ImVec2 ts = ImGui::CalcTextSize(ah.cast_name.c_str());
                         dl->AddText(ImVec2(p0.x + (w - ts.x) * 0.5f, p0.y - ts.y - 2), IM_COL32(235, 240, 250, 240), ah.cast_name.c_str());
+                    }
+                }
+                // A script's message (Show Message), across the top of the view.
+                if (viewport_playing) {
+                    const auto& msg = schizo::editor::play_message();
+                    if (!msg.text.empty() && editor_state.scene_playback_manager->GetPlaybackTime() < msg.until) {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        const float cx = (image_min.x + image_max.x) * 0.5f;
+                        ImGui::SetWindowFontScale(1.35f);
+                        const ImVec2 ts = ImGui::CalcTextSize(msg.text.c_str());
+                        const ImVec2 p(cx - ts.x * 0.5f, image_min.y + 60.0f);
+                        dl->AddRectFilled(ImVec2(p.x - 14, p.y - 8), ImVec2(p.x + ts.x + 14, p.y + ts.y + 8), IM_COL32(10, 14, 20, 190), 6.0f);
+                        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 245, 210, 255), msg.text.c_str());
+                        ImGui::SetWindowFontScale(1.0f);
                     }
                 }
                 // What E would do, and the death notice.
@@ -10432,6 +10471,106 @@ int main(int argc, char** argv) {
                                 editor_state.pending_player_templates.push_back(
                                     {pl->GetId(), static_cast<schizo::editor::PlayerTemplate>(std::clamp(std::atoi(tt), 0, 4))});
                 }
+            }
+            if (!editor_state.pending_outfits.empty()) {
+                auto sc = editor_state.editor_scene->GetScene();
+                auto& pend = editor_state.pending_outfits;
+                size_t done = 0;
+                for (size_t i = 0; i < pend.size();) {
+                    auto ent = sc ? sc->GetEntityById(pend[i].id) : nullptr;
+                    if (!ent) { pend.erase(pend.begin() + i); continue; }
+                    const uint32_t eid = ecs_bridge.ecs_entity_id(ent->GetTransform());
+                    if (eid == schizo::editor::kNoEcsEntity || !ecs_bridge.world().valid(static_cast<schizo::ecs::Entity>(eid))) { ++i; continue; }
+                    pend[i].fn(ecs_bridge.world(), static_cast<schizo::ecs::Entity>(eid));
+                    pend.erase(pend.begin() + i);
+                    ++done;
+                }
+                if (done) spdlog::info("Gave {} object(s) their gameplay components", done);
+            }
+            // GWS_TEST_GAME=<dir> (with GWS_TEST_PLAY): build the test game into
+            // the scene before Play, its files in <dir>.
+            {
+                static bool tg_done = false;
+                if (!tg_done && frame_count > 2) {
+                    tg_done = true;
+                    if (const char* tg = std::getenv("GWS_TEST_GAME"))
+                        if (auto sc = editor_state.editor_scene->GetScene()) {
+                            schizo::editor::TestGameOptions o;
+                            o.dir = tg;
+                            auto b = schizo::editor::build_test_game(sc, o);
+                            for (auto& of : b.outfits) editor_state.pending_outfits.push_back(std::move(of));
+                            if (b.ok) spdlog::info("[test] game: built -- {} creatures, {} objects", b.enemies, b.made.size());
+                            else spdlog::warn("[test] game: {}", b.error);
+                            if (b.ok && b.player)
+                                editor_state.viewport_camera.FollowTarget(b.player->GetTransform()->GetWorldPosition(), glm::vec3(0, 6, 12));
+                        }
+                }
+            }
+            // GWS_TEST_GAME_RULES=1: the rules scripts, checked in Play -- into a
+            // checkpoint (it saves), every creature dies (the count, then the
+            // beacon opens), into the beacon (you win).
+            if (std::getenv("GWS_TEST_GAME_RULES") && editor_state.scene_playback_manager &&
+                editor_state.scene_playback_manager->IsPlaying()) {
+                auto& pm = *editor_state.scene_playback_manager;
+                auto sc = editor_state.editor_scene->GetScene();
+                static int rf = 0;
+                static std::string last_msg;
+                ++rf;
+                const auto& msg = schizo::editor::play_message();
+                if (msg.text != last_msg) { last_msg = msg.text; spdlog::info("[test] rules: message \"{}\" (play frame {})", msg.text, rf); }
+                auto put_in = [&](const char* name) {
+                    if (auto z = sc ? sc->GetEntityByName(name) : nullptr)
+                        pm.TeleportPlayer(z->GetTransform()->GetWorldPosition() + glm::vec3(0.0f, -1.0f, 0.0f),
+                                          pm.GetPlayerEntity()->GetTransform()->GetWorldRotation());
+                };
+                if (rf == 60) put_in("Checkpoint Zone 1");
+                if (rf == 120) {
+                    int n = 0;
+                    ecs_bridge.world().each<schizo::ecs::GameplayTags, schizo::ecs::AttributeSet>(
+                        [&](schizo::ecs::Entity, schizo::ecs::GameplayTags& tg, schizo::ecs::AttributeSet& a) {
+                            if (tg.has("team.enemy")) { a.set("Health", 0.0f); ++n; }
+                        });
+                    spdlog::info("[test] rules: {} creatures struck down; save file {}", n,
+                                 std::filesystem::exists(schizo::editor::play_save_path("quick")) ? "written" : "missing");
+                }
+                if (rf == 300) put_in("Beacon Zone");
+                if (rf == 400) spdlog::info("[test] rules: game.cleared {}, game.won {}", ecs_bridge.world_flag("game.cleared"),
+                                            ecs_bridge.world_flag("game.won"));
+            }
+            // GWS_TEST_GAME_FIGHT=1: next to the first camp, standing still --
+            // the creatures must notice, close in and hurt the player.
+            if (std::getenv("GWS_TEST_GAME_FIGHT") && editor_state.scene_playback_manager &&
+                editor_state.scene_playback_manager->IsPlaying()) {
+                auto& pm = *editor_state.scene_playback_manager;
+                auto sc = editor_state.editor_scene->GetScene();
+                static int ff = 0;
+                ++ff;
+                if (ff == 30)
+                    if (auto camp = sc ? sc->GetEntityByName("Camp 1") : nullptr)
+                        pm.TeleportPlayer(camp->GetTransform()->GetWorldPosition() + glm::vec3(8.0f, 1.5f, 0.0f),
+                                          glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f)));
+                if (ff % 60 == 0 && ff <= 600)
+                    if (auto* pl = pm.GetPlayerEntity()) {
+                        const auto pe = static_cast<schizo::ecs::Entity>(ecs_bridge.ecs_entity_id(pl->GetTransform()));
+                        const auto* pa = ecs_bridge.world().try_get<schizo::ecs::AttributeSet>(pe);
+                        if (auto cr = sc->GetEntityByName("Creature"))
+                            spdlog::info("[test] fight: a creature at ({:.1f}, {:.1f}, {:.1f}), player at ({:.1f}, {:.1f}, {:.1f}); agents {} active {}, navmesh empty {}",
+                                         cr->GetTransform()->GetWorldPosition().x, cr->GetTransform()->GetWorldPosition().y, cr->GetTransform()->GetWorldPosition().z,
+                                         pl->GetTransform()->GetWorldPosition().x, pl->GetTransform()->GetWorldPosition().y, pl->GetTransform()->GetWorldPosition().z,
+                                         editor_state.npc_agents.agent_count(), editor_state.npc_agents.moving(), editor_state.scene_navmesh.empty());
+                        spdlog::info("[test] fight: frame {} -- player health {}, {} agent(s) chasing, {} attacking this frame, dead {}",
+                                     ff, pa ? pa->get("Health") : -1.0f, editor_state.npc_agents.chasing(),
+                                     editor_state.npc_agents.attacks_this_frame(), editor_state.play_loop.hud().player_dead);
+                    }
+            }
+            // GWS_TEST_GAME_WALK=1: in Play, run towards the beacon the whole
+            // time (sprint) -- a moving camera through the world, for measuring.
+            if (std::getenv("GWS_TEST_GAME_WALK") && editor_state.scene_playback_manager &&
+                editor_state.scene_playback_manager->IsPlaying()) {
+                schizo::ecs::MoveInput mi;
+                mi.move.y = 1.0f;
+                mi.sprint = true;
+                editor_state.scene_playback_manager->SetScriptedMoveInput(&mi);
             }
             if (!editor_state.pending_player_templates.empty()) {
                 auto sc = editor_state.editor_scene->GetScene();

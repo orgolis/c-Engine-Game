@@ -84,7 +84,14 @@ inline void tick_life(World& w, float dt, GameplayEventBus* bus, Rng& rng, std::
                 t.rolls = m.loot_rolls;
                 ev.loot = roll_loot(t, rng);
             }
-            if (bus) { GameplayEvent ge; ge.name = "died"; ge.target = e; ge.value = static_cast<float>(ev.loot.size()); bus->publish(ge); }
+            if (bus) {
+                // Param: the team ("enemy" for team.enemy, "player" for team.player), so a
+                // rule can count only the kills it cares about.
+                GameplayEvent ge; ge.name = "died"; ge.target = e; ge.value = static_cast<float>(ev.loot.size());
+                for (const auto& tg : w.get<GameplayTags>(e).tags)
+                    if (tg.rfind("team.", 0) == 0) { ge.param = tg.substr(5); break; }
+                bus->publish(ge);
+            }
             out.push_back(std::move(ev));
             return;
         }

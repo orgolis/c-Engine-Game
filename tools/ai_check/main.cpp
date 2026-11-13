@@ -148,6 +148,43 @@ int main() {
         finish = true;
         REQUIRE(seq.tick(bb, 0.016f) == BtStatus::Success, "sequence completes when action succeeds");
 
+        // Reactive selector: a patrol that is always Running does not stop a
+        // chase from taking over the moment the target is seen, and the chase
+        // stops again when it is lost (the plain Selector stays on patrol).
+        {
+            int chase_runs = 0, patrol_runs = 0;
+            ReactiveSelector rs;
+            auto ch = std::make_unique<ReactiveSequence>();
+            ch->add(make_condition([](Blackboard& b) { return b.get<bool>("seen"); }));
+            ch->add(make_action([&](Blackboard&, float) { ++chase_runs; return BtStatus::Running; }));
+            rs.add(std::move(ch));
+            rs.add(make_action([&](Blackboard&, float) { ++patrol_runs; return BtStatus::Running; }));
+            Blackboard rb;
+            rb.set<bool>("seen", false);
+            rs.tick(rb, 0.016f); rs.tick(rb, 0.016f);
+            rb.set<bool>("seen", true);
+            rs.tick(rb, 0.016f);
+            const bool took_over = chase_runs == 1 && patrol_runs == 2;
+            rb.set<bool>("seen", false);
+            rs.tick(rb, 0.016f);
+            REQUIRE(took_over && chase_runs == 1 && patrol_runs == 3,
+                    "reactive selector: chase takes over a running patrol when seen, and lets go when lost");
+            // The plain Selector, for contrast: it stays on the running patrol.
+            int c2 = 0, p2 = 0;
+            Selector ms;
+            auto ch2 = std::make_unique<Sequence>();
+            ch2->add(make_condition([](Blackboard& b) { return b.get<bool>("seen"); }));
+            ch2->add(make_action([&](Blackboard&, float) { ++c2; return BtStatus::Running; }));
+            ms.add(std::move(ch2));
+            ms.add(make_action([&](Blackboard&, float) { ++p2; return BtStatus::Running; }));
+            Blackboard mb;
+            mb.set<bool>("seen", false);
+            ms.tick(mb, 0.016f);
+            mb.set<bool>("seen", true);
+            ms.tick(mb, 0.016f);
+            REQUIRE(c2 == 0 && p2 == 2, "selector (with memory) resumes its running child -- why agents use the reactive one");
+        }
+
         // Inverter.
         Inverter inv(make_condition([](Blackboard&) { return false; }));
         REQUIRE(inv.tick(bb, 0.016f) == BtStatus::Success, "inverter flips Failure→Success");

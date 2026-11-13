@@ -928,6 +928,22 @@ tools in `tools/perf_research`.
 12. **The larger projects** (§3.4 dense data, §5.3 clustered lights, §5.4
     shadow caching, §5.7 upscaling), each when a real project needs it.
 
+### Found by the test game (v0.8.38, docs/systems/TEST_GAME.md)
+
+13. **Navmesh bake from full-resolution terrain.** Starting Play on the test
+    game bakes 2.2 million navmesh triangles from the terrain and stalls one
+    frame for about 4.7 s (slow-frame line at Play start). Bake from a coarser
+    grid (every 2nd or 4th vertex), cache the bake with the scene, or bake on a
+    worker. Measure: the slow-frame line at Play start, and agent paths still
+    found (`npcagent_check`).
+14. **Agents look up their target by name and scan the scene every frame**
+    (`GetEntityByName` per agent per frame; the play loop maps gameplay
+    entities to scene entities by scanning). Fine at 9 agents; measure at 100.
+15. **The test game's frame, as a baseline.** Running towards the beacon at
+    1920×1032: about 3 ms CPU, 3–5 ms GPU, 40–300 draws, 0.8–1.4 M triangles
+    (75 fps, display-limited). Re-measure after each change above with
+    `GWS_TEST_GAME_WALK=1` and `zones.py`.
+
 ## Sources
 
 Hardware and adoption

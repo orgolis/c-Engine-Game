@@ -482,6 +482,13 @@ bool api_load_game(void* ctx, const char* slot) {
     return schizo::editor::load_play(slot ? slot : "quick", *c->playback, *c->bridge);
 }
 
+void api_show_message(void* ctx, const char* text, float seconds) {
+    auto* c = C(ctx);
+    auto& m = schizo::editor::play_message();
+    m.text = text ? text : "";
+    m.until = (c->playback ? c->playback->GetPlaybackTime() : 0.0) + std::max(0.5f, seconds);
+}
+
 // ---- gameplay event feed ----
 // ECS entity -> scene id. Events are rare, so a scan of the scene is fine.
 uint32_t scene_id_of(EditorScriptCtx* c, ecs::Entity e) {
@@ -673,6 +680,7 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.biome_at           = &api_biome_at;
     api.save_game          = &api_save_game;
     api.load_game          = &api_load_game;
+    api.show_message       = &api_show_message;
     api.distance           = &api_distance;
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;

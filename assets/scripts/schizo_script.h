@@ -122,6 +122,8 @@ typedef struct SchizoScriptApi {
     /* Save the game to a slot (saves/<slot>.sav), or load one. Play only. */
     bool     (*save_game)(void* ctx, const char* slot);
     bool     (*load_game)(void* ctx, const char* slot);
+    /* Text across the game view for some seconds. */
+    void     (*show_message)(void* ctx, const char* text, float seconds);
 } SchizoScriptApi;
 
 }  // extern "C"
