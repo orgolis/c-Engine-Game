@@ -9,13 +9,17 @@
 // G-buffer pass groups identical mesh + material draws into instanced draws,
 // so a forest costs a handful of draw calls, not one per tree.
 //
-// A built-in kind is a few parts (trunk + crown, or one shape), each a unit
-// primitive placed inside a 1-tall frame standing on its base, and coloured
-// with the layer's two colours. A Model layer draws the model file's own
-// meshes and materials.
+// Conifer and Broadleaf trees are grown (scene/tree_mesh.h): a trunk, limbs,
+// branches, twigs and leaves, three variants of each so a forest is not one
+// tree copied, drawn full near, lighter at middle distance and as the simple
+// crown-on-a-trunk far away. The other built-in kinds are a few unit
+// primitives placed inside a 1-tall frame standing on its base. All are
+// coloured with the layer's two colours (leaves, bark). A Model layer draws
+// the model file's own meshes and materials (an imported tree).
 // ============================================================================
 
 #include "foliage.h"
+#include "tree_mesh.h"
 #include "material_cache.h"
 #include "primitive_meshes.h"
 #include "scene.h"
@@ -116,6 +120,31 @@ public:
         crown_ = build(gen_conifer_crown);
         tuft_ = build(gen_grass_tuft);
         if (tuft_) tuft_->set_double_sided(true);
+        // Grown trees: [kind][variant][detail], bark and leaves.
+        auto upload = [&](const std::vector<schizo::scene::TreeVertex>& tv, const std::vector<uint32_t>& ti) {
+            std::vector<SceneVertex> v;
+            v.reserve(tv.size());
+            for (const auto& x : tv) {
+                const glm::vec3 a = std::fabs(x.normal.y) < 0.9f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
+                v.push_back({x.position, x.normal, x.uv, glm::vec4(glm::normalize(glm::cross(a, x.normal)), 1.0f)});
+            }
+            std::vector<uint32_t> i = ti;
+            Submesh sm;
+            sm.material_index = 0;
+            sm.lods.push_back({0, static_cast<uint32_t>(i.size()), 0.0f});
+            return v.empty() ? std::unique_ptr<Mesh>() : Mesh::create(device, v, i, {sm});
+        };
+        for (int kind = 0; kind < 2; ++kind)
+            for (int var = 0; var < kTreeVariants; ++var)
+                for (int det = 0; det < 2; ++det) {
+                    const uint32_t seed = 101u + static_cast<uint32_t>(var) * 7919u;
+                    const schizo::scene::TreeMeshData td = kind == 0 ? schizo::scene::generate_conifer_tree(seed, det)
+                                                                     : schizo::scene::generate_broadleaf_tree(seed, det);
+                    TreeMeshes& tm = trees_[kind][var][det];
+                    tm.bark = upload(td.bark_vertices, td.bark_indices);
+                    tm.leaves = upload(td.leaf_vertices, td.leaf_indices);
+                    if (tm.leaves) tm.leaves->set_double_sided(true);
+                }
     }
 
     /// Free the GPU meshes. Before the device goes: the renderer outlives it.
@@ -123,6 +152,9 @@ public:
         cone_.reset();
         crown_.reset();
         tuft_.reset();
+        for (auto& k : trees_)
+            for (auto& v : k)
+                for (auto& d : v) { d.bark.reset(); d.leaves.reset(); }
     }
 
     struct Stats {
@@ -156,6 +188,22 @@ public:
             for (size_t li = 0; li < fc->Layers().size() && li < sc.size(); ++li) {
                 const FoliageLayer& l = fc->Layers()[li];
                 const std::vector<Part> parts = parts_of(l, prims, mats, device, mat_layout, mat_pool, textures);
+                // A grown tree's materials: leaves and bark in the layer's colours.
+                const int tree_kind = l.kind == FoliageKind::Conifer ? 0 : l.kind == FoliageKind::Broadleaf ? 1 : -1;
+                gws::renderer::gpu::Material* leaf_mat = nullptr;
+                gws::renderer::gpu::Material* bark_mat = nullptr;
+                if (tree_kind >= 0) {
+                    gws::assets::MaterialDesc ld;
+                    ld.name = "foliage";
+                    ld.base_color = glm::vec4(l.color_a, 1.0f);
+                    ld.roughness = 0.8f;
+                    leaf_mat = mats.get_or_create(ld, device, mat_layout, mat_pool, textures);
+                    gws::assets::MaterialDesc bd;
+                    bd.name = "foliage";
+                    bd.base_color = glm::vec4(l.color_b, 1.0f);
+                    bd.roughness = 0.92f;
+                    bark_mat = mats.get_or_create(bd, device, mat_layout, mat_pool, textures);
+                }
                 const gws::renderer::gpu::Scene* model = nullptr;
                 if (l.kind == FoliageKind::Model) {
                     if (l.model_path.empty()) continue;
@@ -206,6 +254,21 @@ public:
                                 gws::renderer::gpu::DrawItem di = src;
                                 di.model = m * src.model;
                                 di.is_blend = false;
+                                di.casts_shadow = l.casts_shadow;
+                                out.push_back(di);
+                                ++stats_.draws;
+                            }
+                        } else if (tree_kind >= 0 && f < kTreeMiddle && leaf_mat && bark_mat) {
+                            // A grown tree near or at middle distance.
+                            const int var = static_cast<int>(std::fmod(std::fabs(in.yaw) * 53.17f, 1.0f) * kTreeVariants) % kTreeVariants;
+                            const TreeMeshes& tm = trees_[tree_kind][var][f < kTreeNear ? 0 : 1];
+                            for (int pi = 0; pi < 2; ++pi) {
+                                gws::renderer::gpu::Mesh* mesh = pi == 0 ? tm.bark.get() : tm.leaves.get();
+                                if (!mesh) continue;
+                                gws::renderer::gpu::DrawItem di;
+                                di.mesh = mesh;
+                                di.material = pi == 0 ? bark_mat : leaf_mat;
+                                di.model = m;
                                 di.casts_shadow = l.casts_shadow;
                                 out.push_back(di);
                                 ++stats_.draws;
@@ -280,6 +343,12 @@ private:
     }
 
     std::unique_ptr<gws::renderer::gpu::Mesh> cone_, crown_, tuft_;
+    // Grown trees. Near: under kTreeNear of the draw distance; middle: under
+    // kTreeMiddle; beyond that the simple crown-on-a-trunk.
+    static constexpr int   kTreeVariants = 3;
+    static constexpr float kTreeNear = 0.18f, kTreeMiddle = 0.45f;
+    struct TreeMeshes { std::unique_ptr<gws::renderer::gpu::Mesh> bark, leaves; };
+    TreeMeshes trees_[2][kTreeVariants][2];
     std::vector<std::pair<float, uint32_t>>   visible_;   // (distance squared, cell) this frame
     Stats stats_;
 };

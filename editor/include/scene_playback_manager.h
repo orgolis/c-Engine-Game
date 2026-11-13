@@ -146,6 +146,15 @@ public:
      */
     bool IsPaused() const { return is_paused_; }
 
+    /// The game stands still (a pause menu, Pause Game) while scripts and UI
+    /// go on: no movement, physics or mouse look. Not the editor's Pause.
+    void SetGamePaused(bool p) { game_paused_ = p; }
+    bool IsGamePaused() const { return game_paused_; }
+    /// A modal UI document is shown over a focused game view: the mouse is
+    /// free for its buttons, and scripts still hear the keys (Esc to close it).
+    void SetUiHasInput(bool u) { ui_has_input_ = u; }
+    bool UiHasInput() const { return ui_has_input_; }
+
     /**
      * Get the player entity (if any)
      */
@@ -227,6 +236,8 @@ private:
 
     bool is_playing_ = false;
     bool is_paused_ = false;
+    bool game_paused_ = false;
+    bool ui_has_input_ = false;
     bool is_cursor_captured_ = false;  // True while the host should hide+lock the OS cursor
     bool is_input_focused_ = false;    // True only while the scene/game surface owns input
     bool net_client_mode_ = false;     // Props follow net-set transforms, no local sim

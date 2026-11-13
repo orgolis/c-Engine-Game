@@ -151,6 +151,7 @@ bool ProjectManifest::save(const std::string& manifest_path, const ProjectManife
     out << "name = "           << m.name           << "\n";
     out << "engine_version = " << m.engine_version << "\n";
     out << "default_scene = "  << m.default_scene  << "\n";
+    if (m.escape != "release") out << "escape = " << m.escape << "\n";
 
     std::string csv;
     for (const auto& fi : feature_table()) {
@@ -185,6 +186,7 @@ bool ProjectManifest::load(const std::string& manifest_path, ProjectManifest& ou
         if (key == "name")                out.name           = val;
         else if (key == "engine_version") out.engine_version = val;
         else if (key == "default_scene")  out.default_scene  = val;
+        else if (key == "escape")         out.escape         = val;
         else if (key == "features") {
             saw_features = true;
             std::stringstream ss(val);

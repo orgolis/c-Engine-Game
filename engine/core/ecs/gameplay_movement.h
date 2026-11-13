@@ -589,8 +589,12 @@ inline MoveResult step_movement(Movement& mv, const MoveInput& in, const MoveBod
     MoveResult r;
     r.velocity = st.velocity;
     // On the ground a little down keeps the capsule on slopes going downhill.
-    // Walking presses down even in the moment the ground is not reported, to settle onto it.
-    if (st.mode == MoveMode::Walk) r.velocity.y = -1.0f;
+    // Standing or walking on the ground asks for no vertical movement: a
+    // downward push is projected along any slope by the collide-and-slide, and
+    // the player slid down even gentle slopes. (The physics keeps a walker on
+    // the ground going downhill by itself.) Only in the moment the ground is
+    // not reported does walking press down, to settle onto it.
+    if (st.mode == MoveMode::Walk) r.velocity.y = st.grounded ? 0.0f : -1.0f;
     else if (st.mode == MoveMode::Slide && st.grounded) r.velocity.y = -1.0f;
     r.height = body.standing_height * (want_crouch ? std::clamp(s.crouch_height, 0.3f, 1.0f) : 1.0f);
     return r;

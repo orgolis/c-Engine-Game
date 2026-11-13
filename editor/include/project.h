@@ -22,6 +22,9 @@ struct ProjectManifest {
     std::string engine_version = "0.1.0";
     std::string default_scene  = "scenes/main.scene";  // relative to project_dir
     FeatureSet  features       = FeatureSet::defaults();
+    // Esc in Play: "release" frees the mouse for the editor (the default);
+    // "game" leaves Esc to the game (a pause menu). Shift+F1 always frees it.
+    std::string escape         = "release";
 
     // Absolute path to the project folder. Filled by load(); not serialized.
     std::string project_dir;

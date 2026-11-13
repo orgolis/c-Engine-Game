@@ -356,8 +356,12 @@ void ScenePlaybackManager::Update(float delta_time) {
         return;
     }
 
-    playback_time_ += delta_time;
     last_dt_ = delta_time;
+    if (game_paused_) {   // a pause menu: the world stands still, the camera stays put
+        UpdateCamera();
+        return;
+    }
+    playback_time_ += delta_time;
 
     UpdateMouseLook();
     DriveCharacterController(delta_time);

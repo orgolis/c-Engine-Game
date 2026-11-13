@@ -4,6 +4,7 @@
 
 #include "script_api_editor.h"
 #include "play_save.h"           // save_game / load_game
+#include "play_ui.h"             // the project's UI documents in Play
 #include "biome_water.h"
 #include "command_palette.h"
 #include "editor_extensions.h"
@@ -113,7 +114,7 @@ bool accepts_gameplay_input(const EditorScriptCtx* c) {
     // cursor capture is the single source of truth for gameplay focus: Escape
     // releases it and every script sees neutral input until the scene is clicked.
     return !c->playback || !c->playback->IsPlaying() ||
-           c->playback->IsCursorCaptured();
+           c->playback->IsCursorCaptured() || c->playback->UiHasInput();
 }
 
 bool api_key_down(void* ctx, int key) {
@@ -489,6 +490,23 @@ void api_show_message(void* ctx, const char* text, float seconds) {
     m.until = (c->playback ? c->playback->GetPlaybackTime() : 0.0) + std::max(0.5f, seconds);
 }
 
+// ---- UI documents, pause, quit ----
+bool api_ui_show(void* ctx, const char* path) {
+    if (!path || !*path) return false;
+    std::string err;
+    const bool ok = schizo::editor::play_ui().show(path, &err);
+    if (!err.empty()) spdlog::warn("[ui] {}", err);
+    (void)ctx;
+    return ok;
+}
+void api_ui_hide(void*, const char* path) { if (path) schizo::editor::play_ui().hide(path); }
+bool api_ui_set_text(void*, const char* path, const char* id, const char* text) {
+    return path && id && schizo::editor::play_ui().set_text(path, id, text ? text : "");
+}
+bool api_ui_shown(void*, const char* path) { return path && schizo::editor::play_ui().shown(path); }
+void api_set_game_paused(void*, bool paused) { schizo::editor::play_ui().script_pause = paused; }
+void api_quit_game(void*) { schizo::editor::play_ui().quit_requested = true; }
+
 // ---- gameplay event feed ----
 // ECS entity -> scene id. Events are rare, so a scan of the scene is fine.
 uint32_t scene_id_of(EditorScriptCtx* c, ecs::Entity e) {
@@ -681,6 +699,12 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.save_game          = &api_save_game;
     api.load_game          = &api_load_game;
     api.show_message       = &api_show_message;
+    api.ui_show            = &api_ui_show;
+    api.ui_hide            = &api_ui_hide;
+    api.ui_set_text        = &api_ui_set_text;
+    api.ui_shown           = &api_ui_shown;
+    api.set_game_paused    = &api_set_game_paused;
+    api.quit_game          = &api_quit_game;
     api.distance           = &api_distance;
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;

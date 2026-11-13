@@ -176,6 +176,18 @@ struct ScriptApi {
     // ---- messages in the game view (added v0.8.38; new entries go at the end) ----
     // Text shown across the game view for `seconds` (the newest replaces the last).
     void (*show_message)(void* ctx, const char* text, float seconds) = nullptr;
+
+    // ---- the project's UI documents (added v0.8.39; new entries go at the end) ----
+    // Show / hide a .ui file over the game; set a widget's text; whether one
+    // is shown. A button click arrives as the gameplay event "ui.click" with
+    // the button's id as its param (logic scripts: On UI Button).
+    bool (*ui_show)(void* ctx, const char* path) = nullptr;
+    void (*ui_hide)(void* ctx, const char* path) = nullptr;
+    bool (*ui_set_text)(void* ctx, const char* path, const char* id, const char* text) = nullptr;
+    bool (*ui_shown)(void* ctx, const char* path) = nullptr;
+    // The game stands still (scripts and UI go on); leave Play / the game.
+    void (*set_game_paused)(void* ctx, bool paused) = nullptr;
+    void (*quit_game)(void* ctx) = nullptr;
 };
 
 }  // namespace schizo::editor

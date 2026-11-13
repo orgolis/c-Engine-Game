@@ -127,6 +127,24 @@ int main() {
         s.run(back, 0.4f);
         check("no sprinting backwards", std::fabs(s.hspeed() - 5.0f) < 0.05f && !s.mv.state.sprinting);
     }
+    // ---- standing on a slope ----------------------------------------------------
+    // The physics projects any downward push along the ground, so a player
+    // standing (or walking) on a slope must ask for no vertical movement at
+    // all, or it slides down even gentle slopes.
+    {
+        Movement mv;
+        MoveBody b;
+        b.grounded = true;
+        b.ground_normal = glm::normalize(glm::vec3(0.0f, 1.0f, 0.3f));   // a gentle slope
+        auto none = [](const glm::vec3&, const glm::vec3&, float) { return MoveHit{}; };
+        MoveResult r;
+        for (int i = 0; i < 30; ++i) r = step_movement(mv, MoveInput{}, b, none, 1.0f / 60.0f);
+        const bool still = glm::length(r.velocity) < 1e-6f;
+        MoveInput w; w.move.y = 1.0f;
+        r = step_movement(mv, w, b, none, 1.0f / 60.0f);
+        check("on the ground: standing asks for no movement, walking for none downwards (no sliding on slopes)",
+              still && r.velocity.y == 0.0f && glm::length(glm::vec2(r.velocity.x, r.velocity.z)) > 0.1f);
+    }
     // ---- crouching ----------------------------------------------------------------
     {
         Sim s;

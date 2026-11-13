@@ -124,6 +124,14 @@ typedef struct SchizoScriptApi {
     bool     (*load_game)(void* ctx, const char* slot);
     /* Text across the game view for some seconds. */
     void     (*show_message)(void* ctx, const char* text, float seconds);
+    /* The project's UI documents (.ui files); a click is the gameplay event
+       "ui.click" with the button's id. Pause the game; quit. */
+    bool     (*ui_show)(void* ctx, const char* path);
+    void     (*ui_hide)(void* ctx, const char* path);
+    bool     (*ui_set_text)(void* ctx, const char* path, const char* id, const char* text);
+    bool     (*ui_shown)(void* ctx, const char* path);
+    void     (*set_game_paused)(void* ctx, bool paused);
+    void     (*quit_game)(void* ctx);
 } SchizoScriptApi;
 
 }  // extern "C"

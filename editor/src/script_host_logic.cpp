@@ -229,6 +229,34 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
     r.fn("ui.show_message", "UI", "Show Message", [s](std::string text, double seconds) {
         if (API && API->show_message) API->show_message(API->ctx, text.c_str(), float(seconds));
     }, {"Text", "Seconds"}).tip("Shows the text across the game view for that many seconds; a newer message replaces it.");
+    const char* U = "UI";
+    r.fn("ui.show", U, "Show UI", [s](std::string path) {
+        return API && API->ui_show && API->ui_show(API->ctx, path.c_str());
+    }, {"File", "Shown"}).tip("Shows a UI document (.ui file in the project) over the game. A modal one frees the mouse for "
+                               "its buttons; a pausing one stands the game still while it is shown.");
+    r.fn("ui.hide", U, "Hide UI", [s](std::string path) {
+        if (API && API->ui_hide) API->ui_hide(API->ctx, path.c_str());
+    }, {"File"});
+    r.fn("ui.set_text", U, "Set UI Text", [s](std::string path, std::string id, std::string text) {
+        return API && API->ui_set_text && API->ui_set_text(API->ctx, path.c_str(), id.c_str(), text.c_str());
+    }, {"File", "Id", "Text", "Done"}).tip("Sets the text of a label or button (by its id) in a shown UI document.");
+    r.pure("ui.is_shown", U, "Is UI Shown", [s](std::string path) {
+        return API && API->ui_shown && API->ui_shown(API->ctx, path.c_str());
+    }, {"File", "Shown"});
+    r.fn("game.pause", "Game", "Pause Game", [s](bool paused) {
+        if (API && API->set_game_paused) API->set_game_paused(API->ctx, paused);
+    }, {"Paused"}).tip("The game stands still (no movement, physics, enemies) while scripts and UI go on.");
+    r.fn("game.quit", "Game", "Quit Game", [s]() {
+        if (API && API->quit_game) API->quit_game(API->ctx);
+    }, {}).tip("Ends Play in the editor; closes an exported game.");
+    {
+        NodeDef d;
+        d.id = "event.ui_button"; d.category = "Events|UI"; d.title = "On UI Button";
+        d.builtin = Builtin::Event; d.named = true; d.name_label = "Button";
+        d.tooltip = "Runs when a button with this id is clicked in a shown UI document.";
+        d.out("Then", kExec);
+        r.add(std::move(d));
+    }
     r.fn("world.emit_event", W, "Emit Event", [s](std::string name) {
         if (API && API->emit_event) API->emit_event(API->ctx, name.c_str());
     }, {"Name"}).tip("Publishes a named event on the gameplay bus.");
@@ -629,6 +657,7 @@ public:
                 (pressed ? k->on_press : k->on_release) = e.name;
             }
             if (e.name.rfind("event.gameplay:", 0) == 0 || e.name.rfind("event.about_me:", 0) == 0 ||
+                e.name.rfind("event.ui_button:", 0) == 0 ||
                 e.name == "event.trigger_enter" || e.name == "event.trigger_exit")
                 wants_bus_ = true;
         }
@@ -732,6 +761,7 @@ public:
                     const uint32_t self = inst_->self;
                     if (step == 0) {
                         vm.fire(*inst_, std::string("event.gameplay:") + name, args, 4);
+                        if (std::string_view(name) == "ui.click") vm.fire(*inst_, std::string("event.ui_button:") + param);
                     } else if (step == 1) {
                         if (self != 0 && (instigator == self || target == self)) vm.fire(*inst_, std::string("event.about_me:") + name, args, 4);
                     } else if (self != 0 && target == self) {

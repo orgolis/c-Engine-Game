@@ -126,7 +126,7 @@
 #include "player_templates.h"     // Create > Player templates (C6)
 #include "play_save.h"            // F6 / F9 and scripts save and load in Play (C6)
 #include "play_loop.h"            // death, loot, interacting, respawning in Play (D0)
-#include "test_game.h"            // Create > Test Game (phase D)
+#include "play_ui.h"              // the project's UI documents (.ui) in Play
 #include "ecs/gameplay_movement.h" // the player's moves in Play (C4)
 #include "ecs/gameplay_camera.h"   // the player's third-person camera rig
 #include "ecs/gameplay_tags.h"     // surface.climbable
@@ -496,8 +496,6 @@ struct EditorState {
     // Player templates waiting for the bridge to mirror their new entity.
     std::vector<std::pair<uint32_t, schizo::editor::PlayerTemplate>> pending_player_templates;
     schizo::editor::PlayGameLoop    play_loop;        // death, loot, E to interact, respawn (D0)
-    // Gameplay components for new scene entities, given once the bridge has them.
-    std::vector<schizo::editor::PendingOutfit> pending_outfits;
     schizo::editor::ShotEffects     shot_effects;    // muzzle flashes, tracers, impact marks
     schizo::editor::EditorScriptCtx script_ctx;
     schizo::editor::ScriptApi       script_api;
@@ -642,6 +640,11 @@ struct EditorState {
 static void BeginPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::Scene>& scene) {
     if (!st.scene_playback_manager || !scene) return;
     st.play_cursor_released_by_escape = false;
+    schizo::editor::play_ui().reset();
+    st.scene_playback_manager->SetGamePaused(false);
+    st.scene_playback_manager->SetUiHasInput(false);
+    st.set_status(st.project.escape == "game" ? "Playing -- Esc is the game's; Shift+F1 frees the mouse for the editor"
+                                              : "Playing -- Esc or Shift+F1 frees the mouse for the editor");
     st.play_changes.Capture(scene, st.ecs_bridge);        // baseline BEFORE play mutates anything
     // Stop gives back what Play changes: the entities and the gameplay values.
     st.play_baseline_ids.clear();
@@ -679,6 +682,9 @@ static void EndPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::Sc
         st.pending_play_changes = {};
 
     st.scene_playback_manager->StopPlayback();
+    schizo::editor::play_ui().reset();
+    st.scene_playback_manager->SetGamePaused(false);
+    st.scene_playback_manager->SetUiHasInput(false);
     // What Play hid comes back, what it made goes, the gameplay values are
     // as they were (the entity list is back to its order, so the snapshot's
     // index keys match).
@@ -2888,29 +2894,6 @@ void ShowSceneHierarchy(EditorState& editor_state) {
               }
               ImGui::EndMenu();
             }
-            if (ImGui::MenuItem("Test Game")) {
-                // One undo step: the world, the player, camps, caches, rules.
-                auto made = std::make_shared<std::vector<uint32_t>>();
-                auto cmd = std::make_unique<schizo::editor::FunctionCommand>(
-                    [scene, &editor_state, made]() {
-                        auto b = schizo::editor::build_test_game(scene);
-                        made->clear();
-                        for (const auto& e : b.made) if (e) made->push_back(e->GetId());
-                        for (auto& of : b.outfits) editor_state.pending_outfits.push_back(std::move(of));
-                        editor_state.editor_scene->MarkModified();
-                        editor_state.set_status(b.ok ? "Test game built: " + std::to_string(b.enemies) +
-                                                           " creatures in camps, caches, checkpoints and a beacon. Press Play."
-                                                     : "Test game: " + b.error);
-                    },
-                    [scene, made]() {
-                        for (auto it = made->rbegin(); it != made->rend(); ++it)
-                            if (auto e = FindEntityById(scene, *it)) scene->RemoveEntity(e);
-                    },
-                    "Create Test Game");
-                editor_state.undo_redo_manager.ExecuteCommand(std::move(cmd));
-                ImGui::CloseCurrentPopup();
-            }
-
             if (ImGui::MenuItem("Camera")) {
                 auto created_id = std::make_shared<uint32_t>(0);   // see FindEntityById
                 auto create_cmd = std::make_unique<schizo::editor::FunctionCommand>(
@@ -5972,7 +5955,9 @@ void ShowViewport(EditorState& editor_state) {
                     !editor_state.scene_playback_manager->IsCursorCaptured();
                 // The ability bar: a box per slot (key, name, cooldown sweep) and
                 // the cast in progress above it.
-                if (viewport_playing && editor_state.player_abilities.hud().shown) {
+                // A modal UI document (a menu) is over the game: the game's own HUD steps back.
+                const bool ui_menu_up = viewport_playing && schizo::editor::play_ui().modal();
+                if (viewport_playing && !ui_menu_up && editor_state.player_abilities.hud().shown) {
                     const auto& ah = editor_state.player_abilities.hud();
                     ImDrawList* dl = ImGui::GetWindowDrawList();
                     const float box = 54.0f, gap = 6.0f;
@@ -6012,6 +5997,13 @@ void ShowViewport(EditorState& editor_state) {
                         dl->AddText(ImVec2(p0.x + (w - ts.x) * 0.5f, p0.y - ts.y - 2), IM_COL32(235, 240, 250, 240), ah.cast_name.c_str());
                     }
                 }
+                // The project's UI documents, over the game view.
+                if (viewport_playing && !schizo::editor::play_ui().empty()) {
+                    auto& ui = schizo::editor::play_ui();
+                    const bool pointer = ui.modal() && !editor_state.scene_playback_manager->IsCursorCaptured() &&
+                                         ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+                    ui.frame(ImGui::GetWindowDrawList(), image_min, image_max, pointer);
+                }
                 // A script's message (Show Message), across the top of the view.
                 if (viewport_playing) {
                     const auto& msg = schizo::editor::play_message();
@@ -6031,7 +6023,7 @@ void ShowViewport(EditorState& editor_state) {
                     const auto& lh = editor_state.play_loop.hud();
                     ImDrawList* dl = ImGui::GetWindowDrawList();
                     const float cx = (image_min.x + image_max.x) * 0.5f;
-                    if (!lh.prompt.empty()) {
+                    if (!lh.prompt.empty() && !ui_menu_up) {
                         const ImVec2 ts = ImGui::CalcTextSize(lh.prompt.c_str());
                         const ImVec2 p(cx - ts.x * 0.5f, (image_min.y + image_max.y) * 0.5f + 40.0f);
                         dl->AddRectFilled(ImVec2(p.x - 10, p.y - 5), ImVec2(p.x + ts.x + 10, p.y + ts.y + 5), IM_COL32(10, 14, 20, 180), 4.0f);
@@ -6066,7 +6058,7 @@ void ShowViewport(EditorState& editor_state) {
                     editor_state.play_cursor_released_by_escape = false;
                     editor_state.set_status("Play input captured — Esc releases the mouse");
                     spdlog::info("Viewport click — recaptured play-mode cursor");
-                } else if (viewport_playing && editor_state.player_weapon.hud().armed && !waiting_for_recapture) {
+                } else if (viewport_playing && !ui_menu_up && editor_state.player_weapon.hud().armed && !waiting_for_recapture) {
                     // The gun's HUD: a crosshair whose gap is the spread now,
                     // a hit marker, and the ammunition.
                     const auto& hud = editor_state.player_weapon.hud();
@@ -9495,6 +9487,12 @@ int main(int argc, char** argv) {
                 editor_state.features       = pm.features;
                 editor_state.project_loaded = true;
                 schizo::editor::set_project_root(pm.project_dir);  // sandbox CWD
+                // The project's own gameplay data (items, weapons, abilities):
+                // the start-up load ran before the project folder was known.
+                {
+                    const int n = ecs_bridge.load_gameplay_data("assets/gameplay");
+                    spdlog::info("[project] {} gameplay definition(s) from assets/gameplay", n);
+                }
                 if (editor_state.asset_browser)                    // re-scope the browser to THIS project
                     editor_state.asset_browser->Reroot();          // (was rooted at the engine dir at construction)
                 const std::string scene_path = pm.default_scene_path();
@@ -10149,7 +10147,8 @@ int main(int argc, char** argv) {
             // the rigged characters observable. Play-mode only: an agent that
             // patrols while you are editing would move things under the gizmo.
             if (editor_state.scene_playback_manager &&
-                editor_state.scene_playback_manager->IsPlaying()) {
+                editor_state.scene_playback_manager->IsPlaying() &&
+                !editor_state.scene_playback_manager->IsGamePaused()) {
                 editor_state.npc_agents.update(editor_state.editor_scene->GetScene(),
                                                editor_state.scene_navmesh, delta_time,
                                                editor_state.ecs_bridge);
@@ -10256,9 +10255,13 @@ int main(int argc, char** argv) {
             const bool terminal_has_input_focus =
                 editor_state.show_terminal && editor_state.terminal &&
                 editor_state.terminal->HasInputFocus();
+            // While Play has the mouse, keys are the game's: no editor shortcuts.
+            const bool play_owns_input = editor_state.scene_playback_manager &&
+                                         editor_state.scene_playback_manager->IsPlaying() &&
+                                         editor_state.scene_playback_manager->HasInputFocus();
             const bool editor_shortcuts_allowed =
                 app_has_input_focus && !terminal_has_input_focus &&
-                !ImGui::GetIO().WantTextInput;
+                !ImGui::GetIO().WantTextInput && !play_owns_input;
             if (editor_state.scene_playback_manager)
                 editor_state.scene_playback_manager->SetInputFocused(scene_has_input_focus);
 
@@ -10278,6 +10281,13 @@ int main(int argc, char** argv) {
                     glfwSetInputMode(glfw_window, GLFW_CURSOR,
                                      want_capture ? GLFW_CURSOR_DISABLED
                                                   : GLFW_CURSOR_NORMAL);
+                    // While the game has the mouse, the editor's UI gets none of
+                    // it: a hidden cursor still moved over the panels and clicked
+                    // them, so the editor stayed usable "behind" the game.
+                    // (Keys stay on: Play reads them through ImGui.)
+                    ImGuiIO& cio = ImGui::GetIO();
+                    if (want_capture) cio.ConfigFlags |= ImGuiConfigFlags_NoMouse;
+                    else              cio.ConfigFlags &= ~(ImGuiConfigFlags_NoMouse);
                     cursor_delta_primed = false;
                     prev_cursor_captured = want_capture;
                 }
@@ -10296,6 +10306,7 @@ int main(int argc, char** argv) {
             } else if (prev_cursor_captured) {
                 // Exited play mode — restore the OS cursor we hid earlier.
                 glfwSetInputMode(glfw_window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                ImGui::GetIO().ConfigFlags &= ~(ImGuiConfigFlags_NoMouse);
                 prev_cursor_captured = false;
                 cursor_delta_primed = false;
             }
@@ -10305,9 +10316,15 @@ int main(int argc, char** argv) {
             // the editor or a standalone game window. The user can re-enter by
             // clicking the running viewport (or anywhere in a game window).
             {
-                static bool prev_esc = false;
+                static bool prev_esc = false, prev_sf1 = false;
                 const bool cur_esc = key(GLFW_KEY_ESCAPE);
-                if (cur_esc && !prev_esc && playing &&
+                const bool cur_sf1 = key(GLFW_KEY_F1) && (key(GLFW_KEY_LEFT_SHIFT) || key(GLFW_KEY_RIGHT_SHIFT));
+                // Esc frees the mouse unless the project gives Esc to the game
+                // (its pause menu); Shift+F1 always does.
+                const bool free_now = (cur_esc && !prev_esc && editor_state.project.escape != "game") ||
+                                      (cur_sf1 && !prev_sf1);
+                prev_sf1 = cur_sf1;
+                if (free_now && playing &&
                     editor_state.scene_playback_manager->IsCursorCaptured()) {
                     editor_state.scene_playback_manager->SetCursorCaptured(false);
                     editor_state.play_cursor_released_by_escape = true;
@@ -10459,6 +10476,30 @@ int main(int argc, char** argv) {
 
             // Player templates: their gameplay components, once the bridge has
             // mirrored the new entity (a frame after it was made).
+            // GWS_TEST_LOG_PLAYER=1: in Play, the player's position every second.
+            if (std::getenv("GWS_TEST_LOG_PLAYER") && editor_state.scene_playback_manager &&
+                editor_state.scene_playback_manager->IsPlaying()) {
+                static int lp = 0;
+                if (++lp % 60 == 0)
+                    if (auto* pl = editor_state.scene_playback_manager->GetPlayerEntity()) {
+                        const glm::vec3 pp = pl->GetTransform()->GetWorldPosition();
+                        spdlog::info("[test] player at ({:.3f}, {:.3f}, {:.3f}) after {} play frames", pp.x, pp.y, pp.z, lp);
+                    }
+            }
+            // GWS_TEST_CAMERA=x,y,z,tx,ty,tz: the editor camera at x,y,z looking
+            // at tx,ty,tz (screenshots of a place in a scene).
+            {
+                static bool cam_done = false;
+                if (!cam_done && frame_count > 2) {
+                    cam_done = true;
+                    if (const char* tc = std::getenv("GWS_TEST_CAMERA")) {
+                        float v[6] = {};
+                        if (std::sscanf(tc, "%f,%f,%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) == 6)
+                            editor_state.viewport_camera.FollowTarget(glm::vec3(v[3], v[4], v[5]),
+                                                                      glm::vec3(v[0] - v[3], v[1] - v[4], v[2] - v[5]));
+                    }
+                }
+            }
             // GWS_TEST_TEMPLATE=<0..4> (with GWS_TEST_PLAY): give the scene's
             // Player that template before Play starts.
             {
@@ -10471,106 +10512,6 @@ int main(int argc, char** argv) {
                                 editor_state.pending_player_templates.push_back(
                                     {pl->GetId(), static_cast<schizo::editor::PlayerTemplate>(std::clamp(std::atoi(tt), 0, 4))});
                 }
-            }
-            if (!editor_state.pending_outfits.empty()) {
-                auto sc = editor_state.editor_scene->GetScene();
-                auto& pend = editor_state.pending_outfits;
-                size_t done = 0;
-                for (size_t i = 0; i < pend.size();) {
-                    auto ent = sc ? sc->GetEntityById(pend[i].id) : nullptr;
-                    if (!ent) { pend.erase(pend.begin() + i); continue; }
-                    const uint32_t eid = ecs_bridge.ecs_entity_id(ent->GetTransform());
-                    if (eid == schizo::editor::kNoEcsEntity || !ecs_bridge.world().valid(static_cast<schizo::ecs::Entity>(eid))) { ++i; continue; }
-                    pend[i].fn(ecs_bridge.world(), static_cast<schizo::ecs::Entity>(eid));
-                    pend.erase(pend.begin() + i);
-                    ++done;
-                }
-                if (done) spdlog::info("Gave {} object(s) their gameplay components", done);
-            }
-            // GWS_TEST_GAME=<dir> (with GWS_TEST_PLAY): build the test game into
-            // the scene before Play, its files in <dir>.
-            {
-                static bool tg_done = false;
-                if (!tg_done && frame_count > 2) {
-                    tg_done = true;
-                    if (const char* tg = std::getenv("GWS_TEST_GAME"))
-                        if (auto sc = editor_state.editor_scene->GetScene()) {
-                            schizo::editor::TestGameOptions o;
-                            o.dir = tg;
-                            auto b = schizo::editor::build_test_game(sc, o);
-                            for (auto& of : b.outfits) editor_state.pending_outfits.push_back(std::move(of));
-                            if (b.ok) spdlog::info("[test] game: built -- {} creatures, {} objects", b.enemies, b.made.size());
-                            else spdlog::warn("[test] game: {}", b.error);
-                            if (b.ok && b.player)
-                                editor_state.viewport_camera.FollowTarget(b.player->GetTransform()->GetWorldPosition(), glm::vec3(0, 6, 12));
-                        }
-                }
-            }
-            // GWS_TEST_GAME_RULES=1: the rules scripts, checked in Play -- into a
-            // checkpoint (it saves), every creature dies (the count, then the
-            // beacon opens), into the beacon (you win).
-            if (std::getenv("GWS_TEST_GAME_RULES") && editor_state.scene_playback_manager &&
-                editor_state.scene_playback_manager->IsPlaying()) {
-                auto& pm = *editor_state.scene_playback_manager;
-                auto sc = editor_state.editor_scene->GetScene();
-                static int rf = 0;
-                static std::string last_msg;
-                ++rf;
-                const auto& msg = schizo::editor::play_message();
-                if (msg.text != last_msg) { last_msg = msg.text; spdlog::info("[test] rules: message \"{}\" (play frame {})", msg.text, rf); }
-                auto put_in = [&](const char* name) {
-                    if (auto z = sc ? sc->GetEntityByName(name) : nullptr)
-                        pm.TeleportPlayer(z->GetTransform()->GetWorldPosition() + glm::vec3(0.0f, -1.0f, 0.0f),
-                                          pm.GetPlayerEntity()->GetTransform()->GetWorldRotation());
-                };
-                if (rf == 60) put_in("Checkpoint Zone 1");
-                if (rf == 120) {
-                    int n = 0;
-                    ecs_bridge.world().each<schizo::ecs::GameplayTags, schizo::ecs::AttributeSet>(
-                        [&](schizo::ecs::Entity, schizo::ecs::GameplayTags& tg, schizo::ecs::AttributeSet& a) {
-                            if (tg.has("team.enemy")) { a.set("Health", 0.0f); ++n; }
-                        });
-                    spdlog::info("[test] rules: {} creatures struck down; save file {}", n,
-                                 std::filesystem::exists(schizo::editor::play_save_path("quick")) ? "written" : "missing");
-                }
-                if (rf == 300) put_in("Beacon Zone");
-                if (rf == 400) spdlog::info("[test] rules: game.cleared {}, game.won {}", ecs_bridge.world_flag("game.cleared"),
-                                            ecs_bridge.world_flag("game.won"));
-            }
-            // GWS_TEST_GAME_FIGHT=1: next to the first camp, standing still --
-            // the creatures must notice, close in and hurt the player.
-            if (std::getenv("GWS_TEST_GAME_FIGHT") && editor_state.scene_playback_manager &&
-                editor_state.scene_playback_manager->IsPlaying()) {
-                auto& pm = *editor_state.scene_playback_manager;
-                auto sc = editor_state.editor_scene->GetScene();
-                static int ff = 0;
-                ++ff;
-                if (ff == 30)
-                    if (auto camp = sc ? sc->GetEntityByName("Camp 1") : nullptr)
-                        pm.TeleportPlayer(camp->GetTransform()->GetWorldPosition() + glm::vec3(8.0f, 1.5f, 0.0f),
-                                          glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f)));
-                if (ff % 60 == 0 && ff <= 600)
-                    if (auto* pl = pm.GetPlayerEntity()) {
-                        const auto pe = static_cast<schizo::ecs::Entity>(ecs_bridge.ecs_entity_id(pl->GetTransform()));
-                        const auto* pa = ecs_bridge.world().try_get<schizo::ecs::AttributeSet>(pe);
-                        if (auto cr = sc->GetEntityByName("Creature"))
-                            spdlog::info("[test] fight: a creature at ({:.1f}, {:.1f}, {:.1f}), player at ({:.1f}, {:.1f}, {:.1f}); agents {} active {}, navmesh empty {}",
-                                         cr->GetTransform()->GetWorldPosition().x, cr->GetTransform()->GetWorldPosition().y, cr->GetTransform()->GetWorldPosition().z,
-                                         pl->GetTransform()->GetWorldPosition().x, pl->GetTransform()->GetWorldPosition().y, pl->GetTransform()->GetWorldPosition().z,
-                                         editor_state.npc_agents.agent_count(), editor_state.npc_agents.moving(), editor_state.scene_navmesh.empty());
-                        spdlog::info("[test] fight: frame {} -- player health {}, {} agent(s) chasing, {} attacking this frame, dead {}",
-                                     ff, pa ? pa->get("Health") : -1.0f, editor_state.npc_agents.chasing(),
-                                     editor_state.npc_agents.attacks_this_frame(), editor_state.play_loop.hud().player_dead);
-                    }
-            }
-            // GWS_TEST_GAME_WALK=1: in Play, run towards the beacon the whole
-            // time (sprint) -- a moving camera through the world, for measuring.
-            if (std::getenv("GWS_TEST_GAME_WALK") && editor_state.scene_playback_manager &&
-                editor_state.scene_playback_manager->IsPlaying()) {
-                schizo::ecs::MoveInput mi;
-                mi.move.y = 1.0f;
-                mi.sprint = true;
-                editor_state.scene_playback_manager->SetScriptedMoveInput(&mi);
             }
             if (!editor_state.pending_player_templates.empty()) {
                 auto sc = editor_state.editor_scene->GetScene();
@@ -10587,6 +10528,81 @@ int main(int argc, char** argv) {
                     ++i;
                 }
             }
+            // The project's UI documents: live values, clicks to the scripts, the
+            // pause they ask for, the mouse while a modal one is shown, quitting.
+            if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
+                auto& pm = *editor_state.scene_playback_manager;
+                auto& ui = schizo::editor::play_ui();
+                ui.refresh([&](const std::string& src) {
+                    schizo::ui::UiValue v;
+                    if (src == "time") { v.found = true; v.value = pm.GetPlaybackTime(); return v; }
+                    if (src.rfind("flag.", 0) == 0) { v.found = true; v.value = ecs_bridge.world_flag(src.substr(5)); return v; }
+                    if (src.rfind("player.", 0) != 0) return v;
+                    auto* pl = pm.GetPlayerEntity();
+                    const uint32_t pid = pl ? ecs_bridge.ecs_entity_id(pl->GetTransform()) : schizo::editor::kNoEcsEntity;
+                    const auto pe = static_cast<schizo::ecs::Entity>(pid);
+                    if (pid == schizo::editor::kNoEcsEntity || !ecs_bridge.world().valid(pe)) return v;
+                    auto& w = ecs_bridge.world();
+                    const std::string what = src.substr(7);
+                    if (what == "ammo" || what == "reserve" || what == "weapon") {
+                        const auto* ws = w.try_get<schizo::ecs::WeaponState>(pe);
+                        if (!ws) return v;
+                        v.found = true;
+                        if (what == "ammo") v.value = ws->ammo_in_mag;
+                        else if (what == "reserve") v.value = ws->reserve;
+                        else { const auto* d = schizo::ecs::find_weapon(ws->weapon_id); v.text = d ? d->name : ws->weapon_id; }
+                        if (const auto* d = schizo::ecs::find_weapon(ws->weapon_id)) v.max = d->mag_size;
+                        return v;
+                    }
+                    if (const auto* a = w.try_get<schizo::ecs::AttributeSet>(pe))
+                        if (const auto* at = a->find(what)) { v.found = true; v.value = at->current; v.max = at->max; }
+                    return v;
+                });
+                // GWS_TEST_UI=click:<id>@<frame>,show:<file>@<frame>,... : click a
+                // button or show a document at a Play frame (menus seen without a person).
+                if (const char* tu = std::getenv("GWS_TEST_UI")) {
+                    static int ui_frames = 0;
+                    ++ui_frames;
+                    std::stringstream tss(tu);
+                    std::string item;
+                    while (std::getline(tss, item, ',')) {
+                        const size_t at = item.rfind('@'), colon = item.find(':');
+                        if (at == std::string::npos || colon == std::string::npos || std::atoi(item.c_str() + at + 1) != ui_frames) continue;
+                        const std::string what = item.substr(0, colon), arg = item.substr(colon + 1, at - colon - 1);
+                        if (what == "click") {
+                            schizo::ecs::GameplayEvent ev; ev.name = "ui.click"; ev.param = arg;
+                            ecs_bridge.events().publish(ev);
+                        } else if (what == "show") {
+                            ui.show(arg);
+                        }
+                        spdlog::info("[test] ui: {} {} (play frame {})", what, arg, ui_frames);
+                    }
+                }
+                for (const std::string& id : ui.take_clicks()) {
+                    schizo::ecs::GameplayEvent ev;
+                    ev.name = "ui.click";
+                    ev.param = id;
+                    ecs_bridge.events().publish(ev);
+                }
+                pm.SetGamePaused(ui.pauses());
+                // A modal document frees the mouse for its buttons; when the last
+                // one goes, the game takes the mouse back.
+                static bool released_for_ui = false;
+                const bool modal = ui.modal();
+                if (modal && pm.IsCursorCaptured()) { pm.SetCursorCaptured(false); released_for_ui = true; }
+                if (!modal && released_for_ui) {
+                    released_for_ui = false;
+                    if (!editor_state.play_cursor_released_by_escape) pm.SetCursorCaptured(true);
+                }
+                const bool app_focused = glfwGetWindowAttrib(glfw_window, GLFW_FOCUSED) == GLFW_TRUE;
+                pm.SetUiHasInput(modal && app_focused && (game_window_mode || editor_state.viewport_input_focused));
+                if (ui.quit_requested) {
+                    ui.quit_requested = false;
+                    if (game_window_mode) glfwSetWindowShouldClose(glfw_window, GLFW_TRUE);
+                    else if (auto qs = editor_state.editor_scene->GetScene()) EndPlayMode(editor_state, qs);
+                }
+            }
+
             // F6 saves the game in Play, F9 loads it (slot "quick").
             if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
                 auto& pm = *editor_state.scene_playback_manager;
@@ -11003,7 +11019,7 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
-                if (pm.IsPlaying()) {
+                if (pm.IsPlaying() && !pm.IsGamePaused()) {
                     static bool prev_e = false;
                     const bool ek = (focus && glfwGetKey(glfw_window, GLFW_KEY_E) == GLFW_PRESS) || life_e;
                     editor_state.play_loop.update(delta_time, pm, ecs_bridge, editor_state.editor_scene->GetScene(), ek && !prev_e);
@@ -11187,6 +11203,10 @@ int main(int argc, char** argv) {
                         (ImTextureID)(void*)editor_state.viewport_texture_id,
                         ImVec2(0.0f, 0.0f), gio.DisplaySize);
                 }
+                if (!schizo::editor::play_ui().empty() && editor_state.scene_playback_manager)
+                    schizo::editor::play_ui().frame(ImGui::GetForegroundDrawList(), ImVec2(0.0f, 0.0f), gio.DisplaySize,
+                                                    schizo::editor::play_ui().modal() &&
+                                                        !editor_state.scene_playback_manager->IsCursorCaptured());
                 // Multiplayer session HUD. A standalone export stays clean and
                 // only shows help after Escape releases its input focus.
                 if (!standalone_game_mode) {
@@ -11233,6 +11253,10 @@ int main(int argc, char** argv) {
                     // Enter the project sandbox (project folder becomes the CWD)
                     // and re-scope the asset browser to it.
                     schizo::editor::set_project_root(chosen.project_dir);
+                    if (editor_state.ecs_bridge) {
+                        const int n = editor_state.ecs_bridge->load_gameplay_data("assets/gameplay");
+                        spdlog::info("[project] {} gameplay definition(s) from assets/gameplay", n);
+                    }
                     if (editor_state.asset_browser) editor_state.asset_browser->Reroot();
 
                     // Load the project's default scene, creating it if missing.
@@ -12689,7 +12713,9 @@ int main(int argc, char** argv) {
             { GWS_PROFILE_ZONE("ecs_sync");
               ecs_bridge.sync_and_run(editor_scene.GetScene()); }
             { GWS_PROFILE_ZONE("gameplay_tick");
-              ecs_bridge.tick_gameplay(delta_time); }   // G0: effects/abilities/triggers/timers/events
+              // Paused: time stands still, but events (UI clicks) still flow.
+              const bool gp = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsGamePaused();
+              ecs_bridge.tick_gameplay(gp ? 0.0f : delta_time); }   // G0: effects/abilities/triggers/timers/events
 
             // Scene logic graph: start/stop with Play, and feed key presses to
             // On Key nodes while playing.

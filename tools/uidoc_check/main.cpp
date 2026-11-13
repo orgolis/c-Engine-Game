@@ -1,0 +1,90 @@
+// ============================================================================
+// uidoc_check -- UI documents (ui/ui_document.h): a game's screens as .ui
+// files. Parsing, placement on screens of other sizes, live values, buttons,
+// setting text, and lines it cannot read.
+// ============================================================================
+#include "ui/ui_document.h"
+
+#include <cmath>
+#include <cstdio>
+#include <string>
+
+using namespace schizo::ui;
+
+static int g_fail = 0, g_pass = 0;
+static void check(const char* what, bool ok) {
+    std::printf("[%s] %s\n", ok ? " OK " : "FAIL", what);
+    (ok ? g_pass : g_fail)++;
+}
+static bool close_to(float a, float b) { return std::fabs(a - b) < 0.01f; }
+
+int main() {
+    const char* menu =
+        "# Pause menu\n"
+        "ui modal pause layer=10\n"
+        "panel  id=dim    anchor=fill color=0,0,0,0.55\n"
+        "label  id=title  anchor=center x=0 y=-150 w=600 h=70 text=\"Paused for now\" size=54 align=center\n"
+        "button id=resume anchor=center x=0 y=-40 w=360 h=64 text=\"Resume\" size=26\n"
+        "button id=quit   anchor=bottom_right x=-20 y=-20 w=200 h=50 text=\"Quit\"\n"
+        "bar    id=hp     anchor=top_left x=24 y=24 w=320 h=22 color=0.85,0.2,0.2,1 bind=player.Health\n"
+        "label  id=ammo   anchor=bottom x=0 y=-30 w=300 h=30 text=\"{player.ammo} / {player.reserve} {flag.x}\"\n";
+    auto d = parse_ui_document(menu, "pause.ui");
+    check("options: modal, pause, layer", d->modal && d->pause && d->layer == 10);
+    check("widgets by id, buttons listed", d->ids.size() == 6 && d->buttons.size() == 2 && d->buttons[0].first == "resume" &&
+                                           d->errors.empty());
+    check("quoted text keeps its spaces", dynamic_cast<Label*>(d->ids["title"])->text == "Paused for now");
+
+    // Placement on the reference screen and on one half its size.
+    d->canvas.layout(1920.0f, 1080.0f);
+    const UiRect r = d->ids["resume"]->rect;
+    check("center anchor: the widget's centre sits at the anchor, moved by x,y",
+          close_to(r.cx(), 960.0f) && close_to(r.cy(), 540.0f - 40.0f) && close_to(r.w, 360.0f));
+    const UiRect q = d->ids["quit"]->rect;
+    check("bottom_right anchor: its corner sits at the screen's corner, inset by x,y",
+          close_to(q.x + q.w, 1900.0f) && close_to(q.y + q.h, 1060.0f));
+    const UiRect f = d->ids["dim"]->rect;
+    check("fill covers the screen", close_to(f.w, 1920.0f) && close_to(f.h, 1080.0f));
+    d->canvas.layout(960.0f, 540.0f);
+    const UiRect r2 = d->ids["resume"]->rect;
+    check("a smaller screen scales it all", close_to(r2.cx(), 480.0f) && close_to(r2.cy(), 270.0f - 20.0f) && close_to(r2.w, 180.0f));
+
+    // Live values.
+    refresh_ui_bindings(*d, [](const std::string& s) {
+        UiValue v;
+        if (s == "player.Health") { v.found = true; v.value = 30; v.max = 120; }
+        if (s == "player.ammo")   { v.found = true; v.value = 17; }
+        if (s == "player.reserve"){ v.found = true; v.value = 90; }
+        return v;
+    });
+    check("{placeholders} and bound bars read the game; unknown ones show '?'",
+          dynamic_cast<Label*>(d->ids["ammo"])->text == "17 / 90 ?" &&
+          close_to(dynamic_cast<ProgressBar*>(d->ids["hp"])->fraction, 0.25f));
+
+    // A click on a button.
+    int clicks = 0;
+    d->buttons[0].second->on_click = [&clicks] { ++clicks; };
+    d->canvas.layout(1920.0f, 1080.0f);
+    d->canvas.pointer_move(960.0f, 500.0f);
+    d->canvas.pointer_button(true);
+    d->canvas.pointer_button(false);
+    d->canvas.pointer_move(10.0f, 10.0f);
+    d->canvas.pointer_button(true);
+    d->canvas.pointer_button(false);
+    check("a press and release on a button clicks it; elsewhere nothing", clicks == 1);
+
+    // Text set from a script.
+    const bool set = set_ui_text(*d, "ammo", "empty");
+    refresh_ui_bindings(*d, [](const std::string&) { UiValue v; v.found = true; v.value = 1; return v; });
+    check("set text: a label keeps it (no longer follows its placeholders)",
+          set && dynamic_cast<Label*>(d->ids["ammo"])->text == "empty" && !set_ui_text(*d, "nope", "x"));
+
+    // Lines it cannot read.
+    auto bad = parse_ui_document("ui modal sideways\nslider id=s\nlabel id=l anchor=middle text=hi\nbutton text=\"No id\"\n");
+    check("bad lines are reported with their line numbers, the rest still builds",
+          bad->errors.size() == 4 && bad->errors[0].rfind("line 1:", 0) == 0 && bad->errors[1].rfind("line 2:", 0) == 0 &&
+          bad->ids.count("l") == 1);
+
+    std::printf("\nuidoc_check: %d passed, %d failed\n", g_pass, g_fail);
+    if (g_fail == 0) std::printf("ALL OK\n");
+    return g_fail ? 1 : 0;
+}

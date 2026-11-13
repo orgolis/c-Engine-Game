@@ -956,6 +956,15 @@ target_compile_features(ai_check PRIVATE cxx_std_20)
 # ui_check: game-UI framework verification (headless, no device) — anchored
 # layout, resolution-independent scaling, pointer/click semantics, focus
 # navigation, HUD draw-list emission.
+# uidoc_check: UI documents (.ui files: a game's menus and HUD as project
+# data) -- parsing, placement, live values, buttons.
+add_executable(uidoc_check uidoc_check/main.cpp)
+target_link_libraries(uidoc_check PRIVATE gws_ui)
+target_compile_features(uidoc_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(uidoc_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 add_executable(ui_check ui_check/main.cpp)
 target_link_libraries(ui_check PRIVATE gws_ui)
 target_compile_features(ui_check PRIVATE cxx_std_20)

@@ -235,6 +235,23 @@ count, "You win!"), a fight (creatures close in and kill a player who stands
 still), a run across the map (3 ms CPU, 3-5 ms GPU). Found for the
 optimization upgrade: the navmesh bake at Play start (2.2 M triangles, 4.7 s).
 
+**Progress (v0.8.39):** the test game moved out of the engine. Jonas's
+review: the game had been built into the engine (a Create > Test Game
+generator); a game belongs in a project. The generator is gone; the game is
+the TestGame project (docs/systems/TEST_GAME.md), now first person, with its
+title menu, HUD, pause menu and win screen as `.ui` files and its rules as
+logic scripts -- all project files. The engine gained only what any game
+needs: UI documents (`.ui`, ui/ui_document.h) with Show UI / Hide UI / Set UI
+Text / On UI Button / Pause Game / Quit Game (docs/systems/GAME_UI.md); a
+project setting giving Esc to the game, with Shift+F1 always freeing the mouse
+for the editor; and grown trees with trunks, branches and leaves for the
+Conifer and Broadleaf foliage kinds (scene/tree_mesh.h). Bugs from playing it:
+the player slid down every slope (the movement pressed down on the ground and
+the physics projected it along the slope); in Play the hidden cursor still
+clicked editor panels; a project's own `assets/gameplay` was never loaded when
+the project was opened (it was read before the project folder was known), so
+its abilities and weapons did not exist.
+
 ## Then: the optimization upgrade
 
 The 16 ranked candidates of OPTIMIZATION_RESEARCH.md, re-measured on the test

@@ -17,6 +17,7 @@
 #include "foliage.h"
 #include "biome.h"
 #include "world_preset.h"
+#include "tree_mesh.h"
 #include "scene.h"
 
 #include <algorithm>
@@ -547,6 +548,43 @@ int main() {
         check(wa.terrain->GetComponent<TerrainComponent>()->Heights() == wb.terrain->GetComponent<TerrainComponent>()->Heights() &&
                   wa.terrain->GetComponent<TerrainComponent>()->Heights() != wc.terrain->GetComponent<TerrainComponent>()->Heights(),
               "the same preset and seed build the same world; another seed another");
+    }
+    // ---- procedural trees -------------------------------------------------------------
+    {
+        auto valid = [](const TreeMeshData& m) {
+            for (uint32_t i : m.bark_indices) if (i >= m.bark_vertices.size()) return false;
+            for (uint32_t i : m.leaf_indices) if (i >= m.leaf_vertices.size()) return false;
+            return m.bark_indices.size() % 3 == 0 && m.leaf_indices.size() % 3 == 0;
+        };
+        auto bounds = [](const TreeMeshData& m, glm::vec3& lo, glm::vec3& hi) {
+            lo = glm::vec3(1e9f); hi = glm::vec3(-1e9f);
+            for (const auto& v : m.bark_vertices) { lo = glm::min(lo, v.position); hi = glm::max(hi, v.position); }
+            for (const auto& v : m.leaf_vertices) { lo = glm::min(lo, v.position); hi = glm::max(hi, v.position); }
+        };
+        const TreeMeshData oak = generate_broadleaf_tree(1, 0), oak_far = generate_broadleaf_tree(1, 1);
+        const TreeMeshData fir = generate_conifer_tree(1, 0), fir_far = generate_conifer_tree(1, 1);
+        check(valid(oak) && valid(oak_far) && valid(fir) && valid(fir_far), "trees: every index points at a vertex");
+        check(oak.branches >= 1 + 4 + 16 + 48 && fir.branches >= 1 + 11 * 7,
+              "trees: a broadleaf has limbs, branches and twigs; a conifer whorls of branches");
+        check(!oak.leaf_indices.empty() && !fir.leaf_indices.empty(), "trees: leaves and needles");
+        glm::vec3 lo, hi;
+        bounds(oak, lo, hi);
+        const bool oak_fits = lo.y > -0.05f && hi.y > 0.75f && hi.y < 1.25f && (hi.x - lo.x) > 0.4f && (hi.x - lo.x) < 1.6f;
+        std::printf("    broadleaf bounds (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)\n", lo.x, lo.y, lo.z, hi.x, hi.y, hi.z);
+        bounds(fir, lo, hi);
+        const bool fir_fits = lo.y > -0.05f && hi.y > 0.95f && hi.y < 1.15f && (hi.x - lo.x) > 0.3f && (hi.x - lo.x) < 1.0f;
+        std::printf("    conifer bounds (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)\n", lo.x, lo.y, lo.z, hi.x, hi.y, hi.z);
+        check(oak_fits && fir_fits, "trees: stand on their base, about one unit tall, a crown wider than the trunk");
+        check(oak.triangles() < 9000 && fir.triangles() < 9000 && oak_far.triangles() * 3 < oak.triangles() &&
+                  fir_far.triangles() * 3 < fir.triangles(),
+              "trees: under 9000 triangles near, under a third of that for middle distance");
+        const TreeMeshData oak2 = generate_broadleaf_tree(2, 0);
+        check(generate_broadleaf_tree(1, 0).bark_vertices.size() == oak.bark_vertices.size() &&
+                  generate_broadleaf_tree(1, 0).leaf_vertices[7].position == oak.leaf_vertices[7].position &&
+                  oak2.leaf_vertices[7].position != oak.leaf_vertices[7].position,
+              "trees: the same seed grows the same tree, another seed another");
+        std::printf("    (broadleaf %zu / %zu triangles, conifer %zu / %zu, near / middle)\n", oak.triangles(), oak_far.triangles(),
+                    fir.triangles(), fir_far.triangles());
     }
     if (g_fail) {
         std::printf("terrainbrush_check: %d FAILED, %d passed\n", g_fail, g_pass);

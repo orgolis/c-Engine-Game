@@ -942,7 +942,7 @@ tools in `tools/perf_research`.
 15. **The test game's frame, as a baseline.** Running towards the beacon at
     1920×1032: about 3 ms CPU, 3–5 ms GPU, 40–300 draws, 0.8–1.4 M triangles
     (75 fps, display-limited). Re-measure after each change above with
-    `GWS_TEST_GAME_WALK=1` and `zones.py`.
+    the TestGame project (docs/systems/TEST_GAME.md) and `zones.py`.
 
 ## Sources
 
