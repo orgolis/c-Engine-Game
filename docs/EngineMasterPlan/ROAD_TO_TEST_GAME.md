@@ -171,6 +171,20 @@ gameplay_check (the file read, written and read again is identical; every
 setting survives). Still open in C3: real projected decals, weapon models in
 the hand.
 
+**Progress (v0.8.35):** C5 abilities. The old ability primitive (cost,
+cooldown, tag gates, effects at once) could not be authored, had no input,
+cast time, channel, targeting or display. New `ecs/gameplay_ability_cast.h`:
+abilities as data (`ability` blocks in .items files, editable in the Items
+editor), cast time (optionally broken by moving), channels that pulse while
+held, four kinds of reach (self, aimed, around the caster, around the aimed
+point) that walls stop, damage and lasting effects, and events at every stage
+(ability.cast / fire / hit / interrupted / end, with a vfx name) as the hooks
+for effects and scripts. The Ability Bar component puts them on keys 1..8 in
+Play with a hotbar (cooldown sweeps, cast bar) and a burst where each goes
+off. In third person, abilities and weapons now leave the player's chest
+towards what the crosshair is on. Checked by gameplay_check and Play
+screenshots (docs/systems/ABILITIES.md).
+
 ## Phase D: the test game
 
 A small game built only with the editor and logic graphs: a terrain with

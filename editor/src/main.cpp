@@ -122,6 +122,7 @@
 #include "biome_water.h"          // the water a biome map treats as wet
 #include "world_preset.h"         // a whole landscape from one choice
 #include "player_weapon.h"        // the player's gun in Play: input, recoil, aim, tracers, impacts
+#include "player_abilities.h"     // the player's abilities in Play: keys 1..8, hotbar (C5)
 #include "ecs/gameplay_movement.h" // the player's moves in Play (C4)
 #include "ecs/gameplay_camera.h"   // the player's third-person camera rig
 #include "ecs/gameplay_tags.h"     // surface.climbable
@@ -487,6 +488,7 @@ struct EditorState {
     // pointers + dt/time are refreshed every frame.
     schizo::editor::ScriptSystem    script_system;
     schizo::editor::PlayerWeapon    player_weapon;   // the player's gun in Play (C3)
+    schizo::editor::PlayerAbilities player_abilities; // the player's ability bar in Play (C5)
     schizo::editor::ShotEffects     shot_effects;    // muzzle flashes, tracers, impact marks
     schizo::editor::EditorScriptCtx script_ctx;
     schizo::editor::ScriptApi       script_api;
@@ -5889,6 +5891,48 @@ void ShowViewport(EditorState& editor_state) {
                 const bool waiting_for_recapture =
                     viewport_playing && editor_state.play_cursor_released_by_escape &&
                     !editor_state.scene_playback_manager->IsCursorCaptured();
+                // The ability bar: a box per slot (key, name, cooldown sweep) and
+                // the cast in progress above it.
+                if (viewport_playing && editor_state.player_abilities.hud().shown) {
+                    const auto& ah = editor_state.player_abilities.hud();
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    const float box = 54.0f, gap = 6.0f;
+                    const float total = ah.slots.size() * box + (ah.slots.size() - 1) * gap;
+                    const float x0 = (image_min.x + image_max.x) * 0.5f - total * 0.5f;
+                    const float y0 = image_max.y - box - 52.0f;
+                    for (size_t i = 0; i < ah.slots.size(); ++i) {
+                        const auto& s = ah.slots[i];
+                        const ImVec2 a(x0 + i * (box + gap), y0), b(a.x + box, a.y + box);
+                        const bool active = ah.casting == static_cast<int>(i);
+                        dl->AddRectFilled(a, b, IM_COL32(12, 16, 24, 190), 5.0f);
+                        if (s.cooldown > 0.0f && s.cooldown_total > 0.0f) {
+                            const float f = std::clamp(s.cooldown / s.cooldown_total, 0.0f, 1.0f);
+                            dl->AddRectFilled(ImVec2(a.x, b.y - box * f), b, IM_COL32(0, 0, 0, 150), 5.0f);
+                            char cd[16];
+                            std::snprintf(cd, sizeof cd, "%.1f", s.cooldown);
+                            const ImVec2 cs = ImGui::CalcTextSize(cd);
+                            dl->AddText(ImVec2(a.x + (box - cs.x) * 0.5f, a.y + (box - cs.y) * 0.5f), IM_COL32(255, 255, 255, 230), cd);
+                        }
+                        dl->AddRect(a, b, active ? IM_COL32(120, 200, 255, 255) : s.ready ? IM_COL32(160, 170, 190, 200)
+                                                                                         : IM_COL32(70, 75, 85, 200),
+                                    5.0f, 0, active ? 2.5f : 1.0f);
+                        char key[4];
+                        std::snprintf(key, sizeof key, "%d", static_cast<int>(i) + 1);
+                        dl->AddText(ImVec2(a.x + 4, a.y + 2), IM_COL32(200, 210, 230, 220), key);
+                        std::string nm = s.name.substr(0, 7);
+                        const ImVec2 ns = ImGui::CalcTextSize(nm.c_str());
+                        dl->AddText(ImVec2(a.x + (box - ns.x) * 0.5f, b.y - ns.y - 3), IM_COL32(230, 235, 245, 240), nm.c_str());
+                    }
+                    if (ah.casting >= 0) {
+                        const float w = 220.0f, h = 8.0f;
+                        const ImVec2 p0((image_min.x + image_max.x) * 0.5f - w * 0.5f, y0 - 30.0f);
+                        dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), IM_COL32(10, 14, 20, 180), 3.0f);
+                        dl->AddRectFilled(p0, ImVec2(p0.x + w * ah.cast_progress, p0.y + h),
+                                          ah.channelling ? IM_COL32(120, 200, 255, 230) : IM_COL32(240, 200, 90, 230), 3.0f);
+                        const ImVec2 ts = ImGui::CalcTextSize(ah.cast_name.c_str());
+                        dl->AddText(ImVec2(p0.x + (w - ts.x) * 0.5f, p0.y - ts.y - 2), IM_COL32(235, 240, 250, 240), ah.cast_name.c_str());
+                    }
+                }
                 // Stamina, when the player's Movement limits it and it is not full.
                 if (viewport_playing) {
                     const auto& ms = editor_state.scene_playback_manager->GetPlayerMovementSettings();
@@ -10481,12 +10525,62 @@ int main(int argc, char** argv) {
                     in.fire_pressed = gun_frames % 20 == 1;
                     in.aim_held = gun_frames > 120;
                 }
+                // Abilities: keys 1..8 cast what is on the player's Ability Bar.
+                schizo::editor::PlayerAbilities::Input ain;
+                {
+                    static bool prev_keys[8] = {};
+                    for (int k = 0; k < 8; ++k) {
+                        const bool down = focus && glfwGetKey(glfw_window, GLFW_KEY_1 + k) == GLFW_PRESS;
+                        ain.held[k] = down;
+                        if (down && !prev_keys[k] && ain.pressed < 0) ain.pressed = k;
+                        prev_keys[k] = down;
+                    }
+                }
+                // GWS_TEST_ABILITIES=1 (with GWS_TEST_PLAY): give the player a bar
+                // of test abilities and cast them in turn -- the bar and its
+                // effects seen without a person.
+                static const bool test_abil = std::getenv("GWS_TEST_ABILITIES") != nullptr;
+                if (test_abil && pm.IsPlaying()) {
+                    static int ab_frames = 0;
+                    if (ab_frames++ == 0) {
+                        schizo::ecs::register_items_text(
+                            "ability t_bolt\n  name Bolt\n  cooldown 3\n  cast 0.3\n  target aimed\n  damage 20\n  vfx bolt\nend\n"
+                            "ability t_nova\n  name Nova\n  cooldown 6\n  target area\n  radius 4\n  damage 10\nend\n"
+                            "ability t_beam\n  name Beam\n  cooldown 2\n  channel 2 0.25\n  target aimed\n  damage 3\nend\n"
+                            "ability t_mend\n  name Mend\n  cooldown 10\n  cast 2\n  still\n  target self\nend\n");
+                        if (auto* pl = pm.GetPlayerEntity()) {
+                            const uint32_t pid = ecs_bridge.ecs_entity_id(pl->GetTransform());
+                            const auto pe = static_cast<schizo::ecs::Entity>(pid);
+                            if (pid != schizo::editor::kNoEcsEntity && ecs_bridge.world().valid(pe)) {
+                                schizo::ecs::AbilityBar tb;
+                                tb.slots = {"t_bolt", "t_nova", "t_beam", "t_mend"};
+                                ecs_bridge.world().add<schizo::ecs::AbilityBar>(pe, tb);
+                                spdlog::info("[test] abilities: the player has a bar of four");
+                            }
+                        }
+                    }
+                    static int ab_seen = 0;
+                    if (ab_frames == 20)  ain.pressed = 0;            // Bolt (0.3 s cast)
+                    if (ab_frames == 60)  ain.pressed = 1;            // Nova
+                    if (ab_frames >= 90 && ab_frames < 200) { ain.held[2] = true; if (ab_frames == 90) ain.pressed = 2; }   // Beam
+                    if (ab_frames == 210) ain.pressed = 3;            // Mend: still casting at the screenshot
+                    const auto& ah = editor_state.player_abilities.hud();
+                    if (ab_frames % 10 == 0)
+                        spdlog::info("[test] abilities: frame {} effects {}", ab_frames, editor_state.shot_effects.count());
+                    if (ah.casting >= 0 && ab_seen != ah.casting + 1) {
+                        ab_seen = ah.casting + 1;
+                        spdlog::info("[test] abilities: casting {} ({})", ah.cast_name, ah.channelling ? "channel" : "wind-up");
+                    }
+                }
                 if (pm.IsPlaying()) {
                     if (auto* pc = pm.GetPlaybackCamera()) {
                         const auto* ct = pc->GetTransform();
                         editor_state.player_weapon.update(delta_time, pm, ecs_bridge, ct->GetWorldPosition(),
                                                           ct->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f), in,
                                                           editor_state.shot_effects);
+                        editor_state.player_abilities.update(delta_time, pm, ecs_bridge, ct->GetWorldPosition(),
+                                                             ct->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f), ain,
+                                                             editor_state.shot_effects);
                     }
                     editor_state.shot_effects.update(delta_time);
                 } else if (editor_state.shot_effects.count()) {

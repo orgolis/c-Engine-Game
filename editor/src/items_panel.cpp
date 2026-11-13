@@ -187,7 +187,7 @@ void draw_weapon(ecs::WeaponDef& w, const ecs::ItemsDoc& d) {
         if (ImGui::BeginCombo("ammunition item", w.ammo_item.empty() ? none : w.ammo_item.c_str())) {
             if (ImGui::Selectable(none, w.ammo_item.empty())) w.ammo_item.clear();
             std::vector<std::string> ids;
-            for (const auto& e : d.entries) if (!e.is_weapon && !e.item.id.empty()) ids.push_back(e.item.id);
+            for (const auto& e : d.entries) if (e.kind == ecs::ItemsDoc::Kind::Item && !e.item.id.empty()) ids.push_back(e.item.id);
             for (const auto& it : ecs::item_registry())
                 if (std::find(ids.begin(), ids.end(), it.id) == ids.end()) ids.push_back(it.id);
             for (const auto& id : ids)
@@ -227,6 +227,78 @@ void draw_weapon(ecs::WeaponDef& w, const ecs::ItemsDoc& d) {
                         per_s > 0.0f ? static_cast<float>(w.mag_size) / per_s : 0.0f);
 }
 
+void draw_effects(const char* title, std::vector<ecs::AbilityEffect>& list, const char* add_label) {
+    if (!ImGui::TreeNodeEx(title, ImGuiTreeNodeFlags_DefaultOpen)) return;
+    int remove = -1;
+    for (size_t i = 0; i < list.size(); ++i) {
+        auto& e = list[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::SetNextItemWidth(120.0f);
+        input_str("##attr", e.attribute, "attribute");
+        ImGui::SameLine(); ImGui::SetNextItemWidth(70.0f);
+        ImGui::DragFloat("##amt", &e.amount, 0.5f);
+        ImGui::SameLine(); ImGui::SetNextItemWidth(80.0f);
+        ImGui::DragFloat("##dur", &e.duration, 0.05f, 0.0f, 3600.0f, e.duration > 0.0f ? "for %.1f s" : "at once");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+        ImGui::PopID();
+    }
+    if (remove >= 0) list.erase(list.begin() + remove);
+    if (ImGui::SmallButton(add_label)) list.push_back({"Health", 10.0f, 0.0f});
+    ImGui::TreePop();
+}
+
+void draw_tag_list(const char* title, std::vector<std::string>& tags) {
+    if (!ImGui::TreeNode(title)) return;
+    int remove = -1;
+    for (size_t i = 0; i < tags.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::SetNextItemWidth(230.0f);
+        input_id("##tag", tags[i]);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+        ImGui::PopID();
+    }
+    if (remove >= 0) tags.erase(tags.begin() + remove);
+    if (ImGui::SmallButton("Add tag")) tags.push_back("state.tag");
+    ImGui::TreePop();
+}
+
+void draw_ability(ecs::AbilityDef& a) {
+    input_id("id", a.id);
+    input_str("name", a.name);
+    int tg = static_cast<int>(a.targeting);
+    const char* tgs[] = {"the caster", "the one aimed at", "everyone around the caster", "everyone around the aimed point"};
+    if (ImGui::Combo("reaches", &tg, tgs, 4)) a.targeting = static_cast<ecs::AbilityTargeting>(tg);
+    if (a.targeting == ecs::AbilityTargeting::Aimed || a.targeting == ecs::AbilityTargeting::AreaAtAim)
+        ImGui::DragFloat("range", &a.range, 0.2f, 0.1f, 10000.0f, "%.1f m");
+    if (a.targeting == ecs::AbilityTargeting::AreaAroundSelf || a.targeting == ecs::AbilityTargeting::AreaAtAim)
+        ImGui::DragFloat("radius", &a.radius, 0.05f, 0.1f, 1000.0f, "%.2f m");
+    if (ImGui::TreeNodeEx("Cost and timing", ImGuiTreeNodeFlags_DefaultOpen)) {
+        input_id("cost attribute", a.cost_attribute);
+        ImGui::DragFloat("cost", &a.cost, 0.2f, 0.0f, 100000.0f, "%.1f");
+        ImGui::DragFloat("cooldown", &a.cooldown, 0.05f, 0.0f, 3600.0f, "%.2f s");
+        ImGui::DragFloat("cast time", &a.cast_time, 0.01f, 0.0f, 60.0f, "%.2f s");
+        bool still = !a.cast_while_moving;
+        if (ImGui::Checkbox("moving breaks the cast", &still)) a.cast_while_moving = !still;
+        ImGui::DragFloat("channel for", &a.channel_time, 0.05f, 0.0f, 600.0f, a.channel_time > 0.0f ? "%.2f s" : "no channel");
+        ImGui::SetItemTooltip("Above 0: keeps going off while the key is held, this long at most.");
+        if (a.channel_time > 0.0f) ImGui::DragFloat("pulse every", &a.channel_period, 0.01f, 0.02f, 60.0f, "%.2f s");
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNodeEx("What it does", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::DragFloat("damage", &a.damage, 0.2f, 0.0f, 100000.0f, "%.1f");
+        input_id("damage type", a.damage_type);
+        ImGui::TreePop();
+    }
+    draw_effects("To each one reached", a.target_effects, "Add effect##t");
+    draw_effects("To the caster", a.self_effects, "Add effect##s");
+    draw_tag_list("Needs tags", a.require_tags);
+    draw_tag_list("Blocked by tags", a.block_tags);
+    input_id("vfx", a.vfx);
+    ImGui::SetItemTooltip("A name handed out with the ability's events, for effects and scripts.");
+}
+
 }  // namespace
 
 void draw_items_panel(bool& open, ItemsPanelState& st, DocumentFile* doc) {
@@ -251,7 +323,7 @@ void draw_items_panel(bool& open, ItemsPanelState& st, DocumentFile* doc) {
     ImGui::SameLine();
     if (ImGui::Button("+ Weapon")) {
         ecs::ItemsDoc::Entry e;
-        e.is_weapon = true;
+        e.kind = ecs::ItemsDoc::Kind::Weapon;
         e.weapon.id = unique_id(d, "new_weapon");
         e.weapon.name = "New Weapon";
         d.entries.push_back(e);
@@ -261,7 +333,7 @@ void draw_items_panel(bool& open, ItemsPanelState& st, DocumentFile* doc) {
     ImGui::BeginDisabled(!has_sel);
     if (ImGui::Button("Duplicate") && has_sel) {
         ecs::ItemsDoc::Entry e = d.entries[st.selected];
-        std::string& id = e.is_weapon ? e.weapon.id : e.item.id;
+        std::string& id = e.id_ref();
         id = unique_id(d, id + "_copy");
         d.entries.insert(d.entries.begin() + st.selected + 1, e);
         ++st.selected;
@@ -296,7 +368,7 @@ void draw_items_panel(bool& open, ItemsPanelState& st, DocumentFile* doc) {
         ImGui::PushID(static_cast<int>(i));
         const bool clash = id_clashes(d, i);
         if (clash) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.4f, 1.0f));
-        const std::string row = std::string(e.is_weapon ? "[weapon] " : "") + label;
+        const std::string row = std::string(e.is_weapon() ? "[weapon] " : e.is_ability() ? "[ability] " : "") + label;
         if (ImGui::Selectable(row.c_str(), st.selected == static_cast<int>(i))) st.selected = static_cast<int>(i);
         if (clash) ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s%s", e.id().c_str(), clash ? "  (id empty or used twice)" : "");
@@ -313,8 +385,9 @@ void draw_items_panel(bool& open, ItemsPanelState& st, DocumentFile* doc) {
         auto& e = d.entries[st.selected];
         ImGui::PushID(st.selected);
         ImGui::PushItemWidth(-150.0f);
-        if (e.is_weapon) draw_weapon(e.weapon, d);
-        else             draw_item(e.item, d);
+        if (e.is_weapon())       draw_weapon(e.weapon, d);
+        else if (e.is_ability()) draw_ability(e.ability);
+        else                     draw_item(e.item, d);
         ImGui::PopItemWidth();
         if (id_clashes(d, static_cast<size_t>(st.selected)))
             ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "The id is empty or used by another entry in this file.");

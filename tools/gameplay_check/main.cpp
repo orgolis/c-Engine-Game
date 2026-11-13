@@ -9,6 +9,7 @@
 #include "ecs/gameplay_tags.h"
 #include "ecs/gameplay_effects.h"
 #include "ecs/gameplay_abilities.h"
+#include "ecs/gameplay_ability_cast.h"
 #include "ecs/gameplay_damage.h"
 #include "ecs/gameplay_events.h"
 #include "ecs/gameplay_triggers.h"
@@ -299,6 +300,139 @@ int main() {
         // insufficient cost gates activation
         aw.get<ecs::AttributeSet>(caster).set("Stamina", 10.0f);
         check("insufficient cost prevents activation", !ecs::try_activate_ability(aw, caster, 0, target));
+    }
+
+    // C5: casting -- cast time, channel, targeting, the bar, abilities as data.
+    {
+        ecs::register_items_text(
+            "ability c5_bolt\n  name Bolt\n  cost Mana 20\n  cooldown 3\n  cast 0.5\n  target aimed\n  range 30\n"
+            "  damage 25 fire\n  vfx bolt\nend\n"
+            "ability c5_nova\n  cost Mana 10\n  target area\n  radius 4\n  damage 10\n  effect Speed -2 3\n  self Mana 5\nend\n"
+            "ability c5_beam\n  channel 2 0.5\n  target aimed\n  damage 5\n  cooldown 1\nend\n"
+            "ability c5_heal\n  cast 1\n  still\n  self Health 30\n  target self\nend\n"
+            "ability c5_blast\n  target area_at_aim\n  range 12\n  radius 2\n  damage 50\nend\n");
+        ecs::World w;
+        ecs::GameplayEventBus bus;
+        std::vector<std::string> seen;
+        for (const char* n : {"ability.cast", "ability.fire", "ability.hit", "ability.interrupted", "ability.end"})
+            bus.subscribe(n, [&seen](const ecs::GameplayEvent& ev) { seen.push_back(ev.name + ":" + ev.param); });
+        const ecs::Entity me = w.create();
+        w.add<ecs::Transform>(me, ecs::Transform{});
+        w.add<ecs::AttributeSet>(me, ecs::AttributeSet{});
+        w.get<ecs::AttributeSet>(me).define("Mana", 100, 0, 100);
+        w.get<ecs::AttributeSet>(me).define("Health", 50, 0, 100);
+        auto foe = [&](glm::vec3 pos) {
+            const ecs::Entity e = w.create();
+            ecs::Transform tf; tf.position = pos;
+            w.add<ecs::Transform>(e, tf);
+            w.add<ecs::CombatActor>(e, ecs::CombatActor{});
+            w.add<ecs::AttributeSet>(e, ecs::AttributeSet{});
+            w.get<ecs::AttributeSet>(e).define("Health", 100, 0, 100);
+            w.get<ecs::AttributeSet>(e).define("Speed", 5, 0, 10);
+            return e;
+        };
+        const ecs::Entity ahead = foe(glm::vec3(0, 0, -10));
+        const ecs::Entity near1 = foe(glm::vec3(2, 0, 1));
+        const ecs::Entity far1 = foe(glm::vec3(30, 0, 0));
+        const ecs::Entity at_aim = foe(glm::vec3(0, 0, -12) + glm::vec3(1, 0, 0));
+        auto hp = [&](ecs::Entity e) { return w.get<ecs::AttributeSet>(e).get("Health"); };
+        ecs::AbilityBar bar;
+        bar.slots = {"c5_bolt", "c5_nova", "c5_beam", "c5_heal", "c5_blast"};
+        const ecs::CombatActor ca{};
+        ecs::AbilityCastInput in;
+        in.origin = glm::vec3(0, ca.hurt_height, 0);
+        in.aim = glm::vec3(0, 0, -1);
+        float dt = 0.1f;
+        auto frame = [&](int pressed, bool held, bool moving = false) {
+            in.pressed = pressed; in.held = held; in.moving = moving;
+            std::vector<ecs::AbilityFired> f;
+            const int n = ecs::step_ability_bar(w, me, bar, in, nullptr, &bus, dt, &f);
+            bus.flush();
+            return n;
+        };
+        // A cast: nothing for 0.5 s, then it goes off at the one aimed at.
+        int fired = frame(0, true);
+        for (int i = 0; i < 3; ++i) fired += frame(-1, true);
+        const bool waited = fired == 0 && hp(ahead) == 100.0f && bar.casting == 0;
+        fired += frame(-1, true);
+        check("cast: goes off after its cast time at the one aimed at, cost paid",
+              waited && fired == 1 && hp(ahead) == 75.0f && w.get<ecs::AttributeSet>(me).get("Mana") == 80.0f);
+        check("cast: then cools down", bar.cooldown[0] == 3.0f && !ecs::ability_slot_ready(w, me, bar, 0));
+        // Area around the caster: those near, not those far; effects for a while; to the caster too.
+        frame(1, true);
+        check("area: reaches those near, not those far",
+              hp(near1) == 90.0f && hp(far1) == 100.0f && hp(ahead) == 75.0f &&
+              w.get<ecs::AttributeSet>(near1).get("Speed") == 3.0f &&
+              w.get<ecs::AttributeSet>(me).get("Mana") == 75.0f);
+        // Channel: a pulse at the start and every period while held, then cooldown.
+        const float before = hp(ahead);
+        dt = 0.125f;   // exact in binary: pulses land on their times
+        int pulses = frame(2, true);
+        for (int i = 0; i < 20; ++i) pulses += frame(-1, true);
+        check("channel: pulses while held, for its time", pulses == 5 && hp(ahead) == before - 25.0f && bar.casting < 0 &&
+                                                          bar.cooldown[2] > 0.0f);
+        bar.cooldown[2] = 0.0f;
+        pulses = frame(2, true);
+        pulses += frame(-1, true);
+        pulses += frame(-1, false);
+        check("channel: letting go ends it", pulses == 1 && bar.casting < 0);
+        // A cast that needs standing still: moving breaks it, no cooldown, no cost.
+        seen.clear();
+        frame(3, true);
+        frame(-1, true, true);
+        bool broke = bar.casting < 0 && bar.cooldown[3] == 0.0f && w.get<ecs::AttributeSet>(me).get("Health") == 50.0f;
+        frame(3, true);
+        for (int i = 0; i < 10; ++i) frame(-1, true);
+        check("still: moving breaks the cast; standing it goes off on the caster",
+              broke && w.get<ecs::AttributeSet>(me).get("Health") == 80.0f);
+        // Area at the aimed point (no wall: at full range).
+        frame(4, true);
+        check("area at the aim: those around where it lands", hp(at_aim) == 50.0f && hp(ahead) == before - 30.0f);   // untouched by it: the channels' 25 + 5 only
+        // Out of mana: does not start.
+        w.get<ecs::AttributeSet>(me).set("Mana", 5.0f);
+        bar.cooldown[0] = 0.0f;
+        frame(0, true);
+        check("too little to pay: does not start", bar.casting < 0);
+        bool has_cast = false, has_hit = false, has_int = false, has_end = false;
+        for (const auto& s : seen) {
+            has_cast |= s == "ability.cast:c5_heal"; has_hit |= s.rfind("ability.hit:", 0) == 0;
+            has_int |= s == "ability.interrupted:c5_heal"; has_end |= s == "ability.end:c5_heal";
+        }
+        check("events: cast, interrupted, end, hit -- with the ability's id", has_cast && has_int && has_end && has_hit);
+        // A wall stops an aimed ability.
+        bar.cooldown[0] = 0.0f;
+        w.get<ecs::AttributeSet>(me).set("Mana", 100.0f);
+        const float hp_before = hp(ahead);
+        ecs::WorldRayFn wall = [](const glm::vec3&, const glm::vec3&, float, float& t, glm::vec3& n) {
+            t = 4.0f; n = glm::vec3(0, 0, 1); return true;
+        };
+        in.pressed = 0; in.held = true;
+        std::vector<ecs::AbilityFired> fl;
+        for (int i = 0; i < 6; ++i) { ecs::step_ability_bar(w, me, bar, in, &wall, &bus, dt, &fl); in.pressed = -1; }
+        check("a wall stops an aimed ability, and it says where", hp(ahead) == hp_before && fl.size() == 1 &&
+                                                                 std::fabs(fl[0].point.z + 4.0f) < 1e-3f && fl[0].vfx == "bolt");
+        // The bar saves its slots.
+        std::vector<uint8_t> buf;
+        ecs::serialize_ability_bar(&bar, buf);
+        ecs::AbilityBar b2;
+        ecs::deserialize_ability_bar(&b2, buf.data(), buf.size());
+        ecs::register_ability_cast_components();
+        check("ability bar: saves its slots; authorable", b2.slots == bar.slots && b2.casting == -1 &&
+                                                          ecs::find_authorable("Ability Bar") != nullptr);
+        // Written back from the Items editor, an ability reads the same.
+        ecs::ItemsDoc doc = ecs::parse_items_doc(
+            "ability c5_x\n  name X\n  cost Mana 3\n  cooldown 2\n  cast 0.25\n  still\n  channel 4 0.25\n"
+            "  target area_at_aim\n  range 9\n  radius 1.5\n  damage 7 cold\n  self Mana 1 2\n  effect Speed -1\n"
+            "  require a.b\n  block c.d\n  vfx frost\nend\n");
+        const std::string t1 = ecs::items_doc_to_text(doc);
+        const ecs::ItemsDoc doc2 = ecs::parse_items_doc(t1);
+        const auto& x = doc2.entries.at(0).ability;
+        check("ability data: every setting survives the Items editor",
+              doc2.entries.size() == 1 && doc2.entries[0].is_ability() && ecs::items_doc_to_text(doc2) == t1 &&
+              x.name == "X" && x.cost == 3.0f && x.cast_time == 0.25f && !x.cast_while_moving && x.channel_time == 4.0f &&
+              x.channel_period == 0.25f && x.targeting == ecs::AbilityTargeting::AreaAtAim && x.range == 9.0f &&
+              x.radius == 1.5f && x.damage_type == "cold" && x.self_effects.size() == 1 && x.self_effects[0].duration == 2.0f &&
+              x.target_effects.size() == 1 && x.require_tags.size() == 1 && x.block_tags.size() == 1 && x.vfx == "frost");
     }
 
     // G0: damage pipeline — data-driven types, resistance (attribute) + immunity
@@ -1381,14 +1515,14 @@ int main() {
             const ecs::ItemsDoc d2 = ecs::parse_items_doc(t1);
             const std::string t2 = ecs::items_doc_to_text(d2);
             check("items doc: blocks in file order, comments above them kept",
-                  d1.entries.size() == 4 && !d1.entries[0].is_weapon && d1.entries[1].is_weapon &&
-                  d1.entries[2].id() == "my_sword" && d1.entries[3].id() == "shotgun" &&
+                  d1.entries.size() == 5 && !d1.entries[0].is_weapon() && d1.entries[1].is_weapon() &&
+                  d1.entries[2].is_ability() && d1.entries[3].id() == "my_sword" && d1.entries[4].id() == "shotgun" &&
                   d1.header == "# My items\n# for the test\n\n# Item definitions (.items). One 'item <id>' block per item; the editor\n"
                                "# loads every .items file under the project at startup / on reload.\n");
             check("items doc: written back and read again is the same file", t1 == t2);
             const auto& r = d2.entries[1].weapon;
-            const auto& sg = d2.entries[3].weapon;
-            const auto& sw = d2.entries[2].item;
+            const auto& sg = d2.entries[4].weapon;
+            const auto& sw = d2.entries[3].item;
             const auto& po = d2.entries[0].item;
             check("items doc: every weapon setting survives",
                   r.fire_mode == ecs::FireMode::Auto && r.damage == 20.0f && r.rpm == 600.0f && r.mag_size == 30 &&

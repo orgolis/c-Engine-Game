@@ -34,6 +34,40 @@
 
 namespace schizo::editor {
 
+/// Level geometry as a gameplay ray (rounds and abilities stop at walls).
+inline schizo::ecs::WorldRayFn physics_world_ray(schizo::physics::PhysicsWorld* pw) {
+    return [pw](const glm::vec3& o, const glm::vec3& d, float max_t, float& t, glm::vec3& n) {
+        if (!pw) return false;
+        const auto hit = pw->raycast(o, d, max_t);
+        if (!hit.hit) return false;
+        t = hit.distance;
+        n = glm::dot(hit.normal, d) < 0.0f ? hit.normal : -hit.normal;
+        return true;
+    };
+}
+
+/// Where a shot or an ability starts and which way it goes. In first person
+/// that is the eye along the view. When the camera is away from the player
+/// (third person), the view finds what the crosshair is on, and the shot
+/// leaves the player's chest towards it -- a camera behind the player would
+/// otherwise fire through the player and from the wrong place.
+inline void aim_from_view(ScenePlaybackManager& play, const glm::vec3& cam_pos, const glm::vec3& cam_fwd, float range,
+                          const schizo::ecs::WorldRayFn& world, glm::vec3& origin, glm::vec3& dir) {
+    dir = glm::normalize(cam_fwd);
+    origin = cam_pos + dir * 0.3f;
+    auto* player = play.GetPlayerEntity();
+    if (!player) return;
+    const glm::vec3 chest = player->GetTransform()->GetWorldPosition() + glm::vec3(0.0f, 0.45f, 0.0f);
+    if (glm::length(chest - cam_pos) < 0.8f) return;   // first person
+    float t = range;
+    glm::vec3 n(0.0f);
+    const glm::vec3 target = (world && world(cam_pos, dir, range, t, n)) ? cam_pos + dir * t : cam_pos + dir * range;
+    const glm::vec3 to = target - chest;
+    if (glm::dot(to, to) < 1e-4f) return;
+    dir = glm::normalize(to);
+    origin = chest + dir * 0.35f;
+}
+
 class ShotEffects {
 public:
     struct Effect {
@@ -42,6 +76,7 @@ public:
         glm::vec3 color{1.0f};
         float     size = 0.1f;
         float     age = 0.0f, life = 0.05f;
+        float     glow = 8.0f;        // a flash's emissive strength
     };
 
     void add(const std::vector<schizo::ecs::ShotTrace>& shots, const schizo::ecs::WeaponDef& wd, const glm::vec3& muzzle) {
@@ -67,6 +102,12 @@ public:
                     break;
                 }
         }
+    }
+
+    /// One effect of any kind (abilities use flashes and tracers too).
+    void push(const Effect& e) {
+        effects_.push_back(e);
+        if (e.kind == Effect::Kind::Impact) ++impacts_;
     }
 
     void update(float dt) {
@@ -105,7 +146,7 @@ public:
             switch (e.kind) {
                 case Effect::Kind::Flash: {
                     di.mesh = prims.sphere.get();
-                    di.material = glow(e.color, 8.0f);
+                    di.material = glow(e.color, e.glow);
                     const float s = e.size * (1.0f - 0.5f * e.age / e.life);
                     di.model = glm::scale(glm::translate(glm::mat4(1.0f), e.a), glm::vec3(s));
                     break;
@@ -208,36 +249,19 @@ public:
         ws->aiming = in.aim_held;
         if (in.reload_pressed) ecs::reload_weapon(*ws);
 
-        // Rounds stop on level geometry: the physics world's ray. Its hits
-        // carry no normal, so two more rays a hand's width apart give one.
-        auto* pw = play.GetPhysicsWorld();
-        const ecs::WorldRayFn world = [pw](const glm::vec3& o, const glm::vec3& d, float max_t, float& t, glm::vec3& n) {
-            if (!pw) return false;
-            const auto hit = pw->raycast(o, d, max_t);
-            if (!hit.hit) return false;
-            t = hit.distance;
-            const glm::vec3 up = std::fabs(d.y) < 0.99f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
-            const glm::vec3 sx = glm::normalize(glm::cross(d, up)) * 0.05f, sy = glm::normalize(glm::cross(sx, d)) * 0.05f;
-            const auto h1 = pw->raycast(o + sx, d, max_t + 1.0f), h2 = pw->raycast(o + sy, d, max_t + 1.0f);
-            n = -d;
-            if (h1.hit && h2.hit) {
-                glm::vec3 c = glm::cross(h1.position - hit.position, h2.position - hit.position);
-                if (glm::dot(c, c) > 1e-10f) {
-                    c = glm::normalize(c);
-                    n = glm::dot(c, d) < 0.0f ? c : -c;
-                }
-            }
-            return true;
-        };
+        // Rounds stop on level geometry: the physics world's ray.
+        const ecs::WorldRayFn world = physics_world_ray(play.GetPhysicsWorld());
         std::vector<ecs::ShotTrace> shots;
-        const glm::vec3 fwd = glm::normalize(cam_fwd);
-        const glm::vec3 origin = cam_pos + fwd * 0.3f;
+        glm::vec3 origin, fwd;
+        aim_from_view(play, cam_pos, cam_fwd, wd->range, world, origin, fwd);
+        const bool third_person = glm::length(origin - (cam_pos + glm::normalize(cam_fwd) * 0.3f)) > 0.05f;
         const int fired = ecs::trigger_weapon(w, e, origin, fwd, *ws, in.fire_pressed, in.fire_held, &bridge.events(),
                                               ++seed_, &world, &shots);
         if (fired > 0) {
             // The muzzle sits a little right of and below the eye.
             const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0, 1, 0)));
-            const glm::vec3 muzzle = cam_pos + fwd * 0.8f + right * 0.18f - glm::vec3(0, 0.15f, 0);
+            const glm::vec3 muzzle = third_person ? origin + fwd * 0.3f
+                                                  : cam_pos + fwd * 0.8f + right * 0.18f - glm::vec3(0, 0.15f, 0);
             fx.add(shots, *wd, muzzle);
             for (const auto& s : shots)
                 if (s.hit == ecs::ShotTrace::Hit::Actor) hud_.hit_marker = 0.15f;

@@ -4,6 +4,7 @@
 #include "ecs/world.h"
 #include "ecs/gameplay_movement.h"
 #include "ecs/gameplay_camera.h"
+#include "ecs/gameplay_ability_cast.h"
 #include "ecs/authorable_components.h"
 #include "ecs/gameplay_attributes.h"   // custom drawer for the data-driven AttributeSet
 #include "ecs/gameplay_tags.h"         // custom drawer for data-driven GameplayTags
@@ -581,6 +582,39 @@ bool draw_movement(void* comp) {
     return changed;
 }
 
+// Ability Bar (C5): which ability is on which key (1..8) in Play.
+bool draw_ability_bar(void* comp) {
+    auto& b = *static_cast<ecs::AbilityBar*>(comp);
+    bool changed = false;
+    int remove = -1;
+    for (size_t i = 0; i < b.slots.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        const ecs::AbilityDef* d = ecs::find_ability_def(b.slots[i]);
+        char label[16];
+        std::snprintf(label, sizeof label, "key %d", static_cast<int>(i) + 1);
+        if (ImGui::BeginCombo(label, d ? d->name.c_str() : (b.slots[i].empty() ? "(empty)" : b.slots[i].c_str()))) {
+            for (const auto& a : ecs::ability_def_registry())
+                if (ImGui::Selectable(a.name.c_str(), a.id == b.slots[i])) { b.slots[i] = a.id; changed = true; }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+        if (i < b.cooldown.size() && b.cooldown[i] > 0.0f) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%.1fs", b.cooldown[i]);
+        }
+        ImGui::PopID();
+    }
+    if (remove >= 0) { b.slots.erase(b.slots.begin() + remove); changed = true; }
+    if (b.slots.size() < 8 && ImGui::SmallButton("Add slot")) {
+        b.slots.push_back(ecs::ability_def_registry().empty() ? std::string() : ecs::ability_def_registry().front().id);
+        changed = true;
+    }
+    if (ecs::ability_def_registry().empty())
+        ImGui::TextDisabled("No abilities yet: add 'ability' blocks to a .items file (Items editor: + Ability).");
+    return changed;
+}
+
 // Camera Rig (C4): a third-person camera for the player.
 bool draw_camera_rig(void* comp) {
     auto& r = *static_cast<ecs::CameraRig*>(comp);
@@ -892,6 +926,8 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_weapon(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Movement") == 0) {
                         if (draw_movement(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Ability Bar") == 0) {
+                        if (draw_ability_bar(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Camera Rig") == 0) {
                         if (draw_camera_rig(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Move Animation") == 0) {

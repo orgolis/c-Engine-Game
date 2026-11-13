@@ -33,8 +33,10 @@
 
 #include "gameplay_items.h"
 #include "gameplay_weapons.h"
+#include "gameplay_ability_cast.h"
 
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -88,7 +90,7 @@ inline std::vector<ItemDef> parse_items_text(const std::string& text) {
         if (key.empty() || key[0] == '#') continue;
 
         if (key == "item")      { flush(); ls >> cur.id; have = true; }
-        else if (key == "weapon") { flush(); }   // a weapon block: parse_weapons_text's
+        else if (key == "weapon" || key == "ability") { flush(); }   // not an item block
         else if (!have)         { continue; }
         else if (key == "end")  { flush(); }
         else if (key == "name")      { std::string rest; std::getline(ls, rest); cur.name = detail::trim(rest); }
@@ -137,7 +139,7 @@ inline std::vector<WeaponDef> parse_weapons_text(const std::string& text) {
         std::string key;
         if (!(ls >> key) || key[0] == '#') continue;
         if (key == "weapon")        { flush(); ls >> cur.id; cur.name = cur.id; have = true; }
-        else if (key == "item")     { flush(); }   // an item block: not ours
+        else if (key == "item" || key == "ability") { flush(); }   // not a weapon block
         else if (!have)             { continue; }
         else if (key == "end")      { flush(); }
         else if (key == "name")     { std::string rest; std::getline(ls, rest); cur.name = detail::trim(rest); }
@@ -168,6 +170,7 @@ inline int register_items_text(const std::string& text) {
     int n = 0;
     for (const auto& d : parse_items_text(text)) { register_item(d); ++n; }
     for (const auto& d : parse_weapons_text(text)) { register_weapon(d); ++n; }
+    for (const auto& d : parse_abilities_text(text)) { register_ability_def(d); ++n; }
     return n;
 }
 
@@ -199,12 +202,17 @@ inline int load_items_dir(const std::string& dir) {
 // file written back from it keeps its blocks and their order; comments between
 // blocks are not kept.
 struct ItemsDoc {
+    enum class Kind : uint8_t { Item, Weapon, Ability };
     struct Entry {
-        bool      is_weapon = false;
-        ItemDef   item;
-        WeaponDef weapon;
-        const std::string& id() const { return is_weapon ? weapon.id : item.id; }
-        const std::string& name() const { return is_weapon ? weapon.name : item.name; }
+        Kind       kind = Kind::Item;
+        ItemDef    item;
+        WeaponDef  weapon;
+        AbilityDef ability;
+        bool is_weapon() const { return kind == Kind::Weapon; }
+        bool is_ability() const { return kind == Kind::Ability; }
+        const std::string& id() const { return kind == Kind::Weapon ? weapon.id : kind == Kind::Ability ? ability.id : item.id; }
+        const std::string& name() const { return kind == Kind::Weapon ? weapon.name : kind == Kind::Ability ? ability.name : item.name; }
+        std::string& id_ref() { return kind == Kind::Weapon ? weapon.id : kind == Kind::Ability ? ability.id : item.id; }
     };
     std::string        header;   // leading '#' lines, kept verbatim
     std::vector<Entry> entries;
@@ -219,7 +227,8 @@ inline ItemsDoc parse_items_doc(const std::string& text) {
         if (!in_block) return;
         in_block = false;
         for (const auto& d : parse_items_text(block)) { ItemsDoc::Entry e; e.item = d; doc.entries.push_back(e); }
-        for (const auto& d : parse_weapons_text(block)) { ItemsDoc::Entry e; e.is_weapon = true; e.weapon = d; doc.entries.push_back(e); }
+        for (const auto& d : parse_weapons_text(block)) { ItemsDoc::Entry e; e.kind = ItemsDoc::Kind::Weapon; e.weapon = d; doc.entries.push_back(e); }
+        for (const auto& d : parse_abilities_text(block)) { ItemsDoc::Entry e; e.kind = ItemsDoc::Kind::Ability; e.ability = d; doc.entries.push_back(e); }
         block.clear();
     };
     while (std::getline(in, line)) {
@@ -227,7 +236,7 @@ inline ItemsDoc parse_items_doc(const std::string& text) {
         std::istringstream ls(line);
         std::string key;
         ls >> key;
-        if (key == "item" || key == "weapon") {
+        if (key == "item" || key == "weapon" || key == "ability") {
             flush();
             in_header = false;
             in_block = true;
@@ -319,11 +328,41 @@ inline std::string weapon_def_text(const WeaponDef& w) {
     return s + "end\n";
 }
 
+inline std::string ability_def_text(const AbilityDef& a) {
+    using detail::num;
+    const AbilityDef def;
+    std::string s = "ability " + a.id + "\n";
+    if (!a.name.empty() && a.name != a.id) s += "  name " + a.name + "\n";
+    if (!a.cost_attribute.empty()) s += "  cost " + a.cost_attribute + " " + num(a.cost) + "\n";
+    if (a.cooldown != 0.0f) s += "  cooldown " + num(a.cooldown) + "\n";
+    if (a.cast_time != 0.0f) s += "  cast " + num(a.cast_time) + "\n";
+    if (!a.cast_while_moving) s += "  still\n";
+    if (a.channel_time > 0.0f) s += "  channel " + num(a.channel_time) + " " + num(a.channel_period) + "\n";
+    s += std::string("  target ") + ability_targeting_name(a.targeting) + "\n";
+    if (a.range != def.range) s += "  range " + num(a.range) + "\n";
+    if (a.radius != def.radius) s += "  radius " + num(a.radius) + "\n";
+    if (a.damage != 0.0f || a.damage_type != def.damage_type)
+        s += "  damage " + num(a.damage) + (a.damage_type.empty() ? "" : " " + a.damage_type) + "\n";
+    auto eff = [&](const char* key, const AbilityEffect& e) {
+        s += std::string("  ") + key + " " + e.attribute + " " + num(e.amount);
+        if (e.duration > 0.0f) s += " " + num(e.duration);
+        s += "\n";
+    };
+    for (const auto& e : a.self_effects) eff("self", e);
+    for (const auto& e : a.target_effects) eff("effect", e);
+    for (const auto& t : a.require_tags) s += "  require " + t + "\n";
+    for (const auto& t : a.block_tags) s += "  block " + t + "\n";
+    if (!a.vfx.empty()) s += "  vfx " + a.vfx + "\n";
+    return s + "end\n";
+}
+
 inline std::string items_doc_to_text(const ItemsDoc& doc) {
     std::string s = doc.header;
     for (const auto& e : doc.entries) {
         if (!s.empty()) s += "\n";
-        s += e.is_weapon ? weapon_def_text(e.weapon) : item_def_text(e.item);
+        s += e.kind == ItemsDoc::Kind::Weapon ? weapon_def_text(e.weapon)
+           : e.kind == ItemsDoc::Kind::Ability ? ability_def_text(e.ability)
+           : item_def_text(e.item);
     }
     return s;
 }
@@ -354,6 +393,17 @@ inline const char* item_file_template() {
            "  tracer 3\n"
            "  impact 0.12\n"
            "  flash\n"
+           "end\n"
+           "\n"
+           "ability my_firebolt\n"
+           "  name Firebolt\n"
+           "  cost Mana 15\n"
+           "  cooldown 2\n"
+           "  cast 0.4\n"
+           "  target aimed\n"
+           "  range 30\n"
+           "  damage 35 fire\n"
+           "  vfx firebolt\n"
            "end\n"
            "\n"
            "item my_sword\n"
