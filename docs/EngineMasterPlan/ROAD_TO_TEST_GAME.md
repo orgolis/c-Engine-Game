@@ -252,6 +252,18 @@ clicked editor panels; a project's own `assets/gameplay` was never loaded when
 the project was opened (it was read before the project folder was known), so
 its abilities and weapons did not exist.
 
+**Progress (v0.8.40):** a left-click shot released the mouse (v0.8.39's
+"ImGui ignores the mouse" still let ImGui treat the click as one on no
+window, which cleared the game view's focus) -- the game view keeps focus
+while Play holds the mouse. Controls became actions (input/action_map.h:
+engine defaults, the project's input.cfg, the player's rebinding saved per
+user and game) used by movement, weapons, abilities, interacting and save /
+load; scripts get Action Pressed / Released, Rebind Action, Reset Controls,
+Key For Action, and settings by name (Set / Get / Next Setting Value: the
+machine's graphics settings, field of view, mouse sensitivity and invert).
+TestGame got a settings screen (all project files). Next: inventory and a
+skill tree with abilities.
+
 ## Then: the optimization upgrade
 
 The 16 ranked candidates of OPTIMIZATION_RESEARCH.md, re-measured on the test

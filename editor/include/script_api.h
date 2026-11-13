@@ -188,6 +188,22 @@ struct ScriptApi {
     // The game stands still (scripts and UI go on); leave Play / the game.
     void (*set_game_paused)(void* ctx, bool paused) = nullptr;
     void (*quit_game)(void* ctx) = nullptr;
+
+    // ---- controls and settings (added v0.8.40; new entries go at the end) ----
+    // An action of the player's controls is held (move_forward, fire,
+    // ability_1, or a project's own from input.cfg).
+    bool (*action_down)(void* ctx, const char* action) = nullptr;
+    // The next key or mouse button pressed becomes the action's (Esc
+    // cancels); the gameplay event "input.rebound" follows with the action.
+    void (*rebind_action)(void* ctx, const char* action) = nullptr;
+    void (*reset_controls)(void* ctx) = nullptr;
+    // The key's name for an action ("Space", "Mouse Left"). Returns its length.
+    int  (*key_for_action)(void* ctx, const char* action, char* out, int out_size) = nullptr;
+    // Settings by name (quality, ambient_occlusion, shadow_quality, fov,
+    // mouse_sensitivity, invert_y, ...): set; read; step to the next choice.
+    bool (*set_setting)(void* ctx, const char* name, const char* value) = nullptr;
+    int  (*get_setting)(void* ctx, const char* name, char* out, int out_size) = nullptr;
+    int  (*next_setting)(void* ctx, const char* name, char* out, int out_size) = nullptr;
 };
 
 }  // namespace schizo::editor

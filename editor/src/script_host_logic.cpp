@@ -246,6 +246,45 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
     r.fn("game.pause", "Game", "Pause Game", [s](bool paused) {
         if (API && API->set_game_paused) API->set_game_paused(API->ctx, paused);
     }, {"Paused"}).tip("The game stands still (no movement, physics, enemies) while scripts and UI go on.");
+    const char* ST = "Settings";
+    r.fn("settings.set", ST, "Set Setting", [s](std::string name, std::string value) {
+        return API && API->set_setting && API->set_setting(API->ctx, name.c_str(), value.c_str());
+    }, {"Name", "Value", "Done"}).tip("A game setting by name: quality (Low/Medium/High), ambient_occlusion, reflections, clouds, "
+                                     "volumetric (On/Off), shadow_quality (Low..Ultra), render_scale (50%..100%, on restart), "
+                                     "vsync (on restart), fov (Camera or degrees), mouse_sensitivity, invert_y (On/Off).");
+    r.pure("settings.get", ST, "Get Setting", [s](std::string name) {
+        char buf[64] = {};
+        if (API && API->get_setting) API->get_setting(API->ctx, name.c_str(), buf, sizeof buf);
+        return std::string(buf);
+    }, {"Name", "Value"});
+    r.fn("settings.next", ST, "Next Setting Value", [s](std::string name) {
+        char buf[64] = {};
+        if (API && API->next_setting) API->next_setting(API->ctx, name.c_str(), buf, sizeof buf);
+        return std::string(buf);
+    }, {"Name", "Value"}).tip("Steps a setting to its next choice (wrapping round) -- one button per setting in a menu.");
+    r.fn("controls.rebind", ST, "Rebind Action", [s](std::string action) {
+        if (API && API->rebind_action) API->rebind_action(API->ctx, action.c_str());
+    }, {"Action"}).tip("The next key or mouse button the player presses becomes this action's (Esc cancels). "
+                       "On Gameplay Event \"input.rebound\" follows.");
+    r.fn("controls.reset", ST, "Reset Controls", [s]() {
+        if (API && API->reset_controls) API->reset_controls(API->ctx);
+    }, {});
+    r.pure("controls.key", ST, "Key For Action", [s](std::string action) {
+        char buf[64] = {};
+        if (API && API->key_for_action) API->key_for_action(API->ctx, action.c_str(), buf, sizeof buf);
+        return std::string(buf);
+    }, {"Action", "Key"});
+    for (const bool pressed : {true, false}) {
+        NodeDef d;
+        d.id = pressed ? "event.action_pressed" : "event.action_released";
+        d.category = "Events|Input";
+        d.title = pressed ? "Action Pressed" : "Action Released";
+        d.builtin = Builtin::Event; d.named = true; d.name_label = "Action";
+        d.tooltip = "Runs when the key bound to this action goes down (or up): move_forward, jump, fire, interact, "
+                    "ability_1..8, or one of the project's own actions in input.cfg. Follows the player's rebinding.";
+        d.out("Then", kExec);
+        r.add(std::move(d));
+    }
     r.fn("game.quit", "Game", "Quit Game", [s]() {
         if (API && API->quit_game) API->quit_game(API->ctx);
     }, {}).tip("Ends Play in the editor; closes an exported game.");
@@ -656,6 +695,15 @@ public:
                 if (!k) { keys_.push_back(Key{}); k = &keys_.back(); k->code = code; }
                 (pressed ? k->on_press : k->on_release) = e.name;
             }
+            for (const bool pressed : {true, false}) {
+                const std::string prefix = pressed ? "event.action_pressed:" : "event.action_released:";
+                if (e.name.rfind(prefix, 0) != 0) continue;
+                const std::string action = e.name.substr(prefix.size());
+                Key* k = nullptr;
+                for (Key& x : keys_) if (x.code < 0 && x.action == action) k = &x;
+                if (!k) { keys_.push_back(Key{}); k = &keys_.back(); k->code = -1; k->action = action; }
+                (pressed ? k->on_press : k->on_release) = e.name;
+            }
             if (e.name.rfind("event.gameplay:", 0) == 0 || e.name.rfind("event.about_me:", 0) == 0 ||
                 e.name.rfind("event.ui_button:", 0) == 0 ||
                 e.name == "event.trigger_enter" || e.name == "event.trigger_exit")
@@ -720,7 +768,8 @@ public:
                         break;
                     }
                     Key&       k = keys_[key_i_++];
-                    const bool down = api_ && api_->key_down && api_->key_down(api_->ctx, k.code);
+                    const bool down = k.code >= 0 ? (api_ && api_->key_down && api_->key_down(api_->ctx, k.code))
+                                                  : (api_ && api_->action_down && api_->action_down(api_->ctx, k.action.c_str()));
                     const bool was = k.down;
                     k.down = down;
                     if (down && !was && !k.on_press.empty()) vm.fire(*inst_, k.on_press);
@@ -818,7 +867,8 @@ private:
     const ScriptApi*               api_ = nullptr;
     std::unique_ptr<Instance>     inst_;
     struct Key {
-        int         code = 0;
+        int         code = 0;            // a key; or -1: `action` (an action of the controls)
+        std::string action;
         bool        down = false;
         std::string on_press, on_release;
     };

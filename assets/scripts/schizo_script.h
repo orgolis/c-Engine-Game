@@ -132,6 +132,15 @@ typedef struct SchizoScriptApi {
     bool     (*ui_shown)(void* ctx, const char* path);
     void     (*set_game_paused)(void* ctx, bool paused);
     void     (*quit_game)(void* ctx);
+    /* Controls by action (move_forward, fire, ability_1, ...) and settings by
+       name (quality, fov, mouse_sensitivity, ...). */
+    bool     (*action_down)(void* ctx, const char* action);
+    void     (*rebind_action)(void* ctx, const char* action);
+    void     (*reset_controls)(void* ctx);
+    int      (*key_for_action)(void* ctx, const char* action, char* out, int out_size);
+    bool     (*set_setting)(void* ctx, const char* name, const char* value);
+    int      (*get_setting)(void* ctx, const char* name, char* out, int out_size);
+    int      (*next_setting)(void* ctx, const char* name, char* out, int out_size);
 } SchizoScriptApi;
 
 }  // extern "C"

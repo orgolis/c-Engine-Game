@@ -956,6 +956,15 @@ target_compile_features(ai_check PRIVATE cxx_std_20)
 # ui_check: game-UI framework verification (headless, no device) — anchored
 # layout, resolution-independent scaling, pointer/click semantics, focus
 # navigation, HUD draw-list emission.
+# controls_check: the action map (input/action_map.h): key names, defaults,
+# rebinding, the settings text.
+add_executable(controls_check controls_check/main.cpp)
+target_include_directories(controls_check PRIVATE ${CMAKE_SOURCE_DIR}/engine/core)
+target_compile_features(controls_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(controls_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # uidoc_check: UI documents (.ui files: a game's menus and HUD as project
 # data) -- parsing, placement, live values, buttons.
 add_executable(uidoc_check uidoc_check/main.cpp)

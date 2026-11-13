@@ -3,6 +3,7 @@
 #include <memory>
 #include "ecs/gameplay_movement.h"   // the player's moves (C4)
 #include "ecs/gameplay_camera.h"     // third-person camera rig (C4)
+#include "input/action_map.h"         // the player's controls, by action
 #include <functional>
 #include <cstdint>
 #include <unordered_map>
@@ -153,6 +154,10 @@ public:
     /// A modal UI document is shown over a focused game view: the mouse is
     /// free for its buttons, and scripts still hear the keys (Esc to close it).
     void SetUiHasInput(bool u) { ui_has_input_ = u; }
+    /// The player's controls this frame (main reads the keys once a frame),
+    /// and how the mouse looks (speed multiplier, inverted up/down).
+    void SetActions(const schizo::input::ActionStates* a) { actions_ = a; }
+    void SetLook(float sensitivity, bool invert_y) { look_scale_ = sensitivity; look_invert_ = invert_y; }
     bool UiHasInput() const { return ui_has_input_; }
 
     /**
@@ -238,6 +243,9 @@ private:
     bool is_paused_ = false;
     bool game_paused_ = false;
     bool ui_has_input_ = false;
+    const schizo::input::ActionStates* actions_ = nullptr;
+    float look_scale_ = 1.0f;
+    bool  look_invert_ = false;
     bool is_cursor_captured_ = false;  // True while the host should hide+lock the OS cursor
     bool is_input_focused_ = false;    // True only while the scene/game surface owns input
     bool net_client_mode_ = false;     // Props follow net-set transforms, no local sim

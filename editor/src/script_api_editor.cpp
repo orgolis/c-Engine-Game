@@ -5,6 +5,7 @@
 #include "script_api_editor.h"
 #include "play_save.h"           // save_game / load_game
 #include "play_ui.h"             // the project's UI documents in Play
+#include "play_settings.h"       // controls and settings
 #include "biome_water.h"
 #include "command_palette.h"
 #include "editor_extensions.h"
@@ -119,6 +120,8 @@ bool accepts_gameplay_input(const EditorScriptCtx* c) {
 
 bool api_key_down(void* ctx, int key) {
     auto* c = C(ctx);
+    // A key that just ended a rebinding (Esc cancelling it) is not the game's yet.
+    if (key == schizo::editor::play_settings().swallowed_key) return false;
     return accepts_gameplay_input(c) && glfwGetKey(c->window, key) == GLFW_PRESS;
 }
 bool api_mouse_down(void* ctx, int button) {
@@ -507,6 +510,31 @@ bool api_ui_shown(void*, const char* path) { return path && schizo::editor::play
 void api_set_game_paused(void*, bool paused) { schizo::editor::play_ui().script_pause = paused; }
 void api_quit_game(void*) { schizo::editor::play_ui().quit_requested = true; }
 
+// ---- controls and settings ----
+int copy_out(const std::string& s, char* out, int size) {
+    if (out && size > 0) std::snprintf(out, static_cast<size_t>(size), "%s", s.c_str());
+    return static_cast<int>(s.size());
+}
+bool api_action_down(void* ctx, const char* action) {
+    return action && accepts_gameplay_input(C(ctx)) && schizo::editor::play_settings().states.down(action);
+}
+void api_rebind_action(void*, const char* action) { if (action) schizo::editor::play_settings().rebinding = action; }
+void api_reset_controls(void*) { schizo::editor::play_settings().reset_controls(); }
+int api_key_for_action(void*, const char* action, char* out, int size) {
+    auto& ps = schizo::editor::play_settings();
+    const std::string a = action ? action : "";
+    return copy_out(ps.rebinding == a ? std::string("press a key...") : schizo::input::key_name(ps.map.key(a)), out, size);
+}
+bool api_set_setting(void*, const char* name, const char* value) {
+    return name && value && schizo::editor::play_settings().set(name, value);
+}
+int api_get_setting(void*, const char* name, char* out, int size) {
+    return copy_out(name ? schizo::editor::play_settings().get(name) : std::string(), out, size);
+}
+int api_next_setting(void*, const char* name, char* out, int size) {
+    return copy_out(name ? schizo::editor::play_settings().next(name) : std::string(), out, size);
+}
+
 // ---- gameplay event feed ----
 // ECS entity -> scene id. Events are rare, so a scan of the scene is fine.
 uint32_t scene_id_of(EditorScriptCtx* c, ecs::Entity e) {
@@ -705,6 +733,13 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.ui_shown           = &api_ui_shown;
     api.set_game_paused    = &api_set_game_paused;
     api.quit_game          = &api_quit_game;
+    api.action_down        = &api_action_down;
+    api.rebind_action      = &api_rebind_action;
+    api.reset_controls     = &api_reset_controls;
+    api.key_for_action     = &api_key_for_action;
+    api.set_setting        = &api_set_setting;
+    api.get_setting        = &api_get_setting;
+    api.next_setting       = &api_next_setting;
     api.distance           = &api_distance;
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;

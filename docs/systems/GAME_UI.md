@@ -55,6 +55,46 @@ C++ scripts have the same in the API table (`ui_show`, `ui_hide`,
 `ui_set_text`, `ui_shown`, `set_game_paused`, `quit_game`); a click is the
 gameplay event `ui.click` with the button's id as its param.
 
+## Controls and settings
+
+The player's controls are **actions**, each bound to a key or mouse button:
+`move_forward`, `move_back`, `move_left`, `move_right`, `jump`, `sprint`,
+`crouch`, `dash`, `fire`, `aim`, `reload`, `interact`, `ability_1` .. `ability_8`,
+`quick_save`, `quick_load`. The engine has defaults (WASD, Space, Left Shift,
+Left Ctrl, V, the mouse buttons, R, E, 1-8, F6, F9). A project changes them and
+adds its own in `input.cfg` in the project folder:
+
+```
+# input.cfg
+inventory = I
+label inventory = Open the bag
+dash = Q
+```
+
+A player rebinds them in the game; their choices (and mouse sensitivity,
+invert-Y, field of view) are kept per user and game, in the config folder
+(`games/<project>/controls.txt`).
+
+| Node | |
+|---|---|
+| **Action Pressed / Action Released** (Action) | runs when the action's key goes down / up (follows rebinding) |
+| **Rebind Action** (Action) | the next key or mouse button pressed becomes the action's; Esc cancels; then the gameplay event `input.rebound` |
+| **Reset Controls** | back to the project's controls |
+| **Key For Action** (Action) | its key's name ("Space", "Mouse Left") |
+| **Set Setting** (Name, Value), **Get Setting** (Name), **Next Setting Value** (Name) | a setting by name, below |
+
+Settings by name: `quality` (Low, Medium, High), `ambient_occlusion`,
+`reflections`, `clouds`, `volumetric` (On, Off), `shadow_quality` (Low, Medium,
+High, Ultra), `render_scale` (50%, 67%, 75%, 100% -- on restart), `vsync` (On,
+Off -- on restart), `fov` (Camera, 70 .. 110), `mouse_sensitivity` (0.05 .. 10),
+`invert_y` (On, Off). Graphics settings are the machine's: the same as the
+editor's render settings. Next Setting Value steps through a setting's
+choices, so a settings menu needs one button per setting.
+
+In UI documents, `{key.<action>}` shows an action's key ("press a key..."
+while it is being rebound) and `{setting.<name>}` a setting's value -- in
+labels and on buttons.
+
 ## Esc, and getting the mouse back in the editor
 
 In Play the game holds the mouse; the editor's panels get none of it.

@@ -215,7 +215,9 @@ target_include_directories(editor_headers_selfcontain PRIVATE
     # cooked-mesh path names meshoptimizer: the same reason, the same remedy.
     ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer/src
     ${CMAKE_SOURCE_DIR}/engine/core/asset_pipeline/..
-    ${CMAKE_SOURCE_DIR}/engine/core/compression/..)
+    ${CMAKE_SOURCE_DIR}/engine/core/compression/..
+    # play_settings.h finds the user's config folder through the platform layer.
+    ${CMAKE_SOURCE_DIR}/engine/platform/include)
 target_link_libraries(editor_headers_selfcontain PRIVATE
     engine scene window character ability network renderer
     gws_jobs gws_profiler gws_ecs gws_serialization gws_ai gws_world

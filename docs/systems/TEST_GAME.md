@@ -19,8 +19,11 @@ it in the editor.
   and their bodies go after a few seconds.
 - **Supply caches** to open with E, **two checkpoints** that save, and **a
   beacon** on the far side.
-- **Screens** (`ui/`): a title menu, the HUD (health and mana, the objective),
-  a pause menu on Esc (resume, save, load, quit) and a win screen. Esc belongs
+- **Screens** (`ui/`): a title menu, the HUD (health and mana, the objective,
+  the keys as bound), a pause menu on Esc (resume, save, load, settings, quit),
+  a settings screen (every control rebindable, mouse sensitivity and invert,
+  quality, ambient occlusion, reflections, clouds, volumetric light, shadow
+  quality, render scale, VSync, field of view) and a win screen. Esc belongs
   to the game in this project (`escape = game` in `project.schizo`); Shift+F1
   frees the mouse for the editor.
 

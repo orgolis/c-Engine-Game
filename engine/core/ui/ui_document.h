@@ -57,7 +57,7 @@ struct UiDocument {
     std::unordered_map<std::string, Widget*> ids;
     std::vector<std::pair<std::string, Button*>> buttons;   // id, widget
 
-    struct TextBinding { Label* label; std::string templ; };
+    struct TextBinding { Label* label; Button* button; std::string templ; };   // one of label / button
     struct BarBinding  { ProgressBar* bar; std::string source; };
     std::vector<TextBinding> texts;
     std::vector<BarBinding>  bars;
@@ -166,11 +166,12 @@ inline std::unique_ptr<UiDocument> parse_ui_document(const std::string& text, co
             const std::string al = kv.count("align") ? kv["align"] : "left";
             const UiAlign a = al == "center" ? UiAlign::Center : al == "right" ? UiAlign::Right : UiAlign::Left;
             auto* l = doc->canvas.root().add<Label>(kv["text"], num("size", 22.0f), c, a);
-            if (l->text.find('{') != std::string::npos) doc->texts.push_back({l, l->text});
+            if (l->text.find('{') != std::string::npos) doc->texts.push_back({l, nullptr, l->text});
             w = l;
         } else if (kind == "button") {
             auto* b = doc->canvas.root().add<Button>(kv["text"]);
             b->font_size = num("size", 24.0f);
+            if (b->text.find('{') != std::string::npos) doc->texts.push_back({nullptr, b, b->text});
             if (kv.count("color")) parse_color(kv["color"], b->color_normal);
             if (kv.count("hover")) parse_color(kv["hover"], b->color_hover);
             if (kv.count("text_color")) parse_color(kv["text_color"], b->text_color);
@@ -234,7 +235,8 @@ inline void refresh_ui_bindings(UiDocument& doc, const UiLookup& lookup) {
             }
             out += s[i++];
         }
-        t.label->text = out;
+        if (t.label) t.label->text = out;
+        if (t.button) t.button->text = out;
     }
     for (auto& b : doc.bars) {
         const UiValue v = lookup(b.source);
@@ -253,7 +255,12 @@ inline bool set_ui_text(UiDocument& doc, const std::string& id, const std::strin
             if (doc.texts[i].label == l) { doc.texts.erase(doc.texts.begin() + static_cast<long>(i)); break; }
         return true;
     }
-    if (auto* b = dynamic_cast<Button*>(it->second)) { b->text = text; return true; }
+    if (auto* b = dynamic_cast<Button*>(it->second)) {
+        b->text = text;
+        for (size_t i = 0; i < doc.texts.size(); ++i)
+            if (doc.texts[i].button == b) { doc.texts.erase(doc.texts.begin() + static_cast<long>(i)); break; }
+        return true;
+    }
     return false;
 }
 

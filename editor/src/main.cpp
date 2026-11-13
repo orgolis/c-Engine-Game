@@ -127,6 +127,7 @@
 #include "play_save.h"            // F6 / F9 and scripts save and load in Play (C6)
 #include "play_loop.h"            // death, loot, interacting, respawning in Play (D0)
 #include "play_ui.h"              // the project's UI documents (.ui) in Play
+#include "play_settings.h"        // controls (actions) and game settings in Play
 #include "ecs/gameplay_movement.h" // the player's moves in Play (C4)
 #include "ecs/gameplay_camera.h"   // the player's third-person camera rig
 #include "ecs/gameplay_tags.h"     // surface.climbable
@@ -389,6 +390,7 @@ struct EditorState {
     // Keyboard/mouse movement belongs exclusively to the scene viewport. This
     // prevents typing in Terminal or editing another panel from moving things.
     bool viewport_input_focused = false;
+    bool viewport_imgui_focused = false;   // ImGui's own view (before Play's hold on the mouse)
     // Screen-space top-left of the rendered viewport image, so synthetic input
     // (--stress-viewport-click) can aim at it.
     glm::vec2 viewport_image_min  = glm::vec2(0.0f);
@@ -5826,8 +5828,19 @@ void ShowViewport(EditorState& editor_state) {
     editor_state.viewport_drawn =
         ImGui::Begin("Viewport", &editor_state.show_viewport, ImGuiWindowFlags_NoMove);  // docked window = child; End() must always run
     {
-        editor_state.viewport_input_focused =
-            ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        // While Play holds the mouse, the game view keeps focus whatever ImGui
+        // thinks: ImGui is told to ignore the mouse then, but still treats a
+        // click as one on "no window" and drops focus -- which released the
+        // mouse on every left-click shot.
+        const bool play_holds_mouse = editor_state.scene_playback_manager &&
+                                      editor_state.scene_playback_manager->IsPlaying() &&
+                                      editor_state.scene_playback_manager->IsCursorCaptured();
+        editor_state.viewport_imgui_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        if (play_holds_mouse && !editor_state.viewport_imgui_focused) {
+            ImGui::SetWindowFocus();
+            if (std::getenv("GWS_TEST_UI")) spdlog::info("[test] ui: ImGui dropped the game view's focus (a click) -- Play keeps it");
+        }
+        editor_state.viewport_input_focused = editor_state.viewport_imgui_focused || play_holds_mouse;
         ImVec2 content_area = ImGui::GetContentRegionAvail();
         auto scene = editor_state.editor_scene->GetScene();
 
@@ -9493,6 +9506,7 @@ int main(int argc, char** argv) {
                     const int n = ecs_bridge.load_gameplay_data("assets/gameplay");
                     spdlog::info("[project] {} gameplay definition(s) from assets/gameplay", n);
                 }
+                schizo::editor::play_settings().load_for_project(pm.project_dir, pm.name);
                 if (editor_state.asset_browser)                    // re-scope the browser to THIS project
                     editor_state.asset_browser->Reroot();          // (was rooted at the engine dir at construction)
                 const std::string scene_path = pm.default_scene_path();
@@ -10248,7 +10262,10 @@ int main(int argc, char** argv) {
             g_cp.mark("pre_input");
             // Key input
             auto key = [&](int k) { return glfwGetKey(glfw_window, k) == GLFW_PRESS; };
-            const bool app_has_input_focus =
+            // GWS_TEST_ASSUME_FOCUS=1: automated runs behave as if the window had
+            // the OS focus (it does not, and taking it would take the desktop's).
+            static const bool assume_focus = std::getenv("GWS_TEST_ASSUME_FOCUS") != nullptr;
+            const bool app_has_input_focus = assume_focus ||
                 glfwGetWindowAttrib(glfw_window, GLFW_FOCUSED) == GLFW_TRUE;
             const bool scene_has_input_focus = app_has_input_focus &&
                 (game_window_mode || editor_state.viewport_input_focused);
@@ -10278,9 +10295,10 @@ int main(int argc, char** argv) {
                 const bool want_capture =
                     editor_state.scene_playback_manager->HasInputFocus();
                 if (want_capture != prev_cursor_captured) {
-                    glfwSetInputMode(glfw_window, GLFW_CURSOR,
-                                     want_capture ? GLFW_CURSOR_DISABLED
-                                                  : GLFW_CURSOR_NORMAL);
+                    if (!assume_focus)   // never lock the real cursor from an automated run
+                        glfwSetInputMode(glfw_window, GLFW_CURSOR,
+                                         want_capture ? GLFW_CURSOR_DISABLED
+                                                      : GLFW_CURSOR_NORMAL);
                     // While the game has the mouse, the editor's UI gets none of
                     // it: a hidden cursor still moved over the panels and clicked
                     // them, so the editor stayed usable "behind" the game.
@@ -10533,8 +10551,69 @@ int main(int argc, char** argv) {
             if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
                 auto& pm = *editor_state.scene_playback_manager;
                 auto& ui = schizo::editor::play_ui();
+                // The controls, once a frame, by action.
+                auto& ps = schizo::editor::play_settings();
+                auto key_held = [&](int code) {
+                    if (code >= schizo::input::kMouseButton)
+                        return glfwGetMouseButton(glfw_window, code - schizo::input::kMouseButton) == GLFW_PRESS;
+                    return code > 0 && glfwGetKey(glfw_window, code) == GLFW_PRESS;
+                };
+                // The key that just ended a rebinding is not the game's until it is let go.
+                if (ps.swallowed_key && !key_held(ps.swallowed_key)) ps.swallowed_key = 0;
+                ps.states.update(ps.map, [&](int code) { return code != ps.swallowed_key && key_held(code); });
+                pm.SetActions(&ps.states);
+                pm.SetLook(ps.map.mouse_sensitivity, ps.map.invert_y);
+                // Rebind Action: the next key or mouse button pressed (Esc cancels).
+                {
+                    static std::vector<int> held_at_start;
+                    static std::string waiting_for;
+                    if (ps.rebinding != waiting_for) {
+                        waiting_for = ps.rebinding;
+                        held_at_start.clear();
+                        if (!waiting_for.empty())
+                            for (int c = 32; c < schizo::input::kMouseButton + 8; ++c) {
+                                if (c == 349) c = schizo::input::kMouseButton;
+                                if (key_held(c)) held_at_start.push_back(c);
+                            }
+                    }
+                    if (!waiting_for.empty()) {
+                        held_at_start.erase(std::remove_if(held_at_start.begin(), held_at_start.end(),
+                                                           [&](int c) { return !key_held(c); }), held_at_start.end());
+                        int got = 0;
+                        for (int c = 32; c < schizo::input::kMouseButton + 8 && !got; ++c) {
+                            if (c == 349) c = schizo::input::kMouseButton;
+                            if (schizo::input::key_name(c) == "None") continue;
+                            if (key_held(c) && std::find(held_at_start.begin(), held_at_start.end(), c) == held_at_start.end()) got = c;
+                        }
+                        if (got) {
+                            if (got != 256) {   // Esc cancels
+                                ps.map.set(waiting_for, got);
+                                ps.save();
+                            }
+                            schizo::ecs::GameplayEvent ev;
+                            ev.name = "input.rebound";
+                            ev.param = waiting_for;
+                            ecs_bridge.events().publish(ev);
+                            spdlog::info("[controls] {} -> {}", waiting_for, got == 256 ? std::string("(cancelled)") : schizo::input::key_name(got));
+                            ps.rebinding.clear();
+                            ps.swallowed_key = got;
+                            waiting_for.clear();
+                        }
+                    }
+                }
                 ui.refresh([&](const std::string& src) {
                     schizo::ui::UiValue v;
+                    if (src.rfind("key.", 0) == 0) {
+                        const std::string a = src.substr(4);
+                        v.found = true;
+                        v.text = ps.rebinding == a ? "press a key..." : schizo::input::key_name(ps.map.key(a));
+                        return v;
+                    }
+                    if (src.rfind("setting.", 0) == 0) {
+                        v.text = ps.get(src.substr(8));
+                        v.found = !v.text.empty();
+                        return v;
+                    }
                     if (src == "time") { v.found = true; v.value = pm.GetPlaybackTime(); return v; }
                     if (src.rfind("flag.", 0) == 0) { v.found = true; v.value = ecs_bridge.world_flag(src.substr(5)); return v; }
                     if (src.rfind("player.", 0) != 0) return v;
@@ -10561,8 +10640,18 @@ int main(int argc, char** argv) {
                 // GWS_TEST_UI=click:<id>@<frame>,show:<file>@<frame>,... : click a
                 // button or show a document at a Play frame (menus seen without a person).
                 if (const char* tu = std::getenv("GWS_TEST_UI")) {
-                    static int ui_frames = 0;
+                    static int ui_frames = 0, mouse_up_at = -1, report_at = -1;
                     ++ui_frames;
+                    if (ui_frames == mouse_up_at) ImGui::GetIO().AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+                    if (ui_frames == report_at)
+                        spdlog::info("[test] ui: after the click -- mouse held by Play {}, game view focused {} (ImGui's own: {})",
+                                     pm.IsCursorCaptured(), editor_state.viewport_input_focused, editor_state.viewport_imgui_focused);
+                    if (std::strstr(tu, "mouse:") && mouse_up_at < 0)
+                        if (const char* m = std::strstr(tu, "mouse:left@")) {
+                            const int at = std::atoi(m + 11);
+                            mouse_up_at = at + 2;
+                            report_at = at + 10;
+                        }
                     std::stringstream tss(tu);
                     std::string item;
                     while (std::getline(tss, item, ',')) {
@@ -10574,6 +10663,11 @@ int main(int argc, char** argv) {
                             ecs_bridge.events().publish(ev);
                         } else if (what == "show") {
                             ui.show(arg);
+                        } else if (what == "mouse") {
+                            // A real left click as the window delivers it (a shot).
+                            ImGui::GetIO().AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+                            spdlog::info("[test] ui: before the click -- mouse held by Play {}, game view focused {} (ImGui's own: {})",
+                                         pm.IsCursorCaptured(), editor_state.viewport_input_focused, editor_state.viewport_imgui_focused);
                         }
                         spdlog::info("[test] ui: {} {} (play frame {})", what, arg, ui_frames);
                     }
@@ -10603,12 +10697,51 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // Graphics settings from a game's settings menu (Set Setting): the
+            // machine's render settings, as the editor's panel changes them.
+            {
+                auto& ps = schizo::editor::play_settings();
+                using QP = schizo::editor::QualityPreset;
+                for (const auto& [name, value] : ps.graphics_requests) {
+                    const bool on = value == "On";
+                    if (name == "quality") render_settings.apply_preset(schizo::editor::quality_preset_from_name(value));
+                    else if (name == "ambient_occlusion") render_settings.ssao = on;
+                    else if (name == "reflections") render_settings.ssr = on;
+                    else if (name == "clouds") render_settings.clouds = on;
+                    else if (name == "volumetric") render_settings.volumetric = on;
+                    else if (name == "shadow_quality") render_settings.shadow_rays = value == "Low" ? 1 : value == "Medium" ? 2 : value == "High" ? 4 : 8;
+                    else if (name == "render_scale") render_settings.render_scale = static_cast<float>(std::atof(value.c_str())) / 100.0f;
+                    else if (name == "vsync") render_settings.vsync = on;
+                    if (name != "quality") render_settings.preset = render_settings.detect_preset();
+                    render_settings.sanitize();
+                    apply_render_settings(render_settings);
+                    schizo::editor::save_render_settings(render_settings);
+                    spdlog::info("[settings] {} = {}", name, value);
+                }
+                ps.graphics_requests.clear();
+                const auto& rs = render_settings;
+                auto onoff = [](bool b) { return std::string(b ? "On" : "Off"); };
+                const QP qp = rs.preset == QP::Custom ? QP::High : rs.preset;
+                ps.graphics["quality"] = rs.preset == QP::Custom ? "Custom" : schizo::editor::quality_preset_name(qp);
+                ps.graphics["ambient_occlusion"] = onoff(rs.ssao);
+                ps.graphics["reflections"] = onoff(rs.ssr);
+                ps.graphics["clouds"] = onoff(rs.clouds);
+                ps.graphics["volumetric"] = onoff(rs.volumetric);
+                ps.graphics["shadow_quality"] = rs.shadow_rays <= 1 ? "Low" : rs.shadow_rays <= 2 ? "Medium" : rs.shadow_rays <= 4 ? "High" : "Ultra";
+                {
+                    const int pct = static_cast<int>(rs.render_scale * 100.0f + 0.5f);
+                    ps.graphics["render_scale"] = std::to_string(pct == 66 ? 67 : pct) + "%";
+                }
+                ps.graphics["vsync"] = onoff(rs.vsync);
+            }
+
             // F6 saves the game in Play, F9 loads it (slot "quick").
             if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
                 auto& pm = *editor_state.scene_playback_manager;
                 static bool prev_f6 = false, prev_f9 = false;
-                const bool f6 = pm.HasInputFocus() && glfwGetKey(glfw_window, GLFW_KEY_F6) == GLFW_PRESS;
-                const bool f9 = pm.HasInputFocus() && glfwGetKey(glfw_window, GLFW_KEY_F9) == GLFW_PRESS;
+                const auto& pst = schizo::editor::play_settings().states;
+                const bool f6 = pm.HasInputFocus() && pst.down("quick_save");
+                const bool f9 = pm.HasInputFocus() && pst.down("quick_load");
                 // GWS_TEST_SAVE=1 (with GWS_TEST_PLAY): save after 1 s, walk on,
                 // load after 2 s -- the log says where the player was each time.
                 static const bool test_save = std::getenv("GWS_TEST_SAVE") != nullptr;
@@ -10803,9 +10936,10 @@ int main(int argc, char** argv) {
                 auto& pm = *editor_state.scene_playback_manager;
                 static bool prev_lmb = false, prev_r = false;
                 const bool  focus = pm.IsPlaying() && pm.HasInputFocus();
-                const bool  lmb = focus && glfwGetMouseButton(glfw_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-                const bool  rmb = focus && glfwGetMouseButton(glfw_window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-                const bool  rk = focus && glfwGetKey(glfw_window, GLFW_KEY_R) == GLFW_PRESS;
+                const auto& acts = schizo::editor::play_settings().states;
+                const bool  lmb = focus && acts.down("fire");
+                const bool  rmb = focus && acts.down("aim");
+                const bool  rk = focus && acts.down("reload");
                 schizo::editor::PlayerWeapon::Input in;
                 in.fire_pressed = lmb && !prev_lmb;
                 in.fire_held = lmb;
@@ -10845,7 +10979,7 @@ int main(int argc, char** argv) {
                 {
                     static bool prev_keys[8] = {};
                     for (int k = 0; k < 8; ++k) {
-                        const bool down = focus && glfwGetKey(glfw_window, GLFW_KEY_1 + k) == GLFW_PRESS;
+                        const bool down = focus && acts.down("ability_" + std::to_string(k + 1));
                         ain.held[k] = down;
                         if (down && !prev_keys[k] && ain.pressed < 0) ain.pressed = k;
                         prev_keys[k] = down;
@@ -11021,7 +11155,7 @@ int main(int argc, char** argv) {
                 }
                 if (pm.IsPlaying() && !pm.IsGamePaused()) {
                     static bool prev_e = false;
-                    const bool ek = (focus && glfwGetKey(glfw_window, GLFW_KEY_E) == GLFW_PRESS) || life_e;
+                    const bool ek = (focus && acts.down("interact")) || life_e;
                     editor_state.play_loop.update(delta_time, pm, ecs_bridge, editor_state.editor_scene->GetScene(), ek && !prev_e);
                     prev_e = ek;
                     if (auto* pc = pm.GetPlaybackCamera()) {
@@ -11257,6 +11391,7 @@ int main(int argc, char** argv) {
                         const int n = editor_state.ecs_bridge->load_gameplay_data("assets/gameplay");
                         spdlog::info("[project] {} gameplay definition(s) from assets/gameplay", n);
                     }
+                    schizo::editor::play_settings().load_for_project(chosen.project_dir, chosen.name);
                     if (editor_state.asset_browser) editor_state.asset_browser->Reroot();
 
                     // Load the project's default scene, creating it if missing.
@@ -12400,6 +12535,10 @@ int main(int argc, char** argv) {
                         };
                         if (auto cc = find_cam_comp(playback_camera)) {
                             cam.proj = cc->GetProjectionMatrix(aspect);
+                            // A field of view chosen in the game's settings (vertical, degrees).
+                            if (const float fov = schizo::editor::play_settings().fov; fov > 0.0f &&
+                                cc->GetProjection() == schizo::scene::CameraProjection::Perspective)
+                                cam.proj = glm::perspective(glm::radians(fov), aspect, cc->GetNearPlane(), cc->GetFarPlane());
                         } else {
                             cam.proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 1000.0f);
                         }

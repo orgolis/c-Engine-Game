@@ -454,7 +454,7 @@ void ScenePlaybackManager::UpdateMouseLook() {
     // cannot read it here. Yaw is applied to the player body; pitch is applied
     // to the one player camera for up/down look.
     if (HasInputFocus()) {
-        const float MOUSE_SENSITIVITY = 0.0025f;  // radians per pixel
+        const float MOUSE_SENSITIVITY = 0.0025f * look_scale_;  // radians per pixel, times the player's setting
 
         if (std::abs(mouse_delta_x_) > 0.0f) {
             float yaw_angle = -mouse_delta_x_ * MOUSE_SENSITIVITY;
@@ -467,7 +467,7 @@ void ScenePlaybackManager::UpdateMouseLook() {
                 // GLFW cursor Y grows downward, and a positive rotation around
                 // local X tilts the camera up. Negate so pushing the mouse
                 // forward (cursor Y decreasing) looks up — standard FPS feel.
-                float pitch_angle = -mouse_delta_y_ * MOUSE_SENSITIVITY;
+                float pitch_angle = -mouse_delta_y_ * MOUSE_SENSITIVITY * (look_invert_ ? -1.0f : 1.0f);
                 glm::quat current_rot = camera_transform->GetLocalRotation();
                 glm::vec3 euler = glm::eulerAngles(current_rot);
                 euler.x = glm::clamp(euler.x + pitch_angle, -1.57f, 1.57f);
@@ -581,16 +581,18 @@ void ScenePlaybackManager::DriveMovement(float delta_time) {
     ecs::MoveInput in;
     if (scripted_input_set_) {
         in = scripted_input_;
-    } else if (HasInputFocus()) {
-        if (ImGui::IsKeyDown(ImGuiKey_W)) in.move.y += 1.0f;
-        if (ImGui::IsKeyDown(ImGuiKey_S)) in.move.y -= 1.0f;
-        if (ImGui::IsKeyDown(ImGuiKey_D)) in.move.x += 1.0f;
-        if (ImGui::IsKeyDown(ImGuiKey_A)) in.move.x -= 1.0f;
-        in.sprint = ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
-        in.crouch = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_C);
-        in.jump_pressed = ImGui::IsKeyPressed(ImGuiKey_Space, false);
-        in.jump_held = ImGui::IsKeyDown(ImGuiKey_Space);
-        in.dash_pressed = ImGui::IsKeyPressed(ImGuiKey_V, false);
+    } else if (HasInputFocus() && actions_) {
+        // The player's controls by action, so a rebound key moves the player too.
+        const auto& a = *actions_;
+        if (a.down("move_forward")) in.move.y += 1.0f;
+        if (a.down("move_back"))    in.move.y -= 1.0f;
+        if (a.down("move_right"))   in.move.x += 1.0f;
+        if (a.down("move_left"))    in.move.x -= 1.0f;
+        in.sprint = a.down("sprint");
+        in.crouch = a.down("crouch");
+        in.jump_pressed = a.pressed("jump");
+        in.jump_held = a.down("jump");
+        in.dash_pressed = a.pressed("dash");
     }
     in.forward = pt->GetForward();
     in.right = pt->GetRight();

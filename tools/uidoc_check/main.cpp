@@ -78,6 +78,13 @@ int main() {
     check("set text: a label keeps it (no longer follows its placeholders)",
           set && dynamic_cast<Label*>(d->ids["ammo"])->text == "empty" && !set_ui_text(*d, "nope", "x"));
 
+    // A button's text can follow a live value too (a controls menu: {key.jump}).
+    {
+        auto c = parse_ui_document("button id=jump text=\"{key.jump}\"\n");
+        refresh_ui_bindings(*c, [](const std::string& s) { UiValue v; v.found = s == "key.jump"; v.text = "Space"; return v; });
+        check("a button's text follows its {placeholder}", dynamic_cast<Button*>(c->ids["jump"])->text == "Space");
+    }
+
     // Lines it cannot read.
     auto bad = parse_ui_document("ui modal sideways\nslider id=s\nlabel id=l anchor=middle text=hi\nbutton text=\"No id\"\n");
     check("bad lines are reported with their line numbers, the rest still builds",
