@@ -563,7 +563,34 @@ int api_ui_selected(void*, const char* path, const char* id) {
 }
 bool api_give_weapon(void* ctx, uint32_t e, const char* weapon) {
     ecs::World* w; ecs::Entity ent;
-    return weapon && gp_entity(ctx, e, w, ent) && ecs::give_weapon(*w, ent, weapon, &C(ctx)->bridge->events());
+    // Carried when a slot is free, else into the bag.
+    return weapon && gp_entity(ctx, e, w, ent) &&
+           ecs::receive_weapon(*w, ent, weapon, &C(ctx)->bridge->events(), false) != ecs::GunReceived::None;
+}
+bool api_stow_weapon(void* ctx, uint32_t e, int index) {
+    ecs::World* w; ecs::Entity ent;
+    return gp_entity(ctx, e, w, ent) && ecs::stow_weapon(*w, ent, index, &C(ctx)->bridge->events());
+}
+bool api_equip_weapon(void* ctx, uint32_t e, const char* weapon, int slot) {
+    ecs::World* w; ecs::Entity ent;
+    return weapon && gp_entity(ctx, e, w, ent) &&
+           ecs::equip_weapon_from_inventory(*w, ent, weapon, slot, &C(ctx)->bridge->events());
+}
+void api_set_weapon_slots(void* ctx, uint32_t e, int count) {
+    ecs::World* w; ecs::Entity ent;
+    if (gp_entity(ctx, e, w, ent)) ecs::set_weapon_slots(*w, ent, count);
+}
+bool api_weapon_in_slot(void* ctx, uint32_t e, int index, char* id_out, int id_size, char* name_out, int name_size) {
+    if (id_out && id_size > 0) id_out[0] = 0;
+    if (name_out && name_size > 0) name_out[0] = 0;
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return false;
+    const ecs::WeaponLoadout* l = ecs::ensure_loadout(*w, ent);
+    if (!l || !ecs::slot_filled(*l, index)) return false;
+    const std::string& id = l->slots[static_cast<size_t>(index)].weapon_id;
+    copy_out(id, id_out, id_size);
+    copy_out(ecs::carried_name(id), name_out, name_size);
+    return true;
 }
 bool api_select_weapon(void* ctx, uint32_t e, int index) {
     ecs::World* w; ecs::Entity ent;
@@ -605,9 +632,8 @@ bool api_item_in_slot(void* ctx, uint32_t e, int index, char* id_out, int id_siz
     const auto* inv = w->try_get<ecs::Inventory>(ent);
     if (!inv || index < 0 || index >= static_cast<int>(inv->items.size())) return false;
     const auto& it = inv->items[static_cast<size_t>(index)];
-    const auto* d = ecs::find_item(it.def_id);
     copy_out(it.def_id, id_out, id_size);
-    copy_out(d ? d->name : it.def_id, name_out, name_size);
+    copy_out(ecs::carried_name(it.def_id), name_out, name_size);   // an item's or a gun's name
     if (count) *count = it.quantity;
     return true;
 }
@@ -828,6 +854,10 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.current_weapon     = &api_current_weapon;
     api.unequip_item       = &api_unequip_item;
     api.equipped_item      = &api_equipped_item;
+    api.stow_weapon        = &api_stow_weapon;
+    api.equip_weapon       = &api_equip_weapon;
+    api.set_weapon_slots   = &api_set_weapon_slots;
+    api.weapon_in_slot     = &api_weapon_in_slot;
     api.distance           = &api_distance;
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;

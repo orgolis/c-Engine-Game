@@ -228,6 +228,17 @@ struct ScriptApi {
     // What is worn in a gear slot: item id and name.
     bool (*equipped_item)(void* ctx, uint32_t e, const char* slot, char* id_out, int id_size, char* name_out,
                           int name_size) = nullptr;
+
+    // ---- weapon slots (added v0.8.43; new entries go at the end) ----
+    // The gun at a place (from 0) into the bag.
+    bool (*stow_weapon)(void* ctx, uint32_t e, int index) = nullptr;
+    // A gun from the bag into a weapon slot (-1: the first empty one, else the gun in hand's).
+    bool (*equip_weapon)(void* ctx, uint32_t e, const char* weapon, int slot) = nullptr;
+    // How many guns can be carried (0: any number).
+    void (*set_weapon_slots)(void* ctx, uint32_t e, int count) = nullptr;
+    // The gun at a place: its id and name (false: an empty slot).
+    bool (*weapon_in_slot)(void* ctx, uint32_t e, int index, char* id_out, int id_size, char* name_out,
+                           int name_size) = nullptr;
 };
 
 }  // namespace schizo::editor

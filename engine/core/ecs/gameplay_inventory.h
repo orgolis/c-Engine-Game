@@ -94,9 +94,16 @@ struct AbilityRequests { std::vector<std::string> ids; };
 
 inline bool equip_from_inventory(World& w, Entity e, const std::string& def_id, GameplayEventBus* bus);
 
+/// How a gun in the bag (an item with a weapon's id) is used: set by
+/// gameplay_loadout.h -- it goes into a weapon slot.
+using WeaponItemUse = bool (*)(World& w, Entity e, const std::string& weapon_id, GameplayEventBus* bus);
+inline WeaponItemUse& weapon_item_use() { static WeaponItemUse f = nullptr; return f; }
+
 inline bool use_item(World& w, Entity e, Inventory& inv, size_t index, GameplayEventBus* bus = nullptr) {
     if (index >= inv.items.size()) return false;
     const ItemDef* d = find_item(inv.items[index].def_id);
+    if ((!d || (d->kind == ItemKind::Weapon && d->equip_slot.empty())) && weapon_item_use())
+        if (weapon_item_use()(w, e, inv.items[index].def_id, bus)) return true;
     if (d && !d->equip_slot.empty() && d->kind != ItemKind::Consumable)
         return equip_from_inventory(w, e, d->id, bus);   // gear: using it puts it on
     if (!d || d->kind != ItemKind::Consumable) return false;

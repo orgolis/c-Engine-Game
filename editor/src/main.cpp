@@ -6002,9 +6002,11 @@ void ShowViewport(EditorState& editor_state) {
                         dl->AddRect(a, b, active ? IM_COL32(120, 200, 255, 255) : s.ready ? IM_COL32(160, 170, 190, 200)
                                                                                          : IM_COL32(70, 75, 85, 200),
                                     5.0f, 0, active ? 2.5f : 1.0f);
-                        char key[4];
-                        std::snprintf(key, sizeof key, "%d", static_cast<int>(i) + 1);
-                        dl->AddText(ImVec2(a.x + 4, a.y + 2), IM_COL32(200, 210, 230, 220), key);
+                        // The key the slot's action is bound to (as the player has it), small when long.
+                        const int code = schizo::editor::play_settings().map.key("ability_" + std::to_string(i + 1));
+                        const std::string key = code ? schizo::input::key_name(code) : std::string("-");
+                        const float kf = key.size() > 2 ? ImGui::GetFontSize() * 0.75f : ImGui::GetFontSize();
+                        dl->AddText(ImGui::GetFont(), kf, ImVec2(a.x + 4, a.y + 2), IM_COL32(200, 210, 230, 220), key.c_str());
                         // The whole name, its text made smaller when it would not fit the slot.
                         const char* nm = s.name.c_str();
                         float fs = ImGui::GetFontSize();
@@ -10695,7 +10697,7 @@ int main(int argc, char** argv) {
                         v.found = true;
                         if (what == "ammo") v.value = ws->ammo_in_mag;
                         else if (what == "reserve") v.value = ws->reserve;
-                        else { const auto* d = schizo::ecs::find_weapon(ws->weapon_id); v.text = d ? d->name : ws->weapon_id; }
+                        else { const auto* d = schizo::ecs::find_weapon(ws->weapon_id); v.text = d ? d->name : ws->weapon_id; if (v.text.empty()) v.text = "-"; }
                         if (const auto* d = schizo::ecs::find_weapon(ws->weapon_id)) v.max = d->mag_size;
                         return v;
                     }
@@ -10706,6 +10708,23 @@ int main(int argc, char** argv) {
                         if (what == "level") v.value = pr->level;
                         else if (what == "skill_points") v.value = pr->skill_points;
                         else { v.value = pr->xp; v.max = pr->curve.threshold(pr->level + 1); }
+                        return v;
+                    }
+                    if (what == "weapon_slots" || what.rfind("weapon_slot.", 0) == 0) {
+                        // weapon_slots: how many guns can be carried; weapon_slot.<n>: the gun
+                        // in slot n, from 1 ("-" empty; value 1 carried, 2 in hand).
+                        v.found = true;
+                        const auto* l = schizo::ecs::ensure_loadout(w, pe);
+                        if (what == "weapon_slots") {
+                            v.value = l ? (l->max_slots > 0 ? l->max_slots : static_cast<int>(l->slots.size())) : 0;
+                            return v;
+                        }
+                        const int n = std::atoi(what.c_str() + 12) - 1;
+                        v.text = "-";
+                        if (l && schizo::ecs::slot_filled(*l, n)) {
+                            v.text = schizo::ecs::carried_name(l->slots[static_cast<size_t>(n)].weapon_id);
+                            v.value = n == l->current ? 2 : 1;
+                        }
                         return v;
                     }
                     if (what.rfind("item.", 0) == 0) {
@@ -10752,18 +10771,21 @@ int main(int argc, char** argv) {
                     if (pid == schizo::editor::kNoEcsEntity || !ecs_bridge.world().valid(pe)) return out;
                     auto& gw = ecs_bridge.world();
                     if (src == "player.weapons") {
-                        // The guns carried: the rounds in each magazine; the one in hand marked.
+                        // The weapon slots: the gun in each (empty ones empty) with the rounds
+                        // in its magazine; the one in hand marked.
                         const auto* l = schizo::ecs::ensure_loadout(gw, pe);
                         const auto* ws = gw.try_get<schizo::ecs::WeaponState>(pe);
                         if (l)
                             for (size_t i = 0; i < l->slots.size(); ++i) {
-                                const bool held = static_cast<int>(i) == l->current;
-                                const auto* d = schizo::ecs::find_weapon(l->slots[i].weapon_id);
-                                schizo::ui::UiSlot s{d ? d->name : l->slots[i].weapon_id,
-                                                     held && ws ? ws->ammo_in_mag : l->slots[i].ammo_in_mag, held ? "in hand" : ""};
-                                if (d) s.info = std::to_string(static_cast<int>(d->damage)) + " damage" +
-                                                (d->pellets > 1 ? " x" + std::to_string(d->pellets) : std::string()) + ", " +
-                                                std::to_string(d->mag_size) + " rounds, " + std::to_string(static_cast<int>(d->rpm)) + " rpm";
+                                schizo::ui::UiSlot s;
+                                if (!l->slots[i].weapon_id.empty()) {
+                                    const bool held = static_cast<int>(i) == l->current;
+                                    const auto* d = schizo::ecs::find_weapon(l->slots[i].weapon_id);
+                                    s = {d ? d->name : l->slots[i].weapon_id, held && ws ? ws->ammo_in_mag : l->slots[i].ammo_in_mag,
+                                         held ? "in hand" : ""};
+                                    if (d) s.info = schizo::ecs::weapon_summary(*d);
+                                    s.marked = held;
+                                }
                                 out.push_back(std::move(s));
                             }
                         return out;
@@ -10773,6 +10795,12 @@ int main(int argc, char** argv) {
                             const auto* d = schizo::ecs::find_item(it.def_id);
                             schizo::ui::UiSlot s{d ? d->name : it.def_id, it.quantity, d ? schizo::ecs::item_kind_name(d->kind) : ""};
                             if (d) s.info = d->description;
+                            else if (const auto* wd = schizo::ecs::find_weapon(it.def_id)) {
+                                // A gun in the bag (every weapon slot was full): Use puts it in a slot.
+                                s.name = wd->name;
+                                s.detail = "gun";
+                                s.info = schizo::ecs::weapon_summary(*wd);
+                            }
                             out.push_back(std::move(s));
                         }
                     return out;

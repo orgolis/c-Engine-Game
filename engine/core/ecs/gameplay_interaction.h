@@ -60,9 +60,9 @@ inline bool interact(World& w, Entity interactor, Entity target, GameplayEventBu
     if (Pickup* p = w.try_get<Pickup>(target)) {
         if (!w.has<Inventory>(interactor)) w.add<Inventory>(interactor, Inventory{});
         if (const WeaponDef* wd = find_weapon(p->item_id)) {
-            // A gun: carried from now on -- or, already carried, a magazine of its ammunition.
-            if (!give_weapon(w, interactor, wd->id, bus) && !wd->ammo_item.empty())
-                inventory_add(w.get<Inventory>(interactor), ItemInstance{wd->ammo_item, std::max(1, wd->mag_size), 0, {}});
+            // A gun: carried (a slot free), into the bag (every slot full), or
+            // -- one already had -- a magazine of its ammunition.
+            receive_weapon(w, interactor, wd->id, bus);
         } else {
             inventory_add(w.get<Inventory>(interactor), ItemInstance{p->item_id, p->quantity, 0, {}});
         }

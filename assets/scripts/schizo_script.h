@@ -156,6 +156,13 @@ typedef struct SchizoScriptApi {
     bool     (*unequip_item)(void* ctx, unsigned e, const char* slot);
     bool     (*equipped_item)(void* ctx, unsigned e, const char* slot, char* id_out, int id_size, char* name_out,
                               int name_size);
+    /* Weapon slots: a gun into the bag, out of it into a slot (-1: the first
+       empty one), how many can be carried (0: any number), what is in one. */
+    bool     (*stow_weapon)(void* ctx, unsigned e, int index);
+    bool     (*equip_weapon)(void* ctx, unsigned e, const char* weapon, int slot);
+    void     (*set_weapon_slots)(void* ctx, unsigned e, int count);
+    bool     (*weapon_in_slot)(void* ctx, unsigned e, int index, char* id_out, int id_size, char* name_out,
+                               int name_size);
 } SchizoScriptApi;
 
 }  // extern "C"

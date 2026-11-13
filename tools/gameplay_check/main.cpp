@@ -435,6 +435,113 @@ int main() {
               back_l.slots[0].ammo_in_mag == l.slots[0].ammo_in_mag);
     }
 
+    // Weapon slots: a limit on the guns carried; more go into the bag and come
+    // out of it into a slot; stowing; rounds neither made nor lost.
+    {
+        ecs::register_items_text("weapon lo_smg\n  fire auto\n  damage 14\n  magazine 25\n  ammo lo_rounds\nend\n");
+        ecs::World w;
+        const ecs::Entity me = w.create();
+        w.add<ecs::Transform>(me, ecs::Transform{});
+        w.add<ecs::Inventory>(me, ecs::Inventory{});
+        ecs::inventory_add(w.get<ecs::Inventory>(me), ecs::ItemInstance{"lo_rounds", 200, 0, {}});
+        auto L = [&]() -> ecs::WeaponLoadout& { return w.get<ecs::WeaponLoadout>(me); };
+        auto bag = [&](const char* id) { return ecs::inventory_count(w.get<ecs::Inventory>(me), id); };
+        auto hand = [&]() { return w.has<ecs::WeaponState>(me) ? w.get<ecs::WeaponState>(me).weapon_id : std::string(); };
+        auto cell = [&](const char* id) {
+            const auto& its = w.get<ecs::Inventory>(me).items;
+            for (size_t i = 0; i < its.size(); ++i)
+                if (its[i].def_id == id) return i;
+            return its.size();
+        };
+        auto rounds = [&]() {   // lo_rounds in the bag and in every magazine that loads them
+            int n = bag("lo_rounds");
+            const auto& lo = L();
+            for (size_t i = 0; i < lo.slots.size(); ++i) {
+                const ecs::WeaponDef* d = ecs::find_weapon(lo.slots[i].weapon_id);
+                if (!d || d->ammo_item != "lo_rounds") continue;
+                const bool held = static_cast<int>(i) == lo.current && w.has<ecs::WeaponState>(me);
+                n += held ? w.get<ecs::WeaponState>(me).ammo_in_mag : lo.slots[i].ammo_in_mag;
+            }
+            return n;
+        };
+        ecs::set_weapon_slots(w, me, 3);
+        const bool empty_start = L().slots.size() == 3 && L().current == -1 && hand().empty();
+        const bool three = ecs::give_weapon(w, me, "lo_rifle") && hand() == "lo_rifle" && ecs::give_weapon(w, me, "lo_shotgun") &&
+                           ecs::give_weapon(w, me, "lo_pistol") && hand() == "lo_rifle";
+        const bool full = !ecs::give_weapon(w, me, "lo_smg") && ecs::loadout_free_slot(L()) == -1;
+        const int r0 = bag("lo_rounds");
+        const bool bagged = ecs::receive_weapon(w, me, "lo_smg") == ecs::GunReceived::Bagged && bag("lo_smg") == 1 &&
+                            bag("lo_rounds") == r0 + 25 && ecs::loadout_count(L()) == 3;
+        const bool had = ecs::receive_weapon(w, me, "lo_smg") == ecs::GunReceived::Ammo && bag("lo_smg") == 1 &&
+                         bag("lo_rounds") == r0 + 50;
+        check("weapon slots: an empty hand takes the first gun; three carried; a fourth goes into the bag with a magazine",
+              empty_start && three && full && bagged && had);
+
+        const int shells0 = bag("lo_shells");
+        const bool stowed = ecs::stow_weapon(w, me, 1) && !ecs::slot_filled(L(), 1) && L().slots.size() == 3 &&
+                            bag("lo_shotgun") == 1 && bag("lo_shells") == shells0 + 6 && hand() == "lo_rifle";
+        const bool skip = ecs::cycle_weapon(w, me, +1) && hand() == "lo_pistol" && ecs::cycle_weapon(w, me, +1) &&
+                          hand() == "lo_rifle" && !ecs::select_weapon(w, me, 1);
+        check("stowing: the gun goes into the bag with its magazine's rounds; its slot stays, empty, and switching skips it",
+              stowed && skip);
+
+        const int before = rounds();
+        const bool into_free = ecs::use_item(w, me, w.get<ecs::Inventory>(me), cell("lo_smg")) &&
+                               L().slots[1].weapon_id == "lo_smg" && L().slots[1].ammo_in_mag == 25 && hand() == "lo_rifle" &&
+                               bag("lo_smg") == 0 && rounds() == before;
+        const int before2 = rounds();
+        const bool swap = ecs::use_item(w, me, w.get<ecs::Inventory>(me), cell("lo_shotgun")) &&
+                          L().slots[0].weapon_id == "lo_shotgun" && hand() == "lo_shotgun" && bag("lo_rifle") == 1 &&
+                          w.get<ecs::WeaponState>(me).ammo_in_mag == 6 && rounds() == before2;
+        const bool named = ecs::equip_weapon_from_inventory(w, me, "lo_rifle", 2) && L().slots[2].weapon_id == "lo_rifle" &&
+                           bag("lo_pistol") == 1 && hand() == "lo_shotgun" && !ecs::equip_weapon_from_inventory(w, me, "lo_rifle", 0) &&
+                           !ecs::equip_weapon_from_inventory(w, me, "lo_pistol", 5);
+        check("from the bag: into an empty slot; with all full in place of the gun in hand (drawn) or a slot named; "
+              "rounds neither made nor lost",
+              into_free && swap && named);
+
+        const bool hand_stowed = ecs::stow_weapon(w, me, 0) && hand() == "lo_smg" && ecs::stow_weapon(w, me, 1) &&
+                                 hand() == "lo_rifle" && ecs::stow_weapon(w, me, 2) && hand().empty() && L().current == -1 &&
+                                 ecs::loadout_count(L()) == 0 && !ecs::cycle_weapon(w, me, 1);
+        const bool regive = ecs::use_item(w, me, w.get<ecs::Inventory>(me), cell("lo_pistol")) && hand() == "lo_pistol" &&
+                            L().current == 0;
+        check("stowing the gun in hand draws another; with none left the hand is empty, and the next gun goes into it",
+              hand_stowed && regive);
+
+        w.get<ecs::Inventory>(me).max_slots = static_cast<int>(w.get<ecs::Inventory>(me).items.size());
+        const bool refused = !ecs::stow_weapon(w, me, 0) && hand() == "lo_pistol" && ecs::slot_filled(L(), 0);
+        w.get<ecs::Inventory>(me).max_slots = 20;
+        std::vector<uint8_t> buf;
+        ecs::serialize_loadout(&L(), buf);
+        ecs::WeaponLoadout back;
+        ecs::deserialize_loadout(&back, buf.data(), buf.size());
+        std::vector<uint8_t> v1;   // a loadout saved before weapon slots
+        ecs::detail::put_i32(v1, 1);
+        ecs::detail::put_i32(v1, 1);
+        ecs::detail::put_str(v1, "lo_rifle");
+        ecs::detail::put_i32(v1, 7);
+        ecs::detail::put_i32(v1, 0);
+        ecs::detail::put_i32(v1, -1);
+        ecs::WeaponLoadout old;
+        ecs::deserialize_loadout(&old, v1.data(), v1.size());
+        check("a full bag refuses a gun; weapon slots are saved (empty ones too); an older loadout has no limit",
+              refused && back.max_slots == 3 && back.slots.size() == 3 && back.slots[0].weapon_id == "lo_pistol" &&
+              back.slots[1].weapon_id.empty() && old.max_slots == 0 && old.slots.size() == 1 && old.slots[0].ammo_in_mag == 7);
+
+        ecs::World w3;
+        const ecs::Entity e3 = w3.create();
+        w3.add<ecs::Inventory>(e3, ecs::Inventory{});
+        for (const char* g : {"lo_rifle", "lo_shotgun", "lo_pistol", "lo_smg"}) ecs::give_weapon(w3, e3, g);
+        ecs::select_weapon(w3, e3, 3);
+        ecs::set_weapon_slots(w3, e3, 2);
+        const auto& l3 = w3.get<ecs::WeaponLoadout>(e3);
+        check("fewer weapon slots: the guns beyond go into the bag, never the one in hand",
+              ecs::loadout_count(l3) == 2 && l3.slots.size() == 2 && l3.slots[0].weapon_id == "lo_rifle" &&
+              l3.slots[1].weapon_id == "lo_smg" && l3.current == 1 && w3.get<ecs::WeaponState>(e3).weapon_id == "lo_smg" &&
+              ecs::inventory_count(w3.get<ecs::Inventory>(e3), "lo_pistol") == 1 &&
+              ecs::inventory_count(w3.get<ecs::Inventory>(e3), "lo_shotgun") == 1);
+    }
+
     // Gear: worn from the bag, swapped back into it, armour that takes damage
     // off, items with a description and an ability.
     {

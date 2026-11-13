@@ -203,10 +203,28 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
     r.fn("weapons.give", "Gameplay|Weapons", "Give Weapon", [s](EntityId e, std::string weapon) {
         return API && API->give_weapon && API->give_weapon(API->ctx, e.id, weapon.c_str());
     }, {"Entity", "Weapon", "Given"}).tip("The entity carries this gun from now on (a weapon block's id), with a full "
-                                         "magazine; its first gun goes into its hand. False if it already has it.");
+                                         "magazine, in its first empty weapon slot; an empty hand takes it. With every "
+                                         "slot full it goes into the bag. False if it already has it.");
     r.fn("weapons.select", "Gameplay|Weapons", "Select Weapon", [s](EntityId e, int64_t index) {
         return API && API->select_weapon && API->select_weapon(API->ctx, e.id, int(index));
-    }, {"Entity", "Index", "Switched"}).tip("Draws the gun carried at that place (from 0, in the order they came).");
+    }, {"Entity", "Index", "Switched"}).tip("Draws the gun in that weapon slot (from 0).");
+    r.fn("weapons.stow", "Gameplay|Weapons", "Stow Weapon", [s](EntityId e, int64_t index) {
+        return API && API->stow_weapon && API->stow_weapon(API->ctx, e.id, int(index));
+    }, {"Entity", "Index", "Stowed"}).tip("Puts the gun in that weapon slot (from 0) into the bag, the rounds in its "
+                                         "magazine with it; the slot is then empty. False when the bag has no room.");
+    r.fn("weapons.equip", "Gameplay|Weapons", "Equip Weapon", [s](EntityId e, std::string weapon, int64_t slot) {
+        return API && API->equip_weapon && API->equip_weapon(API->ctx, e.id, weapon.c_str(), int(slot));
+    }, {"Entity", "Weapon", "Slot", "Equipped"}).tip("Takes a gun out of the bag into a weapon slot (from 0; -1: the first "
+                                                    "empty one, and with all full the gun in hand's). What was there goes "
+                                                    "into the bag. Use Item on a gun does the same with -1.");
+    r.fn("weapons.set_slots", "Gameplay|Weapons", "Set Weapon Slots", [s](EntityId e, int64_t count) {
+        if (API && API->set_weapon_slots) API->set_weapon_slots(API->ctx, e.id, int(count));
+    }, {"Entity", "Count"}).tip("How many guns the entity can carry (0: any number). More are put into the bag.");
+    r.pure("weapons.in_slot", "Gameplay|Weapons", "Weapon In Slot", [s](EntityId e, int64_t index) {
+        char id[96] = {}, name[96] = {};
+        if (API && API->weapon_in_slot) API->weapon_in_slot(API->ctx, e.id, int(index), id, sizeof id, name, sizeof name);
+        return std::make_tuple(std::string(id), std::string(name));
+    }, {"Entity", "Index", "Weapon", "Name"}).tip("The gun in that weapon slot (from 0); empty when there is none.");
     r.pure("weapons.current", "Gameplay|Weapons", "Current Weapon", [s](EntityId e) {
         char id[96] = {};
         const int i = API && API->current_weapon ? API->current_weapon(API->ctx, e.id, id, sizeof id) : -1;

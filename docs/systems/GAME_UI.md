@@ -22,7 +22,8 @@ button id=quit    anchor=center x=0 y=170 w=400 h=66 text="Quit" size=28
 - **Widgets:** `panel` (a coloured box), `label` (text), `button` (text that can
   be clicked; needs an `id`), `bar` (a fill bar), `slots` (a grid of cells, for
   an inventory: `cols=`, `rows=`, `bind=player.inventory` or
-  `bind=player.weapons` -- the guns carried; needs an `id`).
+  `bind=player.weapons` -- the weapon slots, the gun in hand framed in
+  `frame=r,g,b,a`; needs an `id`).
 - **Placement:** in a 1920×1080 reference screen, scaled to the real one.
   `anchor` is the point of the screen the widget hangs from, and the point of
   the widget that sits there: `top_left`, `top`, `top_right`, `left`, `center`,
@@ -37,15 +38,18 @@ button id=quit    anchor=center x=0 y=170 w=400 h=66 text="Quit" size=28
   `player.xp` (a bar shows it against the next level), `player.skill_points`,
   `player.ability.<n>` (the name on the Ability Bar's slot n, from 1; a bar
   shows its cooldown), `player.item.<id>` (how many the bag holds),
-  `player.equipped.<slot>` (what is worn there), `skill.<id>` ("Learned",
+  `player.equipped.<slot>` (what is worn there), `player.weapon_slot.<n>`
+  (the gun in weapon slot n, from 1), `player.weapon_slots`, `skill.<id>` ("Learned",
   "Learn (1 pt)" or "Locked"),
   `flag.<key>`, `time`. Example: `text="{player.ammo} / {player.reserve}"`.
 - **Enabled by a value:** `enabled=<value>` on a button greys it out (and it
   cannot be clicked) while the value is 0 -- `enabled=skill.<id>.can` (1 when
-  that skill can be learned now), `enabled=bag.count` (an item is picked).
+  that skill can be learned now), `enabled=bag.count` (an item is picked),
+  `enabled=guns.filled` (the picked cell has something in it).
 - **Slots:** a click on a cell picks it. `{<slots id>.name}`, `.count`,
-  `.detail` (the item's kind), `.info` (its `about` line) and `.index` are the
-  picked cell's, e.g. `text="{bag.name}"`.
+  `.detail` (the item's kind), `.info` (its `about` line), `.index` and
+  `.filled` (1 when something is in it) are the picked cell's, e.g.
+  `text="{bag.name}"`.
 
 A line that cannot be read is reported (with its line number) when the
 document is shown; the rest still shows.

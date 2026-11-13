@@ -117,6 +117,38 @@ int main() {
               dynamic_cast<Label*>(inv->ids["about"])->text == "For the rifle" && use->interactive);
     }
 
+    // Weapon slots: empty cells, the gun in hand framed, a button enabled
+    // while the picked cell has a gun.
+    {
+        auto doc = parse_ui_document(
+            "slots id=guns anchor=top_left x=0 y=0 w=300 h=100 cols=3 rows=1 bind=player.weapons frame=0,1,0,1\n"
+            "button id=stow anchor=top_left x=0 y=200 w=200 h=50 text=\"Put in bag\" enabled=guns.filled\n");
+        auto guns = [](const std::string& s) {
+            std::vector<UiSlot> v(3);
+            if (s == "player.weapons") { v[0] = {"Rifle", 30, "in hand"}; v[0].marked = true; v[2] = {"Pistol", 12, ""}; }
+            return v;
+        };
+        auto none = [](const std::string&) { return UiValue{}; };
+        doc->canvas.layout(1920.0f, 1080.0f);
+        refresh_ui_bindings(*doc, none, guns);
+        auto* grid = dynamic_cast<SlotGrid*>(doc->ids["guns"]);
+        auto* stow = dynamic_cast<Button*>(doc->ids["stow"]);
+        UiDrawList dl;
+        grid->paint_self(dl);
+        int frames = 0, texts = 0;
+        for (const auto& c : dl) {
+            if (c.type == UiCmdType::Rect && c.color.g == 1.0f && c.color.r == 0.0f) ++frames;
+            if (c.type == UiCmdType::Text) ++texts;
+        }
+        grid->selected = 1;   // the empty slot
+        refresh_ui_bindings(*doc, none, guns);
+        const bool empty_off = !stow->interactive;
+        grid->selected = 2;
+        refresh_ui_bindings(*doc, none, guns);
+        check("slots: empty cells stay empty, the marked one is framed (frame=), {grid.filled} enables a button",
+              frames == 1 && texts == 4 && empty_off && stow->interactive);
+    }
+
     // Lines it cannot read.
     auto bad = parse_ui_document("ui modal sideways\nslider id=s\nlabel id=l anchor=middle text=hi\nbutton text=\"No id\"\n");
     check("bad lines are reported with their line numbers, the rest still builds",

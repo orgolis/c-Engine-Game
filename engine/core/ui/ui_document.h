@@ -54,6 +54,7 @@ struct UiSlot {
     int         count = 0;
     std::string detail;   // a second line: kind, equipped...
     std::string info;     // a description, for {<grid>.info} (not drawn in the cell)
+    bool        marked = false;   // drawn with a frame (the gun in hand)
 };
 
 /// A grid of slots (an inventory, a stash): cells drawn in rows, the
@@ -67,6 +68,7 @@ public:
     int   selected = -1;
     std::function<void(int)> on_click;
     UiColor cell{0.12f, 0.14f, 0.19f, 0.92f}, cell_hover{0.2f, 0.24f, 0.32f, 0.95f}, cell_selected{0.32f, 0.42f, 0.62f, 0.98f};
+    UiColor frame{1.0f, 0.78f, 0.3f, 0.95f};   // around a marked cell
 
     SlotGrid() { interactive = true; }
     int cell_at(float px, float py) const {
@@ -89,6 +91,10 @@ public:
         for (int i = 0; i < cols * rows; ++i) {
             const UiRect r{rect.x + (i % cols) * cw + g * 0.5f, rect.y + (i / cols) * ch + g * 0.5f, cw - g, ch - g};
             const UiColor c = i == selected ? cell_selected : i == hover_ ? cell_hover : cell;
+            if (i < static_cast<int>(slots.size()) && slots[static_cast<size_t>(i)].marked) {
+                const float b = std::max(1.5f, g * 0.4f);
+                dl.push_back({UiCmdType::Rect, UiRect{r.x - b, r.y - b, r.w + 2 * b, r.h + 2 * b}, frame, {}, 0.0f, UiAlign::Left, 0});
+            }
             dl.push_back({UiCmdType::Rect, r, c, {}, 0.0f, UiAlign::Left, 0});
             if (i >= static_cast<int>(slots.size()) || slots[static_cast<size_t>(i)].name.empty()) continue;
             const UiSlot& s = slots[static_cast<size_t>(i)];
@@ -261,6 +267,7 @@ inline std::unique_ptr<UiDocument> parse_ui_document(const std::string& text, co
             g->rows = std::max(1, static_cast<int>(num("rows", 4)));
             g->font_size = num("size", 18.0f);
             if (kv.count("color")) parse_color(kv["color"], g->cell);
+            if (kv.count("frame")) parse_color(kv["frame"], g->frame);
             if (!kv.count("id")) err("slots need an id (it is what On UI Button names, with the cell as Index)");
             else doc->grids.push_back({g, kv["id"], kv.count("bind") ? kv["bind"] : std::string()});
             w = g;
@@ -295,7 +302,7 @@ inline void refresh_ui_bindings(UiDocument& doc, const UiLookup& game_lookup, co
         if (slot_lookup && !g.source.empty()) g.grid->slots = slot_lookup(g.source);
         if (g.grid->selected >= g.grid->cols * g.grid->rows) g.grid->selected = -1;
     }
-    // {<slots id>.name / .count / .detail / .info / .index}: the selected cell.
+    // {<slots id>.name / .count / .detail / .info / .index / .filled}: the selected cell.
     const UiLookup lookup = [&](const std::string& src) {
         for (const auto& g : doc.grids) {
             if (src.rfind(g.id + ".", 0) != 0) continue;
@@ -309,6 +316,7 @@ inline void refresh_ui_bindings(UiDocument& doc, const UiLookup& game_lookup, co
             else if (what == "name") v.text = s && !s->name.empty() ? s->name : std::string(" ");
             else if (what == "detail") v.text = s && !s->detail.empty() ? s->detail : std::string(" ");
             else if (what == "info") v.text = s && !s->info.empty() ? s->info : std::string(" ");
+            else if (what == "filled") v.value = s && !s->name.empty() ? 1 : 0;
             else v.found = false;
             return v;
         }

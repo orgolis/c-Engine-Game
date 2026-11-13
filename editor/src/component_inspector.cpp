@@ -23,6 +23,7 @@
 #include "ecs/gameplay_npc.h"           // G8 drawers: Faction / Aggro / Spawner
 #include "ecs/gameplay_savegame.h"      // G9 drawers: World Flags / Save Id
 #include "ecs/gameplay_weapons.h"       // G12 drawer: Weapon
+#include "ecs/gameplay_loadout.h"       // drawer: Weapon Loadout (weapon slots)
 #include "ecs/gameplay_vehicles.h"      // G13 drawers: Vehicle / Race Progress
 #include "ecs/gameplay_building.h"      // G14 drawers: Extractor / Machine / Generator / Conveyor
 #include "ecs/gameplay_survival.h"      // G15 drawers: Needs / Sanity / Flashlight / Fear Source
@@ -497,6 +498,34 @@ bool draw_weapon(void* comp) {
     return changed;
 }
 
+// Weapon Loadout: how many guns can be carried, and the gun in each slot.
+bool draw_weapon_loadout(void* comp) {
+    auto& l = *static_cast<ecs::WeaponLoadout*>(comp);
+    bool changed = false;
+    if (ImGui::DragInt("weapon slots", &l.max_slots, 0.05f, 0, 9)) {
+        l.max_slots = std::max(0, l.max_slots);
+        if (l.max_slots > 0 && static_cast<int>(l.slots.size()) < l.max_slots) l.slots.resize(static_cast<size_t>(l.max_slots));
+        changed = true;
+    }
+    ImGui::TextDisabled(l.max_slots > 0 ? "guns beyond these go into the bag" : "0: any number of guns");
+    for (size_t i = 0; i < l.slots.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        auto& s = l.slots[i];
+        const ecs::WeaponDef* cur = ecs::find_weapon(s.weapon_id);
+        char label[32];
+        std::snprintf(label, sizeof label, "slot %d%s", static_cast<int>(i) + 1, static_cast<int>(i) == l.current ? " (in hand)" : "");
+        if (ImGui::BeginCombo(label, cur ? cur->name.c_str() : (s.weapon_id.empty() ? "(empty)" : s.weapon_id.c_str()))) {
+            if (ImGui::Selectable("(empty)", s.weapon_id.empty())) { s = ecs::LoadoutSlot{}; changed = true; }
+            for (const auto& d : ecs::weapon_registry())
+                if (ImGui::Selectable(d.name.c_str(), d.id == s.weapon_id)) { s.weapon_id = d.id; s.ammo_in_mag = d.mag_size; changed = true; }
+            ImGui::EndCombo();
+        }
+        ImGui::PopID();
+    }
+    if (l.max_slots <= 0 && ImGui::SmallButton("+ slot")) { l.slots.push_back({}); changed = true; }
+    return changed;
+}
+
 // Movement (C4): how the player moves in Play, grouped by move. Each move
 // that a game may not want can be turned off.
 bool draw_movement(void* comp) {
@@ -924,6 +953,8 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (ImGui::DragInt("save key", &v, 1.0f, 0, 0)) { s.value = static_cast<uint64_t>(v < 0 ? 0 : v); changed = true; }
                     } else if (std::strcmp(ct.name, "Weapon") == 0) {
                         if (draw_weapon(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Weapon Loadout") == 0) {
+                        if (draw_weapon_loadout(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Movement") == 0) {
                         if (draw_movement(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Ability Bar") == 0) {
