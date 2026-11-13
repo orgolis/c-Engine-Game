@@ -19,6 +19,7 @@
 #include "material_cache.h"
 #include "primitive_meshes.h"
 #include "scene_playback_manager.h"
+#include "physics/jolt_physics.h"    // rounds stop on level geometry
 
 #include "vulkan/vulkan_render_graph.h"
 

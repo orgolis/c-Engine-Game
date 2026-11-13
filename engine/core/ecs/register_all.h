@@ -32,6 +32,7 @@
 #include "gameplay_npc.h"
 #include "gameplay_savegame.h"
 #include "gameplay_weapons.h"
+#include "gameplay_movement.h"
 #include "gameplay_vehicles.h"
 #include "gameplay_building.h"
 #include "gameplay_survival.h"
@@ -58,6 +59,7 @@ inline void register_all_components() {
     register_npc_components();           // G8  Faction / Aggro / Spawner
     register_persistence_components();   // G9  Save Id / World Flags
     register_weapon_components();        // G12 Weapon
+    register_movement_components();      // Movement (C4)
     register_vehicle_components();       // G13 Vehicle / Race Progress
     register_building_components();      // G14 Building / Extractor / Machine / Generator / Conveyor
     register_survival_components();      // G15 Needs / Sanity / Flashlight / Light Source / Fear Source

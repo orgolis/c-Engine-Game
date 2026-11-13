@@ -121,6 +121,8 @@
 #include "biome_water.h"          // the water a biome map treats as wet
 #include "world_preset.h"         // a whole landscape from one choice
 #include "player_weapon.h"        // the player's gun in Play: input, recoil, aim, tracers, impacts
+#include "ecs/gameplay_movement.h" // the player's moves in Play (C4)
+#include "ecs/gameplay_tags.h"     // surface.climbable
 #include "logic_script_panel.h"  // graph editor for .lgraph logic scripts
 #include "logic_debug.h"          // a breakpoint in a logic script stops the game
 #include "vscript/value.h"       // literals of a logic graph's Inspector fields
@@ -5881,6 +5883,19 @@ void ShowViewport(EditorState& editor_state) {
                 const bool waiting_for_recapture =
                     viewport_playing && editor_state.play_cursor_released_by_escape &&
                     !editor_state.scene_playback_manager->IsCursorCaptured();
+                // Stamina, when the player's Movement limits it and it is not full.
+                if (viewport_playing) {
+                    const auto& ms = editor_state.scene_playback_manager->GetPlayerMovementSettings();
+                    const auto& mst = editor_state.scene_playback_manager->GetPlayerMovementState();
+                    if (ms.stamina > 0.0f && mst.stamina >= 0.0f && mst.stamina < ms.stamina - 0.01f) {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        const float w = 180.0f, h = 6.0f, frac = std::clamp(mst.stamina / ms.stamina, 0.0f, 1.0f);
+                        const ImVec2 p0((image_min.x + image_max.x) * 0.5f - w * 0.5f, image_max.y - 40.0f);
+                        dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), IM_COL32(10, 14, 20, 170), 3.0f);
+                        dl->AddRectFilled(p0, ImVec2(p0.x + w * frac, p0.y + h),
+                                          frac > 0.25f ? IM_COL32(120, 220, 140, 230) : IM_COL32(240, 150, 60, 230), 3.0f);
+                    }
+                }
                 if (waiting_for_recapture && ImGui::IsItemHovered() &&
                     ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                     editor_state.scene_playback_manager->SetCursorCaptured(true);
@@ -10245,6 +10260,116 @@ int main(int argc, char** argv) {
                 editor_state.scene_playback_manager->SetNetClientMode(false);
                 editor_state.net_autoplay_started = false;
                 editor_state.net_autoplay_failed  = false;
+            }
+
+            // The player's moves: the settings are its Movement component
+            // (defaults without one); surfaces tagged surface.climbable can be
+            // climbed.
+            if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
+                auto& pm = *editor_state.scene_playback_manager;
+                schizo::ecs::MovementSettings ms;
+                if (auto* pl = pm.GetPlayerEntity()) {
+                    const uint32_t pid = ecs_bridge.ecs_entity_id(pl->GetTransform());
+                    const auto pe = static_cast<schizo::ecs::Entity>(pid);
+                    if (pid != schizo::editor::kNoEcsEntity && ecs_bridge.world().valid(pe))
+                        if (auto* mv = ecs_bridge.world().try_get<schizo::ecs::Movement>(pe)) ms = mv->settings;
+                }
+                static bool climb_query_set = false;
+                if (!climb_query_set) {
+                    climb_query_set = true;
+                    pm.SetClimbableQuery([&ecs_bridge, &editor_state](uint32_t eid) {
+                        auto sc = editor_state.editor_scene->GetScene();
+                        auto ent = sc ? sc->GetEntityById(eid) : nullptr;
+                        if (!ent) return false;
+                        const uint32_t id = ecs_bridge.ecs_entity_id(ent->GetTransform());
+                        const auto e = static_cast<schizo::ecs::Entity>(id);
+                        if (id == schizo::editor::kNoEcsEntity || !ecs_bridge.world().valid(e)) return false;
+                        const auto* tags = ecs_bridge.world().try_get<schizo::ecs::GameplayTags>(e);
+                        return tags && tags->has("surface.climbable");
+                    });
+                }
+                // GWS_TEST_MOVES=1 (with GWS_TEST_PLAY): a ledge out of jump reach and a
+                // scripted run at it -- sprint, slide, dash, jumps, then a
+                // mantle onto it -- each change of move logged.
+                static const bool test_moves = std::getenv("GWS_TEST_MOVES") != nullptr;
+                if (test_moves) {
+                    namespace ecs = schizo::ecs;
+                    static bool built = false;
+                    static float ground_y = 0.0f, stand_y = 0.0f, slide_low = 1e9f, top_y = -1e9f;
+                    static ecs::MoveMode last = ecs::MoveMode::Walk;
+                    static uint32_t seen = 0;
+                    auto* pl = pm.GetPlayerEntity();
+                    auto* pw = pm.GetPhysicsWorld();
+                    const float tp = pm.GetPlaybackTime();
+                    if (pl && pw) {
+                        const glm::vec3 c = pl->GetTransform()->GetWorldPosition();
+                        const glm::vec3 f = glm::normalize(glm::vec3(pl->GetTransform()->GetForward().x, 0.0f,
+                                                                     pl->GetTransform()->GetForward().z));
+                        static bool measured = false;
+                        if (!measured && tp > 0.45f) {
+                            measured = true;
+                            const auto g = pw->raycast(c, glm::vec3(0.0f, -1.0f, 0.0f), 50.0f);
+                            ground_y = g.hit ? g.position.y : c.y - 0.9f;
+                            stand_y = c.y;
+                        }
+                        if (!built && tp >= 2.6f) {
+                            // Turn round (the way back is known to be open) and
+                            // put a 1.4 m ledge 3 m ahead.
+                            built = true;
+                            pl->GetTransform()->Rotate(glm::vec3(0.0f, 1.0f, 0.0f), glm::pi<float>());
+                            const glm::vec3 fb = -f;
+                            schizo::physics::BodyDesc d;
+                            d.shape = schizo::physics::ShapeType::Box;
+                            d.half_extents = glm::vec3(4.0f, 1.15f, 2.0f);
+                            d.position = glm::vec3(c.x, ground_y + 0.65f, c.z) + fb * 5.0f;
+                            d.rotation = glm::quatLookAt(fb, glm::vec3(0.0f, 1.0f, 0.0f));
+                            d.motion = schizo::physics::MotionType::Static;
+                            pw->add_body(d);
+                            spdlog::info("[test] moves: turned round; a ledge 1.80 m high 3 m ahead (ground y {:.2f})", ground_y);
+                        }
+                        ecs::MoveInput in;
+                        if (tp > 0.5f && tp < 1.3f)       { in.move.y = 1.0f; in.sprint = true; }
+                        else if (tp >= 1.3f && tp < 1.9f) { in.move.y = 1.0f; in.sprint = true; in.crouch = true; }
+                        else if (tp >= 1.9f && tp < 2.1f) { in.move.y = 1.0f; }
+                        else if (tp >= 2.1f && tp < 2.6f) { in.move.y = 1.0f; in.dash_pressed = tp < 2.13f; }
+                        else if (tp >= 2.6f && tp < 9.0f && !(seen & (1u << int(ecs::MoveMode::Mantle)))) {
+                            in.move.y = 1.0f;
+                            static float next_jump = 2.6f;
+                            if (tp >= next_jump) { in.jump_pressed = true; next_jump = tp + 0.35f; }
+                            in.jump_held = in.jump_pressed;
+                        }
+                        pm.SetScriptedMoveInput(&in);
+                        static float next_dbg = 2.6f;
+                        if (std::getenv("GWS_TEST_MOVES_DEBUG") && tp >= next_dbg) {
+                            next_dbg = tp + 0.25f;
+                            const glm::vec3 feet(c.x, ground_y, c.z);
+                            const auto w = pw->raycast(feet + glm::vec3(0.0f, 0.35f, 0.0f), f, 1.0f);
+                            spdlog::info("[test] moves dbg t={:.2f} c=({:.2f},{:.2f},{:.2f}) f=({:.2f},{:.2f}) wall hit={} d={:.2f} n=({:.2f},{:.2f},{:.2f})",
+                                         tp, c.x, c.y, c.z, f.x, f.z, w.hit, w.distance, w.normal.x, w.normal.y, w.normal.z);
+                        }
+                        const auto& st = pm.GetPlayerMovementState();
+                        seen |= 1u << int(st.mode);
+                        if (st.mode == ecs::MoveMode::Slide) slide_low = std::min(slide_low, c.y);
+                        if (st.mode != last) {
+                            spdlog::info("[test] moves: {} -> {} at {:.2f}s, centre y {:.2f}, speed {:.1f}",
+                                         ecs::move_mode_name(last), ecs::move_mode_name(st.mode), tp, c.y,
+                                         glm::length(glm::vec3(st.velocity.x, 0.0f, st.velocity.z)));
+                            last = st.mode;
+                        }
+                        if (seen & (1u << int(ecs::MoveMode::Mantle))) top_y = std::max(top_y, c.y);
+                        static bool reported = false;
+                        if (!reported && tp > 9.5f) {
+                            reported = true;
+                            std::string modes;
+                            for (int k = 0; k <= int(ecs::MoveMode::Swim); ++k)
+                                if (seen & (1u << k)) { modes += ' '; modes += ecs::move_mode_name(ecs::MoveMode(k)); }
+                            spdlog::info("[test] moves: seen{}; slide lowered the centre {:.2f} m; after the mantle the "
+                                         "centre is {:.2f} m above where it stood", modes,
+                                         slide_low < 1e8f ? stand_y - slide_low : 0.0f, top_y > -1e8f ? top_y - stand_y : 0.0f);
+                        }
+                    }
+                }
+                pm.SetPlayerMovementSettings(ms);
             }
 
             if (editor_state.scene_playback_manager &&

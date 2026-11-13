@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include "ecs/gameplay_movement.h"   // the player's moves (C4)
+#include <functional>
 #include <cstdint>
 #include <unordered_map>
 #include <string>
@@ -182,6 +184,21 @@ public:
      */
     void OnMouseDelta(float dx, float dy) { mouse_delta_x_ += dx; mouse_delta_y_ += dy; }
 
+    // ---- The player's moves (ecs/gameplay_movement.h) ----
+    /// The settings the player moves with: the host hands in the player's
+    /// Movement component each frame (defaults when it has none).
+    void SetPlayerMovementSettings(const schizo::ecs::MovementSettings& s) { player_movement_.settings = s; }
+    const schizo::ecs::MovementState& GetPlayerMovementState() const { return player_movement_.state; }
+    const schizo::ecs::MovementSettings& GetPlayerMovementSettings() const { return player_movement_.settings; }
+    /// Whether a scene entity's surface can be climbed (the host answers from
+    /// its gameplay tags: surface.climbable).
+    void SetClimbableQuery(std::function<bool(uint32_t entity_id)> q) { climbable_query_ = std::move(q); }
+    /// Test hook: input for the player instead of the keyboard (GWS_TEST_MOVES).
+    void SetScriptedMoveInput(const schizo::ecs::MoveInput* in) {
+        scripted_input_set_ = in != nullptr;
+        if (in) scripted_input_ = *in;
+    }
+
 private:
     // Mesh-collider triangle provenance from the last BuildPhysicsWorld().
     size_t last_mesh_from_asset_ = 0;
@@ -231,6 +248,14 @@ private:
     std::vector<uint32_t>                  remote_player_bodies_; // ghost kinematic capsules (BodyIds)
     std::vector<WaterVolume>               water_volumes_;        // physical water (play-time)
     uint32_t                               player_char_id_ = 0xFFFFFFFFu;
+    float                                  player_radius_ = 0.3f;
+    float                                  player_standing_cyl_ = 1.2f;   // cylinder height standing
+    glm::vec3                              player_collider_offset_{0.0f};
+    schizo::ecs::Movement                  player_movement_;
+    std::function<bool(uint32_t)>          climbable_query_;
+    std::unordered_map<uint32_t, bool>     climbable_bodies_;   // body -> climbable (memo, per play)
+    bool                                   scripted_input_set_ = false;
+    schizo::ecs::MoveInput                 scripted_input_;
 
     // Cached world position of the playback camera (profiling/rebase use).
     glm::vec3 camera_position_ = glm::vec3(0.0f);
@@ -242,6 +267,7 @@ private:
     void UpdateCamera();
     void UpdateMouseLook();
     void DriveCharacterController(float delta_time);
+    void DriveMovement(float delta_time);
     void CaptureSceneSnapshot();
     void RestoreSceneSnapshot();
     void BuildPhysicsWorld();

@@ -139,6 +139,19 @@ aims, R reloads, a crosshair whose gap is the spread, a hit marker, an ammo
 readout, muzzle flash, tracers and impact marks. Still open in C3: a weapon
 editor panel, decals that are real projected decals, weapon models in the hand.
 
+**Progress (v0.8.32):** C4 movement done apart from cameras. The old
+character state machine had wall run, climb and slide as empty stubs, no
+crouch, and a dash that the next frame overwrote. Replaced in Play by
+`ecs/gameplay_movement.h`: walk, sprint, crouch (the capsule shrinks, and
+stays down under a low ceiling), jump with coyote time, a jump buffer and air
+jumps, slide (faster downhill), dash, mantle, glide, wall run, climbing
+surfaces tagged `surface.climbable`, swimming and stamina. Settings are the
+Movement component (Inspector), every optional move can be turned off; keys
+in docs/systems/MOVEMENT.md. Checked by movement_check (59 checks against box
+geometry) and a scripted Play run in Jolt (GWS_TEST_MOVES: sprint, slide,
+dash, jumps, mantle onto a 1.8 m ledge). Still open in C4: third-person and
+aim cameras, and animation driven by the move.
+
 ## Phase D: the test game
 
 A small game built only with the editor and logic graphs: a terrain with

@@ -26,6 +26,7 @@
 #include <Jolt/Geometry/IndexedTriangle.h>
 #include <Jolt/Math/Float3.h>
 
+#include <cmath>
 #include <cstdio>
 #include <thread>
 #include <vector>
@@ -79,6 +80,7 @@ struct PhysicsWorld::Impl {
     PhysicsSystem                        system;
     std::vector<RefConst<Shape>>         shapes;   // keep shapes alive
     std::vector<Ref<CharacterVirtual>>   characters;
+    std::vector<glm::vec2>               char_dims;  // per character: radius, cylinder height
     glm::vec3                            gravity{0.0f, -9.81f, 0.0f};
     size_t                               n_bodies = 0;
 };
@@ -301,6 +303,12 @@ RayHit PhysicsWorld::raycast(const glm::vec3& origin, const glm::vec3& direction
         out.distance = result.mFraction * max_distance;
         out.position = origin + dir * out.distance;
         out.body     = static_cast<BodyId>(result.mBodyID.GetIndexAndSequenceNumber());
+        BodyLockRead lock(impl_->system.GetBodyLockInterface(), result.mBodyID);
+        if (lock.Succeeded()) {
+            const Vec3 n = lock.GetBody().GetWorldSpaceSurfaceNormal(
+                result.mSubShapeID2, ray.GetPointOnRay(result.mFraction));
+            out.normal = glm::vec3(n.GetX(), n.GetY(), n.GetZ());
+        }
     }
     return out;
 }
@@ -320,6 +328,7 @@ CharacterId PhysicsWorld::add_character(const CharacterDesc& d) {
     Ref<CharacterVirtual> ch = new CharacterVirtual(
         &cs, RVec3(d.position.x, d.position.y, d.position.z), Quat::sIdentity(), &m.system);
     m.characters.push_back(ch);
+    m.char_dims.push_back(glm::vec2(d.radius, d.height));
     return static_cast<CharacterId>(m.characters.size() - 1);
 }
 
@@ -350,6 +359,42 @@ glm::vec3 PhysicsWorld::character_position(CharacterId id) const {
 bool PhysicsWorld::character_on_ground(CharacterId id) const {
     if (id >= impl_->characters.size()) return false;
     return impl_->characters[id]->GetGroundState() == CharacterBase::EGroundState::OnGround;
+}
+
+glm::vec3 PhysicsWorld::character_ground_normal(CharacterId id) const {
+    if (id >= impl_->characters.size()) return glm::vec3(0.0f, 1.0f, 0.0f);
+    const CharacterVirtual* ch = impl_->characters[id];
+    if (ch->GetGroundState() == CharacterBase::EGroundState::InAir) return glm::vec3(0.0f, 1.0f, 0.0f);
+    const Vec3 n = ch->GetGroundNormal();
+    return glm::vec3(n.GetX(), n.GetY(), n.GetZ());
+}
+
+float PhysicsWorld::character_height(CharacterId id) const {
+    return id < impl_->char_dims.size() ? impl_->char_dims[id].y : 0.0f;
+}
+
+bool PhysicsWorld::set_character_height(CharacterId id, float cylinder_height) {
+    Impl& m = *impl_;
+    if (id >= m.characters.size() || cylinder_height < 0.01f) return false;
+    const float old_h = m.char_dims[id].y;
+    if (std::abs(cylinder_height - old_h) < 1e-4f) return true;
+    ShapeSettings::ShapeResult res = CapsuleShapeSettings(0.5f * cylinder_height, m.char_dims[id].x).Create();
+    if (res.HasError()) return false;
+    CharacterVirtual* ch = m.characters[id];
+    // The capsule is centred on the character's position: move the centre by
+    // half the change so the feet stay on the ground.
+    const RVec3 old_pos = ch->GetPosition();
+    ch->SetPosition(old_pos + Vec3(0.0f, 0.5f * (cylinder_height - old_h), 0.0f));
+    const float slop = 1.5f * m.system.GetPhysicsSettings().mPenetrationSlop;
+    if (!ch->SetShape(res.Get(), slop,
+                      m.system.GetDefaultBroadPhaseLayerFilter(LAYER_MOVING),
+                      m.system.GetDefaultLayerFilter(LAYER_MOVING),
+                      BodyFilter{}, ShapeFilter{}, *m.temp_alloc)) {
+        ch->SetPosition(old_pos);
+        return false;
+    }
+    m.char_dims[id].y = cylinder_height;
+    return true;
 }
 
 size_t PhysicsWorld::body_count() const { return impl_->n_bodies; }

@@ -2,6 +2,7 @@
 
 #include "ecs_bridge.h"
 #include "ecs/world.h"
+#include "ecs/gameplay_movement.h"
 #include "ecs/authorable_components.h"
 #include "ecs/gameplay_attributes.h"   // custom drawer for the data-driven AttributeSet
 #include "ecs/gameplay_tags.h"         // custom drawer for data-driven GameplayTags
@@ -494,6 +495,91 @@ bool draw_weapon(void* comp) {
     return changed;
 }
 
+// Movement (C4): how the player moves in Play, grouped by move. Each move
+// that a game may not want can be turned off.
+bool draw_movement(void* comp) {
+    auto& s = static_cast<ecs::Movement*>(comp)->settings;
+    bool changed = false;
+    auto f = [&](const char* label, float* v, float speed, float lo, float hi, const char* fmt = "%.2f") {
+        if (ImGui::DragFloat(label, v, speed, lo, hi, fmt)) changed = true;
+    };
+    auto b = [&](const char* label, bool* v) { if (ImGui::Checkbox(label, v)) changed = true; };
+    if (ImGui::TreeNodeEx("Ground##mv", ImGuiTreeNodeFlags_DefaultOpen)) {
+        f("walk speed", &s.walk_speed, 0.05f, 0.0f, 50.0f);
+        f("sprint speed", &s.sprint_speed, 0.05f, 0.0f, 50.0f);
+        f("crouch speed", &s.crouch_speed, 0.05f, 0.0f, 50.0f);
+        f("acceleration", &s.accel, 0.5f, 0.0f, 500.0f, "%.0f");
+        f("deceleration", &s.decel, 0.5f, 0.0f, 500.0f, "%.0f");
+        f("air steering", &s.air_accel, 0.25f, 0.0f, 200.0f, "%.1f");
+        f("crouch height", &s.crouch_height, 0.01f, 0.3f, 1.0f);
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNodeEx("Jump##mv", ImGuiTreeNodeFlags_DefaultOpen)) {
+        f("jump height", &s.jump_height, 0.01f, 0.0f, 20.0f);
+        f("gravity", &s.gravity, 0.1f, 0.1f, 100.0f, "%.1f");
+        if (ImGui::DragInt("air jumps", &s.air_jumps, 0.05f, 0, 5)) changed = true;
+        ImGui::SetItemTooltip("1 = double jump");
+        f("coyote time", &s.coyote_time, 0.005f, 0.0f, 1.0f, "%.3f s");
+        f("jump buffer", &s.jump_buffer, 0.005f, 0.0f, 1.0f, "%.3f s");
+        f("max fall speed", &s.max_fall_speed, 0.5f, 1.0f, 200.0f, "%.0f");
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Slide##mv")) {
+        b("slide (crouch while running)", &s.slide);
+        f("min speed", &s.slide_min_speed, 0.05f, 0.0f, 50.0f);
+        f("boost", &s.slide_boost, 0.05f, 0.0f, 50.0f);
+        f("friction", &s.slide_friction, 0.05f, 0.0f, 100.0f);
+        f("max time (flat)", &s.slide_max_time, 0.01f, 0.0f, 10.0f, "%.2f s");
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Dash##mv")) {
+        b("dash (V)", &s.dash);
+        b("in the air (once per jump)", &s.dash_in_air);
+        f("speed##dash", &s.dash_speed, 0.1f, 0.0f, 100.0f, "%.1f");
+        f("time##dash", &s.dash_time, 0.005f, 0.0f, 2.0f, "%.3f s");
+        f("cooldown##dash", &s.dash_cooldown, 0.01f, 0.0f, 30.0f, "%.2f s");
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Mantle##mv")) {
+        b("mantle onto ledges", &s.mantle);
+        f("lowest ledge", &s.mantle_min, 0.01f, 0.1f, 5.0f, "%.2f m");
+        f("highest ledge", &s.mantle_max, 0.01f, 0.1f, 5.0f, "%.2f m");
+        f("reach", &s.mantle_reach, 0.01f, 0.1f, 3.0f, "%.2f m");
+        f("time##mantle", &s.mantle_time, 0.01f, 0.05f, 3.0f, "%.2f s");
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Glide##mv")) {
+        b("glide (hold jump while falling)", &s.glide);
+        f("fall speed##glide", &s.glide_fall_speed, 0.05f, 0.0f, 50.0f);
+        f("speed##glide", &s.glide_speed, 0.05f, 0.0f, 100.0f);
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Wall run##mv")) {
+        b("wall run (sprint-jump along a wall)", &s.wall_run);
+        f("min speed##wr", &s.wall_run_min_speed, 0.05f, 0.0f, 50.0f);
+        f("time##wr", &s.wall_run_time, 0.01f, 0.0f, 10.0f, "%.2f s");
+        f("gravity share", &s.wall_run_gravity, 0.005f, 0.0f, 1.0f);
+        f("jump-off speed", &s.wall_jump_speed, 0.05f, 0.0f, 50.0f);
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Climb and swim##mv")) {
+        b("climb surfaces tagged surface.climbable", &s.climb);
+        f("climb speed", &s.climb_speed, 0.05f, 0.0f, 20.0f);
+        f("swim speed", &s.swim_speed, 0.05f, 0.0f, 20.0f);
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Stamina##mv")) {
+        f("stamina (0 = unlimited)", &s.stamina, 1.0f, 0.0f, 10000.0f, "%.0f");
+        f("sprint cost /s", &s.sprint_cost, 0.25f, 0.0f, 1000.0f, "%.1f");
+        f("dash cost", &s.dash_cost, 0.25f, 0.0f, 1000.0f, "%.1f");
+        f("regen /s", &s.stamina_regen, 0.25f, 0.0f, 1000.0f, "%.1f");
+        f("regen delay", &s.stamina_delay, 0.01f, 0.0f, 10.0f, "%.2f s");
+        ImGui::TreePop();
+    }
+    if (s.mantle_max < s.mantle_min) { s.mantle_max = s.mantle_min; changed = true; }
+    return changed;
+}
+
 // G13 · Vehicle: pick a vehicle def + live speed/heading/boost readout.
 bool draw_vehicle(void* comp) {
     auto& v = *static_cast<ecs::Vehicle*>(comp);
@@ -760,6 +846,8 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (ImGui::DragInt("save key", &v, 1.0f, 0, 0)) { s.value = static_cast<uint64_t>(v < 0 ? 0 : v); changed = true; }
                     } else if (std::strcmp(ct.name, "Weapon") == 0) {
                         if (draw_weapon(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Movement") == 0) {
+                        if (draw_movement(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Vehicle") == 0) {
                         if (draw_vehicle(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Race Progress") == 0) {

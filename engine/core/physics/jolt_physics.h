@@ -50,6 +50,7 @@ struct RayHit {
     bool      hit      = false;
     float     distance = 0.0f;          // along the ray, in world units
     glm::vec3 position{0.0f};           // world-space hit point
+    glm::vec3 normal{0.0f, 1.0f, 0.0f}; // surface normal at the hit point
     BodyId    body     = kInvalidBody;
 };
 
@@ -119,6 +120,13 @@ public:
     void        set_character_position(CharacterId id, const glm::vec3& pos);
     glm::vec3   character_position(CharacterId id) const;
     bool        character_on_ground(CharacterId id) const;
+    // The normal of the ground the character stands on (up when airborne).
+    glm::vec3   character_ground_normal(CharacterId id) const;
+    // Change the capsule's cylinder height, keeping the feet where they are
+    // (crouching). Growing fails -- and nothing changes -- when the taller
+    // capsule would not fit (a low ceiling): returns whether it changed.
+    bool        set_character_height(CharacterId id, float cylinder_height);
+    float       character_height(CharacterId id) const;   // cylinder height now
 
     /// Move every body and character by `d`, for a floating-origin rebase.
     ///

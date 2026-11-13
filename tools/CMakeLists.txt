@@ -661,6 +661,16 @@ if(MINGW)
     target_link_options(gameplay_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# movement_check: every move of ecs/gameplay_movement.h (walk, sprint, crouch,
+# jump with coyote time and buffer, air jumps, slide, dash, mantle, glide, wall
+# run, climb, swim, stamina) against boxes and a ground plane.
+add_executable(movement_check movement_check/main.cpp)
+target_link_libraries(movement_check PRIVATE gws_ecs gws_reflection)
+target_compile_features(movement_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(movement_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # physrebase_check: a floating-origin rebase must be a change of coordinates and
 # nothing else. Without it the Jolt world stays at the old origin and writes
 # pre-rebase positions back over the entities -- the dynamic half of the level

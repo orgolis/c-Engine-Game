@@ -466,6 +466,14 @@ void ScenePlaybackManager::DriveCharacterController(float delta_time) {
     player_controller_->SetPosition(player_pos);
     player_controller_->SetGrounded(is_on_ground_);
 
+    // With a physics character the moves come from ecs/gameplay_movement.h:
+    // crouch, slide, dash, mantle, glide, wall run, climb and swim as well as
+    // walking and jumping. The older controller below only runs without one.
+    if (player_char_id_ != 0xFFFFFFFFu && physics_world_) {
+        DriveMovement(delta_time);
+        return;
+    }
+
     // 2. Build the input action from the keyboard and hand it to the
     //    controller. Cursor capture is also the play-input focus: after Escape
     //    releases it, the simulation keeps ticking but WASD/Shift/Space cannot
@@ -520,6 +528,73 @@ void ScenePlaybackManager::DriveCharacterController(float delta_time) {
     //    to the entity transform.
     if (player_char_id_ != 0xFFFFFFFFu && physics_world_) {
         physics_world_->update_character(player_char_id_, world_velocity, delta_time);
+    }
+}
+
+void ScenePlaybackManager::DriveMovement(float delta_time) {
+    namespace ecs = schizo::ecs;
+    auto pt = player_entity_->GetTransform();
+    physics::PhysicsWorld& pw = *physics_world_;
+    const uint32_t id = player_char_id_;
+
+    const glm::vec3 center = pw.character_position(id);
+    const float     cyl = pw.character_height(id);
+    ecs::MoveBody body;
+    body.radius = player_radius_;
+    body.height = cyl + 2.0f * player_radius_;
+    body.standing_height = player_standing_cyl_ + 2.0f * player_radius_;
+    body.feet = center - glm::vec3(0.0f, 0.5f * body.height, 0.0f);
+    body.grounded = is_on_ground_;
+    body.ground_normal = pw.character_ground_normal(id);
+    {
+        const float wl = WaterLevelAt(center);
+        body.in_water = wl > -1e9f && center.y + 0.4f < wl;
+    }
+
+    ecs::MoveInput in;
+    if (scripted_input_set_) {
+        in = scripted_input_;
+    } else if (HasInputFocus()) {
+        if (ImGui::IsKeyDown(ImGuiKey_W)) in.move.y += 1.0f;
+        if (ImGui::IsKeyDown(ImGuiKey_S)) in.move.y -= 1.0f;
+        if (ImGui::IsKeyDown(ImGuiKey_D)) in.move.x += 1.0f;
+        if (ImGui::IsKeyDown(ImGuiKey_A)) in.move.x -= 1.0f;
+        in.sprint = ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
+        in.crouch = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_C);
+        in.jump_pressed = ImGui::IsKeyPressed(ImGuiKey_Space, false);
+        in.jump_held = ImGui::IsKeyDown(ImGuiKey_Space);
+        in.dash_pressed = ImGui::IsKeyPressed(ImGuiKey_V, false);
+    }
+    in.forward = pt->GetForward();
+    in.right = pt->GetRight();
+
+    auto ray = [this, &pw](const glm::vec3& o, const glm::vec3& d, float max_d) {
+        ecs::MoveHit h;
+        const physics::RayHit r = pw.raycast(o, d, max_d);
+        if (!r.hit) return h;
+        h.hit = true;
+        h.distance = r.distance;
+        h.point = r.position;
+        h.normal = r.normal;
+        if (climbable_query_) {
+            auto it = climbable_bodies_.find(r.body);
+            if (it == climbable_bodies_.end()) {
+                const uint32_t eid = EntityForBody(r.body);
+                it = climbable_bodies_.emplace(r.body, eid != 0 && climbable_query_(eid)).first;
+            }
+            h.climbable = it->second;
+        }
+        return h;
+    };
+    const ecs::MoveResult res = ecs::step_movement(player_movement_, in, body, ray, delta_time);
+    if (std::abs(res.height - body.height) > 1e-3f)
+        pw.set_character_height(id, std::max(0.05f, res.height - 2.0f * player_radius_));
+    pw.update_character(id, res.velocity, delta_time);
+
+    if (player_controller_) {   // keep the older controller's view in step (panel, stats)
+        player_controller_->SetPosition(center);
+        player_controller_->SetGrounded(is_on_ground_);
+        player_controller_->SetVelocity(res.velocity);
     }
 }
 
@@ -782,6 +857,11 @@ void ScenePlaybackManager::BuildPhysicsWorld() {
             if (cd.height < 0.1f) cd.height = 1.2f;
             cd.position = wpos;
             player_char_id_ = physics_world_->add_character(cd);
+            player_radius_ = cd.radius;
+            player_standing_cyl_ = cd.height;
+            player_collider_offset_ = col->GetOffset();
+            player_movement_.state = schizo::ecs::MovementState{};
+            climbable_bodies_.clear();
             if (logger) logger->info("  +player character (capsule r={:.2f} h={:.2f})", cd.radius, cd.height);
             continue;
         }
@@ -1026,7 +1106,7 @@ void ScenePlaybackManager::StepPhysics(float delta_time) {
     // grounded flag the CharacterController reads next frame.
     if (player_char_id_ != 0xFFFFFFFFu && player_entity_) {
         if (auto t = player_entity_->GetTransform())
-            t->SetWorldPosition(physics_world_->character_position(player_char_id_));
+            t->SetWorldPosition(physics_world_->character_position(player_char_id_) - player_collider_offset_);
         is_on_ground_ = physics_world_->character_on_ground(player_char_id_);
     } else {
         is_on_ground_ = false;
