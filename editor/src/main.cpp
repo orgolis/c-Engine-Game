@@ -115,6 +115,8 @@
 #include "asset_drop.h"        // one rule table for every drop site
 #include "terrain_brush.h"        // what each sculpting brush does to a heightmap
 #include "terrain_hydrology.h"    // water let out on a terrain: rivers and lakes
+#include "foliage.h"              // trees, bushes, grass and rocks scattered over a terrain
+#include "foliage_render.h"       // ... and drawn: visible cells only, instanced
 #include "logic_script_panel.h"  // graph editor for .lgraph logic scripts
 #include "logic_debug.h"          // a breakpoint in a logic script stops the game
 #include "vscript/value.h"       // literals of a logic graph's Inspector fields
@@ -262,6 +264,13 @@ struct EditorState {
     bool  terrain_river_carve    = true;
     int   terrain_river_count    = 0;      // for naming them
     int   terrain_paint_layer    = 0;      // active layer 0..3
+    bool  foliage_paint_active   = false;  // LMB grows the active foliage layer, Shift+LMB clears it
+    int   foliage_paint_layer    = 0;
+    float foliage_paint_strength = 0.5f;
+    std::vector<uint8_t> foliage_stroke_mask;   // the layer's mask when the stroke began (undo)
+    bool  foliage_stroke_active  = false;
+    uint32_t foliage_stroke_entity = 0;
+    int   foliage_stroke_layer   = 0;
     float terrain_paint_strength = 0.5f;   // 0..1 per stroke-application
 
     // When true, the Unity-style dock layout is rebuilt to its default
@@ -3810,6 +3819,22 @@ void ShowInspector(EditorState& editor_state) {
                     ImGui::EndDisabled();
                 }
 
+                // Foliage -- trees, grass, rocks over this entity's terrain.
+                {
+                    const bool has_terrain = selected_entity->GetComponent<schizo::scene::TerrainComponent>() != nullptr;
+                    const bool has_foliage = selected_entity->GetComponent<schizo::scene::FoliageComponent>() != nullptr;
+                    ImGui::BeginDisabled(!has_terrain || has_foliage);
+                    if (ImGui::MenuItem("Foliage")) {
+                        auto fc = selected_entity->AddComponent<schizo::scene::FoliageComponent>();
+                        if (fc) fc->MutableLayers().push_back(schizo::scene::FoliageLayer{});
+                        editor_state.editor_scene->MarkModified();
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndDisabled();
+                    if (!has_terrain && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                        ImGui::SetTooltip("Foliage grows on a terrain: add it to an object that has one.");
+                }
+
                 ImGui::EndPopup();
             }
 
@@ -3947,6 +3972,160 @@ void ShowInspector(EditorState& editor_state) {
         // ── Terrain Component ───────────────────────────────────────────
         ImGui::Separator();
         auto terrain_comp = selected_entity->GetComponent<schizo::scene::TerrainComponent>();
+        auto foliage_comp = selected_entity->GetComponent<schizo::scene::FoliageComponent>();
+        if (terrain_comp && foliage_comp && ImGui::TreeNodeEx("Foliage", ImGuiTreeNodeFlags_DefaultOpen)) {
+            namespace sc = schizo::scene;
+            // Every widget edits a copy; a change is written back once, so the
+            // scatter is rebuilt for an edit and not for looking at the panel.
+            std::vector<sc::FoliageLayer> layers = foliage_comp->Layers();
+            bool changed = false, committed = false;
+            int  remove = -1;
+            size_t total = 0;
+            for (const auto& s : foliage_comp->Scatter(*terrain_comp)) total += s.count;
+            ImGui::TextDisabled("%zu instances over the terrain", total);
+            for (int li = 0; li < static_cast<int>(layers.size()); ++li) {
+                sc::FoliageLayer& l = layers[static_cast<size_t>(li)];
+                ImGui::PushID(9000 + li);
+                const std::string head = l.name + "###folayer";
+                if (ImGui::TreeNodeEx(head.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+                    char nb[64];
+                    std::snprintf(nb, sizeof nb, "%s", l.name.c_str());
+                    if (ImGui::InputText("Name", nb, sizeof nb)) { l.name = nb; changed = true; }
+                    int kind = static_cast<int>(l.kind);
+                    if (ImGui::Combo("Kind", &kind, sc::kFoliageKindNames, sc::kFoliageKindCount)) {
+                        l.kind = static_cast<sc::FoliageKind>(kind);
+                        // Sensible starting points when the kind changes.
+                        switch (l.kind) {
+                            case sc::FoliageKind::Grass:
+                                l.size = 0.6f; l.density = 120.0f; l.draw_distance = 70.0f; l.align_to_slope = true;
+                                l.color_a = glm::vec3(0.25f, 0.45f, 0.15f); break;
+                            case sc::FoliageKind::Rock:
+                                l.size = 1.0f; l.density = 0.5f; l.align_to_slope = true; l.sink = 0.3f;
+                                l.color_a = glm::vec3(0.42f, 0.40f, 0.37f); break;
+                            case sc::FoliageKind::Bush:
+                                l.size = 1.4f; l.density = 3.0f; l.draw_distance = 150.0f;
+                                l.color_a = glm::vec3(0.20f, 0.36f, 0.14f); break;
+                            default:
+                                l.size = 6.0f; l.density = 2.0f; l.draw_distance = 300.0f; l.align_to_slope = false; break;
+                        }
+                        changed = true;
+                    }
+                    if (l.kind == sc::FoliageKind::Model) {
+                        char mb[260];
+                        std::snprintf(mb, sizeof mb, "%s", l.model_path.c_str());
+                        if (ImGui::InputTextWithHint("Model", "a .glb / .gltf / .obj path", mb, sizeof mb)) l.model_path = mb;
+                        if (ImGui::IsItemDeactivatedAfterEdit()) committed = true;
+                        if (ImGui::BeginDragDropTarget()) {
+                            if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("MESH_ASSET")) {
+                                l.model_path = static_cast<const char*>(pl->Data);
+                                committed = true;
+                            }
+                            ImGui::EndDragDropTarget();
+                        }
+                        ImGui::TextDisabled("A model 1 unit tall is drawn Size units tall.");
+                    } else {
+                        changed |= ImGui::ColorEdit3(l.kind == sc::FoliageKind::Grass ? "Blades" : l.kind == sc::FoliageKind::Rock ? "Stone" : "Leaves",
+                                                     &l.color_a.x, ImGuiColorEditFlags_NoInputs);
+                        if (l.kind == sc::FoliageKind::Conifer || l.kind == sc::FoliageKind::Broadleaf) {
+                            ImGui::SameLine();
+                            changed |= ImGui::ColorEdit3("Trunk", &l.color_b.x, ImGuiColorEditFlags_NoInputs);
+                        }
+                    }
+                    changed |= ImGui::SliderFloat("Per 100 m2", &l.density, 0.01f, 400.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+                    changed |= ImGui::SliderFloat("Size", &l.size, 0.1f, 40.0f);
+                    changed |= ImGui::DragFloatRange2("Scale", &l.min_scale, &l.max_scale, 0.01f, 0.1f, 4.0f);
+                    changed |= ImGui::Checkbox("Lean with the slope", &l.align_to_slope);
+                    changed |= ImGui::SliderFloat("Draw distance", &l.draw_distance, 10.0f, 2000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+                    int seed = static_cast<int>(l.seed);
+                    if (ImGui::InputInt("Seed", &seed)) { l.seed = static_cast<uint32_t>(std::max(0, seed)); changed = true; }
+                    if (ImGui::TreeNode("Where it grows")) {
+                        changed |= ImGui::Checkbox("Only by rule", &l.rule.enabled);
+                        ImGui::BeginDisabled(!l.rule.enabled);
+                        changed |= ImGui::DragFloatRange2("Height", &l.rule.min_height, &l.rule.max_height, 0.5f, -1000.0f, 1000.0f,
+                                                          "from %.1f", "to %.1f");
+                        changed |= ImGui::DragFloatRange2("Slope", &l.rule.min_slope, &l.rule.max_slope, 0.5f, 0.0f, 90.0f,
+                                                          "from %.0f deg", "to %.0f deg");
+                        changed |= ImGui::SliderFloat("Break up", &l.rule.noise, 0.0f, 1.0f);
+                        changed |= ImGui::SliderFloat("Patch size", &l.rule.noise_scale, 1.0f, 100.0f);
+                        ImGui::EndDisabled();
+                        const char* tex[] = {"anywhere", "texture layer 0", "texture layer 1", "texture layer 2", "texture layer 3"};
+                        int on = l.on_texture_layer + 1;
+                        if (ImGui::Combo("On", &on, tex, 5)) { l.on_texture_layer = on - 1; changed = true; }
+                        if (l.on_texture_layer >= 0) changed |= ImGui::SliderFloat("Layer at least", &l.min_texture_weight, 0.05f, 1.0f);
+                        if (!l.mask.empty() && ImGui::SmallButton("Forget painted density")) { l.mask.clear(); committed = true; }
+                        ImGui::TreePop();
+                    }
+                    if (ImGui::SmallButton("Remove layer")) remove = li;
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            if (remove >= 0) { layers.erase(layers.begin() + remove); committed = true; }
+            if (ImGui::Button("+ Trees")) { layers.push_back(sc::FoliageLayer{}); committed = true; }
+            ImGui::SameLine();
+            if (ImGui::Button("+ Grass")) {
+                sc::FoliageLayer g;
+                g.name = "Grass"; g.kind = sc::FoliageKind::Grass; g.size = 0.6f; g.density = 120.0f; g.draw_distance = 70.0f;
+                g.align_to_slope = true; g.color_a = glm::vec3(0.25f, 0.45f, 0.15f); g.seed = static_cast<uint32_t>(layers.size() + 1);
+                layers.push_back(g);
+                committed = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("+ Rocks")) {
+                sc::FoliageLayer r;
+                r.name = "Rocks"; r.kind = sc::FoliageKind::Rock; r.size = 1.0f; r.density = 0.5f; r.sink = 0.3f;
+                r.align_to_slope = true; r.color_a = glm::vec3(0.42f, 0.40f, 0.37f); r.seed = static_cast<uint32_t>(layers.size() + 7);
+                layers.push_back(r);
+                committed = true;
+            }
+
+            ImGui::Separator();
+            if (ImGui::Checkbox("Paint Foliage##fol", &editor_state.foliage_paint_active) && editor_state.foliage_paint_active) {
+                editor_state.terrain_sculpt_active = false;
+                editor_state.terrain_paint_active = false;
+                editor_state.terrain_water_active = false;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(drag: more; Shift-drag: clear)");
+            if (editor_state.foliage_paint_active && !layers.empty()) {
+                editor_state.foliage_paint_layer = std::clamp(editor_state.foliage_paint_layer, 0, static_cast<int>(layers.size()) - 1);
+                if (ImGui::BeginCombo("Layer##folpaint", layers[static_cast<size_t>(editor_state.foliage_paint_layer)].name.c_str())) {
+                    for (int li = 0; li < static_cast<int>(layers.size()); ++li)
+                        if (ImGui::Selectable((layers[static_cast<size_t>(li)].name + "##fp" + std::to_string(li)).c_str(),
+                                              li == editor_state.foliage_paint_layer))
+                            editor_state.foliage_paint_layer = li;
+                    ImGui::EndCombo();
+                }
+                ImGui::SliderFloat("Brush radius##folpaint", &editor_state.terrain_brush_radius, 0.5f, 80.0f);
+                ImGui::SliderFloat("Strength##folpaint", &editor_state.foliage_paint_strength, 0.05f, 1.0f);
+            }
+
+            // Write back. A drag (colour, slider) changes the forest live but is
+            // one undo step, recorded when the widget is let go.
+            if (changed || committed) {
+                static std::vector<sc::FoliageLayer> drag_before;
+                static bool dragging = false;
+                if (!dragging) { drag_before = foliage_comp->Layers(); dragging = true; }
+                foliage_comp->MutableLayers() = layers;
+                editor_state.editor_scene->MarkModified();
+                if (committed || !ImGui::IsAnyItemActive()) {
+                    const uint32_t eid = selected_entity->GetId();
+                    auto set = [&editor_state, eid](const std::vector<sc::FoliageLayer>& ls) {
+                        auto scn = editor_state.editor_scene->GetScene();
+                        auto en = scn ? scn->GetEntityById(eid) : nullptr;
+                        if (auto f = en ? en->GetComponent<sc::FoliageComponent>() : nullptr) f->MutableLayers() = ls;
+                        editor_state.editor_scene->MarkModified();
+                    };
+                    editor_state.undo_redo_manager.PushExecuted(std::make_unique<schizo::editor::FunctionCommand>(
+                        [set, after = layers] { set(after); }, [set, before = drag_before] { set(before); }, "Edit foliage"));
+                    dragging = false;
+                }
+            } else if (!ImGui::IsAnyItemActive()) {
+                // A drag that ended this frame without a further change.
+                static bool* none = nullptr; (void)none;
+            }
+            ImGui::TreePop();
+        }
         if (terrain_comp) {
             if (ImGui::TreeNodeEx("Terrain", ImGuiTreeNodeFlags_DefaultOpen)) {
                 // These three sliders APPLY ON RELEASE, not on every tick.
@@ -5693,6 +5872,85 @@ void ShowViewport(EditorState& editor_state) {
                                 if (schizo::scene::apply_terrain_brush(*tc, st))
                                     editor_state.editor_scene->MarkModified();
                             }
+                        }
+                    }
+                }
+            }
+
+            // ---- Foliage painting: grow or clear the active layer's density ----
+            if (editor_state.foliage_stroke_active && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                // End of a stroke: one undo step for the whole drag.
+                const uint32_t eid = editor_state.foliage_stroke_entity;
+                const int      li = editor_state.foliage_stroke_layer;
+                auto en = scene ? scene->GetEntityById(eid) : nullptr;
+                auto fc = en ? en->GetComponent<schizo::scene::FoliageComponent>() : nullptr;
+                if (fc && li < static_cast<int>(fc->Layers().size())) {
+                    const std::vector<uint8_t> after = fc->Layers()[static_cast<size_t>(li)].mask;
+                    auto set = [&editor_state, eid, li](const std::vector<uint8_t>& mk) {
+                        auto scn = editor_state.editor_scene->GetScene();
+                        auto e2 = scn ? scn->GetEntityById(eid) : nullptr;
+                        auto f2 = e2 ? e2->GetComponent<schizo::scene::FoliageComponent>() : nullptr;
+                        if (!f2 || li >= static_cast<int>(f2->Layers().size())) return;
+                        f2->MutableLayers()[static_cast<size_t>(li)].mask = mk;
+                        editor_state.editor_scene->MarkModified();
+                    };
+                    editor_state.undo_redo_manager.PushExecuted(std::make_unique<schizo::editor::FunctionCommand>(
+                        [set, after] { set(after); }, [set, before = editor_state.foliage_stroke_mask] { set(before); },
+                        "Paint foliage"));
+                }
+                editor_state.foliage_stroke_active = false;
+            }
+            if (editor_state.foliage_paint_active && scene && image_drawn && editor_state.selected_entity_id != 0) {
+                auto sel = scene->GetEntityById(editor_state.selected_entity_id);
+                auto tc  = sel ? sel->GetComponent<schizo::scene::TerrainComponent>() : nullptr;
+                auto fc  = sel ? sel->GetComponent<schizo::scene::FoliageComponent>() : nullptr;
+                const float vx = io.MousePos.x - image_min.x, vy = io.MousePos.y - image_min.y;
+                if (tc && fc && !fc->Layers().empty() && vx >= 0 && vy >= 0 && vx < viewport_size.x && vy < viewport_size.y) {
+                    auto [ro, rd] = editor_state.viewport_camera.GetPickingRay(vx, vy, viewport_size.x, viewport_size.y);
+                    const glm::vec3 base = sel->GetTransform()->GetWorldPosition();
+                    const float half = tc->GetSize() * 0.5f;
+                    const float step = std::max(0.2f, tc->CellSize() * 0.5f);
+                    const float maxT = tc->GetSize() * 4.0f + 200.0f;
+                    bool hit = false; glm::vec3 hitp(0.0f);
+                    for (float rt = 0.0f; rt < maxT; rt += step) {
+                        const glm::vec3 lp = (ro + rd * rt) - base;
+                        if (lp.x < -half || lp.x > half || lp.z < -half || lp.z > half) continue;
+                        if (lp.y <= tc->SampleHeightLocal(lp.x, lp.z)) { hit = true; hitp = ro + rd * rt; break; }
+                    }
+                    if (hit) {
+                        auto to_scr = [&](glm::vec3 w) -> ImVec2 {
+                            glm::mat4 p = proj_matrix; p[1][1] *= -1.0f;
+                            glm::vec4 c = p * view_matrix * glm::vec4(w, 1.0f);
+                            if (c.w <= 0.0f) return ImVec2(-1e9f, -1e9f);
+                            glm::vec3 ndc = glm::vec3(c) / c.w;
+                            return ImVec2(image_min.x + (ndc.x * 0.5f + 0.5f) * viewport_size.x,
+                                          image_min.y + (ndc.y * 0.5f + 0.5f) * viewport_size.y);
+                        };
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        ImVec2 prev; bool first = true;
+                        for (int s = 0; s <= 32; ++s) {
+                            const float a = static_cast<float>(s) / 32.0f * 6.2831853f;
+                            const glm::vec3 rim(hitp.x + std::cos(a) * editor_state.terrain_brush_radius, 0.0f,
+                                                hitp.z + std::sin(a) * editor_state.terrain_brush_radius);
+                            const ImVec2 sp = to_scr(glm::vec3(rim.x, base.y + tc->SampleHeightLocal(rim.x - base.x, rim.z - base.z), rim.z));
+                            if (!first && sp.x > -1e8f && prev.x > -1e8f) dl->AddLine(prev, sp, IM_COL32(120, 230, 120, 220), 1.5f);
+                            prev = sp; first = false;
+                        }
+                        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                            const int li = std::clamp(editor_state.foliage_paint_layer, 0, static_cast<int>(fc->Layers().size()) - 1);
+                            if (!editor_state.foliage_stroke_active) {
+                                editor_state.foliage_stroke_active = true;
+                                editor_state.foliage_stroke_entity = sel->GetId();
+                                editor_state.foliage_stroke_layer = li;
+                                editor_state.foliage_stroke_mask = fc->Layers()[static_cast<size_t>(li)].mask;
+                            }
+                            const float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 0.016f;
+                            const float amount = editor_state.foliage_paint_strength * std::min(1.0f, dt * 8.0f) * (io.KeyShift ? -1.0f : 1.0f);
+                            schizo::scene::FoliageLayer& layer = fc->MutableLayers()[static_cast<size_t>(li)];
+                            if (schizo::scene::paint_foliage_mask(*tc, layer, hitp.x - base.x, hitp.z - base.z,
+                                                                   editor_state.terrain_brush_radius, amount,
+                                                                   editor_state.terrain_brush_falloff))
+                                editor_state.editor_scene->MarkModified();
                         }
                     }
                 }
@@ -7902,6 +8160,8 @@ int main(int argc, char** argv) {
         // ----------------------------------------------------------------
         schizo::editor::PrimitiveMeshCache prim_cache;
         prim_cache.initialize(&device);
+        schizo::editor::FoliageRenderer foliage_renderer;
+        foliage_renderer.initialize(&device);
         spdlog::info("Primitive meshes initialized (cube/plane/sphere/cylinder/capsule/pyramid)");
 
         // Material assets (.mat) — path → MaterialDesc, hot-reloaded when the
@@ -11316,6 +11576,52 @@ int main(int argc, char** argv) {
                                     schizo::scene::generate_terrain_noise(*tcomp, 35.0f, tcomp->GetSize() * 0.25f,
                                                                           static_cast<uint32_t>(std::atoi(tg)));
                                     schizo::scene::erode_terrain(*tcomp, 40, 0.9f);
+                                    // GWS_TEST_FOLIAGE=1: a forest, a meadow and rocks on them.
+                                    if (std::getenv("GWS_TEST_FOLIAGE")) {
+                                        auto fol = te->GetComponent<schizo::scene::FoliageComponent>();
+                                        if (!fol) fol = te->AddComponent<schizo::scene::FoliageComponent>();
+                                        auto& ls = fol->MutableLayers();
+                                        schizo::scene::FoliageLayer trees;
+                                        trees.density = 1.5f;
+                                        trees.rule.enabled = true;
+                                        trees.rule.max_slope = 28.0f;
+                                        trees.rule.noise = 0.6f;
+                                        trees.rule.noise_scale = 40.0f;
+                                        ls.push_back(trees);
+                                        schizo::scene::FoliageLayer broad = trees;
+                                        broad.kind = schizo::scene::FoliageKind::Broadleaf;
+                                        broad.color_a = glm::vec3(0.26f, 0.42f, 0.14f);
+                                        broad.seed = 5;
+                                        broad.density = 0.8f;
+                                        ls.push_back(broad);
+                                        schizo::scene::FoliageLayer grass;
+                                        grass.kind = schizo::scene::FoliageKind::Grass;
+                                        grass.size = 0.7f; grass.density = 80.0f; grass.draw_distance = 80.0f;
+                                        grass.align_to_slope = true; grass.color_a = glm::vec3(0.27f, 0.45f, 0.15f); grass.seed = 9;
+                                        ls.push_back(grass);
+                                        schizo::scene::FoliageLayer rocks;
+                                        rocks.kind = schizo::scene::FoliageKind::Rock;
+                                        rocks.size = 1.2f; rocks.density = 0.6f; rocks.sink = 0.3f; rocks.align_to_slope = true;
+                                        rocks.color_a = glm::vec3(0.45f, 0.43f, 0.40f); rocks.seed = 13;
+                                        ls.push_back(rocks);
+                                        // GWS_TEST_FOLIAGE=dense: 100,000 conifers over the whole
+                                        // terrain, nothing else, seen from above -- the budget test.
+                                        if (std::string(std::getenv("GWS_TEST_FOLIAGE")) == "dense") {
+                                            ls.clear();
+                                            schizo::scene::FoliageLayer many;
+                                            many.density = 100000.0f * 100.0f / (tcomp->GetSize() * tcomp->GetSize());
+                                            many.draw_distance = 2000.0f;
+                                            ls.push_back(many);
+                                            spdlog::info("[test] dense foliage: {:.2f} per 100 m2 over {:.0f} m", many.density, tcomp->GetSize());
+                                        }
+                                        // GWS_TEST_FOLIAGE=near: look from just above the ground.
+                                        if (std::string(std::getenv("GWS_TEST_FOLIAGE")) == "near") {
+                                            const glm::vec3 tb = te->GetTransform()->GetWorldPosition();
+                                            const float gy = tcomp->SampleHeightLocal(-40.0f, 30.0f);
+                                            editor_state.viewport_camera.FollowTarget(tb + glm::vec3(-10.0f, gy + 1.0f, 0.0f),
+                                                                                      glm::vec3(-30.0f, 4.0f, 30.0f));
+                                        }
+                                    }
                                     // GWS_TEST_TERRAIN_RIVER=1: let water out at the highest
                                     // point, carve it, show it, and look at it from above.
                                     if (std::getenv("GWS_TEST_TERRAIN_RIVER")) {
@@ -11413,6 +11719,15 @@ int main(int argc, char** argv) {
                   terrain_cache, terrain_gpu_cache, &device, mat_layout, mat_pool,
                   opaque_draws, transparent_draws, &texture_manager, &ecs_bridge,
                   &material_assets, terrain_mat_layout, terrain_mat_pool); }
+            if (render_scene) {
+                GWS_PROFILE_ZONE("foliage_draws");
+                foliage_renderer.append(editor_scene.GetScene(), cam, prim_cache, mat_cache, asset_cache, &device,
+                                        mat_layout, mat_pool, &texture_manager, opaque_draws);
+                static int foliage_log = 0;
+                if (foliage_renderer.stats().instances && ++foliage_log % 120 == 0)
+                    spdlog::debug("[foliage] {} cells, {} instances, {} draw items", foliage_renderer.stats().cells_seen,
+                                  foliage_renderer.stats().instances, foliage_renderer.stats().draws);
+            }
 
             // Reclaim GPU materials nothing has referenced for a while. No
             // device idle: the grace period is an order of magnitude longer than
@@ -12354,6 +12669,7 @@ int main(int argc, char** argv) {
         prim_cache.cylinder.reset();
         prim_cache.capsule.reset();
         prim_cache.pyramid.reset();
+        foliage_renderer.release();
         vkDestroyDescriptorPool(device.get_device(), terrain_mat_pool, nullptr);
         vkDestroyDescriptorSetLayout(device.get_device(), terrain_mat_layout, nullptr);
         vkDestroyDescriptorPool(device.get_device(), mat_pool, nullptr);

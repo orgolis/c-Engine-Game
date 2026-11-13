@@ -9,6 +9,7 @@
 #include "camera_component.h"
 #include "audio_components.h"
 #include "terrain_component.h"
+#include "foliage.h"
 #include "script_component.h"
 #include "water_component.h"
 #include "particle_emitter_component.h"
@@ -342,6 +343,32 @@ void write_entity_block(std::ofstream& file,
             file << "TERRAIN_SPLAT=" << sf << "\n";
         }
 
+        // Foliage layers: settings inline, a painted density mask in a sidecar.
+        if (auto fc = entity->GetComponent<schizo::scene::FoliageComponent>()) {
+            const auto& layers = fc->Layers();
+            for (size_t li = 0; li < layers.size(); ++li) {
+                const schizo::scene::FoliageLayer& l = layers[li];
+                const schizo::scene::TerrainLayerRule& r = l.rule;
+                std::string mask_file;
+                if (!l.mask.empty()) {
+                    mask_file = "foliage_" + std::to_string(entity->GetId()) + "_" + std::to_string(li) + ".mask";
+                    std::ofstream mb(scene_dir + mask_file, std::ios::binary);
+                    if (mb) mb.write(reinterpret_cast<const char*>(l.mask.data()), static_cast<std::streamsize>(l.mask.size()));
+                    else mask_file.clear();
+                }
+                // Numbers first, then the three strings, '|'-separated (a name
+                // or a path may hold spaces; neither holds a '|').
+                file << "FOLIAGE_LAYER=" << static_cast<int>(l.kind) << " " << l.density << " " << l.min_scale << " "
+                     << l.max_scale << " " << l.size << " " << (l.align_to_slope ? 1 : 0) << " " << l.sink << " "
+                     << (r.enabled ? 1 : 0) << " " << r.min_height << " " << r.max_height << " " << r.height_blend << " "
+                     << r.min_slope << " " << r.max_slope << " " << r.slope_blend << " " << r.noise << " " << r.noise_scale
+                     << " " << r.weight << " " << l.on_texture_layer << " " << l.min_texture_weight << " " << l.draw_distance
+                     << " " << l.seed << " " << (l.casts_shadow ? 1 : 0) << " " << l.color_a.r << " " << l.color_a.g << " "
+                     << l.color_a.b << " " << l.color_b.r << " " << l.color_b.g << " " << l.color_b.b << "|" << l.name << "|"
+                     << l.model_path << "|" << mask_file << "\n";
+            }
+        }
+
         // Holes (caves) — sidecar of res*res bytes, only when any set.
         if (tc->AnyHoles()) {
             const std::string hf2 = "terrain_" + std::to_string(entity->GetId()) + ".holes";
@@ -613,6 +640,8 @@ struct ParsedEntity {
     float       terrain_tri_sharp = 4.0f;
     std::string terrain_splat_file;
     std::string terrain_holes_file;
+    std::vector<schizo::scene::FoliageLayer> foliage;
+    std::vector<std::string>                 foliage_masks;   // sidecar per layer, "" for none
     bool        terrain_water          = false;
     bool        terrain_water_physical = true;
     float       terrain_water_level    = 0.5f;
@@ -867,6 +896,33 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
     if (starts_with(line, "TERRAIN_TRISHARP", v))      { p.terrain_tri_sharp = std::stof(v); return; }
     if (starts_with(line, "TERRAIN_SPLAT", v))        { p.terrain_splat_file = v; return; }
     if (starts_with(line, "TERRAIN_HOLES", v))        { p.terrain_holes_file = v; return; }
+    if (starts_with(line, "FOLIAGE_LAYER", v)) {
+        schizo::scene::FoliageLayer l;
+        schizo::scene::TerrainLayerRule& r = l.rule;
+        const size_t bar = v.find('|');
+        std::istringstream ns(v.substr(0, bar));
+        int kind = 0, align = 0, en = 0, shadow = 1;
+        ns >> kind >> l.density >> l.min_scale >> l.max_scale >> l.size >> align >> l.sink >> en >> r.min_height >>
+            r.max_height >> r.height_blend >> r.min_slope >> r.max_slope >> r.slope_blend >> r.noise >> r.noise_scale >>
+            r.weight >> l.on_texture_layer >> l.min_texture_weight >> l.draw_distance >> l.seed >> shadow >> l.color_a.r >>
+            l.color_a.g >> l.color_a.b >> l.color_b.r >> l.color_b.g >> l.color_b.b;
+        if (!ns) return;   // a line this version cannot read: skip it rather than grow a wrong forest
+        l.kind = static_cast<schizo::scene::FoliageKind>(std::clamp(kind, 0, schizo::scene::kFoliageKindCount - 1));
+        l.align_to_slope = align != 0;
+        r.enabled = en != 0;
+        l.casts_shadow = shadow != 0;
+        std::vector<std::string> str;
+        for (size_t at = bar; at != std::string::npos;) {
+            const size_t next = v.find('|', at + 1);
+            str.push_back(v.substr(at + 1, next == std::string::npos ? std::string::npos : next - at - 1));
+            at = next;
+        }
+        if (str.size() > 0) l.name = str[0];
+        if (str.size() > 1) l.model_path = str[1];
+        p.foliage.push_back(std::move(l));
+        p.foliage_masks.push_back(str.size() > 2 ? str[2] : std::string());
+        return;
+    }
     if (starts_with(line, "TERRAIN_WATER_DEEP", v))    { std::sscanf(v.c_str(), "%f,%f,%f", &p.terrain_water_deep.r, &p.terrain_water_deep.g, &p.terrain_water_deep.b); return; }
     if (starts_with(line, "TERRAIN_WATER_SHALLOW", v)) { std::sscanf(v.c_str(), "%f,%f,%f", &p.terrain_water_shallow.r, &p.terrain_water_shallow.g, &p.terrain_water_shallow.b); return; }
     if (starts_with(line, "TERRAIN_WATER_WAVES", v))   { std::sscanf(v.c_str(), "%f,%f,%f", &p.terrain_water_waves.x, &p.terrain_water_waves.y, &p.terrain_water_waves.z); return; }
@@ -1033,6 +1089,20 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
             as->SetSpatial(p.audio_src_spatial);
             as->SetPlayOnStart(p.audio_src_play_on_start);
             as->SetBus(p.audio_src_bus);
+        }
+    }
+
+    if (!p.foliage.empty()) {
+        auto fc = e->AddComponent<schizo::scene::FoliageComponent>();
+        auto& layers = fc->MutableLayers();
+        for (size_t li = 0; li < p.foliage.size(); ++li) {
+            schizo::scene::FoliageLayer l = p.foliage[li];
+            if (li < p.foliage_masks.size() && !p.foliage_masks[li].empty()) {
+                std::ifstream mb(scene_dir + p.foliage_masks[li], std::ios::binary);
+                std::vector<uint8_t> m(static_cast<size_t>(schizo::scene::kFoliageMaskRes) * schizo::scene::kFoliageMaskRes);
+                if (mb && mb.read(reinterpret_cast<char*>(m.data()), static_cast<std::streamsize>(m.size()))) l.mask = std::move(m);
+            }
+            layers.push_back(std::move(l));
         }
     }
 

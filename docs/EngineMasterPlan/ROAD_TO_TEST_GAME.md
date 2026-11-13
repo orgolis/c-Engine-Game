@@ -69,7 +69,7 @@ variables), a UI designer, animation graphs as logic graphs.
 | B5 | **Hydrology.** Water placed at a source runs downhill, fills basins into lakes and falls over drops; rivers have flow direction; swimming and buoyancy follow the current | A spring on a hill becomes a river that reaches the sea |
 | B6 | **Workflow.** World templates, larger worlds | A new world starts from a preset |
 
-**Progress (v0.8.27):** B1 mostly done, B2 done, B5 first part. The brushes are plain functions in
+**Progress (v0.8.28):** B1 mostly done, B2 done, B3 first part, B5 first part. The brushes are plain functions in
 `engine/scene/include/terrain_brush.h`, checked by `tools/terrainbrush_check`
 (22 checks): Raise, Lower, Smooth, Flatten (to the height where the stroke
 began), Dig / Fill Hole, and new Noise, Terrace, Ramp and Erode. Whole-terrain
@@ -83,7 +83,20 @@ hollows into lakes up to their rim, spills on and ends at the sea (the
 terrain's water level) or the edge; the bed is carved and water surfaces are
 placed along it (`engine/scene/include/terrain_hydrology.h`). Still open in
 B5: flowing water (current direction on the surface, swimming and buoyancy
-following it), waterfalls drawn as falls. B3, B4, B6 not started.
+following it), waterfalls drawn as falls. B3: a Foliage component on a terrain
+holds layers (conifer, broadleaf, bush, grass, rock, or a model file) placed by
+density, rule, texture layer and a painted mask, deterministic from a seed
+(`engine/scene/include/foliage.h`); drawn through `editor/include/foliage_render.h`
+as draw items in 32 m cells, culled by distance and frustum, nearest first.
+**Measured:** 100,000 trees placed on a 400 m terrain, the nearest 40,000 drawn
+(the per-frame budget): 60 fps, GPU 3.3 ms, but about 11 ms of CPU goes to
+foliage and the general culling and sorting its draw items go through. Without
+the budget (all 96,000 visible) the frame was 50 ms CPU / 39 ms GPU. The done-when
+of B3 needs a GPU-instanced foliage pass (instances in a buffer, culled on the
+GPU, drawn into the G-buffer and the shadow map without per-tree draw items);
+that belongs to the optimization upgrade. Also open in B3: wind, tree
+collision, LOD meshes for model foliage, honouring "casts shadow". B4, B6 not
+started.
 
 ## Phase C: gameplay modules, finished
 

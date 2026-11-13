@@ -14,6 +14,7 @@
 
 #include "terrain_brush.h"
 #include "terrain_hydrology.h"
+#include "foliage.h"
 
 #include <algorithm>
 #include <cmath>
@@ -348,6 +349,94 @@ int main() {
                   "seed " + std::to_string(seed) + ": water from the summit reaches the edge in " + std::to_string(run.river.size()) +
                       " steps through " + std::to_string(run.lakes.size()) + " hollows");
         }
+    }
+    {
+        // Foliage: how many, where, the same every time, and in culling cells.
+        TerrainComponent t(128, 256.0f);   // 65,536 m^2
+        FoliageLayer trees;
+        trees.density = 2.0f;              // per 100 m^2 -> about 1,310
+        const FoliageScatter s = scatter_foliage(t, trees);
+        check(s.count > 1200 && s.count < 1420, "a flat terrain gets the asked density: " + std::to_string(s.count) + " trees for ~1,310");
+        const FoliageScatter again = scatter_foliage(t, trees);
+        bool same = again.count == s.count;
+        for (size_t c = 0; same && c < s.cells.size(); ++c)
+            for (size_t i = 0; same && i < s.cells[c].items.size(); ++i)
+                same = s.cells[c].items[i].pos == again.cells[c].items[i].pos && s.cells[c].items[i].yaw == again.cells[c].items[i].yaw;
+        check(same, "the same settings place the same trees in the same places");
+        FoliageLayer other = trees;
+        other.seed = 2;
+        const FoliageScatter s2 = scatter_foliage(t, other);
+        check(s2.count > 1200 && !s2.cells.empty() && !s.cells[0].items.empty() && !s2.cells[0].items.empty() &&
+                  s2.cells[0].items[0].pos != s.cells[0].items[0].pos,
+              "another seed places them elsewhere");
+        bool inside = true, boxed = true;
+        int  cell_count = 0;
+        for (const FoliageCell& c : s.cells) {
+            if (!c.items.empty()) ++cell_count;
+            for (const FoliageInstance& in : c.items) {
+                inside = inside && std::fabs(in.pos.x) <= 128.0f && std::fabs(in.pos.z) <= 128.0f;
+                boxed = boxed && in.pos.x >= c.min.x && in.pos.x <= c.max.x && in.pos.z >= c.min.z && in.pos.z <= c.max.z &&
+                        in.pos.y >= c.min.y - 1e-3f && in.pos.y + trees.size * in.scale <= c.max.y + 1e-3f;
+            }
+        }
+        check(inside && boxed && cell_count == 64, "every tree is on the terrain and inside its culling cell's box (8 x 8 cells)");
+
+        // Where: a rule, a texture layer, a painted mask, a hole.
+        for (int z = 0; z <= 128; ++z)
+            for (int x = 0; x <= 128; ++x) t.SetHeightAt(x, z, x * 0.5f);   // height 0 at the west edge, 64 at the east
+        FoliageLayer low = trees;
+        low.rule.enabled = true;
+        low.rule.max_height = 20.0f;
+        low.rule.height_blend = 0.0f;
+        const FoliageScatter sl = scatter_foliage(t, low);
+        bool all_low = sl.count > 100;
+        for (const FoliageCell& c : sl.cells)
+            for (const FoliageInstance& in : c.items) all_low = all_low && in.pos.y + low.sink * low.size * in.scale <= 20.0f + 1e-3f;
+        check(all_low, "a rule keeps trees below the tree line");
+
+        FoliageLayer on_paint = trees;
+        on_paint.on_texture_layer = 1;
+        t.PaintSplatLocal(0.0f, 0.0f, 30.0f, 1, 1.0f, 0.0f);
+        const FoliageScatter sp = scatter_foliage(t, on_paint);
+        bool near = sp.count > 10;
+        for (const FoliageCell& c : sp.cells)
+            for (const FoliageInstance& in : c.items) near = near && std::sqrt(in.pos.x * in.pos.x + in.pos.z * in.pos.z) < 31.0f;
+        check(near, "grass told to grow on a texture layer grows only where that layer is painted");
+
+        FoliageLayer cleared = trees;
+        for (int i = 0; i < 10; ++i) paint_foliage_mask(t, cleared, 0.0f, 0.0f, 40.0f, -1.0f, 0.0f);   // the brush held a moment
+        const FoliageScatter sc = scatter_foliage(t, cleared);
+        bool clearing = sc.count > 1000;
+        for (const FoliageCell& c : sc.cells)
+            for (const FoliageInstance& in : c.items) clearing = clearing && std::sqrt(in.pos.x * in.pos.x + in.pos.z * in.pos.z) > 37.0f;
+        check(clearing, "a clearing painted into the mask has no trees, and the rest of the forest stays");
+
+        t.SetHole(64, 64, true);
+        const FoliageScatter sh = scatter_foliage(t, trees);
+        bool none_in_hole = true;
+        for (const FoliageCell& c : sh.cells)
+            for (const FoliageInstance& in : c.items)
+                none_in_hole = none_in_hole && !(in.pos.x >= 0.0f && in.pos.x < 2.0f && in.pos.z >= 0.0f && in.pos.z < 2.0f);
+        check(none_in_hole, "nothing grows in a hole in the terrain");
+
+        // Standing on the ground, and the cache follows the terrain.
+        FoliageComponent fc;
+        fc.MutableLayers().push_back(trees);
+        const FoliageInstance first = fc.Scatter(t)[0].cells[0].items[0];
+        const float ground = t.SampleHeightLocal(first.pos.x, first.pos.z);
+        check(first.pos.y < ground && first.pos.y > ground - trees.size, "a tree's base is at the ground, sunk in a little");
+        const uint64_t v1 = fc.ScatterVersion();
+        fc.Scatter(t);
+        const bool cached = fc.ScatterVersion() == v1;
+        t.Flatten(10.0f);
+        const float moved = fc.Scatter(t)[0].cells[0].items[0].pos.y;
+        check(cached && fc.ScatterVersion() == v1 + 1 && moved > 9.0f, "the scatter is kept until the terrain changes, then follows it");
+
+        const glm::mat4 m = foliage_matrix(first, trees.size);
+        check(m == first.local, "the matrix kept with the instance is the one foliage_matrix gives");
+        const glm::vec3 tip = glm::vec3(m * glm::vec4(0, 1, 0, 1));
+        check(std::fabs(tip.y - first.pos.y - trees.size * first.scale) < 1e-3f && std::fabs(tip.x - first.pos.x) < 1e-3f,
+              "an upright tree's matrix stands it on its base, as tall as its size times its scale");
     }
     if (g_fail) {
         std::printf("terrainbrush_check: %d FAILED, %d passed\n", g_fail, g_pass);

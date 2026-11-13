@@ -20,6 +20,7 @@
 #include "collider_component.h"
 #include "entity.h"
 #include "entity_factory.h"
+#include "foliage.h"
 #include "npc_agent_component.h"
 #include "particle_emitter_component.h"
 #include "scene.h"
@@ -90,6 +91,27 @@ int main() {
         tc->SetLayerMetallic(0, 0.80f);
         tc->SetLayerRoughness(0, 0.15f);
         tc->SetLayerNormalScale(0, 2.50f);
+        {
+            // Foliage: every field of a layer away from its default, a model
+            // path with a space, and a painted density mask.
+            auto fc = ground->AddComponent<scene::FoliageComponent>();
+            scene::FoliageLayer a;
+            a.name = "Old pines";
+            a.kind = scene::FoliageKind::Model;
+            a.model_path = "assets/models/my pine.glb";
+            a.color_a = glm::vec3(0.1f, 0.2f, 0.3f);
+            a.color_b = glm::vec3(0.4f, 0.5f, 0.6f);
+            a.density = 3.25f; a.min_scale = 0.6f; a.max_scale = 1.9f; a.size = 11.5f;
+            a.align_to_slope = true; a.sink = 0.25f;
+            a.rule.enabled = true; a.rule.min_height = 5.0f; a.rule.max_height = 55.0f; a.rule.max_slope = 33.0f; a.rule.noise = 0.35f;
+            a.on_texture_layer = 2; a.min_texture_weight = 0.7f; a.draw_distance = 420.0f; a.seed = 77; a.casts_shadow = false;
+            a.mask.assign(static_cast<size_t>(scene::kFoliageMaskRes) * scene::kFoliageMaskRes, 200);
+            a.mask[1234] = 7;
+            scene::FoliageLayer b;
+            b.name = "Grass";
+            b.kind = scene::FoliageKind::Grass;
+            fc->MutableLayers() = {a, b};
+        }
         tc->SetTiling(0, 48.0f);
         tc->SetTriplanar(true);
         tc->SetTriplanarSharpness(9.5f);
@@ -178,6 +200,30 @@ int main() {
                 if (child && child->GetComponent<scene::CameraComponent>()) ++camera_children;
         }
         check(camera_children == 1, "exactly one player camera survives the round trip");
+
+        {
+            auto g = loaded->GetEntityByName("Ground");
+            auto fc = g ? g->GetComponent<scene::FoliageComponent>() : nullptr;
+            const bool two = fc && fc->Layers().size() == 2;
+            check(two, "a foliage component and its two layers survive");
+            if (two) {
+                const scene::FoliageLayer& l = fc->Layers()[0];
+                check(l.name == "Old pines" && l.kind == scene::FoliageKind::Model && l.model_path == "assets/models/my pine.glb",
+                      "a foliage layer's name, kind and model path (with a space) survive");
+                check(std::fabs(l.color_a.y - 0.2f) < 1e-4f && std::fabs(l.color_b.z - 0.6f) < 1e-4f && std::fabs(l.density - 3.25f) < 1e-4f &&
+                          std::fabs(l.min_scale - 0.6f) < 1e-4f && std::fabs(l.max_scale - 1.9f) < 1e-4f && std::fabs(l.size - 11.5f) < 1e-4f &&
+                          l.align_to_slope && std::fabs(l.sink - 0.25f) < 1e-4f && std::fabs(l.draw_distance - 420.0f) < 1e-3f &&
+                          l.seed == 77 && !l.casts_shadow && l.on_texture_layer == 2 && std::fabs(l.min_texture_weight - 0.7f) < 1e-4f,
+                      "every number of a foliage layer survives");
+                check(l.rule.enabled && std::fabs(l.rule.min_height - 5.0f) < 1e-4f && std::fabs(l.rule.max_slope - 33.0f) < 1e-4f &&
+                          std::fabs(l.rule.noise - 0.35f) < 1e-4f,
+                      "a foliage layer's placement rule survives");
+                check(l.mask.size() == static_cast<size_t>(scene::kFoliageMaskRes) * scene::kFoliageMaskRes && l.mask[1234] == 7 && l.mask[0] == 200,
+                      "a painted foliage density mask survives");
+                check(fc->Layers()[1].kind == scene::FoliageKind::Grass && fc->Layers()[1].mask.empty(),
+                      "a layer that was never painted stays without a mask");
+            }
+        }
     }
 
     // ---- terrain per-layer surface -----------------------------------------
