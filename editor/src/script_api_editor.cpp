@@ -3,6 +3,7 @@
 // ============================================================
 
 #include "script_api_editor.h"
+#include "biome_water.h"
 #include "command_palette.h"
 #include "editor_extensions.h"
 #include "scene_playback_manager.h"
@@ -42,6 +43,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -439,6 +441,34 @@ void api_emit_event(void* ctx, const char* name) {
     if (c->bridge && name) { ecs::GameplayEvent ev; ev.name = name; c->bridge->events().publish(ev); }
 }
 
+// ---- biomes ----
+int api_biome_at(void* ctx, uint32_t e, char* name_out, int name_size, float* weight) {
+    auto* c = C(ctx);
+    if (name_out && name_size > 0) name_out[0] = 0;
+    if (weight) *weight = 0.0f;
+    auto ent = ent_of(ctx, e);
+    if (!ent || !c->scene) return -1;
+    const glm::vec3 p = ent->GetTransform()->GetWorldPosition();
+    for (const auto& te : c->scene->EntitiesWithAny<schizo::scene::BiomeComponent>()) {
+        auto bc = te ? te->GetComponent<schizo::scene::BiomeComponent>() : nullptr;
+        auto tc = te ? te->GetComponent<schizo::scene::TerrainComponent>() : nullptr;
+        if (!bc || !tc || !te->IsActiveInHierarchy()) continue;
+        const glm::vec3 l = p - te->GetTransform()->GetWorldPosition();
+        const float     half = tc->GetSize() * 0.5f;
+        if (std::fabs(l.x) > half || std::fabs(l.z) > half) continue;
+        uint64_t key = 0;
+        const auto water = schizo::editor::biome_water_for(*c->scene, *te, key);
+        bc->Map(*tc, water, key);
+        float w = 0.0f;
+        const int b = bc->DominantAt(*tc, l.x, l.z, &w);
+        if (b < 0) return -1;
+        if (name_out && name_size > 0) std::snprintf(name_out, static_cast<size_t>(name_size), "%s", bc->Biomes()[static_cast<size_t>(b)].name.c_str());
+        if (weight) *weight = w;
+        return b;
+    }
+    return -1;
+}
+
 // ---- gameplay event feed ----
 // ECS entity -> scene id. Events are rare, so a scan of the scene is fine.
 uint32_t scene_id_of(EditorScriptCtx* c, ecs::Entity e) {
@@ -627,6 +657,7 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.emit_event         = &api_emit_event;
     api.event_count        = &api_event_count;
     api.event_get          = &api_event_get;
+    api.biome_at           = &api_biome_at;
     api.distance           = &api_distance;
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;

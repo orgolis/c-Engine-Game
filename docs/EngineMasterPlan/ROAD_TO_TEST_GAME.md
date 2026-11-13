@@ -69,7 +69,7 @@ variables), a UI designer, animation graphs as logic graphs.
 | B5 | **Hydrology.** Water placed at a source runs downhill, fills basins into lakes and falls over drops; rivers have flow direction; swimming and buoyancy follow the current | A spring on a hill becomes a river that reaches the sea |
 | B6 | **Workflow.** World templates, larger worlds | A new world starts from a preset |
 
-**Progress (v0.8.28):** B1 mostly done, B2 done, B3 first part, B5 first part. The brushes are plain functions in
+**Progress (v0.8.29):** B1 mostly done, B2 done, B3 first part, B4 mostly done, B5 first part. The brushes are plain functions in
 `engine/scene/include/terrain_brush.h`, checked by `tools/terrainbrush_check`
 (22 checks): Raise, Lower, Smooth, Flatten (to the height where the stroke
 began), Dig / Fill Hole, and new Noise, Terrace, Ramp and Erode. Whole-terrain
@@ -95,8 +95,16 @@ the budget (all 96,000 visible) the frame was 50 ms CPU / 39 ms GPU. The done-wh
 of B3 needs a GPU-instanced foliage pass (instances in a buffer, culled on the
 GPU, drawn into the G-buffer and the shadow map without per-tree draw items);
 that belongs to the optimization upgrade. Also open in B3: wind, tree
-collision, LOD meshes for model foliage, honouring "casts shadow". B4, B6 not
-started.
+collision, LOD meshes for model foliage, honouring "casts shadow". B4: a Biome
+component divides a terrain by altitude and moisture (wet near the terrain's
+water and any water surface over it), with painted overrides; each biome has a
+ground texture layer, a density per foliage layer and an optional atmosphere
+(ambient light, fog). "Apply biomes" bakes ground and foliage (one undo step);
+atmosphere blends live under the camera; scripts get "Biome At" and a
+"biome.enter" gameplay event (`engine/scene/include/biome.h`). Checked: the
+valley-to-peak walk crosses marsh, forest and alpine. Not yet: ambient sound per
+biome (scripts can do it with biome.enter), sections for streaming (the world
+streaming that exists is separate). B6 not started.
 
 ## Phase C: gameplay modules, finished
 

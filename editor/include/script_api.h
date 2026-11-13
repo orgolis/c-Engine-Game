@@ -158,6 +158,13 @@ struct ScriptApi {
     bool (*event_get)(void* ctx, int index, char* name_out, int name_size,
                       uint32_t* instigator, uint32_t* target, float* value,
                       char* param_out, int param_size) = nullptr;
+
+    // ---- biomes (added v0.8.29; new entries go at the end) ----
+    // The biome entity `e` stands in: the terrain under it with a Biome
+    // component, the biome with the most weight there. Writes its name and
+    // returns its index, or -1 (name "") where there is none. `weight`, when
+    // given, is how much of that biome is there (0..1).
+    int  (*biome_at)(void* ctx, uint32_t e, char* name_out, int name_size, float* weight) = nullptr;
 };
 
 }  // namespace schizo::editor

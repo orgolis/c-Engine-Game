@@ -15,6 +15,7 @@
 #include "terrain_brush.h"
 #include "terrain_hydrology.h"
 #include "foliage.h"
+#include "biome.h"
 
 #include <algorithm>
 #include <cmath>
@@ -437,6 +438,72 @@ int main() {
         const glm::vec3 tip = glm::vec3(m * glm::vec4(0, 1, 0, 1));
         check(std::fabs(tip.y - first.pos.y - trees.size * first.scale) < 1e-3f && std::fabs(tip.x - first.pos.x) < 1e-3f,
               "an upright tree's matrix stands it on its base, as tall as its size times its scale");
+    }
+    {
+        // A valley with a lake at the west end rising to a peak at the east:
+        // marsh by the water, forest on the slopes, alpine on top.
+        TerrainComponent t(128, 256.0f);
+        for (int z = 0; z <= 128; ++z)
+            for (int x = 0; x <= 128; ++x) t.SetHeightAt(x, z, std::max(0.0f, (x - 16) * 0.6f));   // 0 at the west, ~67 at the east
+        t.SetWaterEnabled(true);
+        t.SetWaterLevel(1.0f);
+        Biome marsh;  marsh.name = "Marsh";  marsh.max_height = 12.0f; marsh.min_moisture = 0.55f; marsh.ground_layer = 1;
+        Biome forest; forest.name = "Forest"; forest.min_height = 6.0f; forest.max_height = 42.0f; forest.ground_layer = 2;
+        Biome alpine; alpine.name = "Alpine"; alpine.min_height = 40.0f; alpine.ground_layer = 3;
+        marsh.foliage = {0.0f};    // no trees in the marsh
+        forest.foliage = {1.0f};
+        alpine.foliage = {0.1f};
+        BiomeComponent bc;
+        bc.MutableBiomes() = {marsh, forest, alpine};
+        MoistureSettings ms;
+        ms.noise = 0.0f;
+        bc.SetMoisture(ms);
+        const std::vector<float>& map = bc.Map(t, {}, 0);
+        const std::vector<float>& mo = bc.MoistureMap();
+        check(mo.size() == 128u * 128u && mo[64 * 128 + 2] > 0.95f && mo[64 * 128 + 120] < 0.05f,
+              "ground by the lake is wet and ground far from it is dry");
+        bool sums = map.size() == 128u * 128u * 3u;
+        for (size_t i = 0; sums && i < 128u * 128u; ++i) {
+            const float s = map[i * 3] + map[i * 3 + 1] + map[i * 3 + 2];
+            sums = std::fabs(s - 1.0f) < 1e-3f || s == 0.0f;
+        }
+        check(sums, "every spot's biome weights add up to one (or none claims it)");
+        std::vector<int> crossed;
+        for (float x = -126.0f; x <= 126.0f; x += 2.0f) {
+            const int b = bc.DominantAt(t, x, 0.0f);
+            if (b >= 0 && (crossed.empty() || crossed.back() != b)) crossed.push_back(b);
+        }
+        check(crossed == std::vector<int>({0, 1, 2}), "walking from the valley to the peak crosses marsh, forest and alpine, in that order");
+
+        // Paint a patch of alpine into the valley.
+        Biome& painted = bc.MutableBiomes()[2];
+        for (int i = 0; i < 4; ++i) paint_biome(t, painted, -40.0f, 60.0f, 12.0f, 1.0f, 0.0f);
+        bc.Map(t, {}, 0);
+        check(bc.DominantAt(t, -40.0f, 60.0f) == 2 && bc.DominantAt(t, -40.0f, -60.0f) != 2, "a biome painted by hand wins where it was painted, only there");
+
+        // Bake: ground textures and foliage density follow the biomes.
+        FoliageComponent fc;
+        fc.MutableLayers().push_back(FoliageLayer{});
+        apply_biomes(t, bc.Biomes(), bc.Map(t, {}, 0), &fc);
+        auto splat_at = [&](float lx, float lz, int c) {
+            const int res = t.SplatResolution();
+            const int x = static_cast<int>((lx + 128.0f) / 256.0f * res), z = static_cast<int>((lz + 128.0f) / 256.0f * res);
+            return t.Splat()[(static_cast<size_t>(z) * res + x) * 4 + c];
+        };
+        check(splat_at(-120.0f, 0.0f, 1) > 200 && splat_at(0.0f, 0.0f, 2) > 200 && splat_at(120.0f, 0.0f, 3) > 200,
+              "applying biomes puts each one's ground texture on its ground");
+        const FoliageLayer& trees = fc.Layers()[0];
+        auto mask_at = [&](float lx) { return trees.mask[static_cast<size_t>(64) * kFoliageMaskRes + static_cast<size_t>((lx + 128.0f) / 256.0f * kFoliageMaskRes)]; };
+        check(!trees.mask.empty() && mask_at(-120.0f) < 10 && mask_at(0.0f) > 245 && mask_at(120.0f) < 40,
+              "and each one's foliage density: no trees in the marsh, a full forest, a few up high");
+
+        // The cache: kept until the terrain, the biomes or the water change.
+        const uint64_t v = bc.MapVersion();
+        bc.Map(t, {}, 0);
+        const bool kept = bc.MapVersion() == v;
+        bc.Map(t, {WaterRect{50.0f, -10.0f, 70.0f, 10.0f, 100.0f}}, 1);
+        check(kept && bc.MapVersion() == v + 1 && bc.MoistureMap()[64 * 128 + 94] > 0.95f,
+              "the map is kept until something it depends on changes; new water makes the ground around it wet");
     }
     if (g_fail) {
         std::printf("terrainbrush_check: %d FAILED, %d passed\n", g_fail, g_pass);

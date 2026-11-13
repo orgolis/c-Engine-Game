@@ -209,7 +209,12 @@ target_include_directories(editor_headers_selfcontain PRIVATE
     # The material-graph panel header includes the graph model. Adding the path
     # rather than excluding the header: the header IS self-contained, this
     # target simply could not see one of its dependencies.
-    ${CMAKE_SOURCE_DIR}/engine/core/shadergraph)
+    ${CMAKE_SOURCE_DIR}/engine/core/shadergraph
+    # foliage_render.h draws model foliage through the asset mesh cache, whose
+    # cooked-mesh path names meshoptimizer: the same reason, the same remedy.
+    ${CMAKE_SOURCE_DIR}/third_party/meshoptimizer/src
+    ${CMAKE_SOURCE_DIR}/engine/core/asset_pipeline/..
+    ${CMAKE_SOURCE_DIR}/engine/core/compression/..)
 target_link_libraries(editor_headers_selfcontain PRIVATE
     engine scene window character ability network renderer
     gws_jobs gws_profiler gws_ecs gws_serialization gws_ai gws_world

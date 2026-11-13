@@ -276,6 +276,15 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
         r.add(std::move(d));
     }
 
+    r.pure("world.biome_at", "World", "Biome At", [s](EntityId e) {
+        char  name[64] = {};
+        float w = 0.0f;
+        const int64_t i = API && API->biome_at ? API->biome_at(API->ctx, e.id, name, sizeof name, &w) : -1;
+        return std::make_tuple(std::string(name), double(w), i);
+    }, {"Entity", "Biome", "Weight", "Index"})
+        .tip("The biome an object stands in: its name (empty where none), how much of it is there, and its index. "
+             "On Gameplay Event \"biome.enter\" runs when the player walks into another biome.");
+
     const char* SP = "Script Parameters";
     r.pure("param.float", SP, "Get Float Parameter", [s](EntityId e, std::string n, double def) {
         return double(API && API->get_param_float ? API->get_param_float(API->ctx, e.id, n.c_str(), float(def)) : float(def));

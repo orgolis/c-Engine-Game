@@ -10,6 +10,7 @@
 #include "audio_components.h"
 #include "terrain_component.h"
 #include "foliage.h"
+#include "biome.h"
 #include "script_component.h"
 #include "water_component.h"
 #include "particle_emitter_component.h"
@@ -343,6 +344,29 @@ void write_entity_block(std::ofstream& file,
             file << "TERRAIN_SPLAT=" << sf << "\n";
         }
 
+        // Biomes: one line each, paint in a sidecar; moisture settings.
+        if (auto bc = entity->GetComponent<schizo::scene::BiomeComponent>()) {
+            const auto& ms = bc->Moisture();
+            file << "BIOME_MOISTURE=" << ms.reach << " " << ms.noise << " " << ms.noise_scale << " " << ms.seed << "\n";
+            const auto& bs = bc->Biomes();
+            for (size_t bi = 0; bi < bs.size(); ++bi) {
+                const schizo::scene::Biome& b = bs[bi];
+                std::string paint_file;
+                if (!b.paint.empty()) {
+                    paint_file = "biome_" + std::to_string(entity->GetId()) + "_" + std::to_string(bi) + ".paint";
+                    std::ofstream pb(scene_dir + paint_file, std::ios::binary);
+                    if (pb) pb.write(reinterpret_cast<const char*>(b.paint.data()), static_cast<std::streamsize>(b.paint.size()));
+                    else paint_file.clear();
+                }
+                file << "BIOME=" << b.color.r << " " << b.color.g << " " << b.color.b << " " << b.min_height << " " << b.max_height << " "
+                     << b.height_blend << " " << b.min_moisture << " " << b.max_moisture << " " << b.moisture_blend << " " << b.weight << " "
+                     << b.ground_layer << " " << (b.atmosphere ? 1 : 0) << " " << b.ambient_scale << " " << b.fog_scale << " "
+                     << b.fog_color.r << " " << b.fog_color.g << " " << b.fog_color.b << " " << b.foliage.size();
+                for (float f : b.foliage) file << " " << f;
+                file << "|" << b.name << "|" << paint_file << "\n";
+            }
+        }
+
         // Foliage layers: settings inline, a painted density mask in a sidecar.
         if (auto fc = entity->GetComponent<schizo::scene::FoliageComponent>()) {
             const auto& layers = fc->Layers();
@@ -640,6 +664,10 @@ struct ParsedEntity {
     float       terrain_tri_sharp = 4.0f;
     std::string terrain_splat_file;
     std::string terrain_holes_file;
+    std::vector<schizo::scene::Biome>        biomes;
+    std::vector<std::string>                 biome_paints;
+    bool                                     has_biomes = false;
+    schizo::scene::MoistureSettings          biome_moisture;
     std::vector<schizo::scene::FoliageLayer> foliage;
     std::vector<std::string>                 foliage_masks;   // sidecar per layer, "" for none
     bool        terrain_water          = false;
@@ -896,6 +924,39 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
     if (starts_with(line, "TERRAIN_TRISHARP", v))      { p.terrain_tri_sharp = std::stof(v); return; }
     if (starts_with(line, "TERRAIN_SPLAT", v))        { p.terrain_splat_file = v; return; }
     if (starts_with(line, "TERRAIN_HOLES", v))        { p.terrain_holes_file = v; return; }
+    if (starts_with(line, "BIOME_MOISTURE", v)) {
+        std::istringstream ms(v);
+        auto& m = p.biome_moisture;
+        ms >> m.reach >> m.noise >> m.noise_scale >> m.seed;
+        p.has_biomes = true;
+        return;
+    }
+    if (starts_with(line, "BIOME", v)) {
+        schizo::scene::Biome b;
+        const size_t bar = v.find('|');
+        std::istringstream ns(v.substr(0, bar));
+        int atm = 0;
+        size_t nf = 0;
+        ns >> b.color.r >> b.color.g >> b.color.b >> b.min_height >> b.max_height >> b.height_blend >> b.min_moisture >> b.max_moisture >>
+            b.moisture_blend >> b.weight >> b.ground_layer >> atm >> b.ambient_scale >> b.fog_scale >> b.fog_color.r >> b.fog_color.g >>
+            b.fog_color.b >> nf;
+        if (!ns || nf > 64) return;
+        b.foliage.resize(nf);
+        for (float& f : b.foliage) ns >> f;
+        if (!ns) return;
+        b.atmosphere = atm != 0;
+        std::vector<std::string> str;
+        for (size_t at = bar; at != std::string::npos;) {
+            const size_t next = v.find('|', at + 1);
+            str.push_back(v.substr(at + 1, next == std::string::npos ? std::string::npos : next - at - 1));
+            at = next;
+        }
+        if (!str.empty()) b.name = str[0];
+        p.biomes.push_back(std::move(b));
+        p.biome_paints.push_back(str.size() > 1 ? str[1] : std::string());
+        p.has_biomes = true;
+        return;
+    }
     if (starts_with(line, "FOLIAGE_LAYER", v)) {
         schizo::scene::FoliageLayer l;
         schizo::scene::TerrainLayerRule& r = l.rule;
@@ -1089,6 +1150,21 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
             as->SetSpatial(p.audio_src_spatial);
             as->SetPlayOnStart(p.audio_src_play_on_start);
             as->SetBus(p.audio_src_bus);
+        }
+    }
+
+    if (p.has_biomes) {
+        auto bc = e->AddComponent<schizo::scene::BiomeComponent>();
+        bc->SetMoisture(p.biome_moisture);
+        auto& bs = bc->MutableBiomes();
+        for (size_t bi = 0; bi < p.biomes.size(); ++bi) {
+            schizo::scene::Biome b = p.biomes[bi];
+            if (bi < p.biome_paints.size() && !p.biome_paints[bi].empty()) {
+                std::ifstream pb(scene_dir + p.biome_paints[bi], std::ios::binary);
+                std::vector<uint8_t> px(static_cast<size_t>(schizo::scene::kBiomeRes) * schizo::scene::kBiomeRes);
+                if (pb && pb.read(reinterpret_cast<char*>(px.data()), static_cast<std::streamsize>(px.size()))) b.paint = std::move(px);
+            }
+            bs.push_back(std::move(b));
         }
     }
 

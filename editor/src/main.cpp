@@ -117,6 +117,8 @@
 #include "terrain_hydrology.h"    // water let out on a terrain: rivers and lakes
 #include "foliage.h"              // trees, bushes, grass and rocks scattered over a terrain
 #include "foliage_render.h"       // ... and drawn: visible cells only, instanced
+#include "biome.h"                // regions by altitude and moisture: ground, foliage, atmosphere
+#include "biome_water.h"          // the water a biome map treats as wet
 #include "logic_script_panel.h"  // graph editor for .lgraph logic scripts
 #include "logic_debug.h"          // a breakpoint in a logic script stops the game
 #include "vscript/value.h"       // literals of a logic graph's Inspector fields
@@ -265,6 +267,13 @@ struct EditorState {
     int   terrain_river_count    = 0;      // for naming them
     int   terrain_paint_layer    = 0;      // active layer 0..3
     bool  foliage_paint_active   = false;  // LMB grows the active foliage layer, Shift+LMB clears it
+    bool  biome_paint_active     = false;  // LMB paints the active biome, Shift+LMB removes paint
+    int   biome_paint_index      = 0;
+    std::vector<uint8_t> biome_stroke_paint;   // the biome's paint when the stroke began (undo)
+    bool  biome_stroke_active    = false;
+    uint32_t biome_stroke_entity = 0;
+    int   biome_stroke_index     = 0;
+    int   biome_last_seen        = -2;     // the player's biome last frame ("biome.enter")
     int   foliage_paint_layer    = 0;
     float foliage_paint_strength = 0.5f;
     std::vector<uint8_t> foliage_stroke_mask;   // the layer's mask when the stroke began (undo)
@@ -3819,6 +3828,32 @@ void ShowInspector(EditorState& editor_state) {
                     ImGui::EndDisabled();
                 }
 
+                // Biomes -- regions of this entity's terrain.
+                {
+                    const bool has_terrain = selected_entity->GetComponent<schizo::scene::TerrainComponent>() != nullptr;
+                    const bool has_biomes = selected_entity->GetComponent<schizo::scene::BiomeComponent>() != nullptr;
+                    ImGui::BeginDisabled(!has_terrain || has_biomes);
+                    if (ImGui::MenuItem("Biomes")) {
+                        auto bc = selected_entity->AddComponent<schizo::scene::BiomeComponent>();
+                        if (bc) {
+                            // A starting set that already reads as a landscape.
+                            namespace sc = schizo::scene;
+                            sc::Biome low;   low.name = "Lowland";  low.max_height = 15.0f;  low.color = glm::vec3(0.55f, 0.80f, 0.35f);
+                            sc::Biome wet;   wet.name = "Wetland";  wet.max_height = 15.0f;  wet.min_moisture = 0.6f; wet.weight = 2.0f;
+                            wet.color = glm::vec3(0.25f, 0.55f, 0.55f);
+                            sc::Biome forest; forest.name = "Forest"; forest.min_height = 10.0f; forest.max_height = 45.0f;
+                            forest.color = glm::vec3(0.15f, 0.45f, 0.15f);
+                            sc::Biome high;  high.name = "Highland"; high.min_height = 40.0f; high.color = glm::vec3(0.75f, 0.75f, 0.80f);
+                            bc->MutableBiomes() = {low, wet, forest, high};
+                        }
+                        editor_state.editor_scene->MarkModified();
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndDisabled();
+                    if (!has_terrain && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                        ImGui::SetTooltip("Biomes divide a terrain: add them to an object that has one.");
+                }
+
                 // Foliage -- trees, grass, rocks over this entity's terrain.
                 {
                     const bool has_terrain = selected_entity->GetComponent<schizo::scene::TerrainComponent>() != nullptr;
@@ -3973,6 +4008,181 @@ void ShowInspector(EditorState& editor_state) {
         ImGui::Separator();
         auto terrain_comp = selected_entity->GetComponent<schizo::scene::TerrainComponent>();
         auto foliage_comp = selected_entity->GetComponent<schizo::scene::FoliageComponent>();
+        auto biome_comp = selected_entity->GetComponent<schizo::scene::BiomeComponent>();
+        if (terrain_comp && biome_comp && ImGui::TreeNodeEx("Biomes", ImGuiTreeNodeFlags_DefaultOpen)) {
+            namespace sc = schizo::scene;
+            uint64_t wkey = 0;
+            const auto water = schizo::editor::biome_water_for(*editor_state.editor_scene->GetScene(), *selected_entity, wkey);
+            const std::vector<float>& map = biome_comp->Map(*terrain_comp, water, wkey);
+            std::vector<sc::Biome> biomes = biome_comp->Biomes();
+            const int nb = static_cast<int>(biomes.size());
+
+            // The map: each spot coloured by its biomes, blended. North is up.
+            {
+                const float side = std::min(ImGui::GetContentRegionAvail().x, 256.0f);
+                const ImVec2 o = ImGui::GetCursorScreenPos();
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const int cells = 64, step = sc::kBiomeRes / cells;
+                const float px = side / cells;
+                for (int z = 0; z < cells && nb > 0 && map.size() >= static_cast<size_t>(sc::kBiomeRes) * sc::kBiomeRes * nb; ++z)
+                    for (int x = 0; x < cells; ++x) {
+                        const size_t tix = static_cast<size_t>(z * step) * sc::kBiomeRes + static_cast<size_t>(x * step);
+                        glm::vec3 c(0.15f);
+                        float sum = 0.0f;
+                        glm::vec3 acc(0.0f);
+                        for (int b = 0; b < nb; ++b) { const float w = map[tix * nb + b]; acc += biomes[static_cast<size_t>(b)].color * w; sum += w; }
+                        if (sum > 0.0f) c = acc;
+                        dl->AddRectFilled(ImVec2(o.x + x * px, o.y + z * px), ImVec2(o.x + (x + 1) * px, o.y + (z + 1) * px),
+                                          ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 1.0f)));
+                    }
+                ImGui::Dummy(ImVec2(side, side));
+                if (ImGui::IsItemHovered() && nb > 0) {
+                    const ImVec2 mp = ImGui::GetIO().MousePos;
+                    const float u = (mp.x - o.x) / side, v = (mp.y - o.y) / side;
+                    const float half = terrain_comp->GetSize() * 0.5f;
+                    float w = 0.0f;
+                    const int b = biome_comp->DominantAt(*terrain_comp, -half + u * terrain_comp->GetSize(), -half + v * terrain_comp->GetSize(), &w);
+                    const auto& mo = biome_comp->MoistureMap();
+                    const int mx = std::clamp(static_cast<int>(u * sc::kBiomeRes), 0, sc::kBiomeRes - 1);
+                    const int mz = std::clamp(static_cast<int>(v * sc::kBiomeRes), 0, sc::kBiomeRes - 1);
+                    ImGui::SetTooltip("%s (%.0f%%)\nmoisture %.2f", b >= 0 ? biomes[static_cast<size_t>(b)].name.c_str() : "no biome",
+                                      w * 100.0f, mo.empty() ? 0.0f : mo[static_cast<size_t>(mz) * sc::kBiomeRes + mx]);
+                }
+            }
+
+            bool changed = false, committed = false;
+            int remove = -1;
+            for (int b = 0; b < nb; ++b) {
+                sc::Biome& bi = biomes[static_cast<size_t>(b)];
+                ImGui::PushID(9500 + b);
+                ImGui::ColorEdit3("##bcol", &bi.color.x, ImGuiColorEditFlags_NoInputs);
+                changed |= ImGui::IsItemEdited();
+                ImGui::SameLine();
+                if (ImGui::TreeNode((bi.name + "###biome").c_str())) {
+                    char nbuf[64];
+                    std::snprintf(nbuf, sizeof nbuf, "%s", bi.name.c_str());
+                    if (ImGui::InputText("Name", nbuf, sizeof nbuf)) { bi.name = nbuf; changed = true; }
+                    changed |= ImGui::DragFloatRange2("Height", &bi.min_height, &bi.max_height, 0.5f, -1000.0f, 1000.0f, "from %.1f", "to %.1f");
+                    changed |= ImGui::SliderFloat("Height fade", &bi.height_blend, 0.0f, 50.0f);
+                    changed |= ImGui::DragFloatRange2("Moisture", &bi.min_moisture, &bi.max_moisture, 0.01f, 0.0f, 1.0f, "from %.2f", "to %.2f");
+                    changed |= ImGui::SliderFloat("Moisture fade", &bi.moisture_blend, 0.0f, 0.5f);
+                    changed |= ImGui::SliderFloat("Weight", &bi.weight, 0.0f, 4.0f);
+                    const char* gl[] = {"(leave as it is)", "texture layer 0", "texture layer 1", "texture layer 2", "texture layer 3"};
+                    int g = bi.ground_layer + 1;
+                    if (ImGui::Combo("Ground", &g, gl, 5)) { bi.ground_layer = g - 1; changed = true; }
+                    if (foliage_comp && !foliage_comp->Layers().empty() && ImGui::TreeNode("Foliage here")) {
+                        for (size_t fl = 0; fl < foliage_comp->Layers().size(); ++fl) {
+                            if (bi.foliage.size() <= fl) bi.foliage.resize(fl + 1, 1.0f);
+                            ImGui::PushID(static_cast<int>(fl));
+                            changed |= ImGui::SliderFloat(foliage_comp->Layers()[fl].name.c_str(), &bi.foliage[fl], 0.0f, 1.0f);
+                            ImGui::PopID();
+                        }
+                        ImGui::TreePop();
+                    }
+                    changed |= ImGui::Checkbox("Own atmosphere", &bi.atmosphere);
+                    if (bi.atmosphere) {
+                        changed |= ImGui::SliderFloat("Ambient light", &bi.ambient_scale, 0.0f, 3.0f, "x %.2f");
+                        changed |= ImGui::SliderFloat("Fog", &bi.fog_scale, 0.0f, 10.0f, "x %.2f");
+                        changed |= ImGui::ColorEdit3("Fog colour", &bi.fog_color.x, ImGuiColorEditFlags_NoInputs);
+                        ImGui::TextDisabled("Fog shows when Volumetric Fog is on (Post-Processing).");
+                    }
+                    if (!bi.paint.empty() && ImGui::SmallButton("Forget painted area")) { bi.paint.clear(); committed = true; }
+                    if (ImGui::SmallButton("Remove biome")) remove = b;
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            if (remove >= 0) { biomes.erase(biomes.begin() + remove); committed = true; }
+            if (static_cast<int>(biomes.size()) < sc::kMaxBiomes && ImGui::Button("+ Biome")) {
+                sc::Biome nbm;
+                nbm.name = "Biome " + std::to_string(biomes.size() + 1);
+                nbm.color = glm::vec3(0.6f, 0.4f, 0.7f);
+                biomes.push_back(nbm);
+                committed = true;
+            }
+            {
+                sc::MoistureSettings ms = biome_comp->Moisture();
+                if (ImGui::TreeNode("Moisture")) {
+                    bool mc = false;
+                    mc |= ImGui::SliderFloat("Reach of water", &ms.reach, 2.0f, 300.0f, "%.0f");
+                    mc |= ImGui::SliderFloat("Patchiness", &ms.noise, 0.0f, 1.0f);
+                    mc |= ImGui::SliderFloat("Patch size", &ms.noise_scale, 5.0f, 300.0f, "%.0f");
+                    ImGui::TextDisabled("Wet near the terrain's water and any water surface over it.");
+                    if (mc) { biome_comp->SetMoisture(ms); editor_state.editor_scene->MarkModified(); }
+                    ImGui::TreePop();
+                }
+            }
+
+            ImGui::Separator();
+            if (ImGui::Button("Apply biomes##biome")) {
+                // Ground textures and foliage density, as one undo step.
+                const uint32_t eid = selected_entity->GetId();
+                const std::vector<uint8_t> splat_before = terrain_comp->Splat();
+                std::vector<sc::FoliageLayer> fol_before;
+                if (foliage_comp) fol_before = foliage_comp->Layers();
+                sc::apply_biomes(*terrain_comp, biome_comp->Biomes(), map, foliage_comp.get());
+                const std::vector<uint8_t> splat_after = terrain_comp->Splat();
+                std::vector<sc::FoliageLayer> fol_after;
+                if (foliage_comp) fol_after = foliage_comp->Layers();
+                auto set = [&editor_state, eid](const std::vector<uint8_t>& sp, const std::vector<sc::FoliageLayer>& fl) {
+                    auto scn = editor_state.editor_scene->GetScene();
+                    auto en = scn ? scn->GetEntityById(eid) : nullptr;
+                    if (!en) return;
+                    if (auto tcx = en->GetComponent<sc::TerrainComponent>(); tcx && tcx->Splat().size() == sp.size()) {
+                        tcx->MutableSplat() = sp;
+                        tcx->MarkSplatDirty();
+                    }
+                    if (auto fcx = en->GetComponent<sc::FoliageComponent>(); fcx && fcx->Layers().size() == fl.size()) fcx->MutableLayers() = fl;
+                    editor_state.editor_scene->MarkModified();
+                };
+                editor_state.undo_redo_manager.PushExecuted(std::make_unique<schizo::editor::FunctionCommand>(
+                    [set, splat_after, fol_after] { set(splat_after, fol_after); },
+                    [set, splat_before, fol_before] { set(splat_before, fol_before); }, "Apply biomes"));
+                editor_state.editor_scene->MarkModified();
+                editor_state.set_status("Biomes applied to the ground textures and the foliage");
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(ground textures + foliage density)");
+            if (ImGui::Checkbox("Paint Biome##biome", &editor_state.biome_paint_active) && editor_state.biome_paint_active) {
+                editor_state.terrain_sculpt_active = false;
+                editor_state.terrain_paint_active = false;
+                editor_state.terrain_water_active = false;
+                editor_state.foliage_paint_active = false;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(drag: paint; Shift-drag: unpaint)");
+            if (editor_state.biome_paint_active && !biomes.empty()) {
+                editor_state.biome_paint_index = std::clamp(editor_state.biome_paint_index, 0, static_cast<int>(biomes.size()) - 1);
+                if (ImGui::BeginCombo("Biome##bpaint", biomes[static_cast<size_t>(editor_state.biome_paint_index)].name.c_str())) {
+                    for (int b = 0; b < static_cast<int>(biomes.size()); ++b)
+                        if (ImGui::Selectable((biomes[static_cast<size_t>(b)].name + "##bp" + std::to_string(b)).c_str(), b == editor_state.biome_paint_index))
+                            editor_state.biome_paint_index = b;
+                    ImGui::EndCombo();
+                }
+                ImGui::SliderFloat("Brush radius##bpaint", &editor_state.terrain_brush_radius, 0.5f, 120.0f);
+            }
+
+            if (changed || committed) {
+                static std::vector<sc::Biome> drag_before;
+                static bool dragging = false;
+                if (!dragging) { drag_before = biome_comp->Biomes(); dragging = true; }
+                biome_comp->MutableBiomes() = biomes;
+                editor_state.editor_scene->MarkModified();
+                if (committed || !ImGui::IsAnyItemActive()) {
+                    const uint32_t eid = selected_entity->GetId();
+                    auto set = [&editor_state, eid](const std::vector<sc::Biome>& bs) {
+                        auto scn = editor_state.editor_scene->GetScene();
+                        auto en = scn ? scn->GetEntityById(eid) : nullptr;
+                        if (auto b2 = en ? en->GetComponent<sc::BiomeComponent>() : nullptr) b2->MutableBiomes() = bs;
+                        editor_state.editor_scene->MarkModified();
+                    };
+                    editor_state.undo_redo_manager.PushExecuted(std::make_unique<schizo::editor::FunctionCommand>(
+                        [set, after = biomes] { set(after); }, [set, before = drag_before] { set(before); }, "Edit biomes"));
+                    dragging = false;
+                }
+            }
+            ImGui::TreePop();
+        }
         if (terrain_comp && foliage_comp && ImGui::TreeNodeEx("Foliage", ImGuiTreeNodeFlags_DefaultOpen)) {
             namespace sc = schizo::scene;
             // Every widget edits a copy; a change is written back once, so the
@@ -5950,6 +6160,84 @@ void ShowViewport(EditorState& editor_state) {
                             if (schizo::scene::paint_foliage_mask(*tc, layer, hitp.x - base.x, hitp.z - base.z,
                                                                    editor_state.terrain_brush_radius, amount,
                                                                    editor_state.terrain_brush_falloff))
+                                editor_state.editor_scene->MarkModified();
+                        }
+                    }
+                }
+            }
+
+            // ---- Biome painting ----
+            if (editor_state.biome_stroke_active && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                const uint32_t eid = editor_state.biome_stroke_entity;
+                const int      bi = editor_state.biome_stroke_index;
+                auto en = scene ? scene->GetEntityById(eid) : nullptr;
+                auto bc = en ? en->GetComponent<schizo::scene::BiomeComponent>() : nullptr;
+                if (bc && bi < static_cast<int>(bc->Biomes().size())) {
+                    auto set = [&editor_state, eid, bi](const std::vector<uint8_t>& pt) {
+                        auto scn = editor_state.editor_scene->GetScene();
+                        auto e2 = scn ? scn->GetEntityById(eid) : nullptr;
+                        auto b2 = e2 ? e2->GetComponent<schizo::scene::BiomeComponent>() : nullptr;
+                        if (!b2 || bi >= static_cast<int>(b2->Biomes().size())) return;
+                        b2->MutableBiomes()[static_cast<size_t>(bi)].paint = pt;
+                        editor_state.editor_scene->MarkModified();
+                    };
+                    editor_state.undo_redo_manager.PushExecuted(std::make_unique<schizo::editor::FunctionCommand>(
+                        [set, after = bc->Biomes()[static_cast<size_t>(bi)].paint] { set(after); },
+                        [set, before = editor_state.biome_stroke_paint] { set(before); }, "Paint biome"));
+                }
+                editor_state.biome_stroke_active = false;
+            }
+            if (editor_state.biome_paint_active && scene && image_drawn && editor_state.selected_entity_id != 0) {
+                auto sel = scene->GetEntityById(editor_state.selected_entity_id);
+                auto tc  = sel ? sel->GetComponent<schizo::scene::TerrainComponent>() : nullptr;
+                auto bc  = sel ? sel->GetComponent<schizo::scene::BiomeComponent>() : nullptr;
+                const float vx = io.MousePos.x - image_min.x, vy = io.MousePos.y - image_min.y;
+                if (tc && bc && !bc->Biomes().empty() && vx >= 0 && vy >= 0 && vx < viewport_size.x && vy < viewport_size.y) {
+                    auto [ro, rd] = editor_state.viewport_camera.GetPickingRay(vx, vy, viewport_size.x, viewport_size.y);
+                    const glm::vec3 base = sel->GetTransform()->GetWorldPosition();
+                    const float half = tc->GetSize() * 0.5f;
+                    const float step = std::max(0.2f, tc->CellSize() * 0.5f);
+                    const float maxT = tc->GetSize() * 4.0f + 200.0f;
+                    bool hit = false; glm::vec3 hitp(0.0f);
+                    for (float rt = 0.0f; rt < maxT; rt += step) {
+                        const glm::vec3 lp = (ro + rd * rt) - base;
+                        if (lp.x < -half || lp.x > half || lp.z < -half || lp.z > half) continue;
+                        if (lp.y <= tc->SampleHeightLocal(lp.x, lp.z)) { hit = true; hitp = ro + rd * rt; break; }
+                    }
+                    if (hit) {
+                        const int bi = std::clamp(editor_state.biome_paint_index, 0, static_cast<int>(bc->Biomes().size()) - 1);
+                        const glm::vec3 col = bc->Biomes()[static_cast<size_t>(bi)].color;
+                        auto to_scr = [&](glm::vec3 w) -> ImVec2 {
+                            glm::mat4 p = proj_matrix; p[1][1] *= -1.0f;
+                            glm::vec4 c = p * view_matrix * glm::vec4(w, 1.0f);
+                            if (c.w <= 0.0f) return ImVec2(-1e9f, -1e9f);
+                            glm::vec3 ndc = glm::vec3(c) / c.w;
+                            return ImVec2(image_min.x + (ndc.x * 0.5f + 0.5f) * viewport_size.x,
+                                          image_min.y + (ndc.y * 0.5f + 0.5f) * viewport_size.y);
+                        };
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        ImVec2 prev; bool first = true;
+                        const ImU32 ring = ImGui::ColorConvertFloat4ToU32(ImVec4(col.r, col.g, col.b, 0.9f));
+                        for (int s = 0; s <= 40; ++s) {
+                            const float a = static_cast<float>(s) / 40.0f * 6.2831853f;
+                            const float rx = hitp.x + std::cos(a) * editor_state.terrain_brush_radius;
+                            const float rz = hitp.z + std::sin(a) * editor_state.terrain_brush_radius;
+                            const ImVec2 sp = to_scr(glm::vec3(rx, base.y + tc->SampleHeightLocal(rx - base.x, rz - base.z), rz));
+                            if (!first && sp.x > -1e8f && prev.x > -1e8f) dl->AddLine(prev, sp, ring, 2.0f);
+                            prev = sp; first = false;
+                        }
+                        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                            if (!editor_state.biome_stroke_active) {
+                                editor_state.biome_stroke_active = true;
+                                editor_state.biome_stroke_entity = sel->GetId();
+                                editor_state.biome_stroke_index = bi;
+                                editor_state.biome_stroke_paint = bc->Biomes()[static_cast<size_t>(bi)].paint;
+                            }
+                            const float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 0.016f;
+                            const float amount = std::min(1.0f, dt * 4.0f) * (io.KeyShift ? -1.0f : 1.0f);
+                            if (schizo::scene::paint_biome(*tc, bc->MutableBiomes()[static_cast<size_t>(bi)], hitp.x - base.x,
+                                                           hitp.z - base.z, editor_state.terrain_brush_radius, amount,
+                                                           editor_state.terrain_brush_falloff))
                                 editor_state.editor_scene->MarkModified();
                         }
                     }
@@ -8162,6 +8450,8 @@ int main(int argc, char** argv) {
         prim_cache.initialize(&device);
         schizo::editor::FoliageRenderer foliage_renderer;
         foliage_renderer.initialize(&device);
+        float     biome_fog_scale = 1.0f, biome_fog_weight = 0.0f;   // this frame's biome atmosphere (see foliage_draws)
+        glm::vec3 biome_fog_color(0.0f);
         spdlog::info("Primitive meshes initialized (cube/plane/sphere/cylinder/capsule/pyramid)");
 
         // Material assets (.mat) — path → MaterialDesc, hot-reloaded when the
@@ -11622,6 +11912,49 @@ int main(int argc, char** argv) {
                                                                                       glm::vec3(-30.0f, 4.0f, 30.0f));
                                         }
                                     }
+                                    // GWS_TEST_BIOMES=1: four biomes on the hills, applied.
+                                    if (std::getenv("GWS_TEST_BIOMES")) {
+                                        auto bcm = te->GetComponent<schizo::scene::BiomeComponent>();
+                                        if (!bcm) bcm = te->AddComponent<schizo::scene::BiomeComponent>();
+                                        namespace sc = schizo::scene;
+                                        sc::Biome low;   low.name = "Lowland";  low.max_height = 12.0f; low.ground_layer = 1;
+                                        low.color = glm::vec3(0.55f, 0.80f, 0.35f);
+                                        sc::Biome forest; forest.name = "Forest"; forest.min_height = 8.0f; forest.max_height = 26.0f; forest.ground_layer = 2;
+                                        forest.color = glm::vec3(0.15f, 0.45f, 0.15f);
+                                        sc::Biome high;  high.name = "Highland"; high.min_height = 24.0f; high.ground_layer = 3;
+                                        high.color = glm::vec3(0.75f, 0.75f, 0.80f);
+                                        low.foliage = {0.15f, 0.3f, 1.0f, 0.5f};
+                                        forest.foliage = {1.0f, 1.0f, 0.3f, 0.3f};
+                                        high.foliage = {0.05f, 0.0f, 0.1f, 1.0f};
+                                        bcm->MutableBiomes() = {low, forest, high};
+                                        uint64_t wk = 0;
+                                        const auto wr = schizo::editor::biome_water_for(*ts, *te, wk);
+                                        auto fol = te->GetComponent<schizo::scene::FoliageComponent>();
+                                        // Plain colours per layer, so the biomes read in a screenshot:
+                                        // lowland green, forest dark green, highland grey-white.
+                                        const glm::vec4 layer_col[3] = {glm::vec4(0.35f, 0.55f, 0.20f, 1), glm::vec4(0.12f, 0.28f, 0.10f, 1),
+                                                                        glm::vec4(0.72f, 0.72f, 0.74f, 1)};
+                                        for (int li = 0; li < 3; ++li) {
+                                            gws::assets::MaterialDesc md;
+                                            md.name = "test_biome_layer" + std::to_string(li + 1);
+                                            md.base_color = layer_col[li];
+                                            md.roughness = 0.9f;
+                                            const std::string mp = (std::filesystem::temp_directory_path() / (md.name + ".mat")).generic_string();
+                                            if (gws::assets::save_material(mp, md)) tcomp->SetLayerMaterial(li + 1, mp);
+                                        }
+                                        const std::vector<float>& bmap = bcm->Map(*tcomp, wr, wk);
+                                        sc::apply_biomes(*tcomp, bcm->Biomes(), bmap, fol.get());
+                                        int share[3] = {0, 0, 0}, none = 0;
+                                        const float th = tcomp->GetSize() * 0.5f;
+                                        for (int bz = 0; bz < 64; ++bz)
+                                            for (int bx = 0; bx < 64; ++bx) {
+                                                const int d = bcm->DominantAt(*tcomp, -th + (bx + 0.5f) / 64.0f * 2.0f * th,
+                                                                              -th + (bz + 0.5f) / 64.0f * 2.0f * th);
+                                                if (d >= 0 && d < 3) ++share[d]; else ++none;
+                                            }
+                                        spdlog::info("[test] biomes: lowland {}, forest {}, highland {}, none {} (of 4096 spots)",
+                                                     share[0], share[1], share[2], none);
+                                    }
                                     // GWS_TEST_TERRAIN_RIVER=1: let water out at the highest
                                     // point, carve it, show it, and look at it from above.
                                     if (std::getenv("GWS_TEST_TERRAIN_RIVER")) {
@@ -11720,9 +12053,79 @@ int main(int argc, char** argv) {
                   opaque_draws, transparent_draws, &texture_manager, &ecs_bridge,
                   &material_assets, terrain_mat_layout, terrain_mat_pool); }
             if (render_scene) {
-                GWS_PROFILE_ZONE("foliage_draws");
-                foliage_renderer.append(editor_scene.GetScene(), cam, prim_cache, mat_cache, asset_cache, &device,
-                                        mat_layout, mat_pool, &texture_manager, opaque_draws);
+                // Biome atmosphere: blend each biome's ambient light and fog in
+                // by how much of it is under the camera. Fog is changed only
+                // around its own pass (below) and put back after, so the
+                // Post-Processing settings stay what the user set.
+                {
+                    float     amb_scale = 1.0f, fog_scale = 1.0f, fog_w = 0.0f;
+                    glm::vec3 fog_col(0.0f);
+                    if (auto bscene = editor_scene.GetScene()) {
+                        for (const auto& te : bscene->EntitiesWithAny<schizo::scene::BiomeComponent>()) {
+                            auto bc = te ? te->GetComponent<schizo::scene::BiomeComponent>() : nullptr;
+                            auto tc = te ? te->GetComponent<schizo::scene::TerrainComponent>() : nullptr;
+                            if (!bc || !tc || !te->IsActiveInHierarchy()) continue;
+                            const glm::vec3 l = cam.position - te->GetTransform()->GetWorldPosition();
+                            const float half = tc->GetSize() * 0.5f;
+                            if (std::fabs(l.x) > half || std::fabs(l.z) > half) continue;
+                            uint64_t wk = 0;
+                            const auto wr = schizo::editor::biome_water_for(*bscene, *te, wk);
+                            bc->Map(*tc, wr, wk);
+                            const std::vector<float> w = bc->WeightsAt(*tc, l.x, l.z);
+                            float a = 0.0f, f = 0.0f;
+                            for (size_t b = 0; b < w.size(); ++b) {
+                                const auto& bi = bc->Biomes()[b];
+                                if (!bi.atmosphere) { a += w[b]; f += w[b]; continue; }
+                                a += w[b] * bi.ambient_scale;
+                                f += w[b] * bi.fog_scale;
+                                fog_col += w[b] * bi.fog_color;
+                                fog_w += w[b];
+                            }
+                            float claimed = 0.0f;
+                            for (float x : w) claimed += x;
+                            amb_scale = a + (1.0f - claimed);
+                            fog_scale = f + (1.0f - claimed);
+                            break;
+                        }
+                    }
+                    static float applied_ambient = -1.0f;
+                    const float want = l_cfg.global_ambient * amb_scale;
+                    if (std::fabs(want - applied_ambient) > 1e-4f) {
+                        lighting->set_ambient_light(want);
+                        lighting->set_ibl_intensity(want * kIblShareOfAmbient);
+                        applied_ambient = want;
+                    }
+                    biome_fog_scale = fog_scale;
+                    biome_fog_weight = fog_w;
+                    biome_fog_color = fog_w > 0.0f ? fog_col / fog_w : glm::vec3(0.0f);
+                }
+
+                // "biome.enter": the player walked into another biome (Play only).
+                if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
+                    if (auto* pl = editor_state.scene_playback_manager->GetPlayerEntity()) {
+                        char  bname[64] = {};
+                        float bw = 0.0f;
+                        const int now = editor_state.script_api.biome_at
+                                            ? editor_state.script_api.biome_at(editor_state.script_api.ctx, pl->GetId(), bname, sizeof bname, &bw)
+                                            : -1;
+                        if (now != editor_state.biome_last_seen) {
+                            if (now >= 0 && editor_state.biome_last_seen != -2) {
+                                schizo::ecs::GameplayEvent ev;
+                                ev.name = "biome.enter";
+                                ev.param = bname;
+                                ev.value = static_cast<float>(now);
+                                ecs_bridge.events().publish(ev);
+                            }
+                            editor_state.biome_last_seen = now;
+                        }
+                    }
+                } else {
+                    editor_state.biome_last_seen = -2;
+                }
+
+                { GWS_PROFILE_ZONE("foliage_draws");
+                  foliage_renderer.append(editor_scene.GetScene(), cam, prim_cache, mat_cache, asset_cache, &device,
+                                          mat_layout, mat_pool, &texture_manager, opaque_draws); }
                 static int foliage_log = 0;
                 if (foliage_renderer.stats().instances && ++foliage_log % 120 == 0)
                     spdlog::debug("[foliage] {} cells, {} instances, {} draw items", foliage_renderer.stats().cells_seen,
@@ -12367,8 +12770,16 @@ int main(int argc, char** argv) {
                     froxel_fog->set_sun(sun_dir_for_rt, sun_color_for_rt);
                     froxel_fog->set_shadow_matrix(shadow_view_proj);
                     froxel_fog->set_light_count(lighting->get_light_count());
+                    // The biome under the camera thickens or thins the fog and tints it.
+                    const auto fog_user = froxel_fog->config();
+                    {
+                        auto& fcfg = froxel_fog->mutable_config();
+                        fcfg.density *= biome_fog_scale;
+                        if (biome_fog_weight > 0.0f) fcfg.ambient = glm::mix(fcfg.ambient, biome_fog_color, std::min(1.0f, biome_fog_weight));
+                    }
                     { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "FroxelFog");
                     froxel_fog->execute(cmd, cam.view, cam.proj, cam.position); }
+                    froxel_fog->mutable_config() = fog_user;
                 }
                 // Transparent stage uses a custom recorder so we can feed it
                 // the back-to-front-sorted transparent draw list directly,

@@ -21,6 +21,7 @@
 #include "entity.h"
 #include "entity_factory.h"
 #include "foliage.h"
+#include "biome.h"
 #include "npc_agent_component.h"
 #include "particle_emitter_component.h"
 #include "scene.h"
@@ -111,6 +112,24 @@ int main() {
             b.name = "Grass";
             b.kind = scene::FoliageKind::Grass;
             fc->MutableLayers() = {a, b};
+        }
+        {
+            auto bc = ground->AddComponent<scene::BiomeComponent>();
+            scene::MoistureSettings ms;
+            ms.reach = 55.0f; ms.noise = 0.4f; ms.noise_scale = 90.0f; ms.seed = 12;
+            bc->SetMoisture(ms);
+            scene::Biome m;
+            m.name = "Salt marsh";
+            m.color = glm::vec3(0.2f, 0.4f, 0.6f);
+            m.min_height = -3.0f; m.max_height = 9.5f; m.height_blend = 1.5f;
+            m.min_moisture = 0.65f; m.max_moisture = 0.95f; m.moisture_blend = 0.05f; m.weight = 2.5f; m.ground_layer = 3;
+            m.foliage = {0.0f, 0.75f};
+            m.atmosphere = true; m.ambient_scale = 0.6f; m.fog_scale = 4.0f; m.fog_color = glm::vec3(0.3f, 0.35f, 0.3f);
+            m.paint.assign(static_cast<size_t>(scene::kBiomeRes) * scene::kBiomeRes, 0);
+            m.paint[4321] = 99;
+            scene::Biome h;
+            h.name = "Peaks";
+            bc->MutableBiomes() = {m, h};
         }
         tc->SetTiling(0, 48.0f);
         tc->SetTriplanar(true);
@@ -222,6 +241,28 @@ int main() {
                       "a painted foliage density mask survives");
                 check(fc->Layers()[1].kind == scene::FoliageKind::Grass && fc->Layers()[1].mask.empty(),
                       "a layer that was never painted stays without a mask");
+            }
+        }
+        {
+            auto g = loaded->GetEntityByName("Ground");
+            auto bc = g ? g->GetComponent<scene::BiomeComponent>() : nullptr;
+            const bool two = bc && bc->Biomes().size() == 2;
+            check(two, "a biome component and its two biomes survive");
+            if (two) {
+                const scene::Biome& m = bc->Biomes()[0];
+                check(m.name == "Salt marsh" && std::fabs(m.color.z - 0.6f) < 1e-4f && std::fabs(m.min_height + 3.0f) < 1e-4f &&
+                          std::fabs(m.max_height - 9.5f) < 1e-4f && std::fabs(m.height_blend - 1.5f) < 1e-4f &&
+                          std::fabs(m.min_moisture - 0.65f) < 1e-4f && std::fabs(m.max_moisture - 0.95f) < 1e-4f &&
+                          std::fabs(m.moisture_blend - 0.05f) < 1e-4f && std::fabs(m.weight - 2.5f) < 1e-4f && m.ground_layer == 3,
+                      "a biome's name, colour and where it is survive");
+                check(m.foliage.size() == 2 && m.foliage[0] == 0.0f && std::fabs(m.foliage[1] - 0.75f) < 1e-4f && m.atmosphere &&
+                          std::fabs(m.ambient_scale - 0.6f) < 1e-4f && std::fabs(m.fog_scale - 4.0f) < 1e-4f && std::fabs(m.fog_color.y - 0.35f) < 1e-4f,
+                      "a biome's foliage and atmosphere survive");
+                check(m.paint.size() == static_cast<size_t>(scene::kBiomeRes) * scene::kBiomeRes && m.paint[4321] == 99 && bc->Biomes()[1].paint.empty(),
+                      "a painted biome area survives, and an unpainted biome stays unpainted");
+                const scene::MoistureSettings& ms = bc->Moisture();
+                check(std::fabs(ms.reach - 55.0f) < 1e-4f && std::fabs(ms.noise - 0.4f) < 1e-4f && std::fabs(ms.noise_scale - 90.0f) < 1e-4f && ms.seed == 12,
+                      "the moisture settings survive");
             }
         }
     }

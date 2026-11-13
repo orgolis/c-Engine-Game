@@ -117,6 +117,8 @@ typedef struct SchizoScriptApi {
     bool     (*event_get)(void* ctx, int index, char* name_out, int name_size,
                           unsigned* instigator, unsigned* target, float* value,
                           char* param_out, int param_size);
+    /* The biome an entity stands in (-1 and "" where none), and its weight. */
+    int      (*biome_at)(void* ctx, unsigned e, char* name_out, int name_size, float* weight);
 } SchizoScriptApi;
 
 }  // extern "C"
