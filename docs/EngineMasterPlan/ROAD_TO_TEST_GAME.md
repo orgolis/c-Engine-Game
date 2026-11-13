@@ -125,6 +125,20 @@ nodes, sample content and a check.
 | C5 | Abilities: assets with cast, channel and targeting, effects, cooldown display, VFX hooks |
 | C6 | Glue: a player template, a HUD, save and load |
 
+**Progress (v0.8.31):** an audit at the start of phase C found much of it
+built in earlier stages (items, inventory, equipment, loot, crafting, the
+in-game inventory and character screens, a HUD, melee combat with hurtboxes,
+weapons with ammunition, spread and projectiles, abilities with cooldowns,
+save games). Gaps found: no item or weapon editor, no recoil, aim-down-sights,
+muzzle flash, tracers or impact marks, weapons not authorable as data, the
+player could not shoot with the mouse, no mantle or glide. C3 first part done
+in v0.8.31: weapons as data (`weapon` blocks in `.items` files), recoil, spread
+bloom, aim-down-sights with zoom, burst fire, rounds stopped by level geometry,
+ammunition carried as an inventory item, and in Play: left mouse fires, right
+aims, R reloads, a crosshair whose gap is the spread, a hit marker, an ammo
+readout, muzzle flash, tracers and impact marks. Still open in C3: a weapon
+editor panel, decals that are real projected decals, weapon models in the hand.
+
 ## Phase D: the test game
 
 A small game built only with the editor and logic graphs: a terrain with

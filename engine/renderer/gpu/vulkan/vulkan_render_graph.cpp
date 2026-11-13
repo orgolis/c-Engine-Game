@@ -19,6 +19,7 @@
 #include "culling.h"
 #include "gpu_profiler.h"  // Stage 14 N2: per-pass GPU timing sink (now compiled)
 
+#include <algorithm>
 #include <spdlog/spdlog.h>
 
 #include <array>
@@ -483,6 +484,10 @@ void VulkanRenderGraph::record_shadow(VkCommandBuffer cmd, const StageRecorder& 
         } else {
             items_to_draw.assign(draw_items_.begin(), draw_items_.end());
         }
+        // Draws that do not cast (see DrawItem::casts_shadow).
+        items_to_draw.erase(std::remove_if(items_to_draw.begin(), items_to_draw.end(),
+                                           [](const DrawItem& d) { return !d.casts_shadow; }),
+                            items_to_draw.end());
         config_.shadow_map->draw_items(cmd, camera_.view, camera_.proj,
                                        camera_.position,
                                        items_to_draw.data(), items_to_draw.size(),

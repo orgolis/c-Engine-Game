@@ -78,6 +78,9 @@ struct DrawItem {
     /// per-layer TILING numbers, so terrain reflections were shaded with a
     /// "colour" made of the numbers 16, 16, 16, 16.
     const TerrainMaterial* terrain_material = nullptr;
+    /// False keeps this draw out of the shadow map: light-giving effects
+    /// (muzzle flashes, tracers), and foliage layers set not to cast.
+    bool            casts_shadow  = true;
 };
 
 /**

@@ -16,6 +16,7 @@
  */
 
 #include "profiler/profiler.h"
+#include <algorithm>
 #include <chrono>
 #include "vulkan_rt_scene.h"
 #include "vulkan_device.h"
@@ -583,6 +584,16 @@ static_assert(sizeof(RtInstanceDataGpu) == 64, "RtInstanceData layout drift");
 
 void VulkanRtScene::update(VkCommandBuffer cmd, const DrawItem* items, size_t count) {
     if (device_ == nullptr || cmd == VK_NULL_HANDLE) return;
+
+    // Draws that cast no shadow (muzzle flashes, tracers, foliage set not to)
+    // stay out of the ray-traced scene: its shadows, reflections and AO.
+    if (std::any_of(items, items + count, [](const DrawItem& d) { return !d.casts_shadow; })) {
+        casting_.clear();
+        for (size_t i = 0; i < count; ++i)
+            if (items[i].casts_shadow) casting_.push_back(items[i]);
+        items = casting_.data();
+        count = casting_.size();
+    }
 
     // Reclaim scratch buffers retired by a mid-frame growth, once no frame that
     // could reference them is still in flight. The grace is generous because a

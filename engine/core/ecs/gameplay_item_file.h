@@ -32,6 +32,7 @@
 //   end
 
 #include "gameplay_items.h"
+#include "gameplay_weapons.h"
 
 #include <cctype>
 #include <filesystem>
@@ -85,6 +86,7 @@ inline std::vector<ItemDef> parse_items_text(const std::string& text) {
         if (key.empty() || key[0] == '#') continue;
 
         if (key == "item")      { flush(); ls >> cur.id; have = true; }
+        else if (key == "weapon") { flush(); }   // a weapon block: parse_weapons_text's
         else if (!have)         { continue; }
         else if (key == "end")  { flush(); }
         else if (key == "name")      { std::string rest; std::getline(ls, rest); cur.name = detail::trim(rest); }
@@ -104,10 +106,66 @@ inline std::vector<ItemDef> parse_items_text(const std::string& text) {
     return out;
 }
 
-// Register every item in the text. Returns the number registered.
+// Weapon blocks in the same files:
+//
+//   weapon rifle
+//     name Assault Rifle
+//     fire auto                # semi | auto | burst
+//     damage 22 kinetic
+//     rpm 650
+//     magazine 30
+//     reload 2.1
+//     spread 0.6               # degrees, hip fire at rest
+//     bloom 0.35 5             # per shot, at most
+//     recoil 0.8 0.4           # degrees up, degrees sideways (+/-)
+//     aim 0.75 0.3             # field of view while aiming, spread while aiming
+//     range 150
+//     tracer 3                 # every 3rd round
+//     impact 0.12              # mark size where it hits the world
+//     flash                    # muzzle flash
+//   end
+inline std::vector<WeaponDef> parse_weapons_text(const std::string& text) {
+    std::vector<WeaponDef> out;
+    WeaponDef cur; bool have = false;
+    auto flush = [&] { if (have && !cur.id.empty()) out.push_back(cur); cur = WeaponDef{}; have = false; };
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        std::istringstream ls(line);
+        std::string key;
+        if (!(ls >> key) || key[0] == '#') continue;
+        if (key == "weapon")        { flush(); ls >> cur.id; cur.name = cur.id; have = true; }
+        else if (key == "item")     { flush(); }   // an item block: not ours
+        else if (!have)             { continue; }
+        else if (key == "end")      { flush(); }
+        else if (key == "name")     { std::string rest; std::getline(ls, rest); cur.name = detail::trim(rest); }
+        else if (key == "fire")     { std::string v; ls >> v; cur.fire_mode = v == "auto" ? FireMode::Auto : v == "burst" ? FireMode::Burst : FireMode::Semi; }
+        else if (key == "burst")    { ls >> cur.burst; }
+        else if (key == "damage")   { ls >> cur.damage; std::string ty; if (ls >> ty) cur.damage_type = ty; }
+        else if (key == "rpm")      { ls >> cur.rpm; }
+        else if (key == "magazine") { ls >> cur.mag_size; }
+        else if (key == "pellets")  { ls >> cur.pellets; }
+        else if (key == "reload")   { ls >> cur.reload_time; }
+        else if (key == "spread")   { ls >> cur.spread_deg; }
+        else if (key == "bloom")    { ls >> cur.spread_bloom; float mx; if (ls >> mx) cur.spread_max = mx; float rc; if (ls >> rc) cur.bloom_recovery = rc; }
+        else if (key == "recoil")   { ls >> cur.recoil_pitch; float y; if (ls >> y) cur.recoil_yaw = y; }
+        else if (key == "aim")      { ls >> cur.ads_fov_scale; float s; if (ls >> s) cur.ads_spread = s; float tm; if (ls >> tm) cur.ads_time = tm; }
+        else if (key == "range")    { ls >> cur.range; }
+        else if (key == "projectile") { ls >> cur.projectile_speed; }
+        else if (key == "tracer")   { ls >> cur.tracer_every; float r, g, b; if (ls >> r >> g >> b) cur.tracer_color = glm::vec3(r, g, b); }
+        else if (key == "impact")   { ls >> cur.impact_size; }
+        else if (key == "flash")    { cur.muzzle_flash = true; }
+        else if (key == "ammo")     { ls >> cur.ammo_item; }
+    }
+    flush();
+    return out;
+}
+
+// Register every item and weapon in the text. Returns the number registered.
 inline int register_items_text(const std::string& text) {
     int n = 0;
     for (const auto& d : parse_items_text(text)) { register_item(d); ++n; }
+    for (const auto& d : parse_weapons_text(text)) { register_weapon(d); ++n; }
     return n;
 }
 
@@ -145,6 +203,21 @@ inline const char* item_file_template() {
            "  max_stack 10\n"
            "  weight 0.1\n"
            "  on_use Health 25\n"
+           "end\n"
+           "\n"
+           "weapon my_rifle\n"
+           "  name My Rifle\n"
+           "  fire auto\n"
+           "  damage 20 kinetic\n"
+           "  rpm 600\n"
+           "  magazine 30\n"
+           "  spread 0.6\n"
+           "  bloom 0.35 5\n"
+           "  recoil 0.8 0.4\n"
+           "  aim 0.75 0.3\n"
+           "  tracer 3\n"
+           "  impact 0.12\n"
+           "  flash\n"
            "end\n"
            "\n"
            "item my_sword\n"

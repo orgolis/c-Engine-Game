@@ -1248,6 +1248,130 @@ int main() {
         }
     }
 
+    // ---- C3: guns that feel like guns ----
+    {
+        const char* data =
+            "weapon c3_ar\n  name Test Rifle\n  fire auto\n  damage 10 kinetic\n  rpm 600\n  magazine 30\n"
+            "  spread 0.5\n  bloom 0.4 3 6\n  recoil 1.0 0.5\n  aim 0.7 0.25 0.2\n  range 100\n  tracer 3\n  impact 0.1\n  flash\nend\n"
+            "item c3_ammo\n  name Rounds\n  max_stack 99\nend\n"
+            "weapon c3_burst\n  fire burst\n  burst 3\n  rpm 900\n  magazine 7\nend\n";
+        const int n = ecs::register_items_text(data);
+        const ecs::WeaponDef* ar = ecs::find_weapon("c3_ar");
+        check("a .items file registers weapons beside items (3 definitions)", n == 3 && ar && ecs::find_item("c3_ammo"));
+        check("every weapon field is read from the file",
+              ar && ar->name == "Test Rifle" && ar->fire_mode == ecs::FireMode::Auto && ar->damage == 10.0f && ar->mag_size == 30 &&
+                  ar->spread_deg == 0.5f && ar->spread_bloom == 0.4f && ar->spread_max == 3.0f && ar->bloom_recovery == 6.0f &&
+                  ar->recoil_pitch == 1.0f && ar->recoil_yaw == 0.5f && ar->ads_fov_scale == 0.7f && ar->ads_spread == 0.25f &&
+                  ar->ads_time == 0.2f && ar->tracer_every == 3 && ar->impact_size == 0.1f && ar->muzzle_flash);
+        check("an item block after a weapon block is still an item, not swallowed", ecs::find_item("c3_ammo") != nullptr);
+
+        ecs::World w;
+        ecs::GameplayEventBus bus;
+        const ecs::Entity me = w.create();
+        w.add<ecs::Transform>(me, ecs::Transform{});
+        ecs::WeaponState ws; ws.weapon_id = "c3_ar"; ws.ammo_in_mag = 30;
+        w.add<ecs::WeaponState>(me, ws);
+        auto& s = w.get<ecs::WeaponState>(me);
+        const glm::vec3 o(0, 1, 0), fwd(0, 0, 1);
+
+        // Spread blooms with each shot, up to its maximum, and settles back.
+        const float rest = ecs::current_spread(*ar, s);
+        for (int i = 0; i < 20; ++i) { ecs::fire_weapon(w, me, o, fwd, s, &bus, 10 + i); s.cooldown = 0.0f; }
+        const float hot = ecs::current_spread(*ar, s);
+        ecs::tick_weapons(w, 1.0f);
+        check("spread blooms while firing (0.5 -> 3.0 degrees, no further) and settles back",
+              rest == 0.5f && std::fabs(hot - 3.0f) < 1e-4f && ecs::current_spread(*ar, s) == 0.5f);
+
+        // Recoil goes to the view, once.
+        float kp = 0, ky = 0;
+        ecs::take_recoil(s, kp, ky);
+        float kp2 = 0, ky2 = 0;
+        ecs::take_recoil(s, kp2, ky2);
+        check("twenty rounds kick the view up 20 degrees, with some sideways, and taking it clears it",
+              std::fabs(kp - 20.0f) < 1e-3f && std::fabs(ky) > 1e-4f && std::fabs(ky) < 10.0f && kp2 == 0.0f && ky2 == 0.0f);
+
+        // Aiming down the sights narrows the spread and takes time.
+        s.aiming = true;
+        ecs::tick_weapons(w, 0.1f);
+        const float half = s.aim;
+        ecs::tick_weapons(w, 0.2f);
+        check("raising the sights takes the aim time, and narrows the spread to a quarter",
+              std::fabs(half - 0.5f) < 1e-4f && s.aim == 1.0f && std::fabs(ecs::current_spread(*ar, s) - 0.125f) < 1e-5f);
+        s.reloading = 1.0f;
+        ecs::tick_weapons(w, 0.25f);
+        check("the sights come down to reload", s.aim == 0.0f);
+        s.reloading = 0.0f; s.aiming = false;
+
+        // A wall stops a hitscan round before the target behind it.
+        const ecs::Entity target = w.create();
+        ecs::Transform tt; tt.position = glm::vec3(0, 0, 20);
+        w.add<ecs::Transform>(target, tt);
+        w.add<ecs::CombatActor>(target, ecs::CombatActor{});
+        w.add<ecs::AttributeSet>(target, ecs::AttributeSet{});
+        w.get<ecs::AttributeSet>(target).define("Health", 100, 0, 100);
+        const ecs::WorldRayFn wall = [](const glm::vec3& ro, const glm::vec3& d, float max_t, float& tt2, glm::vec3& nrm) {
+            if (d.z <= 0.0f) return false;
+            tt2 = (10.0f - ro.z) / d.z;   // a wall across z = 10
+            nrm = glm::vec3(0, 0, -1);
+            return tt2 >= 0.0f && tt2 <= max_t;
+        };
+        std::vector<ecs::ShotTrace> shots;
+        s.bloom = 0.0f; s.cooldown = 0.0f;
+        ecs::fire_weapon(w, me, o, fwd, s, &bus, 99, &wall, &shots);
+        check("a wall stops the round: no damage behind it, the shot ends on the wall with the wall's normal",
+              shots.size() == 1 && shots[0].hit == ecs::ShotTrace::Hit::World && std::fabs(shots[0].end.z - 10.0f) < 0.05f &&
+                  shots[0].normal.z == -1.0f && w.get<ecs::AttributeSet>(target).get("Health") == 100.0f);
+        shots.clear(); s.cooldown = 0.0f;
+        ecs::fire_weapon(w, me, o, fwd, s, &bus, 99, nullptr, &shots);
+        check("without the wall the same round hits the target and says so",
+              shots.size() == 1 && shots[0].hit == ecs::ShotTrace::Hit::Actor && shots[0].target == target &&
+                  w.get<ecs::AttributeSet>(target).get("Health") == 90.0f);
+
+        // A tracer every third round.
+        int tracers = 0;
+        for (int i = 0; i < 9; ++i) {
+            shots.clear(); s.cooldown = 0.0f;
+            ecs::fire_weapon(w, me, o, glm::vec3(0, 1, 0), s, &bus, 200 + i, nullptr, &shots);
+            tracers += !shots.empty() && shots[0].tracer ? 1 : 0;
+        }
+        check("every third round is a tracer", tracers == 3);
+
+        // Trigger modes.
+        ecs::WeaponState b; b.weapon_id = "c3_burst"; b.ammo_in_mag = 7;
+        int fired = 0;
+        fired += ecs::trigger_weapon(w, me, o, fwd, b, true, true);   // press: a burst starts
+        for (int f = 0; f < 20; ++f) { ecs::tick_weapons(w, 0.0f); b.cooldown = 0.0f; fired += ecs::trigger_weapon(w, me, o, fwd, b, false, false); }
+        check("one press of a burst weapon fires exactly its burst, even with the button let go", fired == 3 && b.ammo_in_mag == 4);
+        ecs::WeaponState semi; semi.weapon_id = "g12_rifle"; semi.ammo_in_mag = 5;
+        int sf = ecs::trigger_weapon(w, me, o, fwd, semi, true, true);
+        semi.cooldown = 0.0f;
+        sf += ecs::trigger_weapon(w, me, o, fwd, semi, false, true);   // held, no new press
+        check("a semi-automatic fires once per press, not while held", sf == 1);
+        s.ammo_in_mag = 30;   // the earlier checks emptied it
+        int af = 0;
+        for (int f = 0; f < 5; ++f) { s.cooldown = 0.0f; af += ecs::trigger_weapon(w, me, o, glm::vec3(0, 1, 0), s, false, true); }
+        check("an automatic keeps firing while held", af == 5);
+
+        // Ammunition carried as an item: a reload takes rounds out of the inventory.
+        ecs::register_items_text("item c3_rounds\n  max_stack 999\nend\nweapon c3_pistol\n  magazine 8\n  reload 0.5\n  ammo c3_rounds\nend\n");
+        ecs::Inventory inv;
+        ecs::ItemInstance rounds; rounds.def_id = "c3_rounds"; rounds.quantity = 20;
+        ecs::inventory_add(inv, rounds);
+        ecs::WeaponState p; p.weapon_id = "c3_pistol"; p.ammo_in_mag = 0;
+        w.add<ecs::WeaponState>(me, p);
+        auto& pl = w.get<ecs::WeaponState>(me);
+        ecs::sync_ammo_with_inventory(pl, inv);
+        const bool reads = pl.reserve == 20;
+        ecs::reload_weapon(pl);
+        ecs::tick_weapons(w, 0.6f);
+        ecs::sync_ammo_with_inventory(pl, inv);
+        check("ammunition is an inventory item: the reserve is what is carried, and a reload takes from it",
+              reads && pl.ammo_in_mag == 8 && pl.reserve == 12 && ecs::inventory_count(inv, "c3_rounds") == 12);
+        ecs::inventory_add(inv, rounds);
+        ecs::sync_ammo_with_inventory(pl, inv);
+        check("rounds picked up count at once", pl.reserve == 32);
+    }
+
     // G13: vehicles & racing — arcade drive model + checkpoints/laps/ranking.
     {
         ecs::VehicleDef car; car.id = "g13_car"; car.name = "Car"; car.max_speed = 40.0f; car.accel = 20.0f;

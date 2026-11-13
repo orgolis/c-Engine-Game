@@ -120,6 +120,7 @@
 #include "biome.h"                // regions by altitude and moisture: ground, foliage, atmosphere
 #include "biome_water.h"          // the water a biome map treats as wet
 #include "world_preset.h"         // a whole landscape from one choice
+#include "player_weapon.h"        // the player's gun in Play: input, recoil, aim, tracers, impacts
 #include "logic_script_panel.h"  // graph editor for .lgraph logic scripts
 #include "logic_debug.h"          // a breakpoint in a logic script stops the game
 #include "vscript/value.h"       // literals of a logic graph's Inspector fields
@@ -479,6 +480,8 @@ struct EditorState {
     // capture its address, so it must live as long as the editor; the ctx
     // pointers + dt/time are refreshed every frame.
     schizo::editor::ScriptSystem    script_system;
+    schizo::editor::PlayerWeapon    player_weapon;   // the player's gun in Play (C3)
+    schizo::editor::ShotEffects     shot_effects;    // muzzle flashes, tracers, impact marks
     schizo::editor::EditorScriptCtx script_ctx;
     schizo::editor::ScriptApi       script_api;
 
@@ -4294,6 +4297,8 @@ void ShowInspector(EditorState& editor_state) {
                     changed |= ImGui::SliderFloat("Size", &l.size, 0.1f, 40.0f);
                     changed |= ImGui::DragFloatRange2("Scale", &l.min_scale, &l.max_scale, 0.01f, 0.1f, 4.0f);
                     changed |= ImGui::Checkbox("Lean with the slope", &l.align_to_slope);
+                    ImGui::SameLine();
+                    changed |= ImGui::Checkbox("Casts shadow", &l.casts_shadow);
                     changed |= ImGui::SliderFloat("Draw distance", &l.draw_distance, 10.0f, 2000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
                     int seed = static_cast<int>(l.seed);
                     if (ImGui::InputInt("Seed", &seed)) { l.seed = static_cast<uint32_t>(std::max(0, seed)); changed = true; }
@@ -5882,6 +5887,38 @@ void ShowViewport(EditorState& editor_state) {
                     editor_state.play_cursor_released_by_escape = false;
                     editor_state.set_status("Play input captured — Esc releases the mouse");
                     spdlog::info("Viewport click — recaptured play-mode cursor");
+                } else if (viewport_playing && editor_state.player_weapon.hud().armed && !waiting_for_recapture) {
+                    // The gun's HUD: a crosshair whose gap is the spread now,
+                    // a hit marker, and the ammunition.
+                    const auto& hud = editor_state.player_weapon.hud();
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    const ImVec2 c((image_min.x + image_max.x) * 0.5f, (image_min.y + image_max.y) * 0.5f);
+                    const float  half_h = (image_max.y - image_min.y) * 0.5f;
+                    const float  tan_half_fov = std::tan(glm::radians(45.0f) * 0.5f) * std::max(0.1f, hud.view_zoom);
+                    const float  gap = std::clamp(std::tan(glm::radians(hud.spread_deg)) / tan_half_fov * half_h, 3.0f, half_h * 0.5f);
+                    const float  len = 9.0f;
+                    const ImU32  col = IM_COL32(240, 240, 240, 220), shadow = IM_COL32(0, 0, 0, 160);
+                    for (int pass = 0; pass < 2; ++pass) {
+                        const ImU32 k = pass ? col : shadow;
+                        const float o = pass ? 0.0f : 1.0f, th = pass ? 1.5f : 3.0f;
+                        dl->AddLine(ImVec2(c.x - gap - len + o, c.y + o), ImVec2(c.x - gap + o, c.y + o), k, th);
+                        dl->AddLine(ImVec2(c.x + gap + o, c.y + o), ImVec2(c.x + gap + len + o, c.y + o), k, th);
+                        dl->AddLine(ImVec2(c.x + o, c.y - gap - len + o), ImVec2(c.x + o, c.y - gap + o), k, th);
+                        dl->AddLine(ImVec2(c.x + o, c.y + gap + o), ImVec2(c.x + o, c.y + gap + len + o), k, th);
+                    }
+                    if (hud.hit_marker > 0.0f) {
+                        const ImU32 hm = IM_COL32(255, 80, 60, static_cast<int>(255 * std::min(1.0f, hud.hit_marker / 0.15f)));
+                        dl->AddLine(ImVec2(c.x - 10, c.y - 10), ImVec2(c.x - 5, c.y - 5), hm, 2.0f);
+                        dl->AddLine(ImVec2(c.x + 10, c.y - 10), ImVec2(c.x + 5, c.y - 5), hm, 2.0f);
+                        dl->AddLine(ImVec2(c.x - 10, c.y + 10), ImVec2(c.x - 5, c.y + 5), hm, 2.0f);
+                        dl->AddLine(ImVec2(c.x + 10, c.y + 10), ImVec2(c.x + 5, c.y + 5), hm, 2.0f);
+                    }
+                    char ammo[96];
+                    std::snprintf(ammo, sizeof ammo, "%s  %d / %d%s", hud.name, hud.ammo, hud.reserve, hud.reloading ? "  reloading" : "");
+                    const ImVec2 ts = ImGui::CalcTextSize(ammo);
+                    const ImVec2 at(image_max.x - ts.x - 18.0f, image_max.y - ts.y - 16.0f);
+                    dl->AddRectFilled(ImVec2(at.x - 8, at.y - 5), ImVec2(at.x + ts.x + 8, at.y + ts.y + 5), IM_COL32(10, 14, 20, 170), 4.0f);
+                    dl->AddText(at, hud.ammo > 0 ? IM_COL32(240, 240, 240, 255) : IM_COL32(255, 90, 70, 255), ammo);
                 } else if (waiting_for_recapture) {
                     const char* hint = "Click viewport to resume input";
                     const ImVec2 text_size = ImGui::CalcTextSize(hint);
@@ -10223,6 +10260,61 @@ int main(int argc, char** argv) {
                     scene->Update(delta_time);
                 }
             }
+            // The player's gun: left mouse fires, right aims, R reloads, while
+            // the play input is captured. Fired from the play camera.
+            {
+                auto& pm = *editor_state.scene_playback_manager;
+                static bool prev_lmb = false, prev_r = false;
+                const bool  focus = pm.IsPlaying() && pm.HasInputFocus();
+                const bool  lmb = focus && glfwGetMouseButton(glfw_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                const bool  rmb = focus && glfwGetMouseButton(glfw_window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+                const bool  rk = focus && glfwGetKey(glfw_window, GLFW_KEY_R) == GLFW_PRESS;
+                schizo::editor::PlayerWeapon::Input in;
+                in.fire_pressed = lmb && !prev_lmb;
+                in.fire_held = lmb;
+                in.aim_held = rmb;
+                in.reload_pressed = rk && !prev_r;
+                prev_lmb = lmb;
+                prev_r = rk;
+                // GWS_TEST_GUN=1 (with GWS_TEST_PLAY): arm the player with a
+                // test rifle, hold the trigger in short bursts and raise the
+                // sights halfway through -- the gun seen without a person.
+                static const bool test_gun = std::getenv("GWS_TEST_GUN") != nullptr;
+                if (test_gun && pm.IsPlaying()) {
+                    static int gun_frames = 0;
+                    if (gun_frames++ == 0) {
+                        schizo::ecs::register_items_text(
+                            "weapon test_rifle\n  name Test Rifle\n  fire auto\n  damage 20\n  rpm 600\n  magazine 60\n"
+                            "  spread 0.6\n  bloom 0.3 4\n  recoil 0.25 0.2\n  aim 0.7 0.3\n  range 200\n  tracer 2\n"
+                            "  impact 0.25\n  flash\nend\n");
+                        if (auto* pl = pm.GetPlayerEntity()) {
+                            const uint32_t pid = ecs_bridge.ecs_entity_id(pl->GetTransform());
+                            const auto pe = static_cast<schizo::ecs::Entity>(pid);
+                            if (pid != schizo::editor::kNoEcsEntity && ecs_bridge.world().valid(pe)) {
+                                schizo::ecs::WeaponState tw; tw.weapon_id = "test_rifle"; tw.ammo_in_mag = 60; tw.reserve = 120;
+                                ecs_bridge.world().add<schizo::ecs::WeaponState>(pe, tw);
+                                spdlog::info("[test] gun: armed the player");
+                            } else {
+                                spdlog::warn("[test] gun: the player has no gameplay entity");
+                            }
+                        }
+                    }
+                    in.fire_held = (gun_frames / 20) % 2 == 0;
+                    in.fire_pressed = gun_frames % 20 == 1;
+                    in.aim_held = gun_frames > 120;
+                }
+                if (pm.IsPlaying()) {
+                    if (auto* pc = pm.GetPlaybackCamera()) {
+                        const auto* ct = pc->GetTransform();
+                        editor_state.player_weapon.update(delta_time, pm, ecs_bridge, ct->GetWorldPosition(),
+                                                          ct->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f), in,
+                                                          editor_state.shot_effects);
+                    }
+                    editor_state.shot_effects.update(delta_time);
+                } else if (editor_state.shot_effects.count()) {
+                    editor_state.shot_effects.clear();
+                }
+            }
 
             g_cp.mark("pre_scripts");
             // Custom scripts (Stage 12): refresh the API context and drive every
@@ -11550,6 +11642,12 @@ int main(int argc, char** argv) {
                         } else {
                             cam.proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 1000.0f);
                         }
+                        // Aiming down the sights narrows the view.
+                        if (editor_state.player_weapon.hud().armed) {
+                            const float zoom = std::max(0.1f, editor_state.player_weapon.hud().view_zoom);
+                            cam.proj[0][0] /= zoom;
+                            cam.proj[1][1] /= zoom;
+                        }
                         static bool logged_once = false;
                         if (!logged_once) {
                             spdlog::info("✓ CAMERA SWAP ACTIVE: Using playback camera '{}'", playback_camera->GetName());
@@ -12191,6 +12289,8 @@ int main(int argc, char** argv) {
                 { GWS_PROFILE_ZONE("foliage_draws");
                   foliage_renderer.append(editor_scene.GetScene(), cam, prim_cache, mat_cache, asset_cache, &device,
                                           mat_layout, mat_pool, &texture_manager, opaque_draws); }
+                if (editor_state.shot_effects.count())
+                    editor_state.shot_effects.append(prim_cache, mat_cache, &device, mat_layout, mat_pool, &texture_manager, opaque_draws);
                 static int foliage_log = 0;
                 if (foliage_renderer.stats().instances && ++foliage_log % 120 == 0)
                     spdlog::debug("[foliage] {} cells, {} instances, {} draw items", foliage_renderer.stats().cells_seen,

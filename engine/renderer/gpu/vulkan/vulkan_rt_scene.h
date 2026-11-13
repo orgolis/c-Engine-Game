@@ -92,6 +92,7 @@ private:
     bool initialize(VulkanDevice* device);
     bool ensure_blas(VkCommandBuffer cmd, const Mesh* mesh);
     void rebuild_tlas(VkCommandBuffer cmd, const DrawItem* items, size_t count);
+    std::vector<DrawItem> casting_;   // this frame's draws without the ones that cast no shadow
 
     // Helpers — buffer with usage bits and device address allocated.
     bool create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,

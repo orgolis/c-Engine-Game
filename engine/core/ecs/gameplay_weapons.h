@@ -17,13 +17,16 @@
 #include "gameplay_damage.h"
 #include "gameplay_combat.h"      // CombatActor / combat_hurtbox / HitSphere
 #include "gameplay_items.h"       // Rng
+#include "gameplay_inventory.h"   // ammunition carried as an item
 #include "authorable_components.h"
 #include "component_serialize.h"
 
 #include <glm/glm.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -43,6 +46,22 @@ struct WeaponDef {
     float       range = 100.0f;
     float       projectile_speed = 0.0f;  // 0 = hitscan
     float       reload_time = 2.0f;
+    // Feel (C3). Every default is "none", so a weapon written before these
+    // existed fires exactly as it did.
+    int         burst = 3;                // shots per trigger pull in Burst mode
+    float       recoil_pitch = 0.0f;      // degrees the view kicks up per shot
+    float       recoil_yaw = 0.0f;        // degrees of random sideways kick per shot (+/-)
+    float       spread_bloom = 0.0f;      // degrees added to the spread per shot ...
+    float       spread_max = 10.0f;       // ... up to this much in all
+    float       bloom_recovery = 6.0f;    // degrees per second the bloom settles back
+    float       ads_fov_scale = 1.0f;     // the view's field of view while aiming (0.6 = zoomed in)
+    float       ads_spread = 1.0f;        // spread while aiming, as a share of hip-fire spread
+    float       ads_time = 0.15f;         // seconds to raise the sights
+    bool        muzzle_flash = false;
+    int         tracer_every = 0;         // a visible tracer every Nth round (0: none)
+    glm::vec3   tracer_color = glm::vec3(1.0f, 0.75f, 0.35f);
+    float       impact_size = 0.0f;       // mark left where a shot hits the world (0: none)
+    std::string ammo_item;                // reserve is this inventory item, when set
 };
 
 inline std::vector<WeaponDef>& weapon_registry() { static std::vector<WeaponDef> r; return r; }
@@ -61,7 +80,35 @@ struct WeaponState {
     int   reserve = 0;
     float cooldown = 0.0f;    // runtime
     float reloading = 0.0f;   // runtime
+    // runtime, C3
+    float bloom = 0.0f;       // degrees of extra spread from firing
+    float aim = 0.0f;         // 0 hip .. 1 sights up
+    bool  aiming = false;     // the player holds aim
+    int   burst_left = 0;     // rounds still to come in this burst
+    int   rounds_fired = 0;   // for "a tracer every Nth round"
+    float kick_pitch = 0.0f, kick_yaw = 0.0f;   // recoil not yet given to the view (degrees)
+    int   reserve_synced = -1;                  // the reserve last read from the inventory (ammo_item)
 };
+
+/// One round's path, for drawing it: where it started, where it stopped,
+/// and what stopped it.
+struct ShotTrace {
+    enum class Hit : uint8_t { None, World, Actor };
+    glm::vec3 start{0.0f}, end{0.0f}, normal{0.0f, 1.0f, 0.0f};
+    Hit       hit = Hit::None;
+    Entity    target = null_entity;
+    bool      tracer = false;
+};
+
+/// Level geometry for shots: true when the ray from `o` along unit `d` hits
+/// something within `max_t`, with the distance and the surface normal there.
+using WorldRayFn = std::function<bool(const glm::vec3& o, const glm::vec3& d, float max_t, float& t, glm::vec3& normal)>;
+
+/// The spread a shot leaves with: base plus bloom, narrowed by aiming.
+inline float current_spread(const WeaponDef& wd, const WeaponState& ws) {
+    const float hip = std::min(wd.spread_deg + ws.bloom, std::max(wd.spread_deg, wd.spread_max));
+    return hip * (1.0f + (wd.ads_spread - 1.0f) * ws.aim);
+}
 
 struct Projectile {
     glm::vec3 velocity{0.0f};
@@ -113,33 +160,112 @@ inline Entity hitscan_target(World& w, Entity shooter, const glm::vec3& origin, 
 
 // Fire once. Hitscan resolves + applies damage immediately; projectile weapons
 // spawn a Projectile per pellet. Returns false if on cooldown / reloading / empty.
+// With `world`, hitscan rounds also stop at level geometry (a wall shields
+// the one behind it); with `shots`, each round's path is reported for tracers
+// and impact marks. Recoil goes into ws.kick_* for the view to take.
 inline bool fire_weapon(World& w, Entity shooter, const glm::vec3& origin, const glm::vec3& aim,
-                        WeaponState& ws, GameplayEventBus* bus = nullptr, uint64_t seed = 1) {
+                        WeaponState& ws, GameplayEventBus* bus = nullptr, uint64_t seed = 1,
+                        const WorldRayFn* world = nullptr, std::vector<ShotTrace>* shots = nullptr) {
     const WeaponDef* wd = find_weapon(ws.weapon_id);
     if (!wd || ws.reloading > 0.0f || ws.cooldown > 0.0f || ws.ammo_in_mag <= 0) return false;
     --ws.ammo_in_mag;
     ws.cooldown = 60.0f / (wd->rpm > 1.0f ? wd->rpm : 1.0f);
+    ++ws.rounds_fired;
     if (bus) { GameplayEvent ev; ev.name = "weapon.fire"; ev.instigator = shooter; ev.param = ws.weapon_id; bus->publish(ev); }
 
+    const float spread = current_spread(*wd, ws);
     const int pellets = wd->pellets > 0 ? wd->pellets : 1;
     for (int i = 0; i < pellets; ++i) {
-        const glm::vec3 dir = apply_spread(aim, wd->spread_deg, seed + static_cast<uint64_t>(i));
+        const glm::vec3 dir = apply_spread(aim, spread, seed + static_cast<uint64_t>(i));
+        ShotTrace st;
+        st.start = origin;
+        st.tracer = wd->tracer_every > 0 && (ws.rounds_fired % wd->tracer_every) == 0 && i == 0;
         if (wd->projectile_speed > 0.0f) {
             const Entity pe = w.create();
             Transform t; t.position = origin; w.add<Transform>(pe, t);
             w.add<Projectile>(pe, Projectile{dir * wd->projectile_speed, wd->damage, wd->damage_type,
                                              static_cast<uint32_t>(shooter), wd->range / wd->projectile_speed + 0.1f, 0.1f});
+            st.end = origin + dir * std::min(wd->range, 2.0f);   // the muzzle end; the projectile draws itself
         } else {
+            float wall_t = wd->range;
+            glm::vec3 wall_n(0.0f, 1.0f, 0.0f);
+            const bool wall = world && *world && (*world)(origin, dir, wd->range, wall_t, wall_n);
             float t;
-            const Entity hit = hitscan_target(w, shooter, origin, dir, wd->range, t);
+            const Entity hit = hitscan_target(w, shooter, origin, dir, wall ? wall_t : wd->range, t);
             if (hit != null_entity) {
                 const float dealt = apply_damage(w, hit, DamageInfo{wd->damage, wd->damage_type});
                 if (bus) { GameplayEvent ev; ev.name = "weapon.hit"; ev.instigator = shooter; ev.target = hit;
                            ev.value = dealt; ev.param = wd->damage_type; bus->publish(ev); }
+                st.end = origin + dir * t;
+                st.hit = ShotTrace::Hit::Actor;
+                st.target = hit;
+                st.normal = -dir;
+            } else if (wall) {
+                st.end = origin + dir * wall_t;
+                st.hit = ShotTrace::Hit::World;
+                st.normal = wall_n;
+                if (bus) { GameplayEvent ev; ev.name = "weapon.impact"; ev.instigator = shooter; ev.value = wall_t;
+                           ev.param = ws.weapon_id; bus->publish(ev); }
+            } else {
+                st.end = origin + dir * wd->range;
             }
         }
+        if (shots) shots->push_back(st);
+    }
+    // After the round left: spread blooms, the view kicks.
+    ws.bloom = std::min(ws.bloom + wd->spread_bloom, std::max(0.0f, wd->spread_max - wd->spread_deg));
+    if (wd->recoil_pitch != 0.0f || wd->recoil_yaw != 0.0f) {
+        Rng rng(seed * 2654435761u + 17u);
+        const float ads = 1.0f - 0.35f * ws.aim;   // a braced aim kicks less
+        ws.kick_pitch += wd->recoil_pitch * ads;
+        ws.kick_yaw += (rng.unit() * 2.0f - 1.0f) * wd->recoil_yaw * ads;
     }
     return true;
+}
+
+/// Trigger handling for a held button: `pressed` is this frame's edge, `held`
+/// whether it is down. Semi fires on the press, Auto while held, Burst fires
+/// `burst` rounds from one press. Returns rounds fired this call.
+inline int trigger_weapon(World& w, Entity shooter, const glm::vec3& origin, const glm::vec3& aim, WeaponState& ws,
+                          bool pressed, bool held, GameplayEventBus* bus = nullptr, uint64_t seed = 1,
+                          const WorldRayFn* world = nullptr, std::vector<ShotTrace>* shots = nullptr) {
+    const WeaponDef* wd = find_weapon(ws.weapon_id);
+    if (!wd) return 0;
+    bool want = false;
+    switch (wd->fire_mode) {
+        case FireMode::Semi: want = pressed; break;
+        case FireMode::Auto: want = held; break;
+        case FireMode::Burst:
+            if (pressed && ws.burst_left <= 0) ws.burst_left = std::max(1, wd->burst);
+            want = ws.burst_left > 0;
+            break;
+    }
+    if (!want) return 0;
+    if (!fire_weapon(w, shooter, origin, aim, ws, bus, seed, world, shots)) {
+        if (ws.ammo_in_mag <= 0) ws.burst_left = 0;   // a burst ends with the magazine
+        return 0;
+    }
+    if (wd->fire_mode == FireMode::Burst) --ws.burst_left;
+    return 1;
+}
+
+/// For a weapon whose ammunition is an inventory item: what a reload took
+/// from the reserve comes out of the inventory, and the reserve is then what
+/// the inventory holds (picked-up rounds count at once). Call once a frame.
+inline void sync_ammo_with_inventory(WeaponState& ws, Inventory& inv) {
+    const WeaponDef* wd = find_weapon(ws.weapon_id);
+    if (!wd || wd->ammo_item.empty()) return;
+    if (ws.reserve_synced >= 0 && ws.reserve < ws.reserve_synced)
+        inventory_remove(inv, wd->ammo_item, ws.reserve_synced - ws.reserve);
+    ws.reserve = inventory_count(inv, wd->ammo_item);
+    ws.reserve_synced = ws.reserve;
+}
+
+/// Take the recoil not yet applied to the view (degrees), and clear it.
+inline void take_recoil(WeaponState& ws, float& pitch, float& yaw) {
+    pitch = ws.kick_pitch;
+    yaw = ws.kick_yaw;
+    ws.kick_pitch = ws.kick_yaw = 0.0f;
 }
 
 inline void reload_weapon(WeaponState& ws) {
@@ -151,6 +277,12 @@ inline void reload_weapon(WeaponState& ws) {
 inline void tick_weapons(World& w, float dt) {
     w.each<WeaponState>([&](Entity, WeaponState& ws) {
         if (ws.cooldown > 0.0f) ws.cooldown = std::max(0.0f, ws.cooldown - dt);
+        if (const WeaponDef* wd = find_weapon(ws.weapon_id)) {
+            if (ws.bloom > 0.0f) ws.bloom = std::max(0.0f, ws.bloom - wd->bloom_recovery * dt);
+            const float step = wd->ads_time > 1e-4f ? dt / wd->ads_time : 1.0f;
+            const bool  can_aim = ws.reloading <= 0.0f;   // the sights come down to reload
+            ws.aim = ws.aiming && can_aim ? std::min(1.0f, ws.aim + step) : std::max(0.0f, ws.aim - step);
+        }
         if (ws.reloading > 0.0f) {
             ws.reloading -= dt;
             if (ws.reloading <= 0.0f) {

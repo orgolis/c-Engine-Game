@@ -206,6 +206,7 @@ public:
                                 gws::renderer::gpu::DrawItem di = src;
                                 di.model = m * src.model;
                                 di.is_blend = false;
+                                di.casts_shadow = l.casts_shadow;
                                 out.push_back(di);
                                 ++stats_.draws;
                             }
@@ -216,6 +217,7 @@ public:
                                 di.mesh = part.mesh;
                                 di.material = part.material;
                                 di.model = m * part.local;
+                                di.casts_shadow = l.casts_shadow;
                                 out.push_back(di);
                                 ++stats_.draws;
                             }

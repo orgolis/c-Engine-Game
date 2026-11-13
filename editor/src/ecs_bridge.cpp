@@ -620,9 +620,12 @@ void EcsSceneBridge::seed_demo_content() {
 
     // G12 demo weapons (a hitscan rifle + a projectile launcher).
     { WeaponDef d; d.id = "rifle"; d.name = "Assault Rifle"; d.fire_mode = FireMode::Auto;
-      d.damage = 18.0f; d.damage_type = "kinetic"; d.rpm = 600.0f; d.mag_size = 30; d.spread_deg = 1.5f; d.range = 120.0f; register_weapon(d); }
+      d.damage = 18.0f; d.damage_type = "kinetic"; d.rpm = 600.0f; d.mag_size = 30; d.spread_deg = 0.8f; d.range = 120.0f;
+      d.spread_bloom = 0.35f; d.spread_max = 5.0f; d.recoil_pitch = 0.6f; d.recoil_yaw = 0.35f; d.ads_fov_scale = 0.72f; d.ads_spread = 0.35f;
+      d.muzzle_flash = true; d.tracer_every = 3; d.impact_size = 0.12f; register_weapon(d); }
     { WeaponDef d; d.id = "launcher"; d.name = "Rocket Launcher"; d.fire_mode = FireMode::Semi;
-      d.damage = 90.0f; d.damage_type = "explosive"; d.rpm = 40.0f; d.mag_size = 1; d.projectile_speed = 30.0f; d.range = 150.0f; d.reload_time = 2.5f; register_weapon(d); }
+      d.damage = 90.0f; d.damage_type = "explosive"; d.rpm = 40.0f; d.mag_size = 1; d.projectile_speed = 30.0f; d.range = 150.0f; d.reload_time = 2.5f;
+      d.recoil_pitch = 4.0f; d.recoil_yaw = 1.0f; d.ads_fov_scale = 0.8f; d.muzzle_flash = true; register_weapon(d); }
 
     // G13 demo vehicle + a simple square track.
     { VehicleDef d; d.id = "hatchback"; d.name = "Hatchback"; d.max_speed = 45.0f; d.accel = 16.0f;
