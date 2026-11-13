@@ -175,7 +175,31 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
     }, {"Entity", "Level"});
     r.fn("gameplay.unlock_skill", G, "Unlock Skill", [s](EntityId e, std::string node) {
         return API && API->unlock_skill && API->unlock_skill(API->ctx, e.id, node.c_str());
-    }, {"Entity", "Skill", "Unlocked"});
+    }, {"Entity", "Skill", "Unlocked"}).tip("Learns a skill of the entity's skill tree: spends its points, needs what it "
+                                            "requires first, gives its bonuses and tags, and puts its abilities on the Ability Bar.");
+    r.fn("gameplay.set_skill_tree", G, "Set Skill Tree", [s](EntityId e, std::string tree) {
+        return API && API->set_skill_tree && API->set_skill_tree(API->ctx, e.id, tree.c_str());
+    }, {"Entity", "Tree", "Done"}).tip("Gives the entity the skill tree written in the project's data (skill blocks with "
+                                       "this tree), with what learning needs: a progression (levels, points).");
+    r.fn("gameplay.add_skill_points", G, "Add Skill Points", [s](EntityId e, int64_t points) {
+        if (API && API->add_skill_points) API->add_skill_points(API->ctx, e.id, int(points));
+    }, {"Entity", "Points"});
+    r.pure("gameplay.skill_state", G, "Skill State", [s](EntityId e, std::string skill) {
+        const int st = API && API->skill_state ? API->skill_state(API->ctx, e.id, skill.c_str()) : 0;
+        return std::make_tuple(st == 2, st == 1);
+    }, {"Entity", "Skill", "Learned", "Can Learn"});
+    r.pure("gameplay.skill_points", G, "Skill Points", [s](EntityId e) {
+        return int64_t(API && API->skill_points ? API->skill_points(API->ctx, e.id) : 0);
+    }, {"Entity", "Points"});
+    r.pure("ui.selected_slot", "UI", "Selected Slot", [s](std::string path, std::string id) {
+        return int64_t(API && API->ui_selected ? API->ui_selected(API->ctx, path.c_str(), id.c_str()) : -1);
+    }, {"File", "Id", "Index"}).tip("The selected cell of a slots grid in a shown UI document (-1 when none).");
+    r.pure("items.in_slot", "Gameplay|Items", "Item In Slot", [s](EntityId e, int64_t index) {
+        char id[96] = {}, name[96] = {};
+        int count = 0;
+        if (API && API->item_in_slot) API->item_in_slot(API->ctx, e.id, int(index), id, sizeof id, name, sizeof name, &count);
+        return std::make_tuple(std::string(id), std::string(name), int64_t(count));
+    }, {"Entity", "Index", "Item", "Name", "Count"}).tip("What is in the entity's inventory at that place (empty when nothing).");
     r.fn("gameplay.send_state_event", G, "Send State Event", [s](EntityId e, std::string ev) {
         return API && API->send_state_event && API->send_state_event(API->ctx, e.id, ev.c_str());
     }, {"Entity", "Event", "Changed"});
@@ -292,8 +316,9 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
         NodeDef d;
         d.id = "event.ui_button"; d.category = "Events|UI"; d.title = "On UI Button";
         d.builtin = Builtin::Event; d.named = true; d.name_label = "Button";
-        d.tooltip = "Runs when a button with this id is clicked in a shown UI document.";
-        d.out("Then", kExec);
+        d.tooltip = "Runs when a button with this id is clicked in a shown UI document -- or a cell of a slots grid "
+                    "with this id (Index is the cell; -1 for a button).";
+        d.out("Then", kExec).out("Index", kInt);
         r.add(std::move(d));
     }
     r.fn("world.emit_event", W, "Emit Event", [s](std::string name) {
@@ -810,7 +835,10 @@ public:
                     const uint32_t self = inst_->self;
                     if (step == 0) {
                         vm.fire(*inst_, std::string("event.gameplay:") + name, args, 4);
-                        if (std::string_view(name) == "ui.click") vm.fire(*inst_, std::string("event.ui_button:") + param);
+                        if (std::string_view(name) == "ui.click") {
+                            const Value cell = Value::integer(static_cast<int64_t>(std::lround(value)));
+                            vm.fire(*inst_, std::string("event.ui_button:") + param, &cell, 1);
+                        }
                     } else if (step == 1) {
                         if (self != 0 && (instigator == self || target == self)) vm.fire(*inst_, std::string("event.about_me:") + name, args, 4);
                     } else if (self != 0 && target == self) {

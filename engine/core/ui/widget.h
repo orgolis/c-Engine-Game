@@ -118,6 +118,7 @@ public:
     // Interaction hooks (Canvas drives these on the hit widget).
     virtual void paint_self(UiDrawList&) const {}
     virtual void on_hover(bool) {}
+    virtual void on_pointer(float, float) {}   // where the pointer is, while over this widget
     virtual void on_press(bool) {}
     virtual void on_focus(bool) {}
     virtual void on_activate() {}

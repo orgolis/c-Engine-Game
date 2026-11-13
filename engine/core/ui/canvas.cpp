@@ -46,6 +46,7 @@ void Canvas::pointer_move(float x, float y) {
         hovered_ = hit;
         if (hovered_) hovered_->on_hover(true);
     }
+    if (hovered_) hovered_->on_pointer(x, y);
 }
 
 void Canvas::pointer_button(bool down) {

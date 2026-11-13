@@ -20,7 +20,8 @@ button id=quit    anchor=center x=0 y=170 w=400 h=66 text="Quit" size=28
   and its buttons work; the game's own input is off), `pause` (the game stands
   still while shown), `layer=N` (higher is drawn on top).
 - **Widgets:** `panel` (a coloured box), `label` (text), `button` (text that can
-  be clicked; needs an `id`), `bar` (a fill bar).
+  be clicked; needs an `id`), `bar` (a fill bar), `slots` (a grid of cells, for
+  an inventory: `cols=`, `rows=`, `bind=player.inventory`; needs an `id`).
 - **Placement:** in a 1920×1080 reference screen, scaled to the real one.
   `anchor` is the point of the screen the widget hangs from, and the point of
   the widget that sits there: `top_left`, `top`, `top_right`, `left`, `center`,
@@ -31,8 +32,17 @@ button id=quit    anchor=center x=0 y=170 w=400 h=66 text="Quit" size=28
   bars, `hidden=1`.
 - **Live values:** text in braces and a bar's `bind=` read the game each frame:
   `player.<Attribute>` (e.g. `player.Health`; a bar shows it against its
-  maximum), `player.ammo`, `player.reserve`, `player.weapon`, `flag.<key>`,
-  `time`. Example: `text="{player.ammo} / {player.reserve}"`.
+  maximum), `player.ammo`, `player.reserve`, `player.weapon`, `player.level`,
+  `player.xp` (a bar shows it against the next level), `player.skill_points`,
+  `player.ability.<n>` (the name on the Ability Bar's slot n, from 1; a bar
+  shows its cooldown), `skill.<id>` ("Learned", "Learn (1 pt)" or "Locked"),
+  `flag.<key>`, `time`. Example: `text="{player.ammo} / {player.reserve}"`.
+- **Enabled by a value:** `enabled=<value>` on a button greys it out (and it
+  cannot be clicked) while the value is 0 -- `enabled=skill.<id>.can` (1 when
+  that skill can be learned now), `enabled=bag.count` (an item is picked).
+- **Slots:** a click on a cell picks it. `{<slots id>.name}`, `.count`,
+  `.detail` (the item's kind) and `.index` are the picked cell's, e.g.
+  `text="{bag.name}"`.
 
 A line that cannot be read is reported (with its line number) when the
 document is shown; the rest still shows.
@@ -47,13 +57,17 @@ Logic scripts (category UI and Game):
 | **Hide UI** (File) | |
 | **Set UI Text** (File, Id, Text) | a label's or button's text |
 | **Is UI Shown** (File) | |
-| **On UI Button** (Button = id) | runs when that button is clicked |
+| **On UI Button** (Button = id) | runs when that button is clicked -- or a cell of the slots grid with that id (Index: the cell) |
+| **Selected Slot** (File, Id) | the picked cell of a slots grid (-1: none) |
+| **Item In Slot** (Entity, Index) | what is in an inventory at that place: Item (its id), Name, Count -- for **Use Item** |
+| **Show Message** (Text, Seconds) | a line across the top of the view (at the bottom while a menu is up) |
 | **Pause Game** (Paused) | the game stands still; scripts and UI go on |
 | **Quit Game** | ends Play in the editor; closes an exported game |
 
 C++ scripts have the same in the API table (`ui_show`, `ui_hide`,
-`ui_set_text`, `ui_shown`, `set_game_paused`, `quit_game`); a click is the
-gameplay event `ui.click` with the button's id as its param.
+`ui_set_text`, `ui_shown`, `ui_selected`, `item_in_slot`, `set_game_paused`,
+`quit_game`); a click is the gameplay event `ui.click` with the button's id as
+its param (and a grid's cell as its value).
 
 ## Controls and settings
 
@@ -110,4 +124,5 @@ In Play the game holds the mouse; the editor's panels get none of it.
 ## Example
 
 The TestGame project (docs/systems/TEST_GAME.md) has a title menu, a HUD, a
-pause menu and a win screen this way: `ui/*.ui` and its GameRules script.
+pause menu, settings, an inventory, a skill tree and a win screen this way:
+`ui/*.ui` and its GameRules script.

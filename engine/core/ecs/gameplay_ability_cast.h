@@ -32,6 +32,7 @@
 #include "gameplay_events.h"
 #include "gameplay_tags.h"
 #include "gameplay_weapons.h"   // hitscan_target, WorldRayFn
+#include "gameplay_skills.h"    // learning a skill grants abilities
 #include "authorable_components.h"
 
 #include <glm/glm.hpp>
@@ -353,6 +354,38 @@ inline std::vector<AbilityDef> parse_abilities_text(const std::string& text) {
     }
     flush();
     return out;
+}
+
+// ---- skills that grant abilities -------------------------------------------------
+/// Put an ability on `e`'s bar: in the first empty slot, else a new one (up to
+/// 8). False when it is already there or the bar is full.
+inline bool give_ability(World& w, Entity e, const std::string& id) {
+    if (!w.has<AbilityBar>(e)) w.add<AbilityBar>(e, AbilityBar{});
+    AbilityBar& bar = w.get<AbilityBar>(e);
+    for (const auto& s : bar.slots) if (s == id) return false;
+    for (auto& s : bar.slots) if (s.empty()) { s = id; return true; }
+    if (bar.slots.size() >= 8) return false;
+    bar.slots.push_back(id);
+    return true;
+}
+/// Learn a skill (unlock_skill: points, prerequisites, grants, tags) and put
+/// the abilities it gives on the bar.
+inline bool learn_skill(World& w, Entity e, const std::string& node_id, GameplayEventBus* bus = nullptr) {
+    if (!unlock_skill(w, e, node_id, bus)) return false;
+    if (const SkillTree* t = w.try_get<SkillTree>(e))
+        if (const SkillNode* n = find_node(*t, node_id))
+            for (const auto& a : n->abilities) give_ability(w, e, a);
+    return true;
+}
+/// Give `e` the tree with this id from the data files (and what learning
+/// needs: unlocked skills, a progression). False when no such tree exists.
+inline bool set_skill_tree(World& w, Entity e, const std::string& tree) {
+    SkillTree t = skill_tree_named(tree);
+    if (t.nodes.empty()) return false;
+    if (w.has<SkillTree>(e)) w.get<SkillTree>(e) = t; else w.add<SkillTree>(e, t);
+    if (!w.has<UnlockedSkills>(e)) w.add<UnlockedSkills>(e, UnlockedSkills{});
+    if (!w.has<Progression>(e)) w.add<Progression>(e, Progression{});
+    return true;
 }
 
 // ---- the Ability Bar component ----------------------------------------------------

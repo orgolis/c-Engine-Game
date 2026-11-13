@@ -5996,9 +5996,16 @@ void ShowViewport(EditorState& editor_state) {
                         char key[4];
                         std::snprintf(key, sizeof key, "%d", static_cast<int>(i) + 1);
                         dl->AddText(ImVec2(a.x + 4, a.y + 2), IM_COL32(200, 210, 230, 220), key);
-                        std::string nm = s.name.substr(0, 7);
-                        const ImVec2 ns = ImGui::CalcTextSize(nm.c_str());
-                        dl->AddText(ImVec2(a.x + (box - ns.x) * 0.5f, b.y - ns.y - 3), IM_COL32(230, 235, 245, 240), nm.c_str());
+                        // The whole name, its text made smaller when it would not fit the slot.
+                        const char* nm = s.name.c_str();
+                        float fs = ImGui::GetFontSize();
+                        ImVec2 ns = ImGui::CalcTextSize(nm);
+                        if (ns.x > box - 6.0f && ns.x > 0.0f) {
+                            const float k = std::max(0.55f, (box - 6.0f) / ns.x);
+                            fs *= k;
+                            ns = ImVec2(ns.x * k, ns.y * k);
+                        }
+                        dl->AddText(ImGui::GetFont(), fs, ImVec2(a.x + (box - ns.x) * 0.5f, b.y - ns.y - 3), IM_COL32(230, 235, 245, 240), nm);
                     }
                     if (ah.casting >= 0) {
                         const float w = 220.0f, h = 8.0f;
@@ -6017,7 +6024,8 @@ void ShowViewport(EditorState& editor_state) {
                                          ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
                     ui.frame(ImGui::GetWindowDrawList(), image_min, image_max, pointer);
                 }
-                // A script's message (Show Message), across the top of the view.
+                // A script's message (Show Message), across the top of the view --
+                // at its bottom while a menu is up, so it does not cover the menu's title.
                 if (viewport_playing) {
                     const auto& msg = schizo::editor::play_message();
                     if (!msg.text.empty() && editor_state.scene_playback_manager->GetPlaybackTime() < msg.until) {
@@ -6025,7 +6033,7 @@ void ShowViewport(EditorState& editor_state) {
                         const float cx = (image_min.x + image_max.x) * 0.5f;
                         ImGui::SetWindowFontScale(1.35f);
                         const ImVec2 ts = ImGui::CalcTextSize(msg.text.c_str());
-                        const ImVec2 p(cx - ts.x * 0.5f, image_min.y + 60.0f);
+                        const ImVec2 p(cx - ts.x * 0.5f, ui_menu_up ? image_max.y - 18.0f - ts.y : image_min.y + 60.0f);
                         dl->AddRectFilled(ImVec2(p.x - 14, p.y - 8), ImVec2(p.x + ts.x + 14, p.y + ts.y + 8), IM_COL32(10, 14, 20, 190), 6.0f);
                         dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 245, 210, 255), msg.text.c_str());
                         ImGui::SetWindowFontScale(1.0f);
@@ -10553,7 +10561,9 @@ int main(int argc, char** argv) {
                 auto& ui = schizo::editor::play_ui();
                 // The controls, once a frame, by action.
                 auto& ps = schizo::editor::play_settings();
+                static int test_press_key = 0, test_press_frames = 0;   // GWS_TEST_UI press:<action>
                 auto key_held = [&](int code) {
+                    if (test_press_frames > 0 && code == test_press_key) return true;
                     if (code >= schizo::input::kMouseButton)
                         return glfwGetMouseButton(glfw_window, code - schizo::input::kMouseButton) == GLFW_PRESS;
                     return code > 0 && glfwGetKey(glfw_window, code) == GLFW_PRESS;
@@ -10561,6 +10571,7 @@ int main(int argc, char** argv) {
                 // The key that just ended a rebinding is not the game's until it is let go.
                 if (ps.swallowed_key && !key_held(ps.swallowed_key)) ps.swallowed_key = 0;
                 ps.states.update(ps.map, [&](int code) { return code != ps.swallowed_key && key_held(code); });
+                if (test_press_frames > 0) --test_press_frames;
                 pm.SetActions(&ps.states);
                 pm.SetLook(ps.map.mouse_sensitivity, ps.map.invert_y);
                 // Rebind Action: the next key or mouse button pressed (Esc cancels).
@@ -10614,6 +10625,35 @@ int main(int argc, char** argv) {
                         v.found = !v.text.empty();
                         return v;
                     }
+                    if (src.rfind("skill.", 0) == 0) {
+                        // skill.<id>: "Learned" / "Learn (N)" / "Locked"; skill.<id>.can: 1 when it can be learned now.
+                        std::string id = src.substr(6);
+                        const bool can_q = id.size() > 4 && id.compare(id.size() - 4, 4, ".can") == 0;
+                        if (can_q) id = id.substr(0, id.size() - 4);
+                        auto* pl = pm.GetPlayerEntity();
+                        const uint32_t pid = pl ? ecs_bridge.ecs_entity_id(pl->GetTransform()) : schizo::editor::kNoEcsEntity;
+                        const auto pe = static_cast<schizo::ecs::Entity>(pid);
+                        if (pid == schizo::editor::kNoEcsEntity || !ecs_bridge.world().valid(pe)) return v;
+                        const int state = schizo::ecs::skill_state(ecs_bridge.world(), pe, id);
+                        v.found = true;
+                        v.value = can_q ? (state == 1 ? 1 : 0) : state;
+                        if (!can_q) {
+                            // "Learn (N pt)" once what it needs is learned (greyed by .can until the points
+                            // are there); "Locked" before.
+                            int cost = 1;
+                            bool needs_met = true;
+                            auto& sw = ecs_bridge.world();
+                            const auto* got = sw.try_get<schizo::ecs::UnlockedSkills>(pe);
+                            if (const auto* t = sw.try_get<schizo::ecs::SkillTree>(pe))
+                                if (const auto* n = schizo::ecs::find_node(*t, id)) {
+                                    cost = n->cost;
+                                    for (const auto& r : n->prerequisites)
+                                        if (!got || !schizo::ecs::skill_unlocked(*got, r)) needs_met = false;
+                                }
+                            v.text = state == 2 ? "Learned" : (state == 1 || needs_met) ? "Learn (" + std::to_string(cost) + " pt)" : "Locked";
+                        }
+                        return v;
+                    }
                     if (src == "time") { v.found = true; v.value = pm.GetPlaybackTime(); return v; }
                     if (src.rfind("flag.", 0) == 0) { v.found = true; v.value = ecs_bridge.world_flag(src.substr(5)); return v; }
                     if (src.rfind("player.", 0) != 0) return v;
@@ -10633,9 +10673,45 @@ int main(int argc, char** argv) {
                         if (const auto* d = schizo::ecs::find_weapon(ws->weapon_id)) v.max = d->mag_size;
                         return v;
                     }
+                    if (what == "level" || what == "xp" || what == "skill_points") {
+                        const auto* pr = w.try_get<schizo::ecs::Progression>(pe);
+                        if (!pr) return v;
+                        v.found = true;
+                        if (what == "level") v.value = pr->level;
+                        else if (what == "skill_points") v.value = pr->skill_points;
+                        else { v.value = pr->xp; v.max = pr->curve.threshold(pr->level + 1); }
+                        return v;
+                    }
+                    if (what.rfind("ability.", 0) == 0) {
+                        // ability.<n>: the name on the bar's slot n (from 1), its cooldown left of its whole.
+                        const int slot = std::atoi(what.c_str() + 8) - 1;
+                        const auto* bar = w.try_get<schizo::ecs::AbilityBar>(pe);
+                        v.found = true;
+                        v.text = "-";
+                        if (!bar || slot < 0 || slot >= static_cast<int>(bar->slots.size())) return v;
+                        const auto* d = schizo::ecs::find_ability_def(bar->slots[static_cast<size_t>(slot)]);
+                        v.text = d ? d->name : bar->slots[static_cast<size_t>(slot)];
+                        if (static_cast<size_t>(slot) < bar->cooldown.size()) v.value = bar->cooldown[static_cast<size_t>(slot)];
+                        v.max = d ? d->cooldown : 0.0;
+                        return v;
+                    }
                     if (const auto* a = w.try_get<schizo::ecs::AttributeSet>(pe))
                         if (const auto* at = a->find(what)) { v.found = true; v.value = at->current; v.max = at->max; }
                     return v;
+                }, [&](const std::string& src) {
+                    // A slots grid bound to the player's inventory.
+                    std::vector<schizo::ui::UiSlot> out;
+                    if (src != "player.inventory") return out;
+                    auto* pl = pm.GetPlayerEntity();
+                    const uint32_t pid = pl ? ecs_bridge.ecs_entity_id(pl->GetTransform()) : schizo::editor::kNoEcsEntity;
+                    const auto pe = static_cast<schizo::ecs::Entity>(pid);
+                    if (pid == schizo::editor::kNoEcsEntity || !ecs_bridge.world().valid(pe)) return out;
+                    if (const auto* inv = ecs_bridge.world().try_get<schizo::ecs::Inventory>(pe))
+                        for (const auto& it : inv->items) {
+                            const auto* d = schizo::ecs::find_item(it.def_id);
+                            out.push_back({d ? d->name : it.def_id, it.quantity, d ? schizo::ecs::item_kind_name(d->kind) : ""});
+                        }
+                    return out;
                 });
                 // GWS_TEST_UI=click:<id>@<frame>,show:<file>@<frame>,... : click a
                 // button or show a document at a Play frame (menus seen without a person).
@@ -10659,7 +10735,26 @@ int main(int argc, char** argv) {
                         if (at == std::string::npos || colon == std::string::npos || std::atoi(item.c_str() + at + 1) != ui_frames) continue;
                         const std::string what = item.substr(0, colon), arg = item.substr(colon + 1, at - colon - 1);
                         if (what == "click") {
-                            schizo::ecs::GameplayEvent ev; ev.name = "ui.click"; ev.param = arg;
+                            // click:<button>, or click:<grid>.<cell> (picks the cell too)
+                            schizo::ecs::GameplayEvent ev; ev.name = "ui.click"; ev.param = arg; ev.value = -1.0f;
+                            const size_t dot = arg.rfind('.');
+                            if (dot != std::string::npos && ui.pick(arg.substr(0, dot), std::atoi(arg.c_str() + dot + 1))) {
+                                ev.param = arg.substr(0, dot);
+                                ev.value = static_cast<float>(std::atoi(arg.c_str() + dot + 1));
+                            }
+                            ecs_bridge.events().publish(ev);
+                        } else if (what == "press") {
+                            // press:<action> -- its key held for a few frames, as the player would
+                            test_press_key = ps.map.key(arg);
+                            test_press_frames = 4;
+                            spdlog::info("[test] ui: press {} (key {}) -- mouse held by Play {}, menu has input {}, game view focused {}",
+                                         arg, test_press_key, pm.IsCursorCaptured(), pm.UiHasInput(), editor_state.viewport_input_focused);
+                        } else if (what == "event") {
+                            // event:<name>=<param> on the gameplay bus, about the player (a creature's death...)
+                            schizo::ecs::GameplayEvent ev;
+                            const size_t eq = arg.find('=');
+                            ev.name = arg.substr(0, eq);
+                            if (eq != std::string::npos) ev.param = arg.substr(eq + 1);
                             ecs_bridge.events().publish(ev);
                         } else if (what == "show") {
                             ui.show(arg);
@@ -10672,10 +10767,11 @@ int main(int argc, char** argv) {
                         spdlog::info("[test] ui: {} {} (play frame {})", what, arg, ui_frames);
                     }
                 }
-                for (const std::string& id : ui.take_clicks()) {
+                for (const auto& [id, cell] : ui.take_clicks()) {
                     schizo::ecs::GameplayEvent ev;
                     ev.name = "ui.click";
                     ev.param = id;
+                    ev.value = static_cast<float>(cell);   // a grid's cell (-1 for a button)
                     ecs_bridge.events().publish(ev);
                 }
                 pm.SetGamePaused(ui.pauses());
@@ -10688,7 +10784,8 @@ int main(int argc, char** argv) {
                     released_for_ui = false;
                     if (!editor_state.play_cursor_released_by_escape) pm.SetCursorCaptured(true);
                 }
-                const bool app_focused = glfwGetWindowAttrib(glfw_window, GLFW_FOCUSED) == GLFW_TRUE;
+                static const bool ui_assume_focus = std::getenv("GWS_TEST_ASSUME_FOCUS") != nullptr;   // automated runs
+                const bool app_focused = ui_assume_focus || glfwGetWindowAttrib(glfw_window, GLFW_FOCUSED) == GLFW_TRUE;
                 pm.SetUiHasInput(modal && app_focused && (game_window_mode || editor_state.viewport_input_focused));
                 if (ui.quit_requested) {
                     ui.quit_requested = false;

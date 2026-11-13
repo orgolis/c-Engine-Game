@@ -303,6 +303,64 @@ int main() {
         check("insufficient cost prevents activation", !ecs::try_activate_ability(aw, caster, 0, target));
     }
 
+    // Skill trees as data, learning that grants abilities.
+    {
+        const char* data =
+            "ability sk_bolt\n  name Bolt\n  target aimed\nend\n"
+            "ability sk_nova\n  name Nova\n  target area\nend\n"
+            "skill sk_a\n  name Bolt\n  tree sk_test\n  cost 0\n  unlocks sk_bolt\nend\n"
+            "skill sk_b\n  name Toughness\n  tree sk_test\n  cost 1\n  grant Health 25\n  tag perk.tough\nend\n"
+            "skill sk_c\n  name Nova\n  tree sk_test\n  cost 1\n  requires sk_a\n  requires sk_b\n  unlocks sk_nova\nend\n"
+            "skill sk_other\n  tree other_tree\nend\n";
+        ecs::register_items_text(data);
+        const ecs::SkillTree tree = ecs::skill_tree_named("sk_test");
+        check("skill data: the tree's nodes in the order written, with costs, needs and grants",
+              tree.nodes.size() == 3 && tree.nodes[2].id == "sk_c" && tree.nodes[2].prerequisites.size() == 2 &&
+              tree.nodes[2].abilities.size() == 1 && tree.nodes[1].grants.size() == 1 && tree.nodes[1].granted_tags.size() == 1 &&
+              tree.id == "sk_test");
+        ecs::World w;
+        const ecs::Entity me = w.create();
+        w.add<ecs::AttributeSet>(me, ecs::AttributeSet{});
+        w.get<ecs::AttributeSet>(me).define("Health", 100, 0, 100);
+        check("set skill tree: unknown trees are refused", !ecs::set_skill_tree(w, me, "no_such_tree"));
+        const bool set = ecs::set_skill_tree(w, me, "sk_test");
+        w.get<ecs::Progression>(me).skill_points = 1;
+        const bool locked = ecs::skill_state(w, me, "sk_c") == 0 && !ecs::learn_skill(w, me, "sk_c");
+        const bool a = ecs::learn_skill(w, me, "sk_a");
+        const bool b = ecs::learn_skill(w, me, "sk_b");
+        const bool c_no_points = !ecs::learn_skill(w, me, "sk_c");
+        w.get<ecs::Progression>(me).skill_points = 1;
+        const bool can_c = ecs::skill_state(w, me, "sk_c") == 1;
+        const bool c = ecs::learn_skill(w, me, "sk_c");
+        const std::vector<std::string> bar = w.has<ecs::AbilityBar>(me) ? w.get<ecs::AbilityBar>(me).slots : std::vector<std::string>{};
+        check("learning: needs come first, points are spent, its abilities go on the bar, bonuses and tags apply",
+              set && locked && a && b && c_no_points && can_c && c && ecs::skill_state(w, me, "sk_c") == 2 &&
+              bar.size() == 2 && bar[0] == "sk_bolt" && bar[1] == "sk_nova" &&
+              w.get<ecs::AttributeSet>(me).find("Health")->max == 125.0f && w.has<ecs::GameplayTags>(me) &&
+              w.get<ecs::GameplayTags>(me).has("perk.tough"));
+        // The tree saves with its abilities; older data (without them) still reads.
+        std::vector<uint8_t> buf;
+        ecs::serialize_skill_tree(&tree, buf);
+        ecs::SkillTree back;
+        ecs::deserialize_skill_tree(&back, buf.data(), buf.size());
+        ecs::SkillTree old_tree = tree;
+        for (auto& n : old_tree.nodes) n.abilities.clear();
+        std::vector<uint8_t> old_buf;
+        ecs::serialize_skill_tree(&old_tree, old_buf);
+        old_buf.resize(old_buf.size() - 4 - 4 * old_tree.nodes.size() - 4 - old_tree.id.size());   // as an older engine wrote it
+        ecs::SkillTree old_back;
+        ecs::deserialize_skill_tree(&old_back, old_buf.data(), old_buf.size());
+        check("skill tree saving: abilities and id kept; data from before them still reads",
+              back.nodes.size() == 3 && back.nodes[2].abilities == tree.nodes[2].abilities && back.id == "sk_test" &&
+              old_back.nodes.size() == 3 && old_back.nodes[2].prerequisites.size() == 2 && old_back.nodes[2].abilities.empty());
+        // The Items editor keeps skill blocks as written.
+        const ecs::ItemsDoc doc = ecs::parse_items_doc(data);
+        const std::string written = ecs::items_doc_to_text(doc);
+        check("items editor: skill blocks are kept, in place, as written",
+              doc.entries.size() == 6 && doc.entries[2].kind == ecs::ItemsDoc::Kind::Text && doc.entries[2].id() == "sk_a" &&
+              written.find("skill sk_c\n  name Nova\n  tree sk_test\n  cost 1\n  requires sk_a\n") != std::string::npos);
+    }
+
     // D0: life and death.
     {
         ecs::World w;

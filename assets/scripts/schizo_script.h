@@ -141,6 +141,14 @@ typedef struct SchizoScriptApi {
     bool     (*set_setting)(void* ctx, const char* name, const char* value);
     int      (*get_setting)(void* ctx, const char* name, char* out, int out_size);
     int      (*next_setting)(void* ctx, const char* name, char* out, int out_size);
+    /* Skill trees from project data; inventory screens. */
+    bool     (*set_skill_tree)(void* ctx, unsigned e, const char* tree);
+    void     (*add_skill_points)(void* ctx, unsigned e, int points);
+    int      (*skill_state)(void* ctx, unsigned e, const char* skill);
+    int      (*skill_points)(void* ctx, unsigned e);
+    int      (*ui_selected)(void* ctx, const char* path, const char* id);
+    bool     (*item_in_slot)(void* ctx, unsigned e, int index, char* id_out, int id_size, char* name_out, int name_size,
+                             int* count);
 } SchizoScriptApi;
 
 }  // extern "C"

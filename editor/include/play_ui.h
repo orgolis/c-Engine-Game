@@ -56,7 +56,11 @@ public:
         }
         for (auto& [id, b] : doc->buttons) {
             const std::string bid = id;
-            b->on_click = [this, bid] { clicks_.push_back(bid); };
+            b->on_click = [this, bid] { clicks_.push_back({bid, -1}); };
+        }
+        for (auto& g : doc->grids) {
+            const std::string gid = g.id;
+            g.grid->on_click = [this, gid](int cell) { clicks_.push_back({gid, cell}); };
         }
         docs_.push_back(std::move(doc));
         std::stable_sort(docs_.begin(), docs_.end(), [](const auto& a, const auto& b) { return a->layer < b->layer; });
@@ -91,8 +95,22 @@ public:
     bool empty() const { return docs_.empty(); }
 
     /// Fill the live values (call once a frame, where the game is at hand).
-    void refresh(const schizo::ui::UiLookup& lookup) {
-        for (auto& d : docs_) schizo::ui::refresh_ui_bindings(*d, lookup);
+    void refresh(const schizo::ui::UiLookup& lookup, const schizo::ui::UiSlotLookup& slots = {}) {
+        for (auto& d : docs_) schizo::ui::refresh_ui_bindings(*d, lookup, slots);
+    }
+    /// The selected cell of a slots grid in a shown document (-1: none).
+    int selected(const std::string& path, const std::string& id) const {
+        const auto* d = find(norm(path));
+        if (!d) return -1;
+        for (const auto& g : d->grids) if (g.id == id) return g.grid->selected;
+        return -1;
+    }
+    /// Pick a cell of a shown slots grid, as a click on it would (tests).
+    bool pick(const std::string& id, int cell) {
+        for (auto& d : docs_)
+            for (auto& g : d->grids)
+                if (g.id == id) { g.grid->selected = cell; return true; }
+        return false;
     }
 
     /// Lay out over the view [vmin, vmax], take the mouse when `pointer` (a
@@ -115,8 +133,8 @@ public:
         }
     }
 
-    /// Buttons clicked since the last call (their ids).
-    std::vector<std::string> take_clicks() { return std::exchange(clicks_, {}); }
+    /// Buttons and grid cells clicked since the last call: (id, cell or -1).
+    std::vector<std::pair<std::string, int>> take_clicks() { return std::exchange(clicks_, {}); }
 
     bool script_pause = false;     // Pause Game from a script
     bool quit_requested = false;   // Quit Game from a script
@@ -152,7 +170,7 @@ private:
     }
 
     std::vector<std::unique_ptr<schizo::ui::UiDocument>> docs_;
-    std::vector<std::string> clicks_;
+    std::vector<std::pair<std::string, int>> clicks_;
 };
 
 /// The one in Play (scripts reach it through the script API).

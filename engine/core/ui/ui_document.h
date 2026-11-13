@@ -48,6 +48,67 @@
 
 namespace schizo::ui {
 
+/// One cell's content in a slots grid (an inventory).
+struct UiSlot {
+    std::string name;     // what is in it ("" empty)
+    int         count = 0;
+    std::string detail;   // a second line: kind, equipped...
+};
+
+/// A grid of slots (an inventory, a stash): cells drawn in rows, the
+/// contents from the game, a click picks a cell (`selected`) and reports it.
+class SlotGrid : public Widget {
+public:
+    int   cols = 6, rows = 4;
+    float gap = 8.0f;                 // reference pixels between cells
+    float font_size = 18.0f;
+    std::vector<UiSlot> slots;
+    int   selected = -1;
+    std::function<void(int)> on_click;
+    UiColor cell{0.12f, 0.14f, 0.19f, 0.92f}, cell_hover{0.2f, 0.24f, 0.32f, 0.95f}, cell_selected{0.32f, 0.42f, 0.62f, 0.98f};
+
+    SlotGrid() { interactive = true; }
+    int cell_at(float px, float py) const {
+        if (!rect.contains(px, py)) return -1;
+        const float cw = rect.w / static_cast<float>(cols), ch = rect.h / static_cast<float>(rows);
+        const int c = std::min(cols - 1, static_cast<int>((px - rect.x) / cw));
+        const int r = std::min(rows - 1, static_cast<int>((py - rect.y) / ch));
+        return r * cols + c;
+    }
+    void on_pointer(float x, float y) override { hover_ = cell_at(x, y); }
+    void on_hover(bool h) override { if (!h) hover_ = -1; }
+    void on_activate() override {
+        if (hover_ < 0) return;
+        selected = hover_;
+        if (on_click) on_click(selected);
+    }
+    void paint_self(UiDrawList& dl) const override {
+        const float cw = rect.w / static_cast<float>(cols), ch = rect.h / static_cast<float>(rows);
+        const float g = std::min(cw, ch) * 0.06f;
+        for (int i = 0; i < cols * rows; ++i) {
+            const UiRect r{rect.x + (i % cols) * cw + g * 0.5f, rect.y + (i / cols) * ch + g * 0.5f, cw - g, ch - g};
+            const UiColor c = i == selected ? cell_selected : i == hover_ ? cell_hover : cell;
+            dl.push_back({UiCmdType::Rect, r, c, {}, 0.0f, UiAlign::Left, 0});
+            if (i >= static_cast<int>(slots.size()) || slots[static_cast<size_t>(i)].name.empty()) continue;
+            const UiSlot& s = slots[static_cast<size_t>(i)];
+            UiRect name = r;
+            name.h = r.h * 0.6f;
+            dl.push_back({UiCmdType::Text, name, UiColor{1, 1, 1, 1}, s.name, font_size, UiAlign::Center, 0});
+            UiRect low = r;
+            low.y = r.y + r.h * 0.6f;
+            low.h = r.h * 0.36f;
+            std::string tail = s.count > 1 ? "x" + std::to_string(s.count) : std::string();
+            if (!s.detail.empty()) tail = tail.empty() ? s.detail : tail + "  " + s.detail;
+            if (!tail.empty())
+                dl.push_back({UiCmdType::Text, low, UiColor{1, 0.9f, 0.6f, 0.95f}, tail, font_size * 0.8f, UiAlign::Center, 0});
+        }
+    }
+    float scale_hint = 1.0f;
+
+private:
+    int hover_ = -1;
+};
+
 struct UiDocument {
     std::string path;
     bool modal = false;     // frees the mouse over the game, turns game input off
@@ -59,8 +120,12 @@ struct UiDocument {
 
     struct TextBinding { Label* label; Button* button; std::string templ; };   // one of label / button
     struct BarBinding  { ProgressBar* bar; std::string source; };
+    struct EnableBinding { Button* button; std::string source; };   // enabled while the source is above 0
+    struct SlotsBinding { SlotGrid* grid; std::string id, source; };
     std::vector<TextBinding> texts;
     std::vector<BarBinding>  bars;
+    std::vector<EnableBinding> enables;
+    std::vector<SlotsBinding>  grids;
     std::vector<std::string> errors;   // "line 4: unknown anchor 'middle'"
 };
 
@@ -71,6 +136,8 @@ struct UiValue {
     std::string text;       // when not empty, what {source} shows
 };
 using UiLookup = std::function<UiValue(const std::string& source)>;
+/// The contents of a slots grid (`bind=player.inventory`).
+using UiSlotLookup = std::function<std::vector<UiSlot>(const std::string& source)>;
 
 namespace ui_doc_detail {
 
@@ -176,6 +243,7 @@ inline std::unique_ptr<UiDocument> parse_ui_document(const std::string& text, co
             if (kv.count("hover")) parse_color(kv["hover"], b->color_hover);
             if (kv.count("text_color")) parse_color(kv["text_color"], b->text_color);
             w = b;
+            if (kv.count("enabled")) doc->enables.push_back({b, kv["enabled"]});
             if (kv.count("id")) doc->buttons.push_back({kv["id"], b});
             else err("a button needs an id (it is what On UI Button names)");
         } else if (kind == "bar") {
@@ -186,8 +254,17 @@ inline std::unique_ptr<UiDocument> parse_ui_document(const std::string& text, co
             b->fraction = num("value", 1.0f);
             if (kv.count("bind")) doc->bars.push_back({b, kv["bind"]});
             w = b;
+        } else if (kind == "slots") {
+            auto* g = doc->canvas.root().add<SlotGrid>();
+            g->cols = std::max(1, static_cast<int>(num("cols", 6)));
+            g->rows = std::max(1, static_cast<int>(num("rows", 4)));
+            g->font_size = num("size", 18.0f);
+            if (kv.count("color")) parse_color(kv["color"], g->cell);
+            if (!kv.count("id")) err("slots need an id (it is what On UI Button names, with the cell as Index)");
+            else doc->grids.push_back({g, kv["id"], kv.count("bind") ? kv["bind"] : std::string()});
+            w = g;
         } else {
-            err("unknown widget '" + kind + "' (panel, label, button, bar)");
+            err("unknown widget '" + kind + "' (panel, label, button, bar, slots)");
             continue;
         }
         // Placement.
@@ -211,7 +288,35 @@ inline std::unique_ptr<UiDocument> parse_ui_document(const std::string& text, co
 
 /// Fill {source} placeholders and bars from the game. Unknown sources show
 /// as "?" (and leave a bar as it is).
-inline void refresh_ui_bindings(UiDocument& doc, const UiLookup& lookup) {
+inline void refresh_ui_bindings(UiDocument& doc, const UiLookup& game_lookup, const UiSlotLookup& slot_lookup = {}) {
+    for (auto& g : doc.grids) {
+        g.grid->scale_hint = doc.canvas.scale();
+        if (slot_lookup && !g.source.empty()) g.grid->slots = slot_lookup(g.source);
+        if (g.grid->selected >= g.grid->cols * g.grid->rows) g.grid->selected = -1;
+    }
+    // {<slots id>.name / .count / .detail / .index}: the selected cell.
+    const UiLookup lookup = [&](const std::string& src) {
+        for (const auto& g : doc.grids) {
+            if (src.rfind(g.id + ".", 0) != 0) continue;
+            const std::string what = src.substr(g.id.size() + 1);
+            UiValue v;
+            v.found = true;
+            const int i = g.grid->selected;
+            const UiSlot* s = (i >= 0 && i < static_cast<int>(g.grid->slots.size())) ? &g.grid->slots[static_cast<size_t>(i)] : nullptr;
+            if (what == "index") v.value = i;
+            else if (what == "count") v.value = s ? s->count : 0;
+            else if (what == "name") v.text = s && !s->name.empty() ? s->name : std::string(" ");
+            else if (what == "detail") v.text = s && !s->detail.empty() ? s->detail : std::string(" ");
+            else v.found = false;
+            return v;
+        }
+        return game_lookup(src);
+    };
+    for (auto& e : doc.enables) {
+        const UiValue v = lookup(e.source);
+        const bool want = v.found && v.value > 0.0;
+        if (e.button->interactive != want) e.button->set_enabled(want);   // only on a change: keeps hover / press
+    }
     for (auto& t : doc.texts) {
         std::string out;
         const std::string& s = t.templ;

@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace schizo::ecs {
@@ -36,8 +37,9 @@ struct SkillNode {
     std::vector<std::string> prerequisites;   // node ids that must be unlocked first
     std::vector<StatGrant>   grants;          // permanent attribute bonuses
     std::vector<std::string> granted_tags;    // e.g. an ability-unlock tag
+    std::vector<std::string> abilities;       // put on the Ability Bar when learned (learn_skill)
 };
-struct SkillTree     { std::vector<SkillNode> nodes; };
+struct SkillTree     { std::vector<SkillNode> nodes; std::string id; };
 struct UnlockedSkills { std::vector<std::string> unlocked; };  // node ids
 
 inline const SkillNode* find_node(const SkillTree& t, const std::string& id) {
@@ -126,6 +128,12 @@ inline void serialize_skill_tree(const void* obj, std::vector<uint8_t>& out) {
         for (const auto& g : n.grants) { detail::put_str(out, g.attribute); detail::put_f32(out, g.amount); }
         detail::put_str_vec(out, n.granted_tags);
     }
+    // Added later, after everything older readers know: each node's abilities
+    // and the tree's id, behind a marker (data without it reads as before).
+    const uint32_t marker = 0x31424C41u;   // "ALB1"
+    detail::put_bytes(out, &marker, 4);
+    for (const auto& n : t.nodes) detail::put_str_vec(out, n.abilities);
+    detail::put_str(out, t.id);
 }
 inline void deserialize_skill_tree(void* obj, const uint8_t* data, size_t n) {
     auto& t = *static_cast<SkillTree*>(obj); t.nodes.clear();
@@ -147,6 +155,37 @@ inline void deserialize_skill_tree(void* obj, const uint8_t* data, size_t n) {
         if (!detail::get_str_vec(p, e, nd.granted_tags)) return;
         t.nodes.push_back(std::move(nd));
     }
+    uint32_t marker = 0;
+    if (!detail::get_bytes(p, e, &marker, 4) || marker != 0x31424C41u) return;
+    for (auto& nd : t.nodes)
+        if (!detail::get_str_vec(p, e, nd.abilities)) return;
+    detail::get_str(p, e, t.id);
+}
+
+// ---------------- skill trees as data (`skill` blocks in .items files) ----------------
+inline std::vector<std::pair<std::string, SkillNode>>& skill_def_registry() {
+    static std::vector<std::pair<std::string, SkillNode>> r;
+    return r;
+}
+inline void register_skill_def(const std::string& tree, const SkillNode& n) {
+    for (auto& [t, x] : skill_def_registry())
+        if (t == tree && x.id == n.id) { x = n; return; }
+    skill_def_registry().push_back({tree, n});
+}
+/// The tree with this id, from the skills registered from data files (in
+/// the order they were written). Empty when there is none.
+inline SkillTree skill_tree_named(const std::string& tree) {
+    SkillTree t;
+    t.id = tree;
+    for (const auto& [id, n] : skill_def_registry())
+        if (id == tree) t.nodes.push_back(n);
+    return t;
+}
+/// What a skill is to `e` now: 2 learned, 1 can be learned, 0 not yet.
+inline int skill_state(World& w, Entity e, const std::string& node_id) {
+    if (const UnlockedSkills* u = w.try_get<UnlockedSkills>(e))
+        if (skill_unlocked(*u, node_id)) return 2;
+    return can_unlock(w, e, node_id) ? 1 : 0;
 }
 inline void serialize_unlocked_skills(const void* obj, std::vector<uint8_t>& out) {
     detail::put_str_vec(out, static_cast<const UnlockedSkills*>(obj)->unlocked);

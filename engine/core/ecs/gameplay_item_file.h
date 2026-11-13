@@ -34,6 +34,7 @@
 #include "gameplay_items.h"
 #include "gameplay_weapons.h"
 #include "gameplay_ability_cast.h"
+#include "gameplay_skills.h"
 
 #include <cctype>
 #include <cstdint>
@@ -90,7 +91,7 @@ inline std::vector<ItemDef> parse_items_text(const std::string& text) {
         if (key.empty() || key[0] == '#') continue;
 
         if (key == "item")      { flush(); ls >> cur.id; have = true; }
-        else if (key == "weapon" || key == "ability") { flush(); }   // not an item block
+        else if (key == "weapon" || key == "ability" || key == "skill") { flush(); }   // not an item block
         else if (!have)         { continue; }
         else if (key == "end")  { flush(); }
         else if (key == "name")      { std::string rest; std::getline(ls, rest); cur.name = detail::trim(rest); }
@@ -139,7 +140,7 @@ inline std::vector<WeaponDef> parse_weapons_text(const std::string& text) {
         std::string key;
         if (!(ls >> key) || key[0] == '#') continue;
         if (key == "weapon")        { flush(); ls >> cur.id; cur.name = cur.id; have = true; }
-        else if (key == "item" || key == "ability") { flush(); }   // not a weapon block
+        else if (key == "item" || key == "ability" || key == "skill") { flush(); }   // not a weapon block
         else if (!have)             { continue; }
         else if (key == "end")      { flush(); }
         else if (key == "name")     { std::string rest; std::getline(ls, rest); cur.name = detail::trim(rest); }
@@ -165,12 +166,57 @@ inline std::vector<WeaponDef> parse_weapons_text(const std::string& text) {
     return out;
 }
 
+// Skill blocks: one node of a skill tree each.
+//
+//   skill hunter_frost
+//     name Frost Nova
+//     tree hunter              # which tree it belongs to (Set Skill Tree)
+//     cost 1                   # skill points
+//     requires hunter_fire     # learned first (one line each)
+//     unlocks frost_nova       # an ability put on the Ability Bar when learned
+//     grant Health 25          # a lasting bonus to an attribute
+//     tag perk.frost           # a gameplay tag the player gains
+//   end
+inline std::vector<std::pair<std::string, SkillNode>> parse_skills_text(const std::string& text) {
+    std::vector<std::pair<std::string, SkillNode>> out;
+    SkillNode cur;
+    std::string tree;
+    bool have = false;
+    auto flush = [&] {
+        if (have && !cur.id.empty()) out.push_back({tree.empty() ? std::string("default") : tree, cur});
+        cur = SkillNode{};
+        tree.clear();
+        have = false;
+    };
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        std::istringstream ls(line);
+        std::string key;
+        if (!(ls >> key) || key[0] == '#') continue;
+        if (key == "skill") { flush(); ls >> cur.id; cur.name = cur.id; have = true; }
+        else if (key == "item" || key == "weapon" || key == "ability") { flush(); }
+        else if (!have) { continue; }
+        else if (key == "end") { flush(); }
+        else if (key == "name") { std::string r; std::getline(ls, r); cur.name = detail::trim(r); }
+        else if (key == "tree") { ls >> tree; }
+        else if (key == "cost") { ls >> cur.cost; }
+        else if (key == "requires") { std::string r; ls >> r; if (!r.empty()) cur.prerequisites.push_back(r); }
+        else if (key == "unlocks") { std::string a; ls >> a; if (!a.empty()) cur.abilities.push_back(a); }
+        else if (key == "grant") { StatGrant g; ls >> g.attribute >> g.amount; if (!g.attribute.empty()) cur.grants.push_back(g); }
+        else if (key == "tag") { std::string g; ls >> g; if (!g.empty()) cur.granted_tags.push_back(g); }
+    }
+    flush();
+    return out;
+}
+
 // Register every item and weapon in the text. Returns the number registered.
 inline int register_items_text(const std::string& text) {
     int n = 0;
     for (const auto& d : parse_items_text(text)) { register_item(d); ++n; }
     for (const auto& d : parse_weapons_text(text)) { register_weapon(d); ++n; }
     for (const auto& d : parse_abilities_text(text)) { register_ability_def(d); ++n; }
+    for (const auto& [tree, node] : parse_skills_text(text)) { register_skill_def(tree, node); ++n; }
     return n;
 }
 
@@ -202,17 +248,24 @@ inline int load_items_dir(const std::string& dir) {
 // file written back from it keeps its blocks and their order; comments between
 // blocks are not kept.
 struct ItemsDoc {
-    enum class Kind : uint8_t { Item, Weapon, Ability };
+    enum class Kind : uint8_t { Item, Weapon, Ability, Text };   // Text: a block kept as written (skills)
     struct Entry {
         Kind       kind = Kind::Item;
         ItemDef    item;
         WeaponDef  weapon;
         AbilityDef ability;
+        std::string text, text_id;   // Kind::Text: the block as written, and its id
         bool is_weapon() const { return kind == Kind::Weapon; }
         bool is_ability() const { return kind == Kind::Ability; }
-        const std::string& id() const { return kind == Kind::Weapon ? weapon.id : kind == Kind::Ability ? ability.id : item.id; }
-        const std::string& name() const { return kind == Kind::Weapon ? weapon.name : kind == Kind::Ability ? ability.name : item.name; }
-        std::string& id_ref() { return kind == Kind::Weapon ? weapon.id : kind == Kind::Ability ? ability.id : item.id; }
+        const std::string& id() const {
+            return kind == Kind::Weapon ? weapon.id : kind == Kind::Ability ? ability.id : kind == Kind::Text ? text_id : item.id;
+        }
+        const std::string& name() const {
+            return kind == Kind::Weapon ? weapon.name : kind == Kind::Ability ? ability.name : kind == Kind::Text ? text_id : item.name;
+        }
+        std::string& id_ref() {
+            return kind == Kind::Weapon ? weapon.id : kind == Kind::Ability ? ability.id : kind == Kind::Text ? text_id : item.id;
+        }
     };
     std::string        header;   // leading '#' lines, kept verbatim
     std::vector<Entry> entries;
@@ -223,9 +276,21 @@ inline ItemsDoc parse_items_doc(const std::string& text) {
     std::istringstream in(text);
     std::string line, block;
     bool in_header = true, in_block = false;
+    std::string block_key;
     auto flush = [&] {
         if (!in_block) return;
         in_block = false;
+        if (block_key == "skill") {
+            ItemsDoc::Entry e;
+            e.kind = ItemsDoc::Kind::Text;
+            e.text = block;
+            std::istringstream ls(block);
+            std::string k;
+            ls >> k >> e.text_id;
+            doc.entries.push_back(e);
+            block.clear();
+            return;
+        }
         for (const auto& d : parse_items_text(block)) { ItemsDoc::Entry e; e.item = d; doc.entries.push_back(e); }
         for (const auto& d : parse_weapons_text(block)) { ItemsDoc::Entry e; e.kind = ItemsDoc::Kind::Weapon; e.weapon = d; doc.entries.push_back(e); }
         for (const auto& d : parse_abilities_text(block)) { ItemsDoc::Entry e; e.kind = ItemsDoc::Kind::Ability; e.ability = d; doc.entries.push_back(e); }
@@ -236,8 +301,9 @@ inline ItemsDoc parse_items_doc(const std::string& text) {
         std::istringstream ls(line);
         std::string key;
         ls >> key;
-        if (key == "item" || key == "weapon" || key == "ability") {
+        if (key == "item" || key == "weapon" || key == "ability" || key == "skill") {
             flush();
+            block_key = key;
             in_header = false;
             in_block = true;
             block = line + "\n";
@@ -362,6 +428,7 @@ inline std::string items_doc_to_text(const ItemsDoc& doc) {
         if (!s.empty()) s += "\n";
         s += e.kind == ItemsDoc::Kind::Weapon ? weapon_def_text(e.weapon)
            : e.kind == ItemsDoc::Kind::Ability ? ability_def_text(e.ability)
+           : e.kind == ItemsDoc::Kind::Text ? e.text
            : item_def_text(e.item);
     }
     return s;

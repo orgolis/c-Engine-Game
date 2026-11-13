@@ -368,7 +368,8 @@ void draw_items_panel(bool& open, ItemsPanelState& st, DocumentFile* doc) {
         ImGui::PushID(static_cast<int>(i));
         const bool clash = id_clashes(d, i);
         if (clash) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.4f, 1.0f));
-        const std::string row = std::string(e.is_weapon() ? "[weapon] " : e.is_ability() ? "[ability] " : "") + label;
+        const std::string row = std::string(e.is_weapon() ? "[weapon] " : e.is_ability() ? "[ability] "
+                                            : e.kind == ecs::ItemsDoc::Kind::Text ? "[skill] " : "") + label;
         if (ImGui::Selectable(row.c_str(), st.selected == static_cast<int>(i))) st.selected = static_cast<int>(i);
         if (clash) ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s%s", e.id().c_str(), clash ? "  (id empty or used twice)" : "");
@@ -387,6 +388,11 @@ void draw_items_panel(bool& open, ItemsPanelState& st, DocumentFile* doc) {
         ImGui::PushItemWidth(-150.0f);
         if (e.is_weapon())       draw_weapon(e.weapon, d);
         else if (e.is_ability()) draw_ability(e.ability);
+        else if (e.kind == ecs::ItemsDoc::Kind::Text) {
+            ImGui::TextWrapped("A skill (skill tree node). This editor keeps it as written; edit it in the file:");
+            ImGui::Separator();
+            ImGui::TextUnformatted(e.text.c_str());
+        }
         else                     draw_item(e.item, d);
         ImGui::PopItemWidth();
         if (id_clashes(d, static_cast<size_t>(st.selected)))

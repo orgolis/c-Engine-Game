@@ -85,6 +85,36 @@ int main() {
         check("a button's text follows its {placeholder}", dynamic_cast<Button*>(c->ids["jump"])->text == "Space");
     }
 
+    // A slots grid (an inventory): contents from the game, a click picks a
+    // cell, the selection's placeholders, the click reported with its cell.
+    {
+        auto inv = parse_ui_document(
+            "slots id=bag anchor=top_left x=0 y=0 w=600 h=200 cols=6 rows=2 bind=player.inventory\n"
+            "label id=picked anchor=top_left x=0 y=300 w=400 h=40 text=\"{bag.name} ({bag.count})\"\n"
+            "button id=use anchor=top_left x=0 y=400 w=200 h=50 text=\"Use\" enabled=bag.count\n");
+        auto slots = [](const std::string& s) {
+            std::vector<UiSlot> v;
+            if (s == "player.inventory") { v.push_back({"Potion", 3, ""}); v.push_back({"Rounds", 120, ""}); }
+            return v;
+        };
+        auto none = [](const std::string&) { return UiValue{}; };
+        inv->canvas.layout(1920.0f, 1080.0f);
+        refresh_ui_bindings(*inv, none, slots);
+        auto* grid = dynamic_cast<SlotGrid*>(inv->ids["bag"]);
+        auto* use = dynamic_cast<Button*>(inv->ids["use"]);
+        const bool before = grid->slots.size() == 2 && grid->selected == -1 && !use->interactive;
+        int clicked = -1;
+        grid->on_click = [&clicked](int i) { clicked = i; };
+        inv->canvas.pointer_move(150.0f, 50.0f);      // the second cell of the first row (cells 100 wide)
+        inv->canvas.pointer_button(true);
+        inv->canvas.pointer_button(false);
+        refresh_ui_bindings(*inv, none, slots);
+        check("slots: filled from the game; a click picks the cell and reports it",
+              before && clicked == 1 && grid->selected == 1);
+        check("slots: the selection's {name} and {count}, and a button enabled by it",
+              dynamic_cast<Label*>(inv->ids["picked"])->text == "Rounds (120)" && use->interactive);
+    }
+
     // Lines it cannot read.
     auto bad = parse_ui_document("ui modal sideways\nslider id=s\nlabel id=l anchor=middle text=hi\nbutton text=\"No id\"\n");
     check("bad lines are reported with their line numbers, the rest still builds",

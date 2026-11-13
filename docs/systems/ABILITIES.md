@@ -53,6 +53,43 @@ a bar above it for a cast or a channel in progress.
 In third person (with a Camera Rig) abilities and weapons leave the player's
 chest towards what the crosshair is on.
 
+## Skill trees: abilities to learn
+
+A skill tree is data too, in a `.items` file: one `skill` block per skill.
+Skills cost skill points (one per level gained: XP from **Grant XP**).
+
+```
+skill frost
+  name Frost Nova
+  tree hero              # the tree it belongs to
+  cost 1                 # skill points
+  unlocks frost_nova     # an ability put on the Ability Bar when learned (next free key)
+end
+
+skill tough
+  name Toughness
+  tree hero
+  cost 1
+  requires frost         # learned first (one line each)
+  grant Health 25        # raises the attribute's maximum (and the value)
+  tag perk.tough         # a gameplay tag the player gets
+end
+```
+
+The Items editor shows skill blocks and keeps them as written.
+
+| Node | |
+|---|---|
+| **Set Skill Tree** (Entity, Tree) | gives the entity the tree (and a progression: levels, points) -- e.g. on Begin Play |
+| **Unlock Skill** (Entity, Skill) | learns it: needs its `requires` and the points; applies grants and tags; its abilities go on the bar |
+| **Add Skill Points** (Entity, Points) | |
+| **Skill State** (Entity, Skill) | Learned, Can Learn |
+| **Skill Points** (Entity) | |
+
+A skill-tree screen is a UI document with a button per skill:
+`text="{skill.frost}" enabled=skill.frost.can` (docs/systems/GAME_UI.md). The
+tree, what is learned and the points are saved with the game.
+
 ## For effects, sounds and scripts
 
 Each stage is a gameplay event with the ability's id as its parameter:

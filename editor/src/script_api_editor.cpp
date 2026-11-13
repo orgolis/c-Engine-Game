@@ -6,6 +6,7 @@
 #include "play_save.h"           // save_game / load_game
 #include "play_ui.h"             // the project's UI documents in Play
 #include "play_settings.h"       // controls and settings
+#include "ecs/gameplay_ability_cast.h"   // learn_skill, set_skill_tree
 #include "biome_water.h"
 #include "command_palette.h"
 #include "editor_extensions.h"
@@ -318,7 +319,7 @@ int api_get_level(void* ctx, uint32_t e) {
 bool api_unlock_skill(void* ctx, uint32_t e, const char* node_id) {
     ecs::World* w; ecs::Entity ent;
     if (!gp_entity(ctx, e, w, ent) || !node_id) return false;
-    return ecs::unlock_skill(*w, ent, node_id, &C(ctx)->bridge->events());
+    return ecs::learn_skill(*w, ent, node_id, &C(ctx)->bridge->events());   // its abilities onto the bar too
 }
 bool api_send_state_event(void* ctx, uint32_t e, const char* event) {
     ecs::World* w; ecs::Entity ent;
@@ -535,6 +536,46 @@ int api_next_setting(void*, const char* name, char* out, int size) {
     return copy_out(name ? schizo::editor::play_settings().next(name) : std::string(), out, size);
 }
 
+// ---- skill trees and inventory screens ----
+bool api_set_skill_tree(void* ctx, uint32_t e, const char* tree) {
+    ecs::World* w; ecs::Entity ent;
+    return tree && gp_entity(ctx, e, w, ent) && ecs::set_skill_tree(*w, ent, tree);
+}
+void api_add_skill_points(void* ctx, uint32_t e, int points) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return;
+    if (!w->has<ecs::Progression>(ent)) w->add<ecs::Progression>(ent, ecs::Progression{});
+    w->get<ecs::Progression>(ent).skill_points = std::max(0, w->get<ecs::Progression>(ent).skill_points + points);
+}
+int api_skill_state(void* ctx, uint32_t e, const char* skill) {
+    ecs::World* w; ecs::Entity ent;
+    return skill && gp_entity(ctx, e, w, ent) ? ecs::skill_state(*w, ent, skill) : 0;
+}
+int api_skill_points(void* ctx, uint32_t e) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return 0;
+    const auto* p = w->try_get<ecs::Progression>(ent);
+    return p ? p->skill_points : 0;
+}
+int api_ui_selected(void*, const char* path, const char* id) {
+    return path && id ? schizo::editor::play_ui().selected(path, id) : -1;
+}
+bool api_item_in_slot(void* ctx, uint32_t e, int index, char* id_out, int id_size, char* name_out, int name_size, int* count) {
+    if (id_out && id_size > 0) id_out[0] = 0;
+    if (name_out && name_size > 0) name_out[0] = 0;
+    if (count) *count = 0;
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return false;
+    const auto* inv = w->try_get<ecs::Inventory>(ent);
+    if (!inv || index < 0 || index >= static_cast<int>(inv->items.size())) return false;
+    const auto& it = inv->items[static_cast<size_t>(index)];
+    const auto* d = ecs::find_item(it.def_id);
+    copy_out(it.def_id, id_out, id_size);
+    copy_out(d ? d->name : it.def_id, name_out, name_size);
+    if (count) *count = it.quantity;
+    return true;
+}
+
 // ---- gameplay event feed ----
 // ECS entity -> scene id. Events are rare, so a scan of the scene is fine.
 uint32_t scene_id_of(EditorScriptCtx* c, ecs::Entity e) {
@@ -740,6 +781,12 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.set_setting        = &api_set_setting;
     api.get_setting        = &api_get_setting;
     api.next_setting       = &api_next_setting;
+    api.set_skill_tree     = &api_set_skill_tree;
+    api.add_skill_points   = &api_add_skill_points;
+    api.skill_state        = &api_skill_state;
+    api.skill_points       = &api_skill_points;
+    api.ui_selected        = &api_ui_selected;
+    api.item_in_slot       = &api_item_in_slot;
     api.distance           = &api_distance;
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;

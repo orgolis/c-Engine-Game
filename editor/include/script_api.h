@@ -204,6 +204,19 @@ struct ScriptApi {
     bool (*set_setting)(void* ctx, const char* name, const char* value) = nullptr;
     int  (*get_setting)(void* ctx, const char* name, char* out, int out_size) = nullptr;
     int  (*next_setting)(void* ctx, const char* name, char* out, int out_size) = nullptr;
+
+    // ---- skill trees and inventory screens (added v0.8.41; new entries go at the end) ----
+    // Give an entity a skill tree from the project's data (skill blocks).
+    bool (*set_skill_tree)(void* ctx, uint32_t e, const char* tree) = nullptr;
+    void (*add_skill_points)(void* ctx, uint32_t e, int points) = nullptr;
+    // 2 learned, 1 can be learned now, 0 not yet.
+    int  (*skill_state)(void* ctx, uint32_t e, const char* skill) = nullptr;
+    int  (*skill_points)(void* ctx, uint32_t e) = nullptr;
+    // The selected cell of a slots grid in a shown UI document (-1 none).
+    int  (*ui_selected)(void* ctx, const char* path, const char* id) = nullptr;
+    // What is in an entity's inventory at `index`: its item id, name, count.
+    bool (*item_in_slot)(void* ctx, uint32_t e, int index, char* id_out, int id_size, char* name_out, int name_size,
+                         int* count) = nullptr;
 };
 
 }  // namespace schizo::editor
