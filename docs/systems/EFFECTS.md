@@ -37,10 +37,18 @@ end
 | `ring r` | born on a level ring of radius r, moving outward (a nova) |
 | `delay s` | starts s seconds later (a blast's smoke after its flash) |
 | `reach` | lives until it has travelled to the effect's reach (a tracer round) |
+| `shape glow / smoke / soft` | how it is drawn: a hot core, a ragged puff, a soft disc (default: light-adding ones glow, covering ones are smoke, streaked ones soft) |
+
+Once in a block, `light r g b intensity range life` lights the surroundings
+for `life` seconds, fading -- a muzzle flash, a blast. In a stream (a flying
+fireball) the light moves with it.
 
 An area passes its size: distances and speeds grow with its radius over 3 m,
 sizes with the square root of that. Particles fade out right in front of the
-eye, so nothing fills the screen.
+eye, so nothing fills the screen, and softly where they meet the scene, so
+smoke and dust have no hard line where they sink into the ground. Smoke is
+drawn as ragged, turned puffs that merge into a cloud; colours above 1 glow
+and bloom.
 
 ## Which effect, when
 

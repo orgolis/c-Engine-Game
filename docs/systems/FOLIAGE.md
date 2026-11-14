@@ -24,6 +24,11 @@ Play starts.
 To keep a path, a doorway or a camp clear, paint the layer's density mask
 there.
 
+Trees cast shadows -- and break the sun into light shafts (Volumetric light,
+Render Settings) -- from a **directional light** that casts shadows: put a
+Light (Directional, Cast Shadow) on the scene's sun. A scene without one is lit
+by a fallback sun with no shadows at all.
+
 Placement is `engine/scene/include/foliage.h` (`scatter_foliage`,
 `foliage_collider`), checked by `tools/terrainbrush_check`; the solid shapes
 go into Play's physics world in `editor/src/scene_playback_manager.cpp`.

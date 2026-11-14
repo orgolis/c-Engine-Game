@@ -24,15 +24,18 @@ constexpr const char* kVertSrc = R"(#version 450
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec2 in_uv;
 layout(location = 2) in vec4 in_color;
+layout(location = 3) in vec2 in_extra;   // x: shape (0 soft, 1 glow, 2 smoke), y: a per-particle seed
 
-layout(push_constant) uniform Push { mat4 view_proj; } pc;
+layout(push_constant) uniform Push { mat4 view_proj; vec4 params; } pc;
 
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out vec4 v_color;
+layout(location = 2) out vec2 v_extra;
 
 void main() {
     v_uv    = in_uv;
     v_color = in_color;
+    v_extra = in_extra;
     gl_Position = pc.view_proj * vec4(in_pos, 1.0);
 }
 )";
@@ -43,19 +46,58 @@ void main() {
 constexpr const char* kFragSrc = R"(#version 450
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec4 v_color;
+layout(location = 2) in vec2 v_extra;
 layout(location = 0) out vec4 out_color;
+
+layout(set = 0, binding = 0) uniform sampler2D u_depth;   // the scene's depth (read-only this pass)
+// params: x, y the projection's [2][2] and [3][2] (depth -> distance), z 1 / soft distance, w 1 when depth is bound
+layout(push_constant) uniform Push { mat4 view_proj; vec4 params; } pc;
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm(vec2 p) {
+    float s = 0.0, a = 0.5;
+    for (int i = 0; i < 4; ++i) { s += a * vnoise(p); p = p * 2.03 + vec2(17.1, 9.2); a *= 0.5; }
+    return s;
+}
+float dist(float z) { float den = z + pc.params.x; return pc.params.y / (abs(den) < 1e-7 ? 1e-7 : den); }   // depth -> distance along the view (any sign convention)
 
 void main() {
     vec2  d = v_uv * 2.0 - 1.0;
     float r = dot(d, d);
     if (r > 1.0) discard;                 // outside the disc: no square corners
-    float falloff = 1.0 - r;
-    falloff *= falloff;                   // squared: a softer core-to-edge ramp
+    float shape;
+    int kind = int(v_extra.x + 0.5);
+    if (kind == 1) {
+        // Glow: a hot core fading out smoothly (fire, flashes, sparks of light).
+        shape = (exp(-r * 4.0) - 0.0183) / 0.9817;
+    } else if (kind == 2) {
+        // Smoke and dust: a ragged puff, turned by its seed, so neighbours
+        // merge into a cloud instead of reading as separate discs.
+        float a = v_extra.y * 6.2831853;
+        vec2 q = mat2(cos(a), -sin(a), sin(a), cos(a)) * d;
+        float n = fbm(q * 1.9 + v_extra.y * 41.0);
+        float body = smoothstep(1.0, 0.15, r);
+        shape = body * smoothstep(0.2, 0.75, n * 0.9 + body * 0.45);
+    } else {
+        float f = 1.0 - r;
+        shape = f * f;                    // the soft disc
+    }
+    // Soft where it meets the scene: no hard line where smoke sinks into the ground.
+    if (pc.params.w > 0.5) {
+        float scene = dist(texelFetch(u_depth, ivec2(gl_FragCoord.xy), 0).r);
+        float me = dist(gl_FragCoord.z);
+        shape *= clamp((scene - me) * pc.params.z, 0.0, 1.0);
+    }
     // Premultiplied, blended (ONE, ONE_MINUS_SRC_ALPHA). Alpha above zero adds
     // light (fire, sparks: nothing behind is covered); alpha below zero covers
     // what is behind by that much (smoke, dust).
-    float a = abs(v_color.a) * falloff;
-    out_color = vec4(v_color.rgb * a, v_color.a < 0.0 ? a : 0.0);
+    float cov = abs(v_color.a) * shape;
+    out_color = vec4(v_color.rgb * cov, v_color.a < 0.0 ? cov : 0.0);
 }
 )";
 
@@ -80,6 +122,9 @@ VulkanParticlePass::~VulkanParticlePass() {
     if (ibo_memory_) vkFreeMemory(vk_, ibo_memory_, nullptr);
     if (pipeline_)        vkDestroyPipeline(vk_, pipeline_, nullptr);
     if (pipeline_layout_) vkDestroyPipelineLayout(vk_, pipeline_layout_, nullptr);
+    if (depth_pool_)      vkDestroyDescriptorPool(vk_, depth_pool_, nullptr);
+    if (depth_dsl_)       vkDestroyDescriptorSetLayout(vk_, depth_dsl_, nullptr);
+    if (depth_sampler_)   vkDestroySampler(vk_, depth_sampler_, nullptr);
     if (framebuffer_)     vkDestroyFramebuffer(vk_, framebuffer_, nullptr);
     if (render_pass_)     vkDestroyRenderPass(vk_, render_pass_, nullptr);
     shader_registry_.reset();
@@ -104,6 +149,7 @@ bool VulkanParticlePass::init(VulkanDevice* device, VkImageView hdr_color_view,
     }
     if (!create_render_pass(hdr_format, depth_format)) return false;
     if (!create_framebuffer(hdr_color_view, depth_view)) return false;
+    if (!create_depth_descriptor(depth_view)) return false;
     if (!create_pipeline()) return false;
 
     spdlog::info("[Particles] GPU billboard pass ready ({}x{})", width_, height_);
@@ -137,7 +183,9 @@ bool VulkanParticlePass::create_render_pass(VkFormat hdr_format, VkFormat depth_
     depth.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     VkAttachmentReference color_ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference depth_ref{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    // Read-only for the pass: tested against AND sampled (soft particles) --
+    // allowed together in this layout, never in the writable one.
+    VkAttachmentReference depth_ref{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
 
     VkSubpassDescription sub{};
     sub.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -153,10 +201,12 @@ bool VulkanParticlePass::create_render_pass(VkFormat hdr_format, VkFormat depth_
     dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     dep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+    dep.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
 
@@ -183,6 +233,7 @@ void VulkanParticlePass::resize(VkImageView hdr_color_view, VkImageView depth_vi
     width_  = width;
     height_ = height;
     create_framebuffer(hdr_color_view, depth_view);
+    write_depth_descriptor(depth_view);
 }
 
 bool VulkanParticlePass::create_framebuffer(VkImageView hdr_color_view, VkImageView depth_view) {
@@ -199,6 +250,51 @@ bool VulkanParticlePass::create_framebuffer(VkImageView hdr_color_view, VkImageV
         return false;
     }
     return true;
+}
+
+bool VulkanParticlePass::create_depth_descriptor(VkImageView depth_view) {
+    VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    si.magFilter = VK_FILTER_NEAREST;
+    si.minFilter = VK_FILTER_NEAREST;
+    si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    if (vkCreateSampler(vk_, &si, nullptr, &depth_sampler_) != VK_SUCCESS) return false;
+    VkDescriptorSetLayoutBinding b{};
+    b.binding = 0;
+    b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    b.descriptorCount = 1;
+    b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.bindingCount = 1;
+    li.pBindings = &b;
+    if (vkCreateDescriptorSetLayout(vk_, &li, nullptr, &depth_dsl_) != VK_SUCCESS) return false;
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.maxSets = 1;
+    pi.poolSizeCount = 1;
+    pi.pPoolSizes = &ps;
+    if (vkCreateDescriptorPool(vk_, &pi, nullptr, &depth_pool_) != VK_SUCCESS) return false;
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = depth_pool_;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &depth_dsl_;
+    if (vkAllocateDescriptorSets(vk_, &ai, &depth_set_) != VK_SUCCESS) return false;
+    write_depth_descriptor(depth_view);
+    return true;
+}
+
+void VulkanParticlePass::write_depth_descriptor(VkImageView depth_view) {
+    if (depth_set_ == VK_NULL_HANDLE || depth_view == VK_NULL_HANDLE) return;
+    VkDescriptorImageInfo ii{};
+    ii.sampler = depth_sampler_;
+    ii.imageView = depth_view;
+    ii.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = depth_set_;
+    w.dstBinding = 0;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.pImageInfo = &ii;
+    vkUpdateDescriptorSets(vk_, 1, &w, 0, nullptr);
 }
 
 bool VulkanParticlePass::create_pipeline() {
@@ -218,11 +314,13 @@ bool VulkanParticlePass::create_pipeline() {
     }
 
     VkPushConstantRange pcr{};
-    pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pcr.offset     = 0;
-    pcr.size       = sizeof(glm::mat4);
+    pcr.size       = sizeof(glm::mat4) + sizeof(glm::vec4);   // view_proj + soft-particle params
 
     VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pl.setLayoutCount         = 1;
+    pl.pSetLayouts            = &depth_dsl_;
     pl.pushConstantRangeCount = 1;
     pl.pPushConstantRanges    = &pcr;
     if (vkCreatePipelineLayout(vk_, &pl, nullptr, &pipeline_layout_) != VK_SUCCESS) {
@@ -245,15 +343,16 @@ bool VulkanParticlePass::create_pipeline() {
     bind.stride    = sizeof(schizo::vfx::BillboardVertex);
     bind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    VkVertexInputAttributeDescription attrs[3]{};
+    VkVertexInputAttributeDescription attrs[4]{};
     attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(schizo::vfx::BillboardVertex, pos)};
     attrs[1] = {1, 0, VK_FORMAT_R32G32_SFLOAT,       offsetof(schizo::vfx::BillboardVertex, uv)};
     attrs[2] = {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(schizo::vfx::BillboardVertex, color)};
+    attrs[3] = {3, 0, VK_FORMAT_R32G32_SFLOAT,       offsetof(schizo::vfx::BillboardVertex, extra)};
 
     VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     vi.vertexBindingDescriptionCount   = 1;
     vi.pVertexBindingDescriptions      = &bind;
-    vi.vertexAttributeDescriptionCount = 3;
+    vi.vertexAttributeDescriptionCount = 4;
     vi.pVertexAttributeDescriptions    = attrs;
 
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -432,7 +531,7 @@ bool VulkanParticlePass::ensure_vertex_capacity(size_t bytes) {
 
 void VulkanParticlePass::execute(VkCommandBuffer cmd,
                                  const std::vector<schizo::vfx::BillboardVertex>& verts,
-                                 const glm::mat4& view_proj) {
+                                 const glm::mat4& view_proj, const glm::mat4& proj) {
     last_vertex_count_ = 0;
     last_index_count_  = 0;
     draw_calls_        = 0;
@@ -470,8 +569,13 @@ void VulkanParticlePass::execute(VkCommandBuffer cmd,
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-    vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT,
-                       0, sizeof(glm::mat4), &view_proj);
+    // Soft particles: the projection's depth terms turn a depth value into a
+    // distance; they fade over half a metre where they meet the scene.
+    struct { glm::mat4 vp; glm::vec4 params; } push{view_proj,
+        glm::vec4(proj[2][2], proj[3][2], 2.0f, depth_set_ != VK_NULL_HANDLE ? 1.0f : 0.0f)};
+    vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(push), &push);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &depth_set_, 0, nullptr);
 
     const VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &vbo_, &offset);

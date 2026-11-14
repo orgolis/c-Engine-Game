@@ -128,6 +128,16 @@ void main() {
     if (px.x >= pc.output_size.x || px.y >= pc.output_size.y) return;
     vec2 uv = (vec2(px) + 0.5) / vec2(pc.output_size);
 
+    // Sky pixels (depth at the far plane) carry NO geometry. The normal
+    // G-buffer clears to (0,0,1), not zero, so the dot(N,N) test below does
+    // not catch them: SSR took every sky pixel for a mirror and composited its
+    // bogus reflection over the sky -- white speckle over whole regions of it.
+    // The same sky test as ssr_rt.comp and the lighting pass.
+    if (texture(depthTex, uv).r >= 1.0 - 1e-5) {
+        imageStore(dstReflection, px, vec4(0.0));
+        return;
+    }
+
     vec4 normal_sample = texture(normalTex, uv);
     vec3 N = normal_sample.xyz;
     float roughness = normal_sample.w;
@@ -141,7 +151,11 @@ void main() {
     // surfaces fade to zero contribution. SSR at high roughness needs a
     // multi-sample blur which we don't do here.
     float smoothness = 1.0 - roughness;
-    if (smoothness < 0.1) {
+    // Rough surfaces (leaves, bark, grass, rock: roughness 0.7 and up) do not
+    // reflect: a single sharp reflection ray per pixel off a rough surface is
+    // noise, not a reflection -- in a forest it covered the leaves with
+    // speckles of sky. Reflections fade in from roughness 0.7 to 0.5.
+    if (smoothness < 0.3) {
         imageStore(dstReflection, px, vec4(0.0));
         return;
     }
@@ -250,7 +264,7 @@ void main() {
     // HDR — otherwise the lighting pass's IBL specular term leaves a
     // residual sky tint visible THROUGH the SSR object reflection.
     float smoothness_damp = mix(smoothness * smoothness, smoothness, metallic);
-    spec_weight *= smoothness_damp;
+    spec_weight *= smoothness_damp * smoothstep(0.3, 0.5, smoothness);
 
     float alpha = fade * spec_weight;
     // Fold the COLOURED Fresnel into the radiance. spec_weight already took F's

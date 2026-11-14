@@ -30,20 +30,32 @@ vec3 worldPos(vec2 uv) {
 
 void main() {
     vec2 texel = 1.0 / vec2(textureSize(scatterTex, 0));
+    // The sky (depth 1) has no surface: every sky pixel reconstructs to the far
+    // plane, far from its neighbours, so a world-distance edge-stop kept none
+    // of them -- the sky showed the march's raw dither as white speckles. Sky
+    // taps now blend with sky taps (and never with geometry).
+    const float kSky = 1.0 - 1e-5;
+    bool center_sky = texture(depthTex, vUv).r >= kSky;
     vec3 center_pos = worldPos(vUv);
 
     vec3  sum  = vec3(0.0);
     float wsum = 0.0;
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
+    // 5x5 half-res taps: the dither grain smoothed into continuous shafts.
+    for (int y = -2; y <= 2; ++y) {
+        for (int x = -2; x <= 2; ++x) {
             vec2 uv = vUv + vec2(float(x), float(y)) * texel;
             vec3 s  = texture(scatterTex,  uv).rgb;
-            vec3 p  = worldPos(uv);
-            float spatial = exp(-float(x * x + y * y) * 0.6);
-            vec3  dpos = p - center_pos;
-            // World-distance edge-stop: same-surface taps (small dpos) are
-            // kept; silhouette taps (large dpos) are rejected. ~1.7u sigma.
-            float range = exp(-dot(dpos, dpos) * 0.35);
+            bool sky = texture(depthTex, uv).r >= kSky;
+            float spatial = exp(-float(x * x + y * y) * 0.3);
+            float range;
+            if (center_sky || sky) {
+                range = (center_sky == sky) ? 1.0 : 0.0;
+            } else {
+                // World-distance edge-stop: same-surface taps (small dpos) are
+                // kept; silhouette taps (large dpos) are rejected. ~1.7u sigma.
+                vec3 dpos = worldPos(uv) - center_pos;
+                range = exp(-dot(dpos, dpos) * 0.35);
+            }
             float w = spatial * range;
             sum  += s * w;
             wsum += w;

@@ -56,6 +56,7 @@ struct BillboardVertex {
     glm::vec3 pos;
     glm::vec2 uv;
     glm::vec4 color;
+    glm::vec2 extra{0.0f};   // x: shape (0 soft disc, 1 glow, 2 smoke), y: a per-particle seed 0..1
 };
 
 class ParticleSystem {

@@ -36,6 +36,14 @@
 //   ring r            born on a level ring of radius r, moving outward (novas)
 //   delay s           starts s seconds later (a blast's smoke after its flash)
 //   reach             lives until it has travelled to the effect's reach (tracers)
+//   shape glow|smoke|soft  how one is drawn: a hot core, a ragged puff, a soft
+//                     disc (default: covering ones smoke, light-adding ones glow,
+//                     streaked ones soft)
+//
+// And, once in a block:
+//   light r g b intensity range life   it lights its surroundings for `life`
+//                     seconds, fading (a muzzle flash, a blast); in a stream (a
+//                     flying fireball) it moves with it
 //
 // Areas pass a scale (their radius over 3 m): distances and speeds grow with
 // it, sizes with its square root.
@@ -81,11 +89,21 @@ struct EffectLayer {
     bool  blend = false;             // covers (alpha) rather than adds light
     float gravity = 0.0f, drag = 0.0f, streak = 0.0f, jitter = 0.0f, ring = 0.0f, delay = 0.0f;
     bool  reach = false;
+    int   shape = -1;                // -1 by its kind; else 0 soft disc, 1 glow, 2 smoke
+};
+
+/// Light an effect gives its surroundings: a muzzle flash, a blast, a fireball.
+struct EffectLight {
+    glm::vec3 color{1.0f, 0.7f, 0.4f};
+    float     intensity = 0.0f;      // 0: none
+    float     range = 6.0f;
+    float     life = 0.1f;
 };
 
 struct EffectDef {
     std::string id;
     std::vector<EffectLayer> layers;
+    EffectLight light;
 };
 
 // ---- parsing ---------------------------------------------------------------------------------
@@ -141,6 +159,10 @@ inline EffectLayer parse_effect_layer(std::istringstream& ls) {
         else if (k == "ring")    { num(L.ring); }
         else if (k == "delay")   { num(L.delay); }
         else if (k == "reach")   { L.reach = true; }
+        else if (k == "shape" && i < tok.size()) {
+            const std::string s = tok[i++];
+            L.shape = s == "glow" ? 1 : s == "smoke" ? 2 : s == "soft" ? 0 : -1;
+        }
         else if (k == "dir" && i < tok.size()) {
             const std::string d = tok[i++];
             L.dir = d == "back" ? EffectLayer::Dir::Back : d == "normal" ? EffectLayer::Dir::Normal
@@ -174,6 +196,13 @@ inline std::vector<EffectDef> parse_effects_text(const std::string& text) {
         else if (!have) { if (key == "end") other = false; continue; }
         else if (key == "end") { flush(); }
         else if (key == "layer") { cur.layers.push_back(parse_effect_layer(ls)); }
+        else if (key == "light") {
+            EffectLight& l = cur.light;
+            ls >> l.color.r >> l.color.g >> l.color.b >> l.intensity;
+            float v = 0.0f;
+            if (ls >> v) l.range = v;
+            if (ls >> v) l.life = v;
+        }
     }
     flush();
     return out;
@@ -191,24 +220,26 @@ inline void register_effect(const EffectDef& d) {
 inline const char* builtin_effects_text() {
     return R"(
 effect muzzle
-  layer flash  count 2  life 0.04 0.06 size 0.34 0.12 color 6 3.6 1.4 1 to 3 1 0.2 0 jitter 0.02
-  layer cone   count 6  life 0.04 0.07 speed 3 7 spread 10 size 0.14 0.03 color 5 2.6 0.8 1 to 2 0.6 0.1 0 streak 0.05
-  layer sparks count 7  life 0.08 0.22 speed 7 18 spread 18 size 0.025 0.01 color 4 2.4 0.9 1 to 2 0.6 0.1 0 streak 0.03 gravity 4 drag 2
-  layer smoke  count 4  life 0.5 1.0 speed 0.6 1.8 spread 25 size 0.06 0.45 color 0.55 0.53 0.5 0.32 to 0.6 0.6 0.6 0 blend drag 3.5 gravity -0.7
+  light 1 0.62 0.28 14 7 0.06
+  layer core   count 2  life 0.035 0.05 size 0.24 0.12 color 9 5.5 2.2 1 to 4 1.6 0.4 0 jitter 0.008
+  layer cone   count 6  life 0.03 0.05 speed 1.5 4 spread 6 size 0.15 0.05 color 7 3.6 1.1 1 to 3 1 0.2 0 streak 0.07
+  layer sparks count 3  life 0.06 0.14 speed 6 14 spread 10 size 0.02 0.008 color 5 3 1.2 1 to 2 0.6 0.1 0 streak 0.03 gravity 4 drag 2
+  layer smoke  count 7  life 0.6 1.2 speed 0.3 1.1 spread 16 size 0.05 0.38 color 0.6 0.58 0.55 0.22 to 0.62 0.62 0.62 0 blend drag 4 gravity -0.5 jitter 0.03
 end
 effect tracer
-  layer round  count 1 reach speed 320 size 0.05 0.05 color 6 3.8 1.6 1 to 4 2 0.6 0.8 streak 0.022
+  layer round  count 1 reach speed 320 size 0.035 0.035 color 9 6 2.6 1 to 6 3 1 0.8 streak 0.024 shape soft
 end
 effect impact
-  layer flash  count 1 life 0.05 size 0.25 0.1 color 4 3 1.6 1 to 2 1 0.3 0
-  layer sparks count 9 life 0.15 0.4 speed 3 9 dir normal spread 60 size 0.025 0.01 color 4 2.6 1 1 to 2 0.5 0.1 0 streak 0.03 gravity 9.8 drag 1
-  layer dust   count 5 life 0.5 1.1 speed 0.6 2.2 dir normal spread 45 size 0.07 0.55 color 0.42 0.38 0.32 0.55 to 0.45 0.42 0.38 0 blend drag 3.5 gravity -0.2
-  layer chips  count 4 life 0.4 0.7 speed 2 5 dir normal spread 50 size 0.04 0.03 color 0.2 0.18 0.15 0.9 to 0.2 0.18 0.15 0.6 blend gravity 9.8
+  light 1 0.7 0.4 3 3 0.05
+  layer flash  count 1 life 0.04 size 0.22 0.08 color 6 4 2 1 to 2 1 0.3 0
+  layer sparks count 8 life 0.12 0.35 speed 3 9 dir normal spread 55 size 0.02 0.008 color 5 3 1.2 1 to 2 0.5 0.1 0 streak 0.03 gravity 9.8 drag 1
+  layer dust   count 9 life 0.6 1.3 speed 0.4 1.8 dir normal spread 50 size 0.1 0.7 color 0.45 0.41 0.35 0.4 to 0.47 0.44 0.4 0 blend drag 3.5 gravity -0.15 jitter 0.05
+  layer chips  count 5 life 0.4 0.8 speed 2 5.5 dir normal spread 50 size 0.035 0.03 color 0.18 0.16 0.13 0.95 to 0.18 0.16 0.13 0.7 blend gravity 9.8 shape soft
 end
 effect impact_actor
-  layer burst  count 1 life 0.06 size 0.3 0.12 color 3 0.6 0.4 1 to 1 0.1 0.1 0
-  layer spray  count 12 life 0.25 0.55 speed 1.5 4.5 dir normal spread 55 size 0.06 0.03 color 0.45 0.05 0.04 0.95 to 0.3 0.02 0.02 0.6 blend gravity 9.8 drag 0.8
-  layer mist   count 3 life 0.3 0.6 speed 0.4 1.2 dir normal spread 60 size 0.12 0.45 color 0.5 0.06 0.05 0.45 to 0.4 0.05 0.05 0 blend drag 3
+  layer burst  count 1 life 0.05 size 0.24 0.1 color 3 0.6 0.4 1 to 1 0.1 0.1 0
+  layer spray  count 14 life 0.25 0.55 speed 1.5 4.5 dir normal spread 55 size 0.05 0.025 color 0.45 0.04 0.03 0.95 to 0.3 0.02 0.02 0.6 blend gravity 9.8 drag 0.8 shape soft
+  layer mist   count 6 life 0.35 0.7 speed 0.3 1.1 dir normal spread 60 size 0.12 0.5 color 0.5 0.06 0.05 0.35 to 0.4 0.05 0.05 0 blend drag 3 jitter 0.04
 end
 
 effect fire_windup
@@ -220,19 +251,21 @@ effect fire_cast
   layer embers count 10 life 0.2 0.45 speed 2 6 spread 35 size 0.07 0.02 color 4 1.6 0.4 1 to 2 0.4 0.1 0 streak 0.02 drag 2
 end
 effect fire_trail
+  light 1 0.55 0.25 8 6 0.05
   layer core   rate 140 life 0.06 0.1 size 0.32 0.12 color 3.2 1.4 0.35 1 to 2 0.4 0.1 0 jitter 0.03
-  layer flame  rate 80 life 0.14 0.26 speed 0.3 1 dir any size 0.2 0.04 color 2.6 0.9 0.2 1 to 1.2 0.2 0.04 0 jitter 0.06 gravity -2 drag 2
+  layer flame  rate 90 life 0.14 0.26 speed 0.3 1 dir any size 0.2 0.04 color 2.6 0.9 0.2 1 to 1.2 0.2 0.04 0 jitter 0.06 gravity -2 drag 2
   layer embers rate 45 life 0.3 0.6 speed 0.5 2 dir any size 0.05 0.015 color 3 1.2 0.3 1 to 1.5 0.3 0.08 0 gravity -1.5 drag 1.5
-  layer smoke  rate 22 life 0.5 1 speed 0.2 0.6 dir any size 0.12 0.45 color 0.16 0.14 0.13 0.4 to 0.22 0.21 0.2 0 blend gravity -0.8 drag 2
+  layer smoke  rate 40 life 0.5 1.1 speed 0.2 0.6 dir any size 0.12 0.55 color 0.16 0.14 0.13 0.28 to 0.22 0.21 0.2 0 blend gravity -0.8 drag 2 jitter 0.04
 end
 effect fire_beam
   layer bolt   path 7 life 0.08 0.16 size 0.3 0.08 color 5 2 0.5 1 to 2 0.5 0.1 0 jitter 0.08
 end
 effect fire_hit
+  light 1 0.5 0.2 30 10 0.25
   layer flash  count 3 life 0.07 0.12 size 1.2 0.4 color 7 3 0.8 1 to 3 0.8 0.2 0 jitter 0.1
-  layer flame  count 26 life 0.25 0.55 speed 1.5 5 dir any size 0.45 0.1 color 4 1.5 0.35 1 to 1.2 0.25 0.05 0 drag 3 gravity -2
+  layer flame  count 30 life 0.25 0.55 speed 1.5 5 dir any size 0.45 0.1 color 4 1.5 0.35 1 to 1.2 0.25 0.05 0 drag 3 gravity -2
   layer embers count 22 life 0.4 0.9 speed 3 9 dir any size 0.06 0.02 color 4 1.8 0.4 1 to 2 0.4 0.1 0 streak 0.02 gravity 6 drag 1
-  layer smoke  count 10 life 0.9 1.8 speed 0.4 1.6 dir any size 0.4 1.6 color 0.16 0.15 0.14 0.55 to 0.22 0.21 0.2 0 blend gravity -1 drag 2 delay 0.05
+  layer smoke  count 18 life 0.9 1.8 speed 0.4 1.6 dir any size 0.4 1.6 color 0.16 0.15 0.14 0.4 to 0.22 0.21 0.2 0 blend gravity -1 drag 2 delay 0.05 jitter 0.2
 end
 effect fire_area
   layer ring   count 48 life 0.35 0.6 speed 6 9 size 0.5 0.15 color 4 1.6 0.4 1 to 1.5 0.3 0.05 0 ring 0.6 drag 3
@@ -259,9 +292,10 @@ effect cold_hit
   layer mist   count 10 life 0.8 1.5 speed 0.4 1.4 dir any size 0.4 1.4 color 0.75 0.88 1 0.4 to 0.8 0.9 1 0 blend drag 2
 end
 effect cold_area
+  light 0.5 0.75 1 15 10 0.35
   layer ring   count 64 life 0.45 0.7 speed 7 10 size 0.45 0.2 color 1.4 2.6 4.5 1 to 0.5 1 2 0 ring 0.6 drag 3
   layer shards count 40 life 0.4 0.8 speed 2 6 dir up spread 70 size 0.09 0.03 color 1.6 2.8 4.5 1 to 0.6 1 2 0 streak 0.02 gravity 9 ring 1
-  layer mist   count 24 life 0.8 1.5 speed 2 4 size 0.6 1.6 color 0.75 0.88 1 0.4 to 0.8 0.9 1 0 blend ring 0.8 drag 3
+  layer mist   count 30 life 0.8 1.5 speed 2 4 size 0.6 1.6 color 0.75 0.88 1 0.32 to 0.8 0.9 1 0 blend ring 0.8 drag 3 jitter 0.2
 end
 
 effect shock_windup
@@ -275,10 +309,12 @@ effect shock_trail
   layer arcs   rate 80 life 0.05 0.1 speed 3 7 dir any size 0.05 0.02 color 3 2.6 6 1 to 1.5 1 3 0 streak 0.04
 end
 effect shock_beam
+  light 0.6 0.6 1 20 10 0.1
   layer bolt   path 9 life 0.08 0.14 size 0.16 0.06 color 5 4.5 10 1 to 2 1.5 5 0 jitter 0.22
   layer glow   path 2 life 0.12 0.2 size 0.6 0.3 color 1.2 1 2.6 1 to 0.4 0.3 1 0 jitter 0.1
 end
 effect shock_hit
+  light 0.6 0.6 1 25 9 0.15
   layer flash  count 2 life 0.05 0.1 size 1.1 0.3 color 6 5 12 1 to 2 1.5 5 0
   layer arcs   count 24 life 0.08 0.2 speed 4 12 dir any size 0.05 0.02 color 4 3.5 8 1 to 2 1.5 4 0 streak 0.04
 end
@@ -343,12 +379,13 @@ effect explosive_beam
   layer streak path 4 life 0.08 0.12 size 0.15 0.05 color 4 2.4 0.8 1 to 2 0.6 0.1 0
 end
 effect explosive_hit
+  light 1 0.55 0.25 80 18 0.35
   layer flash  count 4 life 0.08 0.14 size 3 1 color 8 4.5 1.5 1 to 4 1.2 0.2 0 jitter 0.3
-  layer fire   count 44 life 0.3 0.7 speed 3 9 dir any size 0.9 0.2 color 5 2 0.4 1 to 1.2 0.25 0.05 0 drag 3.5 gravity -2.5
-  layer debris count 30 life 0.6 1.3 speed 5 14 dir up spread 70 size 0.1 0.06 color 0.15 0.13 0.1 1 to 0.15 0.13 0.1 0.8 blend gravity 14 drag 0.6
+  layer fire   count 50 life 0.3 0.7 speed 3 9 dir any size 0.9 0.2 color 5 2 0.4 1 to 1.2 0.25 0.05 0 drag 3.5 gravity -2.5 jitter 0.2
+  layer debris count 30 life 0.6 1.3 speed 5 14 dir up spread 70 size 0.1 0.06 color 0.15 0.13 0.1 1 to 0.15 0.13 0.1 0.8 blend gravity 14 drag 0.6 shape soft
   layer sparks count 34 life 0.5 1.1 speed 6 16 dir any size 0.05 0.02 color 5 2.8 0.9 1 to 2 0.6 0.1 0 streak 0.025 gravity 9 drag 0.8
-  layer smoke  count 22 life 1.4 2.8 speed 0.8 3 dir any size 0.9 3.2 color 0.14 0.13 0.12 0.62 to 0.22 0.21 0.2 0 blend gravity -1.2 drag 2.2 delay 0.06
-  layer dust   count 26 life 0.8 1.4 speed 6 9 size 0.6 1.8 color 0.42 0.38 0.32 0.5 to 0.45 0.42 0.38 0 blend ring 0.5 drag 3.5
+  layer smoke  count 38 life 1.6 3.2 speed 0.6 2.6 dir any size 1.2 3.8 color 0.14 0.13 0.12 0.45 to 0.24 0.23 0.22 0 blend gravity -1.2 drag 2.2 delay 0.06 jitter 0.6
+  layer dust   count 30 life 0.9 1.6 speed 6 9 size 0.7 2 color 0.42 0.38 0.32 0.4 to 0.45 0.42 0.38 0 blend ring 0.5 drag 3.5
 end
 effect explosive_area
   layer flash  count 3 life 0.08 0.14 size 3 1 color 8 4.5 1.5 1 to 4 1.2 0.2 0
@@ -380,6 +417,7 @@ effect heal_windup
   layer motes  rate 50 life 0.4 0.8 speed 0.3 0.8 dir up spread 30 size 0.08 0.02 color 0.8 3 1.2 1 to 0.3 1.2 0.5 0 jitter 0.45
 end
 effect heal_self
+  light 0.4 1 0.5 8 5 0.5
   layer rise   count 40 life 0.7 1.3 speed 0.8 2 dir up spread 20 size 0.1 0.03 color 0.9 3.2 1.3 1 to 0.3 1.2 0.5 0 ring 0.55 drag 0.5
   layer glow   count 3 life 0.25 0.4 size 1.6 0.6 color 0.5 1.6 0.7 1 to 0.2 0.6 0.3 0
 end
@@ -438,6 +476,7 @@ class EffectParticles {
 public:
     /// Start an effect: its bursts (`count`, `path`) now or after their delay.
     void burst(const EffectDef& d, const EffectSpawn& at) {
+        if (d.light.intensity > 0.0f) lights_.push_back({at.pos + at.normal * 0.3f, d.light, 0.0f, d.light.life});
         for (const auto& L : d.layers) {
             if (L.count <= 0 && L.per_metre <= 0.0f) continue;
             if (L.delay > 0.0f) pending_.push_back({L, at, L.delay});
@@ -448,6 +487,8 @@ public:
     void stream(const EffectDef& d, const glm::vec3& from, const glm::vec3& to, float dt, float scale = 1.0f) {
         const glm::vec3 seg = to - from;
         const float len = glm::length(seg);
+        // A moving light: one frame's worth, where it is now.
+        if (d.light.intensity > 0.0f) lights_.push_back({to, d.light, 0.0f, std::max(1e-3f, dt * 1.5f)});
         EffectSpawn at;
         at.dir = len > 1e-5f ? seg / len : glm::vec3(0.0f, 1.0f, 0.0f);
         at.scale = scale;
@@ -465,6 +506,8 @@ public:
         }
     }
     void update(float dt) {
+        for (auto& l : lights_) l.age += dt;
+        lights_.erase(std::remove_if(lights_.begin(), lights_.end(), [](const Lit& l) { return l.age >= l.life; }), lights_.end());
         for (size_t i = 0; i < pending_.size();) {
             pending_[i].wait -= dt;
             if (pending_[i].wait <= 0.0f) {
@@ -498,7 +541,7 @@ public:
             glm::vec4 c = p.c0 + (p.c1 - p.c0) * t;
             // Fade out right in front of the eye: a particle a hand's width away
             // would fill the screen (a trail leaving the hand, muzzle smoke).
-            c.a = std::max(0.0f, c.a) * std::clamp((std::sqrt(dist2) - 0.35f) / 1.1f, 0.0f, 1.0f);
+            c.a = std::max(0.0f, c.a) * std::clamp((std::sqrt(dist2) - 0.25f) / 0.5f, 0.0f, 1.0f);
             if (c.a <= 0.0f || size <= 0.0f) continue;
             if (p.blend) c.a = -c.a;   // the shader's mark for "covers"
             glm::vec3 view = cam_pos - p.pos;
@@ -522,16 +565,30 @@ public:
             } else {
                 face(view, size, r, u);
             }
-            out.push_back({p.pos - r - u, {0, 0}, c});
-            out.push_back({p.pos + r - u, {1, 0}, c});
-            out.push_back({p.pos + r + u, {1, 1}, c});
-            out.push_back({p.pos - r + u, {0, 1}, c});
+            const glm::vec2 ex(p.shape, p.seed);
+            out.push_back({p.pos - r - u, {0, 0}, c, ex});
+            out.push_back({p.pos + r - u, {1, 0}, c, ex});
+            out.push_back({p.pos + r + u, {1, 1}, c, ex});
+            out.push_back({p.pos - r + u, {0, 1}, c, ex});
         }
     }
     size_t alive() const { return ps_.size(); }
-    void clear() { ps_.clear(); pending_.clear(); accum_.clear(); }
+    void clear() { ps_.clear(); pending_.clear(); accum_.clear(); lights_.clear(); }
+
+    /// The lights effects give now (fading): for the renderer's point lights.
+    struct PointLight { glm::vec3 pos, color; float intensity, range; };
+    std::vector<PointLight> lights() const {
+        std::vector<PointLight> out;
+        out.reserve(lights_.size());
+        for (const auto& l : lights_) {
+            const float f = 1.0f - std::clamp(l.age / std::max(1e-4f, l.life), 0.0f, 1.0f);
+            out.push_back({l.pos, l.def.color, l.def.intensity * f * f, l.def.range});
+        }
+        return out;
+    }
     /// A floating-origin rebase moves every particle with the world.
     void apply_shift(const glm::vec3& d) {
+        for (auto& l : lights_) l.pos += d;
         for (auto& p : ps_) p.pos += d;
         for (auto& q : pending_) q.at.pos += d;
     }
@@ -544,8 +601,10 @@ private:
         float age = 0.0f, life = 1.0f, size0 = 0.1f, size1 = 0.1f, gravity = 0.0f, drag = 0.0f, streak = 0.0f;
         glm::vec4 c0, c1;
         bool blend = false;
+        float shape = 0.0f, seed = 0.0f;
     };
     struct Pending { EffectLayer layer; EffectSpawn at; float wait; };
+    struct Lit { glm::vec3 pos; EffectLight def; float age, life; };
 
     static void face(const glm::vec3& view, float size, glm::vec3& r, glm::vec3& u) {
         glm::vec3 right = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), view);
@@ -621,12 +680,15 @@ private:
         p.drag = L.drag;
         p.streak = L.streak;
         p.blend = L.blend;
+        p.shape = static_cast<float>(L.shape >= 0 ? L.shape : L.blend ? 2 : L.streak > 0.0f ? 0 : 1);
+        p.seed = rnd();
         ps_.push_back(p);
     }
 
     std::vector<P> ps_;
     std::vector<Pending> pending_;
     std::unordered_map<uint64_t, float> accum_;
+    std::vector<Lit> lights_;
     mutable std::vector<std::pair<float, uint32_t>> order_;
     uint32_t rng_ = 0x9E3779B9u;
 };

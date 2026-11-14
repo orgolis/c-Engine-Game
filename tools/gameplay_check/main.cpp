@@ -542,6 +542,36 @@ int main() {
               ecs::inventory_count(w3.get<ecs::Inventory>(e3), "lo_shotgun") == 1);
     }
 
+    // Spread: each pellet its own direction, evenly round the aim (small,
+    // consecutive seeds used to give every pellet the same corner of the cone).
+    {
+        ecs::register_items_text("weapon sp_shotgun\n  damage 5\n  pellets 9\n  spread 5\n  magazine 6\n  range 50\nend\n");
+        ecs::World w;
+        const ecs::Entity me = w.create();
+        w.add<ecs::Transform>(me, ecs::Transform{});
+        ecs::WeaponState ws;
+        ws.weapon_id = "sp_shotgun";
+        ws.ammo_in_mag = 6;
+        std::vector<ecs::ShotTrace> shots;
+        const bool fired = ecs::fire_weapon(w, me, glm::vec3(0), glm::vec3(0, 0, -1), ws, nullptr, 3, nullptr, &shots);
+        bool distinct = shots.size() == 9, inside = true;
+        glm::vec3 mean(0.0f);
+        float widest = 0.0f;
+        for (size_t i = 0; i < shots.size(); ++i) {
+            const glm::vec3 d = glm::normalize(shots[i].end - shots[i].start);
+            mean += d;
+            const float ang = glm::degrees(std::acos(std::clamp(-d.z, -1.0f, 1.0f)));
+            inside = inside && ang <= 5.01f;
+            widest = std::max(widest, ang);
+            for (size_t j = 0; j < i; ++j)
+                distinct = distinct && glm::length(d - glm::normalize(shots[j].end - shots[j].start)) > 1e-4f;
+        }
+        mean = glm::normalize(mean);
+        const float bias = glm::degrees(std::acos(std::clamp(-mean.z, -1.0f, 1.0f)));
+        check("a shotgun's pellets spread: each its own way, within the cone, round the aim (no shared bias)",
+              fired && distinct && inside && widest > 2.0f && bias < 2.0f);
+    }
+
     // Abilities that fly (`speed`, `arc`): they take effect where they land,
     // not at once; they pass the caster's own side; effect blocks load.
     {

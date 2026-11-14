@@ -134,11 +134,23 @@ inline bool ray_sphere(const glm::vec3& o, const glm::vec3& d, const glm::vec3& 
     out_t = t;
     return true;
 }
+/// A seed's bits mixed (splitmix64): small, consecutive seeds -- a shot
+/// counter, pellet 1, 2, 3 -- otherwise give an xorshift Rng first draws
+/// that are all zero, and every pellet the same direction.
+inline uint64_t mix_seed(uint64_t s) {
+    s += 0x9E3779B97F4A7C15ULL;
+    s = (s ^ (s >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    s = (s ^ (s >> 27)) * 0x94D049BB133111EBULL;
+    return s ^ (s >> 31);
+}
+
+/// A direction within `deg` of `dir`: evenly over the cone's disc.
 inline glm::vec3 apply_spread(const glm::vec3& dir, float deg, uint64_t seed) {
     if (deg <= 0.0f) return glm::normalize(dir);
-    Rng rng(seed);
-    const float ax = (rng.unit() * 2.0f - 1.0f) * glm::radians(deg);
-    const float ay = (rng.unit() * 2.0f - 1.0f) * glm::radians(deg);
+    Rng rng(mix_seed(seed));
+    const float r = std::sqrt(rng.unit()) * glm::radians(deg), a = rng.unit() * 6.2831853f;
+    const float ax = r * std::cos(a);
+    const float ay = r * std::sin(a);
     const glm::vec3 up = std::abs(dir.y) < 0.99f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
     const glm::vec3 right = glm::normalize(glm::cross(dir, up));
     const glm::vec3 realup = glm::cross(right, glm::normalize(dir));
@@ -180,7 +192,8 @@ inline bool fire_weapon(World& w, Entity shooter, const glm::vec3& origin, const
         const glm::vec3 dir = apply_spread(aim, spread, seed + static_cast<uint64_t>(i));
         ShotTrace st;
         st.start = origin;
-        st.tracer = wd->tracer_every > 0 && (ws.rounds_fired % wd->tracer_every) == 0 && i == 0;
+        // A tracer round shows every pellet (a shotgun's spread can be seen).
+        st.tracer = wd->tracer_every > 0 && (ws.rounds_fired % wd->tracer_every) == 0;
         if (wd->projectile_speed > 0.0f) {
             const Entity pe = w.create();
             Transform t; t.position = origin; w.add<Transform>(pe, t);
@@ -216,7 +229,7 @@ inline bool fire_weapon(World& w, Entity shooter, const glm::vec3& origin, const
     // After the round left: spread blooms, the view kicks.
     ws.bloom = std::min(ws.bloom + wd->spread_bloom, std::max(0.0f, wd->spread_max - wd->spread_deg));
     if (wd->recoil_pitch != 0.0f || wd->recoil_yaw != 0.0f) {
-        Rng rng(seed * 2654435761u + 17u);
+        Rng rng(mix_seed(seed * 2654435761u + 17u));
         const float ads = 1.0f - 0.35f * ws.aim;   // a braced aim kicks less
         ws.kick_pitch += wd->recoil_pitch * ads;
         ws.kick_yaw += (rng.unit() * 2.0f - 1.0f) * wd->recoil_yaw * ads;

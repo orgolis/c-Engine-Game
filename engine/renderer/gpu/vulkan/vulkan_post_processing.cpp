@@ -10,6 +10,7 @@
 #include "auto_exposure_spirv.h"
 #include "post_proc_fxaa_spirv.h"
 #include "post_proc_colorfx_spirv.h"
+#include "post_proc_bloom_chain_spirv.h"   // the bloom chain's down / up passes (tools/post_proc_bloom_*.frag)
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <array>
@@ -64,6 +65,7 @@ std::unique_ptr<VulkanPostProcessing> VulkanPostProcessing::create(VulkanDevice*
             post_proc->create_bloom_framebuffer();
             post_proc->create_bloom_descriptor();
             post_proc->create_bloom_pipeline();
+            post_proc->create_bloom_chain();
         }
 
         if (config.taa.enabled && post_proc->taa_history_ != VK_NULL_HANDLE) {
@@ -611,6 +613,237 @@ void VulkanPostProcessing::create_bloom_pipeline() {
                                   &bloom_pipeline_) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create bloom pipeline");
     }
+}
+
+void VulkanPostProcessing::create_bloom_chain() {
+    // Built beside the single-pass bloom (kept as the fallback): if anything
+    // here fails the chain stays off and bloom works as before.
+    VkDevice vk = device_->get_device();
+    const uint32_t n = static_cast<uint32_t>(bloom_mips_.size());
+    if (n < 2 || bloom_render_pass_ == VK_NULL_HANDLE) return;
+    try {
+        // The up pass: LOAD what the down pass left, add to it.
+        VkAttachmentDescription color{};
+        color.format         = VK_FORMAT_R16G16B16A16_SFLOAT;
+        color.samples        = VK_SAMPLE_COUNT_1_BIT;
+        color.loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD;
+        color.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        color.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        color.initialLayout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        color.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkAttachmentReference ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription sub{};
+        sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sub.colorAttachmentCount = 1;
+        sub.pColorAttachments = &ref;
+        std::array<VkSubpassDependency, 2> deps{};
+        deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+        deps[0].dstSubpass    = 0;
+        deps[0].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        deps[1].srcSubpass    = 0;
+        deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+        deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        VkRenderPassCreateInfo rpi{};
+        rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        rpi.attachmentCount = 1;
+        rpi.pAttachments = &color;
+        rpi.subpassCount = 1;
+        rpi.pSubpasses = &sub;
+        rpi.dependencyCount = static_cast<uint32_t>(deps.size());
+        rpi.pDependencies = deps.data();
+        if (vkCreateRenderPass(vk, &rpi, nullptr, &bloom_up_render_pass_) != VK_SUCCESS)
+            throw std::runtime_error("bloom chain: up render pass");
+
+        // A framebuffer per mip (compatible with both passes: they differ only in load / layouts).
+        uint32_t w = config_.width, h = config_.height;
+        bloom_mip_extents_.clear();
+        bloom_mip_framebuffers_.assign(n, VK_NULL_HANDLE);
+        for (uint32_t i = 0; i < n; ++i) {
+            w = std::max(1u, w / 2);
+            h = std::max(1u, h / 2);
+            bloom_mip_extents_.push_back({w, h});
+            VkFramebufferCreateInfo fi{};
+            fi.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            fi.renderPass = bloom_render_pass_;
+            fi.attachmentCount = 1;
+            fi.pAttachments = &bloom_mip_views_[i];
+            fi.width = w;
+            fi.height = h;
+            fi.layers = 1;
+            if (vkCreateFramebuffer(vk, &fi, nullptr, &bloom_mip_framebuffers_[i]) != VK_SUCCESS)
+                throw std::runtime_error("bloom chain: framebuffer");
+        }
+
+        // Descriptors: a sampler (the source) + the exposure buffer.
+        std::array<VkDescriptorSetLayoutBinding, 2> b{};
+        b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b[0].descriptorCount = 1; b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        b[1].descriptorCount = 1; b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo li{};
+        li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        li.bindingCount = 2;
+        li.pBindings = b.data();
+        if (vkCreateDescriptorSetLayout(vk, &li, nullptr, &bloom_chain_dsl_) != VK_SUCCESS)
+            throw std::runtime_error("bloom chain: descriptor layout");
+        std::array<VkDescriptorPoolSize, 2> ps{};
+        ps[0] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, n + 1};
+        ps[1] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, n + 1};
+        VkDescriptorPoolCreateInfo pi{};
+        pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pi.poolSizeCount = 2;
+        pi.pPoolSizes = ps.data();
+        pi.maxSets = n + 1;
+        if (vkCreateDescriptorPool(vk, &pi, nullptr, &bloom_chain_pool_) != VK_SUCCESS)
+            throw std::runtime_error("bloom chain: descriptor pool");
+        std::vector<VkDescriptorSetLayout> layouts(n + 1, bloom_chain_dsl_);
+        std::vector<VkDescriptorSet> sets(n + 1);
+        VkDescriptorSetAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool = bloom_chain_pool_;
+        ai.descriptorSetCount = n + 1;
+        ai.pSetLayouts = layouts.data();
+        if (vkAllocateDescriptorSets(vk, &ai, sets.data()) != VK_SUCCESS)
+            throw std::runtime_error("bloom chain: descriptor sets");
+        bloom_input_set_ = sets[0];
+        bloom_mip_sets_.assign(sets.begin() + 1, sets.end());
+
+        // Pipelines: down (replaces), up (adds).
+        VkPushConstantRange pr{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float) * 8};
+        VkPipelineLayoutCreateInfo pli{};
+        pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pli.setLayoutCount = 1;
+        pli.pSetLayouts = &bloom_chain_dsl_;
+        pli.pushConstantRangeCount = 1;
+        pli.pPushConstantRanges = &pr;
+        if (vkCreatePipelineLayout(vk, &pli, nullptr, &bloom_chain_layout_) != VK_SUCCESS)
+            throw std::runtime_error("bloom chain: pipeline layout");
+        auto vert = shader_registry_->compile_glsl(kTonemapVertSrc, ShaderStage::Vertex, "post_proc_fullscreen.vert");
+        if (!vert) vert = shader_registry_->create_from_spirv(kTonemapVertSpv, kTonemapVertSpv_size, ShaderStage::Vertex,
+                                                              "post_proc_fullscreen.vert");
+        auto down = shader_registry_->create_from_spirv(kBloomDownFragSpv, kBloomDownFragSpv_size, ShaderStage::Fragment,
+                                                        "post_proc_bloom_down.frag");
+        auto up = shader_registry_->create_from_spirv(kBloomUpFragSpv, kBloomUpFragSpv_size, ShaderStage::Fragment,
+                                                      "post_proc_bloom_up.frag");
+        if (!vert || !down || !up) throw std::runtime_error("bloom chain: shaders");
+        auto make = [&](VkShaderModule frag, bool add, VkRenderPass rp, VkPipeline& out) {
+            std::array<VkPipelineShaderStageCreateInfo, 2> st{};
+            st[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            st[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+            st[0].module = vert->handle;
+            st[0].pName = "main";
+            st[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+            st[1].module = frag;
+            st[1].pName = "main";
+            VkPipelineVertexInputStateCreateInfo vi{};
+            vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+            VkPipelineInputAssemblyStateCreateInfo ia{};
+            ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+            ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+            std::array<VkDynamicState, 2> ds{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+            VkPipelineDynamicStateCreateInfo dyn{};
+            dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+            dyn.dynamicStateCount = 2;
+            dyn.pDynamicStates = ds.data();
+            VkPipelineViewportStateCreateInfo vp{};
+            vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+            vp.viewportCount = 1;
+            vp.scissorCount = 1;
+            VkPipelineRasterizationStateCreateInfo rs{};
+            rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+            rs.polygonMode = VK_POLYGON_MODE_FILL;
+            rs.cullMode = VK_CULL_MODE_NONE;
+            rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+            rs.lineWidth = 1.0f;
+            VkPipelineMultisampleStateCreateInfo ms{};
+            ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+            ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+            VkPipelineColorBlendAttachmentState cba{};
+            cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+            if (add) {
+                cba.blendEnable = VK_TRUE;
+                cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+                cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+                cba.colorBlendOp = VK_BLEND_OP_ADD;
+                cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+                cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+                cba.alphaBlendOp = VK_BLEND_OP_ADD;
+            }
+            VkPipelineColorBlendStateCreateInfo cb{};
+            cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+            cb.attachmentCount = 1;
+            cb.pAttachments = &cba;
+            VkGraphicsPipelineCreateInfo gi{};
+            gi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+            gi.stageCount = 2;
+            gi.pStages = st.data();
+            gi.pVertexInputState = &vi;
+            gi.pInputAssemblyState = &ia;
+            gi.pViewportState = &vp;
+            gi.pRasterizationState = &rs;
+            gi.pMultisampleState = &ms;
+            gi.pColorBlendState = &cb;
+            gi.pDynamicState = &dyn;
+            gi.layout = bloom_chain_layout_;
+            gi.renderPass = rp;
+            if (vkCreateGraphicsPipelines(vk, VK_NULL_HANDLE, 1, &gi, nullptr, &out) != VK_SUCCESS)
+                throw std::runtime_error("bloom chain: pipeline");
+        };
+        make(down->handle, false, bloom_render_pass_, bloom_down_pipeline_);
+        make(up->handle, true, bloom_up_render_pass_, bloom_up_pipeline_);
+        spdlog::info("Bloom chain: {} levels, {}x{} down to {}x{}", n, bloom_mip_extents_.front().width,
+                     bloom_mip_extents_.front().height, bloom_mip_extents_.back().width, bloom_mip_extents_.back().height);
+    } catch (const std::exception& e) {
+        spdlog::warn("Bloom chain unavailable ({}); the single-pass bloom is used", e.what());
+        bloom_chain_ready_ = false;
+        return;
+    }
+    // Ready once its descriptors have the input and the exposure (update_bloom_chain_descriptors).
+}
+
+void VulkanPostProcessing::update_bloom_chain_descriptors() {
+    if (bloom_chain_pool_ == VK_NULL_HANDLE || input_view_ == VK_NULL_HANDLE || input_sampler_ == VK_NULL_HANDLE ||
+        auto_exposure_buffer_ == VK_NULL_HANDLE || bloom_down_pipeline_ == VK_NULL_HANDLE ||
+        bloom_up_pipeline_ == VK_NULL_HANDLE) {
+        bloom_chain_ready_ = false;
+        return;
+    }
+    const size_t n = bloom_mip_sets_.size();
+    std::vector<VkDescriptorImageInfo> images(n + 1);
+    std::vector<VkWriteDescriptorSet> writes;
+    VkDescriptorBufferInfo expo{auto_exposure_buffer_, 0, VK_WHOLE_SIZE};
+    for (size_t i = 0; i <= n; ++i) {
+        images[i].sampler = input_sampler_;
+        images[i].imageView = i == 0 ? input_view_ : bloom_mip_views_[i - 1];
+        images[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        const VkDescriptorSet set = i == 0 ? bloom_input_set_ : bloom_mip_sets_[i - 1];
+        VkWriteDescriptorSet a{};
+        a.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        a.dstSet = set;
+        a.dstBinding = 0;
+        a.descriptorCount = 1;
+        a.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        a.pImageInfo = &images[i];
+        writes.push_back(a);
+        VkWriteDescriptorSet bw{};
+        bw.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        bw.dstSet = set;
+        bw.dstBinding = 1;
+        bw.descriptorCount = 1;
+        bw.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bw.pBufferInfo = &expo;
+        writes.push_back(bw);
+    }
+    vkUpdateDescriptorSets(device_->get_device(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    bloom_chain_ready_ = true;
 }
 
 void VulkanPostProcessing::create_taa_output_image() {
@@ -1259,11 +1492,65 @@ void VulkanPostProcessing::set_input_image(VkImageView image_view) {
     init_auto_exposure_resources();
     update_input_descriptor();
     update_bloom_descriptor();
+    update_bloom_chain_descriptors();
     update_taa_descriptor();
 }
 
 void VulkanPostProcessing::apply_bloom(VkCommandBuffer cmd) {
     if (!bloom_enabled_) return;
+    if (bloom_chain_ready_ && input_view_ != VK_NULL_HANDLE && auto_exposure_buffer_ != VK_NULL_HANDLE) {
+        struct {
+            float tx, ty, threshold, knee, prefilter, static_exposure, clamp_max, pad;
+        } pc{};
+        const uint32_t n = static_cast<uint32_t>(bloom_mip_framebuffers_.size());
+        auto pass = [&](VkRenderPass rp, uint32_t mip) {
+            VkClearValue clear{};
+            clear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+            VkRenderPassBeginInfo rb{};
+            rb.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            rb.renderPass = rp;
+            rb.framebuffer = bloom_mip_framebuffers_[mip];
+            rb.renderArea.extent = bloom_mip_extents_[mip];
+            rb.clearValueCount = 1;
+            rb.pClearValues = &clear;
+            vkCmdBeginRenderPass(cmd, &rb, VK_SUBPASS_CONTENTS_INLINE);
+            VkViewport vp{};
+            vp.width = static_cast<float>(bloom_mip_extents_[mip].width);
+            vp.height = static_cast<float>(bloom_mip_extents_[mip].height);
+            vp.maxDepth = 1.0f;
+            vkCmdSetViewport(cmd, 0, 1, &vp);
+            VkRect2D sc{};
+            sc.extent = bloom_mip_extents_[mip];
+            vkCmdSetScissor(cmd, 0, 1, &sc);
+        };
+        // Down: the bright-pass into mip 0, then each mip from the one above.
+        for (uint32_t i = 0; i < n; ++i) {
+            pass(bloom_render_pass_, i);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bloom_down_pipeline_);
+            VkDescriptorSet set = i == 0 ? bloom_input_set_ : bloom_mip_sets_[i - 1];
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bloom_chain_layout_, 0, 1, &set, 0, nullptr);
+            const float sw = i == 0 ? static_cast<float>(config_.width) : static_cast<float>(bloom_mip_extents_[i - 1].width);
+            const float sh = i == 0 ? static_cast<float>(config_.height) : static_cast<float>(bloom_mip_extents_[i - 1].height);
+            pc = {1.0f / sw, 1.0f / sh, std::max(0.0f, config_.bloom.threshold), 0.5f, i == 0 ? 1.0f : 0.0f,
+                  config_.tone_mapping.exposure, 64.0f, 0.0f};
+            vkCmdPushConstants(cmd, bloom_chain_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+            vkCmdEndRenderPass(cmd);
+        }
+        // Up: each mip, blurred, added into the one above it.
+        for (int i = static_cast<int>(n) - 2; i >= 0; --i) {
+            pass(bloom_up_render_pass_, static_cast<uint32_t>(i));
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bloom_up_pipeline_);
+            VkDescriptorSet set = bloom_mip_sets_[static_cast<size_t>(i) + 1];
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bloom_chain_layout_, 0, 1, &set, 0, nullptr);
+            const VkExtent2D lo = bloom_mip_extents_[static_cast<size_t>(i) + 1];
+            pc = {1.0f / static_cast<float>(lo.width), 1.0f / static_cast<float>(lo.height), 1.0f, 1.0f, 0, 0, 0, 0};
+            vkCmdPushConstants(cmd, bloom_chain_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+            vkCmdEndRenderPass(cmd);
+        }
+        return;
+    }
     if (bloom_pipeline_ == VK_NULL_HANDLE || bloom_render_pass_ == VK_NULL_HANDLE ||
         bloom_framebuffer_ == VK_NULL_HANDLE) {
         return;
@@ -1376,7 +1663,9 @@ void VulkanPostProcessing::apply_tone_mapping(VkCommandBuffer cmd) {
         config_.tone_mapping.gamma,
         config_.tone_mapping.contrast,
         config_.tone_mapping.saturation,
-        (bloom_enabled_ && bloom_pipeline_ != VK_NULL_HANDLE) ? config_.bloom.intensity : 0.0f,
+        (bloom_enabled_ && bloom_pipeline_ != VK_NULL_HANDLE)
+            ? config_.bloom.intensity * (bloom_chain_ready_ ? 0.35f / static_cast<float>(bloom_mips_.size()) : 1.0f)
+            : 0.0f,
         {0.0f, 0.0f, 0.0f},
     };
     vkCmdPushConstants(cmd, pipeline_layouts_[0], VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1449,11 +1738,11 @@ void VulkanPostProcessing::apply_film_grain(VkCommandBuffer cmd) {
 }
 
 void VulkanPostProcessing::render(VkCommandBuffer cmd) {
+    // Auto-exposure first: the tone map reads the exposure it updates, and so
+    // does the bloom's bright-pass (what will look brighter than white glows).
+    if (auto_exposure_enabled_) apply_auto_exposure(cmd, delta_time_);
     if (bloom_enabled_) apply_bloom(cmd);
     if (taa_enabled_) apply_taa(cmd);
-    // Auto-exposure must run BEFORE tone mapping — the latter reads the
-    // smoothed exposure value this compute pass updates.
-    if (auto_exposure_enabled_) apply_auto_exposure(cmd, delta_time_);
     if (tone_mapping_enabled_) apply_tone_mapping(cmd);
     // FXAA runs on the LDR tone-mapped result. Edge detection on a
     // gamma-correct LDR image is what FXAA was designed for; running it
@@ -1667,6 +1956,21 @@ void VulkanPostProcessing::cleanup() {
         input_sampler_ = VK_NULL_HANDLE;
     }
 
+    if (bloom_down_pipeline_ != VK_NULL_HANDLE) { vkDestroyPipeline(vk_device, bloom_down_pipeline_, nullptr); bloom_down_pipeline_ = VK_NULL_HANDLE; }
+    if (bloom_up_pipeline_ != VK_NULL_HANDLE) { vkDestroyPipeline(vk_device, bloom_up_pipeline_, nullptr); bloom_up_pipeline_ = VK_NULL_HANDLE; }
+    if (bloom_chain_layout_ != VK_NULL_HANDLE) { vkDestroyPipelineLayout(vk_device, bloom_chain_layout_, nullptr); bloom_chain_layout_ = VK_NULL_HANDLE; }
+    if (bloom_chain_pool_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(vk_device, bloom_chain_pool_, nullptr);
+        bloom_chain_pool_ = VK_NULL_HANDLE;
+        bloom_input_set_ = VK_NULL_HANDLE;
+        bloom_mip_sets_.clear();
+    }
+    if (bloom_chain_dsl_ != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(vk_device, bloom_chain_dsl_, nullptr); bloom_chain_dsl_ = VK_NULL_HANDLE; }
+    for (VkFramebuffer fb : bloom_mip_framebuffers_) if (fb != VK_NULL_HANDLE) vkDestroyFramebuffer(vk_device, fb, nullptr);
+    bloom_mip_framebuffers_.clear();
+    bloom_mip_extents_.clear();
+    if (bloom_up_render_pass_ != VK_NULL_HANDLE) { vkDestroyRenderPass(vk_device, bloom_up_render_pass_, nullptr); bloom_up_render_pass_ = VK_NULL_HANDLE; }
+    bloom_chain_ready_ = false;
     if (bloom_pipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(vk_device, bloom_pipeline_, nullptr);
         bloom_pipeline_ = VK_NULL_HANDLE;

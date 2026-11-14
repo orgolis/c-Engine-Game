@@ -129,6 +129,7 @@ public:
     void clear() { fx_.clear(); }
     void apply_shift(const glm::vec3& d) { fx_.apply_shift(d); }
     size_t alive() const { return fx_.alive(); }
+    std::vector<schizo::vfx::EffectParticles::PointLight> lights() const { return fx_.lights(); }
     schizo::vfx::EffectParticles& particles() { return fx_; }
 
     /// An ability's effect for a stage: <vfx>_<stage>, <element>_<stage>, magic_<stage>.

@@ -9,7 +9,8 @@ it in the editor.
 ## What is in it
 
 - **The world** (`scenes/main.scene`): rolling hills with rivers under an HDR
-  sky (`assets/sky/`), forests of grown broadleaf and conifer trees from 5 to
+  sky (`assets/sky/`) and a sun that shines from where the sky's sun is and
+  casts the trees' shadows (and, with Volumetric light on, light shafts), forests of grown broadleaf and conifer trees from 5 to
   18 m tall, grass and rocks. Trees and rocks are solid: they stop the player,
   rounds, grenades and creatures (docs/systems/FOLIAGE.md); the ground round
   the start, the caches, checkpoints, the beacon and the camps is kept clear.

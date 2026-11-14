@@ -132,7 +132,11 @@ void main() {
     N = normalize(N);
 
     float smoothness = 1.0 - roughness;
-    if (smoothness < 0.1) { imageStore(dstReflection, px, vec4(0.0)); return; }
+    // Rough surfaces (leaves, bark, grass, rock: roughness 0.7 and up) do not
+    // reflect: a single sharp reflection ray per pixel off a rough surface is
+    // noise, not a reflection -- in a forest it covered the leaves with
+    // speckles of sky. Reflections fade in from roughness 0.7 to 0.5.
+    if (smoothness < 0.3) { imageStore(dstReflection, px, vec4(0.0)); return; }
 
     float metallic = texture(albedoTex, uv).a;
     vec3 P = relPos(uv) + pc.camera_pos.xyz;   // world space: rays trace the TLAS (F5)
@@ -239,7 +243,7 @@ void main() {
     vec3 F = F0_v + (rough_term - F0_v) *
                     pow(clamp(1.0 - NdotV, 0.0, 1.0), pc.fresnel_power);
     float spec_weight = max(max(F.r, F.g), F.b);
-    spec_weight *= mix(smoothness * smoothness, smoothness, metallic);
+    spec_weight *= mix(smoothness * smoothness, smoothness, metallic) * smoothstep(0.3, 0.5, smoothness);
 
     // F is a COLOUR and was being collapsed to a scalar here, which threw the
     // hue away even when F0 carried one. The composite blends

@@ -226,6 +226,41 @@ int main() {
                 flying == 1 && tr.alive() == 0 && len > wid * 10.0f);
     }
 
+    // Effect lights and particle shapes.
+    {
+        const auto defs = parse_effects_text(
+            "effect t_flash\n"
+            "  light 1 0.6 0.3 12 7 0.1\n"
+            "  layer glow  count 1 life 1 size 0.2\n"
+            "  layer smoke count 1 life 1 size 0.2 blend\n"
+            "  layer spark count 1 life 1 speed 5 size 0.02 streak 0.03\n"
+            "  layer puff  count 1 life 1 size 0.2 shape smoke\n"
+            "end\n");
+        REQUIRE("an effect's light parses", defs.size() == 1 && near(defs[0].light.intensity, 12.0f) &&
+                near(defs[0].light.range, 7.0f) && near(defs[0].light.life, 0.1f) && defs[0].layers[3].shape == 2);
+        EffectParticles fx;
+        EffectSpawn at;
+        at.pos = glm::vec3(0, 0, -5);
+        fx.burst(defs[0], at);
+        const auto l0 = fx.lights();
+        fx.update(0.05f);
+        const auto l1 = fx.lights();
+        fx.update(0.06f);
+        REQUIRE("it lights its surroundings, fading, then gone",
+                l0.size() == 1 && near(l0[0].intensity, 12.0f) && l1.size() == 1 && l1[0].intensity < 4.0f &&
+                fx.lights().empty());
+        std::vector<BillboardVertex> v;
+        fx.build(glm::vec3(0), v);
+        // Farthest first; all at the same distance, so check the set of shapes.
+        int glow = 0, smoke = 0, soft = 0;
+        for (size_t i = 0; i < v.size(); i += 4) {
+            const int s = static_cast<int>(v[i].extra.x + 0.5f);
+            glow += s == 1; smoke += s == 2; soft += s == 0;
+        }
+        REQUIRE("shapes by kind: light-adding glows, covering is smoke, streaks soft; a layer can choose",
+                v.size() == 16 && glow == 1 && smoke == 2 && soft == 1);
+    }
+
     std::printf("vfx_check: ALL OK (%d checks)\n", g_checks);
     return 0;
 }

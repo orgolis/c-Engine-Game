@@ -113,8 +113,22 @@ cfg.gamma = 2.2f;
 post_processor->AddEffect(std::move(tonemap), &cfg);
 ```
 
+**In the Vulkan renderer** (`vulkan_post_processing.cpp`, what the editor and games
+use): ACES, then the output is LINEAR when the window's swapchain is sRGB (the
+hardware encodes on write) and gamma 2.2 only when it is not. Encoding in both
+places -- as it did before 0.8.45 -- made every frame milky: blacks grey,
+colours washed out. Colours drawn over the game (UI documents, the HUD) are
+handed over the same way (`hud32`, `ui_output_srgb`).
+
 ### 2. Bloom
 Creates a glow effect from bright areas of the image.
+
+**In the Vulkan renderer:** a mip chain. A bright-pass measured on the EXPOSED
+image (the auto-exposure the tone map uses -- only what will look brighter than
+white glows, with a soft knee) and a 13-tap downsample into five mips (1/2 to
+1/32), then a tent-filtered upsample back up, each added into the mip above;
+the tone map adds the result. Wide and soft, stable as the camera moves: muzzle
+flashes, fire, sparks and the sun glow. Particles colours above 1 bloom.
 
 **Configuration:**
 ```cpp

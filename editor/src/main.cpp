@@ -6011,23 +6011,23 @@ void ShowViewport(EditorState& editor_state) {
                         const auto& s = ah.slots[i];
                         const ImVec2 a(x0 + i * (box + gap), y0), b(a.x + box, a.y + box);
                         const bool active = ah.casting == static_cast<int>(i);
-                        dl->AddRectFilled(a, b, IM_COL32(12, 16, 24, 190), 5.0f);
+                        dl->AddRectFilled(a, b, schizo::editor::hud32(12, 16, 24, 190), 5.0f);
                         if (s.cooldown > 0.0f && s.cooldown_total > 0.0f) {
                             const float f = std::clamp(s.cooldown / s.cooldown_total, 0.0f, 1.0f);
-                            dl->AddRectFilled(ImVec2(a.x, b.y - box * f), b, IM_COL32(0, 0, 0, 150), 5.0f);
+                            dl->AddRectFilled(ImVec2(a.x, b.y - box * f), b, schizo::editor::hud32(0, 0, 0, 150), 5.0f);
                             char cd[16];
                             std::snprintf(cd, sizeof cd, "%.1f", s.cooldown);
                             const ImVec2 cs = ImGui::CalcTextSize(cd);
-                            dl->AddText(ImVec2(a.x + (box - cs.x) * 0.5f, a.y + (box - cs.y) * 0.5f), IM_COL32(255, 255, 255, 230), cd);
+                            dl->AddText(ImVec2(a.x + (box - cs.x) * 0.5f, a.y + (box - cs.y) * 0.5f), schizo::editor::hud32(255, 255, 255, 230), cd);
                         }
-                        dl->AddRect(a, b, active ? IM_COL32(120, 200, 255, 255) : s.ready ? IM_COL32(160, 170, 190, 200)
-                                                                                         : IM_COL32(70, 75, 85, 200),
+                        dl->AddRect(a, b, active ? schizo::editor::hud32(120, 200, 255, 255) : s.ready ? schizo::editor::hud32(160, 170, 190, 200)
+                                                                                         : schizo::editor::hud32(70, 75, 85, 200),
                                     5.0f, 0, active ? 2.5f : 1.0f);
                         // The key the slot's action is bound to (as the player has it), small when long.
                         const int code = schizo::editor::play_settings().map.key("ability_" + std::to_string(i + 1));
                         const std::string key = code ? schizo::input::key_name(code) : std::string("-");
                         const float kf = key.size() > 2 ? ImGui::GetFontSize() * 0.75f : ImGui::GetFontSize();
-                        dl->AddText(ImGui::GetFont(), kf, ImVec2(a.x + 4, a.y + 2), IM_COL32(200, 210, 230, 220), key.c_str());
+                        dl->AddText(ImGui::GetFont(), kf, ImVec2(a.x + 4, a.y + 2), schizo::editor::hud32(200, 210, 230, 220), key.c_str());
                         // The whole name, its text made smaller when it would not fit the slot.
                         const char* nm = s.name.c_str();
                         float fs = ImGui::GetFontSize();
@@ -6037,16 +6037,16 @@ void ShowViewport(EditorState& editor_state) {
                             fs *= k;
                             ns = ImVec2(ns.x * k, ns.y * k);
                         }
-                        dl->AddText(ImGui::GetFont(), fs, ImVec2(a.x + (box - ns.x) * 0.5f, b.y - ns.y - 3), IM_COL32(230, 235, 245, 240), nm);
+                        dl->AddText(ImGui::GetFont(), fs, ImVec2(a.x + (box - ns.x) * 0.5f, b.y - ns.y - 3), schizo::editor::hud32(230, 235, 245, 240), nm);
                     }
                     if (ah.casting >= 0) {
                         const float w = 220.0f, h = 8.0f;
                         const ImVec2 p0((image_min.x + image_max.x) * 0.5f - w * 0.5f, y0 - 30.0f);
-                        dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), IM_COL32(10, 14, 20, 180), 3.0f);
+                        dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), schizo::editor::hud32(10, 14, 20, 180), 3.0f);
                         dl->AddRectFilled(p0, ImVec2(p0.x + w * ah.cast_progress, p0.y + h),
-                                          ah.channelling ? IM_COL32(120, 200, 255, 230) : IM_COL32(240, 200, 90, 230), 3.0f);
+                                          ah.channelling ? schizo::editor::hud32(120, 200, 255, 230) : schizo::editor::hud32(240, 200, 90, 230), 3.0f);
                         const ImVec2 ts = ImGui::CalcTextSize(ah.cast_name.c_str());
-                        dl->AddText(ImVec2(p0.x + (w - ts.x) * 0.5f, p0.y - ts.y - 2), IM_COL32(235, 240, 250, 240), ah.cast_name.c_str());
+                        dl->AddText(ImVec2(p0.x + (w - ts.x) * 0.5f, p0.y - ts.y - 2), schizo::editor::hud32(235, 240, 250, 240), ah.cast_name.c_str());
                     }
                 }
                 // The project's UI documents, over the game view.
@@ -6066,8 +6066,8 @@ void ShowViewport(EditorState& editor_state) {
                         ImGui::SetWindowFontScale(1.35f);
                         const ImVec2 ts = ImGui::CalcTextSize(msg.text.c_str());
                         const ImVec2 p(cx - ts.x * 0.5f, ui_menu_up ? image_max.y - 18.0f - ts.y : image_min.y + 60.0f);
-                        dl->AddRectFilled(ImVec2(p.x - 14, p.y - 8), ImVec2(p.x + ts.x + 14, p.y + ts.y + 8), IM_COL32(10, 14, 20, 190), 6.0f);
-                        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 245, 210, 255), msg.text.c_str());
+                        dl->AddRectFilled(ImVec2(p.x - 14, p.y - 8), ImVec2(p.x + ts.x + 14, p.y + ts.y + 8), schizo::editor::hud32(10, 14, 20, 190), 6.0f);
+                        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), p, schizo::editor::hud32(255, 245, 210, 255), msg.text.c_str());
                         ImGui::SetWindowFontScale(1.0f);
                     }
                 }
@@ -6079,16 +6079,16 @@ void ShowViewport(EditorState& editor_state) {
                     if (!lh.prompt.empty() && !ui_menu_up) {
                         const ImVec2 ts = ImGui::CalcTextSize(lh.prompt.c_str());
                         const ImVec2 p(cx - ts.x * 0.5f, (image_min.y + image_max.y) * 0.5f + 40.0f);
-                        dl->AddRectFilled(ImVec2(p.x - 10, p.y - 5), ImVec2(p.x + ts.x + 10, p.y + ts.y + 5), IM_COL32(10, 14, 20, 180), 4.0f);
-                        dl->AddText(p, IM_COL32(245, 240, 220, 255), lh.prompt.c_str());
+                        dl->AddRectFilled(ImVec2(p.x - 10, p.y - 5), ImVec2(p.x + ts.x + 10, p.y + ts.y + 5), schizo::editor::hud32(10, 14, 20, 180), 4.0f);
+                        dl->AddText(p, schizo::editor::hud32(245, 240, 220, 255), lh.prompt.c_str());
                     }
                     if (lh.player_dead) {
-                        dl->AddRectFilled(image_min, image_max, IM_COL32(60, 0, 0, 90));
+                        dl->AddRectFilled(image_min, image_max, schizo::editor::hud32(60, 0, 0, 90));
                         const char* msg = "You died";
                         ImGui::SetWindowFontScale(2.0f);
                         const ImVec2 ts = ImGui::CalcTextSize(msg);
                         dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(cx - ts.x * 0.5f, (image_min.y + image_max.y) * 0.5f - ts.y),
-                                    IM_COL32(255, 220, 220, 255), msg);
+                                    schizo::editor::hud32(255, 220, 220, 255), msg);
                         ImGui::SetWindowFontScale(1.0f);
                     }
                 }
@@ -6100,9 +6100,9 @@ void ShowViewport(EditorState& editor_state) {
                         ImDrawList* dl = ImGui::GetWindowDrawList();
                         const float w = 180.0f, h = 6.0f, frac = std::clamp(mst.stamina / ms.stamina, 0.0f, 1.0f);
                         const ImVec2 p0((image_min.x + image_max.x) * 0.5f - w * 0.5f, image_max.y - 40.0f);
-                        dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), IM_COL32(10, 14, 20, 170), 3.0f);
+                        dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), schizo::editor::hud32(10, 14, 20, 170), 3.0f);
                         dl->AddRectFilled(p0, ImVec2(p0.x + w * frac, p0.y + h),
-                                          frac > 0.25f ? IM_COL32(120, 220, 140, 230) : IM_COL32(240, 150, 60, 230), 3.0f);
+                                          frac > 0.25f ? schizo::editor::hud32(120, 220, 140, 230) : schizo::editor::hud32(240, 150, 60, 230), 3.0f);
                     }
                 }
                 // Being hit: a red arc round the crosshair towards where it came
@@ -6136,7 +6136,7 @@ void ShowViewport(EditorState& editor_state) {
                                         const float t = ang - half + 2.0f * half * static_cast<float>(i) / segs;
                                         dl->PathLineTo(ImVec2(cc.x + std::sin(t) * rad, cc.y - std::cos(t) * rad));
                                     }
-                                    dl->PathStroke(pass == 0 ? IM_COL32(0, 0, 0, static_cast<int>(120 * a)) : IM_COL32(255, 60, 40, static_cast<int>(235 * a)),
+                                    dl->PathStroke(pass == 0 ? schizo::editor::hud32(0, 0, 0, static_cast<int>(120 * a)) : schizo::editor::hud32(255, 60, 40, static_cast<int>(235 * a)),
                                                    0, (pass == 0 ? 9.0f : 5.0f) * k);
                                 }
                             }
@@ -6152,7 +6152,7 @@ void ShowViewport(EditorState& editor_state) {
                             const float sev = 1.0f - hp->current / (hp->max * 0.35f);
                             const float pulse = 0.75f + 0.25f * std::sin(static_cast<float>(ImGui::GetTime()) * (4.0f + 4.0f * sev));
                             const int al = static_cast<int>(std::clamp(70.0f + 120.0f * sev, 0.0f, 200.0f) * pulse);
-                            const ImU32 red = IM_COL32(170, 10, 10, al), none = IM_COL32(170, 10, 10, 0);
+                            const ImU32 red = schizo::editor::hud32(170, 10, 10, al), none = schizo::editor::hud32(170, 10, 10, 0);
                             const float ew = (image_max.x - image_min.x) * 0.16f, eh = (image_max.y - image_min.y) * 0.2f;
                             dl->AddRectFilledMultiColor(image_min, ImVec2(image_min.x + ew, image_max.y), red, none, none, red);
                             dl->AddRectFilledMultiColor(ImVec2(image_max.x - ew, image_min.y), image_max, none, red, red, none);
@@ -6177,7 +6177,7 @@ void ShowViewport(EditorState& editor_state) {
                     const float  tan_half_fov = std::tan(glm::radians(45.0f) * 0.5f) * std::max(0.1f, hud.view_zoom);
                     const float  gap = std::clamp(std::tan(glm::radians(hud.spread_deg)) / tan_half_fov * half_h, 3.0f, half_h * 0.5f);
                     const float  len = 9.0f;
-                    const ImU32  col = IM_COL32(240, 240, 240, 220), shadow = IM_COL32(0, 0, 0, 160);
+                    const ImU32  col = schizo::editor::hud32(240, 240, 240, 220), shadow = schizo::editor::hud32(0, 0, 0, 160);
                     for (int pass = 0; pass < 2; ++pass) {
                         const ImU32 k = pass ? col : shadow;
                         const float o = pass ? 0.0f : 1.0f, th = pass ? 1.5f : 3.0f;
@@ -6187,7 +6187,7 @@ void ShowViewport(EditorState& editor_state) {
                         dl->AddLine(ImVec2(c.x + o, c.y + gap + o), ImVec2(c.x + o, c.y + gap + len + o), k, th);
                     }
                     if (hud.hit_marker > 0.0f) {
-                        const ImU32 hm = IM_COL32(255, 80, 60, static_cast<int>(255 * std::min(1.0f, hud.hit_marker / 0.15f)));
+                        const ImU32 hm = schizo::editor::hud32(255, 80, 60, static_cast<int>(255 * std::min(1.0f, hud.hit_marker / 0.15f)));
                         dl->AddLine(ImVec2(c.x - 10, c.y - 10), ImVec2(c.x - 5, c.y - 5), hm, 2.0f);
                         dl->AddLine(ImVec2(c.x + 10, c.y - 10), ImVec2(c.x + 5, c.y - 5), hm, 2.0f);
                         dl->AddLine(ImVec2(c.x - 10, c.y + 10), ImVec2(c.x - 5, c.y + 5), hm, 2.0f);
@@ -6207,28 +6207,28 @@ void ShowViewport(EditorState& editor_state) {
                         const float pw = std::max(ms.x + rs.x + 10.0f * k, ns.x) + 28.0f * k;
                         const float ph = ns.y + ms.y + 22.0f * k;
                         const ImVec2 b1(image_max.x - 18.0f * k, image_max.y - 16.0f * k), b0(b1.x - pw, b1.y - ph);
-                        dl->AddRectFilled(ImVec2(b0.x + 3 * k, b0.y + 4 * k), ImVec2(b1.x + 3 * k, b1.y + 4 * k), IM_COL32(0, 0, 0, 70), 7.0f * k);
-                        dl->AddRectFilled(b0, b1, IM_COL32(9, 13, 19, 200), 7.0f * k);
-                        dl->AddRect(b0, b1, IM_COL32(255, 210, 120, 70), 7.0f * k, 0, 1.5f * k);
+                        dl->AddRectFilled(ImVec2(b0.x + 3 * k, b0.y + 4 * k), ImVec2(b1.x + 3 * k, b1.y + 4 * k), schizo::editor::hud32(0, 0, 0, 70), 7.0f * k);
+                        dl->AddRectFilled(b0, b1, schizo::editor::hud32(9, 13, 19, 200), 7.0f * k);
+                        dl->AddRect(b0, b1, schizo::editor::hud32(255, 210, 120, 70), 7.0f * k, 0, 1.5f * k);
                         const bool low = hud.magazine > 0 && hud.ammo <= std::max(1, hud.magazine / 4);
-                        const ImU32 mc = hud.ammo <= 0 ? IM_COL32(255, 90, 70, 255) : low ? IM_COL32(255, 190, 90, 255) : IM_COL32(245, 245, 245, 255);
-                        dl->AddText(f, small, ImVec2(b1.x - 14.0f * k - ns.x, b0.y + 8.0f * k), IM_COL32(255, 215, 140, 230), hud.name);
+                        const ImU32 mc = hud.ammo <= 0 ? schizo::editor::hud32(255, 90, 70, 255) : low ? schizo::editor::hud32(255, 190, 90, 255) : schizo::editor::hud32(245, 245, 245, 255);
+                        dl->AddText(f, small, ImVec2(b1.x - 14.0f * k - ns.x, b0.y + 8.0f * k), schizo::editor::hud32(255, 215, 140, 230), hud.name);
                         const float ty = b0.y + 8.0f * k + ns.y;
                         dl->AddText(f, big, ImVec2(b1.x - 14.0f * k - rs.x - 8.0f * k - ms.x, ty), mc, mag);
-                        dl->AddText(f, small * 1.2f, ImVec2(b1.x - 14.0f * k - rs.x, ty + ms.y - rs.y - 4.0f * k), IM_COL32(200, 205, 215, 220), res);
+                        dl->AddText(f, small * 1.2f, ImVec2(b1.x - 14.0f * k - rs.x, ty + ms.y - rs.y - 4.0f * k), schizo::editor::hud32(200, 205, 215, 220), res);
                         // The magazine as a thin bar along the bottom, or the reload filling it.
                         const ImVec2 r0(b0.x + 12.0f * k, b1.y - 9.0f * k), r1(b1.x - 12.0f * k, b1.y - 6.0f * k);
-                        dl->AddRectFilled(r0, r1, IM_COL32(255, 255, 255, 30), 2.0f);
+                        dl->AddRectFilled(r0, r1, schizo::editor::hud32(255, 255, 255, 30), 2.0f);
                         const float fr = hud.reloading ? hud.reload_progress
                                                        : (hud.magazine > 0 ? std::clamp(static_cast<float>(hud.ammo) / static_cast<float>(hud.magazine), 0.0f, 1.0f) : 0.0f);
                         if (fr > 0.0f)
                             dl->AddRectFilled(r0, ImVec2(r0.x + (r1.x - r0.x) * fr, r1.y),
-                                              hud.reloading ? IM_COL32(120, 200, 255, 230) : low ? IM_COL32(255, 170, 80, 230) : IM_COL32(255, 220, 150, 210), 2.0f);
+                                              hud.reloading ? schizo::editor::hud32(120, 200, 255, 230) : low ? schizo::editor::hud32(255, 170, 80, 230) : schizo::editor::hud32(255, 220, 150, 210), 2.0f);
                         if (hud.reloading) {
                             const char* rl = "RELOADING";
                             const ImVec2 rls = f->CalcTextSizeA(small, FLT_MAX, 0.0f, rl);
                             const ImVec2 cc((image_min.x + image_max.x) * 0.5f, (image_min.y + image_max.y) * 0.5f);
-                            dl->AddText(f, small, ImVec2(cc.x - rls.x * 0.5f, cc.y + 34.0f * k), IM_COL32(150, 210, 255, 230), rl);
+                            dl->AddText(f, small, ImVec2(cc.x - rls.x * 0.5f, cc.y + 34.0f * k), schizo::editor::hud32(150, 210, 255, 230), rl);
                         }
                     }
                 } else if (waiting_for_recapture) {
@@ -8315,6 +8315,19 @@ int main(int argc, char** argv) {
         PostProcessingConfig pp_cfg{};
         pp_cfg.width  = kW;
         pp_cfg.height = kH;
+        // The window's swapchain is sRGB when the device offers it, and then the
+        // hardware encodes what is written: the tone map must hand over LINEAR
+        // colour. It used to encode with gamma 2.2 as well, so every frame was
+        // encoded twice -- blacks grey, colours washed out, everything milky.
+        {
+            const VkFormat pf = swapchain ? swapchain->get_format() : VK_FORMAT_UNDEFINED;
+            const bool srgb = pf == VK_FORMAT_B8G8R8A8_SRGB || pf == VK_FORMAT_R8G8B8A8_SRGB ||
+                              pf == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
+            pp_cfg.tone_mapping.gamma = srgb ? 1.0f : 2.2f;
+            schizo::editor::ui_output_srgb() = srgb;
+            spdlog::info("[display] swapchain {} -> tone map gamma {}", srgb ? "sRGB (encodes on write)" : "UNORM",
+                         pp_cfg.tone_mapping.gamma);
+        }
         pp_cfg.bloom.enabled        = true;
         pp_cfg.taa.enabled          = false;
         pp_cfg.tone_mapping.enabled = true;
@@ -8632,6 +8645,12 @@ int main(int argc, char** argv) {
             if (froxel_fog)       froxel_fog->set_enabled(rs.froxel);
             if (ddgi)             ddgi->set_enabled(rs.ddgi);
             if (lighting)         lighting->set_shadow_ray_count(rs.shadow_rays);
+            // GWS_VOL_TUNE="density,anisotropy,intensity" (automation: tuning the light shafts).
+            if (const char* vt = std::getenv("GWS_VOL_TUNE"); vt && volumetric_light) {
+                auto& vc = volumetric_light->mutable_config();
+                std::sscanf(vt, "%f,%f,%f", &vc.density, &vc.anisotropy, &vc.intensity);
+                spdlog::info("[test] light shafts: density {} anisotropy {} intensity {}", vc.density, vc.anisotropy, vc.intensity);
+            }
         };
 
         // The first-launch DECISION (which preset, from which device) was
@@ -10463,7 +10482,9 @@ int main(int argc, char** argv) {
                 if (want_capture) {
                     double cx = 0.0, cy = 0.0;
                     glfwGetCursorPos(glfw_window, &cx, &cy);
-                    if (cursor_delta_primed) {
+                    // An automated run never reads the real mouse: whoever is using
+                    // the computer would turn its camera, and no two runs would match.
+                    if (cursor_delta_primed && !assume_focus) {
                         editor_state.scene_playback_manager->OnMouseDelta(
                             static_cast<float>(cx - last_cursor_x),
                             static_cast<float>(cy - last_cursor_y));
@@ -10979,6 +11000,30 @@ int main(int argc, char** argv) {
                             ev.name = arg.substr(0, eq);
                             if (eq != std::string::npos) ev.param = arg.substr(eq + 1);
                             ecs_bridge.events().publish(ev);
+                        } else if (what == "turn") {
+                            // turn:<dx>/<dy> -- a mouse movement in pixels (negative dy looks up)
+                            const size_t comma = arg.find('/');
+                            const float tdx = static_cast<float>(std::atof(arg.c_str()));
+                            const float tdy = comma == std::string::npos ? 0.0f : static_cast<float>(std::atof(arg.c_str() + comma + 1));
+                            pm.OnMouseDelta(tdx, tdy);
+                        } else if (what == "fx") {
+                            // fx:<effect>[~<metres>] -- that effect, in front of the camera
+                            // (default 5 m), facing it: an effect seen at a known moment.
+                            if (auto* pc2 = pm.GetPlaybackCamera()) {
+                                const size_t tl = arg.find('~');
+                                const std::string name = arg.substr(0, tl);
+                                const float fx_dist = tl == std::string::npos ? 5.0f : static_cast<float>(std::atof(arg.c_str() + tl + 1));
+                                if (const auto* d = schizo::vfx::find_effect(name)) {
+                                    const glm::vec3 cp = pc2->GetTransform()->GetWorldPosition();
+                                    const glm::vec3 cf = pc2->GetTransform()->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f);
+                                    schizo::vfx::EffectSpawn at;
+                                    at.pos = cp + cf * fx_dist;
+                                    at.dir = cf;
+                                    at.normal = -cf;
+                                    at.reach = 40.0f;
+                                    editor_state.play_effects.particles().burst(*d, at);
+                                }
+                            }
                         } else if (what == "show") {
                             ui.show(arg);
                         } else if (what == "mouse") {
@@ -13106,6 +13151,11 @@ int main(int argc, char** argv) {
                                                     glm::vec3(1.0f, 0.95f, 0.85f),
                                                     1.5f, /*shadow=*/false);
                 }
+                // Effects that light their surroundings (muzzle flashes, blasts, fireballs).
+                if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying())
+                    for (const auto& el : editor_state.play_effects.lights())
+                        if (el.intensity > 0.01f && light_frustum.is_sphere_visible(el.pos, el.range))
+                            lighting->add_point_light(el.pos, el.color, el.intensity, el.range, false);
                 if (lights_culled > 0) {
                     static int light_cull_log = 0;
                     if ((light_cull_log++ % 240) == 0)
@@ -14237,7 +14287,7 @@ int main(int argc, char** argv) {
                                 const glm::vec3 cam_pos = glm::vec3(glm::inverse(cam.view)[3]);
                                 editor_state.play_effects.build(cam_pos, bb);
                             }
-                            if (!bb.empty()) particles_pass->execute(rec_cmd, bb, cam.proj * cam.view);
+                            if (!bb.empty()) particles_pass->execute(rec_cmd, bb, cam.proj * cam.view, cam.proj);
                         }
                     }); }
                 g_cp.mark("pre_post");

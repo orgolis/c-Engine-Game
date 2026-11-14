@@ -59,9 +59,10 @@ public:
 
     /// Upload `verts` and draw them. A no-op when there is nothing to draw, so
     /// the common case of a scene without emitters costs one branch.
+    /// `proj`: the camera's projection, for soft particles (where they meet the scene).
     void execute(VkCommandBuffer cmd,
                  const std::vector<schizo::vfx::BillboardVertex>& verts,
-                 const glm::mat4& view_proj);
+                 const glm::mat4& view_proj, const glm::mat4& proj);
 
     /// Follow a resized scene (F1): the HDR target and the depth it tests
     /// against were recreated. The caller has waited for the device to go idle.
@@ -85,6 +86,8 @@ private:
     bool create_render_pass(VkFormat hdr_format, VkFormat depth_format);
     bool create_framebuffer(VkImageView hdr_color_view, VkImageView depth_view);
     bool create_pipeline();
+    bool create_depth_descriptor(VkImageView depth_view);
+    void write_depth_descriptor(VkImageView depth_view);
     bool ensure_vertex_capacity(size_t bytes);
     bool ensure_index_capacity(uint32_t quads);
 
@@ -95,6 +98,11 @@ private:
     VkFramebuffer    framebuffer_     = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline       pipeline_        = VK_NULL_HANDLE;
+    // The scene's depth, sampled for soft particles.
+    VkSampler             depth_sampler_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout depth_dsl_     = VK_NULL_HANDLE;
+    VkDescriptorPool      depth_pool_    = VK_NULL_HANDLE;
+    VkDescriptorSet       depth_set_     = VK_NULL_HANDLE;
 
     VkBuffer       ibo_        = VK_NULL_HANDLE;
     VkDeviceMemory ibo_memory_ = VK_NULL_HANDLE;

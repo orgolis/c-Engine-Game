@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -35,6 +36,22 @@
 #include <vector>
 
 namespace schizo::editor {
+
+/// Whether the window encodes to sRGB as it is written (an sRGB swapchain).
+/// Then colours meant as they look -- a UI document's, the game HUD's -- are
+/// handed over linear, or they would be encoded twice and come out pale.
+inline bool& ui_output_srgb() { static bool v = false; return v; }
+
+/// A colour as it should look (0..255 per channel) for the game's overlays.
+inline ImU32 hud32(int r, int g, int b, int a = 255) {
+    if (!ui_output_srgb()) return IM_COL32(r, g, b, a);
+    auto lin = [](int v) {
+        const float c = std::clamp(v, 0, 255) / 255.0f;
+        const float l = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+        return static_cast<int>(l * 255.0f + 0.5f);
+    };
+    return IM_COL32(lin(r), lin(g), lin(b), a);
+}
 
 class PlayUi {
 public:
@@ -149,7 +166,7 @@ private:
     }
     static ImU32 col(const schizo::ui::UiColor& c) {
         auto b = [](float v) { return static_cast<int>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
-        return IM_COL32(b(c.r), b(c.g), b(c.b), b(c.a));
+        return hud32(b(c.r), b(c.g), b(c.b), b(c.a));
     }
     /// The bold face loaded beside the regular one (imgui_vulkan.cpp names it "UiBold"); else the regular.
     static ImFont* bold_font() {

@@ -359,6 +359,21 @@ private:
     VkPipeline bloom_pipeline_ = VK_NULL_HANDLE;
     uint32_t bloom_width_ = 0;
     uint32_t bloom_height_ = 0;
+
+    // Bloom chain (wide glow): a bright-passed 13-tap downsample into each mip,
+    // then a tent-filtered upsample back up, added into the mip above. mip 0
+    // ends up holding every level. The single-pass blur above is the fallback.
+    VkRenderPass                 bloom_up_render_pass_ = VK_NULL_HANDLE;   // LOADs: the up pass adds
+    std::vector<VkFramebuffer>   bloom_mip_framebuffers_;
+    std::vector<VkExtent2D>      bloom_mip_extents_;
+    VkDescriptorSetLayout        bloom_chain_dsl_      = VK_NULL_HANDLE;   // sampler + exposure buffer
+    VkDescriptorPool             bloom_chain_pool_     = VK_NULL_HANDLE;
+    VkDescriptorSet              bloom_input_set_      = VK_NULL_HANDLE;   // samples the lit HDR image
+    std::vector<VkDescriptorSet> bloom_mip_sets_;                          // [i] samples mip i
+    VkPipelineLayout             bloom_chain_layout_   = VK_NULL_HANDLE;
+    VkPipeline                   bloom_down_pipeline_  = VK_NULL_HANDLE;
+    VkPipeline                   bloom_up_pipeline_    = VK_NULL_HANDLE;
+    bool                         bloom_chain_ready_    = false;
     
     // Effect state
     bool bloom_enabled_ = true;
@@ -445,6 +460,8 @@ private:
     void create_bloom_descriptor();
     void create_bloom_pipeline();
     void update_bloom_descriptor();
+    void create_bloom_chain();
+    void update_bloom_chain_descriptors();
     void create_taa_output_image();
     void create_taa_render_pass();
     void create_taa_framebuffer();
