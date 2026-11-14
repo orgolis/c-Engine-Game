@@ -18,6 +18,12 @@
 //                   (keys 1..8 in Play), plus the cooldowns and the cast now.
 //   step_ability_bar -- one frame: start, wind up, fire, channel, cool down.
 //
+// An aimed or area-at-aim ability with a `speed` flies (AbilityShots on the
+// caster, moved by tick_ability_shots): it falls by its `arc`, and takes
+// effect where it meets someone (not of the caster's team) or the world -- an
+// area one goes off there too, or where its flight ends. Without a speed it
+// takes effect at once, as before.
+//
 // Every stage publishes a gameplay event (ability.cast, ability.fire,
 // ability.hit, ability.interrupted, ability.end) carrying the ability id; the
 // AbilityFired list says where each one went off -- the hooks for effects,
@@ -101,6 +107,8 @@ struct AbilityDef {
     std::string damage_type = "magic";
     std::vector<AbilityEffect> self_effects, target_effects;
     std::string vfx;                       // handed out with the events, for effects to pick up
+    float       speed = 0.0f;              // > 0: aimed / area-at-aim abilities fly at this speed (m/s)
+    float       arc = 0.0f;                // a flying one falls by this (m/s^2): thrown things
 };
 
 inline std::vector<AbilityDef>& ability_def_registry() { static std::vector<AbilityDef> r; return r; }
@@ -135,9 +143,30 @@ struct AbilityCastInput {
 struct AbilityFired {
     int         slot = -1;
     std::string id, vfx;
-    glm::vec3   point{0.0f};               // where it went off
+    glm::vec3   point{0.0f};               // where it went off (where it was launched, for a flying one)
     int         targets = 0;
+    glm::vec3   origin{0.0f}, dir{0.0f, 0.0f, -1.0f};   // where it started and which way
+    bool        launched = false;          // flying: it takes effect later (tick_ability_shots)
+    bool        on_actor = false;          // aimed: it reached someone
 };
+
+/// Abilities in flight, on their caster.
+struct AbilityShot {
+    std::string id;
+    glm::vec3   pos{0.0f}, vel{0.0f};
+    float       life = 0.0f;               // seconds left
+};
+struct AbilityShots { std::vector<AbilityShot> shots; };
+
+/// Where a flying ability took effect (for its effect), and one moved this frame (its trail).
+struct AbilityImpact {
+    std::string id;
+    Entity      caster = null_entity;
+    glm::vec3   point{0.0f}, normal{0.0f, 1.0f, 0.0f};
+    int         targets = 0;
+    bool        on_actor = false;
+};
+struct AbilityFlight { std::string id; glm::vec3 from{0.0f}, to{0.0f}; };
 
 namespace ability_detail {
 inline void publish(GameplayEventBus* bus, const char* name, Entity caster, Entity target, float value, const std::string& id) {
@@ -160,11 +189,76 @@ inline bool tags_allow(World& w, Entity caster, const AbilityDef& d) {
     if (tags) for (const auto& t : d.block_tags) if (tags->has(t)) return false;
     return true;
 }
-// The ability goes off once: reach its targets and apply everything.
+/// The entity's team: its first `team.*` tag ("" when none).
+inline std::string team_of(World& w, Entity e) {
+    if (const GameplayTags* t = w.try_get<GameplayTags>(e))
+        for (const auto& s : t->tags)
+            if (s.rfind("team.", 0) == 0) return s;
+    return {};
+}
+/// The nearest hurtbox along a ray that is not the caster's nor its team's.
+inline Entity target_along(World& w, Entity caster, const glm::vec3& origin, const glm::vec3& dir, float max_t, float& out_t) {
+    const std::string team = team_of(w, caster);
+    Entity best = null_entity;
+    float best_t = max_t;
+    w.each<CombatActor, Transform>([&](Entity e, CombatActor& ca, Transform& t) {
+        if (e == caster) return;
+        if (!team.empty() && team_of(w, e) == team) return;
+        const HitSphere hb = combat_hurtbox(ca, t.position);
+        float tt = 0.0f;
+        if (ray_sphere(origin, dir, hb.center, hb.radius, best_t, tt) && tt < best_t) { best_t = tt; best = e; }
+    });
+    out_t = best_t;
+    return best;
+}
+/// Apply the ability to who it reached: `hit` (aimed), or everyone around
+/// `centre` (areas). Returns how many.
+inline int reach_targets(World& w, Entity caster, const AbilityDef& d, const glm::vec3& centre, Entity hit, GameplayEventBus* bus) {
+    std::vector<Entity> hits;
+    if (d.targeting == AbilityTargeting::Aimed) {
+        if (hit != null_entity) hits.push_back(hit);
+    } else if (d.targeting == AbilityTargeting::AreaAtAim || d.targeting == AbilityTargeting::AreaAroundSelf) {
+        const float r2 = d.radius * d.radius;
+        const std::string team = team_of(w, caster);
+        w.each<Transform>([&](Entity e, Transform& t) {
+            if (e == caster) return;
+            if (!w.has<CombatActor>(e) && !w.has<AttributeSet>(e)) return;
+            if (!team.empty() && team_of(w, e) == team) return;   // not its own side
+            const glm::vec3 dd = t.position - centre;
+            if (glm::dot(dd, dd) <= r2) hits.push_back(e);
+        });
+    }
+    for (Entity e : hits) {
+        float dealt = 0.0f;
+        if (d.damage > 0.0f) dealt = apply_damage(w, e, DamageInfo{d.damage, d.damage_type});
+        for (const auto& fx : d.target_effects) apply_effect(w, e, to_gameplay_effect(fx, d.name));
+        publish(bus, "ability.hit", caster, e, dealt, d.id);
+    }
+    return static_cast<int>(hits.size());
+}
+
+// The ability goes off once: reach its targets and apply everything -- or,
+// with a speed, set off in flight.
 inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot, const AbilityCastInput& in,
                          const WorldRayFn* world, GameplayEventBus* bus) {
     AbilityFired f;
     f.slot = slot; f.id = d.id; f.vfx = d.vfx;
+    f.origin = in.origin;
+    f.dir = glm::length(in.aim) > 1e-5f ? glm::normalize(in.aim) : glm::vec3(0.0f, 0.0f, -1.0f);
+    if (d.speed > 0.0f && (d.targeting == AbilityTargeting::Aimed || d.targeting == AbilityTargeting::AreaAtAim)) {
+        AbilityShot s;
+        s.id = d.id;
+        s.pos = in.origin;
+        s.vel = f.dir * d.speed;
+        s.life = d.arc > 0.0f ? 8.0f : std::max(0.05f, d.range / d.speed);
+        if (!w.has<AbilityShots>(caster)) w.add<AbilityShots>(caster, AbilityShots{});
+        w.get<AbilityShots>(caster).shots.push_back(s);
+        for (const auto& e : d.self_effects) apply_effect(w, caster, to_gameplay_effect(e, d.name));
+        f.point = in.origin;
+        f.launched = true;
+        publish(bus, "ability.fire", caster, null_entity, 0.0f, d.id);
+        return f;
+    }
     std::vector<Entity> hits;
     glm::vec3 centre = in.caster_pos;
     const glm::vec3 aim = glm::length(in.aim) > 1e-5f ? glm::normalize(in.aim) : glm::vec3(0.0f, 0.0f, -1.0f);
@@ -178,8 +272,8 @@ inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot,
             break;
         case AbilityTargeting::Aimed: {
             float t = 0.0f;
-            const Entity hit = hitscan_target(w, caster, in.origin, aim, wall ? wall_t : d.range, t);
-            if (hit != null_entity) { hits.push_back(hit); f.point = in.origin + aim * t; }
+            const Entity hit = target_along(w, caster, in.origin, aim, wall ? wall_t : d.range, t);
+            if (hit != null_entity) { hits.push_back(hit); f.point = in.origin + aim * t; f.on_actor = true; }
             else f.point = in.origin + aim * (wall ? wall_t : d.range);
             break;
         }
@@ -195,9 +289,11 @@ inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot,
         case AbilityTargeting::AreaAroundSelf: {
             f.point = centre;
             const float r2 = d.radius * d.radius;
+            const std::string team = team_of(w, caster);
             w.each<Transform>([&](Entity e, Transform& t) {
                 if (e == caster) return;
                 if (!w.has<CombatActor>(e) && !w.has<AttributeSet>(e)) return;
+                if (!team.empty() && team_of(w, e) == team) return;   // not its own side
                 const glm::vec3 dd = t.position - centre;
                 if (glm::dot(dd, dd) <= r2) hits.push_back(e);
             });
@@ -216,6 +312,55 @@ inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot,
     return f;
 }
 }  // namespace ability_detail
+
+/// Move the abilities in flight: each falls by its arc and takes effect where
+/// it meets someone or the world (an area one also where its flight ends).
+/// `impacts`: where each took effect; `flights`: the path each flew this frame.
+inline void tick_ability_shots(World& w, float dt, const WorldRayFn* world, GameplayEventBus* bus,
+                               std::vector<AbilityImpact>* impacts = nullptr, std::vector<AbilityFlight>* flights = nullptr) {
+    std::vector<Entity> casters;
+    w.each<AbilityShots>([&](Entity e, AbilityShots& s) { if (!s.shots.empty()) casters.push_back(e); });
+    for (Entity caster : casters) {
+        if (!w.valid(caster) || !w.has<AbilityShots>(caster)) continue;
+        std::vector<AbilityShot> shots = std::move(w.get<AbilityShots>(caster).shots);
+        std::vector<AbilityShot> keep;
+        for (AbilityShot& s : shots) {
+            const AbilityDef* d = find_ability_def(s.id);
+            if (!d) continue;
+            s.vel.y -= d->arc * dt;
+            const glm::vec3 step = s.vel * dt;
+            const float len = glm::length(step);
+            const glm::vec3 dir = len > 1e-6f ? step / len : glm::vec3(0.0f, -1.0f, 0.0f);
+            float tw = len;
+            glm::vec3 n(0.0f, 1.0f, 0.0f);
+            const bool wall = world && *world && len > 1e-6f && (*world)(s.pos, dir, len, tw, n);
+            float ta = wall ? tw : len;
+            const Entity hit = len > 1e-6f ? ability_detail::target_along(w, caster, s.pos, dir, ta, ta) : null_entity;
+            s.life -= dt;
+            const bool area = d->targeting == AbilityTargeting::AreaAtAim;
+            if (hit != null_entity || wall || (s.life <= 0.0f && area)) {
+                AbilityImpact im;
+                im.id = d->id;
+                im.caster = caster;
+                im.on_actor = hit != null_entity;
+                im.point = hit != null_entity ? s.pos + dir * ta : wall ? s.pos + dir * tw : s.pos + step;
+                im.normal = hit != null_entity ? -dir : wall ? n : glm::vec3(0.0f, 1.0f, 0.0f);
+                if (flights) flights->push_back({d->id, s.pos, im.point});
+                im.targets = ability_detail::reach_targets(w, caster, *d, im.point, hit, bus);
+                if (impacts) impacts->push_back(im);
+                continue;
+            }
+            if (flights) flights->push_back({d->id, s.pos, s.pos + step});
+            s.pos += step;
+            if (s.life > 0.0f) keep.push_back(s);
+        }
+        if (w.valid(caster) && w.has<AbilityShots>(caster)) {
+            auto& now = w.get<AbilityShots>(caster).shots;   // launched while this ran
+            keep.insert(keep.end(), now.begin(), now.end());
+            now = std::move(keep);
+        }
+    }
+}
 
 /// Can the slot be started now (cooldown, tags, cost, nothing else casting)?
 inline bool ability_slot_ready(World& w, Entity caster, const AbilityBar& bar, int slot) {
@@ -317,7 +462,9 @@ inline int step_ability_bar(World& w, Entity caster, AbilityBar& bar, const Abil
 //     effect Speed -2 3     # to each one reached: attribute amount [seconds]
 //     require state.alive
 //     block state.stunned
-//     vfx fireball_burst
+//     vfx fireball_burst    # its effects: fireball_burst_cast, _trail, _hit ... (vfx/effects.h)
+//     speed 40              # aimed / area_at_aim: it flies (m/s) and takes effect where it lands
+//     arc 9.8               # a flying one falls (thrown things)
 //   end
 inline std::vector<AbilityDef> parse_abilities_text(const std::string& text) {
     std::vector<AbilityDef> out;
@@ -357,6 +504,8 @@ inline std::vector<AbilityDef> parse_abilities_text(const std::string& text) {
         else if (key == "require")  { std::string t; ls >> t; if (!t.empty()) cur.require_tags.push_back(t); }
         else if (key == "block")    { std::string t; ls >> t; if (!t.empty()) cur.block_tags.push_back(t); }
         else if (key == "vfx")      { ls >> cur.vfx; }
+        else if (key == "speed")    { ls >> cur.speed; }
+        else if (key == "arc")      { ls >> cur.arc; }
     }
     flush();
     return out;

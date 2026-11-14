@@ -132,6 +132,7 @@ void write_entity_block(std::ofstream& file,
         // carry it -- an agent that forgot who it was hunting would
         // simply stand still, with nothing to explain why.
         file << "NPCAGENT_TARGET=" << nac->target_name << "\n";
+        if (!nac->ability.empty()) file << "NPCAGENT_ABILITY=" << nac->ability << "\n";
     }
 
     // TransformComponent (separate Component-derived wrapper users can
@@ -388,7 +389,8 @@ void write_entity_block(std::ofstream& file,
                      << r.min_slope << " " << r.max_slope << " " << r.slope_blend << " " << r.noise << " " << r.noise_scale
                      << " " << r.weight << " " << l.on_texture_layer << " " << l.min_texture_weight << " " << l.draw_distance
                      << " " << l.seed << " " << (l.casts_shadow ? 1 : 0) << " " << l.color_a.r << " " << l.color_a.g << " "
-                     << l.color_a.b << " " << l.color_b.r << " " << l.color_b.g << " " << l.color_b.b << "|" << l.name << "|"
+                     << l.color_a.b << " " << l.color_b.r << " " << l.color_b.g << " " << l.color_b.b << " " << l.solid
+                     << "|" << l.name << "|"
                      << l.model_path << "|" << mask_file << "\n";
             }
         }
@@ -563,6 +565,7 @@ struct ParsedEntity {
     schizo::scene::ParticleEmitterComponent emitter;
     schizo::scene::NpcAgentComponent        npc;
     std::string                             npc_target;
+    std::string                             npc_ability;
     bool                                    has_emitter = false;
     bool                                    has_npc     = false;
 
@@ -733,6 +736,7 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
     // prefix, and fall through when they do not recognise the key, so every
     // legacy parser below still gets its turn and old scenes keep loading.
     if (starts_with(line, "NPCAGENT_TARGET", v)) { p.npc_target = v; p.has_npc = true; return; }
+    if (starts_with(line, "NPCAGENT_ABILITY", v)) { p.npc_ability = v; p.has_npc = true; return; }
     if (starts_with(line, "EMITTER_VFX_PATH", v)) { p.emitter.vfx_path = v; p.has_emitter = true; return; }
     if (schizo::scene::apply_reflected_line(
             "EMITTER", line, &p.emitter,
@@ -968,6 +972,8 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
             r.weight >> l.on_texture_layer >> l.min_texture_weight >> l.draw_distance >> l.seed >> shadow >> l.color_a.r >>
             l.color_a.g >> l.color_a.b >> l.color_b.r >> l.color_b.g >> l.color_b.b;
         if (!ns) return;   // a line this version cannot read: skip it rather than grow a wrong forest
+        int solid = -1;
+        if (ns >> solid) l.solid = std::clamp(solid, -1, 1);   // written since 0.8.44; before: by kind
         l.kind = static_cast<schizo::scene::FoliageKind>(std::clamp(kind, 0, schizo::scene::kFoliageKindCount - 1));
         l.align_to_slope = align != 0;
         r.enabled = en != 0;
@@ -1038,6 +1044,7 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
         if (auto* nac = e->GetNpcAgentComponent()) {
             *nac = p.npc;
             if (!p.npc_target.empty()) nac->target_name = p.npc_target;
+            nac->ability = p.npc_ability;
         }
 
     if (auto smc = e->GetSkinnedMeshComponent(); !p.skinned_path.empty() && smc) {

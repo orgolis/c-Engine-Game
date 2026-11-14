@@ -278,6 +278,14 @@ void draw_ability(ecs::AbilityDef& a) {
         ImGui::DragFloat("range", &a.range, 0.2f, 0.1f, 10000.0f, "%.1f m");
     if (a.targeting == ecs::AbilityTargeting::AreaAroundSelf || a.targeting == ecs::AbilityTargeting::AreaAtAim)
         ImGui::DragFloat("radius", &a.radius, 0.05f, 0.1f, 1000.0f, "%.2f m");
+    if (a.targeting == ecs::AbilityTargeting::Aimed || a.targeting == ecs::AbilityTargeting::AreaAtAim) {
+        ImGui::DragFloat("speed", &a.speed, 0.5f, 0.0f, 1000.0f, a.speed > 0.0f ? "%.1f m/s" : "at once");
+        ImGui::SetItemTooltip("Above 0: it flies at this speed and takes effect where it lands (a fireball, a spit, a grenade).");
+        if (a.speed > 0.0f) {
+            ImGui::DragFloat("arc", &a.arc, 0.1f, 0.0f, 100.0f, a.arc > 0.0f ? "falls %.1f m/s2" : "straight");
+            ImGui::SetItemTooltip("It falls by this on the way: 9.8 for something thrown.");
+        }
+    }
     if (ImGui::TreeNodeEx("Cost and timing", ImGuiTreeNodeFlags_DefaultOpen)) {
         input_id("cost attribute", a.cost_attribute);
         ImGui::DragFloat("cost", &a.cost, 0.2f, 0.0f, 100000.0f, "%.1f");
@@ -300,7 +308,8 @@ void draw_ability(ecs::AbilityDef& a) {
     draw_tag_list("Needs tags", a.require_tags);
     draw_tag_list("Blocked by tags", a.block_tags);
     input_id("vfx", a.vfx);
-    ImGui::SetItemTooltip("A name handed out with the ability's events, for effects and scripts.");
+    ImGui::SetItemTooltip("Its effects: effect blocks named <vfx>_windup, _cast, _trail, _beam, _hit, _area, _self\n"
+                          "(else the built-in ones for its damage type). Also handed out with its events.");
 }
 
 }  // namespace

@@ -62,6 +62,10 @@ GWS_REFLECT_BEGIN(schizo::scene::NpcAgentComponent)
     GWS_REFLECT_FIELD(patrol_radius)
     GWS_REFLECT_FIELD(attack_range)
     GWS_REFLECT_FIELD(ability_index)
+    GWS_REFLECT_FIELD(alert_radius)
+    GWS_REFLECT_FIELD(leash_radius)
+    GWS_REFLECT_FIELD(keep_distance)
+    GWS_REFLECT_FIELD(hearing_range)
 GWS_REFLECT_END()
 
 GWS_REFLECT_BEGIN(schizo::scene::MeshComponent)
@@ -89,11 +93,11 @@ GWS_REFLECT_END()
 #if defined(_LIBCPP_VERSION)
 inline constexpr std::size_t kExpectedSkinnedMeshComponentSize = 56;
 inline constexpr std::size_t kExpectedParticleEmitterComponentSize = 80;
-inline constexpr std::size_t kExpectedNpcAgentComponentSize = 56;
+inline constexpr std::size_t kExpectedNpcAgentComponentSize = 96;
 #else
 inline constexpr std::size_t kExpectedSkinnedMeshComponentSize = 64;
 inline constexpr std::size_t kExpectedParticleEmitterComponentSize = 88;
-inline constexpr std::size_t kExpectedNpcAgentComponentSize = 64;
+inline constexpr std::size_t kExpectedNpcAgentComponentSize = 112;   // + ability (by hand: NPCAGENT_ABILITY), 4 floats
 #endif
 
 static_assert(sizeof(schizo::scene::SkinnedMeshComponent) == kExpectedSkinnedMeshComponentSize,

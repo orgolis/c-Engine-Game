@@ -46,6 +46,22 @@ struct UiDrawCmd {
     float       font_size = 18.0f;    // Text
     UiAlign     align = UiAlign::Left;
     uint64_t    texture = 0;          // Image (asset/texture id)
+    // Looks (all optional; the defaults draw as before).
+    float       rounding = -1.0f;     // Rect: corner radius in reference px (-1: the renderer's own)
+    UiColor     border{0, 0, 0, 0};   // Rect: an outline of this colour ...
+    float       border_width = 0.0f;  // ... this wide (reference px)
+    bool        drop = false;         // Rect: a soft shadow under it
+    bool        bold = false;         // Text: the bold face
+    bool        shadow = false;       // Text: a dark shadow under it (reads over anything)
+};
+
+/// How a box looks besides its colour: rounded corners, an outline, a shadow.
+struct UiBoxStyle {
+    float   rounding = -1.0f;
+    UiColor border{0, 0, 0, 0};
+    float   border_width = 0.0f;
+    bool    drop = false;
+    void apply(UiDrawCmd& c) const { c.rounding = rounding; c.border = border; c.border_width = border_width; c.drop = drop; }
 };
 using UiDrawList = std::vector<UiDrawCmd>;
 
@@ -130,8 +146,11 @@ class Panel : public Widget {
 public:
     explicit Panel(UiColor c = {0, 0, 0, 0.5f}) : color(c) {}
     UiColor color;
+    UiBoxStyle box;
     void paint_self(UiDrawList& dl) const override {
-        dl.push_back({UiCmdType::Rect, rect, color, {}, 0.0f, UiAlign::Left, 0});
+        UiDrawCmd c{UiCmdType::Rect, rect, color, {}, 0.0f, UiAlign::Left, 0};
+        box.apply(c);
+        dl.push_back(c);
     }
 };
 
@@ -150,8 +169,12 @@ public:
           UiAlign a = UiAlign::Left)
         : text(std::move(t)), font_size(size), color(c), align(a) {}
     std::string text; float font_size; UiColor color; UiAlign align;
+    bool bold = false, shadow = false;
     void paint_self(UiDrawList& dl) const override {
-        dl.push_back({UiCmdType::Text, rect, color, text, font_size, align, 0});
+        UiDrawCmd c{UiCmdType::Text, rect, color, text, font_size, align, 0};
+        c.bold = bold;
+        c.shadow = shadow;
+        dl.push_back(c);
     }
 };
 
@@ -162,11 +185,26 @@ public:
         : fill(fill), bg(bg) {}
     float fraction = 1.0f;
     UiColor fill, bg;
+    UiBoxStyle box;
     void paint_self(UiDrawList& dl) const override {
-        dl.push_back({UiCmdType::Rect, rect, bg, {}, 0.0f, UiAlign::Left, 0});
+        UiDrawCmd b{UiCmdType::Rect, rect, bg, {}, 0.0f, UiAlign::Left, 0};
+        box.apply(b);
+        b.border_width = 0.0f;
+        dl.push_back(b);
         UiRect fr = rect;
         fr.w = rect.w * glm::clamp(fraction, 0.0f, 1.0f);
-        dl.push_back({UiCmdType::Rect, fr, fill, {}, 0.0f, UiAlign::Left, 0});
+        if (fr.w > 0.5f) {
+            UiDrawCmd f{UiCmdType::Rect, fr, fill, {}, 0.0f, UiAlign::Left, 0};
+            f.rounding = box.rounding;
+            dl.push_back(f);
+        }
+        if (box.border_width > 0.0f && box.border.a > 0.0f) {   // the outline over both
+            UiDrawCmd o{UiCmdType::Rect, rect, UiColor{0, 0, 0, 0}, {}, 0.0f, UiAlign::Left, 0};
+            o.rounding = box.rounding;
+            o.border = box.border;
+            o.border_width = box.border_width;
+            dl.push_back(o);
+        }
     }
 };
 
@@ -184,6 +222,9 @@ public:
     UiColor color_disabled{0.15f, 0.15f, 0.15f, 0.6f};
     UiColor text_color{1, 1, 1, 1};
     float font_size = 18.0f;
+    UiBoxStyle box;
+    UiColor border_hover{0, 0, 0, 0};   // the outline while hovered (none: as `box.border`)
+    bool bold = false, shadow = false;
     State state = State::Normal;
 
     void set_enabled(bool e) {
@@ -211,9 +252,18 @@ public:
             case State::Disabled: c = color_disabled; break;
             default: c = (focused_ ? color_hover : color_normal); break;
         }
-        dl.push_back({UiCmdType::Rect, rect, c, {}, 0.0f, UiAlign::Left, 0});
-        dl.push_back({UiCmdType::Text, rect, text_color, text, font_size,
-                      UiAlign::Center, 0});
+        UiDrawCmd bg{UiCmdType::Rect, rect, c, {}, 0.0f, UiAlign::Left, 0};
+        box.apply(bg);
+        if ((state == State::Hover || state == State::Pressed || focused_) && border_hover.a > 0.0f) {
+            bg.border = border_hover;
+            if (bg.border_width <= 0.0f) bg.border_width = 2.0f;
+        }
+        dl.push_back(bg);
+        UiDrawCmd tx{UiCmdType::Text, rect, text_color, text, font_size, UiAlign::Center, 0};
+        tx.bold = bold;
+        tx.shadow = shadow;
+        if (state == State::Disabled) tx.color.a *= 0.45f;
+        dl.push_back(tx);
     }
 
 private:

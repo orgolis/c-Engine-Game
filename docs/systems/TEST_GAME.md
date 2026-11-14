@@ -8,13 +8,17 @@ it in the editor.
 
 ## What is in it
 
-- **The world** (`scenes/main.scene`): rolling hills with rivers, forests of
-  grown broadleaf and conifer trees, grass and rocks.
+- **The world** (`scenes/main.scene`): rolling hills with rivers under an HDR
+  sky (`assets/sky/`), forests of grown broadleaf and conifer trees from 5 to
+  18 m tall, grass and rocks. Trees and rocks are solid: they stop the player,
+  rounds, grenades and creatures (docs/systems/FOLIAGE.md); the ground round
+  the start, the caches, checkpoints, the beacon and the camps is kept clear.
 - **The player**: first person, the full movement set (sprint, crouch, slide,
   dash, mantle, climb), three weapon slots -- a rifle and a pistol to start,
   the third empty (keys 1, 2, 3; the mouse wheel or Q switches too) -- two
-  frag grenades (G), Firebolt on Z, health and mana potions; mortal, comes
-  back from the last checkpoint.
+  frag grenades (G, thrown: aim up to throw far), Firebolt on Z, health and
+  mana potions; mortal, comes back from the last checkpoint. The HUD shows
+  where a hit came from and glows red at low health.
 - **Guns and gear** (`assets/gameplay/arsenal.items`): rifle, pistol,
   shotgun, marksman rifle, SMG, burst carbine, light machine gun and revolver
   (rifle rounds, pistol rounds or shotgun shells); a combat helmet or a mage
@@ -30,10 +34,19 @@ it in the editor.
 - **Inventory** (I): the three weapon slots (click a gun to draw it; Put in
   bag), what is worn (click to take it off) and the bag (pick an item, then
   Use / equip: potions, gear, guns).
-- **Creature camps**: creatures patrol around their camp, notice the player
-  in front of them, close by or when hurt, chase it along the navmesh and
-  claw; every third camp spits from range. They die, drop rounds and potions,
-  and their bodies go after a few seconds.
+- **Creature camps** (docs/systems/CREATURES_AI.md): creatures wander about
+  their camp, see the player only with a clear line (not through hills or
+  trees), hear it close by and hear gunfire, and call their camp in. They
+  chase, search where it was last seen, and give up far from home. A creature
+  rears up (a red glow) and claws; every third camp spits from range -- a
+  green glob that arcs and can be dodged -- keeping its distance and
+  side-stepping. Their attacks are abilities in
+  `assets/gameplay/creatures.items`. They die, drop rounds and potions, and
+  their bodies go after a few seconds.
+- **Effects** (docs/systems/EFFECTS.md): muzzle flashes and smoke, tracers,
+  sparks and dust, a firebolt that flies with a fiery trail, grenades that
+  arc and burst, frost and lightning; the creatures' claw and spit and the
+  shotgun's muzzle are the project's own (`assets/gameplay/effects.items`).
 - **Ten supply caches** to open with E (guns, armour, grenades), **two
   checkpoints** that save, and **a beacon** on the far side.
 - **Screens** (`ui/`): a title menu, the HUD (health and mana, the objective,
@@ -79,12 +92,11 @@ before (Settings) keep their keys: Reset controls there gives these.
 
 ## Known limits
 
-- Creatures are capsules (no rigged models yet) and walk by their transform:
-  they pass through trees.
-- Guns have no models in the hand yet (the HUD names the one held), and a
-  grenade goes off at once where the crosshair lands -- there is no thrown
-  grenade to see; trees do not stop it.
-- Spit and claw take health at once; there is no projectile to see.
+- Creatures are capsules (no rigged models yet); they steer round trees but
+  can still get stuck in a dense thicket.
+- Guns have no models in the hand yet (the HUD names the one held).
+- A claw lands at the end of its wind-up if the player is still in reach;
+  there is no blocking or dodging animation.
 - Trees are grown from flat leaf and needle cards without textures: they have
   trunks, branches and crowns, but up close they are not photographic. An
   imported tree model (a foliage layer of kind Model) looks as good as the

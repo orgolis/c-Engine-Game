@@ -13,6 +13,7 @@
 // Pure CPU. Prints "vfx_check: ALL OK" + exits 0 on pass.
 
 #include "vfx/particle_system.h"
+#include "vfx/effects.h"
 
 #include <glm/glm.hpp>
 #include <cmath>
@@ -155,6 +156,74 @@ int main() {
         const glm::vec3 to_cam2 = glm::normalize(cam2 - c2);
         REQUIRE("billboard re-faces a moved camera (any camera rig)",
                 near(std::fabs(glm::dot(n2, to_cam2)), 1.0f, 1e-3f));
+    }
+
+    // ---- Effects: the data, the built-in set, bursts, streams, quads -------
+    {
+        const auto defs = parse_effects_text(
+            "# guns\n"
+            "effect t_muzzle\n"
+            "  layer flash count 2 life 0.05 size 0.3 0.1 color 5 3 1 1 to 2 1 0.2 0\n"
+            "  layer smoke count 3 life 1 speed 1 2 spread 30 size 0.1 0.5 color 0.5 0.5 0.5 0.4 blend gravity -1 delay 0.1\n"
+            "end\n"
+            "ability x\n  effect Speed -2 3\nend\n"
+            "effect t_trail\n  layer core rate 100 life 0.5 size 0.2\nend\n"
+            "effect t_tracer\n  layer round count 1 reach speed 100 size 0.05 streak 0.02\nend\n");
+        REQUIRE("effect blocks parse (an ability's effect line is not one)",
+                defs.size() == 3 && defs[0].id == "t_muzzle" && defs[0].layers.size() == 2 &&
+                defs[0].layers[1].blend && near(defs[0].layers[1].delay, 0.1f) && near(defs[0].layers[1].gravity, -1.0f) &&
+                defs[0].layers[0].count == 2 && near(defs[0].layers[0].color_end.a, 0.0f) &&
+                near(defs[0].layers[1].color_end.a, 0.0f) && near(defs[0].layers[1].color_end.r, 0.5f));
+        for (const auto& d : defs) register_effect(d);
+        const char* stages[] = {"windup", "cast", "trail", "beam", "hit", "area"};
+        const char* elements[] = {"fire", "cold", "shock", "poison", "physical", "explosive", "magic"};
+        bool all = find_effect("muzzle") && find_effect("tracer") && find_effect("impact") && find_effect("impact_actor") &&
+                   find_effect("heal_self") && find_effect("heal_windup") && find_effect("magic_self");
+        for (const char* e : elements)
+            for (const char* s : stages) all = all && find_effect(std::string(e) + "_" + s) != nullptr;
+        REQUIRE("the built-in set has every gun and element stage", all);
+        REQUIRE("a project's effect of a built-in name replaces it",
+                (register_effect(EffectDef{"impact", {}}), find_effect("impact")->layers.empty()));
+        REQUIRE("elements from damage types", effect_element("fire", false) == "fire" && effect_element("frost", false) == "cold" &&
+                effect_element("kinetic", false) == "physical" && effect_element("", true) == "heal" &&
+                effect_element("arcane", false) == "magic");
+
+        EffectParticles fx;
+        EffectSpawn at;
+        at.pos = glm::vec3(1, 2, 3);
+        fx.burst(*find_effect("t_muzzle"), at);
+        const size_t first = fx.alive();
+        fx.update(0.06f);   // the flash is gone, the smoke not yet born
+        const size_t mid = fx.alive();
+        fx.update(0.06f);
+        REQUIRE("a burst: its layers now, a delayed one later, each gone after its life",
+                first == 2 && mid == 0 && fx.alive() == 3);
+        std::vector<BillboardVertex> quads;
+        fx.build(glm::vec3(0, 2, 10), quads);
+        bool covering = quads.size() == 12;
+        for (const auto& v : quads) covering = covering && v.color.a < 0.0f;
+        REQUIRE("quads, four corners each; a covering (blend) particle is marked by a negative alpha", covering);
+
+        EffectParticles st;
+        st.stream(*find_effect("t_trail"), glm::vec3(0), glm::vec3(0, 0, -10), 0.1f);
+        REQUIRE("a stream: its rate for the time, along the path", st.alive() == 10);
+
+        EffectParticles tr;
+        at.reach = 50.0f;
+        at.dir = glm::vec3(1, 0, 0);
+        tr.burst(*find_effect("t_tracer"), at);
+        tr.update(0.25f);
+        const size_t flying = tr.alive();
+        tr.update(0.3f);
+        std::vector<BillboardVertex> one;
+        EffectParticles tr2;
+        tr2.burst(*find_effect("t_tracer"), at);
+        tr2.update(0.01f);
+        tr2.build(glm::vec3(0, 50, 0), one);
+        const float len = one.size() == 4 ? glm::length(one[2].pos - one[1].pos) : 0.0f;   // along its motion
+        const float wid = one.size() == 4 ? glm::length(one[1].pos - one[0].pos) : 0.0f;
+        REQUIRE("a tracer lives until it has reached the end, drawn stretched along its flight",
+                flying == 1 && tr.alive() == 0 && len > wid * 10.0f);
     }
 
     std::printf("vfx_check: ALL OK (%d checks)\n", g_checks);

@@ -13,5 +13,9 @@ void main() {
     if (r > 1.0) discard;                 // outside the disc: no square corners
     float falloff = 1.0 - r;
     falloff *= falloff;                   // squared: a softer core-to-edge ramp
-    out_color = vec4(v_color.rgb, v_color.a * falloff);
+    // Premultiplied, blended (ONE, ONE_MINUS_SRC_ALPHA). Alpha above zero adds
+    // light (fire, sparks: nothing behind is covered); alpha below zero covers
+    // what is behind by that much (smoke, dust).
+    float a = abs(v_color.a) * falloff;
+    out_color = vec4(v_color.rgb * a, v_color.a < 0.0 ? a : 0.0);
 }

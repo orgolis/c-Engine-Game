@@ -31,7 +31,11 @@ button id=quit    anchor=center x=0 y=170 w=400 h=66 text="Quit" size=28
   `w`, `h` are its size. `anchor=fill` covers the screen.
 - **Looks:** `color=r,g,b,a` (0..1), `size=` (text, in reference pixels),
   `align=left|center|right`, `text_color=` and `hover=` for buttons, `bg=` for
-  bars, `hidden=1`.
+  bars, `hidden=1`. Boxes (panels, buttons, bars, slot cells): `radius=` (corner
+  radius), `border=r,g,b,a` and `border_width=` (an outline), `shadow=1` on a
+  panel (a soft drop shadow); `border_hover=` on a button (its outline while
+  hovered). Text (labels, buttons): `bold=1`, `shadow=1` (a dark shadow under
+  it, so it reads over the game).
 - **Live values:** text in braces and a bar's `bind=` read the game each frame:
   `player.<Attribute>` (e.g. `player.Health`; a bar shows it against its
   maximum), `player.ammo`, `player.reserve`, `player.weapon`, `player.level`,
@@ -118,6 +122,14 @@ choices, so a settings menu needs one button per setting.
 In UI documents, `{key.<action>}` shows an action's key ("press a key..."
 while it is being rebound) and `{setting.<name>}` a setting's value -- in
 labels and on buttons.
+
+## The combat HUD
+
+With a gun in hand, Play draws the crosshair (its gap is the spread), a hit
+marker, and the ammunition: the gun's name over the rounds in the magazine and
+in reserve, a bar of the magazine that fills while reloading. Being hit shows
+a red arc round the crosshair toward where it came from; at low health the
+edges of the view glow red. A project's own HUD (`ui/hud.ui`) goes round them.
 
 ## Esc, and getting the mouse back in the editor
 

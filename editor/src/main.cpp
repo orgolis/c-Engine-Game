@@ -498,7 +498,10 @@ struct EditorState {
     // Player templates waiting for the bridge to mirror their new entity.
     std::vector<std::pair<uint32_t, schizo::editor::PlayerTemplate>> pending_player_templates;
     schizo::editor::PlayGameLoop    play_loop;        // death, loot, E to interact, respawn (D0)
-    schizo::editor::ShotEffects     shot_effects;    // muzzle flashes, tracers, impact marks
+    schizo::editor::ShotEffects     shot_effects;    // impact marks
+    schizo::editor::PlayEffects     play_effects;    // particles: muzzles, tracers, impacts, abilities, attacks
+    struct HudHit { glm::vec3 from; float age; };
+    std::vector<HudHit>             hud_hits;        // where the player was hit from (the HUD's arcs)
     schizo::editor::EditorScriptCtx script_ctx;
     schizo::editor::ScriptApi       script_api;
 
@@ -3625,6 +3628,15 @@ void ShowInspector(EditorState& editor_state) {
                     nac->target_name = buf;
                     editor_state.editor_scene->MarkModified();
                 }
+                char abuf[64];
+                std::snprintf(abuf, sizeof abuf, "%s", nac->ability.c_str());
+                if (ImGui::InputText("ability", abuf, sizeof abuf)) {
+                    nac->ability = abuf;
+                    editor_state.editor_scene->MarkModified();
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("The ability it attacks with: an ability block's id in the project's .items\n"
+                                      "(damage, reach, cast time as its wind-up, speed for something it throws).");
                 if (schizo::editor::draw_reflected_fields(
                         nac, *gws::reflect::reflect<schizo::scene::NpcAgentComponent>()))
                     editor_state.editor_scene->MarkModified();
@@ -4382,6 +4394,15 @@ void ShowInspector(EditorState& editor_state) {
                     changed |= ImGui::Checkbox("Lean with the slope", &l.align_to_slope);
                     ImGui::SameLine();
                     changed |= ImGui::Checkbox("Casts shadow", &l.casts_shadow);
+                    {
+                        // Solid in Play: stops the player, rounds and creatures.
+                        const char* solid_names[] = {"Solid: by kind (trees, rocks)", "Solid: no", "Solid: yes"};
+                        int s = l.solid + 1;
+                        if (ImGui::Combo("##solid", &s, solid_names, 3)) { l.solid = s - 1; changed = true; }
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("In Play, solid foliage stops the player, rounds, grenades and creatures.\n"
+                                              "By kind: trees, rocks and model files are solid; grass and bushes are not.");
+                    }
                     changed |= ImGui::SliderFloat("Draw distance", &l.draw_distance, 10.0f, 2000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
                     int seed = static_cast<int>(l.seed);
                     if (ImGui::InputInt("Seed", &seed)) { l.seed = static_cast<uint32_t>(std::max(0, seed)); changed = true; }
@@ -6084,6 +6105,62 @@ void ShowViewport(EditorState& editor_state) {
                                           frac > 0.25f ? IM_COL32(120, 220, 140, 230) : IM_COL32(240, 150, 60, 230), 3.0f);
                     }
                 }
+                // Being hit: a red arc round the crosshair towards where it came
+                // from, fading; low health: the screen's edges glow red, pulsing.
+                if (viewport_playing && !ui_menu_up) {
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    const ImVec2 cc((image_min.x + image_max.x) * 0.5f, (image_min.y + image_max.y) * 0.5f);
+                    const float k = std::clamp((image_max.y - image_min.y) / 1080.0f, 0.35f, 2.0f);
+                    auto* pmh = editor_state.scene_playback_manager.get();
+                    auto* plh = pmh ? pmh->GetPlayerEntity() : nullptr;
+                    auto* camh = pmh ? pmh->GetPlaybackCamera() : nullptr;
+                    if (plh && camh && !editor_state.hud_hits.empty()) {
+                        const glm::vec3 me = plh->GetTransform()->GetWorldPosition();
+                        glm::vec3 fw = camh->GetTransform()->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f);
+                        fw.y = 0.0f;
+                        if (glm::length(fw) > 1e-4f) {
+                            fw = glm::normalize(fw);
+                            const glm::vec3 rt(-fw.z, 0.0f, fw.x);
+                            for (const auto& hh : editor_state.hud_hits) {
+                                glm::vec3 to = hh.from - me;
+                                to.y = 0.0f;
+                                if (glm::length(to) < 1e-3f) continue;
+                                to = glm::normalize(to);
+                                const float ang = std::atan2(glm::dot(to, rt), glm::dot(to, fw));   // 0: ahead, +: right
+                                const float a = std::clamp(1.0f - hh.age / 1.4f, 0.0f, 1.0f);
+                                const float rad = 120.0f * k, half = 0.32f;
+                                const int segs = 14;
+                                for (int pass = 0; pass < 2; ++pass) {
+                                    dl->PathClear();
+                                    for (int i = 0; i <= segs; ++i) {
+                                        const float t = ang - half + 2.0f * half * static_cast<float>(i) / segs;
+                                        dl->PathLineTo(ImVec2(cc.x + std::sin(t) * rad, cc.y - std::cos(t) * rad));
+                                    }
+                                    dl->PathStroke(pass == 0 ? IM_COL32(0, 0, 0, static_cast<int>(120 * a)) : IM_COL32(255, 60, 40, static_cast<int>(235 * a)),
+                                                   0, (pass == 0 ? 9.0f : 5.0f) * k);
+                                }
+                            }
+                        }
+                    }
+                    if (plh && editor_state.ecs_bridge) {
+                        auto& hb = *editor_state.ecs_bridge;
+                        const uint32_t hid = hb.ecs_entity_id(plh->GetTransform());
+                        const auto* ha = hid != schizo::editor::kNoEcsEntity
+                                             ? hb.world().try_get<schizo::ecs::AttributeSet>(static_cast<schizo::ecs::Entity>(hid)) : nullptr;
+                        const auto* hp = ha ? ha->find("Health") : nullptr;
+                        if (hp && hp->max > 0.0f && hp->current > 0.0f && hp->current < hp->max * 0.35f) {
+                            const float sev = 1.0f - hp->current / (hp->max * 0.35f);
+                            const float pulse = 0.75f + 0.25f * std::sin(static_cast<float>(ImGui::GetTime()) * (4.0f + 4.0f * sev));
+                            const int al = static_cast<int>(std::clamp(70.0f + 120.0f * sev, 0.0f, 200.0f) * pulse);
+                            const ImU32 red = IM_COL32(170, 10, 10, al), none = IM_COL32(170, 10, 10, 0);
+                            const float ew = (image_max.x - image_min.x) * 0.16f, eh = (image_max.y - image_min.y) * 0.2f;
+                            dl->AddRectFilledMultiColor(image_min, ImVec2(image_min.x + ew, image_max.y), red, none, none, red);
+                            dl->AddRectFilledMultiColor(ImVec2(image_max.x - ew, image_min.y), image_max, none, red, red, none);
+                            dl->AddRectFilledMultiColor(image_min, ImVec2(image_max.x, image_min.y + eh), red, red, none, none);
+                            dl->AddRectFilledMultiColor(ImVec2(image_min.x, image_max.y - eh), image_max, none, none, red, red);
+                        }
+                    }
+                }
                 if (waiting_for_recapture && ImGui::IsItemHovered() &&
                     ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                     editor_state.scene_playback_manager->SetCursorCaptured(true);
@@ -6116,12 +6193,44 @@ void ShowViewport(EditorState& editor_state) {
                         dl->AddLine(ImVec2(c.x - 10, c.y + 10), ImVec2(c.x - 5, c.y + 5), hm, 2.0f);
                         dl->AddLine(ImVec2(c.x + 10, c.y + 10), ImVec2(c.x + 5, c.y + 5), hm, 2.0f);
                     }
-                    char ammo[96];
-                    std::snprintf(ammo, sizeof ammo, "%s  %d / %d%s", hud.name, hud.ammo, hud.reserve, hud.reloading ? "  reloading" : "");
-                    const ImVec2 ts = ImGui::CalcTextSize(ammo);
-                    const ImVec2 at(image_max.x - ts.x - 18.0f, image_max.y - ts.y - 16.0f);
-                    dl->AddRectFilled(ImVec2(at.x - 8, at.y - 5), ImVec2(at.x + ts.x + 8, at.y + ts.y + 5), IM_COL32(10, 14, 20, 170), 4.0f);
-                    dl->AddText(at, hud.ammo > 0 ? IM_COL32(240, 240, 240, 255) : IM_COL32(255, 90, 70, 255), ammo);
+                    // The ammunition: the gun's name over the rounds in the magazine
+                    // (large) and in reserve, a bar of the magazine, the reload's progress.
+                    {
+                        const float k = std::clamp((image_max.y - image_min.y) / 1080.0f, 0.35f, 2.0f);
+                        ImFont* f = ImGui::GetFont();
+                        const float big = 40.0f * k, small = 17.0f * k;
+                        char mag[16], res[24];
+                        std::snprintf(mag, sizeof mag, "%d", hud.ammo);
+                        std::snprintf(res, sizeof res, "/ %d", hud.reserve);
+                        const ImVec2 ms = f->CalcTextSizeA(big, FLT_MAX, 0.0f, mag), rs = f->CalcTextSizeA(small * 1.2f, FLT_MAX, 0.0f, res);
+                        const ImVec2 ns = f->CalcTextSizeA(small, FLT_MAX, 0.0f, hud.name);
+                        const float pw = std::max(ms.x + rs.x + 10.0f * k, ns.x) + 28.0f * k;
+                        const float ph = ns.y + ms.y + 22.0f * k;
+                        const ImVec2 b1(image_max.x - 18.0f * k, image_max.y - 16.0f * k), b0(b1.x - pw, b1.y - ph);
+                        dl->AddRectFilled(ImVec2(b0.x + 3 * k, b0.y + 4 * k), ImVec2(b1.x + 3 * k, b1.y + 4 * k), IM_COL32(0, 0, 0, 70), 7.0f * k);
+                        dl->AddRectFilled(b0, b1, IM_COL32(9, 13, 19, 200), 7.0f * k);
+                        dl->AddRect(b0, b1, IM_COL32(255, 210, 120, 70), 7.0f * k, 0, 1.5f * k);
+                        const bool low = hud.magazine > 0 && hud.ammo <= std::max(1, hud.magazine / 4);
+                        const ImU32 mc = hud.ammo <= 0 ? IM_COL32(255, 90, 70, 255) : low ? IM_COL32(255, 190, 90, 255) : IM_COL32(245, 245, 245, 255);
+                        dl->AddText(f, small, ImVec2(b1.x - 14.0f * k - ns.x, b0.y + 8.0f * k), IM_COL32(255, 215, 140, 230), hud.name);
+                        const float ty = b0.y + 8.0f * k + ns.y;
+                        dl->AddText(f, big, ImVec2(b1.x - 14.0f * k - rs.x - 8.0f * k - ms.x, ty), mc, mag);
+                        dl->AddText(f, small * 1.2f, ImVec2(b1.x - 14.0f * k - rs.x, ty + ms.y - rs.y - 4.0f * k), IM_COL32(200, 205, 215, 220), res);
+                        // The magazine as a thin bar along the bottom, or the reload filling it.
+                        const ImVec2 r0(b0.x + 12.0f * k, b1.y - 9.0f * k), r1(b1.x - 12.0f * k, b1.y - 6.0f * k);
+                        dl->AddRectFilled(r0, r1, IM_COL32(255, 255, 255, 30), 2.0f);
+                        const float fr = hud.reloading ? hud.reload_progress
+                                                       : (hud.magazine > 0 ? std::clamp(static_cast<float>(hud.ammo) / static_cast<float>(hud.magazine), 0.0f, 1.0f) : 0.0f);
+                        if (fr > 0.0f)
+                            dl->AddRectFilled(r0, ImVec2(r0.x + (r1.x - r0.x) * fr, r1.y),
+                                              hud.reloading ? IM_COL32(120, 200, 255, 230) : low ? IM_COL32(255, 170, 80, 230) : IM_COL32(255, 220, 150, 210), 2.0f);
+                        if (hud.reloading) {
+                            const char* rl = "RELOADING";
+                            const ImVec2 rls = f->CalcTextSizeA(small, FLT_MAX, 0.0f, rl);
+                            const ImVec2 cc((image_min.x + image_max.x) * 0.5f, (image_min.y + image_max.y) * 0.5f);
+                            dl->AddText(f, small, ImVec2(cc.x - rls.x * 0.5f, cc.y + 34.0f * k), IM_COL32(150, 210, 255, 230), rl);
+                        }
+                    }
                 } else if (waiting_for_recapture) {
                     const char* hint = "Click viewport to resume input";
                     const ImVec2 text_size = ImGui::CalcTextSize(hint);
@@ -10006,6 +10115,7 @@ int main(int argc, char** argv) {
                 if (shift != glm::vec3(0.0f)) {
                     editor_state.scene_navmesh.translate(shift);
                     editor_state.npc_agents.apply_origin_shift(shift);
+                    editor_state.play_effects.apply_shift(shift);
                     if (editor_state.scene_playback_manager)
                         editor_state.scene_playback_manager->ApplyOriginShift(shift);
                     // The imported preview actor is not a scene entity, so the
@@ -10183,9 +10293,30 @@ int main(int argc, char** argv) {
             if (editor_state.scene_playback_manager &&
                 editor_state.scene_playback_manager->IsPlaying() &&
                 !editor_state.scene_playback_manager->IsGamePaused()) {
+                // The physics world: line of sight, trees and rocks in the way, the ground.
+                const schizo::ecs::WorldRayFn npc_world =
+                    schizo::editor::physics_world_ray(editor_state.scene_playback_manager->GetPhysicsWorld());
                 editor_state.npc_agents.update(editor_state.editor_scene->GetScene(),
                                                editor_state.scene_navmesh, delta_time,
-                                               editor_state.ecs_bridge);
+                                               editor_state.ecs_bridge, &npc_world, &editor_state.play_effects);
+                for (const auto& from : editor_state.npc_agents.attack_sources())
+                    editor_state.hud_hits.push_back({from, 0.0f});
+                // Automated runs: what the creatures are doing, once a second.
+                if (std::getenv("GWS_TEST_PLAY")) {
+                    static int npc_frames = 0;
+                    static size_t npc_attacks = 0;
+                    npc_attacks += editor_state.npc_agents.attacks_this_frame();
+                    if (++npc_frames % 60 == 0) {
+                        float hp = -1.0f;
+                        if (auto* pl = editor_state.scene_playback_manager->GetPlayerEntity())
+                            if (const uint32_t pid = editor_state.ecs_bridge->ecs_entity_id(pl->GetTransform()); pid != schizo::editor::kNoEcsEntity)
+                                if (const auto* pa = editor_state.ecs_bridge->world().try_get<schizo::ecs::AttributeSet>(static_cast<schizo::ecs::Entity>(pid)))
+                                    hp = pa->get("Health");
+                        spdlog::info("[test] agents: {} of {} after the player, {} closing in, {} attacks so far; player health {:.0f}; effect particles {}",
+                                     editor_state.npc_agents.alerted(), editor_state.npc_agents.agent_count(),
+                                     editor_state.npc_agents.chasing(), npc_attacks, hp, editor_state.play_effects.alive());
+                    }
+                }
             }
 
             // Particle emitters (3.9). Fed the rebase shift because particles
@@ -11357,14 +11488,50 @@ int main(int argc, char** argv) {
                         const auto* ct = pc->GetTransform();
                         editor_state.player_weapon.update(delta_time, pm, ecs_bridge, ct->GetWorldPosition(),
                                                           ct->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f), in,
-                                                          editor_state.shot_effects);
+                                                          editor_state.shot_effects, &editor_state.play_effects);
                         editor_state.player_abilities.update(delta_time, pm, ecs_bridge, ct->GetWorldPosition(),
                                                              ct->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f), ain,
-                                                             editor_state.shot_effects);
+                                                             editor_state.shot_effects, &editor_state.play_effects);
+                        // Gunfire carries: creatures within their hearing come to look.
+                        if (editor_state.player_weapon.hud().fired)
+                            if (auto* pl = pm.GetPlayerEntity()) editor_state.npc_agents.notify_noise(pl->GetTransform()->GetWorldPosition());
+                    }
+                    // Abilities in flight (a firebolt, a spit, a grenade): move them,
+                    // take effect where they land, and show their trails and hits.
+                    {
+                        auto& gw = ecs_bridge.world();
+                        const schizo::ecs::WorldRayFn shot_world = schizo::editor::physics_world_ray(pm.GetPhysicsWorld());
+                        std::vector<schizo::ecs::AbilityImpact> impacts;
+                        std::vector<schizo::ecs::AbilityFlight> flights;
+                        schizo::ecs::tick_ability_shots(gw, delta_time, &shot_world, &ecs_bridge.events(), &impacts, &flights);
+                        for (const auto& fl : flights)
+                            if (const auto* d = schizo::ecs::find_ability_def(fl.id))
+                                editor_state.play_effects.ability_flight(*d, fl.from, fl.to, delta_time);
+                        auto* pl = pm.GetPlayerEntity();
+                        const uint32_t pid = pl ? ecs_bridge.ecs_entity_id(pl->GetTransform()) : schizo::editor::kNoEcsEntity;
+                        for (const auto& im : impacts) {
+                            if (const auto* d = schizo::ecs::find_ability_def(im.id)) editor_state.play_effects.ability_impact(*d, im);
+                            if (std::getenv("GWS_TEST_PLAY"))
+                                spdlog::info("[test] abilities: {} landed at ({:.1f}, {:.1f}, {:.1f}){}, reached {}; effect particles {}", im.id,
+                                             im.point.x, im.point.y, im.point.z, im.on_actor ? " on someone" : "", im.targets,
+                                             editor_state.play_effects.alive());
+                            // A creature's spit that reached the player: where it came from, for the HUD.
+                            if (im.targets > 0 && pid != schizo::editor::kNoEcsEntity &&
+                                im.caster != static_cast<schizo::ecs::Entity>(pid) && gw.valid(im.caster))
+                                if (const auto* ct2 = gw.try_get<schizo::ecs::Transform>(im.caster))
+                                    editor_state.hud_hits.push_back({ct2->position, 0.0f});
+                        }
                     }
                     editor_state.shot_effects.update(delta_time);
-                } else if (editor_state.shot_effects.count()) {
-                    editor_state.shot_effects.clear();
+                    editor_state.play_effects.update(delta_time);
+                    for (auto& h : editor_state.hud_hits) h.age += delta_time;
+                    editor_state.hud_hits.erase(std::remove_if(editor_state.hud_hits.begin(), editor_state.hud_hits.end(),
+                                                               [](const auto& h) { return h.age > 1.4f; }),
+                                                editor_state.hud_hits.end());
+                } else if (!pm.IsPlaying()) {
+                    if (editor_state.shot_effects.count()) editor_state.shot_effects.clear();
+                    if (editor_state.play_effects.alive()) editor_state.play_effects.clear();
+                    editor_state.hud_hits.clear();
                 }
             }
 
@@ -14056,16 +14223,21 @@ int main(int argc, char** argv) {
                         // already resolved. The simulation half has existed for a
                         // while; this is what finally puts it on screen.
                         if (particles_pass) {
-                            const auto& bb = editor_state.particles.billboards();
-                            if (!bb.empty()) {
-                                // The graph's camera, not the viewport camera's
-                                // getters: this is the exact view the rest of the
-                                // frame was rendered with, so particles cannot end
-                                // up projected through a slightly different matrix
-                                // than the geometry they sit among.
-                                const auto& cam = graph->get_camera();
-                                particles_pass->execute(rec_cmd, bb, cam.proj * cam.view);
+                            // The scene's emitters, then Play's effects (muzzles,
+                            // tracers, impacts, abilities), farthest first.
+                            // The graph's camera, not the viewport camera's
+                            // getters: this is the exact view the rest of the
+                            // frame was rendered with, so particles cannot end
+                            // up projected through a slightly different matrix
+                            // than the geometry they sit among.
+                            const auto& cam = graph->get_camera();
+                            static std::vector<schizo::vfx::BillboardVertex> bb;
+                            bb = editor_state.particles.billboards();
+                            if (editor_state.play_effects.alive()) {
+                                const glm::vec3 cam_pos = glm::vec3(glm::inverse(cam.view)[3]);
+                                editor_state.play_effects.build(cam_pos, bb);
                             }
+                            if (!bb.empty()) particles_pass->execute(rec_cmd, bb, cam.proj * cam.view);
                         }
                     }); }
                 g_cp.mark("pre_post");

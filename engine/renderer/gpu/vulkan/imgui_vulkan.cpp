@@ -14,6 +14,7 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 
 namespace gws::renderer::gpu {
@@ -139,6 +140,25 @@ void apply_worldshaper_theme(GLFWwindow* window) {
             io.FontDefault = font;
             break;
         }
+    }
+    // A bold face beside it, for game UI titles and buttons (`bold=1` in .ui
+    // documents). Named so the game UI can find it; absent, text stays regular.
+    const char* bold_candidates[] = {
+#ifdef _WIN32
+        "C:\\Windows\\Fonts\\segoeuib.ttf",
+        "C:\\Windows\\Fonts\\arialbd.ttf",
+#else
+        "/usr/share/fonts/TTF/Inter-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+#endif
+    };
+    for (const char* candidate : bold_candidates) {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(candidate, ec)) continue;
+        ImFontConfig cfg;
+        std::snprintf(cfg.Name, sizeof cfg.Name, "UiBold");
+        if (io.Fonts->AddFontFromFileTTF(candidate, 15.5f * ui_scale, &cfg)) break;
     }
 }
 

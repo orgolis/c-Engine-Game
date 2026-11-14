@@ -9,6 +9,7 @@
 #include "assets/mesh_asset.h"       // MeshAsset primitives — collider triangles without a disk read
 #include "asset_path_util.h"       // resolve_asset_path / utf8_path (shared w/ render loader)
 #include "terrain_component.h"
+#include "foliage.h"                 // solid trees and rocks in Play
 #include "water_component.h"
 #include "physics/jolt_physics.h"   // Stage 4 — Jolt-backed PhysicsWorld
 #include "tinygltf.hpp"
@@ -864,6 +865,30 @@ void ScenePlaybackManager::BuildPhysicsWorld() {
                         if (logger) logger->info("  +terrain collider '{}' ({} tris)",
                                                  ent->GetName(), tris.size() / 3);
                     }
+                }
+                // Solid foliage: a static capsule per trunk, a sphere per rock.
+                if (auto fol = ent->GetComponent<schizo::scene::FoliageComponent>()) {
+                    const auto& layers = fol->Layers();
+                    const auto& scatter = fol->Scatter(*terr);
+                    const glm::vec3 origin = tt->GetWorldPosition();
+                    size_t solid = 0;
+                    for (size_t li = 0; li < layers.size() && li < scatter.size(); ++li) {
+                        if (!schizo::scene::foliage_solid(layers[li])) continue;
+                        for (const auto& cell : scatter[li].cells)
+                            for (const auto& in : cell.items) {
+                                const auto c = schizo::scene::foliage_collider(layers[li], in);
+                                BodyDesc d;
+                                d.shape    = c.sphere ? ShapeType::Sphere : ShapeType::Capsule;
+                                d.radius   = c.radius;
+                                d.height   = c.height;
+                                d.position = origin + c.center;
+                                d.motion   = MotionType::Static;
+                                d.mass     = 0.0f;
+                                d.friction = 0.7f;
+                                if (physics_world_->add_body(d) != kInvalidBody) ++solid;
+                            }
+                    }
+                    if (solid > 0) spdlog::info("[physics] solid foliage on '{}': {} trunks and rocks", ent->GetName(), solid);
                 }
                 if (terr->IsWaterEnabled() && terr->IsWaterPhysical()) {
                     WaterVolume v;

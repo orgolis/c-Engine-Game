@@ -149,6 +149,26 @@ int main() {
               frames == 1 && texts == 4 && empty_off && stow->interactive);
     }
 
+    // Looks: rounded corners, outlines, shadows, bold text.
+    {
+        auto doc = parse_ui_document(
+            "panel id=card anchor=center x=0 y=0 w=400 h=300 color=0,0,0,0.9 radius=12 border=1,0.8,0.5,0.3 shadow=1\n"
+            "label id=t anchor=center x=0 y=-100 w=300 h=60 text=\"Title\" bold=1 shadow=1\n"
+            "button id=b anchor=center x=0 y=50 w=200 h=50 text=\"Go\" radius=8 border=1,1,1,0.3 border_hover=1,0.8,0.5,1 bold=1\n"
+            "bar id=hp anchor=center x=0 y=120 w=200 h=20 radius=6 border=0,0,0,0.6 border_width=1.5\n");
+        doc->canvas.layout(1920.0f, 1080.0f);
+        const UiDrawList& dl = doc->canvas.paint();
+        bool panel = false, title = false, button = false, bar_outline = false;
+        for (const auto& c : dl) {
+            if (c.type == UiCmdType::Rect && c.rounding == 12.0f && c.drop && c.border_width == 2.0f && c.border.a > 0.29f) panel = true;
+            if (c.type == UiCmdType::Text && c.text == "Title" && c.bold && c.shadow) title = true;
+            if (c.type == UiCmdType::Text && c.text == "Go" && c.bold) button = true;
+            if (c.type == UiCmdType::Rect && c.rounding == 6.0f && c.border_width == 1.5f && c.color.a == 0.0f) bar_outline = true;
+        }
+        check("looks: a rounded, outlined card with a shadow; bold titles with a shadow; bold buttons; an outlined bar",
+              doc->errors.empty() && panel && title && button && bar_outline);
+    }
+
     // Lines it cannot read.
     auto bad = parse_ui_document("ui modal sideways\nslider id=s\nlabel id=l anchor=middle text=hi\nbutton text=\"No id\"\n");
     check("bad lines are reported with their line numbers, the rest still builds",

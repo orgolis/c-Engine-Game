@@ -13,6 +13,8 @@
 #include "npc_agents.h"
 
 #include "ecs/gameplay_abilities.h"
+#include "ecs/gameplay_ability_cast.h"
+#include <glm/gtc/quaternion.hpp>
 
 #include <cmath>
 #include <cstdio>
@@ -325,6 +327,119 @@ int main() {
               "in the new frame of reference, not dragged back toward the old origin");
         check(agents.agent_count() == 1,
               "with the agent still registered across the rebase");
+    }
+
+    // ---- an attack as data: a wind-up, then the ability goes off -----------
+    // `ability` names an ability block: its cast time is a wind-up the agent
+    // stands through, then it reaches the target through the ability system.
+    {
+        ecs::AbilityDef claw;
+        claw.id = "chk_claw"; claw.name = "Claw";
+        claw.targeting = ecs::AbilityTargeting::Aimed;
+        claw.range = 4.0f; claw.cast_time = 0.3f; claw.cooldown = 1.0f;
+        claw.damage = 10.0f; claw.damage_type = "physical";
+        ecs::register_ability_def(claw);
+        World w = make_world({0, 0, 0}, {0, 0, 2});
+        auto* ag = w.agent->GetNpcAgentComponent();
+        ag->attack_range = 2.5f;
+        ag->ability = "chk_claw";
+        editor::EcsSceneBridge bridge;
+        bridge.sync_and_run(w.scene);
+        auto& ew = bridge.world();
+        const auto tid = static_cast<ecs::Entity>(bridge.ecs_entity_id(w.target->GetTransform()));
+        ecs::AttributeSet a; a.define("Health", 100.0f, 0.0f, 100.0f);
+        ew.add<ecs::AttributeSet>(tid, a);
+        ecs::CombatActor ca; ca.hurt_radius = 0.6f; ca.hurt_height = 0.0f;
+        ew.add<ecs::CombatActor>(tid, ca);
+        editor::EditorNpcAgents agents;
+        float early = 0.0f;
+        size_t attacks = 0;
+        bool sourced = false;
+        for (int i = 0; i < 60; ++i) {
+            agents.update(w.scene, w.nav, 1.0f / 60.0f, &bridge);
+            attacks += agents.attacks_this_frame();
+            if (agents.attacks_this_frame() > 0)
+                sourced = agents.attack_sources().size() == 1 && dist_xz(agents.attack_sources()[0], {0, 0, 0}) < 1.0f;
+            if (i == 10) early = ew.get<ecs::AttributeSet>(tid).get("Health");
+        }
+        check(early == 100.0f, "an attack with a cast time winds up first: no damage after 1/6 s");
+        check(attacks == 1 && ew.get<ecs::AttributeSet>(tid).get("Health") == 90.0f,
+              "then it goes off once (its own cooldown after) and the target takes its damage");
+        check(sourced, "and the hit reports where it came from (the HUD's hit direction)");
+    }
+
+    // ---- line of sight: a wall between them hides the target ----------------
+    {
+        World w = make_world({0, 0, 0}, {0, 0, 20});
+        // Everything is behind a wall 5 m ahead.
+        const ecs::WorldRayFn wall = [](const glm::vec3& o, const glm::vec3& d, float max_t, float& t, glm::vec3& n) {
+            if (d.z <= 0.1f || o.z >= 5.0f) return false;
+            const float hit = (5.0f - o.z) / d.z;
+            if (hit > max_t) return false;
+            t = hit; n = glm::vec3(0, 0, -1);
+            return true;
+        };
+        editor::EditorNpcAgents agents;
+        for (int i = 0; i < 10; ++i) agents.update(w.scene, w.nav, 1.0f / 60.0f, nullptr, &wall);
+        check(agents.chasing() == 0, "a target behind a wall is not seen");
+        World w2 = make_world({0, 0, 0}, {0, 0, 20});
+        editor::EditorNpcAgents agents2;
+        const ecs::WorldRayFn open = [](const glm::vec3&, const glm::vec3&, float, float&, glm::vec3&) { return false; };
+        for (int i = 0; i < 10; ++i) agents2.update(w2.scene, w2.nav, 1.0f / 60.0f, nullptr, &open);
+        check(agents2.chasing() == 1, "the same target in the open is");
+    }
+
+    // ---- a camp fights together; gunfire is heard ---------------------------
+    {
+        World w = make_world({0, 0, 0}, {0, 0, 20});
+        auto second = w.scene->CreateEntity("Guard2");
+        second->GetTransform()->SetLocalPosition({6, 0, 0});
+        second->GetTransform()->SetWorldRotation(glm::angleAxis(3.14159f, glm::vec3(0, 1, 0)));   // facing away
+        auto* ag2 = second->GetNpcAgentComponent();
+        *ag2 = *w.agent->GetNpcAgentComponent();
+        editor::EditorNpcAgents agents;
+        for (int i = 0; i < 3; ++i) agents.update(w.scene, w.nav, 1.0f / 60.0f);
+        check(agents.mode_of(second->GetId()) == editor::EditorNpcAgents::Mode::Chase,
+              "one that sees the target calls the others near it (alert radius)");
+
+        World q = make_world({0, 0, 0}, {0, 0, -30});   // behind it, beyond hearing it
+        editor::EditorNpcAgents quiet;
+        for (int i = 0; i < 3; ++i) quiet.update(q.scene, q.nav, 1.0f / 60.0f);
+        const bool calm = quiet.mode_of(q.agent->GetId()) == editor::EditorNpcAgents::Mode::Patrol;
+        quiet.notify_noise({0, 0, -30});
+        quiet.update(q.scene, q.nav, 1.0f / 60.0f);
+        check(calm && quiet.mode_of(q.agent->GetId()) == editor::EditorNpcAgents::Mode::Chase,
+              "a shot within its hearing range brings it");
+    }
+
+    // ---- a leash: chased too far from home, it gives up and goes back -------
+    {
+        World w = make_world({0, 0, 0}, {0, 0, 30});
+        w.agent->GetNpcAgentComponent()->leash_radius = 4.0f;
+        editor::EditorNpcAgents agents;
+        bool chased = false;
+        for (int i = 0; i < 120; ++i) {
+            agents.update(w.scene, w.nav, 1.0f / 60.0f);
+            chased = chased || agents.mode_of(w.agent->GetId()) == editor::EditorNpcAgents::Mode::Chase;
+        }
+        check(chased && agents.mode_of(w.agent->GetId()) != editor::EditorNpcAgents::Mode::Chase &&
+                  dist_xz(w.agent->GetTransform()->GetLocalPosition(), {0, 0, 0}) < 6.0f,
+              "past its leash radius it stops chasing and heads home");
+    }
+
+    // ---- out of sight: to where it was last seen, then it searches ----------
+    {
+        World w = make_world({0, 0, 0}, {0, 0, 10});
+        editor::EditorNpcAgents agents;
+        for (int i = 0; i < 5; ++i) agents.update(w.scene, w.nav, 1.0f / 60.0f);
+        w.target->SetActive(false);   // gone
+        bool searched = false;
+        for (int i = 0; i < 400 && !searched; ++i) {
+            agents.update(w.scene, w.nav, 1.0f / 60.0f);
+            searched = agents.mode_of(w.agent->GetId()) == editor::EditorNpcAgents::Mode::Search;
+        }
+        check(searched && dist_xz(w.agent->GetTransform()->GetLocalPosition(), {0, 0, 10}) < 3.0f,
+              "a target lost from sight is looked for where it was last seen");
     }
 
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);

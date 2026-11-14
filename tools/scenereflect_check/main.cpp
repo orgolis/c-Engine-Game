@@ -102,10 +102,16 @@ int main() {
         in.patrol_radius = 12.0f;
         in.attack_range  = 3.5f;
         in.ability_index = 2;
+        in.alert_radius  = 21.0f;
+        in.leash_radius  = 61.0f;
+        in.keep_distance = 7.5f;
+        in.hearing_range = 33.0f;
 
         const auto out = round_trip(in);
         check(out.enabled && std::abs(out.sight_range - 42.0f) < 1e-6f &&
-              std::abs(out.attack_range - 3.5f) < 1e-6f && out.ability_index == 2,
+              std::abs(out.attack_range - 3.5f) < 1e-6f && out.ability_index == 2 &&
+              out.alert_radius == 21.0f && out.leash_radius == 61.0f && out.keep_distance == 7.5f &&
+              out.hearing_range == 33.0f,
               "NpcAgentComponent round-trips every registered field");
     }
 
@@ -152,9 +158,11 @@ int main() {
                   3 * sizeof(int) + 2 * sizeof(bool) + 2 * sizeof(float),
               "SkinnedMeshComponent's registered fields account for every non-string field");
 
-        // NpcAgentComponent: 1 bool + 5 floats + 1 int.
+        // NpcAgentComponent: 1 bool + 9 floats + 1 int (0.8.44: alert_radius,
+        // leash_radius, keep_distance, hearing_range). `ability` is a string,
+        // written by hand like target_name.
         check(reflected_bytes<scene::NpcAgentComponent>() ==
-                  sizeof(bool) + 5 * sizeof(float) + sizeof(int),
+                  sizeof(bool) + 9 * sizeof(float) + sizeof(int),
               "NpcAgentComponent's registered fields account for every non-string field");
 
         // ParticleEmitterComponent: 2 bools + 2 floats + 1 uint32 + 2 vec4.

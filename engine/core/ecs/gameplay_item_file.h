@@ -37,6 +37,7 @@
 #include "gameplay_weapons.h"
 #include "gameplay_ability_cast.h"
 #include "gameplay_skills.h"
+#include "vfx/effects.h"   // effect blocks: what guns and abilities look like
 
 #include <cctype>
 #include <cstdint>
@@ -222,6 +223,7 @@ inline int register_items_text(const std::string& text) {
     for (const auto& d : parse_weapons_text(text)) { register_weapon(d); ++n; }
     for (const auto& d : parse_abilities_text(text)) { register_ability_def(d); ++n; }
     for (const auto& [tree, node] : parse_skills_text(text)) { register_skill_def(tree, node); ++n; }
+    for (const auto& d : schizo::vfx::parse_effects_text(text)) { schizo::vfx::register_effect(d); ++n; }
     return n;
 }
 
@@ -285,7 +287,7 @@ inline ItemsDoc parse_items_doc(const std::string& text) {
     auto flush = [&] {
         if (!in_block) return;
         in_block = false;
-        if (block_key == "skill") {
+        if (block_key == "skill" || block_key == "effect") {   // kept as written
             ItemsDoc::Entry e;
             e.kind = ItemsDoc::Kind::Text;
             e.text = block;
@@ -306,7 +308,7 @@ inline ItemsDoc parse_items_doc(const std::string& text) {
         std::istringstream ls(line);
         std::string key;
         ls >> key;
-        if (key == "item" || key == "weapon" || key == "ability" || key == "skill") {
+        if (key == "item" || key == "weapon" || key == "ability" || key == "skill" || (key == "effect" && !in_block)) {
             flush();
             block_key = key;
             in_header = false;
@@ -427,6 +429,8 @@ inline std::string ability_def_text(const AbilityDef& a) {
     for (const auto& t : a.require_tags) s += "  require " + t + "\n";
     for (const auto& t : a.block_tags) s += "  block " + t + "\n";
     if (!a.vfx.empty()) s += "  vfx " + a.vfx + "\n";
+    if (a.speed > 0.0f) s += "  speed " + num(a.speed) + "\n";
+    if (a.arc > 0.0f) s += "  arc " + num(a.arc) + "\n";
     return s + "end\n";
 }
 

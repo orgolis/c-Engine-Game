@@ -69,6 +69,7 @@ public:
     std::function<void(int)> on_click;
     UiColor cell{0.12f, 0.14f, 0.19f, 0.92f}, cell_hover{0.2f, 0.24f, 0.32f, 0.95f}, cell_selected{0.32f, 0.42f, 0.62f, 0.98f};
     UiColor frame{1.0f, 0.78f, 0.3f, 0.95f};   // around a marked cell
+    UiBoxStyle box;                             // each cell's corners and outline
 
     SlotGrid() { interactive = true; }
     int cell_at(float px, float py) const {
@@ -93,9 +94,14 @@ public:
             const UiColor c = i == selected ? cell_selected : i == hover_ ? cell_hover : cell;
             if (i < static_cast<int>(slots.size()) && slots[static_cast<size_t>(i)].marked) {
                 const float b = std::max(1.5f, g * 0.4f);
-                dl.push_back({UiCmdType::Rect, UiRect{r.x - b, r.y - b, r.w + 2 * b, r.h + 2 * b}, frame, {}, 0.0f, UiAlign::Left, 0});
+                UiDrawCmd fr{UiCmdType::Rect, UiRect{r.x - b, r.y - b, r.w + 2 * b, r.h + 2 * b}, frame, {}, 0.0f, UiAlign::Left, 0};
+                if (box.rounding >= 0.0f) fr.rounding = box.rounding + b / std::max(0.01f, scale_hint);
+                dl.push_back(fr);
             }
-            dl.push_back({UiCmdType::Rect, r, c, {}, 0.0f, UiAlign::Left, 0});
+            UiDrawCmd cellc{UiCmdType::Rect, r, c, {}, 0.0f, UiAlign::Left, 0};
+            box.apply(cellc);
+            cellc.drop = false;
+            dl.push_back(cellc);
             if (i >= static_cast<int>(slots.size()) || slots[static_cast<size_t>(i)].name.empty()) continue;
             const UiSlot& s = slots[static_cast<size_t>(i)];
             UiRect name = r;
@@ -195,6 +201,17 @@ inline bool anchor_point(const std::string& a, glm::vec2& p) {
 
 }  // namespace ui_doc_detail
 
+/// The looks a box can have: `radius=`, `border=r,g,b,a`, `border_width=`, `shadow=1`.
+inline void parse_box_style(std::unordered_map<std::string, std::string>& kv, UiBoxStyle& s, bool shadow_is_drop) {
+    if (kv.count("radius")) s.rounding = static_cast<float>(std::atof(kv["radius"].c_str()));
+    if (kv.count("border") && ui_doc_detail::parse_color(kv["border"], s.border) && s.border_width <= 0.0f) s.border_width = 2.0f;
+    if (kv.count("border_width")) s.border_width = static_cast<float>(std::atof(kv["border_width"].c_str()));
+    if (shadow_is_drop && kv.count("shadow")) s.drop = kv["shadow"] != "0" && kv["shadow"] != "false";
+}
+inline bool flag_on(std::unordered_map<std::string, std::string>& kv, const char* k) {
+    return kv.count(k) && kv[k] != "0" && kv[k] != "false";
+}
+
 /// Build a document from .ui text. Lines it cannot read are reported in
 /// `errors` and left out; the rest still builds.
 inline std::unique_ptr<UiDocument> parse_ui_document(const std::string& text, const std::string& path = {}) {
@@ -233,13 +250,17 @@ inline std::unique_ptr<UiDocument> parse_ui_document(const std::string& text, co
         if (kind == "panel") {
             UiColor c{0, 0, 0, 0.5f};
             if (kv.count("color") && !parse_color(kv["color"], c)) err("bad color '" + kv["color"] + "'");
-            w = doc->canvas.root().add<Panel>(c);
+            auto* pn = doc->canvas.root().add<Panel>(c);
+            parse_box_style(kv, pn->box, true);
+            w = pn;
         } else if (kind == "label") {
             UiColor c{1, 1, 1, 1};
             if (kv.count("color") && !parse_color(kv["color"], c)) err("bad color '" + kv["color"] + "'");
             const std::string al = kv.count("align") ? kv["align"] : "left";
             const UiAlign a = al == "center" ? UiAlign::Center : al == "right" ? UiAlign::Right : UiAlign::Left;
             auto* l = doc->canvas.root().add<Label>(kv["text"], num("size", 22.0f), c, a);
+            l->bold = flag_on(kv, "bold");
+            l->shadow = flag_on(kv, "shadow");
             if (l->text.find('{') != std::string::npos) doc->texts.push_back({l, nullptr, l->text});
             w = l;
         } else if (kind == "button") {
@@ -249,6 +270,10 @@ inline std::unique_ptr<UiDocument> parse_ui_document(const std::string& text, co
             if (kv.count("color")) parse_color(kv["color"], b->color_normal);
             if (kv.count("hover")) parse_color(kv["hover"], b->color_hover);
             if (kv.count("text_color")) parse_color(kv["text_color"], b->text_color);
+            parse_box_style(kv, b->box, false);
+            if (kv.count("border_hover")) parse_color(kv["border_hover"], b->border_hover);
+            b->bold = flag_on(kv, "bold");
+            b->shadow = flag_on(kv, "shadow");
             w = b;
             if (kv.count("enabled")) doc->enables.push_back({b, kv["enabled"]});
             if (kv.count("id")) doc->buttons.push_back({kv["id"], b});
@@ -258,6 +283,7 @@ inline std::unique_ptr<UiDocument> parse_ui_document(const std::string& text, co
             if (kv.count("color") && !parse_color(kv["color"], fill)) err("bad color '" + kv["color"] + "'");
             if (kv.count("bg") && !parse_color(kv["bg"], bg)) err("bad color '" + kv["bg"] + "'");
             auto* b = doc->canvas.root().add<ProgressBar>(fill, bg);
+            parse_box_style(kv, b->box, false);
             b->fraction = num("value", 1.0f);
             if (kv.count("bind")) doc->bars.push_back({b, kv["bind"]});
             w = b;
@@ -268,6 +294,7 @@ inline std::unique_ptr<UiDocument> parse_ui_document(const std::string& text, co
             g->font_size = num("size", 18.0f);
             if (kv.count("color")) parse_color(kv["color"], g->cell);
             if (kv.count("frame")) parse_color(kv["frame"], g->frame);
+            parse_box_style(kv, g->box, false);
             if (!kv.count("id")) err("slots need an id (it is what On UI Button names, with the cell as Index)");
             else doc->grids.push_back({g, kv["id"], kv.count("bind") ? kv["bind"] : std::string()});
             w = g;

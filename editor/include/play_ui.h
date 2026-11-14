@@ -151,19 +151,46 @@ private:
         auto b = [](float v) { return static_cast<int>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
         return IM_COL32(b(c.r), b(c.g), b(c.b), b(c.a));
     }
+    /// The bold face loaded beside the regular one (imgui_vulkan.cpp names it "UiBold"); else the regular.
+    static ImFont* bold_font() {
+        static ImFont* bold = [] {
+            ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+            for (ImFont* f : atlas->Fonts)
+                if (f && std::string(f->GetDebugName()).rfind("UiBold", 0) == 0) return f;
+            return static_cast<ImFont*>(nullptr);
+        }();
+        return bold ? bold : ImGui::GetFont();
+    }
     static void draw(const schizo::ui::UiDrawList& dl, float scale, ImDrawList* out, ImVec2 o) {
-        ImFont* font = ImGui::GetFont();
         for (const auto& c : dl) {
             const ImVec2 mn(o.x + c.rect.x, o.y + c.rect.y), mx(mn.x + c.rect.w, mn.y + c.rect.h);
             if (c.type == schizo::ui::UiCmdType::Rect) {
-                out->AddRectFilled(mn, mx, col(c.color), 4.0f * scale);
+                const float r = (c.rounding >= 0.0f ? c.rounding : 4.0f) * scale;
+                if (c.drop) {   // a soft shadow: a few widening, fading layers below and to the right
+                    for (int i = 3; i >= 1; --i) {
+                        const float g = static_cast<float>(i) * 3.0f * scale;
+                        out->AddRectFilled(ImVec2(mn.x - g * 0.5f, mn.y + g * 0.3f), ImVec2(mx.x + g * 0.5f, mx.y + g),
+                                           IM_COL32(0, 0, 0, static_cast<int>(26.0f * c.color.a)), r + g);
+                    }
+                }
+                if (c.color.a > 0.0f) out->AddRectFilled(mn, mx, col(c.color), r);
+                if (c.border_width > 0.0f && c.border.a > 0.0f) {
+                    const float bw = std::max(1.0f, c.border_width * scale);
+                    out->AddRect(ImVec2(mn.x + bw * 0.5f, mn.y + bw * 0.5f), ImVec2(mx.x - bw * 0.5f, mx.y - bw * 0.5f), col(c.border),
+                                 std::max(0.0f, r - bw * 0.5f), 0, bw);
+                }
             } else if (c.type == schizo::ui::UiCmdType::Text && !c.text.empty()) {
+                ImFont* font = c.bold ? bold_font() : ImGui::GetFont();
                 const float size = std::max(6.0f, c.font_size * scale);
                 const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.0f, c.text.c_str());
                 float x = mn.x;
                 if (c.align == schizo::ui::UiAlign::Center) x = mn.x + (c.rect.w - ts.x) * 0.5f;
                 else if (c.align == schizo::ui::UiAlign::Right) x = mx.x - ts.x;
                 const float y = mn.y + (c.rect.h - ts.y) * 0.5f;
+                if (c.shadow) {
+                    const float d = std::max(1.0f, size * 0.06f);
+                    out->AddText(font, size, ImVec2(x + d, y + d), IM_COL32(0, 0, 0, static_cast<int>(170.0f * c.color.a)), c.text.c_str());
+                }
                 out->AddText(font, size, ImVec2(x, y), col(c.color), c.text.c_str());
             }
         }

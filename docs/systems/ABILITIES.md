@@ -23,7 +23,9 @@ ability firebolt
   self Mana 5           # to the caster, the same way
   require state.armed   # the caster needs this tag
   block state.stunned   # ... and must not have this one
-  vfx fire_burst        # a name handed out with its events
+  vfx fire_burst        # its effects (docs/systems/EFFECTS.md), and handed out with its events
+  speed 40              # aimed / area_at_aim: it flies at this speed and takes effect where it lands
+  arc 9.8               # a flying one falls on the way (something thrown)
 end
 ```
 
@@ -39,6 +41,14 @@ Who it reaches:
 | `aimed` | the first one along the crosshair, up to the range; walls stop it |
 | `area` | everyone within the radius of the caster |
 | `area_at_aim` | everyone within the radius of where the crosshair lands (a wall, or the range) |
+
+With a **speed**, an `aimed` or `area_at_aim` ability flies instead of taking
+effect at once: from the caster's hand toward what the crosshair is on,
+falling by its `arc`. It takes effect on the first one it meets (not of the
+caster's own side) or where it meets the world; an area one goes off there,
+or where its flight ends. Flying things can be side-stepped.
+
+Nothing an ability does reaches the caster's own side (the same `team.*` tag).
 
 The cost is paid when the ability goes off, not when the cast starts, and a
 cast that is broken costs nothing and starts no cooldown.
@@ -96,8 +106,13 @@ Each stage is a gameplay event with the ability's id as its parameter:
 `ability.cast` (the wind-up starts), `ability.fire` (it goes off; the value is
 how many it reached), `ability.hit` (one per target, with the damage dealt),
 `ability.interrupted` and `ability.end`. Logic scripts receive them like any
-other gameplay event. Play draws a simple burst where each one goes off; the
-`vfx` name is there for a game's own effects.
+other gameplay event.
+
+Play shows each stage as an effect named after the ability's `vfx`: a wind-up
+at the hand while it is cast, the cast, a beam or a trail while it flies, and
+where it lands -- or, without effects of its own, the built-in ones for its
+damage type (docs/systems/EFFECTS.md). Creatures attack with abilities too
+(docs/systems/CREATURES_AI.md).
 
 The rules are `engine/core/ecs/gameplay_ability_cast.h` (`step_ability_bar`),
 checked by `tools/gameplay_check`.

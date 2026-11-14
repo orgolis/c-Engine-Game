@@ -586,6 +586,29 @@ int main() {
         std::printf("    (broadleaf %zu / %zu triangles, conifer %zu / %zu, near / middle)\n", oak.triangles(), oak_far.triangles(),
                     fir.triangles(), fir_far.triangles());
     }
+    // Solid foliage: which layers, and the shapes (a trunk, a rock).
+    {
+        FoliageLayer tree;  tree.kind = FoliageKind::Conifer;  tree.size = 10.0f;
+        FoliageLayer grass; grass.kind = FoliageKind::Grass;
+        FoliageLayer bush;  bush.kind = FoliageKind::Bush;  bush.solid = 1;
+        FoliageLayer rock;  rock.kind = FoliageKind::Rock;  rock.size = 1.2f;
+        FoliageLayer off = tree; off.solid = 0;
+        check(foliage_solid(tree) && foliage_solid(rock) && !foliage_solid(grass) && foliage_solid(bush) && !foliage_solid(off),
+              "solid by kind (trees and rocks, not grass), or as set on the layer");
+        FoliageInstance in;
+        in.pos = glm::vec3(5.0f, 2.0f, -3.0f);
+        in.up = glm::vec3(0.0f, 1.0f, 0.0f);
+        in.scale = 1.5f;
+        const FoliageCollider c = foliage_collider(tree, in);
+        const float bottom = c.center.y - c.height * 0.5f - c.radius, top = c.center.y + c.height * 0.5f + c.radius;
+        check(!c.sphere && std::fabs(c.center.x - 5.0f) < 1e-4f && std::fabs(bottom - 2.0f) < 1e-3f &&
+                  top > 2.0f + 0.4f * 15.0f && top < 2.0f + 15.0f && c.radius > 0.4f && c.radius < 0.6f,
+              "a tree is solid at its trunk: a capsule from its base to about half its height, as thick as it is drawn");
+        const FoliageCollider r = foliage_collider(rock, in);
+        check(r.sphere && r.radius > 0.8f && r.radius < 1.2f && r.center.y > 2.0f,
+              "a rock is solid as a whole (a sphere its size)");
+    }
+
     if (g_fail) {
         std::printf("terrainbrush_check: %d FAILED, %d passed\n", g_fail, g_pass);
         return 1;

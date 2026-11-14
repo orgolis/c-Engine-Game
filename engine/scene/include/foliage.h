@@ -59,6 +59,7 @@ struct FoliageLayer {
     float       draw_distance = 300.0f;
     uint32_t    seed = 1;
     bool        casts_shadow = true;
+    int         solid = -1;                            // in Play: -1 by kind (trees, rocks, models), 0 no, 1 yes
     std::vector<uint8_t> mask;                         // kFoliageMaskRes^2, 255 = full density; empty = all full
 
     float mask_at(float u, float v) const {            // u, v in 0..1 across the terrain
@@ -80,6 +81,24 @@ struct FoliageInstance {
 struct FoliageCell {
     glm::vec3 min, max;                   // local bounds of everything in it
     std::vector<FoliageInstance> items;
+};
+
+/// Whether a layer's instances are solid in Play -- they stop the player, rounds,
+/// thrown things and creatures: as set on the layer, or by kind (trees, rocks and
+/// model files are; grass and bushes are not).
+inline bool foliage_solid(const FoliageLayer& l) {
+    if (l.solid >= 0) return l.solid != 0;
+    return l.kind != FoliageKind::Grass && l.kind != FoliageKind::Bush;
+}
+
+/// The solid part of one instance, local to the terrain: an upright capsule
+/// for a trunk (`height` is its straight part), a sphere for a rock or a bush.
+/// Sized to the shapes the renderer draws, a little generous on thin trunks.
+struct FoliageCollider {
+    bool      sphere = false;
+    glm::vec3 center{0.0f};
+    float     radius = 0.2f;
+    float     height = 0.0f;
 };
 
 /// The instances of one layer, in culling cells.
@@ -139,6 +158,33 @@ inline float foliage_density_at(const TerrainComponent& tc, const FoliageLayer& 
         d *= std::clamp((w - lo) / std::max(1e-3f, l.min_texture_weight - lo), 0.0f, 1.0f);
     }
     return d;
+}
+
+inline FoliageCollider foliage_collider(const FoliageLayer& l, const FoliageInstance& in) {
+    const float h = l.size * in.scale;   // the instance's height
+    FoliageCollider c;
+    auto trunk = [&](float radius_share, float min_radius, float straight_share) {
+        c.radius = std::max(min_radius, radius_share * h);
+        c.height = straight_share * h;
+        c.center = in.pos + in.up * (c.radius + 0.5f * c.height);
+    };
+    switch (l.kind) {
+        case FoliageKind::Conifer:   trunk(0.032f, 0.15f, 0.5f); break;   // tapering to the top
+        case FoliageKind::Broadleaf: trunk(0.042f, 0.15f, 0.4f); break;   // up to where it splits
+        case FoliageKind::Model:     trunk(0.05f, 0.2f, 0.5f); break;     // unknown shape: a stout post
+        case FoliageKind::Rock:                                            // a flattened sphere, 1.6 x 1 x 1.3
+            c.sphere = true;
+            c.radius = 0.55f * h;
+            c.center = in.pos + in.up * (0.45f * h);
+            break;
+        case FoliageKind::Bush:
+        case FoliageKind::Grass:
+            c.sphere = true;
+            c.radius = 0.5f * h;
+            c.center = in.pos + in.up * (0.5f * h);
+            break;
+    }
+    return c;
 }
 
 /// Place a layer's instances on a terrain.

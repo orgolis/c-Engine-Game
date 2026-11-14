@@ -542,6 +542,98 @@ int main() {
               ecs::inventory_count(w3.get<ecs::Inventory>(e3), "lo_shotgun") == 1);
     }
 
+    // Abilities that fly (`speed`, `arc`): they take effect where they land,
+    // not at once; they pass the caster's own side; effect blocks load.
+    {
+        const char* data =
+            "ability fl_bolt\n  target aimed\n  range 40\n  damage 25 fire\n  speed 20\n  vfx fl_bolt\nend\n"
+            "ability fl_bomb\n  target area_at_aim\n  range 30\n  radius 3\n  damage 50 explosive\n  speed 12\n  arc 9.8\nend\n"
+            "ability fl_jab\n  target aimed\n  range 5\n  damage 5 physical\n  effect Speed -2 3\nend\n"
+            "effect fl_bolt_trail\n  layer core rate 100 life 0.1 0.2 size 0.4 0.1 color 4 2 0.5 1\nend\n";
+        ecs::register_items_text(data);
+        const ecs::AbilityDef* bolt = ecs::find_ability_def("fl_bolt");
+        const ecs::AbilityDef* bomb = ecs::find_ability_def("fl_bomb");
+        const ecs::AbilityDef* jab = ecs::find_ability_def("fl_jab");
+        ecs::World w;
+        auto actor = [&](glm::vec3 at, const char* team) {
+            const ecs::Entity e = w.create();
+            ecs::Transform tr; tr.position = at;
+            w.add<ecs::Transform>(e, tr);
+            ecs::AttributeSet a; a.define("Health", 100.0f, 0.0f, 100.0f); a.define("Speed", 5.0f, 0.0f, 10.0f);
+            w.add<ecs::AttributeSet>(e, a);
+            ecs::CombatActor ca; ca.hurt_radius = 0.5f; ca.hurt_height = 0.0f;
+            w.add<ecs::CombatActor>(e, ca);
+            ecs::GameplayTags g; g.add(team);
+            w.add<ecs::GameplayTags>(e, g);
+            return e;
+        };
+        const ecs::Entity me = actor({0, 1, 0}, "team.player");
+        const ecs::Entity foe = actor({0, 1, -10}, "team.enemy");
+        const ecs::Entity pal = actor({0, 1, -5}, "team.enemy");
+        ecs::AbilityCastInput ci;
+        ci.origin = {0, 1, 0}; ci.aim = {0, 0, -1}; ci.caster_pos = {0, 1, 0};
+        const ecs::AbilityFired f = ecs::ability_detail::fire(w, me, *bolt, -1, ci, nullptr, nullptr);
+        const bool launched = f.launched && w.has<ecs::AbilityShots>(me) && w.get<ecs::AbilityShots>(me).shots.size() == 1 &&
+                              w.get<ecs::AttributeSet>(pal).get("Health") == 100.0f;
+        std::vector<ecs::AbilityImpact> impacts;
+        std::vector<ecs::AbilityFlight> flights;
+        float t_hit = -1.0f;
+        for (int i = 0; i < 60 && t_hit < 0.0f; ++i) {
+            ecs::tick_ability_shots(w, 1.0f / 60.0f, nullptr, nullptr, &impacts, &flights);
+            if (!impacts.empty()) t_hit = (i + 1) / 60.0f;
+        }
+        check("a flying ability does nothing at once, flies, and hits the first one in its way when it gets there",
+              launched && !flights.empty() && impacts.size() == 1 && impacts[0].on_actor &&
+              std::fabs(t_hit - 0.225f) < 0.04f && w.get<ecs::AttributeSet>(pal).get("Health") == 75.0f &&
+              w.get<ecs::AttributeSet>(foe).get("Health") == 100.0f && w.get<ecs::AbilityShots>(me).shots.empty());
+
+        // The enemy side's jab passes its own (pal is in the way) and reaches the player.
+        ecs::AbilityCastInput ej;
+        ej.origin = {0, 1, -10}; ej.aim = {0, 0, 1}; ej.caster_pos = {0, 1, -10};
+        const ecs::AbilityFired j = ecs::ability_detail::fire(w, foe, *jab, -1, ej, nullptr, nullptr);
+        check("an attack passes its own side and reaches the other",
+              !j.on_actor && w.get<ecs::AttributeSet>(pal).get("Health") == 75.0f);
+        ej.origin = {0, 1, -4};
+        const ecs::AbilityFired j2 = ecs::ability_detail::fire(w, foe, *jab, -1, ej, nullptr, nullptr);
+        check("...when in reach: damage and its lasting effect",
+              j2.on_actor && w.get<ecs::AttributeSet>(me).get("Health") == 95.0f);
+
+        // A thrown bomb falls on the ground (a plane at y = 0) and goes off there.
+        const ecs::WorldRayFn ground = [](const glm::vec3& o, const glm::vec3& d, float max_t, float& tt, glm::vec3& n) {
+            if (d.y >= -1e-4f || o.y < 0.0f) return false;
+            tt = -o.y / d.y;
+            if (tt > max_t) return false;
+            n = glm::vec3(0, 1, 0);
+            return true;
+        };
+        ecs::World w2;
+        const ecs::Entity thrower = w2.create();
+        w2.add<ecs::Transform>(thrower, ecs::Transform{});
+        const ecs::Entity near = w2.create();
+        ecs::Transform nt; nt.position = {0, 0.5f, -13.0f};   // ~1.3 m from where it lands
+        w2.add<ecs::Transform>(near, nt);
+        ecs::AttributeSet na; na.define("Health", 100.0f, 0.0f, 100.0f);
+        w2.add<ecs::AttributeSet>(near, na);
+        ecs::AbilityCastInput ti;
+        ti.origin = {0, 1.5f, 0}; ti.aim = glm::normalize(glm::vec3(0, 0.5f, -1)); ti.caster_pos = {0, 1, 0};
+        ecs::ability_detail::fire(w2, thrower, *bomb, -1, ti, &ground, nullptr);
+        std::vector<ecs::AbilityImpact> booms;
+        for (int i = 0; i < 300 && booms.empty(); ++i) ecs::tick_ability_shots(w2, 1.0f / 60.0f, &ground, nullptr, &booms, nullptr);
+        // 12 m/s at 26.6 degrees from 1.5 m, falling at 9.8: it comes down after 1.33 s, 14.3 m out.
+        const bool landed = booms.size() == 1 && std::fabs(booms[0].point.y) < 0.05f && std::fabs(booms[0].point.z + 14.25f) < 0.4f;
+        check("a thrown one arcs down, lands on the ground and goes off around where it landed",
+              landed && w2.get<ecs::AttributeSet>(near).get("Health") == 50.0f);
+
+        // Data: written back, and effect blocks (not an ability's `effect` line).
+        const std::string back = ecs::ability_def_text(*bomb);
+        const ecs::ItemsDoc doc = ecs::parse_items_doc(data);
+        check("speed and arc are written back; an effect block is kept as written, an ability's effect line is not a block",
+              back.find("  speed 12\n") != std::string::npos && back.find("  arc 9.8\n") != std::string::npos &&
+              doc.entries.size() == 4 && doc.entries[3].kind == ecs::ItemsDoc::Kind::Text && doc.entries[3].text_id == "fl_bolt_trail" &&
+              jab->target_effects.size() == 1 && schizo::vfx::find_effect("fl_bolt_trail") &&
+              schizo::vfx::find_effect("Speed") == nullptr);
+    }
+
     // Gear: worn from the bag, swapped back into it, armour that takes damage
     // off, items with a description and an ability.
     {

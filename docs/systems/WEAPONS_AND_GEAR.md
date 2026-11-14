@@ -28,6 +28,11 @@ weapon shotgun
 end
 ```
 
+A gun's muzzle flash and smoke, its tracers, and the sparks and dust where its
+rounds land are effects: `<gun>_muzzle`, `<gun>_tracer`, `<gun>_impact`,
+`<gun>_hit` effect blocks, or the built-in ones (docs/systems/EFFECTS.md).
+Solid trees and rocks stop rounds (docs/systems/FOLIAGE.md).
+
 ## Carrying several and switching
 
 A player carries guns in **weapon slots** and holds one. Each keeps the rounds
@@ -105,9 +110,9 @@ end
 ## Grenades and other items that do something
 
 `casts <ability>` on an item: using it fires that ability from the player's
-view, at once (no cost or cooldown -- the item is used up instead). A grenade
-is an `area_at_aim` ability; aimed at the sky, it comes down on the ground
-below the end of its range.
+hand, at once (no cost or cooldown -- the item is used up instead). A grenade
+is an `area_at_aim` ability with a `speed` and an `arc`: it is thrown, flies
+in an arc and bursts where it lands (on the ground, a tree, someone).
 
 ```
 item frag_grenade
@@ -119,9 +124,11 @@ end
 
 ability frag
   target area_at_aim
-  range 25
+  range 40
   radius 5
   damage 90 explosive
+  speed 18              # thrown ...
+  arc 9.8               # ... and falls
 end
 ```
 

@@ -7,16 +7,17 @@
 // geometry (the physics world's ray cast), hands recoil to the view, and keeps
 // what the HUD shows: the crosshair's spread, a hit marker, the ammunition.
 //
-// ShotEffects draws what the shots leave behind: a muzzle flash for a frame
-// or two, tracers that streak along the round's path, and marks where rounds
-// hit the world, fading after a while. They are draw items appended each
-// frame, like foliage; nothing about them is in the scene.
+// ShotEffects draws the marks rounds leave where they hit the world, fading
+// after a while (draw items appended each frame, like foliage). The muzzle,
+// the tracers and what a hit throws up are particles: PlayEffects
+// (play_effects.h), from the project's effect blocks or the built-in ones.
 // ============================================================================
 
 #include "ecs/gameplay_item_file.h"   // weapon blocks in .items files
 #include "ecs/gameplay_loadout.h"     // the guns carried
 #include "ecs/gameplay_weapons.h"
 #include "ecs_bridge.h"
+#include "play_effects.h"             // muzzle, tracers, impacts as particles
 #include "material_cache.h"
 #include "primitive_meshes.h"
 #include "scene_playback_manager.h"
@@ -80,15 +81,9 @@ public:
         float     glow = 8.0f;        // a flash's emissive strength
     };
 
-    void add(const std::vector<schizo::ecs::ShotTrace>& shots, const schizo::ecs::WeaponDef& wd, const glm::vec3& muzzle) {
-        if (wd.muzzle_flash && !shots.empty())
-            effects_.push_back({Effect::Kind::Flash, muzzle, muzzle, glm::vec3(0, 1, 0), glm::vec3(1.0f, 0.55f, 0.15f), 0.07f, 0.0f, 0.04f});
+    /// The marks the rounds leave (the flash, tracers and sparks are particles).
+    void add(const std::vector<schizo::ecs::ShotTrace>& shots, const schizo::ecs::WeaponDef& wd, const glm::vec3& /*muzzle*/) {
         for (const auto& s : shots) {
-            if (s.tracer) {
-                const float len = glm::length(s.end - muzzle);
-                effects_.push_back({Effect::Kind::Tracer, muzzle, s.end, glm::vec3(0, 1, 0), wd.tracer_color, 0.04f, 0.0f,
-                                    std::max(kTracerMinLife, len / kTracerSpeed)});
-            }
             if (s.hit == schizo::ecs::ShotTrace::Hit::World && wd.impact_size > 0.0f) {
                 effects_.push_back({Effect::Kind::Impact, s.end, s.end, s.normal, glm::vec3(0.05f), wd.impact_size, 0.0f, kImpactLife});
                 ++impacts_;
@@ -228,16 +223,20 @@ public:
         float hit_marker = 0.0f;          // seconds the hit marker still shows
         int   ammo = 0, reserve = 0;
         bool  reloading = false;
+        float reload_progress = 0.0f;     // 0..1 while reloading
+        int   magazine = 0;               // the gun's magazine size
+        bool  fired = false;              // a round went this frame (creatures hear it)
         const char* name = "";
     };
     const Hud& hud() const { return hud_; }
 
     /// One Play frame. `camera` is the view the player looks through.
     void update(float dt, ScenePlaybackManager& play, EcsSceneBridge& bridge, const glm::vec3& cam_pos, const glm::vec3& cam_fwd,
-                const Input& in, ShotEffects& fx) {
+                const Input& in, ShotEffects& fx, PlayEffects* pfx = nullptr) {
         namespace ecs = schizo::ecs;
         hud_.armed = false;
         hud_.aiming = false;
+        hud_.fired = false;
         hud_.hit_marker = std::max(0.0f, hud_.hit_marker - dt);
         auto* player = play.GetPlayerEntity();
         if (!player || !play.IsPlaying() || play.IsPaused()) return;
@@ -266,12 +265,14 @@ public:
         const bool third_person = glm::length(origin - (cam_pos + glm::normalize(cam_fwd) * 0.3f)) > 0.05f;
         const int fired = ecs::trigger_weapon(w, e, origin, fwd, *ws, in.fire_pressed, in.fire_held, &bridge.events(),
                                               ++seed_, &world, &shots);
+        hud_.fired = fired > 0;
         if (fired > 0) {
             // The muzzle sits a little right of and below the eye.
             const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0, 1, 0)));
             const glm::vec3 muzzle = third_person ? origin + fwd * 0.3f
                                                   : cam_pos + fwd * 0.8f + right * 0.18f - glm::vec3(0, 0.15f, 0);
             fx.add(shots, *wd, muzzle);
+            if (pfx) pfx->gun_fired(*wd, muzzle, fwd, shots);
             for (const auto& s : shots)
                 if (s.hit == ecs::ShotTrace::Hit::Actor) hud_.hit_marker = 0.15f;
         }
@@ -291,6 +292,9 @@ public:
         hud_.ammo = ws->ammo_in_mag;
         hud_.reserve = ws->reserve;
         hud_.reloading = ws->reloading > 0.0f;
+        hud_.reload_progress = hud_.reloading && wd->reload_time > 1e-3f
+                                   ? std::clamp(1.0f - ws->reloading / wd->reload_time, 0.0f, 1.0f) : 0.0f;
+        hud_.magazine = wd->mag_size;
         hud_.name = wd->name.c_str();
     }
 

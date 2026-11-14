@@ -44,6 +44,22 @@ struct NpcAgentComponent {
     /// not WHAT -- which is what keeps combat design out of the agent code.
     int   ability_index = 0;
 
+    /// The ability it attacks with: an `ability` block's id in the project's
+    /// .items (its damage, reach, cast time as a wind-up, speed for something
+    /// thrown or spat, effects). Empty: the AbilitySet slot `ability_index`.
+    std::string ability;
+
+    // ---- behaviour ----------------------------------------------------------
+    /// Others within this distance join in when it notices its target.
+    float alert_radius = 15.0f;
+    /// It gives up a chase this far from where it started, and goes back.
+    float leash_radius = 50.0f;
+    /// The distance it keeps while fighting: -1 by its attack (a ranged one,
+    /// attack_range above 5, keeps 60% of it; a melee one closes in).
+    float keep_distance = -1.0f;
+    /// Gunfire within this distance makes it come and look.
+    float hearing_range = 35.0f;
+
     bool active() const { return enabled; }
 };
 

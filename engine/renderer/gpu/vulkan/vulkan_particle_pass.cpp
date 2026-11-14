@@ -51,7 +51,11 @@ void main() {
     if (r > 1.0) discard;                 // outside the disc: no square corners
     float falloff = 1.0 - r;
     falloff *= falloff;                   // squared: a softer core-to-edge ramp
-    out_color = vec4(v_color.rgb, v_color.a * falloff);
+    // Premultiplied, blended (ONE, ONE_MINUS_SRC_ALPHA). Alpha above zero adds
+    // light (fire, sparks: nothing behind is covered); alpha below zero covers
+    // what is behind by that much (smoke, dust).
+    float a = abs(v_color.a) * falloff;
+    out_color = vec4(v_color.rgb * a, v_color.a < 0.0 ? a : 0.0);
 }
 )";
 
@@ -284,8 +288,10 @@ bool VulkanParticlePass::create_pipeline() {
     // brighten what is behind them and never darken it.
     VkPipelineColorBlendAttachmentState cba{};
     cba.blendEnable         = VK_TRUE;
-    cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    // Premultiplied: the shader writes colour x coverage, and an alpha that
+    // is 0 for light-adding particles (pure add) or the coverage for smoke.
+    cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     cba.colorBlendOp        = VK_BLEND_OP_ADD;
     cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
