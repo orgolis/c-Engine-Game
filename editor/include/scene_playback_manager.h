@@ -126,6 +126,9 @@ public:
         glm::vec2 center_xz{0.0f};
         glm::vec2 half_size{0.0f};
         float     level = 0.0f;    // world-space surface height
+        // A river: world (x, z, level, half width) points; the water is
+        // within half width of the path, at the level there.
+        std::vector<glm::vec4> path;
     };
     /// Water surface height above `pos` (XZ containment), or -FLT_MAX when
     /// not over any physical water volume.

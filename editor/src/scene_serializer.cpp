@@ -442,6 +442,15 @@ void write_entity_block(std::ofstream& file,
         file << "WATER_WAVES="   << wc->GetWaveHeight() << "," << wc->GetWaveSpeed()
              << "," << wc->GetWaveScale() << "\n";
         file << "WATER_LOOK="    << wc->GetClarity() << "," << wc->GetReflectivity() << "\n";
+        if (wc->IsRiver()) {
+            // x,z,level,half-width per point, ';' between them
+            file << "WATER_PATH=";
+            for (size_t i = 0; i < wc->GetPath().size(); ++i) {
+                const glm::vec4& q = wc->GetPath()[i];
+                file << (i ? ";" : "") << q.x << "," << q.y << "," << q.z << "," << q.w;
+            }
+            file << "\n";
+        }
     }
 
     file << "\n";
@@ -693,6 +702,7 @@ struct ParsedEntity {
     glm::vec3 water_shallow   = glm::vec3(0.10f, 0.45f, 0.50f);
     glm::vec3 water_waves     = glm::vec3(0.18f, 1.0f, 14.0f);   // height, speed, scale
     glm::vec2 water_look      = glm::vec2(4.0f, 0.8f);           // clarity, reflectivity
+    std::vector<glm::vec4> water_path;                          // a river (x, z, level, half width)
 };
 
 // Helper: does `line` start with `key=`? If so, return the value portion.
@@ -1015,6 +1025,19 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
     if (starts_with(line, "WATER_SHALLOW", v)) { std::sscanf(v.c_str(), "%f,%f,%f", &p.water_shallow.r, &p.water_shallow.g, &p.water_shallow.b); return; }
     if (starts_with(line, "WATER_WAVES", v))   { std::sscanf(v.c_str(), "%f,%f,%f", &p.water_waves.x, &p.water_waves.y, &p.water_waves.z); return; }
     if (starts_with(line, "WATER_LOOK", v))    { std::sscanf(v.c_str(), "%f,%f", &p.water_look.x, &p.water_look.y); return; }
+    if (starts_with(line, "WATER_PATH", v)) {
+        p.water_path.clear();
+        size_t at = 0;
+        while (at < v.size()) {
+            const size_t end = v.find(';', at);
+            const std::string pt = v.substr(at, end == std::string::npos ? std::string::npos : end - at);
+            glm::vec4 q(0.0f);
+            if (std::sscanf(pt.c_str(), "%f,%f,%f,%f", &q.x, &q.y, &q.z, &q.w) == 4) p.water_path.push_back(q);
+            if (end == std::string::npos) break;
+            at = end + 1;
+        }
+        return;
+    }
 
     // Unknown key — silently ignore for forward compatibility.
 }
@@ -1281,6 +1304,7 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
             wc->SetWaveScale(p.water_waves.z);
             wc->SetClarity(p.water_look.x);
             wc->SetReflectivity(p.water_look.y);
+            if (p.water_path.size() >= 2) wc->SetPath(p.water_path);
         }
     }
 

@@ -67,7 +67,8 @@ It has these **companion** plans (all current):
 
 ### `systems/` — engine subsystem deep-dives
 `DEFERRED-RENDERING-SYSTEM.md` · `LIGHTING-SYSTEM.md` · `MATERIAL-AND-PBR-SYSTEM.md` ·
-`MESH-AND-GEOMETRY-SYSTEM.md` · `POST-PROCESSING-SYSTEM.md` · `SCENE-MANAGEMENT-SYSTEM.md`
+`MESH-AND-GEOMETRY-SYSTEM.md` · `POST-PROCESSING-SYSTEM.md` · `SCENE-MANAGEMENT-SYSTEM.md` ·
+`WORLDS_AND_WATER.md` (world presets, rivers and lakes, `gws world`) · `FOLIAGE.md`
 
 ### `references/` — quick-reference cheat sheets
 One `*-QUICK-REFERENCE.md` per system (deferred rendering, graphics, lighting, material,

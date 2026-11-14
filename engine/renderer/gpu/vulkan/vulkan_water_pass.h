@@ -44,7 +44,7 @@ public:
     VulkanWaterPass& operator=(const VulkanWaterPass&) = delete;
 
     /// Reset the per-frame surface list (call once per frame before add_water).
-    void begin_frame() { draws_.clear(); }
+    void begin_frame() { draws_.clear(); rivers_.clear(); river_verts_.clear(); }
 
     /// Register one water surface for this frame.
     void add_water(const glm::vec3& center, const glm::vec2& size,
@@ -56,8 +56,17 @@ public:
         d.p0           = glm::vec4(size.y, wave_height, wave_speed, wave_scale);
         d.deep_clarity = glm::vec4(deep_color, clarity);
         d.shallow_refl = glm::vec4(shallow_color, reflectivity);
+        d.river        = glm::vec4(0.0f);
         draws_.push_back(d);
     }
+
+    /// A river: one continuous ribbon along `path` -- world (x, level, z,
+    /// half width) points downstream -- its ripples flowing at `flow_speed`
+    /// (faster where it falls steeply).
+    void add_river(const std::vector<glm::vec4>& path,
+                   const glm::vec3& deep_color, const glm::vec3& shallow_color,
+                   float wave_height, float flow_speed, float wave_scale,
+                   float clarity, float reflectivity);
 
     /// Sun direction (light -> scene) + colour, for the specular glint.
     void set_sun(const glm::vec3& direction, const glm::vec3& color) {
@@ -88,7 +97,29 @@ private:
         glm::vec4 p0;            // size.y, wave_height, wave_speed, wave_scale
         glm::vec4 deep_clarity;  // deep rgb, clarity
         glm::vec4 shallow_refl;  // shallow rgb, reflectivity
+        glm::vec4 river;         // x = 1 for a river, y = flow speed
     };
+    struct RiverVertex {
+        glm::vec3 pos;           // world position on the surface
+        glm::vec2 flow;          // downstream x speed (world xz per second)
+        glm::vec2 along;         // metres along, -1..1 across
+    };
+    struct RiverDraw {
+        WaterDraw pc;
+        uint32_t  first = 0, count = 0;
+    };
+    std::vector<RiverDraw>   rivers_;
+    std::vector<RiverVertex> river_verts_;
+    // Vertex buffers for the rivers, a ring of three: the one written this
+    // frame was last read three frames ago (two in flight), so it is free.
+    static constexpr uint32_t kRiverRing = 3;
+    VkBuffer       river_vbo_[kRiverRing]    = {};
+    VkDeviceMemory river_mem_[kRiverRing]    = {};
+    void*          river_mapped_[kRiverRing] = {};
+    VkDeviceSize   river_cap_[kRiverRing]    = {};
+    uint32_t       river_frame_ = 0;
+    VkPipeline     river_pipeline_ = VK_NULL_HANDLE;
+    bool ensure_river_buffer(uint32_t slot, VkDeviceSize bytes);
     // Must match the shader's FrameUBO (std140, 192 bytes).
     struct FrameUBO {
         glm::mat4 view;

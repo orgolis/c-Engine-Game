@@ -207,6 +207,8 @@ public:
      * @brief Get depth texture handle
      */
     VkImageView get_depth_view() const { return depth_view_; }
+    /// The time the wind is at (seconds): grass sways with it.
+    void set_wind_time(float seconds) { wind_time_ = seconds; }
     
     /**
      * @brief Get framebuffer handle
@@ -336,6 +338,7 @@ private:
     // triple-buffering it would add three allocations and an index to thread
     // through every call site to fix something nobody can see. Revisit if
     // anything latency-sensitive ever moves into this block.
+    float                 wind_time_        = 0.0f;   // seconds, in the frame block's w (grass sways)
     VkDescriptorSetLayout frame_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool      frame_pool_       = VK_NULL_HANDLE;
     VkDescriptorSet       frame_set_        = VK_NULL_HANDLE;

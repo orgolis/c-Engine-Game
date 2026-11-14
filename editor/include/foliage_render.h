@@ -83,6 +83,50 @@ inline void gen_grass_tuft(std::vector<gws::renderer::gpu::SceneVertex>& v, std:
     }
 }
 
+/// A clump of grass: `blades` curved, tapering blades of different heights
+/// spread over a small patch (radius 0.5 of the 1-tall frame, base at 0), each in three
+/// segments that bend outward. Normals lean up and, at the base, outward and
+/// down -- the base sits in the clump's shade and the tips catch the light,
+/// a gradient with no texture. Deterministic: the same clump every time.
+inline void gen_grass_clump(std::vector<gws::renderer::gpu::SceneVertex>& v, std::vector<uint32_t>& idx, int blades) {
+    const float pi = 3.14159265358979323846f;
+    uint32_t s = 2463534242u;
+    auto rnd = [&s]() { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return static_cast<float>(s & 0xFFFFFF) / 16777215.0f; };
+    for (int b = 0; b < blades; ++b) {
+        // Where it grows and which way it leans: golden-angle spread.
+        const float ang = static_cast<float>(b) * 2.39996323f + rnd() * 0.6f;
+        const float rad = 0.5f * std::sqrt((static_cast<float>(b) + 0.5f) / static_cast<float>(blades));
+        const glm::vec3 root(std::cos(ang) * rad, 0.0f, std::sin(ang) * rad);   // the instance's base
+        const glm::vec3 out = glm::normalize(glm::vec3(std::cos(ang), 0.0f, std::sin(ang)));
+        const float facing = ang + pi * 0.5f + (rnd() - 0.5f) * 1.2f;   // which way the blade's face turns
+        const glm::vec3 across(std::cos(facing), 0.0f, std::sin(facing));
+        const float height = 0.55f + rnd() * 0.45f;
+        const float width  = 0.030f + rnd() * 0.022f;
+        const float bend   = 0.10f + rnd() * 0.22f;
+        const glm::vec3 face_n = glm::normalize(glm::cross(across, glm::vec3(0, 1, 0)));
+        const uint32_t base = static_cast<uint32_t>(v.size());
+        const float ts[4] = {0.0f, 0.38f, 0.72f, 1.0f};
+        for (int k = 0; k < 4; ++k) {
+            const float tt = ts[k];
+            const glm::vec3 c = root + glm::vec3(0.0f, height * tt, 0.0f) + out * (bend * tt * tt) * height;
+            const float w = width * (1.0f - tt * 0.85f);
+            // Shade: the base faces out and a little down, the tip faces up.
+            const glm::vec3 n = glm::normalize(face_n * 0.45f + glm::vec3(0.0f, 0.2f + tt * 0.6f, 0.0f) + out * (0.55f - tt * 0.35f));
+            const glm::vec4 tan(across, 2.0f);   // w 2: sways in the wind (gbuffer_scene_instanced.vert)
+            if (k < 3) {
+                v.push_back({c - across * w, n, {0.0f, tt}, tan});
+                v.push_back({c + across * w, n, {1.0f, tt}, tan});
+            } else {
+                v.push_back({c, n, {0.5f, 1.0f}, tan});
+            }
+        }
+        // Two quads and the tip.
+        idx.insert(idx.end(), {base + 0, base + 1, base + 3, base + 0, base + 3, base + 2,
+                               base + 2, base + 3, base + 5, base + 2, base + 5, base + 4,
+                               base + 4, base + 5, base + 6});
+    }
+}
+
 /// A conifer's crown as ONE mesh: two cones stacked, drawn straight in the
 /// tree's own frame (base at y = 0, top at y = 1) so it needs no placement.
 inline void gen_conifer_crown(std::vector<gws::renderer::gpu::SceneVertex>& v, std::vector<uint32_t>& idx) {
@@ -120,6 +164,11 @@ public:
         crown_ = build(gen_conifer_crown);
         tuft_ = build(gen_grass_tuft);
         if (tuft_) tuft_->set_double_sided(true);
+        // Grass: a full clump near, a lighter one farther out.
+        clump_ = build([](std::vector<SceneVertex>& v, std::vector<uint32_t>& i) { gen_grass_clump(v, i, 16); });
+        clump_far_ = build([](std::vector<SceneVertex>& v, std::vector<uint32_t>& i) { gen_grass_clump(v, i, 6); });
+        if (clump_) clump_->set_double_sided(true);
+        if (clump_far_) clump_far_->set_double_sided(true);
         // Grown trees: [kind][variant][detail], bark and leaves.
         auto upload = [&](const std::vector<schizo::scene::TreeVertex>& tv, const std::vector<uint32_t>& ti) {
             std::vector<SceneVertex> v;
@@ -152,6 +201,8 @@ public:
         cone_.reset();
         crown_.reset();
         tuft_.reset();
+        clump_.reset();
+        clump_far_.reset();
         for (auto& k : trees_)
             for (auto& v : k)
                 for (auto& d : v) { d.bark.reset(); d.leaves.reset(); }
@@ -203,6 +254,20 @@ public:
                     bd.base_color = glm::vec4(l.color_b, 1.0f);
                     bd.roughness = 0.92f;
                     bark_mat = mats.get_or_create(bd, device, mat_layout, mat_pool, textures);
+                }
+                // Grass: three tints of the layer's colour, one per clump by
+                // a hash, so a meadow is not one flat green.
+                gws::renderer::gpu::Material* grass_mat[3] = {nullptr, nullptr, nullptr};
+                if (l.kind == FoliageKind::Grass && clump_ && clump_far_) {
+                    const glm::vec3 tint[3] = {glm::vec3(0.88f), glm::vec3(0.98f, 0.95f, 0.76f), glm::vec3(0.76f, 0.88f, 0.82f)};
+                    for (int gi = 0; gi < 3; ++gi) {
+                        gws::assets::MaterialDesc gd;
+                        gd.name = "foliage";
+                        gd.base_color = glm::vec4(glm::min(l.color_a * tint[gi], glm::vec3(1.0f)), 1.0f);
+                        gd.roughness = 0.95f;   // no sheen: blades are matte
+                        gd.occlusion = 0.55f;   // a clump shades itself: less sky in it
+                        grass_mat[gi] = mats.get_or_create(gd, device, mat_layout, mat_pool, textures);
+                    }
                 }
                 const gws::renderer::gpu::Scene* model = nullptr;
                 if (l.kind == FoliageKind::Model) {
@@ -273,6 +338,15 @@ public:
                                 out.push_back(di);
                                 ++stats_.draws;
                             }
+                        } else if (grass_mat[0] && grass_mat[1] && grass_mat[2]) {
+                            const uint32_t gh = static_cast<uint32_t>(std::fabs(in.yaw) * 7919.0f);
+                            gws::renderer::gpu::DrawItem di;
+                            di.mesh = f < 0.45f ? clump_.get() : clump_far_.get();
+                            di.material = grass_mat[gh % 3];
+                            di.model = m;
+                            di.casts_shadow = l.casts_shadow && f < 0.3f;   // far grass: a shadow nobody sees
+                            out.push_back(di);
+                            ++stats_.draws;
                         } else {
                             for (const Part& part : parts) {
                                 if (part.detail && f > 0.3f) continue;
@@ -342,7 +416,7 @@ private:
         return p;
     }
 
-    std::unique_ptr<gws::renderer::gpu::Mesh> cone_, crown_, tuft_;
+    std::unique_ptr<gws::renderer::gpu::Mesh> cone_, crown_, tuft_, clump_, clump_far_;
     // Grown trees. Near: under kTreeNear of the draw distance; middle: under
     // kTreeMiddle; beyond that the simple crown-on-a-trunk.
     static constexpr int   kTreeVariants = 3;

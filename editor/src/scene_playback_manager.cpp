@@ -664,6 +664,7 @@ void ScenePlaybackManager::ApplyOriginShift(const glm::vec3& shift) {
     for (WaterVolume& wv : water_volumes_) {
         wv.center_xz += glm::vec2(shift.x, shift.z);
         wv.level     += shift.y;
+        for (glm::vec4& q : wv.path) { q.x += shift.x; q.y += shift.z; q.z += shift.y; }
     }
 
     // 4) Cached world-space camera position follows the same rebase.
@@ -838,6 +839,18 @@ void ScenePlaybackManager::BuildPhysicsWorld() {
                     v.center_xz = glm::vec2(wp.x, wp.z);
                     v.half_size = wcomp->GetSize() * 0.5f;
                     v.level     = wp.y;
+                    if (wcomp->IsRiver()) {
+                        // World space, with a box round it for a quick reject.
+                        glm::vec2 lo(1e30f), hi(-1e30f);
+                        for (const glm::vec4& q : wcomp->GetPath()) {
+                            const glm::vec4 w(q.x + wp.x, q.y + wp.z, q.z + wp.y, q.w);
+                            v.path.push_back(w);
+                            lo = glm::min(lo, glm::vec2(w.x, w.y) - glm::vec2(w.w));
+                            hi = glm::max(hi, glm::vec2(w.x, w.y) + glm::vec2(w.w));
+                        }
+                        v.center_xz = (lo + hi) * 0.5f;
+                        v.half_size = (hi - lo) * 0.5f;
+                    }
                     water_volumes_.push_back(v);
                     if (logger) logger->info("  +water volume '{}' (level {:.2f})",
                                              ent->GetName(), v.level);
@@ -1021,9 +1034,23 @@ void ScenePlaybackManager::TearDownPhysicsWorld() {
 float ScenePlaybackManager::WaterLevelAt(const glm::vec3& pos) const {
     float best = -FLT_MAX;
     for (const WaterVolume& v : water_volumes_) {
-        if (std::abs(pos.x - v.center_xz.x) <= v.half_size.x &&
-            std::abs(pos.z - v.center_xz.y) <= v.half_size.y)
+        if (std::abs(pos.x - v.center_xz.x) > v.half_size.x ||
+            std::abs(pos.z - v.center_xz.y) > v.half_size.y)
+            continue;
+        if (v.path.size() < 2) {
             best = std::max(best, v.level);
+            continue;
+        }
+        // A river: the nearest stretch of its path, if within its width there.
+        const glm::vec2 p(pos.x, pos.z);
+        for (size_t i = 0; i + 1 < v.path.size(); ++i) {
+            const glm::vec2 a(v.path[i].x, v.path[i].y), b(v.path[i + 1].x, v.path[i + 1].y);
+            const glm::vec2 ab = b - a;
+            const float     t = glm::clamp(glm::dot(p - a, ab) / std::max(glm::dot(ab, ab), 1e-6f), 0.0f, 1.0f);
+            const float     w = glm::mix(v.path[i].w, v.path[i + 1].w, t);
+            if (glm::length(p - (a + ab * t)) <= w)
+                best = std::max(best, glm::mix(v.path[i].z, v.path[i + 1].z, t));
+        }
     }
     return best;
 }

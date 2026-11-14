@@ -1018,6 +1018,17 @@ if(MINGW)
     target_link_options(gws PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# worldgen: a whole world from a preset, as a scene, without the editor
+# (scene/world_preset.h, the same build as the editor's World menu). Driven by
+# `gws world`.
+add_executable(worldgen worldgen/main.cpp ../editor/src/scene_serializer.cpp)
+target_include_directories(worldgen PRIVATE ../editor/include ../engine/scene/include)
+target_link_libraries(worldgen PRIVATE scene gws_reflection gws_ecs gws_logging glm)
+target_compile_features(worldgen PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(worldgen PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # docgen: the component reference, generated from the authorable registry
 # (issue #10). Documentation that cannot drift — it reads the same registration
 # the inspector, the save sidecar and replication read. Driven by `gws docs`.
@@ -1060,10 +1071,10 @@ endif()
 # which is specified to run the engine's own tooling against a candidate
 # version. The sibling tools are included because gws drives them: `cook` needs
 # assetcook, `run` needs headless, `project` needs projectctl, `docs` needs
-# docgen.
+# docgen, `world` needs worldgen.
 #
 # CPACK_STRIP_FILES strips these in the package, so the download cost is small.
-install(TARGETS gws headless projectctl docgen assetcook
+install(TARGETS gws headless projectctl docgen assetcook worldgen
         RUNTIME DESTINATION "${GWS_ENGINE_DEST}" COMPONENT engine)
 
 # innerloop_check: measure the inner loop so it can be defended (issue #13).

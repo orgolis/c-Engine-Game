@@ -48,6 +48,7 @@ struct WorldPreset {
     float sea_level = 0.0f;        // as a share of `height`
     int   rivers = 2;
     float river_width = 3.0f, river_depth = 1.5f;
+    float breach = 3.0f;           // hollows shallower than this the rivers cut through (deeper ones are lakes)
     std::vector<Biome>        biomes;
     std::vector<FoliageLayer> foliage;
     glm::vec4 ground[4] = {glm::vec4(0.45f, 0.42f, 0.36f, 1), glm::vec4(0.35f, 0.55f, 0.20f, 1), glm::vec4(0.13f, 0.30f, 0.11f, 1),
@@ -213,9 +214,11 @@ inline BuiltWorld build_world(Scene& scene, const WorldPreset& p, uint32_t seed,
 
     // Rivers: from the highest points, each well away from the others.
     HydrologySettings hs;
+    hs.breach_depth = p.breach;
     hs.has_sea = p.sea;
     hs.sea_level = tc->GetWaterLevel();
     std::vector<glm::vec2> springs;
+    std::vector<WaterSurface> lakes_made;
     const int n = tc->VertsPerSide();
     const float half = tc->GetSize() * 0.5f, cell = tc->CellSize();
     for (int r = 0; r < p.rivers; ++r) {
@@ -240,20 +243,49 @@ inline BuiltWorld build_world(Scene& scene, const WorldPreset& p, uint32_t seed,
         if (!river) continue;
         w.made.push_back(river);
         river->GetTransform()->SetWorldPosition(e->GetTransform()->GetWorldPosition());
+        // The lakes: one surface each, at its level over its extent -- once,
+        // when two rivers run into the same one.
         int k = 0;
         for (const WaterSurface& s : river_surfaces(run, p.river_width, p.river_depth * 0.7f, 0.6f, 240)) {
-            auto part = scene.CreateEntity(river->GetName() + (s.lake ? " lake " : " water ") + std::to_string(++k));
+            if (!s.lake) continue;
+            bool known = false;
+            for (const WaterSurface& o : lakes_made)
+                known = known || (std::fabs(o.level - s.level) < 1.5f && std::fabs(o.x - s.x) < (o.size_x + s.size_x) * 0.5f &&
+                                  std::fabs(o.z - s.z) < (o.size_z + s.size_z) * 0.5f);
+            if (known) continue;
+            lakes_made.push_back(s);
+            auto part = scene.CreateEntity(river->GetName() + " lake " + std::to_string(++k));
             if (!part) continue;
             river->AddChild(part);
             part->GetTransform()->SetWorldPosition(e->GetTransform()->GetWorldPosition() + glm::vec3(s.x, s.level, s.z));
             if (auto wc = part->AddComponent<WaterComponent>()) {
                 wc->SetSize(glm::vec2(s.size_x, s.size_z));
-                wc->SetWaveHeight(s.lake ? 0.05f : 0.02f);
-                wc->SetWaveScale(s.lake ? 8.0f : 3.0f);
-                wc->SetClarity(s.lake ? 3.0f : 1.5f);
+                wc->SetWaveHeight(0.04f);
+                wc->SetWaveScale(8.0f);
+                wc->SetClarity(3.0f);
+                wc->SetDeepColor(glm::vec3(0.02f, 0.08f, 0.10f));
+                wc->SetShallowColor(glm::vec3(0.10f, 0.24f, 0.22f));
             }
             w.made.push_back(part);
-            if (s.lake) ++w.lakes;
+            ++w.lakes;
+        }
+        // The river itself: one continuous surface per stretch between lakes,
+        // falling with its bed -- not a chain of flat steps.
+        for (const WaterPath& wp : river_paths(run, p.river_width, p.river_depth * 0.7f)) {
+            auto part = scene.CreateEntity(river->GetName() + " water " + std::to_string(++k));
+            if (!part) continue;
+            river->AddChild(part);
+            part->GetTransform()->SetWorldPosition(e->GetTransform()->GetWorldPosition());
+            if (auto wc = part->AddComponent<WaterComponent>()) {
+                wc->SetPath(wp.points);
+                wc->SetWaveHeight(0.02f);
+                wc->SetWaveSpeed(1.0f);    // how fast it flows
+                wc->SetWaveScale(3.0f);
+                wc->SetClarity(1.2f);
+                wc->SetDeepColor(glm::vec3(0.02f, 0.08f, 0.09f));
+                wc->SetShallowColor(glm::vec3(0.12f, 0.24f, 0.20f));
+            }
+            w.made.push_back(part);
         }
     }
 
@@ -269,11 +301,39 @@ inline BuiltWorld build_world(Scene& scene, const WorldPreset& p, uint32_t seed,
     for (const auto& m : w.made)
         if (auto wc = m->GetComponent<WaterComponent>()) {
             const glm::vec3 c = m->GetTransform()->GetWorldPosition() - base;
-            const glm::vec2 hs2 = wc->GetSize() * 0.5f;
-            water.push_back(WaterRect{c.x - hs2.x, c.z - hs2.y, c.x + hs2.x, c.z + hs2.y, c.y});
+            if (wc->IsRiver()) {
+                for (const glm::vec4& q : wc->GetPath())
+                    water.push_back(WaterRect{c.x + q.x - q.w, c.z + q.y - q.w, c.x + q.x + q.w, c.z + q.y + q.w, c.y + q.z});
+            } else {
+                const glm::vec2 hs2 = wc->GetSize() * 0.5f;
+                water.push_back(WaterRect{c.x - hs2.x, c.z - hs2.y, c.x + hs2.x, c.z + hs2.y, c.y});
+            }
             ++key;
         }
     apply_biomes(*tc, bc->Biomes(), bc->Map(*tc, water, key), fc.get());
+
+    // Nothing grows under the water: every foliage layer's mask is cleared
+    // where the ground lies below a river's or a lake's surface.
+    {
+        const float size = tc->GetSize(), texel = size / static_cast<float>(kFoliageMaskRes);
+        for (FoliageLayer& l : fc->MutableLayers()) {
+            if (l.mask.empty()) l.mask.assign(static_cast<size_t>(kFoliageMaskRes) * kFoliageMaskRes, 255);
+            for (const WaterRect& r : water) {
+                const int x0 = std::max(0, static_cast<int>(std::floor((r.min_x + half) / texel)));
+                const int x1 = std::min(kFoliageMaskRes - 1, static_cast<int>(std::floor((r.max_x + half) / texel)));
+                const int z0 = std::max(0, static_cast<int>(std::floor((r.min_z + half) / texel)));
+                const int z1 = std::min(kFoliageMaskRes - 1, static_cast<int>(std::floor((r.max_z + half) / texel)));
+                for (int z = z0; z <= z1; ++z)
+                    for (int x = x0; x <= x1; ++x) {
+                        uint8_t& m = l.mask[static_cast<size_t>(z) * kFoliageMaskRes + x];
+                        if (m == 0) continue;
+                        const float lx = -half + (static_cast<float>(x) + 0.5f) * texel;
+                        const float lz = -half + (static_cast<float>(z) + 0.5f) * texel;
+                        if (tc->SampleHeightLocal(lx, lz) < r.level + 0.3f) m = 0;
+                    }
+            }
+        }
+    }
     return w;
 }
 

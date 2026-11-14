@@ -1227,7 +1227,9 @@ bool VulkanGBuffer::create_frame_resources(VkDevice vk_device) {
     b.binding         = 0;
     b.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     b.descriptorCount = 1;
-    b.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // The vertex stage too: the instanced vertex shader reads the time from
+    // it, for grass swaying in the wind.
+    b.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT;
 
     VkDescriptorSetLayoutCreateInfo li{};
     li.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1311,7 +1313,7 @@ void VulkanGBuffer::draw_items(VkCommandBuffer cmd,
     // Per-frame block, written and bound ONCE for the whole pass rather than
     // per draw: every draw in the pass sees the same camera.
     if (frame_mapped_ != nullptr) {
-        const float cam[4] = { camera_position.x, camera_position.y, camera_position.z, 0.0f };
+        const float cam[4] = { camera_position.x, camera_position.y, camera_position.z, wind_time_ };
         std::memcpy(frame_mapped_, cam, sizeof cam);
     }
     if (scene_pipeline_back_ == VK_NULL_HANDLE || scene_pipeline_none_ == VK_NULL_HANDLE ||

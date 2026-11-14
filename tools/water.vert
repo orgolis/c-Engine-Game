@@ -1,8 +1,9 @@
 #version 450
-// Water surface vertex stage: a procedural grid (no vertex buffer — positions
-// derived from gl_VertexIndex) spanning the water rect, displaced by a sum of
-// directional waves. One draw per water surface; per-surface data in push
-// constants, per-frame data in the UBO.
+// Water surface vertex stage (a lake, a pond, the sea): a procedural grid (no
+// vertex buffer -- positions derived from gl_VertexIndex) spanning the water
+// rect, displaced by a sum of directional waves. One draw per surface;
+// per-surface data in push constants, per-frame data in the UBO. Rivers have
+// their own vertex stage (water_river.vert); both feed water.frag.
 
 layout(set = 0, binding = 0) uniform FrameUBO {
     mat4 view;
@@ -18,10 +19,12 @@ layout(push_constant) uniform WaterPC {
     vec4 p0;           // x = size.y, y = wave_height, z = wave_speed, w = wave_scale
     vec4 deep_clarity; // rgb = deep color, w = clarity
     vec4 shallow_refl; // rgb = shallow color, w = reflectivity
+    vec4 river;        // x = 1 for a river, y = flow speed
 } pc;
 
 layout(location = 0) out vec3 outWorldPos;
-layout(location = 1) out vec2 outGridXZ;   // world xz (for FS normal reconstruction)
+layout(location = 1) out vec2 outFlow;     // world xz per second the ripples drift
+layout(location = 2) out vec2 outAlong;    // unused for a rect (a river: along, across)
 
 const int GRID = 128;   // cells per side; 2 triangles per cell
 
@@ -55,6 +58,7 @@ void main() {
     float y   = pc.center_sx.y + wave_h(xz, u.cam_time.w);
 
     outWorldPos = vec3(xz.x, y, xz.y);
-    outGridXZ   = xz;
+    outFlow     = vec2(0.10, 0.04) * pc.p0.z;   // still water: a slow drift
+    outAlong    = xz;
     gl_Position = u.proj * u.view * vec4(outWorldPos, 1.0);
 }

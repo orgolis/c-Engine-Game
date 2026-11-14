@@ -71,7 +71,7 @@ jobs:
       - name: Build what the package installs
         run: >-
           cmake --build --preset linux-release --parallel
-          --target editor gws headless projectctl docgen assetcook
+          --target editor gws headless projectctl docgen assetcook worldgen
 
       - name: Stage the engine component
         id: stage
@@ -122,7 +122,7 @@ jobs:
             echo "::error::the packaged editor links a library that is not installed"; exit 1
           fi
           # The executable bit survived staging.
-          for exe in editor gws headless projectctl docgen assetcook tools/export_game_linux.sh; do
+          for exe in editor gws headless projectctl docgen assetcook worldgen tools/export_game_linux.sh; do
             [ -x "$exe" ] || { echo "::error::$exe is not executable"; exit 1; }
           done
           # The binary reports the version it is released under.

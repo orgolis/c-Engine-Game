@@ -8,7 +8,9 @@ it in the editor.
 
 ## What is in it
 
-- **The world** (`scenes/main.scene`): rolling hills with rivers under an HDR
+- **The world** (`scenes/main.scene`): 1024 m of rolling hills (built with
+  `gws world`, docs/systems/WORLDS_AND_WATER.md) with four rivers and their
+  lakes under an HDR
   sky (`assets/sky/`) and a sun that shines from where the sky's sun is and
   casts the trees' shadows (and, with Volumetric light on, light shafts), forests of grown broadleaf and conifer trees from 5 to
   18 m tall, grass and rocks. Trees and rocks are solid: they stop the player,

@@ -2,6 +2,7 @@
 
 #include "entity.h"
 #include <glm/glm.hpp>
+#include <vector>
 
 namespace schizo::scene {
 
@@ -10,7 +11,10 @@ namespace schizo::scene {
 // ============================================================================
 //
 // A rectangular animated water surface centered on the entity's origin: the
-// entity's world Y is the water level, `size_` spans the plane in X/Z. The
+// entity's world Y is the water level, `size_` spans the plane in X/Z. Or a
+// RIVER: a path of points (entity-local x, z; the level relative to the
+// entity; a half width) that the surface follows as one continuous ribbon,
+// its level falling along it and its ripples flowing downstream. The
 // water pass renders it as a procedural grid displaced by Gerstner-style
 // waves, shaded with fresnel environment reflections, sun glint, and
 // depth-based shore fade (shallow -> deep color).
@@ -59,7 +63,15 @@ public:
     bool IsPhysical() const { return physical_; }
     void SetPhysical(bool p) { MarkChanged(); physical_ = p; }
 
+    // ---- River ----
+    /// The river's path, downstream: (local x, local z, level above the
+    /// entity, half width). Two points or more make this a river.
+    const std::vector<glm::vec4>& GetPath() const { return path_; }
+    void SetPath(std::vector<glm::vec4> p) { MarkChanged(); path_ = std::move(p); }
+    bool IsRiver() const { return path_.size() >= 2; }
+
 private:
+    std::vector<glm::vec4> path_;
     bool      physical_      = true;
     glm::vec2 size_          = glm::vec2(60.0f, 60.0f);
     glm::vec3 deep_color_    = glm::vec3(0.02f, 0.12f, 0.18f);

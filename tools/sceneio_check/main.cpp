@@ -27,6 +27,7 @@
 #include "scene.h"
 #include "skinned_mesh_component.h"
 #include "transform.h"
+#include "water_component.h"
 
 #include "mesh_renderer_component.h"
 #include "terrain_component.h"
@@ -85,6 +86,11 @@ int main() {
         // Terrain per-layer surface. Values chosen to be nothing like the
         // defaults, so a field that silently fails to round-trip reads as its
         // default and the assertion catches it.
+        // A river: one continuous surface along a path.
+        auto river = scn->CreateEntity("River");
+        if (auto wc = river->AddComponent<scene::WaterComponent>())
+            wc->SetPath({glm::vec4(-10.0f, 4.0f, 2.5f, 3.3f), glm::vec4(0.0f, 5.0f, 2.25f, 3.3f), glm::vec4(12.5f, 6.0f, 1.75f, 3.6f)});
+
         auto ground = scn->CreateEntity("Ground");
         ground->AddComponent<scene::TerrainComponent>();
         auto tc = ground->GetComponent<scene::TerrainComponent>();
@@ -358,6 +364,15 @@ int main() {
         check(pec && std::abs(pec->color_start.r - 1.0f) < 1e-3f &&
               std::abs(pec->color_end.a - 0.0f) < 1e-3f,
               "and both colours, including a zero alpha");
+    }
+
+    // ---- the river's path came back ----------------------------------------
+    {
+        auto river = loaded->GetEntityByName("River");
+        auto wc = river ? river->GetComponent<scene::WaterComponent>() : nullptr;
+        check(wc && wc->IsRiver() && wc->GetPath().size() == 3 &&
+                  glm::length(wc->GetPath()[2] - glm::vec4(12.5f, 6.0f, 1.75f, 3.6f)) < 1e-4f,
+              "a river keeps its path: every point, its level and its width");
     }
 
     // ---- the agent came back -------------------------------------------------

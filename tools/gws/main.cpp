@@ -467,6 +467,25 @@ int cmd_docs(int argc, char** argv) {
     return rc == 0 ? 0 : 1;
 }
 
+// --------------------------------------------------------------------- world
+// A whole world from a preset, written as a scene (worldgen does the work).
+int cmd_world(int argc, char** argv, bool json) {
+    const fs::path gen = sibling_tool("worldgen");
+    if (!fs::exists(gen)) {
+        std::fprintf(stderr, "gws world: worldgen not found next to gws (build it first)\n");
+        return 1;
+    }
+    std::string cmd = "\"" + gen.string() + "\"";
+    for (const char* o : {"--save", "--preset", "--size", "--resolution", "--seed", "--rivers", "--height", "--materials"})
+        if (const char* v = opt_value(argc, argv, o)) { cmd += " "; cmd += o; cmd += " \""; cmd += v; cmd += "\""; }
+    if (json) cmd += " --json";
+    if (!opt_value(argc, argv, "--save")) cmd += " --help";
+    std::string output;
+    const int rc = run_capture(cmd, output);
+    std::printf("%s", output.c_str());
+    return rc == 0 ? 0 : 1;
+}
+
 // --------------------------------------------------------------------- crash
 
 // Crash reports -> a grouped, filable bug (issue #11).
@@ -751,6 +770,12 @@ int usage() {
         "     --load <file>       load a .gameplay / save file\n"
         "     --project <dir>     load <dir>/scenes/main.gameplay if present\n"
         "     --demo              seed a small world, as a self-check\n"
+        "  world                a whole world from a preset, written as a scene\n"
+        "     --save <file>       the .scene to write (the heightmap etc. beside it)\n"
+        "     --preset <name>     Rolling hills (default), Mountains, Islands, Plain\n"
+        "     --size <m>          the land's side (keeps the preset's cell size)\n"
+        "     --resolution <n>    cells a side   --seed <n>   --rivers <n>   --height <m>\n"
+        "     --materials <dir>   write ground materials there (default: none)\n"
         "  build                build via a CMake preset\n"
         "     --preset <name>     default: windows-debug\n"
         "     --target <name>     default: all\n"
@@ -782,6 +807,7 @@ int main(int argc, char** argv) {
     if (cmd == "crash")      return cmd_crash(argc, argv);
     if (cmd == "build")      return cmd_build(argc, argv);
     if (cmd == "run")        return cmd_run(argc, argv);
+    if (cmd == "world")      return cmd_world(argc, argv, json);
     if (cmd == "screenshot") return not_implemented("screenshot", "issue #64");
 
     std::fprintf(stderr, "gws: unknown command '%s' (try --help)\n", cmd.c_str());

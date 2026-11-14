@@ -24,6 +24,12 @@ Play starts.
 To keep a path, a doorway or a camp clear, paint the layer's density mask
 there.
 
+Grass grows in clumps of curved blades of different heights, in three shades
+of the layer's colour; the blades sway in the wind, gusts rolling across a
+field. Nearer than 45% of the draw distance a clump is full, farther a lighter
+one; past 60% the clumps thin out. Nothing grows under water when a world is
+built (docs/systems/WORLDS_AND_WATER.md).
+
 Trees cast shadows -- and break the sun into light shafts (Volumetric light,
 Render Settings) -- from a **directional light** that casts shadows: put a
 Light (Directional, Cast Shadow) on the scene's sun. A scene without one is lit

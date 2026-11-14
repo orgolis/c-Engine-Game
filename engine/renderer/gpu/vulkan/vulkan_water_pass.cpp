@@ -10,7 +10,10 @@
 #include "water_spirv.h"
 
 #include <spdlog/spdlog.h>
+#include <glm/glm.hpp>
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <cstdint>
 
@@ -292,10 +295,110 @@ bool VulkanWaterPass::initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,
         gp.subpass             = 0;
         const VkResult r = vkCreateGraphicsPipelines(vk, VK_NULL_HANDLE, 1, &gp, nullptr,
                                                      &pipeline_);
+        // Rivers: the same fragment stage over a ribbon from a vertex buffer.
+        VkShaderModule rvs = make_module(vk, kWaterRiverVertSpv, kWaterRiverVertSpv_size);
+        if (r == VK_SUCCESS && rvs != VK_NULL_HANDLE) {
+            st[0].module = rvs;
+            VkVertexInputBindingDescription bind{0, sizeof(RiverVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+            std::array<VkVertexInputAttributeDescription, 3> at{};
+            at[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(RiverVertex, pos))};
+            at[1] = {1, 0, VK_FORMAT_R32G32_SFLOAT,    static_cast<uint32_t>(offsetof(RiverVertex, flow))};
+            at[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,    static_cast<uint32_t>(offsetof(RiverVertex, along))};
+            VkPipelineVertexInputStateCreateInfo rvi{};
+            rvi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+            rvi.vertexBindingDescriptionCount   = 1;
+            rvi.pVertexBindingDescriptions      = &bind;
+            rvi.vertexAttributeDescriptionCount = static_cast<uint32_t>(at.size());
+            rvi.pVertexAttributeDescriptions    = at.data();
+            gp.pVertexInputState = &rvi;
+            if (vkCreateGraphicsPipelines(vk, VK_NULL_HANDLE, 1, &gp, nullptr, &river_pipeline_) != VK_SUCCESS) {
+                spdlog::warn("VulkanWaterPass: river pipeline failed -- rivers will not draw");
+                river_pipeline_ = VK_NULL_HANDLE;
+            }
+        }
+        if (rvs) vkDestroyShaderModule(vk, rvs, nullptr);
         vkDestroyShaderModule(vk, vs, nullptr);
         vkDestroyShaderModule(vk, fs, nullptr);
         if (r != VK_SUCCESS) return false;
     }
+    return true;
+}
+
+void VulkanWaterPass::add_river(const std::vector<glm::vec4>& path,
+                                const glm::vec3& deep_color, const glm::vec3& shallow_color,
+                                float wave_height, float flow_speed, float wave_scale,
+                                float clarity, float reflectivity) {
+    const size_t n = path.size();
+    if (n < 2) return;
+    constexpr int kAcross = 4;   // strips across the river
+    RiverDraw rd;
+    rd.pc.center_sx    = glm::vec4(path[0].x, path[0].y, path[0].z, 0.0f);
+    rd.pc.p0           = glm::vec4(0.0f, wave_height, flow_speed, wave_scale);
+    rd.pc.deep_clarity = glm::vec4(deep_color, clarity);
+    rd.pc.shallow_refl = glm::vec4(shallow_color, reflectivity);
+    rd.pc.river        = glm::vec4(1.0f, flow_speed, 0.0f, 0.0f);
+    rd.first = static_cast<uint32_t>(river_verts_.size());
+    // Rows of vertices across the river at each point.
+    std::vector<RiverVertex> rows;
+    rows.reserve(n * (kAcross + 1));
+    float along = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        const glm::vec2 c(path[i].x, path[i].z);
+        const glm::vec2 a(path[i > 0 ? i - 1 : 0].x, path[i > 0 ? i - 1 : 0].z);
+        const glm::vec2 b(path[i + 1 < n ? i + 1 : n - 1].x, path[i + 1 < n ? i + 1 : n - 1].z);
+        glm::vec2 dir = b - a;
+        dir = glm::dot(dir, dir) > 1e-8f ? glm::normalize(dir) : glm::vec2(1.0f, 0.0f);
+        if (i > 0) along += glm::length(c - glm::vec2(path[i - 1].x, path[i - 1].z));
+        // Faster where it falls steeply.
+        const size_t j0 = i > 0 ? i - 1 : 0, j1 = i + 1 < n ? i + 1 : n - 1;
+        const float run  = glm::length(glm::vec2(path[j1].x - path[j0].x, path[j1].z - path[j0].z));
+        const float drop = path[j0].y - path[j1].y;
+        const float speed = flow_speed * (0.6f + std::min(4.0f, std::sqrt(std::max(0.0f, drop) / std::max(run, 0.1f)) * 9.0f));
+        const glm::vec2 side(-dir.y, dir.x);
+        for (int k = 0; k <= kAcross; ++k) {
+            const float s = -1.0f + 2.0f * static_cast<float>(k) / kAcross;
+            const glm::vec2 p = c + side * (path[i].w * s);
+            rows.push_back({glm::vec3(p.x, path[i].y, p.y), dir * speed, glm::vec2(along, s)});
+        }
+    }
+    for (size_t i = 0; i + 1 < n; ++i)
+        for (int k = 0; k < kAcross; ++k) {
+            const RiverVertex& a = rows[i * (kAcross + 1) + k];
+            const RiverVertex& b = rows[i * (kAcross + 1) + k + 1];
+            const RiverVertex& c = rows[(i + 1) * (kAcross + 1) + k];
+            const RiverVertex& d = rows[(i + 1) * (kAcross + 1) + k + 1];
+            river_verts_.insert(river_verts_.end(), {a, c, b, b, c, d});
+        }
+    rd.count = static_cast<uint32_t>(river_verts_.size()) - rd.first;
+    rivers_.push_back(rd);
+}
+
+bool VulkanWaterPass::ensure_river_buffer(uint32_t slot, VkDeviceSize bytes) {
+    if (bytes <= river_cap_[slot] && river_mapped_[slot]) return true;
+    VkDevice vk = device_->get_device();
+    // Safe without waiting: this slot was last read three frames ago.
+    if (river_mapped_[slot]) { vkUnmapMemory(vk, river_mem_[slot]); river_mapped_[slot] = nullptr; }
+    if (river_vbo_[slot]) { vkDestroyBuffer(vk, river_vbo_[slot], nullptr); river_vbo_[slot] = VK_NULL_HANDLE; }
+    if (river_mem_[slot]) { vkFreeMemory(vk, river_mem_[slot], nullptr); river_mem_[slot] = VK_NULL_HANDLE; }
+    river_cap_[slot] = 0;
+    const VkDeviceSize size = std::max<VkDeviceSize>(bytes + bytes / 2, 64 * 1024);
+    VkBufferCreateInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size  = size;
+    bi.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(vk, &bi, nullptr, &river_vbo_[slot]) != VK_SUCCESS) return false;
+    VkMemoryRequirements req{};
+    vkGetBufferMemoryRequirements(vk, river_vbo_[slot], &req);
+    VkMemoryAllocateInfo ai{};
+    ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize  = req.size;
+    ai.memoryTypeIndex = device_->find_memory_type(
+        req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(vk, &ai, nullptr, &river_mem_[slot]) != VK_SUCCESS) return false;
+    vkBindBufferMemory(vk, river_vbo_[slot], river_mem_[slot], 0);
+    if (vkMapMemory(vk, river_mem_[slot], 0, size, 0, &river_mapped_[slot]) != VK_SUCCESS) return false;
+    river_cap_[slot] = size;
     return true;
 }
 
@@ -304,7 +407,12 @@ void VulkanWaterPass::execute(VkCommandBuffer cmd,
                               const glm::mat4& proj,
                               const glm::vec3& camera_position,
                               float time_seconds) {
-    if (!enabled_ || draws_.empty() || pipeline_ == VK_NULL_HANDLE) return;
+    if (!enabled_ || (draws_.empty() && rivers_.empty()) || pipeline_ == VK_NULL_HANDLE) return;
+    // The rivers' vertices, into this frame's slot of the ring.
+    const uint32_t slot = river_frame_++ % kRiverRing;
+    const bool rivers_ok = !rivers_.empty() && river_pipeline_ != VK_NULL_HANDLE &&
+        ensure_river_buffer(slot, river_verts_.size() * sizeof(RiverVertex));
+    if (rivers_ok) std::memcpy(river_mapped_[slot], river_verts_.data(), river_verts_.size() * sizeof(RiverVertex));
 
     FrameUBO u{};
     u.view       = view;
@@ -339,6 +447,16 @@ void VulkanWaterPass::execute(VkCommandBuffer cmd,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(WaterDraw), &d);
         vkCmdDraw(cmd, kVertices, 1, 0, 0);
+    }
+    if (rivers_ok) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, river_pipeline_);
+        const VkDeviceSize off = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &river_vbo_[slot], &off);
+        for (const RiverDraw& r : rivers_) {
+            vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(WaterDraw), &r.pc);
+            vkCmdDraw(cmd, r.count, 1, r.first, 0);
+        }
     }
     vkCmdEndRenderPass(cmd);
 }
@@ -376,6 +494,13 @@ void VulkanWaterPass::destroy() {
     if (framebuffer_)     vkDestroyFramebuffer(vk, framebuffer_, nullptr);
     if (render_pass_)     vkDestroyRenderPass(vk, render_pass_, nullptr);
     if (ubo_mapped_)      vkUnmapMemory(vk, ubo_memory_);
+    for (uint32_t s = 0; s < kRiverRing; ++s) {
+        if (river_mapped_[s]) vkUnmapMemory(vk, river_mem_[s]);
+        if (river_vbo_[s])    vkDestroyBuffer(vk, river_vbo_[s], nullptr);
+        if (river_mem_[s])    vkFreeMemory(vk, river_mem_[s], nullptr);
+        river_mapped_[s] = nullptr; river_vbo_[s] = VK_NULL_HANDLE; river_mem_[s] = VK_NULL_HANDLE; river_cap_[s] = 0;
+    }
+    if (river_pipeline_) { vkDestroyPipeline(vk, river_pipeline_, nullptr); river_pipeline_ = VK_NULL_HANDLE; }
     if (ubo_)             vkDestroyBuffer(vk, ubo_, nullptr);
     if (ubo_memory_)      vkFreeMemory(vk, ubo_memory_, nullptr);
     if (gbuffer_sampler_) vkDestroySampler(vk, gbuffer_sampler_, nullptr);

@@ -32,15 +32,23 @@ inline std::vector<schizo::scene::WaterRect> biome_water_for(schizo::scene::Scen
         auto wc = e->GetComponent<schizo::scene::WaterComponent>();
         if (!wc) continue;
         const glm::vec3 p = e->GetTransform()->GetWorldPosition() - base;
+        auto add = [&](const schizo::scene::WaterRect& r) {
+            if (r.max_x < -half || r.min_x > half || r.max_z < -half || r.min_z > half) return;
+            out.push_back(r);
+            uint64_t bits[3];
+            static_assert(sizeof(float) * 5 <= sizeof(bits), "");
+            std::memset(bits, 0, sizeof bits);
+            std::memcpy(bits, &r, sizeof r);
+            for (uint64_t b : bits) key = (key ^ b) * 1099511628211ull;
+        };
+        if (wc->IsRiver()) {
+            // A river: a small rect round each point of its path.
+            for (const glm::vec4& q : wc->GetPath())
+                add(schizo::scene::WaterRect{p.x + q.x - q.w, p.z + q.y - q.w, p.x + q.x + q.w, p.z + q.y + q.w, p.y + q.z});
+            continue;
+        }
         const glm::vec2 s = wc->GetSize() * 0.5f;
-        if (p.x + s.x < -half || p.x - s.x > half || p.z + s.y < -half || p.z - s.y > half) continue;
-        const schizo::scene::WaterRect r{p.x - s.x, p.z - s.y, p.x + s.x, p.z + s.y, p.y};
-        out.push_back(r);
-        uint64_t bits[3];
-        static_assert(sizeof(float) * 5 <= sizeof(bits), "");
-        std::memset(bits, 0, sizeof bits);
-        std::memcpy(bits, &r, sizeof r);
-        for (uint64_t b : bits) key = (key ^ b) * 1099511628211ull;
+        add(schizo::scene::WaterRect{p.x - s.x, p.z - s.y, p.x + s.x, p.z + s.y, p.y});
     }
     return out;
 }

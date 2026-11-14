@@ -5263,7 +5263,17 @@ void ShowInspector(EditorState& editor_state) {
         auto water_comp = selected_entity->GetComponent<schizo::scene::WaterComponent>();
         if (water_comp) {
             if (ImGui::TreeNodeEx("Water", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::TextDisabled("Entity Y position = water level");
+                if (water_comp->IsRiver()) {
+                    float len = 0.0f;
+                    const auto& wpath = water_comp->GetPath();
+                    for (size_t i = 1; i < wpath.size(); ++i)
+                        len += glm::length(glm::vec2(wpath[i].x - wpath[i - 1].x, wpath[i].y - wpath[i - 1].y));
+                    ImGui::Text("River: %zu points, %.0f m long, falls %.1f m", wpath.size(), len,
+                                wpath.front().z - wpath.back().z);
+                    ImGui::TextDisabled("One surface along its path; Wave Speed is how fast it flows");
+                } else {
+                    ImGui::TextDisabled("Entity Y position = water level");
+                }
                 bool wphys = water_comp->IsPhysical();
                 if (ImGui::Checkbox("Physical##water", &wphys)) {
                     water_comp->SetPhysical(wphys);
@@ -5273,7 +5283,7 @@ void ShowInspector(EditorState& editor_state) {
                 ImGui::TextDisabled(wphys ? "(buoyancy + swimming in Play)"
                                           : "(visual only)");
                 glm::vec2 wsz = water_comp->GetSize();
-                if (ImGui::DragFloat2("Size (m)##water", &wsz.x, 1.0f, 1.0f, 4000.0f)) {
+                if (!water_comp->IsRiver() && ImGui::DragFloat2("Size (m)##water", &wsz.x, 1.0f, 1.0f, 4000.0f)) {
                     water_comp->SetSize(wsz); editor_state.editor_scene->MarkModified();
                 }
                 glm::vec3 dc = water_comp->GetDeepColor();
@@ -14209,11 +14219,23 @@ int main(int argc, char** argv) {
                             if (!went || !went->IsActiveInHierarchy()) continue;
                             // Standalone water surfaces.
                             if (auto wc = went->GetComponent<schizo::scene::WaterComponent>()) {
-                                water_pass->add_water(
-                                    went->GetTransform()->GetWorldPosition(),
-                                    wc->GetSize(), wc->GetDeepColor(), wc->GetShallowColor(),
-                                    wc->GetWaveHeight(), wc->GetWaveSpeed(), wc->GetWaveScale(),
-                                    wc->GetClarity(), wc->GetReflectivity());
+                                if (wc->IsRiver()) {
+                                    // One continuous ribbon along the river's path (world space).
+                                    static std::vector<glm::vec4> wpath;
+                                    wpath.clear();
+                                    const glm::vec3 wo = went->GetTransform()->GetWorldPosition();
+                                    for (const glm::vec4& q : wc->GetPath())
+                                        wpath.push_back(glm::vec4(wo.x + q.x, wo.y + q.z, wo.z + q.y, q.w));
+                                    water_pass->add_river(wpath, wc->GetDeepColor(), wc->GetShallowColor(),
+                                                          wc->GetWaveHeight(), wc->GetWaveSpeed(), wc->GetWaveScale(),
+                                                          wc->GetClarity(), wc->GetReflectivity());
+                                } else {
+                                    water_pass->add_water(
+                                        went->GetTransform()->GetWorldPosition(),
+                                        wc->GetSize(), wc->GetDeepColor(), wc->GetShallowColor(),
+                                        wc->GetWaveHeight(), wc->GetWaveSpeed(), wc->GetWaveScale(),
+                                        wc->GetClarity(), wc->GetReflectivity());
+                                }
                             }
                             // Terrain-integrated water: one surface covering the
                             // terrain rect at origin.y + water level.
@@ -14233,6 +14255,7 @@ int main(int argc, char** argv) {
                     }
                     static float water_time = 0.0f;
                     water_time += delta_time;
+                    if (g_buffer) g_buffer->set_wind_time(water_time);
                     water_pass->set_sun(sun_dir_for_rt, sun_color_for_rt);
                     { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "Water");
                     water_pass->execute(cmd, cam.view, cam.proj, cam.position, water_time); }

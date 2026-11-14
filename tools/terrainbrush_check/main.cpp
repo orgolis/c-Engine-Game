@@ -289,6 +289,17 @@ int main() {
         check(!run.lakes.empty() && run.lakes[0].level > rim - 1.5f && run.lakes[0].level < rim + 1.0f,
               "the lake rises to the lowest point of its rim, no higher");
         check(run.reached_edge && !run.reached_sea && run.river.back().x > 60.0f, "then it spills over and runs on to the edge of the land");
+        {
+            // A hollow shallower than the breach depth is cut through: no
+            // lake, one unbroken stretch. The 8-deep bowl still fills.
+            HydrologySettings cut_through;
+            cut_through.breach_depth = 12.0f;
+            const WaterRun through = trace_water(t, -60.0f, 0.0f, cut_through);
+            cut_through.breach_depth = 3.0f;
+            const WaterRun still_lake = trace_water(t, -60.0f, 0.0f, cut_through);
+            check(through.lakes.empty() && through.breaks.empty() && through.reached_edge && still_lake.lakes.size() == 1,
+                  "a hollow shallower than the breach depth is cut through, not filled; a deeper one is a lake");
+        }
 
         HydrologySettings sea;
         sea.has_sea = true;
@@ -324,6 +335,27 @@ int main() {
         }
         check(lakes == 1 && surf.size() > 5 && stepping, "the water to show is the lake and a chain along each stretch of river, each lower than the one before");
         check(outflow_below_lake, "the river leaving the lake stands no higher than the lake");
+
+        // The river as continuous surfaces: one per stretch, evenly spaced,
+        // never rising, each point over the carved bed, the one after the
+        // lake no higher than the lake.
+        const std::vector<WaterPath> paths = river_paths(cut, 3.0f, 1.0f, 2.0f);
+        bool even = true, never_up = true, over_bed = true, after_lake_ok = true;
+        size_t points = 0;
+        for (const WaterPath& wp : paths) {
+            points += wp.points.size();
+            for (size_t i = 1; i < wp.points.size(); ++i) {
+                const float gap = glm::length(glm::vec2(wp.points[i].x - wp.points[i - 1].x, wp.points[i].y - wp.points[i - 1].y));
+                if (gap > 2.6f || (gap < 0.5f && i + 1 < wp.points.size())) even = false;
+                if (wp.points[i].z > wp.points[i - 1].z + 1e-4f) never_up = false;
+            }
+            for (const glm::vec4& q : wp.points)
+                if (tt.SampleHeightLocal(q.x, q.y) > q.z + 0.05f) over_bed = false;
+            if (wp.stretch == 1 && !cut.lakes.empty() && wp.points.front().z > cut.lakes[0].level + 1e-3f) after_lake_ok = false;
+        }
+        check(paths.size() == 2 && points > 20 && even && never_up,
+              "the river as one continuous surface per stretch: evenly spaced, never rising");
+        check(over_bed && after_lake_ok, "the water stands over its carved bed, and below the lake after it");
     }
     {
         // A closed bowl with no way out: the run ends in a lake and does not loop.
@@ -538,8 +570,23 @@ int main() {
             }
             const int want = std::min<int>(static_cast<int>(p.biomes.size()), 2);
             ok = ok && used >= want;
+            // Nothing grows in a river: no plant within a river's half width
+            // of its path where the ground lies under its water.
+            size_t drowned = 0;
+            if (ok)
+                for (const auto& m : w.made)
+                    if (auto wc = m->GetComponent<WaterComponent>(); wc && wc->IsRiver())
+                        for (const auto& s : fc->Scatter(*tc))
+                            for (const auto& cellv : s.cells)
+                                for (const auto& in : cellv.items)
+                                    for (size_t q = 0; q < wc->GetPath().size(); q += 3) {
+                                        const glm::vec4& pt = wc->GetPath()[q];
+                                        if (glm::length(glm::vec2(in.pos.x - pt.x, in.pos.z - pt.y)) < pt.w * 0.5f && in.pos.y < pt.z - 0.2f)
+                                            ++drowned;
+                                    }
+            ok = ok && drowned == 0;
             check(ok, p.name + ": ground from 0 to " + std::to_string(static_cast<int>(hi)) + ", " + std::to_string(w.rivers) +
-                          " river(s), " + std::to_string(trees) + " plants, " + std::to_string(used) + " biomes in use");
+                          " river(s), " + std::to_string(trees) + " plants (none in a river), " + std::to_string(used) + " biomes in use");
         }
         Scene a("a"), b("b");
         const WorldPreset hills = world_presets()[0];
