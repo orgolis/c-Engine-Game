@@ -55,8 +55,16 @@ inline glm::vec3 any_perpendicular(const glm::vec3& d) {
     return glm::normalize(glm::cross(d, a));
 }
 
-// A tapering tube through `pts`, radius r0 at the first point to r1 at the last.
-inline void tube(TreeMeshData& m, const std::vector<glm::vec3>& pts, float r0, float r1, int sides) {
+inline float radius_at(float r0, float r1, float t) { return r0 + (r1 - r0) * std::clamp(t, 0.0f, 1.0f); }
+
+// A tapering tube through `pts`, radius r0 at the first point to r1 at the
+// last, its end closed by a low dome (not a tip too thin to see). An open
+// end was a hole: the bark is drawn one-sided, so through it the far wall's
+// inside was culled and the tube showed what was behind it -- forks looked
+// see-through. A tube that starts inside its parent (every branch, every
+// limb) or under the ground (the trunk) needs no cap there.
+inline void tube(TreeMeshData& m, const std::vector<glm::vec3>& pts, float r0, float r1, int sides,
+                 bool cap_start = false) {
     const float pi = 3.14159265358979323846f;
     if (pts.size() < 2 || sides < 3) return;
     const uint32_t base = static_cast<uint32_t>(m.bark_vertices.size());
@@ -81,6 +89,23 @@ inline void tube(TreeMeshData& m, const std::vector<glm::vec3>& pts, float r0, f
             const uint32_t a = base + i * ring + s, b = a + 1, c = a + ring, d = c + 1;
             m.bark_indices.insert(m.bark_indices.end(), {a, c, b, b, c, d});
         }
+    // The caps: the end ring again with normals bent outward, and a tip a
+    // little beyond it. Wound like the sides (their front faces out).
+    auto cap = [&](size_t i, float r, const glm::vec3& out, bool at_end) {
+        const uint32_t c0 = static_cast<uint32_t>(m.bark_vertices.size());
+        for (int s = 0; s <= sides; ++s) {
+            const TreeVertex v = m.bark_vertices[base + i * ring + static_cast<uint32_t>(s)];
+            m.bark_vertices.push_back({v.position, glm::normalize(v.normal + out), v.uv});
+        }
+        const uint32_t tip = static_cast<uint32_t>(m.bark_vertices.size());
+        m.bark_vertices.push_back({pts[i] + out * (r * 0.6f), out, glm::vec2(0.5f, at_end ? 4.0f : 0.0f)});
+        for (uint32_t s = 0; s < static_cast<uint32_t>(sides); ++s) {
+            if (at_end) m.bark_indices.insert(m.bark_indices.end(), {c0 + s, tip, c0 + s + 1});
+            else        m.bark_indices.insert(m.bark_indices.end(), {c0 + s, c0 + s + 1, tip});
+        }
+    };
+    if (cap_start) cap(0, r0, -glm::normalize(pts[1] - pts[0]), false);
+    if (r1 >= 0.0025f) cap(n - 1, r1, glm::normalize(pts[n - 1] - pts[n - 2]), true);
     ++m.branches;
 }
 
@@ -162,8 +187,12 @@ inline TreeMeshData generate_broadleaf_tree(uint32_t seed, int detail) {
     for (int i = 0; i < limbs; ++i, az += golden) {
         const glm::vec3 d = spread(glm::vec3(0, 1, 0), rnd.range(0.55f, 0.95f), az);
         const float len = rnd.range(0.30f, 0.40f);
-        const auto limb = path(top, d, len, glm::vec3(0, 0.9f, 0), full ? 4 : 3, rnd, 0.5f);
-        tube(m, limb, r_trunk * 0.62f, r_trunk * 0.3f, full ? 5 : 4);
+        // Each limb starts a little down inside the trunk (on its axis, and
+        // narrower than it), so the fork is solid.
+        const float lr0 = r_trunk * 0.62f, lr1 = r_trunk * 0.3f;
+        const glm::vec3 trunk_dir = glm::normalize(trunk.back() - trunk[trunk.size() - 2]);
+        const auto limb = path(top - trunk_dir * lr0, d, len, glm::vec3(0, 0.9f, 0), full ? 4 : 3, rnd, 0.5f);
+        tube(m, limb, lr0, lr1, full ? 5 : 4);
         const int branches = full ? 4 : 3;
         float az2 = rnd.range(0.0f, 6.28f);
         for (int j = 0; j < branches; ++j, az2 += golden) {
@@ -172,8 +201,11 @@ inline TreeMeshData generate_broadleaf_tree(uint32_t seed, int detail) {
             const glm::vec3 pd = glm::normalize(limb.back() - limb.front());
             const glm::vec3 bd = spread(pd, rnd.range(0.5f, 0.9f), az2);
             const float blen = len * rnd.range(0.45f, 0.6f);
+            // Never wider than the limb where it leaves it, and starting inside it.
+            const float br0 = std::min(r_trunk * 0.3f, radius_at(lr0, lr1, t) * 0.85f);
+            const float br1 = std::min(r_trunk * 0.12f, br0 * 0.6f);
             const auto br = path(at, bd, blen, glm::vec3(0, 0.6f, 0), full ? 3 : 2, rnd, 0.6f);
-            tube(m, br, r_trunk * 0.3f, r_trunk * 0.12f, full ? 4 : 3);
+            tube(m, br, br0, br1, full ? 4 : 3);
             if (!full) {
                 leaf_cluster(br.back(), 0.075f, 9, 0.085f);
                 leaf_cluster(point_on(br, 0.5f), 0.06f, 5, 0.08f);
@@ -181,10 +213,12 @@ inline TreeMeshData generate_broadleaf_tree(uint32_t seed, int detail) {
             }
             float az3 = rnd.range(0.0f, 6.28f);
             for (int k = 0; k < 3; ++k, az3 += golden) {
-                const glm::vec3 tat = point_on(br, rnd.range(0.4f, 1.0f));
+                const float tt = rnd.range(0.4f, 1.0f);
+                const glm::vec3 tat = point_on(br, tt);
                 const glm::vec3 td = spread(glm::normalize(br.back() - br.front()), rnd.range(0.5f, 1.0f), az3);
+                const float tr0 = std::min(r_trunk * 0.1f, radius_at(br0, br1, tt) * 0.85f);
                 const auto twig = path(tat, td, blen * rnd.range(0.35f, 0.5f), glm::vec3(0, 0.4f, 0), 2, rnd, 0.6f);
-                tube(m, twig, r_trunk * 0.1f, r_trunk * 0.05f, 3);
+                tube(m, twig, tr0, std::min(r_trunk * 0.05f, tr0 * 0.6f), 3);
                 leaf_cluster(twig.back(), 0.055f, 14, 0.045f);
             }
             leaf_cluster(br.back(), 0.05f, 10, 0.045f);
@@ -212,8 +246,9 @@ inline TreeMeshData generate_conifer_tree(uint32_t seed, int detail) {
         for (int b = 0; b < count; ++b, az += golden) {
             const glm::vec3 at = point_on(trunk, h);
             const glm::vec3 d = spread(glm::vec3(0, 1, 0), rnd.range(1.25f, 1.5f), az);   // full horizontal
+            const float br0 = std::min(0.008f * (1.0f - h * 0.5f), radius_at(0.026f, 0.003f, h) * 0.85f);
             const auto br = path(at, d, reach * rnd.range(0.85f, 1.1f), glm::vec3(0, -0.9f, 0), full ? 3 : 2, rnd, 0.3f);
-            tube(m, br, 0.008f * (1.0f - h * 0.5f), 0.002f, full ? 4 : 3);
+            tube(m, br, br0, std::min(0.002f, br0 * 0.6f), full ? 4 : 3);
             // Needle sprays along it: narrow strips fanned out on both sides
             // and a little up, like a fir's flat sprays. Near: many fine ones;
             // middle distance: fewer, wider, so the crown still reads as full.

@@ -293,10 +293,28 @@ void VulkanGBuffer::create_render_pass() {
     render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     render_pass_info.attachmentCount = static_cast<uint32_t>(attachments.size());
     render_pass_info.pAttachments = attachments.data();
+    // And out: everything after this pass samples these targets (lighting,
+    // AO, SSR, volumetrics, soft particles, the HZB build) or tests against
+    // the depth. Without this, the implicit dependency ends at BOTTOM_OF_PIPE
+    // with no memory access, so nothing after was ordered after the final
+    // layout transitions (synchronization validation: read-after-write).
+    VkSubpassDependency dependency_out{};
+    dependency_out.srcSubpass = 0;
+    dependency_out.dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependency_out.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dependency_out.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT;
+    dependency_out.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependency_out.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                   VK_ACCESS_TRANSFER_READ_BIT;
+    const VkSubpassDependency dependencies[2] = {dependency, dependency_out};
+
     render_pass_info.subpassCount = 1;
     render_pass_info.pSubpasses = &subpass;
-    render_pass_info.dependencyCount = 1;
-    render_pass_info.pDependencies = &dependency;
+    render_pass_info.dependencyCount = 2;
+    render_pass_info.pDependencies = dependencies;
 
     if (vkCreateRenderPass(vk_device, &render_pass_info, nullptr, &render_pass_) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create G-Buffer render pass");

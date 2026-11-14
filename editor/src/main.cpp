@@ -8901,10 +8901,19 @@ int main(int argc, char** argv) {
         // view-proj of the frame that BUILT it — testing with the current
         // camera against last frame's depth falsely culled anything newly
         // revealed by camera motion (the "objects vanish while moving" bug).
-        glm::mat4 hzb_prev_vp(1.0f);
-        glm::vec3 hzb_prev_cam_pos(0.0f);
-        glm::vec3 hzb_prev_cam_fwd(0.0f, 0.0f, -1.0f);
-        bool      hzb_prev_valid = false;
+        // One pyramid per frame in flight (VulkanHzbCuller's readback slots):
+        // each kept with the camera of the frame that built it. A frame tests
+        // the newest pyramid that is FINISHED on the GPU, with that pyramid's
+        // camera. (One shared buffer used to be read while the last frame was
+        // still writing it, and tested with a camera it was not built from.)
+        struct HzbSlot {
+            glm::mat4 vp{1.0f};
+            glm::vec3 pos{0.0f};
+            glm::vec3 fwd{0.0f, 0.0f, -1.0f};
+            bool      valid = false;
+        };
+        std::array<HzbSlot, VulkanHzbCuller::kReadbackSlots> hzb_slots{};
+        auto hzb_invalidate = [&hzb_slots] { for (auto& s : hzb_slots) s.valid = false; };
         // Occlusion hysteresis: a draw must test occluded on TWO consecutive
         // frames before it's actually dropped (one grace frame absorbs
         // readback latency + test jitter). Keyed by mesh+submesh+position.
@@ -9101,7 +9110,7 @@ int main(int argc, char** argv) {
             if (clouds)           clouds->resize(hdr, w, h);
             if (water_pass)       water_pass->resize(hdr, w, h);
             if (hzb_culler)       hzb_culler->resize(depth, w, h);
-            hzb_prev_valid = false;                    // no pyramid at this size yet
+            hzb_invalidate();                          // no pyramid at this size yet
 
             // Hand the new views on.
             if (ssao) {
@@ -12819,11 +12828,8 @@ int main(int argc, char** argv) {
             }
             }
             g_cp.mark("post_timings");
-            // Same story for the HZB readback — the GPU finished copying the
-            // HZB mip to the host buffer before signalling this fence.
-            { GWS_PROFILE_ZONE("hzb_readback");
-            if (hzb_culler) hzb_culler->pull_readback();
-            }
+            // The HZB readback is pulled where it is tested (the draw-list
+            // build): the newest FINISHED frame's slot, with its camera.
 
             g_cp.mark("post_hzb_readback");
             // Scoped deliberately. GWS_PROFILE_ZONE declares a local whose
@@ -13833,23 +13839,37 @@ int main(int argc, char** argv) {
                     aabb_mins[i] = wmin;
                     aabb_maxs[i] = wmax;
                 });
-                // Camera-motion gate: the pyramid is one frame old, so on a
-                // cut or fast pan/rotation the test would falsely cull
+                // Which pyramid: last frame's if the GPU has finished it, else
+                // the one before (finished: its fence was waited on at the top
+                // of this frame -- its slot is this frame's, rewritten only
+                // after this read).
+                constexpr uint32_t kSlots = VulkanHzbCuller::kReadbackSlots;
+                const uint32_t slot_now  = current_frame % kSlots;
+                const uint32_t slot_last = ((current_frame + kMaxFrames - 1) % kMaxFrames) % kSlots;
+                int use_slot = -1;
+                if (hzb_slots[slot_last].valid &&
+                    vkGetFenceStatus(device.get_device(), frame_fences[(current_frame + kMaxFrames - 1) % kMaxFrames]) == VK_SUCCESS)
+                    use_slot = static_cast<int>(slot_last);
+                else if (hzb_slots[slot_now].valid)
+                    use_slot = static_cast<int>(slot_now);
+                if (use_slot >= 0) hzb_culler->pull_readback(static_cast<uint32_t>(use_slot));
+                const HzbSlot* hs = use_slot >= 0 ? &hzb_slots[static_cast<size_t>(use_slot)] : nullptr;
+                // Camera-motion gate: the pyramid is a frame or two old, so on
+                // a cut or fast pan/rotation the test would falsely cull
                 // objects the old depth never saw. Skip occlusion those
                 // frames (frustum culling still applies).
                 const glm::vec3 view_fwd = glm::normalize(
                     glm::vec3(-cam.view[0][2], -cam.view[1][2], -cam.view[2][2]));
-                const bool camera_moved_fast = hzb_prev_valid &&
-                    (glm::length(cam.position - hzb_prev_cam_pos) > 1.0f ||
-                     glm::dot(view_fwd, hzb_prev_cam_fwd) < 0.996f);
+                const bool camera_moved_fast = hs != nullptr &&
+                    (glm::length(cam.position - hs->pos) > 1.0f ||
+                     glm::dot(view_fwd, hs->fwd) < 0.996f);
 
                 if (draw_n && aabb_mins && aabb_maxs &&
-                    hzb_prev_valid && !camera_moved_fast) {
+                    hs != nullptr && !camera_moved_fast) {
                     // Test with the view-proj of the frame that BUILT the
-                    // current pyramid — never the current camera.
+                    // pyramid -- never the current camera.
                     lap_.reset(); lap_.emplace("hzb.test");
-                    hzb_culler->test_visibility(aabb_mins, aabb_maxs, draw_n,
-                                                hzb_prev_vp);
+                    hzb_culler->test_visibility(aabb_mins, aabb_maxs, draw_n, hs->vp);
                     lap_.reset(); lap_.emplace("hzb.filter");
 
                     // Filter with 2-frame hysteresis: only drop a draw that
@@ -13909,12 +13929,10 @@ int main(int argc, char** argv) {
                     hzb_occluded_streak.clear();
                 }
 
-                // Next frame's pyramid is built from THIS frame's depth, so
-                // remember this frame's camera for next frame's test.
-                hzb_prev_vp      = cam.proj * cam.view;
-                hzb_prev_cam_pos = cam.position;
-                hzb_prev_cam_fwd = view_fwd;
-                hzb_prev_valid   = true;
+                // This frame's pyramid (built from THIS frame's depth, in the
+                // geometry stage) goes to this frame's slot, with this camera.
+                hzb_culler->set_write_slot(slot_now);
+                hzb_slots[slot_now] = HzbSlot{cam.proj * cam.view, cam.position, view_fwd, true};
             }
             // The filtered list is handed over by swap: nothing reads
             // geometry_draws after this, and copying it into the graph was a
@@ -14125,16 +14143,9 @@ int main(int argc, char** argv) {
                     }); }
                 { GWS_PROFILE_ZONE("stage_geometry");
                   graph->execute_stage(cmd, RenderGraphStage::Geometry,   {}); }
-                // HZB occlusion: build the depth pyramid from THIS frame's depth
-                // (compute downsample chain) + copy the readback mip to a host
-                // buffer. pull_readback() next frame feeds test_visibility(), which
-                // ran at the top of THIS frame against the PREVIOUS frame's pyramid.
-                // Without this call the CPU HZB is never populated — the reason the
-                // occlusion test was previously dropping objects (garbage data).
-                if (hzb_culler) {
-                    engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "HZB");
-                    hzb_culler->build_and_readback(cmd);
-                }
+                // The HZB pyramid is built by the geometry stage itself
+                // (VulkanRenderGraph::record_geometry) into this frame's
+                // readback slot. It was built a second time here, every frame.
                 // SSAO compute dispatch — runs after the G-Buffer is populated
                 // and before lighting samples the occlusion texture. Outside
                 // the render graph because it's a compute pass and the graph
@@ -14294,7 +14305,7 @@ int main(int argc, char** argv) {
                 { GWS_PROFILE_ZONE("stage_post");
                   graph->execute_stage(cmd, RenderGraphStage::PostProcess, {}); }
             } else {
-                hzb_prev_valid = false;
+                hzb_slots[current_frame % VulkanHzbCuller::kReadbackSlots].valid = false;   // no pyramid built this frame
             }
             graph->end_frame(cmd);
             gpu_zones.end_frame(device.get_device());
@@ -14347,9 +14358,23 @@ int main(int argc, char** argv) {
             // here, while it still owns the swapchain image.
             SwapchainCapture capture{};
             const bool last_frame = frame_limit > 0 && frame_count + 1 >= frame_limit;
-            const bool capturing = last_frame && !screenshot_path.empty() &&
+            // GWS_TEST_SHOTS=<frame>,<frame>,...: with --screenshot, also write
+            // these frames, as <path>_<frame>.tga -- a sequence from one run
+            // (flicker, popping: what changes from frame to frame). Each one
+            // waits for its frame, so space them out by a few frames.
+            static const std::vector<uint32_t> test_shots = [] {
+                std::vector<uint32_t> v;
+                if (const char* s = std::getenv("GWS_TEST_SHOTS")) {
+                    std::stringstream ss(s);
+                    std::string tok;
+                    while (std::getline(ss, tok, ',')) if (!tok.empty()) v.push_back(static_cast<uint32_t>(std::atoi(tok.c_str())));
+                }
+                return v;
+            }();
+            const bool shot_now = !last_frame &&
+                std::find(test_shots.begin(), test_shots.end(), static_cast<uint32_t>(frame_count + 1)) != test_shots.end();
+            const bool capturing = (last_frame || shot_now) && !screenshot_path.empty() &&
                                    record_swapchain_capture(device, swapchain, image_index, cmd, capture);
-
             vkEndCommandBuffer(cmd);
 
             VkPipelineStageFlags wait_stage =
@@ -14419,7 +14444,12 @@ int main(int argc, char** argv) {
             if (capturing) {
                 vkWaitForFences(device.get_device(), 1, &frame_fences[(current_frame + kMaxFrames - 1) % kMaxFrames],
                                 VK_TRUE, UINT64_MAX);
-                write_swapchain_capture(device, capture, screenshot_path);
+                std::string shot_path = screenshot_path;
+                if (!last_frame) {
+                    const size_t dot = shot_path.rfind('.');
+                    shot_path.insert(dot == std::string::npos ? shot_path.size() : dot, "_" + std::to_string(frame_count));
+                }
+                write_swapchain_capture(device, capture, shot_path);
             }
             if (frame_limit > 0 && frame_count >= frame_limit) {
                 spdlog::info("[frames] rendered {} frame(s); exiting as requested", frame_count);

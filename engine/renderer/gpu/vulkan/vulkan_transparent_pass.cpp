@@ -690,7 +690,11 @@ bool VulkanTransparentPass::initialize(VulkanDevice* device,
     atts[2].format         = depth_format;
     atts[2].samples        = VK_SAMPLE_COUNT_1_BIT;
     atts[2].loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD;
-    atts[2].storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    // STORE, not DONT_CARE: the scene's depth is read after this pass (soft
+    // particles, post-processing). DONT_CARE let the driver drop it -- on
+    // NVIDIA every compressed tile (the sky, flat ground, big leaf cards)
+    // read back as zeros and garbage: 8x8 holes and dots in smoke.
+    atts[2].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
     atts[2].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     atts[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     atts[2].initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;

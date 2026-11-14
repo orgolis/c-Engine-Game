@@ -83,14 +83,11 @@ void VulkanHzbCuller::destroy() {
     if (hzb_image_ != VK_NULL_HANDLE) { vkDestroyImage(vk, hzb_image_, nullptr); hzb_image_ = VK_NULL_HANDLE; }
     if (hzb_memory_ != VK_NULL_HANDLE) { vkFreeMemory(vk, hzb_memory_, nullptr); hzb_memory_ = VK_NULL_HANDLE; }
 
-    if (readback_buffer_ != VK_NULL_HANDLE) {
-        if (readback_mapped_ != nullptr) {
-            vkUnmapMemory(vk, readback_memory_);
-            readback_mapped_ = nullptr;
-        }
-        vkDestroyBuffer(vk, readback_buffer_, nullptr); readback_buffer_ = VK_NULL_HANDLE;
+    for (uint32_t s = 0; s < kReadbackSlots; ++s) {
+        if (readback_mapped_[s] != nullptr) { vkUnmapMemory(vk, readback_memory_[s]); readback_mapped_[s] = nullptr; }
+        if (readback_buffer_[s] != VK_NULL_HANDLE) { vkDestroyBuffer(vk, readback_buffer_[s], nullptr); readback_buffer_[s] = VK_NULL_HANDLE; }
+        if (readback_memory_[s] != VK_NULL_HANDLE) { vkFreeMemory(vk, readback_memory_[s], nullptr); readback_memory_[s] = VK_NULL_HANDLE; }
     }
-    if (readback_memory_ != VK_NULL_HANDLE) { vkFreeMemory(vk, readback_memory_, nullptr); readback_memory_ = VK_NULL_HANDLE; }
 
     device_ = nullptr;
 }
@@ -347,24 +344,26 @@ bool VulkanHzbCuller::create_readback_buffer() {
 
     VkDevice vk = device_->get_device();
 
-    VkBufferCreateInfo bi{};
-    bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bi.size        = bytes;
-    bi.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(vk, &bi, nullptr, &readback_buffer_) != VK_SUCCESS) return false;
+    for (uint32_t s = 0; s < kReadbackSlots; ++s) {
+        VkBufferCreateInfo bi{};
+        bi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bi.size        = bytes;
+        bi.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(vk, &bi, nullptr, &readback_buffer_[s]) != VK_SUCCESS) return false;
 
-    VkMemoryRequirements mr{};
-    vkGetBufferMemoryRequirements(vk, readback_buffer_, &mr);
-    VkMemoryAllocateInfo ai{};
-    ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.allocationSize  = mr.size;
-    ai.memoryTypeIndex = device_->find_memory_type(
-        mr.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (vkAllocateMemory(vk, &ai, nullptr, &readback_memory_) != VK_SUCCESS) return false;
-    vkBindBufferMemory(vk, readback_buffer_, readback_memory_, 0);
-    if (vkMapMemory(vk, readback_memory_, 0, bytes, 0, &readback_mapped_) != VK_SUCCESS) return false;
+        VkMemoryRequirements mr{};
+        vkGetBufferMemoryRequirements(vk, readback_buffer_[s], &mr);
+        VkMemoryAllocateInfo ai{};
+        ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        ai.allocationSize  = mr.size;
+        ai.memoryTypeIndex = device_->find_memory_type(
+            mr.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(vk, &ai, nullptr, &readback_memory_[s]) != VK_SUCCESS) return false;
+        vkBindBufferMemory(vk, readback_buffer_[s], readback_memory_[s], 0);
+        if (vkMapMemory(vk, readback_memory_[s], 0, bytes, 0, &readback_mapped_[s]) != VK_SUCCESS) return false;
+    }
 
     cpu_hzb_.assign(static_cast<size_t>(readback_width_) * readback_height_, 1.0f);
     return true;
@@ -390,8 +389,10 @@ void VulkanHzbCuller::build_and_readback(VkCommandBuffer cmd) {
     barr_to_general.subresourceRange.baseMipLevel = 0;
     barr_to_general.subresourceRange.levelCount   = mip_count_;
     barr_to_general.subresourceRange.layerCount   = 1;
+    // One pyramid image for every frame: wait for the previous frame's use
+    // of it (its downsample and readback copy) before writing it again.
     vkCmdPipelineBarrier(cmd,
-                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &barr_to_general);
 
@@ -462,16 +463,28 @@ void VulkanHzbCuller::build_and_readback(VkCommandBuffer cmd) {
     region.imageSubresource.baseArrayLayer = 0;
     region.imageSubresource.layerCount     = 1;
     region.imageExtent = { readback_width_, readback_height_, 1 };
+    VkBuffer dst = readback_buffer_[write_slot_];
+    // The host read this slot's last contents before this frame was recorded.
+    VkBufferMemoryBarrier hb{};
+    hb.sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    hb.srcAccessMask       = VK_ACCESS_HOST_READ_BIT;
+    hb.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+    hb.srcQueueFamilyIndex = hb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    hb.buffer              = dst;
+    hb.size                = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 1, &hb, 0, nullptr);
     vkCmdCopyImageToBuffer(cmd, hzb_image_,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           readback_buffer_, 1, &region);
+                           dst, 1, &region);
 
     // Make the copy visible to host reads after the frame fence.
     VkBufferMemoryBarrier bb{};
     bb.sType         = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     bb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     bb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-    bb.buffer        = readback_buffer_;
+    bb.srcQueueFamilyIndex = bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bb.buffer        = dst;
     bb.size          = VK_WHOLE_SIZE;
     vkCmdPipelineBarrier(cmd,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -479,10 +492,11 @@ void VulkanHzbCuller::build_and_readback(VkCommandBuffer cmd) {
                          0, 0, nullptr, 1, &bb, 0, nullptr);
 }
 
-void VulkanHzbCuller::pull_readback() {
-    if (!enabled_ || readback_mapped_ == nullptr) return;
+void VulkanHzbCuller::pull_readback(uint32_t slot) {
+    slot %= kReadbackSlots;
+    if (!enabled_ || readback_mapped_[slot] == nullptr) return;
     const size_t bytes = cpu_hzb_.size() * sizeof(float);
-    std::memcpy(cpu_hzb_.data(), readback_mapped_, bytes);
+    std::memcpy(cpu_hzb_.data(), readback_mapped_[slot], bytes);
     cpu_hzb_valid_ = true;
 }
 

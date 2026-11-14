@@ -12,8 +12,15 @@
  *      frame's depth buffer, then copies one mip level (the "readback mip"
  *      — half-resolution by default for a 32x18 pixel HZB at 1920x1080)
  *      to a host-visible buffer.
- *   3. (CPU, next frame start) `pull_readback()` swaps the readback buffer
- *      contents into the CPU-side HZB array used by `test_visibility`.
+ *   3. (CPU, a later frame) `pull_readback(slot)` copies one readback into
+ *      the CPU-side HZB array used by `test_visibility`.
+ *
+ * Readbacks go to one buffer per frame in flight (`set_write_slot`), so a
+ * frame still on the GPU never writes the buffer being read, and the caller
+ * tests each pyramid with the view-projection of the frame that BUILT it.
+ * With one shared buffer (before 0.8.46), a frame read the pyramid of two
+ * frames ago -- or half of one -- and tested it with last frame's camera:
+ * while the camera moved, things on screen could be culled for a frame.
  *
  * One frame of latency in steady state — culled objects re-appear one
  * frame after their occluder clears. Acceptable for editor / WYSIWYG use.
@@ -84,10 +91,15 @@ public:
     /// writing depth, while still inside the same frame's command buffer.
     void build_and_readback(VkCommandBuffer cmd);
 
-    /// CPU side: copy the host-visible readback buffer contents into the
-    /// CPU-side HZB array used by test_visibility. Call after the frame
-    /// fence is signalled so the GPU has finished the readback copy.
-    void pull_readback();
+    /// Which readback buffer this frame's build_and_readback writes: the
+    /// frame-in-flight index (below kReadbackSlots).
+    static constexpr uint32_t kReadbackSlots = 3;
+    void set_write_slot(uint32_t slot) { write_slot_ = slot % kReadbackSlots; }
+
+    /// CPU side: copy one slot's readback into the CPU-side HZB array used by
+    /// test_visibility. Only once the frame that wrote that slot has finished
+    /// on the GPU (its fence).
+    void pull_readback(uint32_t slot);
 
     void     set_enabled(bool e) { enabled_ = e; }
     bool     is_enabled() const  { return enabled_; }
@@ -142,10 +154,11 @@ private:
     // HZB[0]"; index k>0 = "HZB[k-1] → HZB[k]".
     std::vector<VkDescriptorSet> descriptor_sets_;
 
-    // ---- Readback ----
-    VkBuffer       readback_buffer_ = VK_NULL_HANDLE;
-    VkDeviceMemory readback_memory_ = VK_NULL_HANDLE;
-    void*          readback_mapped_ = nullptr;
+    // ---- Readback: one buffer per frame in flight ----
+    VkBuffer       readback_buffer_[kReadbackSlots] = {};
+    VkDeviceMemory readback_memory_[kReadbackSlots] = {};
+    void*          readback_mapped_[kReadbackSlots] = {};
+    uint32_t       write_slot_      = 0;
     uint32_t       readback_width_  = 0;
     uint32_t       readback_height_ = 0;
 

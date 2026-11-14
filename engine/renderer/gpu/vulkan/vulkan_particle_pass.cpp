@@ -167,8 +167,15 @@ bool VulkanParticlePass::create_render_pass(VkFormat hdr_format, VkFormat depth_
     color.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
     color.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    color.initialLayout  = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    color.finalLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    // The layouts the neighbours use, before and after: the transparent
+    // composite leaves the HDR image SHADER_READ_ONLY (post-processing samples
+    // it so), and the G-buffer leaves depth DEPTH_STENCIL_READ_ONLY (and the
+    // transparent pass keeps it there). Declaring ATTACHMENT layouts here
+    // (as before 0.8.46) did not match what the neighbours leave, and left
+    // both images in attachment layouts for the passes after this one, which
+    // sample them (three validation errors whenever particles were drawn).
+    color.initialLayout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    color.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     // Depth is read-only: LOAD it, and STORE_OP_NONE would be ideal but STORE
     // is portable and harmless since nothing writes it.
@@ -179,8 +186,8 @@ bool VulkanParticlePass::create_render_pass(VkFormat hdr_format, VkFormat depth_
     depth.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
     depth.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depth.initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depth.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth.initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    depth.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
     VkAttachmentReference color_ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     // Read-only for the pass: tested against AND sampled (soft particles) --
@@ -209,15 +216,25 @@ bool VulkanParticlePass::create_render_pass(VkFormat hdr_format, VkFormat depth_
                         VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    // And hand the blended image to what samples it next (post-processing,
+    // fragment or compute).
+    VkSubpassDependency out{};
+    out.srcSubpass    = 0;
+    out.dstSubpass    = VK_SUBPASS_EXTERNAL;
+    out.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    out.dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    out.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    out.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
     const VkAttachmentDescription attachments[2] = {color, depth};
+    const VkSubpassDependency     deps[2] = {dep, out};
     VkRenderPassCreateInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
     rp.attachmentCount = 2;
     rp.pAttachments    = attachments;
     rp.subpassCount    = 1;
     rp.pSubpasses      = &sub;
-    rp.dependencyCount = 1;
-    rp.pDependencies   = &dep;
+    rp.dependencyCount = 2;
+    rp.pDependencies   = deps;
 
     if (vkCreateRenderPass(vk_, &rp, nullptr, &render_pass_) != VK_SUCCESS) {
         spdlog::error("[Particles] vkCreateRenderPass failed");

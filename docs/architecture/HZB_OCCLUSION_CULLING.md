@@ -3,6 +3,20 @@
 **Date**: April 27, 2026  
 **Status**: ✅ COMPLETE  
 
+> **As it runs now (0.8.46).** The pyramid is built once a frame, by the
+> geometry stage (`VulkanRenderGraph::record_geometry`), and its readback mip
+> is copied to that frame's own readback buffer (`set_write_slot`, one per
+> frame in flight). The CPU test runs in `editor/src/main.cpp` while the draw
+> list is built: it pulls the newest pyramid that is FINISHED on the GPU (last
+> frame's if its fence has signalled, otherwise the one before) and tests it
+> with the view-projection of the frame that built it, with a two-frame
+> hysteresis and a camera-motion gate. Before 0.8.46 there was one readback
+> buffer for two frames in flight: a frame could read a pyramid two frames
+> old -- or one the GPU was still writing -- and test it with last frame's
+> camera, so while the camera moved a visible object could be dropped for a
+> frame. `GWS_NO_HZB=1` turns the culler off for an A/B. The sections below
+> describe the original design.
+
 ---
 
 ## Overview
