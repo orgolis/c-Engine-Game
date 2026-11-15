@@ -101,6 +101,16 @@ void write_entity_block(std::ofstream& file,
             file << "SKINNED_CLIP="  << smc->clip_index << "\n";
             file << "SKINNED_PLAY="  << (smc->playing ? "1" : "0") << "\n";
             file << "SKINNED_SPEED=" << smc->speed      << "\n";
+            if (smc->drive_from_motion)
+                file << "SKINNED_MOTION=" << smc->idle_clip << "," << smc->move_clip << "," << smc->move_threshold << "\n";
+            if (smc->drive_from_gameplay) {
+                file << "SKINNED_GAMEPLAY=" << smc->run_speed << "\n";
+                file << "SKINNED_CLIPS=" << smc->clips << "\n";
+                if (!smc->upper_body.empty()) file << "SKINNED_UPPER=" << smc->upper_body << "\n";
+            }
+            if (!smc->attach_bone.empty())
+                file << "SKINNED_ATTACH=" << smc->attach_bone << "|" << smc->attach_pos.x << "," << smc->attach_pos.y << ","
+                     << smc->attach_pos.z << "|" << smc->attach_rot.x << "," << smc->attach_rot.y << "," << smc->attach_rot.z << "\n";
         }
     }
 
@@ -582,6 +592,12 @@ struct ParsedEntity {
     int         skinned_clip  = 0;
     bool        skinned_play  = true;
     float       skinned_speed = 1.0f;
+    bool        skinned_motion = false;
+    glm::vec3   skinned_motion_v{0.0f, 1.0f, 0.15f};   // idle clip, move clip, threshold
+    bool        skinned_gameplay = false;
+    float       skinned_run = 3.2f;
+    std::string skinned_clips, skinned_upper, skinned_attach_bone;
+    glm::vec3   skinned_attach_pos{0.0f}, skinned_attach_rot{0.0f};
     bool mesh_use_asset = false;
 
     bool has_transform_comp = false;
@@ -763,6 +779,23 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
     if (starts_with(line, "SKINNED_CLIP", v))  { p.skinned_clip = std::atoi(v.c_str()); return; }
     if (starts_with(line, "SKINNED_PLAY", v))  { p.skinned_play = (v == "1"); return; }
     if (starts_with(line, "SKINNED_SPEED", v)) { p.skinned_speed = static_cast<float>(std::atof(v.c_str())); return; }
+    if (starts_with(line, "SKINNED_MOTION", v)) {
+        p.skinned_motion = true;
+        std::sscanf(v.c_str(), "%f,%f,%f", &p.skinned_motion_v.x, &p.skinned_motion_v.y, &p.skinned_motion_v.z);
+        return;
+    }
+    if (starts_with(line, "SKINNED_GAMEPLAY", v)) { p.skinned_gameplay = true; p.skinned_run = static_cast<float>(std::atof(v.c_str())); return; }
+    if (starts_with(line, "SKINNED_CLIPS", v))    { p.skinned_clips = v; return; }
+    if (starts_with(line, "SKINNED_UPPER", v))    { p.skinned_upper = v; return; }
+    if (starts_with(line, "SKINNED_ATTACH", v)) {
+        const size_t a = v.find('|'), b = a == std::string::npos ? std::string::npos : v.find('|', a + 1);
+        p.skinned_attach_bone = v.substr(0, a);
+        if (a != std::string::npos)
+            std::sscanf(v.c_str() + a + 1, "%f,%f,%f", &p.skinned_attach_pos.x, &p.skinned_attach_pos.y, &p.skinned_attach_pos.z);
+        if (b != std::string::npos)
+            std::sscanf(v.c_str() + b + 1, "%f,%f,%f", &p.skinned_attach_rot.x, &p.skinned_attach_rot.y, &p.skinned_attach_rot.z);
+        return;
+    }
     if (starts_with(line, "MESH_PATH", v))      { p.mesh_path = v; return; }
     if (starts_with(line, "MESH_USE_ASSET", v)) { p.mesh_use_asset = (v == "1"); return; }
 
@@ -1075,6 +1108,19 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
         smc->clip_index = p.skinned_clip;
         smc->playing    = p.skinned_play;
         smc->speed      = p.skinned_speed;
+        smc->drive_from_motion = p.skinned_motion;
+        if (p.skinned_motion) {
+            smc->idle_clip      = static_cast<int>(p.skinned_motion_v.x);
+            smc->move_clip      = static_cast<int>(p.skinned_motion_v.y);
+            smc->move_threshold = p.skinned_motion_v.z;
+        }
+        smc->drive_from_gameplay = p.skinned_gameplay;
+        smc->run_speed   = p.skinned_run;
+        smc->clips       = p.skinned_clips;
+        smc->upper_body  = p.skinned_upper;
+        smc->attach_bone = p.skinned_attach_bone;
+        smc->attach_pos  = p.skinned_attach_pos;
+        smc->attach_rot  = p.skinned_attach_rot;
     }
 
     if (p.has_transform_comp) {

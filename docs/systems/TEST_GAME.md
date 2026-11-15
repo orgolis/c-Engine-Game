@@ -16,7 +16,8 @@ it in the editor.
   18 m tall, grass and rocks. Trees and rocks are solid: they stop the player,
   rounds, grenades and creatures (docs/systems/FOLIAGE.md); the ground round
   the start, the caches, checkpoints, the beacon and the camps is kept clear.
-- **The player**: first person, the full movement set (sprint, crouch, slide,
+- **The player**: first person (a rigged soldier, seen in third person and in
+  its shadow), the gun in hand seen and animated, the full movement set (sprint, crouch, slide,
   dash, mantle, climb), three weapon slots -- a rifle and a pistol to start,
   the third empty (keys 1, 2, 3; the mouse wheel or Q switches too) -- two
   frag grenades (G, thrown: aim up to throw far), Firebolt on Z, health and
@@ -37,6 +38,11 @@ it in the editor.
 - **Inventory** (I): the three weapon slots (click a gun to draw it; Put in
   bag), what is worn (click to take it off) and the bag (pick an item, then
   Use / equip: potions, gear, guns).
+- **Soldiers** (docs/systems/CHARACTERS.md): three outposts of riflemen and
+  heavy gunners -- rigged, animated models with guns in their hands -- who
+  patrol, aim, shoot (rifle shots and machine-gun bursts that spread at range)
+  from cover distance, stagger when hit and fall when killed. Their guns and
+  attacks are `assets/gameplay/soldiers.items`.
 - **Creature camps** (docs/systems/CREATURES_AI.md): creatures wander about
   their camp, see the player only with a clear line (not through hills or
   trees), hear it close by and hear gunfire, and call their camp in. They
@@ -69,7 +75,7 @@ Logic scripts in `testgame/`:
   menu at the start; Start and Quit; Esc opens and closes the pause menu (not
   over the title or the win screen) and its Resume / Save / Load / Quit; every
   `died` event of the enemy team gives XP and rounds and counts down
-  "Creatures left" on the HUD; at zero it sets the world flag `game.cleared`.
+  "Enemies left" (creatures and soldiers) on the HUD; at zero it sets the world flag `game.cleared`.
   It also gives the player the `hero` skill tree at the start, opens and
   closes the inventory (I) and skill tree (K) -- Esc closes them too -- and
   runs their Use, Put in bag and Learn buttons.
@@ -95,9 +101,9 @@ before (Settings) keep their keys: Reset controls there gives these.
 
 ## Known limits
 
-- Creatures are capsules (no rigged models yet); they steer round trees but
-  can still get stuck in a dense thicket.
-- Guns have no models in the hand yet (the HUD names the one held).
+- Creatures are capsules (the soldiers are rigged models); they steer round
+  trees but can still get stuck in a dense thicket.
+- No inverse kinematics: a soldier's support hand follows its clip, not the gun.
 - A claw lands at the end of its wind-up if the player is still in reach;
   there is no blocking or dodging animation.
 - Trees are grown from flat leaf and needle cards without textures: they have

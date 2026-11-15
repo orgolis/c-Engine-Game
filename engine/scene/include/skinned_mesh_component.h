@@ -18,6 +18,8 @@
 // loadable, savable and diffable without a Vulkan device in the process.
 // ============================================================================
 
+#include <glm/glm.hpp>
+
 #include <string>
 
 namespace schizo::scene {
@@ -54,6 +56,30 @@ struct SkinnedMeshComponent {
     /// Metres/second above which `move_clip` is used. Not zero: floating-point
     /// jitter in a transform would otherwise flicker between clips every frame.
     float move_threshold = 0.15f;
+
+    // ---- driven by gameplay: a character in Play ---------------------------
+    // The clip follows what the character is doing: standing, walking or
+    // running (by how fast it moves), crouched, aiming, firing, reloading, hit,
+    // dead. `clips` names a clip for each, "state=clip name" separated by
+    // commas: idle, walk, run, crouch, crouch_walk, aim, fire, reload, hit,
+    // death, draw. A name matches the start or any part of a clip's name
+    // ("Walk" finds "01_Walk"); a state without a clip is skipped. Clips blend
+    // into each other; fire, reload, hit and death play once (a death stays down).
+    bool        drive_from_gameplay = false;
+    std::string clips;
+    float       run_speed = 3.2f;   // m/s: above it the run clip, below it the walk
+    /// A bone: aim, fire, reload and hit play on it and everything under it
+    /// while the legs walk or run. Empty: those take the whole body.
+    std::string upper_body;
+
+    // ---- held in the parent's hand -----------------------------------------
+    // A bone of the PARENT's skinned character (a name, matched as a prefix):
+    // this entity's model is drawn there, turned by `attach_rot` (degrees,
+    // x then y then z) and moved by `attach_pos` in the bone's space. A gun in
+    // a hand; with drive_from_gameplay it fires and reloads with its holder.
+    std::string attach_bone;
+    glm::vec3   attach_pos{0.0f};
+    glm::vec3   attach_rot{0.0f};
 
     SkinnedMeshComponent() = default;
     explicit SkinnedMeshComponent(std::string path) : gltf_path(std::move(path)) {}

@@ -1,6 +1,7 @@
 #include "skinned_gltf_loader.h"
 
 #include "tinygltf.hpp"
+#include <stb_image.h>
 
 #include <spdlog/spdlog.h>
 #include <glm/gtc/quaternion.hpp>
@@ -321,9 +322,47 @@ LoadedSkinnedModel load_skinned_gltf(const std::string& path) {
         R.animations.push_back(clip);
     }
 
+    // ---- material: the first primitive's, with its images decoded ----
+    {
+        const tinygltf::Mesh& mm = model.meshes[mesh_index];
+        const int mi = mm.primitives.empty() ? -1 : mm.primitives[0].material;
+        if (mi >= 0 && mi < static_cast<int>(model.materials.size())) {
+            const tinygltf::Material& gm = model.materials[mi];
+            LoadedSkinnedMaterial& M = R.material;
+            M.present = true;
+            const auto& f = gm.pbrMetallicRoughness.baseColorFactor;
+            if (f.size() == 4) M.base_color_factor = glm::vec4(f[0], f[1], f[2], f[3]);
+            M.metallic_factor  = static_cast<float>(gm.pbrMetallicRoughness.metallicFactor);
+            M.roughness_factor = static_cast<float>(gm.pbrMetallicRoughness.roughnessFactor);
+            auto decode = [&](int tex_index, LoadedImage& out) {
+                if (tex_index < 0 || tex_index >= static_cast<int>(model.textures.size())) return;
+                const int src = model.textures[tex_index].source;
+                if (src < 0 || src >= static_cast<int>(model.images.size())) return;
+                const tinygltf::Image& img = model.images[src];
+                if (img.bufferView < 0 || img.bufferView >= static_cast<int>(model.bufferViews.size())) return;
+                const auto& view = model.bufferViews[img.bufferView];
+                if (view.buffer < 0 || view.buffer >= static_cast<int>(model.buffers.size())) return;
+                const auto& buf = model.buffers[view.buffer];
+                if (view.byteOffset + view.byteLength > buf.data.size()) return;
+                int w = 0, h = 0, comp = 0;
+                stbi_uc* px = stbi_load_from_memory(buf.data.data() + view.byteOffset, static_cast<int>(view.byteLength),
+                                                    &w, &h, &comp, STBI_rgb_alpha);
+                if (!px) return;
+                out.rgba.assign(px, px + static_cast<size_t>(w) * h * 4);
+                out.width = static_cast<uint32_t>(w);
+                out.height = static_cast<uint32_t>(h);
+                stbi_image_free(px);
+            };
+            decode(gm.pbrMetallicRoughness.baseColorTexture.index, M.base_color);
+            decode(gm.pbrMetallicRoughness.metallicRoughnessTexture.index, M.metallic_roughness);
+            decode(gm.normalTexture.index, M.normal);
+        }
+    }
+
     R.valid = true;
-    spdlog::info("[skinned-gltf] '{}' loaded: {} verts, {} bones, {} anim(s)",
-                 path, R.vertices.size(), R.skeleton->GetBoneCount(), R.animations.size());
+    spdlog::info("[skinned-gltf] '{}' loaded: {} verts, {} bones, {} anim(s), material {}{}",
+                 path, R.vertices.size(), R.skeleton->GetBoneCount(), R.animations.size(),
+                 R.material.present ? "yes" : "no", R.material.base_color.empty() ? "" : " (textured)");
     return R;
 }
 

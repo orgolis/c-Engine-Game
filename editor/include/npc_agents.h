@@ -65,6 +65,7 @@
 #include <cstdlib>
 #include <memory>
 #include <unordered_map>
+#include <functional>
 #include <vector>
 
 namespace schizo::editor {
@@ -212,7 +213,12 @@ public:
             st.prev_target_known = has_target;
             bool attacking = false;
             if (def && bridge && me != schizo::ecs::null_entity) {
-                const glm::vec3 hand = eye + fwd * 0.45f;
+                glm::vec3 hand = eye + fwd * 0.45f;
+                // A gun in its hands: the shot leaves from the gun's muzzle.
+                if (muzzle_of) {
+                    glm::vec3 mz;
+                    if (muzzle_of(id, mz)) hand = mz;
+                }
                 if (st.windup > 0.0f) {
                     attacking = true;
                     st.windup -= dt;
@@ -235,6 +241,7 @@ public:
                         if (fx) fx->ability_fired(*def, f, hand);
                         if (f.on_actor || f.targets > 0) sources_.push_back(pos);
                         st.cooldown = std::max(0.2f, def->cooldown);
+                        ++st.shots;
                         ++attacked_;
                     }
                 } else if (in_range && st.cooldown <= 0.0f && st.stagger <= 0.0f) {
@@ -249,10 +256,13 @@ public:
                     if (const uint32_t t = bridge->ecs_entity_id(target_ent->GetTransform()); t != kNoEcsEntity)
                         target_id = static_cast<schizo::ecs::Entity>(t);
                 if (schizo::ecs::try_activate_ability(bridge->world(), me, static_cast<size_t>(ag->ability_index), target_id)) {
+                    ++st.shots;
                     ++attacked_;
                     sources_.push_back(pos);
                 }
             }
+
+            st.aiming = visible && (in_range || attacking);
 
             // --- where to go -------------------------------------------------
             glm::vec3 goal = pos;
@@ -416,6 +426,22 @@ public:
     size_t alerted()      const { return alerted_; }
     /// Where the agents that hit their target this frame stood (a HUD's hit direction).
     const std::vector<glm::vec3>& attack_sources() const { return sources_; }
+    /// What an agent is doing, for its animation.
+    struct AnimInfo {
+        bool     aiming = false;      // at a target it can see, in reach
+        uint32_t shots = 0;           // attacks made so far
+        bool     staggered = false;   // just hurt
+    };
+    AnimInfo anim_of(uint32_t id) const {
+        auto it = agents_.find(id);
+        if (it == agents_.end()) return {};
+        return {it->second->aiming, it->second->shots, it->second->stagger > 0.0f};
+    }
+    /// Where an agent's attack leaves from when it holds a weapon (the gun's
+    /// muzzle), set by whoever knows where the weapon is drawn. false: from
+    /// its hand.
+    std::function<bool(uint32_t entity_id, glm::vec3& at)> muzzle_of;
+
     /// An agent's mode (Patrol when it is not an agent).
     Mode mode_of(uint32_t id) const {
         auto it = agents_.find(id);
@@ -470,6 +496,10 @@ private:
         float     ground_offset = 0.0f;  // its height over the ground
         bool      ground_known = false;
         float     avoid_side = 1.0f;     // which way it went round the last thing in its way
+        // What it is doing, for its animation: aiming at a target in sight,
+        // and how many attacks it has made (a new one: play the shot).
+        bool      aiming = false;
+        uint32_t  shots = 0;
     };
 
     Agent& state(uint32_t id, const glm::vec3& pos, float patrol_radius) {

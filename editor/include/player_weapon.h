@@ -227,7 +227,13 @@ public:
         int   magazine = 0;               // the gun's magazine size
         bool  fired = false;              // a round went this frame (creatures hear it)
         const char* name = "";
+        std::string weapon_id;            // the gun in hand ("" with none)
     };
+    /// Where the gun in hand's muzzle is in first person (the gun model seen
+    /// there), set each frame by whoever draws it: shots and the flash leave
+    /// from it. Unset: a little right of and below the eye.
+    void set_view_muzzle(const glm::vec3& at) { view_muzzle_ = at; has_view_muzzle_ = true; }
+    void clear_view_muzzle() { has_view_muzzle_ = false; }
     const Hud& hud() const { return hud_; }
 
     /// One Play frame. `camera` is the view the player looks through.
@@ -237,6 +243,7 @@ public:
         hud_.armed = false;
         hud_.aiming = false;
         hud_.fired = false;
+        hud_.weapon_id.clear();
         hud_.hit_marker = std::max(0.0f, hud_.hit_marker - dt);
         auto* player = play.GetPlayerEntity();
         if (!player || !play.IsPlaying() || play.IsPaused()) return;
@@ -270,7 +277,8 @@ public:
             // The muzzle sits a little right of and below the eye.
             const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0, 1, 0)));
             const glm::vec3 muzzle = third_person ? origin + fwd * 0.3f
-                                                  : cam_pos + fwd * 0.8f + right * 0.18f - glm::vec3(0, 0.15f, 0);
+                                   : has_view_muzzle_ ? view_muzzle_
+                                                      : cam_pos + fwd * 0.8f + right * 0.18f - glm::vec3(0, 0.15f, 0);
             fx.add(shots, *wd, muzzle);
             if (pfx) pfx->gun_fired(*wd, muzzle, fwd, shots);
             for (const auto& s : shots)
@@ -296,11 +304,14 @@ public:
                                    ? std::clamp(1.0f - ws->reloading / wd->reload_time, 0.0f, 1.0f) : 0.0f;
         hud_.magazine = wd->mag_size;
         hud_.name = wd->name.c_str();
+        hud_.weapon_id = wd->id;
     }
 
 private:
     Hud      hud_;
     uint64_t seed_ = 1;
+    glm::vec3 view_muzzle_{0.0f};
+    bool      has_view_muzzle_ = false;
 };
 
 }  // namespace schizo::editor

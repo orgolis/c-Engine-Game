@@ -61,5 +61,11 @@ where a hit came from.
 Without `ability`, the agent uses its AbilitySet slot `ability_index` at once
 (no wind-up), as before.
 
+**A body**: a rigged model on the agent, or on a child of it, driven by
+gameplay plays the agent's idle, walk, run, aim, fire, hit and death clips; a
+gun held at its hand fires with it, and the attack leaves the gun's `muzzle`
+bone (docs/systems/CHARACTERS.md). An ability with a `spread` misses at
+range.
+
 The rules are `editor/include/npc_agents.h`, checked by
 `tools/npcagent_check`.

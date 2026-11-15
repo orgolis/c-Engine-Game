@@ -24,9 +24,29 @@
 
 namespace gws::renderer::gpu {
 
+/// A decoded image (RGBA8), or empty.
+struct LoadedImage {
+    std::vector<uint8_t> rgba;
+    uint32_t width = 0, height = 0;
+    bool empty() const { return rgba.empty(); }
+};
+
+/// The skinned mesh's material (its first primitive's), as the asset authored
+/// it: factors and decoded images. Device-free; the caller uploads them.
+struct LoadedSkinnedMaterial {
+    bool      present = false;
+    glm::vec4 base_color_factor{1.0f};
+    float     metallic_factor  = 1.0f;
+    float     roughness_factor = 1.0f;
+    LoadedImage base_color;          // sRGB
+    LoadedImage metallic_roughness;  // linear: green = roughness, blue = metallic
+    LoadedImage normal;              // linear, tangent space
+};
+
 struct LoadedSkinnedModel {
     bool valid = false;
     std::string error;
+    LoadedSkinnedMaterial material;
 
     std::vector<SkinnedVertex> vertices;      // bind pose; .joints are bone ids
     std::vector<uint32_t>      indices;

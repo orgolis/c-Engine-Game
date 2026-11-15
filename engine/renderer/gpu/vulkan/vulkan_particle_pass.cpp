@@ -114,12 +114,15 @@ std::unique_ptr<VulkanParticlePass> VulkanParticlePass::create(
 
 VulkanParticlePass::~VulkanParticlePass() {
     if (vk_ == VK_NULL_HANDLE) return;
-    if (vbo_mapped_) { vkUnmapMemory(vk_, vbo_memory_); vbo_mapped_ = nullptr; }
-    if (vbo_)        vkDestroyBuffer(vk_, vbo_, nullptr);
-    if (vbo_memory_) vkFreeMemory(vk_, vbo_memory_, nullptr);
-    if (ibo_mapped_) { vkUnmapMemory(vk_, ibo_memory_); ibo_mapped_ = nullptr; }
-    if (ibo_)        vkDestroyBuffer(vk_, ibo_, nullptr);
-    if (ibo_memory_) vkFreeMemory(vk_, ibo_memory_, nullptr);
+    for (Slot& s : slots_) {
+        if (s.vbo_mapped) { vkUnmapMemory(vk_, s.vbo_memory); s.vbo_mapped = nullptr; }
+        if (s.vbo)        vkDestroyBuffer(vk_, s.vbo, nullptr);
+        if (s.vbo_memory) vkFreeMemory(vk_, s.vbo_memory, nullptr);
+        if (s.ibo_mapped) { vkUnmapMemory(vk_, s.ibo_memory); s.ibo_mapped = nullptr; }
+        if (s.ibo)        vkDestroyBuffer(vk_, s.ibo, nullptr);
+        if (s.ibo_memory) vkFreeMemory(vk_, s.ibo_memory, nullptr);
+        s = Slot{};
+    }
     if (pipeline_)        vkDestroyPipeline(vk_, pipeline_, nullptr);
     if (pipeline_layout_) vkDestroyPipelineLayout(vk_, pipeline_layout_, nullptr);
     if (depth_pool_)      vkDestroyDescriptorPool(vk_, depth_pool_, nullptr);
@@ -490,26 +493,26 @@ static bool make_mapped_buffer(VkDevice vk, VkPhysicalDevice pdev,
 //
 // Corner order from build_billboards is c0(0,0) c1(1,0) c2(1,1) c3(0,1), so the
 // two triangles are 0-1-2 and 0-2-3.
-bool VulkanParticlePass::ensure_index_capacity(uint32_t quads) {
-    if (quads <= ibo_quads_ && ibo_ != VK_NULL_HANDLE) return true;
+bool VulkanParticlePass::ensure_index_capacity(Slot& s, uint32_t quads) {
+    if (quads <= s.ibo_quads && s.ibo != VK_NULL_HANDLE) return true;
 
     const uint32_t want_quads = quads + quads / 2 + 256;
     const size_t   bytes      = size_t(want_quads) * 6 * sizeof(uint32_t);
 
-    if (ibo_mapped_) { vkUnmapMemory(vk_, ibo_memory_); ibo_mapped_ = nullptr; }
-    if (ibo_)        { vkDestroyBuffer(vk_, ibo_, nullptr); ibo_ = VK_NULL_HANDLE; }
-    if (ibo_memory_) { vkFreeMemory(vk_, ibo_memory_, nullptr); ibo_memory_ = VK_NULL_HANDLE; }
+    if (s.ibo_mapped) { vkUnmapMemory(vk_, s.ibo_memory); s.ibo_mapped = nullptr; }
+    if (s.ibo)        { vkDestroyBuffer(vk_, s.ibo, nullptr); s.ibo = VK_NULL_HANDLE; }
+    if (s.ibo_memory) { vkFreeMemory(vk_, s.ibo_memory, nullptr); s.ibo_memory = VK_NULL_HANDLE; }
 
     if (!make_mapped_buffer(vk_, device_->get_physical_device(),
                             VK_BUFFER_USAGE_INDEX_BUFFER_BIT, bytes,
-                            ibo_, ibo_memory_, ibo_mapped_)) {
+                            s.ibo, s.ibo_memory, s.ibo_mapped)) {
         spdlog::error("[Particles] index buffer allocation failed ({} quads)", want_quads);
         return false;
     }
 
     // The pattern is fixed, so it is written once on growth rather than every
     // frame -- particle counts change constantly and this never does.
-    uint32_t* idx = static_cast<uint32_t*>(ibo_mapped_);
+    uint32_t* idx = static_cast<uint32_t*>(s.ibo_mapped);
     for (uint32_t q = 0; q < want_quads; ++q) {
         const uint32_t base = q * 4;
         idx[q * 6 + 0] = base + 0;
@@ -519,30 +522,30 @@ bool VulkanParticlePass::ensure_index_capacity(uint32_t quads) {
         idx[q * 6 + 4] = base + 2;
         idx[q * 6 + 5] = base + 3;
     }
-    ibo_quads_ = want_quads;
+    s.ibo_quads = want_quads;
     return true;
 }
 
-bool VulkanParticlePass::ensure_vertex_capacity(size_t bytes) {
-    if (bytes <= vbo_bytes_) return true;
+bool VulkanParticlePass::ensure_vertex_capacity(Slot& s, size_t bytes) {
+    if (bytes <= s.vbo_bytes) return true;
 
     // Grow generously and stay mapped. Particle counts fluctuate every frame;
     // reallocating on each small increase would churn device memory during
     // exactly the frames that are already the most expensive.
     const size_t want = bytes + bytes / 2 + 4096;
 
-    if (vbo_mapped_) { vkUnmapMemory(vk_, vbo_memory_); vbo_mapped_ = nullptr; }
-    if (vbo_)        { vkDestroyBuffer(vk_, vbo_, nullptr); vbo_ = VK_NULL_HANDLE; }
-    if (vbo_memory_) { vkFreeMemory(vk_, vbo_memory_, nullptr); vbo_memory_ = VK_NULL_HANDLE; }
+    if (s.vbo_mapped) { vkUnmapMemory(vk_, s.vbo_memory); s.vbo_mapped = nullptr; }
+    if (s.vbo)        { vkDestroyBuffer(vk_, s.vbo, nullptr); s.vbo = VK_NULL_HANDLE; }
+    if (s.vbo_memory) { vkFreeMemory(vk_, s.vbo_memory, nullptr); s.vbo_memory = VK_NULL_HANDLE; }
 
     if (!make_mapped_buffer(vk_, device_->get_physical_device(),
                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, want,
-                            vbo_, vbo_memory_, vbo_mapped_)) {
+                            s.vbo, s.vbo_memory, s.vbo_mapped)) {
         spdlog::error("[Particles] vertex buffer allocation failed ({} bytes)", want);
         return false;
     }
 
-    vbo_bytes_ = want;
+    s.vbo_bytes = want;
     return true;
 }
 
@@ -562,9 +565,10 @@ void VulkanParticlePass::execute(VkCommandBuffer cmd,
     if (quads == 0) return;
 
     const size_t bytes = verts.size() * sizeof(schizo::vfx::BillboardVertex);
-    if (!ensure_vertex_capacity(bytes)) return;
-    if (!ensure_index_capacity(quads)) return;
-    std::memcpy(vbo_mapped_, verts.data(), bytes);
+    Slot& slot = slots_[frame_++ % kRing];
+    if (!ensure_vertex_capacity(slot, bytes)) return;
+    if (!ensure_index_capacity(slot, quads)) return;
+    std::memcpy(slot.vbo_mapped, verts.data(), bytes);
 
     VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rp.renderPass        = render_pass_;
@@ -595,8 +599,8 @@ void VulkanParticlePass::execute(VkCommandBuffer cmd,
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &depth_set_, 0, nullptr);
 
     const VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &vbo_, &offset);
-    vkCmdBindIndexBuffer(cmd, ibo_, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &slot.vbo, &offset);
+    vkCmdBindIndexBuffer(cmd, slot.ibo, 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(cmd, quads * 6, 1, 0, 0, 0);
 
     vkCmdEndRenderPass(cmd);

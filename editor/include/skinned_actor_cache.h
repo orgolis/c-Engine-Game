@@ -67,6 +67,12 @@ public:
         return raw;
     }
 
+    /// The actor already built for `entity_id`, or null (never builds one).
+    ImportedSkinnedActor* find(uint32_t entity_id) const {
+        auto it = entries_.find(entity_id);
+        return it == entries_.end() ? nullptr : it->second.actor.get();
+    }
+
     /// Drop actors for entities that no longer exist or no longer carry the
     /// component, so deleting a character releases its GPU memory.
     template <typename KeepPredicate>

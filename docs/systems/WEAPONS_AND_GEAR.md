@@ -25,8 +25,15 @@ weapon shotgun
   impact 0.1            # marks where rounds hit
   flash                 # a muzzle flash
   ammo shotgun_shells   # the item it loads from the bag
+  model assets/models/guns/shotgun.glb   # seen in first person (a rigged model)
+  view 0.21 -0.23 0.38  # where it is held: right, up, forward from the eye (m)
 end
 ```
+
+With a `model`, the drawn gun is seen in first person: it plays its `Draw`,
+`Fire`, `Reload` and `Idle` clips, bobs, kicks and comes to the middle when
+aiming, and its `muzzle` bone is where rounds and the flash start
+(docs/systems/CHARACTERS.md).
 
 A gun's muzzle flash and smoke, its tracers, and the sparks and dust where its
 rounds land are effects: `<gun>_muzzle`, `<gun>_tracer`, `<gun>_impact`,

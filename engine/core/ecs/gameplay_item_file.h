@@ -167,6 +167,8 @@ inline std::vector<WeaponDef> parse_weapons_text(const std::string& text) {
         else if (key == "impact")   { ls >> cur.impact_size; }
         else if (key == "flash")    { cur.muzzle_flash = true; }
         else if (key == "ammo")     { ls >> cur.ammo_item; }
+        else if (key == "model")    { ls >> cur.model; }
+        else if (key == "view")     { ls >> cur.view_offset.x >> cur.view_offset.y >> cur.view_offset.z; }
     }
     flush();
     return out;

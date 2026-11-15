@@ -42,6 +42,10 @@ GWS_REFLECT_BEGIN(schizo::scene::SkinnedMeshComponent)
     GWS_REFLECT_FIELD(idle_clip)
     GWS_REFLECT_FIELD(move_clip)
     GWS_REFLECT_FIELD(move_threshold)
+    GWS_REFLECT_FIELD(drive_from_gameplay)
+    GWS_REFLECT_FIELD(run_speed)
+    GWS_REFLECT_FIELD(attach_pos)
+    GWS_REFLECT_FIELD(attach_rot)
 GWS_REFLECT_END()
 
 GWS_REFLECT_BEGIN(schizo::scene::ParticleEmitterComponent)
@@ -91,11 +95,11 @@ GWS_REFLECT_END()
 // register any new fields and update the number.
 // ---------------------------------------------------------------------------
 #if defined(_LIBCPP_VERSION)
-inline constexpr std::size_t kExpectedSkinnedMeshComponentSize = 56;
+inline constexpr std::size_t kExpectedSkinnedMeshComponentSize = 160;   // + gameplay drive, clips/upper/attach bone (strings, by hand: SKINNED_*), attach offset
 inline constexpr std::size_t kExpectedParticleEmitterComponentSize = 80;
 inline constexpr std::size_t kExpectedNpcAgentComponentSize = 96;
 #else
-inline constexpr std::size_t kExpectedSkinnedMeshComponentSize = 64;
+inline constexpr std::size_t kExpectedSkinnedMeshComponentSize = 192;   // + gameplay drive, clips/upper/attach bone (strings, by hand: SKINNED_*), attach offset
 inline constexpr std::size_t kExpectedParticleEmitterComponentSize = 88;
 inline constexpr std::size_t kExpectedNpcAgentComponentSize = 112;   // + ability (by hand: NPCAGENT_ABILITY), 4 floats
 #endif

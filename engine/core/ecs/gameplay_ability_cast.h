@@ -109,6 +109,7 @@ struct AbilityDef {
     std::string vfx;                       // handed out with the events, for effects to pick up
     float       speed = 0.0f;              // > 0: aimed / area-at-aim abilities fly at this speed (m/s)
     float       arc = 0.0f;                // a flying one falls by this (m/s^2): thrown things
+    float       spread = 0.0f;             // aimed: degrees it may go off its aim (a cone; 0: dead on)
 };
 
 inline std::vector<AbilityDef>& ability_def_registry() { static std::vector<AbilityDef> r; return r; }
@@ -239,12 +240,32 @@ inline int reach_targets(World& w, Entity caster, const AbilityDef& d, const glm
 
 // The ability goes off once: reach its targets and apply everything -- or,
 // with a speed, set off in flight.
+/// `dir` turned by up to `deg` degrees, evenly over the cone (a spread).
+inline glm::vec3 spread_aim(const glm::vec3& dir, float deg, uint64_t& state) {
+    if (deg <= 0.0f) return dir;
+    auto next = [&state] {
+        uint64_t z = (state += 0x9E3779B97F4A7C15ULL);
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+        return static_cast<float>((z ^ (z >> 31)) >> 40) / 16777216.0f;
+    };
+    const float r = std::sqrt(next()) * glm::radians(deg), a = next() * 6.2831853f;
+    const glm::vec3 side = glm::normalize(glm::cross(dir, std::fabs(dir.y) < 0.99f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0)));
+    const glm::vec3 up = glm::cross(side, dir);
+    return glm::normalize(dir + (side * std::cos(a) + up * std::sin(a)) * std::tan(r));
+}
+inline uint64_t& ability_spread_state() { static uint64_t s = 0x2545F4914F6CDD1DULL; return s; }
+
 inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot, const AbilityCastInput& in,
                          const WorldRayFn* world, GameplayEventBus* bus) {
     AbilityFired f;
     f.slot = slot; f.id = d.id; f.vfx = d.vfx;
     f.origin = in.origin;
-    f.dir = glm::length(in.aim) > 1e-5f ? glm::normalize(in.aim) : glm::vec3(0.0f, 0.0f, -1.0f);
+    // Where it goes: the aim, off by up to its spread.
+    glm::vec3 aim0 = glm::length(in.aim) > 1e-5f ? glm::normalize(in.aim) : glm::vec3(0.0f, 0.0f, -1.0f);
+    if (d.spread > 0.0f && (d.targeting == AbilityTargeting::Aimed || d.targeting == AbilityTargeting::AreaAtAim))
+        aim0 = spread_aim(aim0, d.spread, ability_spread_state());
+    f.dir = aim0;
     if (d.speed > 0.0f && (d.targeting == AbilityTargeting::Aimed || d.targeting == AbilityTargeting::AreaAtAim)) {
         AbilityShot s;
         s.id = d.id;
@@ -261,7 +282,7 @@ inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot,
     }
     std::vector<Entity> hits;
     glm::vec3 centre = in.caster_pos;
-    const glm::vec3 aim = glm::length(in.aim) > 1e-5f ? glm::normalize(in.aim) : glm::vec3(0.0f, 0.0f, -1.0f);
+    const glm::vec3 aim = aim0;
     float wall_t = d.range;
     glm::vec3 n(0.0f, 1.0f, 0.0f);
     const bool wall = (d.targeting == AbilityTargeting::Aimed || d.targeting == AbilityTargeting::AreaAtAim) &&
@@ -506,6 +527,7 @@ inline std::vector<AbilityDef> parse_abilities_text(const std::string& text) {
         else if (key == "vfx")      { ls >> cur.vfx; }
         else if (key == "speed")    { ls >> cur.speed; }
         else if (key == "arc")      { ls >> cur.arc; }
+        else if (key == "spread")   { ls >> cur.spread; }
     }
     flush();
     return out;

@@ -63,6 +63,11 @@ struct WeaponDef {
     glm::vec3   tracer_color = glm::vec3(1.0f, 0.75f, 0.35f);
     float       impact_size = 0.0f;       // mark left where a shot hits the world (0: none)
     std::string ammo_item;                // reserve is this inventory item, when set
+    // Seen in first person: a rigged gun model (its clips: idle, fire, reload,
+    // draw -- found by name) held at `view_offset` from the eye (right, up,
+    // forward, metres), its muzzle where shots and the flash come from.
+    std::string model;
+    glm::vec3   view_offset = glm::vec3(0.16f, -0.17f, 0.34f);
 };
 
 inline std::vector<WeaponDef>& weapon_registry() { static std::vector<WeaponDef> r; return r; }

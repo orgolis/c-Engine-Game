@@ -153,9 +153,11 @@ int main() {
     // deliberately excluded make the totals differ legitimately. The assertion
     // is that the registered fields cover the struct's PLAIN DATA.
     {
-        // SkinnedMeshComponent: 3 ints + 2 bools + 2 floats registered.
+        // SkinnedMeshComponent: 3 ints + 3 bools + 3 floats + 2 vec3s (the
+        // hold offset and turn) registered; clips, upper body and the held
+        // bone are strings, written by hand (SKINNED_*).
         check(reflected_bytes<scene::SkinnedMeshComponent>() ==
-                  3 * sizeof(int) + 2 * sizeof(bool) + 2 * sizeof(float),
+                  3 * sizeof(int) + 3 * sizeof(bool) + 3 * sizeof(float) + 2 * sizeof(glm::vec3),
               "SkinnedMeshComponent's registered fields account for every non-string field");
 
         // NpcAgentComponent: 1 bool + 9 floats + 1 int (0.8.44: alert_radius,

@@ -572,6 +572,33 @@ int main() {
               fired && distinct && inside && widest > 2.0f && bias < 2.0f);
     }
 
+    // An aimed ability with a spread goes off its aim, each time a little
+    // differently, never wider than its cone (soldiers miss at range).
+    {
+        ecs::register_items_text("ability sp_shot\n  target aimed\n  range 40\n  spread 4\n  damage 1 kinetic\nend\n");
+        const ecs::AbilityDef* sd = ecs::find_ability_def("sp_shot");
+        bool parsed = sd && std::abs(sd->spread - 4.0f) < 1e-4f, inside = true, varied = false;
+        glm::vec3 first(0.0f);
+        float widest = 0.0f;
+        if (sd) {
+            ecs::World aw;
+            const ecs::Entity me = aw.create();
+            for (int i = 0; i < 40; ++i) {
+                ecs::AbilityCastInput ci;
+                ci.origin = glm::vec3(0.0f);
+                ci.aim = glm::vec3(0.0f, 0.0f, -1.0f);
+                const ecs::AbilityFired f = ecs::ability_detail::fire(aw, me, *sd, -1, ci, nullptr, nullptr);
+                const float ang = glm::degrees(std::acos(std::clamp(-f.dir.z, -1.0f, 1.0f)));
+                inside = inside && ang <= 4.01f;
+                widest = std::max(widest, ang);
+                if (i == 0) first = f.dir;
+                else varied = varied || glm::length(f.dir - first) > 1e-4f;
+            }
+        }
+        check("an aimed ability with a spread goes off its aim -- differently each time, within its cone",
+              parsed && inside && varied && widest > 1.5f);
+    }
+
     // Abilities that fly (`speed`, `arc`): they take effect where they land,
     // not at once; they pass the caster's own side; effect blocks load.
     {

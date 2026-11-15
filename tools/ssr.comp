@@ -138,6 +138,15 @@ void main() {
         return;
     }
 
+    // Gear in hand (the gun seen in first person): nothing in the world is
+    // this close to the eye. A ray marched from a surface this near sweeps
+    // across the whole screen and painted the gun with sharp mirror images of
+    // the trees; its sky reflection comes from the lighting pass instead.
+    if (length(relPos(uv)) < 0.7) {
+        imageStore(dstReflection, px, vec4(0.0));
+        return;
+    }
+
     vec4 normal_sample = texture(normalTex, uv);
     vec3 N = normal_sample.xyz;
     float roughness = normal_sample.w;

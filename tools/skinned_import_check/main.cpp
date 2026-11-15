@@ -76,6 +76,11 @@ static void write_test_rig(const std::string& gltf_path) {
     const size_t off_rot = b.data.size();
     b.f(0); b.f(0); b.f(0); b.f(1);                         // t=0 identity
     b.f(0.70710678f); b.f(0); b.f(0); b.f(0.70710678f);     // t=1 90deg X
+    // A 1x1 PNG, RGBA (200, 100, 50, 255): the material's base colour image.
+    const size_t off_png = b.data.size();
+    static const uint8_t png[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x38, 0x91, 0x62, 0xF4, 0x1F, 0x00, 0x05, 0xB4, 0x02, 0x5E, 0x1F, 0x3A, 0xFB, 0xCB, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82};
+    for (uint8_t v : png) b.data.push_back(v);
+    while (b.data.size() % 4) b.data.push_back(0);
     const size_t total = b.data.size();
 
     std::ofstream bin_out(bp, std::ios::binary);
@@ -97,7 +102,11 @@ static void write_test_rig(const std::string& gltf_path) {
     "  {\"name\":\"mesh\",\"mesh\":0,\"skin\":0}\n"
     "],\n"
     "\"skins\":[{\"joints\":[0,1],\"inverseBindMatrices\":5}],\n"
-    "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"JOINTS_0\":2,\"WEIGHTS_0\":3},\"indices\":4}]}],\n"
+    "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"JOINTS_0\":2,\"WEIGHTS_0\":3},\"indices\":4,\"material\":0}]}],\n"
+    "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.5,0.25,0.125,1],\"metallicFactor\":0.2,"
+        "\"roughnessFactor\":0.7,\"baseColorTexture\":{\"index\":0}}}],\n"
+    "\"textures\":[{\"source\":0}],\n"
+    "\"images\":[{\"bufferView\":8,\"mimeType\":\"image/png\"}],\n"
     "\"animations\":[{\"name\":\"bend\",\"samplers\":[{\"input\":6,\"output\":7,\"interpolation\":\"LINEAR\"}],"
         "\"channels\":[{\"sampler\":0,\"target\":{\"node\":1,\"path\":\"rotation\"}}]}],\n"
     "\"accessors\":[\n"
@@ -118,7 +127,8 @@ static void write_test_rig(const std::string& gltf_path) {
     "  " + bv(off_idx,12) + ",\n"
     "  " + bv(off_ibm,128) + ",\n"
     "  " + bv(off_tin,8) + ",\n"
-    "  " + bv(off_rot,32) + "\n"
+    "  " + bv(off_rot,32) + ",\n"
+    "  " + bv(off_png, sizeof(png)) + "\n"
     "],\n"
     "\"buffers\":[{\"uri\":\"" + bin_name + "\",\"byteLength\":" + std::to_string(total) + "}]\n"
     "}\n";
@@ -148,6 +158,12 @@ int main(int argc, char** argv) {
     LoadedSkinnedModel R = load_skinned_gltf(gltf_path);
 
     check("import succeeded", R.valid);
+    // The material comes with it: factors, and the base colour image decoded.
+    check("the material: its factors", R.material.present && approx(R.material.base_color_factor.y, 0.25f) &&
+                                       approx(R.material.metallic_factor, 0.2f) && approx(R.material.roughness_factor, 0.7f));
+    check("and its base colour image, decoded (an embedded PNG)",
+          R.material.base_color.width == 1 && R.material.base_color.height == 1 && R.material.base_color.rgba.size() == 4 &&
+              R.material.base_color.rgba[0] == 200 && R.material.base_color.rgba[1] == 100 && R.material.base_color.rgba[2] == 50);
     if (!R.valid) { std::cout << "  error: " << R.error << "\n"; return 1; }
 
     check("2 bones", R.skeleton && R.skeleton->GetBoneCount() == 2);

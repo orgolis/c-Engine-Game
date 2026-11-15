@@ -3,6 +3,7 @@
 
 #define GLM_ENABLE_EXPERIMENTAL
 #define GLFW_INCLUDE_VULKAN
+#include <unordered_set>
 #include <GLFW/glfw3.h>
 #include <utility>   // std::as_const: reads must not stamp the entity
 #include <vulkan/vulkan.h>
@@ -3659,6 +3660,30 @@ void ShowInspector(EditorState& editor_state) {
                     editor_state.editor_scene->MarkModified();
                 if (ImGui::DragInt("Clip##skinned", &smc->clip_index, 0.2f, 0, 64))
                     editor_state.editor_scene->MarkModified();
+                // Driven by gameplay: the clip follows what the character does in Play.
+                if (ImGui::Checkbox("Driven by gameplay##skinned", &smc->drive_from_gameplay))
+                    editor_state.editor_scene->MarkModified();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("In Play the clip follows what the character does: idle, walk, run, crouch,\n"
+                                      "aim, fire, reload, hit, death -- each a clip named in Clips.");
+                auto edit_text = [&](const char* label, std::string& s, const char* tip) {
+                    char buf[512];
+                    std::snprintf(buf, sizeof buf, "%s", s.c_str());
+                    if (ImGui::InputText(label, buf, sizeof buf)) { s = buf; editor_state.editor_scene->MarkModified(); }
+                    if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+                };
+                if (smc->drive_from_gameplay) {
+                    edit_text("Clips##skinned", smc->clips, "state=clip, comma separated: idle, walk, run, crouch, crouch_walk,\n"
+                                                             "aim, fire, reload, hit, death, draw (a clip name or part of one)");
+                    if (ImGui::DragFloat("Run above (m/s)##skinned", &smc->run_speed, 0.05f, 0.5f, 12.0f))
+                        editor_state.editor_scene->MarkModified();
+                    edit_text("Upper body bone##skinned", smc->upper_body, "aim, fire and reload play on this bone and under it while the legs move");
+                }
+                edit_text("Held at parent bone##skinned", smc->attach_bone, "a bone of the parent's character (a gun in a hand); empty: not held");
+                if (!smc->attach_bone.empty()) {
+                    if (ImGui::DragFloat3("Hold offset##skinned", &smc->attach_pos.x, 0.005f)) editor_state.editor_scene->MarkModified();
+                    if (ImGui::DragFloat3("Hold turn (deg)##skinned", &smc->attach_rot.x, 1.0f)) editor_state.editor_scene->MarkModified();
+                }
                 if (ImGui::SmallButton("Clear rig")) {
                     *smc = schizo::scene::SkinnedMeshComponent{};
                     editor_state.editor_scene->MarkModified();
@@ -8898,6 +8923,29 @@ int main(int argc, char** argv) {
         // Per-entity skinned characters (SkinnedMeshComponent). Keyed by entity
         // so two characters animate independently; see skinned_actor_cache.h.
         schizo::editor::SkinnedActorCache skinned_actors;
+        // What each gameplay-driven character is doing (for its clips).
+        struct CharAnim {
+            enum : int { Idle, Walk, Run, Crouch, CrouchWalk, Aim, Fire, Reload, Hit, Death, Draw, kStates };
+            int  clip[kStates] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+            std::string resolved_from, upper_from;
+            const void* resolved_actor = nullptr;
+            uint32_t shots = 0;
+            bool fired_now = false, reload_now = false, reloading = false, staggered = false, dead = false;
+        };
+        std::unordered_map<uint32_t, CharAnim> char_anim;
+        // The gun seen in first person, one actor per model file.
+        struct ViewModel {
+            std::unique_ptr<schizo::editor::ImportedSkinnedActor> actor;
+            bool tried = false;
+            int  idle = -1, fire = -1, reload = -1, draw = -1;
+        };
+        std::unordered_map<std::string, ViewModel> viewmodels;
+        struct { std::string weapon; bool reloading = false; float kick = 0.0f, bob = 0.0f, aim = 0.0f; } vm_state;
+        // Per frame: actors drawn only into shadows (the player's own model in
+        // first person), drawn without a shadow (the first-person gun), and
+        // drawn though they are no scene entity's (the first-person gun).
+        std::unordered_set<const schizo::editor::ImportedSkinnedActor*> fp_hidden_actors, no_shadow_actors;
+        std::vector<schizo::editor::ImportedSkinnedActor*> extra_skinned;
 
         // Per-terrain-entity GPU mesh cache. Rebuilds a terrain's grid mesh
         // only when its heightmap version changes (each sculpt edit).
@@ -10372,55 +10420,230 @@ int main(int argc, char** argv) {
             // Per-entity skinned characters: build on demand, pose, and place
             // from the entity's Transform. Done before the command buffer opens
             // so record_skin below has an up-to-date pose.
+            //
+            // Two passes: characters first, then what they hold (an entity
+            // attached to its parent's bone is drawn where that bone is, so its
+            // parent must be posed first). A character driven by gameplay picks
+            // its clips from what it is doing -- moving, crouched, aiming,
+            // firing, reloading, hit, dead -- and what it holds fires and
+            // reloads with it. In Play, the gun in the player's hands is drawn
+            // in first person too (its model from the weapon's `model`).
+            fp_hidden_actors.clear();
+            no_shadow_actors.clear();
+            extra_skinned.clear();
             if (auto sk_scene = editor_state.editor_scene->GetScene()) {
+                const bool sk_playing = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying();
+                auto* sk_pm = editor_state.scene_playback_manager.get();
+                const schizo::scene::Entity* sk_player = sk_playing ? sk_pm->GetPlayerEntity() : nullptr;
+                // First person: the player has no third-person camera rig.
+                bool sk_first_person = true;
+                if (sk_player) {
+                    const uint32_t pid = ecs_bridge.ecs_entity_id(sk_player->GetTransform());
+                    if (pid != schizo::editor::kNoEcsEntity)
+                        if (const auto* rig = ecs_bridge.world().try_get<schizo::ecs::CameraRig>(static_cast<schizo::ecs::Entity>(pid)))
+                            sk_first_person = !rig->third_person;
+                }
+                auto is_player_part = [&](const schizo::scene::Entity* e) {
+                    for (const schizo::scene::Entity* q = e; q && sk_player; q = q->GetParent().get())
+                        if (q == sk_player) return true;
+                    return false;
+                };
+                const auto& pw_hud = editor_state.player_weapon.hud();
+
+                // ---- what a gameplay-driven character is doing -------------------
+                auto resolve = [](CharAnim& ca, schizo::editor::ImportedSkinnedActor& a, const std::string& clips) {
+                    if (ca.resolved_from == clips && ca.resolved_actor == &a) return;
+                    ca.resolved_from = clips;
+                    ca.resolved_actor = &a;
+                    for (int& c : ca.clip) c = -1;
+                    static const char* states[CharAnim::kStates] = {"idle", "walk", "run", "crouch", "crouch_walk", "aim",
+                                                                    "fire", "reload", "hit", "death", "draw"};
+                    size_t at = 0;
+                    while (at < clips.size()) {
+                        const size_t endp = clips.find(',', at);
+                        const std::string item = clips.substr(at, endp == std::string::npos ? std::string::npos : endp - at);
+                        const size_t eq = item.find('=');
+                        if (eq != std::string::npos)
+                            for (int s = 0; s < CharAnim::kStates; ++s)
+                                if (item.substr(0, eq) == states[s]) ca.clip[s] = a.find_clip(item.substr(eq + 1));
+                        if (endp == std::string::npos) break;
+                        at = endp + 1;
+                    }
+                };
+
+                for (int sk_pass = 0; sk_pass < 2; ++sk_pass)
                 for (const auto& ent : sk_scene->GetEntities()) {
                     if (!ent) continue;
                     const auto* smc = std::as_const(*ent).GetSkinnedMeshComponent();
                     if (!smc || !smc->active()) continue;
+                    const bool attached = !smc->attach_bone.empty() && ent->GetParent();
+                    if ((sk_pass == 0) == attached) continue;
+                    if (sk_playing && !ent->IsActiveInHierarchy()) continue;
                     auto* actor = skinned_actors.get_or_create(
                         ent->GetId(), smc->gltf_path, &device,
                         mat_layout, mat_pool, &texture_manager);
                     if (!actor) continue;
                     auto* sk_tf = ent->GetTransform();
                     if (!sk_tf) continue;
+
+                    CharAnim& ca = char_anim[ent->GetId()];
+                    const bool is_player = is_player_part(ent.get());
+
+                    if (attached) {
+                        // Held: drawn at the parent's bone.
+                        auto* parent_actor = skinned_actors.get_or_create(
+                            ent->GetParent()->GetId(), std::as_const(*ent->GetParent()).GetSkinnedMeshComponent()->gltf_path,
+                            &device, mat_layout, mat_pool, &texture_manager);
+                        glm::mat4 at = sk_tf->GetWorldMatrix();
+                        if (parent_actor) {
+                            const int bone = parent_actor->find_bone(smc->attach_bone);
+                            const glm::vec3 r = glm::radians(smc->attach_rot);
+                            const glm::mat4 off = glm::translate(glm::mat4(1.0f), smc->attach_pos) *
+                                                  glm::mat4_cast(glm::quat(r));
+                            at = parent_actor->bone_world(bone) * off * glm::scale(glm::mat4(1.0f), sk_tf->GetLocalScale());
+                        }
+                        // Fires and reloads with its holder.
+                        if (smc->drive_from_gameplay) {
+                            resolve(ca, *actor, smc->clips);
+                            const CharAnim& holder = char_anim[ent->GetParent()->GetId()];
+                            if (holder.fired_now && ca.clip[CharAnim::Fire] >= 0)
+                                actor->play(ca.clip[CharAnim::Fire], false, 0.0f, 1.0f, true);
+                            else if (holder.reload_now && ca.clip[CharAnim::Reload] >= 0)
+                                actor->play(ca.clip[CharAnim::Reload], false, 0.05f, 1.0f, true);
+                            else if ((actor->finished() || actor->clip_index() == static_cast<size_t>(std::max(ca.clip[CharAnim::Idle], 0))) &&
+                                     ca.clip[CharAnim::Idle] >= 0)
+                                actor->play(ca.clip[CharAnim::Idle], true, 0.1f);
+                        }
+                        if (smc->playing) actor->advance(delta_time * smc->speed);
+                        else              actor->refresh_pose();
+                        actor->set_model(at);
+                        if (is_player && sk_first_person && sk_playing) fp_hidden_actors.insert(actor);
+                        continue;
+                    }
+
                     // Choose the clip from how fast the entity is ACTUALLY
                     // moving, when asked to. This is what makes an NPC agent
                     // walking a navmesh path play its walk cycle without either
                     // system knowing the other exists.
                     int want_clip = smc->clip_index;
-                    if (smc->drive_from_motion) {
-                        auto& loco = editor_state.locomotion[ent->GetId()];
-                        // A rebase teleports the entity; without this it reads
-                        // as an enormous one-frame speed and snaps every
-                        // character into its run cycle.
-                        if (origin_shift_this_frame != glm::vec3(0.0f))
-                            schizo::editor::locomotion_apply_origin_shift(loco, origin_shift_this_frame);
-                        const bool mv = schizo::editor::locomotion_wants_move(
-                            loco, sk_tf->GetWorldPosition(), delta_time, smc->move_threshold);
-                        want_clip = mv ? smc->move_clip : smc->idle_clip;
+                    auto& loco = editor_state.locomotion[ent->GetId()];
+                    // A rebase teleports the entity; without this it reads
+                    // as an enormous one-frame speed and snaps every
+                    // character into its run cycle.
+                    if (origin_shift_this_frame != glm::vec3(0.0f))
+                        schizo::editor::locomotion_apply_origin_shift(loco, origin_shift_this_frame);
+                    const bool mv = schizo::editor::locomotion_wants_move(
+                        loco, sk_tf->GetWorldPosition(), delta_time, smc->move_threshold);
+                    if (smc->drive_from_motion) want_clip = mv ? smc->move_clip : smc->idle_clip;
+
+                    if (smc->drive_from_gameplay && sk_playing) {
+                        // ---- a character in Play: its clips from what it does ----
+                        resolve(ca, *actor, smc->clips);
+                        if (!smc->upper_body.empty() && ca.upper_from != smc->upper_body) {
+                            actor->set_upper_body(smc->upper_body);
+                            ca.upper_from = smc->upper_body;
+                        }
+                        // Whose doing it reads: the player (for its model, a
+                        // child of the player), else the NPC agent it is or
+                        // belongs to (a body under an agent).
+                        const schizo::scene::Entity* who = ent.get();
+                        if (is_player) who = sk_player;
+                        else
+                            for (const schizo::scene::Entity* q = ent.get(); q; q = q->GetParent().get())
+                                if (const auto* qa = std::as_const(*q).GetNpcAgentComponent(); qa && qa->enabled) { who = q; break; }
+                        const bool dead = schizo::editor::EditorNpcAgents::dead(ecs_bridge, who->GetTransform());
+                        bool aiming = false, staggered = false;
+                        uint32_t shots = ca.shots;
+                        bool reloading = false, crouched = false;
+                        float speed = loco.speed;
+                        if (is_player) {
+                            aiming = pw_hud.armed;                       // a gun in hand: held up
+                            if (pw_hud.fired) ++shots;
+                            reloading = pw_hud.reloading;
+                            const auto& mst = sk_pm->GetPlayerMovementState();
+                            crouched = mst.crouched;
+                            speed = glm::length(glm::vec2(mst.velocity.x, mst.velocity.z));
+                        } else {
+                            const auto ai = editor_state.npc_agents.anim_of(who->GetId());
+                            aiming = ai.aiming;
+                            shots = ai.shots;
+                            staggered = ai.staggered;
+                        }
+                        ca.fired_now = shots != ca.shots;
+                        ca.shots = shots;
+                        ca.reload_now = reloading && !ca.reloading;
+                        ca.reloading = reloading;
+                        const bool hit_now = staggered && !ca.staggered;
+                        ca.staggered = staggered;
+                        const int* C = ca.clip;
+                        auto clip_or = [&](int a, int b) { return a >= 0 ? a : b; };
+                        const bool upper = !smc->upper_body.empty();
+                        if (dead) {
+                            if (!ca.dead && C[CharAnim::Death] >= 0) actor->play(C[CharAnim::Death], false, 0.12f);
+                            actor->play_upper(-1, false, 0.1f);
+                            ca.dead = true;
+                        } else {
+                            ca.dead = false;
+                            // The legs: standing, walking or running (crouched or not).
+                            const bool moving = speed > std::max(0.25f, smc->move_threshold);
+                            int legs = C[CharAnim::Idle];
+                            float rate = 1.0f;
+                            if (crouched) {
+                                legs = moving ? clip_or(C[CharAnim::CrouchWalk], C[CharAnim::Walk]) : clip_or(C[CharAnim::Crouch], C[CharAnim::Idle]);
+                                if (moving) rate = std::clamp(speed / 1.2f, 0.6f, 1.6f);
+                            } else if (moving && speed > smc->run_speed && C[CharAnim::Run] >= 0) {
+                                legs = C[CharAnim::Run];
+                                rate = std::clamp(speed / 4.5f, 0.7f, 1.5f);
+                            } else if (moving) {
+                                legs = clip_or(C[CharAnim::Walk], C[CharAnim::Idle]);
+                                rate = std::clamp(speed / 1.6f, 0.6f, 1.8f);
+                            }
+                            // The arms: fire, reload, hit, or aim while there is a target.
+                            int arms = -1;
+                            bool arms_loop = true, arms_restart = false;
+                            if (ca.fired_now && C[CharAnim::Fire] >= 0) { arms = C[CharAnim::Fire]; arms_loop = false; arms_restart = true; }
+                            else if (ca.reload_now && C[CharAnim::Reload] >= 0) { arms = C[CharAnim::Reload]; arms_loop = false; arms_restart = true; }
+                            else if (hit_now && C[CharAnim::Hit] >= 0) { arms = C[CharAnim::Hit]; arms_loop = false; arms_restart = true; }
+                            if (upper) {
+                                actor->play(legs >= 0 ? legs : 0, true, 0.2f, rate);
+                                if (arms >= 0) actor->play_upper(arms, arms_loop, 0.06f, arms_restart);
+                                else if (!actor->upper_finished() && actor->upper_clip() >= 0 &&
+                                         (actor->upper_clip() == C[CharAnim::Fire] || actor->upper_clip() == C[CharAnim::Reload] ||
+                                          actor->upper_clip() == C[CharAnim::Hit])) {
+                                    // let it finish
+                                } else if (aiming && C[CharAnim::Aim] >= 0) actor->play_upper(C[CharAnim::Aim], true, 0.15f);
+                                else actor->play_upper(-1, false, 0.2f);
+                            } else {
+                                const int busy = static_cast<int>(actor->clip_index());
+                                const bool once_playing = !actor->finished() &&
+                                    (busy == C[CharAnim::Fire] || busy == C[CharAnim::Reload] || busy == C[CharAnim::Hit]);
+                                if (arms >= 0) actor->play(arms, false, 0.06f, 1.0f, true);
+                                else if (once_playing) { /* let it finish */ }
+                                else if (aiming && !moving && C[CharAnim::Aim] >= 0) actor->play(C[CharAnim::Aim], true, 0.15f);
+                                else if (legs >= 0) actor->play(legs, true, 0.2f, rate);
+                            }
+                        }
+                        actor->advance(delta_time * smc->speed);
+                        actor->set_model(sk_tf->GetWorldMatrix());
+                        if (is_player && sk_first_person) fp_hidden_actors.insert(actor);
+                        continue;
                     }
+
                     // The player's model plays the clip for its move (jump, slide,
                     // climb...) when it has a Move Animation, on it or on the player.
-                    if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
-                        auto& pm = *editor_state.scene_playback_manager;
-                        const schizo::scene::Entity* player = pm.GetPlayerEntity();
-                        bool is_player = false;
-                        for (const schizo::scene::Entity* p = ent.get(); p && player; p = p->GetParent().get())
-                            if (p == player) { is_player = true; break; }
-                        if (is_player) {
-                            auto& w = ecs_bridge.world();
-                            auto find_ma = [&](const schizo::scene::Entity* e) -> const schizo::ecs::MoveAnimation* {
-                                const uint32_t id = ecs_bridge.ecs_entity_id(e->GetTransform());
-                                const auto ee = static_cast<schizo::ecs::Entity>(id);
-                                return id != schizo::editor::kNoEcsEntity && w.valid(ee) ? w.try_get<schizo::ecs::MoveAnimation>(ee) : nullptr;
-                            };
-                            const schizo::ecs::MoveAnimation* ma = find_ma(ent.get());
-                            if (!ma) ma = find_ma(player);
-                            if (ma) {
-                                const auto& st = pm.GetPlayerMovementState();
-                                const bool moving = glm::length(glm::vec2(st.velocity.x, st.velocity.z)) > smc->move_threshold;
-                                want_clip = schizo::ecs::move_animation_clip(*ma, st, moving, want_clip);
-                            }
+                    if (sk_playing && is_player) {
+                        auto& w = ecs_bridge.world();
+                        auto find_ma = [&](const schizo::scene::Entity* e) -> const schizo::ecs::MoveAnimation* {
+                            const uint32_t id = ecs_bridge.ecs_entity_id(e->GetTransform());
+                            const auto ee = static_cast<schizo::ecs::Entity>(id);
+                            return id != schizo::editor::kNoEcsEntity && w.valid(ee) ? w.try_get<schizo::ecs::MoveAnimation>(ee) : nullptr;
+                        };
+                        const schizo::ecs::MoveAnimation* ma = find_ma(ent.get());
+                        if (!ma) ma = find_ma(sk_player);
+                        if (ma) {
+                            const auto& st = sk_pm->GetPlayerMovementState();
+                            const bool moving = glm::length(glm::vec2(st.velocity.x, st.velocity.z)) > smc->move_threshold;
+                            want_clip = schizo::ecs::move_animation_clip(*ma, st, moving, want_clip);
                         }
                     }
                     if (static_cast<size_t>(want_clip) != actor->clip_index())
@@ -10429,6 +10652,96 @@ int main(int argc, char** argv) {
                     else              actor->refresh_pose();   // hold the pose, not bind pose
                     actor->set_model(sk_tf->GetWorldMatrix());
                 }
+
+                // ---- an agent with a gun fires from its muzzle --------------------
+                editor_state.npc_agents.muzzle_of = [&skinned_actors, sk_scene](uint32_t id, glm::vec3& out) {
+                    auto e = sk_scene->GetEntityById(id);
+                    if (!e) return false;
+                    // A held thing with a "muzzle" bone anywhere under the agent
+                    // (its body's hands).
+                    std::vector<schizo::scene::Entity*> todo{e.get()};
+                    for (size_t qi = 0; qi < todo.size() && qi < 64; ++qi)
+                        for (const auto& child : todo[qi]->GetChildren()) {
+                            if (!child) continue;
+                            todo.push_back(child.get());
+                            const auto* csmc = std::as_const(*child).GetSkinnedMeshComponent();
+                            if (!csmc || !csmc->active() || csmc->attach_bone.empty()) continue;
+                            auto* ga = skinned_actors.find(child->GetId());
+                            if (!ga) continue;
+                            const int mb = ga->find_bone("muzzle");
+                            if (mb < 0) continue;
+                            out = glm::vec3(ga->bone_world(mb)[3]);
+                            return true;
+                        }
+                    return false;
+                };
+
+                // ---- the gun in the player's hands, in first person ---------------
+                editor_state.player_weapon.clear_view_muzzle();
+                const schizo::ecs::WeaponDef* vwd = (sk_playing && sk_first_person && pw_hud.armed && !pw_hud.weapon_id.empty())
+                                                        ? schizo::ecs::find_weapon(pw_hud.weapon_id) : nullptr;
+                const auto* vcam = sk_playing ? sk_pm->GetPlaybackCamera() : nullptr;
+                if (vwd && !vwd->model.empty() && vcam && vcam->GetTransform()) {
+                    auto& slot = viewmodels[vwd->model];
+                    if (!slot.tried) {
+                        slot.tried = true;
+                        std::string err;
+                        slot.actor = schizo::editor::ImportedSkinnedActor::create(&device, mat_layout, mat_pool, &texture_manager,
+                                                                                  vwd->model, glm::vec3(0.0f), &err);
+                        if (!slot.actor) spdlog::error("[viewmodel] '{}' failed to load: {}", vwd->model, err);
+                        else {
+                            slot.idle = slot.actor->find_clip("Idle");
+                            slot.fire = slot.actor->find_clip("Fire");
+                            slot.reload = slot.actor->find_clip("Reload");
+                            slot.draw = slot.actor->find_clip("Draw");
+                        }
+                    }
+                    if (auto* va = slot.actor.get()) {
+                        // Drawn when switched to; fires, reloads; idle between.
+                        if (vm_state.weapon != pw_hud.weapon_id) {
+                            vm_state.weapon = pw_hud.weapon_id;
+                            if (slot.draw >= 0) va->play(slot.draw, false, 0.0f, 1.0f, true);
+                            vm_state.kick = 0.0f;
+                        }
+                        if (pw_hud.fired) {
+                            if (slot.fire >= 0) va->play(slot.fire, false, 0.0f, 1.0f, true);
+                            vm_state.kick = 1.0f;
+                        } else if (pw_hud.reloading && !vm_state.reloading && slot.reload >= 0) {
+                            va->play(slot.reload, false, 0.05f, 1.0f, true);
+                        } else if (va->finished() && slot.idle >= 0) {
+                            va->play(slot.idle, true, 0.1f);
+                        }
+                        vm_state.reloading = pw_hud.reloading;
+                        vm_state.kick = std::max(0.0f, vm_state.kick - delta_time * 9.0f);
+                        // Held in front of the eye: bob while walking, sway, the kick of a shot.
+                        const auto& mst = sk_pm->GetPlayerMovementState();
+                        const float spd = glm::length(glm::vec2(mst.velocity.x, mst.velocity.z));
+                        vm_state.bob += delta_time * (2.0f + spd * 1.6f);
+                        const float bob_amt = std::min(spd / 5.0f, 1.0f) * (mst.grounded ? 1.0f : 0.2f);
+                        const glm::vec3 bob(std::sin(vm_state.bob) * 0.008f * bob_amt, std::abs(std::cos(vm_state.bob)) * 0.010f * bob_amt, 0.0f);
+                        const float aim_in = pw_hud.aiming ? 1.0f : 0.0f;
+                        vm_state.aim += (aim_in - vm_state.aim) * std::min(1.0f, delta_time * 12.0f);
+                        glm::vec3 off = vwd->view_offset;
+                        off.x *= 1.0f - vm_state.aim * 0.9f;   // aiming: the gun comes to the middle
+                        off.y += vm_state.aim * 0.05f;
+                        const glm::vec3 kick(0.0f, 0.004f * vm_state.kick, -0.045f * vm_state.kick);
+                        const glm::mat4 cam_world = vcam->GetTransform()->GetWorldMatrix();
+                        // The model faces +Z; the eye looks down -Z.
+                        const glm::mat4 vm = cam_world *
+                                             glm::translate(glm::mat4(1.0f), glm::vec3(off.x, off.y, -off.z) + bob + kick) *
+                                             glm::rotate(glm::mat4(1.0f), glm::radians(3.5f * vm_state.kick), glm::vec3(1, 0, 0)) *
+                                             glm::rotate(glm::mat4(1.0f), glm::radians(180.0f), glm::vec3(0, 1, 0));
+                        va->advance(delta_time);
+                        va->set_model(vm);
+                        const int mb = va->find_bone("muzzle");
+                        if (mb >= 0) editor_state.player_weapon.set_view_muzzle(glm::vec3(va->bone_world(mb)[3]));
+                        extra_skinned.push_back(va);
+                        no_shadow_actors.insert(va);
+                    }
+                } else {
+                    vm_state.weapon.clear();
+                }
+
                 // Release actors whose entity is gone or no longer skinned.
                 // One id lookup per actor. This scanned the whole scene once PER
                 // ACTOR -- actors x entities a frame, a quadratic waiting for the
@@ -12912,12 +13225,19 @@ int main(int argc, char** argv) {
                 for (size_t i = 0; i < sk_ents.size(); ++i) {
                     if (!is_skinned[i]) continue;
                     const auto& ent = sk_ents[i];
+                    if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying() &&
+                        !ent->IsActiveInHierarchy())
+                        continue;   // a removed body in Play
                     if (auto* a = skinned_actors.get_or_create(
                             ent->GetId(), std::as_const(*ent).GetSkinnedMeshComponent()->gltf_path, &device,
                             mat_layout, mat_pool, &texture_manager)) {
                         a->record_skin(cmd);
                         frame_skinned.push_back(a);
                     }
+                }
+                for (auto* a : extra_skinned) {
+                    a->record_skin(cmd);
+                    frame_skinned.push_back(a);
                 }
             }
 
@@ -13650,7 +13970,14 @@ int main(int argc, char** argv) {
             // Per-entity skinned characters join the opaque list like any other
             // draw, so they get culling, shadows and the G-buffer for free.
             // The actors were found (and skinned) by the scan before recording.
-            for (auto* a : frame_skinned) opaque_draws.push_back(a->draw_item());
+            static std::vector<gws::renderer::gpu::DrawItem> shadow_only_draws;
+            shadow_only_draws.clear();
+            for (auto* a : frame_skinned) {
+                gws::renderer::gpu::DrawItem d = a->draw_item();
+                if (fp_hidden_actors.count(a)) { shadow_only_draws.push_back(d); continue; }   // seen only as a shadow
+                if (no_shadow_actors.count(a)) d.casts_shadow = false;
+                opaque_draws.push_back(d);
+            }
 
             // DDGI grid auto-fit: enclose the scene's world AABB (from the
             // opaque draw list) with the fixed probe grid so probes actually
@@ -13971,6 +14298,7 @@ int main(int argc, char** argv) {
                 shadow_draws.reserve(opaque_draws.size() + transparent_draws.size());
                 shadow_draws.insert(shadow_draws.end(), opaque_draws.begin(), opaque_draws.end());
                 shadow_draws.insert(shadow_draws.end(), transparent_draws.begin(), transparent_draws.end());
+                shadow_draws.insert(shadow_draws.end(), shadow_only_draws.begin(), shadow_only_draws.end());
             };
 
             // Stage 6: drive per-entity AudioSource/AudioListener components.
@@ -14130,6 +14458,8 @@ int main(int argc, char** argv) {
                         opaque_draws.data(), opaque_draws.size(), shadow_draws, light_frustum);
                     gws::renderer::gpu::cull_draw_items_frustum_into(
                         transparent_draws.data(), transparent_draws.size(), shadow_draws, light_frustum);
+                    gws::renderer::gpu::cull_draw_items_frustum_into(
+                        shadow_only_draws.data(), shadow_only_draws.size(), shadow_draws, light_frustum);
                 } else {
                     concat_shadow_draws();
                 }
@@ -14619,6 +14949,11 @@ int main(int argc, char** argv) {
         prim_cache.capsule.reset();
         prim_cache.pyramid.reset();
         foliage_renderer.release();
+        // Rigged characters: the first-person guns, every actor, then the files
+        // and textures they shared -- all before the pools and the device.
+        viewmodels.clear();
+        skinned_actors.clear();
+        schizo::editor::clear_skinned_asset_cache();
         vkDestroyDescriptorPool(device.get_device(), terrain_mat_pool, nullptr);
         vkDestroyDescriptorSetLayout(device.get_device(), terrain_mat_layout, nullptr);
         vkDestroyDescriptorPool(device.get_device(), mat_pool, nullptr);

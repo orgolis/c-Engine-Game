@@ -88,8 +88,6 @@ private:
     bool create_pipeline();
     bool create_depth_descriptor(VkImageView depth_view);
     void write_depth_descriptor(VkImageView depth_view);
-    bool ensure_vertex_capacity(size_t bytes);
-    bool ensure_index_capacity(uint32_t quads);
 
     VulkanDevice* device_ = nullptr;
     VkDevice      vk_     = VK_NULL_HANDLE;
@@ -104,15 +102,27 @@ private:
     VkDescriptorPool      depth_pool_    = VK_NULL_HANDLE;
     VkDescriptorSet       depth_set_     = VK_NULL_HANDLE;
 
-    VkBuffer       ibo_        = VK_NULL_HANDLE;
-    VkDeviceMemory ibo_memory_ = VK_NULL_HANDLE;
-    void*          ibo_mapped_ = nullptr;
-    uint32_t       ibo_quads_  = 0;
-
-    VkBuffer       vbo_        = VK_NULL_HANDLE;
-    VkDeviceMemory vbo_memory_ = VK_NULL_HANDLE;
-    void*          vbo_mapped_ = nullptr;
-    size_t         vbo_bytes_  = 0;
+    // The particles' vertices and indices, a ring of three: the slot written
+    // this frame was last read three frames ago (two in flight), so writing it
+    // -- or replacing it with a bigger one -- cannot touch a buffer the GPU is
+    // still drawing from. With one buffer, a frame with more particles than
+    // ever destroyed the buffer the previous frame was drawing (and every
+    // frame overwrote what the last one might still be reading).
+    struct Slot {
+        VkBuffer       ibo        = VK_NULL_HANDLE;
+        VkDeviceMemory ibo_memory = VK_NULL_HANDLE;
+        void*          ibo_mapped = nullptr;
+        uint32_t       ibo_quads  = 0;
+        VkBuffer       vbo        = VK_NULL_HANDLE;
+        VkDeviceMemory vbo_memory = VK_NULL_HANDLE;
+        void*          vbo_mapped = nullptr;
+        size_t         vbo_bytes  = 0;
+    };
+    static constexpr uint32_t kRing = 3;
+    Slot     slots_[kRing];
+    uint32_t frame_ = 0;
+    bool ensure_vertex_capacity(Slot& s, size_t bytes);
+    bool ensure_index_capacity(Slot& s, uint32_t quads);
 
     std::unique_ptr<VulkanShaderRegistry> shader_registry_;
 

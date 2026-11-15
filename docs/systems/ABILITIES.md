@@ -17,6 +17,7 @@ ability firebolt
   still                 # moving breaks the cast
   target aimed          # self | aimed | area | area_at_aim
   range 30              # aimed and area_at_aim
+  spread 3              # aimed and area_at_aim: goes this many degrees off the aim, at random (a soldier's rifle)
   radius 3              # area and area_at_aim
   damage 35 fire        # to each one it reaches, with its damage type
   effect Speed -2 3     # to each one reached: attribute, amount, seconds (none: at once)
