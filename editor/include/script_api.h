@@ -239,6 +239,10 @@ struct ScriptApi {
     // The gun at a place: its id and name (false: an empty slot).
     bool (*weapon_in_slot)(void* ctx, uint32_t e, int index, char* id_out, int id_size, char* name_out,
                            int name_size) = nullptr;
+
+    // ---- ability slots (added v0.8.51; new entries go at the end) ----
+    // A known ability (its place in the known list, from 0) into a bar slot (from 0).
+    bool (*equip_ability)(void* ctx, uint32_t e, int known_index, int slot) = nullptr;
 };
 
 }  // namespace schizo::editor

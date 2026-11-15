@@ -31,7 +31,13 @@ below a river or a lake.
 
 Two rivers running into the same lake make one lake surface. A river that
 reaches another river (or its lake) **joins it there and ends**: there is one
-water surface on any bed, never two one on the other.
+water surface on any bed, never two one on the other. A river that flows into
+a lake ends at the shore -- none of its points lie under the lake -- and the
+lake's bed is the filled hollow, not a trench carved under it.
+
+Where surfaces meet (a river's mouth at a lake) only the nearest one is drawn
+at each pixel: the water is drawn twice, depth first, so two surfaces at
+almost the same level never show through each other or flicker.
 
 ### Water
 

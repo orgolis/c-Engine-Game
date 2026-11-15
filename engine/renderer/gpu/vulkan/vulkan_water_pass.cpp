@@ -161,37 +161,59 @@ bool VulkanWaterPass::initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,
         ref.attachment = 0;
         ref.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
+        // The water's own depth (cleared each frame, not kept).
+        VkAttachmentDescription datt{};
+        datt.format         = VK_FORMAT_D32_SFLOAT;
+        datt.samples        = VK_SAMPLE_COUNT_1_BIT;
+        datt.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        datt.storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        datt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        datt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        datt.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        datt.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference dref{};
+        dref.attachment = 1;
+        dref.layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
         VkSubpassDescription sp{};
         sp.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
         sp.colorAttachmentCount = 1;
         sp.pColorAttachments    = &ref;
+        sp.pDepthStencilAttachment = &dref;
 
         VkSubpassDependency dep{};
         dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
         dep.dstSubpass    = 0;
         dep.srcStageMask  = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;   // last frame's water depth
         dep.dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dep.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        dep.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         dep.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
+        const VkAttachmentDescription atts[2] = {att, datt};
         VkRenderPassCreateInfo rp{};
         rp.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        rp.attachmentCount = 1;
-        rp.pAttachments    = &att;
+        rp.attachmentCount = 2;
+        rp.pAttachments    = atts;
         rp.subpassCount    = 1;
         rp.pSubpasses      = &sp;
         rp.dependencyCount = 1;
         rp.pDependencies   = &dep;
         if (vkCreateRenderPass(vk, &rp, nullptr, &render_pass_) != VK_SUCCESS) return false;
 
+        if (!create_depth(width, height)) return false;
+        const VkImageView views[2] = {hdr_color_view, depth_view_};
         VkFramebufferCreateInfo fb{};
         fb.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         fb.renderPass      = render_pass_;
-        fb.attachmentCount = 1;
-        fb.pAttachments    = &hdr_color_view;
+        fb.attachmentCount = 2;
+        fb.pAttachments    = views;
         fb.width           = width;
         fb.height          = height;
         fb.layers          = 1;
@@ -260,8 +282,24 @@ bool VulkanWaterPass::initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,
         ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
         ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-        VkPipelineDepthStencilStateCreateInfo ds{};   // manual depth test in FS
-        ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        // Shaded: only where this surface is the nearest water (its depth
+        // equals the depth pass's), and the scene in front by the manual test
+        // in the fragment stage.
+        VkPipelineDepthStencilStateCreateInfo ds{};
+        ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        ds.depthTestEnable  = VK_TRUE;
+        ds.depthWriteEnable = VK_FALSE;
+        ds.depthCompareOp   = VK_COMPARE_OP_EQUAL;
+        // Depth only: the nearest water per pixel, nothing written to colour.
+        VkPipelineDepthStencilStateCreateInfo dsd = ds;
+        dsd.depthWriteEnable = VK_TRUE;
+        dsd.depthCompareOp   = VK_COMPARE_OP_LESS;
+        VkPipelineColorBlendAttachmentState cbd{};
+        cbd.colorWriteMask = 0;
+        VkPipelineColorBlendStateCreateInfo cb_depth{};
+        cb_depth.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        cb_depth.attachmentCount = 1;
+        cb_depth.pAttachments    = &cbd;
 
         VkPipelineColorBlendAttachmentState cba{};
         cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -293,8 +331,14 @@ bool VulkanWaterPass::initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,
         gp.layout              = layout_;
         gp.renderPass          = render_pass_;
         gp.subpass             = 0;
-        const VkResult r = vkCreateGraphicsPipelines(vk, VK_NULL_HANDLE, 1, &gp, nullptr,
+        VkResult r = vkCreateGraphicsPipelines(vk, VK_NULL_HANDLE, 1, &gp, nullptr,
                                                      &pipeline_);
+        if (r == VK_SUCCESS) {
+            VkGraphicsPipelineCreateInfo gd = gp;
+            gd.pDepthStencilState = &dsd;
+            gd.pColorBlendState   = &cb_depth;
+            r = vkCreateGraphicsPipelines(vk, VK_NULL_HANDLE, 1, &gd, nullptr, &depth_pipeline_);
+        }
         // Rivers: the same fragment stage over a ribbon from a vertex buffer.
         VkShaderModule rvs = make_module(vk, kWaterRiverVertSpv, kWaterRiverVertSpv_size);
         if (r == VK_SUCCESS && rvs != VK_NULL_HANDLE) {
@@ -311,9 +355,15 @@ bool VulkanWaterPass::initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,
             rvi.vertexAttributeDescriptionCount = static_cast<uint32_t>(at.size());
             rvi.pVertexAttributeDescriptions    = at.data();
             gp.pVertexInputState = &rvi;
-            if (vkCreateGraphicsPipelines(vk, VK_NULL_HANDLE, 1, &gp, nullptr, &river_pipeline_) != VK_SUCCESS) {
+            VkGraphicsPipelineCreateInfo gd = gp;
+            gd.pDepthStencilState = &dsd;
+            gd.pColorBlendState   = &cb_depth;
+            if (vkCreateGraphicsPipelines(vk, VK_NULL_HANDLE, 1, &gp, nullptr, &river_pipeline_) != VK_SUCCESS ||
+                vkCreateGraphicsPipelines(vk, VK_NULL_HANDLE, 1, &gd, nullptr, &river_depth_pipeline_) != VK_SUCCESS) {
                 spdlog::warn("VulkanWaterPass: river pipeline failed -- rivers will not draw");
+                if (river_pipeline_) vkDestroyPipeline(vk, river_pipeline_, nullptr);
                 river_pipeline_ = VK_NULL_HANDLE;
+                river_depth_pipeline_ = VK_NULL_HANDLE;
             }
         }
         if (rvs) vkDestroyShaderModule(vk, rvs, nullptr);
@@ -487,11 +537,15 @@ void VulkanWaterPass::execute(VkCommandBuffer cmd,
     for (uint32_t i = 0; i < kRipples; ++i) u.ripples[i] = ripples_[i];
     cmd_update_uniform(cmd, ubo_, &u, sizeof(u));   // not a memcpy: a frame in flight may read it
 
+    VkClearValue clears[2]{};
+    clears[1].depthStencil = {1.0f, 0};
     VkRenderPassBeginInfo rb{};
     rb.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rb.renderPass        = render_pass_;
     rb.framebuffer       = framebuffer_;
     rb.renderArea.extent = {width_, height_};
+    rb.clearValueCount   = 2;
+    rb.pClearValues      = clears;
     vkCmdBeginRenderPass(cmd, &rb, VK_SUBPASS_CONTENTS_INLINE);
 
     VkViewport vp{};
@@ -502,23 +556,30 @@ void VulkanWaterPass::execute(VkCommandBuffer cmd,
     VkRect2D sc{{0, 0}, {width_, height_}};
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_,
                             0, 1, &set_, 0, nullptr);
-    for (const WaterDraw& d : draws_) {
-        vkCmdPushConstants(cmd, layout_,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(WaterDraw), &d);
-        vkCmdDraw(cmd, kVertices, 1, 0, 0);
-    }
     if (rivers_ok) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, river_pipeline_);
         const VkDeviceSize off = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &river_vbo_[slot], &off);
-        for (const RiverDraw& r : rivers_) {
-            vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(WaterDraw), &r.pc);
-            vkCmdDraw(cmd, r.count, 1, r.first, 0);
+    }
+    // Twice: the depth of the nearest water, then each surface shaded where
+    // it is that nearest one.
+    for (int phase = 0; phase < 2; ++phase) {
+        const bool depth_only = phase == 0;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depth_only ? depth_pipeline_ : pipeline_);
+        for (const WaterDraw& d : draws_) {
+            vkCmdPushConstants(cmd, layout_,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(WaterDraw), &d);
+            vkCmdDraw(cmd, kVertices, 1, 0, 0);
+        }
+        if (rivers_ok) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depth_only ? river_depth_pipeline_ : river_pipeline_);
+            for (const RiverDraw& r : rivers_) {
+                vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(WaterDraw), &r.pc);
+                vkCmdDraw(cmd, r.count, 1, r.first, 0);
+            }
         }
     }
     vkCmdEndRenderPass(cmd);
@@ -529,10 +590,13 @@ void VulkanWaterPass::resize(VkImageView hdr_color_view, uint32_t width, uint32_
     VkDevice vk = device_->get_device();
     if (framebuffer_) { vkDestroyFramebuffer(vk, framebuffer_, nullptr); framebuffer_ = VK_NULL_HANDLE; }
     width_ = width; height_ = height;
+    destroy_depth();
+    if (!create_depth(width, height)) spdlog::error("VulkanWaterPass::resize: depth creation failed");
+    const VkImageView views[2] = {hdr_color_view, depth_view_};
     VkFramebufferCreateInfo fb{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
     fb.renderPass      = render_pass_;
-    fb.attachmentCount = 1;
-    fb.pAttachments    = &hdr_color_view;
+    fb.attachmentCount = 2;
+    fb.pAttachments    = views;
     fb.width           = width;
     fb.height          = height;
     fb.layers          = 1;
@@ -545,6 +609,43 @@ void VulkanWaterPass::resize(VkImageView hdr_color_view, uint32_t width, uint32_
     w.dstSet = set_; w.dstBinding = 1; w.descriptorCount = 1;
     w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &depth;
     vkUpdateDescriptorSets(vk, 1, &w, 0, nullptr);
+}
+
+bool VulkanWaterPass::create_depth(uint32_t width, uint32_t height) {
+    VkDevice vk = device_->get_device();
+    VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ii.imageType   = VK_IMAGE_TYPE_2D;
+    ii.format      = VK_FORMAT_D32_SFLOAT;
+    ii.extent      = {std::max(1u, width), std::max(1u, height), 1};
+    ii.mipLevels   = 1;
+    ii.arrayLayers = 1;
+    ii.samples     = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling      = VK_IMAGE_TILING_OPTIMAL;
+    ii.usage       = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(vk, &ii, nullptr, &depth_image_) != VK_SUCCESS) return false;
+    VkMemoryRequirements req{};
+    vkGetImageMemoryRequirements(vk, depth_image_, &req);
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.allocationSize  = req.size;
+    ai.memoryTypeIndex = device_->find_memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (vkAllocateMemory(vk, &ai, nullptr, &depth_memory_) != VK_SUCCESS) return false;
+    vkBindImageMemory(vk, depth_image_, depth_memory_, 0);
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image    = depth_image_;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format   = VK_FORMAT_D32_SFLOAT;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    return vkCreateImageView(vk, &vi, nullptr, &depth_view_) == VK_SUCCESS;
+}
+
+void VulkanWaterPass::destroy_depth() {
+    if (!device_) return;
+    VkDevice vk = device_->get_device();
+    if (depth_view_)   vkDestroyImageView(vk, depth_view_, nullptr);
+    if (depth_image_)  vkDestroyImage(vk, depth_image_, nullptr);
+    if (depth_memory_) vkFreeMemory(vk, depth_memory_, nullptr);
+    depth_view_ = VK_NULL_HANDLE; depth_image_ = VK_NULL_HANDLE; depth_memory_ = VK_NULL_HANDLE;
 }
 
 void VulkanWaterPass::destroy() {
@@ -564,6 +665,9 @@ void VulkanWaterPass::destroy() {
         river_mapped_[s] = nullptr; river_vbo_[s] = VK_NULL_HANDLE; river_mem_[s] = VK_NULL_HANDLE; river_cap_[s] = 0;
     }
     if (river_pipeline_) { vkDestroyPipeline(vk, river_pipeline_, nullptr); river_pipeline_ = VK_NULL_HANDLE; }
+    if (river_depth_pipeline_) { vkDestroyPipeline(vk, river_depth_pipeline_, nullptr); river_depth_pipeline_ = VK_NULL_HANDLE; }
+    if (depth_pipeline_) { vkDestroyPipeline(vk, depth_pipeline_, nullptr); depth_pipeline_ = VK_NULL_HANDLE; }
+    destroy_depth();
     if (ubo_)             vkDestroyBuffer(vk, ubo_, nullptr);
     if (ubo_memory_)      vkFreeMemory(vk, ubo_memory_, nullptr);
     if (gbuffer_sampler_) vkDestroySampler(vk, gbuffer_sampler_, nullptr);

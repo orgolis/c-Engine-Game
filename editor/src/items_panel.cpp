@@ -271,6 +271,8 @@ void draw_tag_list(const char* title, std::vector<std::string>& tags) {
 void draw_ability(ecs::AbilityDef& a) {
     input_id("id", a.id);
     input_str("name", a.name);
+    input_str("about", a.about, "what it does, in a sentence");
+    ImGui::SetItemTooltip("Shown with it: a HUD slot's or an abilities screen's {grid.info}.");
     int tg = static_cast<int>(a.targeting);
     const char* tgs[] = {"the caster", "the one aimed at", "everyone around the caster", "everyone around the aimed point"};
     if (ImGui::Combo("reaches", &tg, tgs, 4)) a.targeting = static_cast<ecs::AbilityTargeting>(tg);
@@ -307,6 +309,20 @@ void draw_ability(ecs::AbilityDef& a) {
     draw_effects("To the caster", a.self_effects, "Add effect##s");
     draw_tag_list("Needs tags", a.require_tags);
     draw_tag_list("Blocked by tags", a.block_tags);
+    if (a.targeting == ecs::AbilityTargeting::Aimed || a.targeting == ecs::AbilityTargeting::AreaAtAim)
+        ImGui::DragFloat("spread", &a.spread, 0.05f, 0.0f, 45.0f, a.spread > 0.0f ? "%.1f deg" : "dead on");
+    if (ImGui::TreeNodeEx("Moves the caster")) {
+        int mv = static_cast<int>(a.move);
+        const char* mvs[] = {"no", "blink (there at once)", "dash", "leap"};
+        if (ImGui::Combo("move", &mv, mvs, 4)) a.move = static_cast<ecs::AbilityDef::Move>(mv);
+        if (a.move == ecs::AbilityDef::Move::Blink || a.move == ecs::AbilityDef::Move::Dash)
+            ImGui::DragFloat("distance", &a.move_a, 0.1f, 0.0f, 200.0f, "%.1f m");
+        if (a.move == ecs::AbilityDef::Move::Leap) {
+            ImGui::DragFloat("up", &a.move_a, 0.1f, 0.0f, 100.0f, "%.1f m/s");
+            ImGui::DragFloat("forward", &a.move_b, 0.1f, 0.0f, 100.0f, "%.1f m/s");
+        }
+        ImGui::TreePop();
+    }
     input_id("vfx", a.vfx);
     ImGui::SetItemTooltip("Its effects: effect blocks named <vfx>_windup, _cast, _trail, _beam, _hit, _area, _self\n"
                           "(else the built-in ones for its damage type). Also handed out with its events.");

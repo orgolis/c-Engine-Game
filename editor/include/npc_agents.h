@@ -266,7 +266,10 @@ public:
 
             // --- where to go -------------------------------------------------
             glm::vec3 goal = pos;
+            // MoveSpeed (a bonus stat): % faster -- or slower, a Frost Nova's chill.
             float speed = ag->move_speed;
+            if (bridge && me != schizo::ecs::null_entity)
+                speed *= std::max(0.15f, 1.0f + schizo::ecs::bonus_stat(bridge->world().try_get<schizo::ecs::AttributeSet>(me), "MoveSpeed") / 100.0f);
             bool  hold = false;   // stand (a wind-up, a stagger, a pause on patrol)
             switch (st.mode) {
                 case Mode::Chase:

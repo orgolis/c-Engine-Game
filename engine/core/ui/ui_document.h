@@ -55,6 +55,18 @@ struct UiSlot {
     std::string detail;   // a second line: kind, equipped...
     std::string info;     // a description, for {<grid>.info} (not drawn in the cell)
     bool        marked = false;   // drawn with a frame (the gun in hand)
+    std::string corner;           // small, top left (the key it is on)
+    float       shade = 0.0f;     // 0..1: so much of the cell dark from the top (a cooldown left)
+    std::string overlay;          // large, over the middle (the seconds left)
+};
+
+/// One node of a drawn skill tree (`skilltree`).
+struct UiTreeNode {
+    std::string id, name, about;
+    int   cost = 1;
+    int   state = 0;              // 0 locked, 1 can be learned now, 2 learned
+    float col = -1.0f, row = -1.0f;   // its place (< 0: by what it needs)
+    std::vector<int> needs;       // indices of the nodes it needs
 };
 
 /// A grid of slots (an inventory, a stash): cells drawn in rows, the
@@ -102,8 +114,18 @@ public:
             box.apply(cellc);
             cellc.drop = false;
             dl.push_back(cellc);
-            if (i >= static_cast<int>(slots.size()) || slots[static_cast<size_t>(i)].name.empty()) continue;
+            if (i >= static_cast<int>(slots.size())) continue;
             const UiSlot& s = slots[static_cast<size_t>(i)];
+            if (!s.corner.empty()) {   // the key, even on an empty slot
+                const UiRect k{r.x + r.w * 0.06f, r.y + r.h * 0.02f, r.w * 0.5f, r.h * 0.3f};
+                dl.push_back({UiCmdType::Text, k, UiColor{0.85f, 0.88f, 0.95f, 0.85f}, s.corner, font_size * 0.8f, UiAlign::Left, 0});
+            }
+            if (s.name.empty()) continue;
+            if (s.shade > 0.0f) {      // a cooldown: the cell dark over what is left of it
+                UiDrawCmd sh{UiCmdType::Rect, UiRect{r.x, r.y, r.w, r.h * std::min(1.0f, s.shade)}, UiColor{0, 0, 0, 0.62f}, {}, 0.0f, UiAlign::Left, 0};
+                sh.rounding = box.rounding;
+                dl.push_back(sh);
+            }
             UiRect name = r;
             name.h = r.h * 0.6f;
             dl.push_back({UiCmdType::Text, name, UiColor{1, 1, 1, 1}, s.name, font_size, UiAlign::Center, 0});
@@ -114,12 +136,125 @@ public:
             if (!s.detail.empty()) tail = tail.empty() ? s.detail : tail + "  " + s.detail;
             if (!tail.empty())
                 dl.push_back({UiCmdType::Text, low, UiColor{1, 0.9f, 0.6f, 0.95f}, tail, font_size * 0.8f, UiAlign::Center, 0});
+            if (!s.overlay.empty()) {
+                UiDrawCmd ov{UiCmdType::Text, r, UiColor{1, 1, 1, 0.95f}, s.overlay, font_size * 1.5f, UiAlign::Center, 0};
+                ov.bold = true;
+                ov.shadow = true;
+                dl.push_back(ov);
+            }
         }
     }
     float scale_hint = 1.0f;
 
 private:
     int hover_ = -1;
+};
+
+/// A skill tree drawn as a tree: each skill a box, a line to each skill it
+/// needs; learned ones gold, ones that can be learned now bright, the rest
+/// dim. Placed by each skill's `pos` (columns and rows), else by what it needs
+/// (a row a step). A click on a box reports it (`on_click`, its index).
+class SkillTreeView : public Widget {
+public:
+    std::vector<UiTreeNode> nodes;
+    float font_size = 18.0f;
+    float node_w = 170.0f, node_h = 62.0f;   // reference pixels
+    float scale_hint = 1.0f;
+    bool  root_at_bottom = true;             // row 0 at the bottom: it grows up like a tree
+    UiColor learned{0.95f, 0.72f, 0.25f, 1.0f}, open{0.55f, 0.85f, 1.0f, 1.0f}, locked{0.4f, 0.43f, 0.5f, 1.0f};
+    UiColor fill{0.09f, 0.12f, 0.17f, 0.96f};
+    int hovered = -1, selected = -1;
+    std::function<void(int)> on_click;
+
+    SkillTreeView() { interactive = true; }
+    /// Where each node is (its box's centre), as laid out now.
+    std::vector<glm::vec2> centres() const {
+        std::vector<glm::vec2> c(nodes.size(), glm::vec2(0.0f));
+        if (nodes.empty()) return c;
+        // Rows: given, else one past the deepest thing it needs.
+        std::vector<float> row(nodes.size(), -1.0f), col(nodes.size(), -1.0f);
+        for (size_t i = 0; i < nodes.size(); ++i) { row[i] = nodes[i].row; col[i] = nodes[i].col; }
+        for (int pass = 0; pass < 32; ++pass)
+            for (size_t i = 0; i < nodes.size(); ++i) {
+                if (nodes[i].row >= 0.0f) continue;
+                float r = 0.0f;
+                for (int n : nodes[i].needs)
+                    if (n >= 0 && n < static_cast<int>(nodes.size())) r = std::max(r, (row[static_cast<size_t>(n)] < 0 ? 0.0f : row[static_cast<size_t>(n)]) + 1.0f);
+                row[i] = r;
+            }
+        // Columns not given: spread evenly in their row.
+        std::unordered_map<int, int> in_row, at;
+        for (size_t i = 0; i < nodes.size(); ++i) if (col[i] < 0.0f) ++in_row[static_cast<int>(row[i])];
+        float maxc = 0.0f;
+        for (size_t i = 0; i < nodes.size(); ++i) if (col[i] >= 0.0f) maxc = std::max(maxc, col[i]);
+        for (const auto& [r, n] : in_row) maxc = std::max(maxc, static_cast<float>(n - 1));
+        for (size_t i = 0; i < nodes.size(); ++i)
+            if (col[i] < 0.0f) {
+                const int r = static_cast<int>(row[i]);
+                const int n = in_row[r], k = at[r]++;
+                col[i] = n <= 1 ? maxc * 0.5f : maxc * static_cast<float>(k) / static_cast<float>(n - 1);
+            }
+        float c0 = 1e9f, c1 = -1e9f, r0 = 1e9f, r1 = -1e9f;
+        for (size_t i = 0; i < nodes.size(); ++i) { c0 = std::min(c0, col[i]); c1 = std::max(c1, col[i]); r0 = std::min(r0, row[i]); r1 = std::max(r1, row[i]); }
+        const float nw = node_w * scale_hint, nh = node_h * scale_hint;
+        const float x0 = rect.x + nw * 0.5f, x1 = rect.x + rect.w - nw * 0.5f;
+        const float y0 = rect.y + nh * 0.5f, y1 = rect.y + rect.h - nh * 0.5f;
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            const float fx = c1 > c0 ? (col[i] - c0) / (c1 - c0) : 0.5f;
+            float fy = r1 > r0 ? (row[i] - r0) / (r1 - r0) : 0.5f;
+            if (root_at_bottom) fy = 1.0f - fy;
+            c[i] = glm::vec2(x0 + (x1 - x0) * fx, y0 + (y1 - y0) * fy);
+        }
+        return c;
+    }
+    int node_at(float px, float py) const {
+        const auto c = centres();
+        const float hw = node_w * scale_hint * 0.5f, hh = node_h * scale_hint * 0.5f;
+        for (size_t i = 0; i < c.size(); ++i)
+            if (std::fabs(px - c[i].x) <= hw && std::fabs(py - c[i].y) <= hh) return static_cast<int>(i);
+        return -1;
+    }
+    void on_pointer(float x, float y) override { hovered = node_at(x, y); }
+    void on_hover(bool h) override { if (!h) hovered = -1; }
+    void on_activate() override {
+        if (hovered < 0) return;
+        selected = hovered;
+        if (on_click) on_click(hovered);
+    }
+    void paint_self(UiDrawList& dl) const override {
+        const auto c = centres();
+        const float s = std::max(0.01f, scale_hint);
+        // The lines first, under the boxes.
+        for (size_t i = 0; i < nodes.size(); ++i)
+            for (int n : nodes[i].needs) {
+                if (n < 0 || n >= static_cast<int>(nodes.size())) continue;
+                const bool lit = nodes[static_cast<size_t>(n)].state == 2;
+                const UiColor lc = lit && nodes[i].state == 2 ? learned : lit ? open : UiColor{locked.r, locked.g, locked.b, 0.55f};
+                const glm::vec2 a = c[static_cast<size_t>(n)], b = c[i];
+                UiDrawCmd ln{UiCmdType::Line, UiRect{a.x, a.y, b.x - a.x, b.y - a.y}, lc, {}, (lit ? 4.0f : 2.5f), UiAlign::Left, 0};
+                dl.push_back(ln);
+            }
+        const float hw = node_w * s * 0.5f, hh = node_h * s * 0.5f;
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            const UiTreeNode& nd = nodes[i];
+            const UiColor edge = nd.state == 2 ? learned : nd.state == 1 ? open : locked;
+            UiDrawCmd box{UiCmdType::Rect, UiRect{c[i].x - hw, c[i].y - hh, hw * 2.0f, hh * 2.0f}, fill, {}, 0.0f, UiAlign::Left, 0};
+            if (nd.state == 2) box.color = UiColor{0.22f, 0.17f, 0.07f, 0.97f};
+            box.rounding = 10.0f;
+            box.border = edge;
+            box.border_width = static_cast<int>(i) == hovered || static_cast<int>(i) == selected ? 3.5f : 2.0f;
+            box.drop = true;
+            dl.push_back(box);
+            UiRect name{c[i].x - hw + 4.0f * s, c[i].y - hh, hw * 2.0f - 8.0f * s, hh * 1.3f};
+            UiDrawCmd t{UiCmdType::Text, name, nd.state == 0 ? UiColor{0.75f, 0.77f, 0.82f, 0.9f} : UiColor{1, 1, 1, 1}, nd.name,
+                        font_size, UiAlign::Center, 0};
+            t.bold = true;
+            dl.push_back(t);
+            const std::string tail = nd.state == 2 ? "learned" : std::to_string(nd.cost) + (nd.cost == 1 ? " point" : " points");
+            UiRect low{c[i].x - hw, c[i].y + hh * 0.15f, hw * 2.0f, hh * 0.8f};
+            dl.push_back({UiCmdType::Text, low, UiColor{edge.r, edge.g, edge.b, 0.95f}, tail, font_size * 0.78f, UiAlign::Center, 0});
+        }
+    }
 };
 
 struct UiDocument {
@@ -135,10 +270,12 @@ struct UiDocument {
     struct BarBinding  { ProgressBar* bar; std::string source; };
     struct EnableBinding { Button* button; std::string source; };   // enabled while the source is above 0
     struct SlotsBinding { SlotGrid* grid; std::string id, source; };
+    struct TreeBinding { SkillTreeView* view; std::string id, source, prefix; };   // prefix + skill id: its click
     std::vector<TextBinding> texts;
     std::vector<BarBinding>  bars;
     std::vector<EnableBinding> enables;
     std::vector<SlotsBinding>  grids;
+    std::vector<TreeBinding>   trees;
     std::vector<std::string> errors;   // "line 4: unknown anchor 'middle'"
 };
 
@@ -151,6 +288,8 @@ struct UiValue {
 using UiLookup = std::function<UiValue(const std::string& source)>;
 /// The contents of a slots grid (`bind=player.inventory`).
 using UiSlotLookup = std::function<std::vector<UiSlot>(const std::string& source)>;
+/// The skills of a drawn tree (`skilltree bind=<tree>`), with the player's state.
+using UiTreeLookup = std::function<std::vector<UiTreeNode>(const std::string& source)>;
 
 namespace ui_doc_detail {
 
@@ -298,8 +437,22 @@ inline std::unique_ptr<UiDocument> parse_ui_document(const std::string& text, co
             if (!kv.count("id")) err("slots need an id (it is what On UI Button names, with the cell as Index)");
             else doc->grids.push_back({g, kv["id"], kv.count("bind") ? kv["bind"] : std::string()});
             w = g;
+        } else if (kind == "skilltree") {
+            auto* v = doc->canvas.root().add<SkillTreeView>();
+            v->font_size = num("size", 18.0f);
+            v->node_w = num("node_w", 170.0f);
+            v->node_h = num("node_h", 62.0f);
+            if (kv.count("root") && kv["root"] == "top") v->root_at_bottom = false;
+            if (kv.count("learned")) parse_color(kv["learned"], v->learned);
+            if (kv.count("open")) parse_color(kv["open"], v->open);
+            if (kv.count("locked")) parse_color(kv["locked"], v->locked);
+            if (kv.count("color")) parse_color(kv["color"], v->fill);
+            if (!kv.count("id")) err("a skilltree needs an id");
+            else doc->trees.push_back({v, kv["id"], kv.count("bind") ? kv["bind"] : std::string(),
+                                       kv.count("click") ? kv["click"] : std::string("learn_")});
+            w = v;
         } else {
-            err("unknown widget '" + kind + "' (panel, label, button, bar, slots)");
+            err("unknown widget '" + kind + "' (panel, label, button, bar, slots, skilltree)");
             continue;
         }
         // Placement.
@@ -323,14 +476,50 @@ inline std::unique_ptr<UiDocument> parse_ui_document(const std::string& text, co
 
 /// Fill {source} placeholders and bars from the game. Unknown sources show
 /// as "?" (and leave a bar as it is).
-inline void refresh_ui_bindings(UiDocument& doc, const UiLookup& game_lookup, const UiSlotLookup& slot_lookup = {}) {
+inline void refresh_ui_bindings(UiDocument& doc, const UiLookup& game_lookup, const UiSlotLookup& slot_lookup = {},
+                                const UiTreeLookup& tree_lookup = {}) {
     for (auto& g : doc.grids) {
         g.grid->scale_hint = doc.canvas.scale();
         if (slot_lookup && !g.source.empty()) g.grid->slots = slot_lookup(g.source);
         if (g.grid->selected >= g.grid->cols * g.grid->rows) g.grid->selected = -1;
     }
+    for (auto& t : doc.trees) {
+        t.view->scale_hint = doc.canvas.scale();
+        if (tree_lookup && !t.source.empty()) t.view->nodes = tree_lookup(t.source);
+        const int n = static_cast<int>(t.view->nodes.size());
+        if (t.view->selected >= n) t.view->selected = -1;
+        if (t.view->hovered >= n) t.view->hovered = -1;
+    }
     // {<slots id>.name / .count / .detail / .info / .index / .filled}: the selected cell.
     const UiLookup lookup = [&](const std::string& src) {
+        // {<skilltree id>.name / .about / .cost / .state / .info}: the skill under
+        // the pointer, else the one picked last.
+        for (const auto& t : doc.trees) {
+            if (src.rfind(t.id + ".", 0) != 0) continue;
+            const std::string what = src.substr(t.id.size() + 1);
+            const int i = t.view->hovered >= 0 ? t.view->hovered : t.view->selected;
+            const UiTreeNode* nd = i >= 0 && i < static_cast<int>(t.view->nodes.size()) ? &t.view->nodes[static_cast<size_t>(i)] : nullptr;
+            UiValue v;
+            v.found = true;
+            if (what == "name") v.text = nd ? nd->name : std::string(" ");
+            else if (what == "about") v.text = nd && !nd->about.empty() ? nd->about : std::string(" ");
+            else if (what == "cost") v.value = nd ? nd->cost : 0;
+            else if (what == "state") v.text = !nd ? std::string(" ") : nd->state == 2 ? std::string("Learned")
+                                             : nd->state == 1 ? std::string("Click to learn") : std::string("Locked");
+            else if (what == "info") {
+                if (!nd) v.text = "Point at a skill";
+                else {
+                    std::string needs;
+                    for (int k : nd->needs)
+                        if (k >= 0 && k < static_cast<int>(t.view->nodes.size()))
+                            needs += (needs.empty() ? "" : ", ") + t.view->nodes[static_cast<size_t>(k)].name;
+                    v.text = nd->about + (nd->state == 2 ? "   (learned)"
+                                          : "   (" + std::to_string(nd->cost) + (nd->cost == 1 ? " point" : " points") +
+                                                (needs.empty() || nd->state == 1 ? std::string(")") : "; needs " + needs + ")"));
+                }
+            } else v.found = false;
+            return v;
+        }
         for (const auto& g : doc.grids) {
             if (src.rfind(g.id + ".", 0) != 0) continue;
             const std::string what = src.substr(g.id.size() + 1);

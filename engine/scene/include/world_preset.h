@@ -262,6 +262,42 @@ inline BuiltWorld build_world(Scene& scene, const WorldPreset& p, uint32_t seed,
                 run.reached_edge = run.reached_sea = false;
             }
         }
+        // Where the river crosses the shallow end of a lake's basin (cut
+        // through, not deep enough to be the lake when traced) the lake's
+        // water covers it all the same: no bed carved there -- it showed
+        // through the lake as a straight trench -- and no ribbon under the
+        // lake. The river stops at the shore and goes on beyond the lake.
+        {
+            std::vector<uint8_t> in_lake;
+            for (const WaterRun::Lake& lk : run.lakes) {
+                if (lk.cells < 8) continue;
+                if (in_lake.empty()) in_lake.assign(static_cast<size_t>(n) * n, 0);
+                // Grown as its shape is (lake_shape's pad): the lake's water
+                // reaches that far, so the river stops there.
+                for (int vi : lk.cell_index) {
+                    const int cx = vi % n, cz = vi / n;
+                    for (int dz = -2; dz <= 2; ++dz)
+                        for (int dx = -2; dx <= 2; ++dx) {
+                            const int x = cx + dx, z = cz + dz;
+                            if (x >= 0 && z >= 0 && x < n && z < n) in_lake[static_cast<size_t>(z) * n + x] = 1;
+                        }
+                }
+            }
+            if (!in_lake.empty()) {
+                std::vector<WaterRun::Point> kept;
+                std::vector<size_t> breaks;
+                bool gap = false;
+                for (size_t i = 0; i < run.river.size(); ++i) {
+                    const bool after_break = std::find(run.breaks.begin(), run.breaks.end(), i) != run.breaks.end();
+                    if (in_lake[static_cast<size_t>(grid(run.river[i].z)) * n + grid(run.river[i].x)]) { gap = true; continue; }
+                    if ((gap || after_break) && !kept.empty()) breaks.push_back(kept.size());
+                    gap = false;
+                    kept.push_back(run.river[i]);
+                }
+                run.river = std::move(kept);
+                run.breaks = std::move(breaks);
+            }
+        }
         if (run.river.size() < 8) continue;
         carve_river(*tc, run, p.river_width, p.river_depth);
         auto river = scene.CreateEntity(p.name + " river " + std::to_string(++w.rivers));

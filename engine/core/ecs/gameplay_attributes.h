@@ -55,6 +55,31 @@ struct AttributeSet {
     }
 };
 
+// ---- bonus stats: attributes the engine's systems read when an entity has them ----
+//   MoveSpeed          % faster moving (the player; NPC agents)
+//   Damage             % more damage dealt (guns, abilities)
+//   CooldownReduction  % shorter ability cooldowns (at most 75)
+//   ReloadSpeed        % faster reloading
+//   HealthRegen        health a second (while alive)
+//   ExtraJumps         jumps in the air
+// A skill's `grant` or an effect on one the entity does not have yet adds it
+// (from 0, room up to +-1000): passives and buffs need no setup.
+inline bool is_bonus_stat(const std::string& n) {
+    return n == "MoveSpeed" || n == "Damage" || n == "CooldownReduction" || n == "ReloadSpeed" ||
+           n == "HealthRegen" || n == "ExtraJumps";
+}
+inline Attribute* ensure_bonus_stat(AttributeSet& s, const std::string& n) {
+    if (Attribute* a = s.find(n)) return a;
+    if (!is_bonus_stat(n)) return nullptr;
+    return &s.define(n, 0.0f, -1000.0f, 1000.0f);
+}
+/// A bonus stat's value (0 when the set has none).
+inline float bonus_stat(const AttributeSet* s, const char* n) {
+    if (!s) return 0.0f;
+    const Attribute* a = s->find(n);
+    return a ? a->current : 0.0f;
+}
+
 // ---- custom serialization: count, then per attribute (name, base, current, min, max) ----
 // Byte helpers (detail::put_bytes/get_bytes) come from component_serialize.h.
 

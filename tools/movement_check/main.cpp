@@ -271,6 +271,29 @@ int main() {
         off.step(d);
         check("dash can be turned off", off.last_mode == MoveMode::Walk);
     }
+    // ---- an ability's dash and leap (start_dash, launch) ----------------------------------
+    {
+        Sim s;
+        start_dash(s.mv, glm::vec3(1.0f, 0.3f, 0.0f), 12.0f, 0.2f);   // level: the up part dropped
+        const bool going = s.mv.state.mode == MoveMode::Dash && std::fabs(s.mv.state.velocity.x - 60.0f) < 1e-3f &&
+                           std::fabs(s.mv.state.velocity.y) < 1e-6f && (s.mv.state.events & kMoveDashed);
+        s.run(MoveInput{}, 0.3f);
+        check("an ability's dash: its own distance and time, then back to walking",
+              going && std::fabs(s.feet.x - 12.0f) < 1.2f && s.last_mode == MoveMode::Walk &&
+              s.mv.state.dash_speed_override == 0.0f && s.mv.state.dash_time_override == 0.0f);
+        // The dash key's own dash keeps the settings' speed after it.
+        MoveInput d; d.dash_pressed = true; d.move = glm::vec2(0.0f, 1.0f);
+        s.mv.state.dash_cooldown = 0.0f;
+        s.step(d);
+        check("the dash key's dash afterwards keeps the settings' speed",
+              s.last_mode == MoveMode::Dash && std::fabs(s.hspeed() - s.mv.settings.dash_speed) < 0.5f);
+        Sim l;
+        launch(l.mv, glm::vec3(0.0f, 9.0f, -7.0f));
+        const bool up = l.mv.state.mode == MoveMode::Air && !l.mv.state.grounded;
+        l.run(MoveInput{}, 2.5f);
+        check("a leap: thrown up and forward (peak v^2/2g = 2 m at 9 m/s), lands",
+              up && std::fabs(l.max_y - 81.0f / (2.0f * l.mv.settings.gravity)) < 0.15f && l.feet.z < -6.0f && l.grounded);
+    }
     // ---- mantle -------------------------------------------------------------------
     auto ledge_sim = [](float height, bool ceiling) {
         Sim s;

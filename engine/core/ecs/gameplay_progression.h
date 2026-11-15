@@ -67,6 +67,13 @@ inline void tick_regen(World& w, float dt) {
         for (const auto& e : r.entries)
             if (e.per_second != 0.0f) a.adjust(e.attribute, e.per_second * dt);
     });
+    // The HealthRegen bonus stat (a passive): health a second, while alive.
+    w.each<AttributeSet>([&](Entity, AttributeSet& a) {
+        const Attribute* r = a.find("HealthRegen");
+        if (!r || r->current <= 0.0f) return;
+        const Attribute* h = a.find("Health");
+        if (h && h->current > 0.0f && h->current < h->max) a.adjust("Health", r->current * dt);
+    });
 }
 
 // ---------------- Leveling / XP ----------------

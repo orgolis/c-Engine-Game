@@ -180,6 +180,17 @@ private:
 
     VkRenderPass          render_pass_ = VK_NULL_HANDLE;
     VkFramebuffer         framebuffer_ = VK_NULL_HANDLE;
+    // The water's own depth: every surface is drawn depth-only first, then
+    // shaded where it is the nearest water -- so a surface under another (a
+    // river running on under a lake, two ribbons where rivers meet) is not
+    // blended through the one on top.
+    VkImage               depth_image_  = VK_NULL_HANDLE;
+    VkDeviceMemory        depth_memory_ = VK_NULL_HANDLE;
+    VkImageView           depth_view_   = VK_NULL_HANDLE;
+    VkPipeline            depth_pipeline_       = VK_NULL_HANDLE;   // the grid, depth only
+    VkPipeline            river_depth_pipeline_ = VK_NULL_HANDLE;   // rivers and shaped lakes, depth only
+    bool create_depth(uint32_t width, uint32_t height);
+    void destroy_depth();
     VkDescriptorSetLayout dsl_         = VK_NULL_HANDLE;
     VkDescriptorPool      pool_        = VK_NULL_HANDLE;
     VkDescriptorSet       set_         = VK_NULL_HANDLE;

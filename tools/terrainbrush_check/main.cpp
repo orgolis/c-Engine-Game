@@ -648,6 +648,23 @@ int main() {
                             if (glm::length(glm::vec2(q.x - r.x, q.y - r.y)) < 2.0f) { ++near_pts; break; }
                     if (near_pts > 4) ++doubled;
                 }
+            // No river under a lake: where a river crossed the shallow end of
+            // a basin its bed was carved there and showed through the lake.
+            size_t under = 0;
+            for (const auto& m : w.made) {
+                auto lk = m->GetComponent<WaterComponent>();
+                if (!lk || lk->IsRiver() || !lk->HasMask()) continue;
+                const glm::vec3 lc = m->GetTransform()->GetWorldPosition();
+                for (const WaterComponent* rv : rivers)
+                    for (const glm::vec4& q : rv->GetPath())
+                        if (q.z < lc.y - 1.0f && lk->IsWaterAt(q.x - lc.x, q.y - lc.z)) {
+                            ++under;
+                            if (std::getenv("GWS_CHECK_VERBOSE"))
+                                std::printf("    under %s (level %.2f): point (%.1f, %.1f) level %.2f\n", m->GetName().c_str(), lc.y,
+                                            q.x, q.y, q.z);
+                        }
+            }
+            check(under == 0, "1024 m, 4 rivers, seed 7: no river runs on more than a metre under a lake (" + std::to_string(under) + " points)");
             check(rivers.size() >= 4 && doubled == 0,
                   "1024 m, 4 rivers, seed 7: " + std::to_string(rivers.size()) + " river stretches, none running on another (" +
                       std::to_string(doubled) + " pairs)");

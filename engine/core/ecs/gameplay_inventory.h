@@ -180,7 +180,8 @@ inline void recompute_equipment(World& w, Entity e) {
 
     if (attrs) for (const auto& m : agg) {
         // An attribute the wearer lacks starts at 0 (armour's resist.<type> on anyone).
-        Attribute* a = attrs->find(m.attribute);
+        // (A bonus stat -- MoveSpeed, Damage... -- with its own room, +-1000.)
+        Attribute* a = ensure_bonus_stat(*attrs, m.attribute);
         if (!a) a = &attrs->define(m.attribute, 0.0f, 0.0f, 0.0f);
         a->max += m.amount; a->current += m.amount;
         a->current = std::max(a->min, std::min(a->max, a->current));

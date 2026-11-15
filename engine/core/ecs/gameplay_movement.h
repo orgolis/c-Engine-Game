@@ -137,6 +137,8 @@ struct MovementState {
     glm::vec3 dir{0.0f};               // dash direction, or the way onto a ledge
     glm::vec3 wall_normal{0.0f};       // wall run / climb surface
     float     wall_cooldown = 0.0f;    // after leaving a wall, before another wall run
+    float     dash_speed_override = 0.0f;   // > 0: this dash's speed and time (an ability's), not the settings'
+    float     dash_time_override  = 0.0f;
     glm::vec3 mantle_top{0.0f};        // where the feet end on a ledge
     float     mantle_rise = 0.0f;      // feet height to reach before moving onto it
     float     stamina = -1.0f;         // < 0: not started (filled on the first step)
@@ -474,9 +476,12 @@ inline MoveResult step_movement(Movement& mv, const MoveInput& in, const MoveBod
     }
     case MoveMode::Dash: {
         st.timer += dt;
-        st.velocity = st.dir * s.dash_speed;
-        if (st.timer >= s.dash_time) {
-            st.velocity = st.dir * std::max(s.walk_speed, std::min(s.dash_speed, s.sprint_speed));
+        const float dspeed = st.dash_speed_override > 0.0f ? st.dash_speed_override : s.dash_speed;
+        const float dtime = st.dash_time_override > 0.0f ? st.dash_time_override : s.dash_time;
+        st.velocity = st.dir * dspeed;
+        if (st.timer >= dtime) {
+            st.velocity = st.dir * std::max(s.walk_speed, std::min(dspeed, s.sprint_speed));
+            st.dash_speed_override = st.dash_time_override = 0.0f;
             enter(st.grounded ? MoveMode::Walk : MoveMode::Air);
         }
         break;
@@ -609,6 +614,33 @@ struct MoveAnimation {
 };
 
 /// The clip for the move now; `fallback` is the model's own choice.
+/// From outside (an ability): dash `distance` metres along `dir` (level) in
+/// `time` seconds -- the same mode as the dash key, its own speed.
+inline void start_dash(Movement& mv, const glm::vec3& dir, float distance, float time = 0.22f) {
+    MovementState& st = mv.state;
+    glm::vec3 d(dir.x, 0.0f, dir.z);
+    if (glm::length(d) < 1e-4f) return;
+    d = glm::normalize(d);
+    time = std::max(0.05f, time);
+    st.mode = MoveMode::Dash;
+    st.timer = 0.0f;
+    st.dir = d;
+    st.dash_speed_override = std::max(0.0f, distance) / time;
+    st.dash_time_override = time;
+    st.velocity = d * st.dash_speed_override;
+    st.events |= kMoveDashed;
+}
+/// From outside: thrown with this velocity (a leap) -- in the air at once.
+inline void launch(Movement& mv, const glm::vec3& velocity) {
+    MovementState& st = mv.state;
+    st.mode = MoveMode::Air;
+    st.timer = 0.0f;
+    st.velocity = velocity;
+    st.grounded = false;
+    st.jump_spent = true;
+    st.events |= kMoveJumped;
+}
+
 inline int move_animation_clip(const MoveAnimation& a, const MovementState& st, bool moving, int fallback) {
     auto pick = [fallback](int c) { return c >= 0 ? c : fallback; };
     switch (st.mode) {

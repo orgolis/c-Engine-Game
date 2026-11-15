@@ -423,7 +423,7 @@ private:
     // Grown trees. Near: under kTreeNear of the draw distance; middle: under
     // kTreeMiddle; beyond that the simple crown-on-a-trunk.
     static constexpr int   kTreeVariants = 3;
-    static constexpr float kTreeNear = 0.18f, kTreeMiddle = 0.45f;
+    static constexpr float kTreeNear = 0.40f, kTreeMiddle = 0.90f;
     struct TreeMeshes { std::unique_ptr<gws::renderer::gpu::Mesh> bark, leaves; };
     TreeMeshes trees_[2][kTreeVariants][2];
     std::vector<std::pair<float, uint32_t>>   visible_;   // (distance squared, cell) this frame

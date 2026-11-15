@@ -1,4 +1,6 @@
 #version 450
+// The depth pass and the shaded pass must agree to the bit (EQUAL test).
+invariant gl_Position;
 // Water surface vertex stage (a lake, a pond, the sea): a procedural grid (no
 // vertex buffer -- positions derived from gl_VertexIndex) spanning the water
 // rect, displaced by a sum of directional waves. One draw per surface;

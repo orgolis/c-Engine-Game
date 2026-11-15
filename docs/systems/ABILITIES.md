@@ -1,6 +1,8 @@
 # Abilities
 
-Spells, skills and powers the player casts with keys 1 to 8.
+Spells, skills and powers the player casts with the ability keys -- up to 8
+slots, or as many as the game gives (3 in the test game) -- and passives:
+bonuses a skill gives for good.
 
 ## Making an ability
 
@@ -27,8 +29,22 @@ ability firebolt
   vfx fire_burst        # its effects (docs/systems/EFFECTS.md), and handed out with its events
   speed 40              # aimed / area_at_aim: it flies at this speed and takes effect where it lands
   arc 9.8               # a flying one falls on the way (something thrown)
+  move blink 14         # moves the caster (below)
+  about A ball of fire at what you aim at.   # what it does, shown with it
 end
 ```
+
+**Movement abilities** move the player as they go off, along the way the
+camera looks (level):
+
+| `move` | |
+|---|---|
+| `blink 14` | there at once, up to 14 m ahead, stopping short of walls, set down on the ground there (at the same height above it) |
+| `dash 12` | a 12 m dash, the same move as the dash key with its own distance |
+| `leap 11 10` | thrown up at 11 m/s and forward at 10 (gravity 20: about 3 m high) |
+
+A buff is an ability with a `self` effect for a while on a bonus stat (below):
+`self MoveSpeed 50 6` -- Haste, 50% faster for 6 seconds.
 
 A **channel** keeps going off while the key is held: `channel 3 0.5` lasts at
 most 3 seconds and goes off every half second (once as it starts). Letting go
@@ -59,7 +75,21 @@ cast that is broken costs nothing and starts no cooldown.
 Add **Inspector > Gameplay Components > Ability Bar** to the Player and pick an
 ability for each key. In Play, the bar shows along the bottom of the view:
 the key, the name, a dark sweep and the seconds left while it cools down, and
-a bar above it for a cast or a channel in progress.
+a bar above it for a cast or a channel in progress. A HUD document that shows
+the slots itself (a `slots` grid bound to `player.abilities`,
+docs/systems/GAME_UI.md) replaces it.
+
+**Slots and known abilities.** The bar's **Slots** (0: 8) limits how many
+abilities are on keys. An ability learned beyond them is still *known*: the
+player puts it in a slot on an abilities screen -- a `slots` grid bound to
+`player.known_abilities`, another to `player.abilities`, and the **Equip
+Ability** node (Entity, Known: the known grid's selected cell, Slot: the slot
+clicked). Equipping an ability already on the bar swaps the two; one taken off
+keeps cooling down while it rests.
+
+| Node | |
+|---|---|
+| **Equip Ability** (Entity, Known, Slot) | Equipped: false for an empty cell, a slot past the bar, or while casting |
 
 In third person (with a Camera Rig) abilities and weapons leave the player's
 chest towards what the crosshair is on.
@@ -74,7 +104,9 @@ skill frost
   name Frost Nova
   tree hero              # the tree it belongs to
   cost 1                 # skill points
-  unlocks frost_nova     # an ability put on the Ability Bar when learned (next free key)
+  unlocks frost_nova     # an ability given when learned: into the next free slot, else known
+  about Ability: a freezing burst around you.   # what it does (a drawn tree shows it)
+  pos 2 1                # its place in a drawn tree: column, row (leave out: placed by what it needs)
 end
 
 skill tough
@@ -89,6 +121,22 @@ end
 
 The Items editor shows skill blocks and keeps them as written.
 
+**Passives and bonus stats.** `grant` raises an attribute for good; a few
+attributes are read by the engine's systems when the player has them, and a
+`grant`, a gear `mod` or a `self` effect on one adds it (from 0) -- no setup:
+
+| Bonus stat | |
+|---|---|
+| `MoveSpeed` | % faster walking, running, crouching, swimming (and NPCs) |
+| `Damage` | % more damage from guns and abilities |
+| `CooldownReduction` | % shorter ability cooldowns (at most 75) |
+| `ReloadSpeed` | % faster reloads |
+| `HealthRegen` | health a second, while alive |
+| `ExtraJumps` | jumps in mid-air |
+
+`grant MoveSpeed 10` is +10% move speed for good; `self Damage 30 8` is +30%
+damage for 8 seconds. A UI shows them as `{player.MoveSpeed}` (0 until raised).
+
 | Node | |
 |---|---|
 | **Set Skill Tree** (Entity, Tree) | gives the entity the tree (and a progression: levels, points) -- e.g. on Begin Play |
@@ -97,9 +145,12 @@ The Items editor shows skill blocks and keeps them as written.
 | **Skill State** (Entity, Skill) | Learned, Can Learn |
 | **Skill Points** (Entity) | |
 
-A skill-tree screen is a UI document with a button per skill:
-`text="{skill.frost}" enabled=skill.frost.can` (docs/systems/GAME_UI.md). The
-tree, what is learned and the points are saved with the game.
+A skill-tree screen draws the tree with a `skilltree` widget: a box per skill,
+a line to each skill it needs, learned ones gold and ones that can be learned
+now bright; a click on one is the button `learn_<skill id>`
+(docs/systems/GAME_UI.md). A screen of buttons works too:
+`text="{skill.frost}" enabled=skill.frost.can`. The tree, what is learned and
+the points are saved with the game.
 
 ## For effects, sounds and scripts
 

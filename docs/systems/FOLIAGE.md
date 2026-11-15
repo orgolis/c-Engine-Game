@@ -30,6 +30,10 @@ field. Nearer than 45% of the draw distance a clump is full, farther a lighter
 one; past 60% the clumps thin out. Nothing grows under water when a world is
 built (docs/systems/WORLDS_AND_WATER.md).
 
+A grown tree is drawn in full out to 40% of its layer's draw distance, a
+lighter model of it out to 90%, and past that a simple crown on a trunk --
+the far forest keeps its shape. Grass in the test game is drawn to 120 m.
+
 A tree's leaves **fade out near the camera** -- a dither from 2 m, gone by
 0.9 m -- so walking through low branches does not fill the view with leaves or
 cut through the gun in hand; they still cast their shadows. Trunks stay (they

@@ -123,6 +123,33 @@ In UI documents, `{key.<action>}` shows an action's key ("press a key..."
 while it is being rebound) and `{setting.<name>}` a setting's value -- in
 labels and on buttons.
 
+## A skill tree, drawn
+
+```
+skilltree id=tree anchor=center x=0 y=-40 w=1780 h=700 bind=hero node_w=140 node_h=60 size=16
+label id=info anchor=center x=0 y=380 w=1700 h=30 text="{tree.name}: {tree.info}"
+```
+
+`bind=` names the tree (the skills' `tree`); each skill's `pos` places it (else
+a row above what it needs). The root is at the bottom (`root=top` turns it
+over). A click on a skill is the button `learn_<skill id>` (`click=` changes
+the prefix) for On UI Button. `{tree.name}`, `{tree.about}`, `{tree.cost}`,
+`{tree.state}` and `{tree.info}` (what it does, its cost and what it needs) are
+the skill under the pointer, else the one clicked last. Colours: `learned=`,
+`open=`, `locked=`, `color=` (the boxes).
+
+## Ability slots
+
+A `slots` grid bound to `player.abilities` shows the ability slots: each its
+key in the corner, the ability, its cooldown darkening the cell with the
+seconds over it, the one being cast framed. `player.known_abilities` lists
+every ability the player knows ("slot 2" under one on the bar); see
+docs/systems/ABILITIES.md for equipping. A weapon grid (`player.weapons`)
+shows each slot's key too. `{player.weapon}`, `{player.ammo}`,
+`{player.reserve}` and a bar bound to `player.reload` (the reload's progress)
+make an ammunition box; a HUD that binds `player.ammo` or `player.abilities`
+replaces the built-in ammunition box or ability bar.
+
 ## The combat HUD
 
 With a gun in hand, Play draws the crosshair (its gap is the spread), a hit
@@ -142,6 +169,13 @@ In Play the game holds the mouse; the editor's panels get none of it.
   pause menu: a script listens with Key Pressed (Escape) and shows its menu,
   which, being modal, frees the mouse for its buttons. Closing the menu gives
   the mouse back to the game.
+
+## Full screen
+
+**F11** (or **Full screen** over the game view) shows the game view alone over
+the whole monitor the editor is on -- no menus, toolbars or panels -- in Play
+or not; F11 again brings the editor back as it was. Not while typing, and
+not while a logic script is stopped at a breakpoint (there F11 is Step Into).
 
 ## Example
 

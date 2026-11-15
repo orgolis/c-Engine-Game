@@ -1,4 +1,6 @@
 #version 450
+// The depth pass and the shaded pass must agree to the bit (EQUAL test).
+invariant gl_Position;
 // River surface vertex stage: a ribbon along the river's path, built on the
 // CPU (VulkanWaterPass::add_river) -- one continuous surface whose level falls
 // with the bed, instead of a chain of flat rects. Also a lake drawn from its

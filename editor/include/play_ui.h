@@ -79,6 +79,15 @@ public:
             const std::string gid = g.id;
             g.grid->on_click = [this, gid](int cell) { clicks_.push_back({gid, cell}); };
         }
+        // A skill tree's box: the click its game rules hear for that skill
+        // (`learn_<skill>` -- what a Learn button of its own would send).
+        for (auto& t : doc->trees) {
+            auto* view = t.view;
+            const std::string prefix = t.prefix;
+            view->on_click = [this, view, prefix](int i) {
+                if (i >= 0 && i < static_cast<int>(view->nodes.size())) clicks_.push_back({prefix + view->nodes[static_cast<size_t>(i)].id, -1});
+            };
+        }
         docs_.push_back(std::move(doc));
         std::stable_sort(docs_.begin(), docs_.end(), [](const auto& a, const auto& b) { return a->layer < b->layer; });
         return true;
@@ -112,8 +121,19 @@ public:
     bool empty() const { return docs_.empty(); }
 
     /// Fill the live values (call once a frame, where the game is at hand).
-    void refresh(const schizo::ui::UiLookup& lookup, const schizo::ui::UiSlotLookup& slots = {}) {
-        for (auto& d : docs_) schizo::ui::refresh_ui_bindings(*d, lookup, slots);
+    void refresh(const schizo::ui::UiLookup& lookup, const schizo::ui::UiSlotLookup& slots = {},
+                 const schizo::ui::UiTreeLookup& trees = {}) {
+        for (auto& d : docs_) schizo::ui::refresh_ui_bindings(*d, lookup, slots, trees);
+    }
+    /// Does a shown document show this live value (a grid bound to it, or
+    /// {it} in a text)? The game's own HUD steps back for what a document
+    /// shows itself (the ability bar, the rounds left).
+    bool binds(const std::string& source) const {
+        for (const auto& d : docs_) {
+            for (const auto& g : d->grids) if (g.source == source) return true;
+            for (const auto& t : d->texts) if (t.templ.find("{" + source) != std::string::npos) return true;
+        }
+        return false;
     }
     /// The selected cell of a slots grid in a shown document (-1: none).
     int selected(const std::string& path, const std::string& id) const {
@@ -196,6 +216,8 @@ private:
                     out->AddRect(ImVec2(mn.x + bw * 0.5f, mn.y + bw * 0.5f), ImVec2(mx.x - bw * 0.5f, mx.y - bw * 0.5f), col(c.border),
                                  std::max(0.0f, r - bw * 0.5f), 0, bw);
                 }
+            } else if (c.type == schizo::ui::UiCmdType::Line) {
+                out->AddLine(mn, mx, col(c.color), std::max(1.0f, c.font_size * scale));
             } else if (c.type == schizo::ui::UiCmdType::Text && !c.text.empty()) {
                 ImFont* font = c.bold ? bold_font() : ImGui::GetFont();
                 const float size = std::max(6.0f, c.font_size * scale);

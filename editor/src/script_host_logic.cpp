@@ -188,6 +188,11 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
         const int st = API && API->skill_state ? API->skill_state(API->ctx, e.id, skill.c_str()) : 0;
         return std::make_tuple(st == 2, st == 1);
     }, {"Entity", "Skill", "Learned", "Can Learn"});
+    r.fn("gameplay.equip_ability", G, "Equip Ability", [s](EntityId e, int64_t known, int64_t slot) {
+        return API && API->equip_ability && API->equip_ability(API->ctx, e.id, int(known), int(slot));
+    }, {"Entity", "Known", "Slot", "Equipped"}).tip("Puts one of the abilities the entity knows (its place in the known list -- "
+                                                    "a grid bound to player.known_abilities -- from 0) into an ability slot "
+                                                    "(from 0). Already in another slot: they change places.");
     r.pure("gameplay.skill_points", G, "Skill Points", [s](EntityId e) {
         return int64_t(API && API->skill_points ? API->skill_points(API->ctx, e.id) : 0);
     }, {"Entity", "Points"});

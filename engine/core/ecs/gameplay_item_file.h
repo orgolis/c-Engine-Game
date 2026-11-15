@@ -213,6 +213,8 @@ inline std::vector<std::pair<std::string, SkillNode>> parse_skills_text(const st
         else if (key == "unlocks") { std::string a; ls >> a; if (!a.empty()) cur.abilities.push_back(a); }
         else if (key == "grant") { StatGrant g; ls >> g.attribute >> g.amount; if (!g.attribute.empty()) cur.grants.push_back(g); }
         else if (key == "tag") { std::string g; ls >> g; if (!g.empty()) cur.granted_tags.push_back(g); }
+        else if (key == "about") { std::string r; std::getline(ls, r); cur.about = detail::trim(r); }
+        else if (key == "pos") { ls >> cur.col >> cur.row; }
     }
     flush();
     return out;
@@ -433,6 +435,14 @@ inline std::string ability_def_text(const AbilityDef& a) {
     if (!a.vfx.empty()) s += "  vfx " + a.vfx + "\n";
     if (a.speed > 0.0f) s += "  speed " + num(a.speed) + "\n";
     if (a.arc > 0.0f) s += "  arc " + num(a.arc) + "\n";
+    if (a.spread > 0.0f) s += "  spread " + num(a.spread) + "\n";
+    if (a.move != AbilityDef::Move::None) {
+        s += std::string("  move ") + (a.move == AbilityDef::Move::Blink ? "blink" : a.move == AbilityDef::Move::Dash ? "dash" : "leap") +
+             " " + num(a.move_a);
+        if (a.move == AbilityDef::Move::Leap) s += " " + num(a.move_b);
+        s += "\n";
+    }
+    if (!a.about.empty()) s += "  about " + a.about + "\n";
     return s + "end\n";
 }
 

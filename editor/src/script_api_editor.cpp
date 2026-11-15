@@ -580,6 +580,15 @@ void api_set_weapon_slots(void* ctx, uint32_t e, int count) {
     ecs::World* w; ecs::Entity ent;
     if (gp_entity(ctx, e, w, ent)) ecs::set_weapon_slots(*w, ent, count);
 }
+bool api_equip_ability(void* ctx, uint32_t e, int known_index, int slot) {
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return false;
+    const auto* bar = w->try_get<ecs::AbilityBar>(ent);
+    if (!bar) return false;
+    const std::vector<std::string> known = ecs::known_abilities(*bar);
+    if (known_index < 0 || known_index >= static_cast<int>(known.size())) return false;
+    return ecs::equip_ability(*w, ent, known[static_cast<size_t>(known_index)], slot);
+}
 bool api_weapon_in_slot(void* ctx, uint32_t e, int index, char* id_out, int id_size, char* name_out, int name_size) {
     if (id_out && id_size > 0) id_out[0] = 0;
     if (name_out && name_size > 0) name_out[0] = 0;
@@ -858,6 +867,7 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.equip_weapon       = &api_equip_weapon;
     api.set_weapon_slots   = &api_set_weapon_slots;
     api.weapon_in_slot     = &api_weapon_in_slot;
+    api.equip_ability      = &api_equip_ability;
     api.distance           = &api_distance;
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;

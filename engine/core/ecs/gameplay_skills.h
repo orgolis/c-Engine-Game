@@ -38,6 +38,8 @@ struct SkillNode {
     std::vector<StatGrant>   grants;          // permanent attribute bonuses
     std::vector<std::string> granted_tags;    // e.g. an ability-unlock tag
     std::vector<std::string> abilities;       // put on the Ability Bar when learned (learn_skill)
+    std::string about;                        // what it does, in a sentence (the tree's detail)
+    float col = -1.0f, row = -1.0f;           // its place in a drawn tree (`pos`); < 0: laid out by need
 };
 struct SkillTree     { std::vector<SkillNode> nodes; std::string id; };
 struct UnlockedSkills { std::vector<std::string> unlocked; };  // node ids
@@ -53,7 +55,7 @@ inline bool skill_unlocked(const UnlockedSkills& u, const std::string& id) {
 
 inline void apply_grants(AttributeSet& a, const std::vector<StatGrant>& g, float sign) {
     for (const auto& s : g)
-        if (Attribute* at = a.find(s.attribute)) {
+        if (Attribute* at = ensure_bonus_stat(a, s.attribute)) {
             at->base    += s.amount * sign;
             at->max     += s.amount * sign;
             at->current += s.amount * sign;
@@ -134,6 +136,10 @@ inline void serialize_skill_tree(const void* obj, std::vector<uint8_t>& out) {
     detail::put_bytes(out, &marker, 4);
     for (const auto& n : t.nodes) detail::put_str_vec(out, n.abilities);
     detail::put_str(out, t.id);
+    // And later still: each node's about and place.
+    const uint32_t marker2 = 0x32424B53u;   // "SKB2"
+    detail::put_bytes(out, &marker2, 4);
+    for (const auto& n : t.nodes) { detail::put_str(out, n.about); detail::put_f32(out, n.col); detail::put_f32(out, n.row); }
 }
 inline void deserialize_skill_tree(void* obj, const uint8_t* data, size_t n) {
     auto& t = *static_cast<SkillTree*>(obj); t.nodes.clear();
@@ -160,6 +166,10 @@ inline void deserialize_skill_tree(void* obj, const uint8_t* data, size_t n) {
     for (auto& nd : t.nodes)
         if (!detail::get_str_vec(p, e, nd.abilities)) return;
     detail::get_str(p, e, t.id);
+    uint32_t marker2 = 0;
+    if (!detail::get_bytes(p, e, &marker2, 4) || marker2 != 0x32424B53u) return;
+    for (auto& nd : t.nodes)
+        if (!detail::get_str(p, e, nd.about) || !detail::get_f32(p, e, nd.col) || !detail::get_f32(p, e, nd.row)) return;
 }
 
 // ---------------- skill trees as data (`skill` blocks in .items files) ----------------

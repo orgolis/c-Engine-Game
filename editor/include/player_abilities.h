@@ -45,7 +45,37 @@ public:
         float cast_progress = 0.0f;   // 0..1, wind-up or channel
         bool  channelling = false;
         std::string cast_name;
+        int   max_slots = 8;          // the bar's slots (its key slots shown even when empty)
     };
+    /// An ability's movement for the player: there at once (a blink, up to its
+    /// metres along the view, short of walls, onto the ground), a dash, a leap.
+    static void move_player(ScenePlaybackManager& play, const schizo::ecs::AbilityFired& f, const glm::vec3& cam_fwd) {
+        namespace ecs = schizo::ecs;
+        auto* player = play.GetPlayerEntity();
+        if (!player) return;
+        glm::vec3 dir(cam_fwd.x, 0.0f, cam_fwd.z);
+        if (glm::length(dir) < 1e-4f) return;
+        dir = glm::normalize(dir);
+        if (f.move == ecs::AbilityDef::Move::Dash) { play.DashPlayer(dir, f.move_a); return; }
+        if (f.move == ecs::AbilityDef::Move::Leap) { play.LaunchPlayer(dir * f.move_b + glm::vec3(0.0f, f.move_a, 0.0f)); return; }
+        // Blink: along the view at chest height, stopping short of what is in the way.
+        auto* pw = play.GetPhysicsWorld();
+        const glm::vec3 from = player->GetTransform()->GetWorldPosition();
+        float dist = f.move_a;
+        if (pw) {
+            const auto h = pw->raycast(from + glm::vec3(0.0f, 0.4f, 0.0f), dir, f.move_a + 0.6f);
+            if (h.hit) dist = std::max(0.0f, h.distance - 0.7f);
+        }
+        glm::vec3 to = from + dir * dist;
+        if (pw) {   // onto the ground there (or a ledge), as high above it as the player stands now
+            const auto g0 = pw->raycast(from, glm::vec3(0.0f, -1.0f, 0.0f), 10.0f);
+            const float above = g0.hit ? g0.distance : 1.0f;
+            const auto g = pw->raycast(to + glm::vec3(0.0f, 3.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f), 30.0f);
+            if (g.hit) to.y = g.position.y + above;
+        }
+        play.TeleportPlayer(to, player->GetTransform()->GetWorldRotation());
+    }
+
     const Hud& hud() const { return hud_; }
 
     void update(float dt, ScenePlaybackManager& play, EcsSceneBridge& bridge, const glm::vec3& cam_pos,
@@ -98,10 +128,12 @@ public:
         for (const auto& f : fired) {
             const ecs::AbilityDef* d = ecs::find_ability_def(f.id);
             if (d && pfx) pfx->ability_fired(*d, f, ci.origin);
+            if (f.move != ecs::AbilityDef::Move::None) move_player(play, f, cam_fwd);
         }
 
         // HUD
         hud_.shown = true;
+        hud_.max_slots = ecs::ability_slot_count(*bar);
         hud_.slots.resize(bar->slots.size());
         for (size_t i = 0; i < bar->slots.size(); ++i) {
             const ecs::AbilityDef* d = ecs::find_ability_def(bar->slots[i]);

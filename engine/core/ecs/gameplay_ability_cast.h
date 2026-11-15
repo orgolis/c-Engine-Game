@@ -110,6 +110,14 @@ struct AbilityDef {
     float       speed = 0.0f;              // > 0: aimed / area-at-aim abilities fly at this speed (m/s)
     float       arc = 0.0f;                // a flying one falls by this (m/s^2): thrown things
     float       spread = 0.0f;             // aimed: degrees it may go off its aim (a cone; 0: dead on)
+    std::string about;                     // what it does, in a sentence
+    // Moves the caster as it goes off (the player): `move blink 10` -- there at
+    // once, up to 10 m along the aim, stopping short of walls; `move dash 12`
+    // -- a 12 m dash along the aim; `move leap 9 7` -- thrown up at 9 m/s and
+    // forward at 7.
+    enum class Move : uint8_t { None, Blink, Dash, Leap };
+    Move        move = Move::None;
+    float       move_a = 0.0f, move_b = 0.0f;
 };
 
 inline std::vector<AbilityDef>& ability_def_registry() { static std::vector<AbilityDef> r; return r; }
@@ -124,12 +132,15 @@ inline const AbilityDef* find_ability_def(const std::string& id) {
 
 struct AbilityBar {
     std::vector<std::string> slots;        // ability ids, slot i on key i+1
+    int max_slots = 0;                     // > 0: this many slots; abilities learned beyond them are known, to equip
+    std::vector<std::string> known;        // every ability it has (on the bar or not)
     // Runtime (not saved)
     std::vector<float> cooldown;           // per slot, seconds left
     int   casting = -1;                    // the slot being cast or channelled
     float cast_timer = 0.0f;               // wind-up done so far
     bool  channelling = false;
     float channel_timer = 0.0f, tick_timer = 0.0f;
+    std::vector<std::pair<std::string, float>> resting_cooldown;   // abilities taken off the bar, cooling down still
 };
 
 struct AbilityCastInput {
@@ -149,6 +160,8 @@ struct AbilityFired {
     glm::vec3   origin{0.0f}, dir{0.0f, 0.0f, -1.0f};   // where it started and which way
     bool        launched = false;          // flying: it takes effect later (tick_ability_shots)
     bool        on_actor = false;          // aimed: it reached someone
+    AbilityDef::Move move = AbilityDef::Move::None;   // the caster to move (the host does it)
+    float       move_a = 0.0f, move_b = 0.0f;
 };
 
 /// Abilities in flight, on their caster.
@@ -229,9 +242,10 @@ inline int reach_targets(World& w, Entity caster, const AbilityDef& d, const glm
             if (glm::dot(dd, dd) <= r2) hits.push_back(e);
         });
     }
+    const float dmg = d.damage * (1.0f + bonus_stat(w.valid(caster) ? w.try_get<AttributeSet>(caster) : nullptr, "Damage") / 100.0f);
     for (Entity e : hits) {
         float dealt = 0.0f;
-        if (d.damage > 0.0f) dealt = apply_damage(w, e, DamageInfo{d.damage, d.damage_type});
+        if (d.damage > 0.0f) dealt = apply_damage(w, e, DamageInfo{dmg, d.damage_type});
         for (const auto& fx : d.target_effects) apply_effect(w, e, to_gameplay_effect(fx, d.name));
         publish(bus, "ability.hit", caster, e, dealt, d.id);
     }
@@ -322,9 +336,13 @@ inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot,
         }
     }
     for (const auto& e : d.self_effects) apply_effect(w, caster, to_gameplay_effect(e, d.name));
+    f.move = d.move;
+    f.move_a = d.move_a;
+    f.move_b = d.move_b;
+    const float dmg = d.damage * (1.0f + bonus_stat(w.try_get<AttributeSet>(caster), "Damage") / 100.0f);
     for (Entity e : hits) {
         float dealt = 0.0f;
-        if (d.damage > 0.0f) dealt = apply_damage(w, e, DamageInfo{d.damage, d.damage_type});
+        if (d.damage > 0.0f) dealt = apply_damage(w, e, DamageInfo{dmg, d.damage_type});
         for (const auto& fx : d.target_effects) apply_effect(w, e, to_gameplay_effect(fx, d.name));
         publish(bus, "ability.hit", caster, e, dealt, d.id);
     }
@@ -400,8 +418,15 @@ inline int step_ability_bar(World& w, Entity caster, AbilityBar& bar, const Abil
     bar.cooldown.resize(bar.slots.size(), 0.0f);
     for (float& c : bar.cooldown) c = std::max(0.0f, c - dt);
     int count = 0;
+    // Abilities resting off the bar cool down too.
+    for (auto& rc : bar.resting_cooldown) rc.second = std::max(0.0f, rc.second - dt);
+    bar.resting_cooldown.erase(std::remove_if(bar.resting_cooldown.begin(), bar.resting_cooldown.end(),
+                                              [](const auto& rc) { return rc.second <= 0.0f; }),
+                               bar.resting_cooldown.end());
+    // CooldownReduction (a bonus stat): % shorter, at most 75.
+    const float cdr = std::clamp(bonus_stat(w.try_get<AttributeSet>(caster), "CooldownReduction"), 0.0f, 75.0f);
     auto start_cooldown = [&](int slot, const AbilityDef& d) {
-        if (slot < static_cast<int>(bar.cooldown.size())) bar.cooldown[slot] = d.cooldown;
+        if (slot < static_cast<int>(bar.cooldown.size())) bar.cooldown[slot] = d.cooldown * (1.0f - cdr / 100.0f);
     };
     auto end_cast = [&] { bar.casting = -1; bar.cast_timer = 0.0f; bar.channelling = false; bar.channel_timer = 0.0f; bar.tick_timer = 0.0f; };
     auto go = [&](int slot, const AbilityDef& d) {
@@ -528,6 +553,14 @@ inline std::vector<AbilityDef> parse_abilities_text(const std::string& text) {
         else if (key == "speed")    { ls >> cur.speed; }
         else if (key == "arc")      { ls >> cur.arc; }
         else if (key == "spread")   { ls >> cur.spread; }
+        else if (key == "about")    { cur.about = rest_of(ls); }
+        else if (key == "move")     {
+            std::string k;
+            ls >> k >> cur.move_a;
+            if (!(ls >> cur.move_b)) cur.move_b = 0.0f;
+            cur.move = k == "blink" ? AbilityDef::Move::Blink : k == "dash" ? AbilityDef::Move::Dash
+                     : k == "leap" ? AbilityDef::Move::Leap : AbilityDef::Move::None;
+        }
     }
     flush();
     return out;
@@ -536,13 +569,55 @@ inline std::vector<AbilityDef> parse_abilities_text(const std::string& text) {
 // ---- skills that grant abilities -------------------------------------------------
 /// Put an ability on `e`'s bar: in the first empty slot, else a new one (up to
 /// 8). False when it is already there or the bar is full.
+/// The bar's slot count: max_slots, else 8.
+inline int ability_slot_count(const AbilityBar& bar) { return bar.max_slots > 0 ? std::min(bar.max_slots, 8) : 8; }
+/// Every ability `bar` has, on it or not (known, and the slots of a bar from
+/// before there was a known list).
+inline std::vector<std::string> known_abilities(const AbilityBar& bar) {
+    std::vector<std::string> out = bar.known;
+    for (const auto& s : bar.slots)
+        if (!s.empty() && std::find(out.begin(), out.end(), s) == out.end()) out.push_back(s);
+    return out;
+}
+/// Give an ability: known from now on, and on the bar when it has room.
 inline bool give_ability(World& w, Entity e, const std::string& id) {
     if (!w.has<AbilityBar>(e)) w.add<AbilityBar>(e, AbilityBar{});
     AbilityBar& bar = w.get<AbilityBar>(e);
+    if (std::find(bar.known.begin(), bar.known.end(), id) == bar.known.end()) bar.known.push_back(id);
     for (const auto& s : bar.slots) if (s == id) return false;
     for (auto& s : bar.slots) if (s.empty()) { s = id; return true; }
-    if (bar.slots.size() >= 8) return false;
+    if (static_cast<int>(bar.slots.size()) >= ability_slot_count(bar)) return true;   // known, to equip
     bar.slots.push_back(id);
+    return true;
+}
+/// Put a known ability in a slot (0-based). Already in another slot: the two
+/// change places. What it pushes out rests, its cooldown running on. False
+/// when it is not known or the slot is past the bar's slots.
+inline bool equip_ability(World& w, Entity e, const std::string& id, int slot) {
+    if (!w.has<AbilityBar>(e)) return false;
+    AbilityBar& bar = w.get<AbilityBar>(e);
+    const std::vector<std::string> known = known_abilities(bar);
+    if (slot < 0 || slot >= ability_slot_count(bar) || std::find(known.begin(), known.end(), id) == known.end()) return false;
+    if (bar.casting >= 0) return false;   // not while casting
+    if (static_cast<int>(bar.slots.size()) <= slot) bar.slots.resize(static_cast<size_t>(slot) + 1);
+    bar.cooldown.resize(bar.slots.size(), 0.0f);
+    if (std::find(bar.known.begin(), bar.known.end(), id) == bar.known.end()) bar.known.push_back(id);
+    for (size_t i = 0; i < bar.slots.size(); ++i)
+        if (bar.slots[i] == id && static_cast<int>(i) != slot) {
+            std::swap(bar.slots[i], bar.slots[static_cast<size_t>(slot)]);
+            std::swap(bar.cooldown[i], bar.cooldown[static_cast<size_t>(slot)]);
+            return true;
+        }
+    if (bar.slots[static_cast<size_t>(slot)] == id) return true;
+    // The one taken off rests with its cooldown; the one put on brings its own.
+    const std::string out = bar.slots[static_cast<size_t>(slot)];
+    if (!out.empty() && bar.cooldown[static_cast<size_t>(slot)] > 0.0f)
+        bar.resting_cooldown.push_back({out, bar.cooldown[static_cast<size_t>(slot)]});
+    float cd = 0.0f;
+    for (auto it = bar.resting_cooldown.begin(); it != bar.resting_cooldown.end(); ++it)
+        if (it->first == id) { cd = it->second; bar.resting_cooldown.erase(it); break; }
+    bar.slots[static_cast<size_t>(slot)] = id;
+    bar.cooldown[static_cast<size_t>(slot)] = cd;
     return true;
 }
 /// Learn a skill (unlock_skill: points, prerequisites, grants, tags) and put
@@ -568,8 +643,10 @@ inline bool set_skill_tree(World& w, Entity e, const std::string& tree) {
 // ---- the Ability Bar component ----------------------------------------------------
 inline void serialize_ability_bar(const void* obj, std::vector<uint8_t>& out) {
     const auto& b = *static_cast<const AbilityBar*>(obj);
-    detail::put_i32(out, 1);
+    detail::put_i32(out, 2);
     detail::put_str_vec(out, b.slots);
+    detail::put_i32(out, b.max_slots);
+    detail::put_str_vec(out, b.known);
 }
 inline void deserialize_ability_bar(void* obj, const uint8_t* data, size_t n) {
     auto& b = *static_cast<AbilityBar*>(obj);
@@ -578,6 +655,10 @@ inline void deserialize_ability_bar(void* obj, const uint8_t* data, size_t n) {
     int32_t ver = 0;
     if (!detail::get_i32(p, e, ver) || ver < 1) return;
     detail::get_str_vec(p, e, b.slots);
+    if (ver < 2) return;
+    int32_t ms = 0;
+    if (detail::get_i32(p, e, ms)) b.max_slots = ms;
+    detail::get_str_vec(p, e, b.known);
 }
 inline void register_ability_cast_components() {
     register_authorable(make_authorable_custom<AbilityBar>("Ability Bar", &serialize_ability_bar, &deserialize_ability_bar));

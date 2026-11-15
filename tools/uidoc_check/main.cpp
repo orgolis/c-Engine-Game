@@ -169,6 +169,84 @@ int main() {
               doc->errors.empty() && panel && title && button && bar_outline);
     }
 
+    // A skill tree drawn as a tree: the root at the bottom, a line to each
+    // skill a skill needs, a click picks one, its placeholders.
+    {
+        auto doc = parse_ui_document(
+            "skilltree id=tree anchor=top_left x=0 y=0 w=600 h=400 bind=hunter node_w=100 node_h=40\n"
+            "label id=info anchor=top_left x=0 y=500 w=600 h=40 text=\"{tree.name}: {tree.info}\"\n"
+            "skilltree id=top anchor=top_left x=0 y=600 w=600 h=400 bind=hunter root=top click=pick_\n");
+        auto nodes = [](const std::string& s) {
+            std::vector<UiTreeNode> v;
+            if (s != "hunter") return v;
+            UiTreeNode a; a.id = "root"; a.name = "Root"; a.state = 2; a.about = "Where it starts.";
+            UiTreeNode b; b.id = "left"; b.name = "Left"; b.state = 1; b.needs = {0}; b.about = "Goes left."; b.cost = 2;
+            UiTreeNode c; c.id = "right"; c.name = "Right"; c.state = 0; c.needs = {0}; c.about = "Goes right.";
+            UiTreeNode d; d.id = "far"; d.name = "Far"; d.state = 0; d.needs = {1, 2}; d.col = 0.0f; d.row = 2.0f;
+            v = {a, b, c, d};
+            return v;
+        };
+        auto none = [](const std::string&) { return UiValue{}; };
+        doc->canvas.layout(1920.0f, 1080.0f);
+        refresh_ui_bindings(*doc, none, {}, nodes);
+        auto* t = dynamic_cast<SkillTreeView*>(doc->ids["tree"]);
+        auto* top = dynamic_cast<SkillTreeView*>(doc->ids["top"]);
+        const auto c = t->centres();
+        const auto ct = top->centres();
+        check("skilltree: parsed (id, bind, click), root at the bottom, root=top turns it over",
+              doc->errors.empty() && doc->trees.size() == 2 && doc->trees[0].prefix == "learn_" && doc->trees[1].prefix == "pick_" &&
+              t->nodes.size() == 4 && c.size() == 4 && c[0].y > c[1].y && c[1].y > c[3].y && ct[0].y < ct[1].y);
+        check("skilltree: those a row up spread across it; pos places one (col 0 at the left)",
+              close_to(c[1].y, c[2].y) && c[1].x < c[2].x && close_to(c[3].x, 50.0f) && close_to(c[0].x, 300.0f));
+        UiDrawList dl;
+        t->paint_self(dl);
+        int lines = 0, boxes = 0;
+        for (const auto& cmd : dl) {
+            if (cmd.type == UiCmdType::Line) ++lines;
+            if (cmd.type == UiCmdType::Rect && cmd.rounding == 10.0f) ++boxes;
+        }
+        check("skilltree: a box a skill, a line to each skill it needs", lines == 4 && boxes == 4);
+        int clicked = -1;
+        t->on_click = [&clicked](int i) { clicked = i; };
+        doc->canvas.pointer_move(c[1].x, c[1].y);
+        doc->canvas.pointer_button(true);
+        doc->canvas.pointer_button(false);
+        doc->canvas.pointer_move(1500.0f, 1000.0f);   // away: the picked one stays
+        refresh_ui_bindings(*doc, none, {}, nodes);
+        check("skilltree: a click picks a skill; {tree.name} and {tree.info} (about, cost)",
+              clicked == 1 && t->selected == 1 &&
+              dynamic_cast<Label*>(doc->ids["info"])->text == "Left: Goes left.   (2 points)");
+        auto bad = parse_ui_document("skilltree anchor=top_left\n");
+        check("skilltree: one without an id is reported", bad->errors.size() == 1);
+    }
+
+    // Ability slots: the key in the corner (an empty slot too), the cooldown
+    // darkening the cell from the top, the seconds left over it.
+    {
+        auto doc = parse_ui_document("slots id=abil anchor=top_left x=0 y=0 w=300 h=100 cols=3 rows=1 bind=player.abilities\n");
+        auto abil = [](const std::string& s) {
+            std::vector<UiSlot> v(3);
+            if (s != "player.abilities") return v;
+            v[0].name = "Bolt"; v[0].corner = "1"; v[0].shade = 0.5f; v[0].overlay = "3.2";
+            v[1].name = "Nova"; v[1].corner = "2";
+            v[2].corner = "3";
+            return v;
+        };
+        auto none = [](const std::string&) { return UiValue{}; };
+        doc->canvas.layout(1920.0f, 1080.0f);
+        refresh_ui_bindings(*doc, none, abil);
+        UiDrawList dl;
+        dynamic_cast<SlotGrid*>(doc->ids["abil"])->paint_self(dl);
+        int keys = 0, shades = 0, seconds = 0;
+        for (const auto& cmd : dl) {
+            if (cmd.type == UiCmdType::Text && (cmd.text == "1" || cmd.text == "2" || cmd.text == "3")) ++keys;
+            if (cmd.type == UiCmdType::Rect && close_to(cmd.color.a, 0.62f) && cmd.rect.h < 60.0f) ++shades;
+            if (cmd.type == UiCmdType::Text && cmd.text == "3.2" && cmd.bold) ++seconds;
+        }
+        check("ability slots: each key (an empty slot's too), one cooling down darkened half with its seconds",
+              keys == 3 && shades == 1 && seconds == 1);
+    }
+
     // Lines it cannot read.
     auto bad = parse_ui_document("ui modal sideways\nslider id=s\nlabel id=l anchor=middle text=hi\nbutton text=\"No id\"\n");
     check("bad lines are reported with their line numbers, the rest still builds",

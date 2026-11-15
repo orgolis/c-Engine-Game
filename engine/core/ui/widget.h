@@ -35,7 +35,9 @@ struct UiColor {
     float r = 1, g = 1, b = 1, a = 1;
 };
 
-enum class UiCmdType : uint8_t { Rect, Text, Image };
+// Line: from (rect.x, rect.y) to (rect.x + rect.w, rect.y + rect.h), font_size
+// reference pixels wide.
+enum class UiCmdType : uint8_t { Rect, Text, Image, Line };
 enum class UiAlign   : uint8_t { Left, Center, Right };
 
 struct UiDrawCmd {

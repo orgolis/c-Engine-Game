@@ -163,6 +163,8 @@ typedef struct SchizoScriptApi {
     void     (*set_weapon_slots)(void* ctx, unsigned e, int count);
     bool     (*weapon_in_slot)(void* ctx, unsigned e, int index, char* id_out, int id_size, char* name_out,
                                int name_size);
+    /* Ability slots: a known ability (its place in the known list) into a bar slot. */
+    bool     (*equip_ability)(void* ctx, unsigned e, int known_index, int slot);
 } SchizoScriptApi;
 
 }  // extern "C"

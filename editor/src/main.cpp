@@ -217,6 +217,15 @@ struct EditorState {
     bool logic_break_paused_play = false;  // ... and that is what paused the game
     bool show_logic_graph = false;   // scene logic-graph node editor
     bool show_viewport = true;
+    // F11 (or the Full screen button): the game view fills the screen -- the
+    // window full screen on its monitor, the Viewport over everything, no
+    // panels, no toolbar. F11 again puts it back where it was docked.
+    bool         game_fullscreen    = false;
+    bool         fullscreen_redock  = false;   // dock the Viewport back next frame
+    unsigned int viewport_dock_id   = 0;       // where it was docked
+    int          saved_window[4]    = {0, 0, 0, 0};
+    const char*  saved_ini_filename = nullptr; // no layout saved while full screen
+    bool         request_fullscreen_toggle = false;
     // True when the Viewport panel is on screen THIS frame: open, not
     // collapsed, not a background tab. Set by ShowViewport (which runs before
     // the frame is recorded); the 3D frame is skipped when nothing shows it.
@@ -6126,6 +6135,41 @@ void ShowAssetBrowser(EditorState& editor_state) {
     editor_state.asset_browser->Render(scene, &editor_state.show_asset_browser);
 }
 
+// The game view full screen on the window's monitor, or back as it was.
+static void SetGameFullscreen(EditorState& es, GLFWwindow* w, bool on) {
+    if (on == es.game_fullscreen || !w) return;
+    if (on) {
+        glfwGetWindowPos(w, &es.saved_window[0], &es.saved_window[1]);
+        glfwGetWindowSize(w, &es.saved_window[2], &es.saved_window[3]);
+        // The monitor the window is mostly on.
+        int count = 0;
+        GLFWmonitor** mons = glfwGetMonitors(&count);
+        GLFWmonitor* best = glfwGetPrimaryMonitor();
+        const int cx = es.saved_window[0] + es.saved_window[2] / 2, cy = es.saved_window[1] + es.saved_window[3] / 2;
+        for (int i = 0; i < count; ++i) {
+            int mx = 0, my = 0;
+            glfwGetMonitorPos(mons[i], &mx, &my);
+            const GLFWvidmode* md = glfwGetVideoMode(mons[i]);
+            if (md && cx >= mx && cx < mx + md->width && cy >= my && cy < my + md->height) best = mons[i];
+        }
+        const GLFWvidmode* mode = best ? glfwGetVideoMode(best) : nullptr;
+        if (!mode) return;
+        // Nothing of the layout is saved while the Viewport is out of its dock:
+        // quitting in full screen leaves the layout as it was.
+        es.saved_ini_filename = ImGui::GetIO().IniFilename;
+        ImGui::GetIO().IniFilename = nullptr;
+        glfwSetWindowMonitor(w, best, 0, 0, mode->width, mode->height, mode->refreshRate);
+        es.game_fullscreen = true;
+        spdlog::info("[viewport] full screen ({}x{}); F11 to go back", mode->width, mode->height);
+    } else {
+        glfwSetWindowMonitor(w, nullptr, es.saved_window[0], es.saved_window[1], std::max(640, es.saved_window[2]),
+                             std::max(400, es.saved_window[3]), 0);
+        es.game_fullscreen = false;
+        es.fullscreen_redock = true;
+        spdlog::info("[viewport] back in the editor");
+    }
+}
+
 void ShowViewport(EditorState& editor_state) {
     if (!editor_state.show_viewport) {
         editor_state.viewport_input_focused = false;
@@ -6135,8 +6179,34 @@ void ShowViewport(EditorState& editor_state) {
 
     // Begin() returns false when the window is collapsed or docked behind
     // another tab: then nothing displays the 3D image this frame (F8).
+    // Full screen: the Viewport out of its dock, over the whole window, no
+    // frame. Back: docked again where it was.
+    const bool game_fs = editor_state.game_fullscreen;
+    ImGuiWindowFlags vflags = ImGuiWindowFlags_NoMove;
+    if (game_fs) {
+        const ImGuiViewport* mv = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(mv->Pos, ImGuiCond_Always);
+        ImGui::SetNextWindowSize(mv->Size, ImGuiCond_Always);
+        ImGui::SetNextWindowDockID(0, ImGuiCond_Always);
+        vflags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    } else if (editor_state.fullscreen_redock && editor_state.viewport_dock_id != 0) {
+        ImGui::SetNextWindowDockID(editor_state.viewport_dock_id, ImGuiCond_Always);
+    }
     editor_state.viewport_drawn =
-        ImGui::Begin("Viewport", &editor_state.show_viewport, ImGuiWindowFlags_NoMove);  // docked window = child; End() must always run
+        ImGui::Begin("Viewport", &editor_state.show_viewport, vflags);  // docked window = child; End() must always run
+    if (game_fs) {
+        ImGui::PopStyleVar(2);
+        ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+    } else {
+        if (ImGui::GetWindowDockID() != 0) editor_state.viewport_dock_id = ImGui::GetWindowDockID();
+        if (editor_state.fullscreen_redock) {
+            editor_state.fullscreen_redock = false;
+            ImGui::GetIO().IniFilename = editor_state.saved_ini_filename;   // the layout is saved again
+        }
+    }
     {
         // While Play holds the mouse, the game view keeps focus whatever ImGui
         // thinks: ImGui is told to ignore the mouse then, but still treats a
@@ -6160,6 +6230,7 @@ void ShowViewport(EditorState& editor_state) {
         // see a consistent "playing" state.
         const bool viewport_playing = editor_state.scene_playback_manager &&
                                       editor_state.scene_playback_manager->IsPlaying();
+        if (!game_fs) {   // the toolbar and readouts: not in full screen
         if (viewport_playing) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f));  // Green text
             ImGui::Text(">>> PLAY MODE (%.2f s) <<<",
@@ -6211,8 +6282,11 @@ void ShowViewport(EditorState& editor_state) {
 
         ImGui::Separator();
         ImGui::Checkbox("Wireframe Mode", &editor_state.wireframe_mode);
+        ImGui::SameLine();
+        if (ImGui::Button("Full screen (F11)")) editor_state.request_fullscreen_toggle = true;
 
         ImGui::Separator();
+        }   // !game_fs
 
         // Prepare view and projection matrices
         ImVec2 viewport_size = ImGui::GetContentRegionAvail();
@@ -6280,7 +6354,8 @@ void ShowViewport(EditorState& editor_state) {
                 // the cast in progress above it.
                 // A modal UI document (a menu) is over the game: the game's own HUD steps back.
                 const bool ui_menu_up = viewport_playing && schizo::editor::play_ui().modal();
-                if (viewport_playing && !ui_menu_up && editor_state.player_abilities.hud().shown) {
+                if (viewport_playing && !ui_menu_up && editor_state.player_abilities.hud().shown &&
+                    !schizo::editor::play_ui().binds("player.abilities")) {   // a HUD document shows them itself
                     const auto& ah = editor_state.player_abilities.hud();
                     ImDrawList* dl = ImGui::GetWindowDrawList();
                     const float box = 54.0f, gap = 6.0f;
@@ -6474,8 +6549,9 @@ void ShowViewport(EditorState& editor_state) {
                         dl->AddLine(ImVec2(c.x + 10, c.y + 10), ImVec2(c.x + 5, c.y + 5), hm, 2.0f);
                     }
                     // The ammunition: the gun's name over the rounds in the magazine
-                    // (large) and in reserve, a bar of the magazine, the reload's progress.
-                    {
+                    // (large) and in reserve, a bar of the magazine, the reload's progress
+                    // -- unless a HUD document shows the rounds itself.
+                    if (!schizo::editor::play_ui().binds("player.ammo")) {
                         const float k = std::clamp((image_max.y - image_min.y) / 1080.0f, 0.35f, 2.0f);
                         ImFont* f = ImGui::GetFont();
                         const float big = 40.0f * k, small = 17.0f * k;
@@ -10377,6 +10453,33 @@ int main(int argc, char** argv) {
 
         while (!glfwWindowShouldClose(glfw_window)) {
             { GWS_PROFILE_ZONE("poll_events"); glfwPollEvents(); }
+            // F11 (not while typing), or the Full screen button: the game view
+            // full screen and back.
+            {
+                static bool f11_was = false;
+                const bool f11 = glfwGetKey(glfw_window, GLFW_KEY_F11) == GLFW_PRESS;
+                // (Not while a logic script is stopped at a breakpoint: there F11 is Step Into.)
+                if (f11 && !f11_was && !ImGui::GetIO().WantTextInput && !editor_state.logic_break_active &&
+                    glfwGetKey(glfw_window, GLFW_KEY_LEFT_SHIFT) != GLFW_PRESS && glfwGetKey(glfw_window, GLFW_KEY_RIGHT_SHIFT) != GLFW_PRESS)
+                    editor_state.request_fullscreen_toggle = true;
+                f11_was = f11;
+                // GWS_TEST_FULLSCREEN=<frame>[,<frame>]: toggle at those frames (tests).
+                static const std::vector<int> fs_test = [] {
+                    std::vector<int> v;
+                    if (const char* e = std::getenv("GWS_TEST_FULLSCREEN")) {
+                        std::stringstream ss(e);
+                        std::string tok;
+                        while (std::getline(ss, tok, ',')) v.push_back(std::atoi(tok.c_str()));
+                    }
+                    return v;
+                }();
+                if (std::find(fs_test.begin(), fs_test.end(), static_cast<int>(frame_count)) != fs_test.end())
+                    editor_state.request_fullscreen_toggle = true;
+                if (editor_state.request_fullscreen_toggle) {
+                    editor_state.request_fullscreen_toggle = false;
+                    SetGameFullscreen(editor_state, glfw_window, !editor_state.game_fullscreen);
+                }
+            }
 
             // Scene targets follow the Viewport panel (F1). Only once its size
             // has held for a few frames and moved by more than a few pixels:
@@ -11455,6 +11558,15 @@ int main(int argc, char** argv) {
                     if (pid == schizo::editor::kNoEcsEntity || !ecs_bridge.world().valid(pe)) return v;
                     auto& w = ecs_bridge.world();
                     const std::string what = src.substr(7);
+                    if (what == "reload") {
+                        // The reload's progress: a bar (seconds done of the whole); 0 when not reloading.
+                        const auto* ws = w.try_get<schizo::ecs::WeaponState>(pe);
+                        const auto* d = ws ? schizo::ecs::find_weapon(ws->weapon_id) : nullptr;
+                        v.found = true;
+                        v.max = d ? d->reload_time : 1.0f;
+                        v.value = ws && ws->reloading > 0.0f ? std::max(0.0, v.max - ws->reloading) : 0.0;
+                        return v;
+                    }
                     if (what == "ammo" || what == "reserve" || what == "weapon") {
                         const auto* ws = w.try_get<schizo::ecs::WeaponState>(pe);
                         if (!ws) return v;
@@ -11523,17 +11635,63 @@ int main(int argc, char** argv) {
                         return v;
                     }
                     if (const auto* a = w.try_get<schizo::ecs::AttributeSet>(pe))
-                        if (const auto* at = a->find(what)) { v.found = true; v.value = at->current; v.max = at->max; }
+                        if (const auto* at = a->find(what)) { v.found = true; v.value = at->current; v.max = at->max; return v; }
+                    // A bonus stat not raised yet (MoveSpeed, Damage...): 0, not unknown.
+                    if (schizo::ecs::is_bonus_stat(what)) v.found = true;
                     return v;
                 }, [&](const std::string& src) {
                     // A slots grid bound to the player's inventory.
                     std::vector<schizo::ui::UiSlot> out;
-                    if (src != "player.inventory" && src != "player.weapons") return out;
+                    if (src != "player.inventory" && src != "player.weapons" && src != "player.abilities" &&
+                        src != "player.known_abilities")
+                        return out;
                     auto* pl = pm.GetPlayerEntity();
                     const uint32_t pid = pl ? ecs_bridge.ecs_entity_id(pl->GetTransform()) : schizo::editor::kNoEcsEntity;
                     const auto pe = static_cast<schizo::ecs::Entity>(pid);
                     if (pid == schizo::editor::kNoEcsEntity || !ecs_bridge.world().valid(pe)) return out;
                     auto& gw = ecs_bridge.world();
+                    if (src == "player.abilities" || src == "player.known_abilities") {
+                        const auto* bar = gw.try_get<schizo::ecs::AbilityBar>(pe);
+                        if (!bar) return out;
+                        if (src == "player.abilities") {
+                            // The slots: each its key in the corner, the ability, its cooldown
+                            // darkening the cell from the top and the seconds left over it.
+                            const float cdr = std::clamp(schizo::ecs::bonus_stat(gw.try_get<schizo::ecs::AttributeSet>(pe), "CooldownReduction"), 0.0f, 75.0f);
+                            const int n = schizo::ecs::ability_slot_count(*bar);
+                            for (int i = 0; i < n; ++i) {
+                                schizo::ui::UiSlot s;
+                                const int code = ps.map.key("ability_" + std::to_string(i + 1));
+                                s.corner = code ? schizo::input::key_name(code) : std::string("-");
+                                if (i < static_cast<int>(bar->slots.size()) && !bar->slots[static_cast<size_t>(i)].empty()) {
+                                    const auto* d = schizo::ecs::find_ability_def(bar->slots[static_cast<size_t>(i)]);
+                                    s.name = d ? d->name : bar->slots[static_cast<size_t>(i)];
+                                    if (d) s.info = d->about;
+                                    const float cd = static_cast<size_t>(i) < bar->cooldown.size() ? bar->cooldown[static_cast<size_t>(i)] : 0.0f;
+                                    const float total = d ? d->cooldown * (1.0f - cdr / 100.0f) : 0.0f;
+                                    if (cd > 0.0f && total > 0.0f) {
+                                        s.shade = std::clamp(cd / total, 0.0f, 1.0f);
+                                        char b[16];
+                                        std::snprintf(b, sizeof b, cd >= 10.0f ? "%.0f" : "%.1f", cd);
+                                        s.overlay = b;
+                                    }
+                                    s.marked = bar->casting == i;
+                                }
+                                out.push_back(std::move(s));
+                            }
+                            return out;
+                        }
+                        // Every ability it knows: which slot it is in, if any.
+                        for (const auto& id : schizo::ecs::known_abilities(*bar)) {
+                            const auto* d = schizo::ecs::find_ability_def(id);
+                            schizo::ui::UiSlot s;
+                            s.name = d ? d->name : id;
+                            if (d) s.info = d->about;
+                            for (size_t k = 0; k < bar->slots.size(); ++k)
+                                if (bar->slots[k] == id) { s.detail = "slot " + std::to_string(k + 1); s.marked = true; }
+                            out.push_back(std::move(s));
+                        }
+                        return out;
+                    }
                     if (src == "player.weapons") {
                         // The weapon slots: the gun in each (empty ones empty) with the rounds
                         // in its magazine; the one in hand marked.
@@ -11550,6 +11708,8 @@ int main(int argc, char** argv) {
                                     if (d) s.info = schizo::ecs::weapon_summary(*d);
                                     s.marked = held;
                                 }
+                                // The slot's key in the corner, when it has one.
+                                if (const int code = ps.map.key("weapon_" + std::to_string(i + 1))) s.corner = schizo::input::key_name(code);
                                 out.push_back(std::move(s));
                             }
                         return out;
@@ -11567,6 +11727,39 @@ int main(int argc, char** argv) {
                             }
                             out.push_back(std::move(s));
                         }
+                    return out;
+                }, [&](const std::string& tree_id) {
+                    // A drawn skill tree: the tree's skills (the player's own tree when it
+                    // is this one), each with its state for the player.
+                    std::vector<schizo::ui::UiTreeNode> out;
+                    auto* pl = pm.GetPlayerEntity();
+                    const uint32_t pid = pl ? ecs_bridge.ecs_entity_id(pl->GetTransform()) : schizo::editor::kNoEcsEntity;
+                    const auto pe = static_cast<schizo::ecs::Entity>(pid);
+                    auto& tw = ecs_bridge.world();
+                    const bool have = pid != schizo::editor::kNoEcsEntity && tw.valid(pe);
+                    const auto* own = have ? tw.try_get<schizo::ecs::SkillTree>(pe) : nullptr;
+                    static std::string cached_id;
+                    static schizo::ecs::SkillTree cached;
+                    const schizo::ecs::SkillTree* tree = own && own->id == tree_id ? own : nullptr;
+                    if (!tree) {
+                        if (cached_id != tree_id) { cached = schizo::ecs::skill_tree_named(tree_id); cached_id = tree_id; }
+                        tree = &cached;
+                    }
+                    out.reserve(tree->nodes.size());
+                    for (const auto& n : tree->nodes) {
+                        schizo::ui::UiTreeNode u;
+                        u.id = n.id;
+                        u.name = n.name;
+                        u.about = n.about;
+                        u.cost = n.cost;
+                        u.col = n.col;
+                        u.row = n.row;
+                        u.state = have ? schizo::ecs::skill_state(tw, pe, n.id) : 0;
+                        for (const auto& r : n.prerequisites)
+                            for (size_t k = 0; k < tree->nodes.size(); ++k)
+                                if (tree->nodes[k].id == r) u.needs.push_back(static_cast<int>(k));
+                        out.push_back(std::move(u));
+                    }
                     return out;
                 });
                 // GWS_TEST_UI=click:<id>@<frame>,show:<file>@<frame>,... : click a
@@ -12151,6 +12344,14 @@ int main(int argc, char** argv) {
                         editor_state.player_abilities.update(delta_time, pm, ecs_bridge, ct->GetWorldPosition(),
                                                              ct->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f), ain,
                                                              editor_state.shot_effects, &editor_state.play_effects);
+                        // The player's movement bonuses (MoveSpeed, ExtraJumps: passives, buffs).
+                        if (auto* mpl = pm.GetPlayerEntity()) {
+                            const uint32_t mid = ecs_bridge.ecs_entity_id(mpl->GetTransform());
+                            const auto* ma = mid != schizo::editor::kNoEcsEntity
+                                                 ? ecs_bridge.world().try_get<schizo::ecs::AttributeSet>(static_cast<schizo::ecs::Entity>(mid)) : nullptr;
+                            pm.SetMoveBonus(schizo::ecs::bonus_stat(ma, "MoveSpeed"),
+                                            static_cast<int>(std::lround(schizo::ecs::bonus_stat(ma, "ExtraJumps"))));
+                        }
                         // Gunfire carries: creatures within their hearing come to look.
                         if (editor_state.player_weapon.hud().fired)
                             if (auto* pl = pm.GetPlayerEntity()) editor_state.npc_agents.notify_noise(pl->GetTransform()->GetWorldPosition());
@@ -12489,7 +12690,7 @@ int main(int argc, char** argv) {
             // so the user can only resize splitters or close panels; closing
             // a panel makes its neighbours expand to refill the window.
             // ------------------------------------------------------------
-            ShowMainMenuBar(editor_state, glfw_window);
+            if (!editor_state.game_fullscreen) ShowMainMenuBar(editor_state, glfw_window);
             {
                 ImGuiID dockspace_id = ImGui::GetID("EditorDockSpace");
                 // Build the default layout on first run (no saved dock data in
@@ -15252,7 +15453,13 @@ int main(int argc, char** argv) {
             // nothing goes wrong -- "it was fine until here" needs a "here".
             {
                 static double last_health_wall = 0.0;
-                if (now_wall - last_health_wall >= 5.0) {
+                // GWS_HEALTH_PERIOD=<s>: more often (measuring); every 5 s otherwise.
+                static const double health_period = [] {
+                    const char* e = std::getenv("GWS_HEALTH_PERIOD");
+                    const double v = e ? std::atof(e) : 0.0;
+                    return v > 0.0 ? v : 5.0;
+                }();
+                if (now_wall - last_health_wall >= health_period) {
                     last_health_wall = now_wall;
                     const auto& gs = graph->get_stats();
                     MEMORYSTATUSEX ms{}; ms.dwLength = sizeof(ms);

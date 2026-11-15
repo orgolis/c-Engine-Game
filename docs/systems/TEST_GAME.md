@@ -20,21 +20,36 @@ it in the editor.
   its shadow), the gun in hand seen and animated, the full movement set (sprint, crouch, slide,
   dash, mantle, climb), three weapon slots -- a rifle and a pistol to start,
   the third empty (keys 1, 2, 3; the mouse wheel or Q switches too) -- two
-  frag grenades (G, thrown: aim up to throw far), Firebolt on Z, health and
-  mana potions; mortal, comes back from the last checkpoint. The HUD shows
-  where a hit came from and glows red at low health.
+  frag grenades (G, thrown: aim up to throw far), Firebolt in the first of
+  three ability slots (Z), health potions; mortal, comes back from the last
+  checkpoint. No mana: abilities cost only their cooldowns. The HUD has
+  health, the objective and the level at the top; in the lower left corner the
+  ability slots (key, cooldown darkening the slot with the seconds left) and
+  the gun (name, rounds, reload, weapon slots, grenades). It shows where a hit
+  came from and glows red at low health.
 - **Guns and gear** (`assets/gameplay/arsenal.items`): rifle, pistol,
   shotgun, marksman rifle, SMG, burst carbine, light machine gun and revolver
   (rifle rounds, pistol rounds or shotgun shells); a combat helmet or a mage
-  hood (head) and a kevlar vest (chest) that raise health or mana and take
-  off damage; frag grenades. The other six guns, the armour and more grenades
+  hood (head) and a kevlar vest (chest) that raise health, shorten ability
+  cooldowns (the hood: 15%) and take off damage; frag grenades. The other six guns, the armour and more grenades
   are in the supply caches. A gun found while all three slots are full goes
   into the bag; Use it in the inventory to swap it with the gun in hand.
-- **Levels and a skill tree**: each creature gives 100 XP (and ammunition); each
-  level gives a skill point. The tree (K) has three branches -- Spells (Frost
-  Nova, Lightning, Archmage), Body (Toughness, Mend, Iron Skin) and Mind (Focus,
-  Clarity, Veteran). Learned abilities go on the next keys (X, C, F); the
-  others raise health or mana. One point to start; a full run gives five.
+- **Levels and a skill tree**: each kill gives 100 XP (and ammunition); each
+  level gives a skill point. The tree (K) is drawn as a tree of 32 skills
+  growing from Awakening at the bottom into three branches -- Sorcery (Frost
+  Nova, Ice Lance, Lightning, Shock Wave, Venom Rain, Meteor, cooldown and
+  damage passives), Survival (Toughness, Mend, Regeneration, Iron Skin, Second
+  Wind, Battle Cry, Veteran, Undying) and Agility (Fleet Foot, Surge, Leap,
+  Double Jump, Haste, Blink, Quick Hands, Marksman, Deadeye, Swiftness,
+  Windwalker, Gunslinger). A click learns one; skills cost 1 point low in the
+  tree, 2 in the middle, 3 at the top. Thirteen abilities to learn -- four of
+  them movement: Surge (a 12 m dash), Leap, Blink (14 m ahead, there at once),
+  Haste (50% faster for 6 s) -- and passives that raise health, move speed,
+  damage, reload speed, health regeneration, air jumps or shorten cooldowns.
+  Three points to start.
+- **Abilities** (P): the three ability slots and every ability learned. A
+  learned ability goes into a free slot; once all three are full, pick one in
+  the list and click a slot to put it there.
 - **Inventory** (I): the three weapon slots (click a gun to draw it; Put in
   bag), what is worn (click to take it off) and the bag (pick an item, then
   Use / equip: potions, gear, guns).
@@ -58,9 +73,9 @@ it in the editor.
   shotgun's muzzle are the project's own (`assets/gameplay/effects.items`).
 - **Ten supply caches** to open with E (guns, armour, grenades), **two
   checkpoints** that save, and **a beacon** on the far side.
-- **Screens** (`ui/`): a title menu, the HUD (health and mana, the objective,
-  level, XP and skill points, the weapon slots, the keys as bound), the inventory, the skill
-  tree, a pause menu on Esc (resume, save, load, settings, quit),
+- **Screens** (`ui/`): a title menu, the HUD (health, the objective,
+  level, XP and skill points, the ability slots and the gun, the keys as
+  bound), the inventory, the skill tree, the abilities, a pause menu on Esc (resume, save, load, settings, quit),
   a settings screen (every control rebindable, mouse sensitivity and invert,
   quality, ambient occlusion, reflections, clouds, volumetric light, shadow
   quality, render scale, VSync, field of view) and a win screen. Esc belongs
@@ -77,25 +92,26 @@ Logic scripts in `testgame/`:
   `died` event of the enemy team gives XP and rounds and counts down
   "Enemies left" (creatures and soldiers) on the HUD; at zero it sets the world flag `game.cleared`.
   It also gives the player the `hero` skill tree at the start, opens and
-  closes the inventory (I) and skill tree (K) -- Esc closes them too -- and
-  runs their Use, Put in bag and Learn buttons.
+  closes the inventory (I), the skill tree (K) and the abilities (P) -- Esc
+  closes them too -- and runs their Use, Put in bag, learn (a click on a
+  skill) and equip (a click on a slot) buttons.
 - `Checkpoint.lgraph` (on each checkpoint zone): Save Game "quick" on enter.
 - `Goal.lgraph` (on the beacon zone): the win screen once `game.cleared` is
   set, otherwise "clear every camp first".
 
-Weapons, items and abilities are `assets/gameplay/starter.items`; the skill
-tree, Lightning and the mana potion are `assets/gameplay/hero.items`, the other
+Weapons, items and the first abilities are `assets/gameplay/starter.items`;
+the skill tree and the other abilities are `assets/gameplay/hero.items`, the other
 guns, armour and grenades `assets/gameplay/arsenal.items` (open them in the
 Items editor). The player's three weapon slots are its Weapon Loadout
 (Inspector). The inventory, skills, grenade, weapon-slot and ability keys are
-in `input.cfg`.
+in `input.cfg`; the ability slots are the player's Ability Bar (Slots 3).
 
 ## Keys
 
 WASD move, Shift sprint, Space jump / mantle, Ctrl crouch / slide, V dash,
 left mouse fire, right mouse aim, R reload, 1 / 2 / 3 weapon slots, mouse
-wheel / Q switch gun, G grenade, Z / X / C / F abilities, E open / pick up,
-I inventory, K skill tree, Esc menu, F6 save, F9 load, Shift+F1 free the
+wheel / Q switch gun, G grenade, Z / X / C abilities, E open / pick up,
+I inventory, K skill tree, P abilities, Esc menu, F6 save, F9 load, Shift+F1 free the
 mouse. All but Esc can be rebound in Settings. Controls a player saved
 before (Settings) keep their keys: Reset controls there gives these.
 

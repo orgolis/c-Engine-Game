@@ -14,6 +14,7 @@
 #include "world.h"
 #include "components.h"           // Transform
 #include "gameplay_events.h"
+#include "gameplay_attributes.h"   // bonus stats (Damage, ReloadSpeed)
 #include "gameplay_damage.h"
 #include "gameplay_combat.h"      // CombatActor / combat_hurtbox / HitSphere
 #include "gameplay_items.h"       // Rng
@@ -212,7 +213,9 @@ inline bool fire_weapon(World& w, Entity shooter, const glm::vec3& origin, const
             float t;
             const Entity hit = hitscan_target(w, shooter, origin, dir, wall ? wall_t : wd->range, t);
             if (hit != null_entity) {
-                const float dealt = apply_damage(w, hit, DamageInfo{wd->damage, wd->damage_type});
+                // The shooter's Damage bonus (a passive, a buff).
+                const float dmg = wd->damage * (1.0f + bonus_stat(w.try_get<AttributeSet>(shooter), "Damage") / 100.0f);
+                const float dealt = apply_damage(w, hit, DamageInfo{dmg, wd->damage_type});
                 if (bus) { GameplayEvent ev; ev.name = "weapon.hit"; ev.instigator = shooter; ev.target = hit;
                            ev.value = dealt; ev.param = wd->damage_type; bus->publish(ev); }
                 st.end = origin + dir * t;
@@ -294,7 +297,7 @@ inline void reload_weapon(WeaponState& ws) {
 }
 
 inline void tick_weapons(World& w, float dt) {
-    w.each<WeaponState>([&](Entity, WeaponState& ws) {
+    w.each<WeaponState>([&](Entity owner, WeaponState& ws) {
         if (ws.cooldown > 0.0f) ws.cooldown = std::max(0.0f, ws.cooldown - dt);
         if (const WeaponDef* wd = find_weapon(ws.weapon_id)) {
             if (ws.bloom > 0.0f) ws.bloom = std::max(0.0f, ws.bloom - wd->bloom_recovery * dt);
@@ -303,7 +306,8 @@ inline void tick_weapons(World& w, float dt) {
             ws.aim = ws.aiming && can_aim ? std::min(1.0f, ws.aim + step) : std::max(0.0f, ws.aim - step);
         }
         if (ws.reloading > 0.0f) {
-            ws.reloading -= dt;
+            // ReloadSpeed: % faster (a passive).
+            ws.reloading -= dt * std::max(0.1f, 1.0f + bonus_stat(w.try_get<AttributeSet>(owner), "ReloadSpeed") / 100.0f);
             if (ws.reloading <= 0.0f) {
                 ws.reloading = 0.0f;
                 if (const WeaponDef* wd = find_weapon(ws.weapon_id)) {

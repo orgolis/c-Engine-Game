@@ -616,7 +616,16 @@ void ScenePlaybackManager::DriveMovement(float delta_time) {
         }
         return h;
     };
+    // Bonuses (passives, buffs): faster, more jumps in the air -- this step only.
+    const ecs::MovementSettings base_settings = player_movement_.settings;
+    if (move_bonus_pct_ != 0.0f || extra_jumps_ != 0) {
+        const float k = std::max(0.2f, 1.0f + move_bonus_pct_ / 100.0f);
+        auto& ms = player_movement_.settings;
+        ms.walk_speed *= k; ms.sprint_speed *= k; ms.crouch_speed *= k; ms.swim_speed *= k;
+        ms.air_jumps = std::max(0, ms.air_jumps + extra_jumps_);
+    }
     const ecs::MoveResult res = ecs::step_movement(player_movement_, in, body, ray, delta_time);
+    player_movement_.settings = base_settings;
     if (std::abs(res.height - body.height) > 1e-3f)
         pw.set_character_height(id, std::max(0.05f, res.height - 2.0f * player_radius_));
     pw.update_character(id, res.velocity, delta_time);

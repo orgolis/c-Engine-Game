@@ -213,6 +213,11 @@ public:
     /// The settings the player moves with: the host hands in the player's
     /// Movement component each frame (defaults when it has none).
     void SetPlayerMovementSettings(const schizo::ecs::MovementSettings& s) { player_movement_.settings = s; }
+    /// The player's MoveSpeed (%) and ExtraJumps bonuses this frame (passives, buffs).
+    void SetMoveBonus(float speed_pct, int extra_jumps) { move_bonus_pct_ = speed_pct; extra_jumps_ = extra_jumps; }
+    /// An ability's movement: a dash along `dir`, a throw (a leap).
+    void DashPlayer(const glm::vec3& dir, float distance) { schizo::ecs::start_dash(player_movement_, dir, distance); }
+    void LaunchPlayer(const glm::vec3& velocity) { schizo::ecs::launch(player_movement_, velocity); }
     const schizo::ecs::MovementState& GetPlayerMovementState() const { return player_movement_.state; }
     const schizo::ecs::MovementSettings& GetPlayerMovementSettings() const { return player_movement_.settings; }
     /// Whether a scene entity's surface can be climbed (the host answers from
@@ -296,6 +301,8 @@ private:
     float                                  player_standing_cyl_ = 1.2f;   // cylinder height standing
     glm::vec3                              player_collider_offset_{0.0f};
     schizo::ecs::Movement                  player_movement_;
+    float                                  move_bonus_pct_ = 0.0f;
+    int                                    extra_jumps_ = 0;
     std::function<bool(uint32_t)>          climbable_query_;
     std::unordered_map<uint32_t, bool>     climbable_bodies_;   // body -> climbable (memo, per play)
     bool                                   scripted_input_set_ = false;

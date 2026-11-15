@@ -2643,6 +2643,144 @@ int main() {
               g2.find(onping) && g2.find(onping)->param == "ping");
     }
 
+    // Ability slots and known abilities, bonus stats (passives), movement
+    // abilities, a skill's about and place in a drawn tree.
+    {
+        ecs::register_items_text(
+            "ability s51_a\n  name A\n  cooldown 10\n  about Does A things, well.\nend\n"
+            "ability s51_b\n  name B\n  cooldown 4\nend\n"
+            "ability s51_c\n  name C\n  cooldown 6\n  move dash 12\nend\n"
+            "ability s51_d\n  name D\n  move leap 9 7\nend\n"
+            "ability s51_e\n  name E\n  target aimed\n  damage 20\n  move blink 10\nend\n"
+            "ability s51_haste\n  name Haste\n  self MoveSpeed 40 5\nend\n"
+            "skill s51_root\n  name Swift\n  tree s51\n  cost 0\n  grant MoveSpeed 15\n  grant CooldownReduction 20\n"
+            "  about Faster, and abilities cool down sooner.\n  pos 2 0\nend\n"
+            "skill s51_leaf\n  name Leaf\n  tree s51\n  cost 1\n  requires s51_root\nend\n");
+        const ecs::AbilityDef* da = ecs::find_ability_def("s51_a");
+        const ecs::AbilityDef* dc = ecs::find_ability_def("s51_c");
+        const ecs::AbilityDef* dd = ecs::find_ability_def("s51_d");
+        const ecs::AbilityDef* de = ecs::find_ability_def("s51_e");
+        check("ability data: about (the rest of the line) and move blink / dash / leap",
+              da && dc && dd && de && da->about == "Does A things, well." && dc->move == ecs::AbilityDef::Move::Dash &&
+              dc->move_a == 12.0f && dd->move == ecs::AbilityDef::Move::Leap && dd->move_a == 9.0f && dd->move_b == 7.0f &&
+              de->move == ecs::AbilityDef::Move::Blink && de->move_a == 10.0f);
+        {
+            // Written back from the Items editor: the same.
+            const auto back = ecs::parse_abilities_text(ecs::ability_def_text(*dd) + ecs::ability_def_text(*da));
+            check("ability data: about and move are written back by the Items editor",
+                  back.size() == 2 && back[0].move == ecs::AbilityDef::Move::Leap && back[0].move_b == 7.0f &&
+                  back[1].about == da->about);
+        }
+        const ecs::SkillTree st = ecs::skill_tree_named("s51");
+        check("skill data: about and pos (its place in a drawn tree)",
+              st.nodes.size() == 2 && st.nodes[0].about == "Faster, and abilities cool down sooner." && st.nodes[0].col == 2.0f &&
+              st.nodes[0].row == 0.0f && st.nodes[1].col < 0.0f);
+        {
+            std::vector<uint8_t> buf;
+            ecs::serialize_skill_tree(&st, buf);
+            ecs::SkillTree back;
+            ecs::deserialize_skill_tree(&back, buf.data(), buf.size());
+            check("skill tree: saves each node's about and place",
+                  back.nodes.size() == 2 && back.nodes[0].about == st.nodes[0].about && back.nodes[0].col == 2.0f &&
+                  back.nodes[1].row < 0.0f && back.id == "s51");
+        }
+
+        // Three slots: abilities past them are known, to equip.
+        ecs::World w;
+        ecs::GameplayEventBus b51;
+        const ecs::Entity me = w.create();
+        w.add<ecs::Transform>(me, ecs::Transform{});
+        w.add<ecs::AttributeSet>(me, ecs::AttributeSet{});
+        w.get<ecs::AttributeSet>(me).define("Health", 50, 0, 100);
+        ecs::AbilityBar start;
+        start.max_slots = 3;
+        w.add<ecs::AbilityBar>(me, start);
+        for (const char* id : {"s51_a", "s51_b", "s51_c", "s51_d", "s51_e"}) ecs::give_ability(w, me, id);
+        auto& bar = w.get<ecs::AbilityBar>(me);
+        check("slots: 3 at most; the rest known, not on the bar",
+              ecs::ability_slot_count(bar) == 3 && bar.slots.size() == 3 && bar.slots[2] == "s51_c" &&
+              ecs::known_abilities(bar).size() == 5 && ecs::known_abilities(bar)[4] == "s51_e");
+        bar.cooldown.assign(3, 0.0f);
+        bar.cooldown[0] = 5.0f;   // A cooling down
+        const bool in = ecs::equip_ability(w, me, "s51_e", 0);
+        const bool rests = bar.slots[0] == "s51_e" && bar.cooldown[0] == 0.0f && bar.resting_cooldown.size() == 1;
+        ecs::AbilityCastInput idle;
+        ecs::step_ability_bar(w, me, bar, idle, nullptr, &b51, 1.0f);
+        const bool back_in = ecs::equip_ability(w, me, "s51_a", 1);   // A back on: its cooldown ran on off the bar
+        const bool kept = bar.slots[1] == "s51_a" && std::fabs(bar.cooldown[1] - 4.0f) < 1e-4f;
+        const bool swap = ecs::equip_ability(w, me, "s51_e", 1) && bar.slots[0] == "s51_a" && bar.slots[1] == "s51_e" &&
+                          std::fabs(bar.cooldown[0] - 4.0f) < 1e-4f;
+        const bool refused = !ecs::equip_ability(w, me, "s51_haste", 0) && !ecs::equip_ability(w, me, "s51_b", 3);
+        check("equip: into a slot; what it pushes out keeps cooling down; two on the bar change places; "
+              "not unknown ones, not past the slots",
+              in && rests && back_in && kept && swap && refused);
+        {
+            std::vector<uint8_t> buf;
+            ecs::serialize_ability_bar(&bar, buf);
+            ecs::AbilityBar back;
+            ecs::deserialize_ability_bar(&back, buf.data(), buf.size());
+            check("ability bar: saves its slot count and what it knows",
+                  back.max_slots == 3 && back.slots == bar.slots && back.known == bar.known);
+        }
+
+        // Passives: a skill's grant adds a bonus stat the entity did not have.
+        ecs::set_skill_tree(w, me, "s51");
+        const bool learned = ecs::learn_skill(w, me, "s51_root");
+        const auto* as = &w.get<ecs::AttributeSet>(me);
+        check("bonus stats: a skill's grant adds them (MoveSpeed 15, CooldownReduction 20)",
+              learned && ecs::bonus_stat(as, "MoveSpeed") == 15.0f && ecs::bonus_stat(as, "CooldownReduction") == 20.0f &&
+              ecs::bonus_stat(as, "Damage") == 0.0f && ecs::bonus_stat(nullptr, "Damage") == 0.0f);
+        // CooldownReduction: B's 4 s cooldown is 3.2 s.
+        bar.slots[2] = "s51_b";
+        bar.cooldown[2] = 0.0f;
+        ecs::AbilityCastInput press;
+        press.pressed = 2;
+        ecs::step_ability_bar(w, me, bar, press, nullptr, &b51, 0.1f);
+        check("CooldownReduction: 20% shorter cooldowns", std::fabs(bar.cooldown[2] - 3.2f) < 1e-4f);
+        // A buff: Haste adds 40 MoveSpeed for 5 s, then it is gone again.
+        ecs::AbilityFired hf = ecs::ability_detail::fire(w, me, *ecs::find_ability_def("s51_haste"), -1, idle, nullptr, &b51);
+        const float hasted = ecs::bonus_stat(&w.get<ecs::AttributeSet>(me), "MoveSpeed");
+        ecs::tick_effects(w, 5.5f);
+        check("a buff on a bonus stat: MoveSpeed 15 -> 55 for its time, then 15",
+              hf.move == ecs::AbilityDef::Move::None && hasted == 55.0f &&
+              ecs::bonus_stat(&w.get<ecs::AttributeSet>(me), "MoveSpeed") == 15.0f);
+        // HealthRegen: health a second, while alive.
+        w.get<ecs::AttributeSet>(me).define("HealthRegen", 5, -1000, 1000);
+        ecs::tick_regen(w, 2.0f);
+        const bool regen = w.get<ecs::AttributeSet>(me).get("Health") == 60.0f;
+        w.get<ecs::AttributeSet>(me).set("Health", 0.0f);
+        ecs::tick_regen(w, 2.0f);
+        check("HealthRegen: health a second while alive, not for the dead",
+              regen && w.get<ecs::AttributeSet>(me).get("Health") == 0.0f);
+        w.get<ecs::AttributeSet>(me).set("Health", 100.0f);
+
+        // Damage: 50% more from an aimed ability; it hands out its move (a blink).
+        const ecs::Entity foe = w.create();
+        ecs::Transform ft; ft.position = glm::vec3(0.0f, 0.0f, -8.0f);
+        w.add<ecs::Transform>(foe, ft);
+        w.add<ecs::CombatActor>(foe, ecs::CombatActor{});
+        w.add<ecs::AttributeSet>(foe, ecs::AttributeSet{});
+        w.get<ecs::AttributeSet>(foe).define("Health", 100, 0, 100);
+        w.get<ecs::AttributeSet>(me).define("Damage", 50, -1000, 1000);
+        ecs::AbilityCastInput aim;
+        aim.origin = glm::vec3(0.0f, ecs::CombatActor{}.hurt_height, 0.0f);
+        aim.aim = glm::vec3(0.0f, 0.0f, -1.0f);
+        const ecs::AbilityFired bf = ecs::ability_detail::fire(w, me, *de, -1, aim, nullptr, &b51);
+        check("Damage: 50% more (20 -> 30); the blink handed out for the host",
+              w.get<ecs::AttributeSet>(foe).get("Health") == 70.0f && bf.move == ecs::AbilityDef::Move::Blink &&
+              bf.move_a == 10.0f);
+        // ReloadSpeed: 100% faster, a 2 s reload in 1.
+        ecs::WeaponDef gun;
+        gun.id = "s51_gun"; gun.mag_size = 10; gun.reload_time = 2.0f;
+        ecs::register_weapon(gun);
+        ecs::WeaponState ws; ws.weapon_id = "s51_gun"; ws.ammo_in_mag = 0; ws.reserve = 30;
+        w.add<ecs::WeaponState>(me, ws);
+        w.get<ecs::AttributeSet>(me).define("ReloadSpeed", 100, -1000, 1000);
+        ecs::reload_weapon(w.get<ecs::WeaponState>(me));
+        ecs::tick_weapons(w, 1.05f);
+        check("ReloadSpeed: 100% faster (a 2 s reload done in 1)", w.get<ecs::WeaponState>(me).ammo_in_mag == 10);
+    }
+
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }
     std::cout << "gameplay_check: " << g_fail << " FAILED\n";
     return 1;

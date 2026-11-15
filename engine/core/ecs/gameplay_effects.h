@@ -51,7 +51,7 @@ struct GameplayEffect {
 // Apply modifiers to an AttributeSet once (sign=-1 reverts Add/Multiply).
 inline void apply_modifiers(AttributeSet& attrs, const std::vector<EffectModifier>& mods, float sign) {
     for (const auto& m : mods) {
-        Attribute* a = attrs.find(m.attribute);
+        Attribute* a = ensure_bonus_stat(attrs, m.attribute);   // a bonus stat is added on its first buff
         if (!a) continue;
         switch (m.op) {
             case EffectOp::Add:      a->current += m.magnitude * sign; break;
