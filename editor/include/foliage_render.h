@@ -248,7 +248,8 @@ public:
                     ld.name = "foliage";
                     ld.base_color = glm::vec4(l.color_a, 1.0f);
                     ld.roughness = 0.8f;
-                    ld.near_fade = 2.0f;   // walked through: not a wall of leaves in the eye, nor through the gun
+                    static const bool no_fade = std::getenv("GWS_TEST_NO_NEAR_FADE") != nullptr;   // A/B
+                    ld.near_fade = no_fade ? 0.0f : 2.0f;   // walked through: not a wall of leaves in the eye, nor through the gun
                     leaf_mat = mats.get_or_create(ld, device, mat_layout, mat_pool, textures);
                     gws::assets::MaterialDesc bd;
                     bd.name = "foliage";

@@ -76,6 +76,7 @@ One `*-QUICK-REFERENCE.md` per system (deferred rendering, graphics, lighting, m
 mesh, post-processing, scene management) plus `WEEK-5-6-QUICK-REFERENCE.md`.
 
 ### `testing/` — testing & debugging guides
+`FLICKER_HUNTING.md` (the flicker recorder, A/B switches, races between frames),
 Camera debug/diagnostic guides (`CAMERA_*.md`), `PHYSICS-TESTING.md`, `TESTING_GAMEPLAY.md`,
 `QUICK_START_CAMERA_TEST.md`, `IN_GAME_CAMERA_TEST.md`.
 

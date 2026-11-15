@@ -38,4 +38,26 @@ inline void cmd_update_uniform(VkCommandBuffer cmd, VkBuffer buffer,
                          0, 1, &post, 0, nullptr, 0, nullptr);
 }
 
+/// The same for a STORAGE buffer read by shaders (a light list, skinning
+/// matrices): any size, in pieces of 64 KiB, made visible as shader reads.
+inline void cmd_update_storage(VkCommandBuffer cmd, VkBuffer buffer, const void* data, VkDeviceSize size) {
+    assert((size % 4) == 0);
+    if (size == 0) return;
+    VkMemoryBarrier pre{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    pre.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    pre.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 1, &pre, 0, nullptr, 0, nullptr);
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    for (VkDeviceSize at = 0; at < size; at += 65536) {
+        const VkDeviceSize n = size - at < 65536 ? size - at : 65536;
+        vkCmdUpdateBuffer(cmd, buffer, at, n, bytes + at);
+    }
+    VkMemoryBarrier post{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    post.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    post.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         0, 1, &post, 0, nullptr, 0, nullptr);
+}
+
 }  // namespace gws::renderer::gpu

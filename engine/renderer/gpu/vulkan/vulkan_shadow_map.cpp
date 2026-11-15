@@ -168,10 +168,15 @@ void VulkanShadowMap::create_render_pass() {
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-    dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    // In: wait for the previous use of this map -- its depth store (late
+    // fragment tests) and the lighting reading it (fragment / compute). From
+    // BOTTOM_OF_PIPE with MEMORY_READ the layout transition could overlap the
+    // last frame's depth write (SYNC-HAZARD-WRITE-AFTER-WRITE).
+    dependency.srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dependency.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependency.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
     dependency.dependencyFlags = 0;
     
     VkRenderPassCreateInfo render_pass_info{};

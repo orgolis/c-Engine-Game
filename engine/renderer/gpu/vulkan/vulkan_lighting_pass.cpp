@@ -5,6 +5,7 @@
 
 #include "vulkan_lighting_pass.h"
 #include "vulkan_device.h"
+#include "vulkan_inline_update.h"   // per-frame data in the command stream
 #include "vulkan_g_buffer.h"
 #include "vulkan_shader_registry.h"
 #include "vulkan_texture.h"        // RGBA32F LTC LUT textures (area lights)
@@ -1153,18 +1154,15 @@ void VulkanLightingPass::update_descriptor_set() {
                            0, nullptr);
 }
 
-void VulkanLightingPass::upload_lights() {
-    if (light_buffer_memory_ == VK_NULL_HANDLE || lights_.empty()) {
+void VulkanLightingPass::upload_lights(VkCommandBuffer cmd) {
+    if (light_buffer_ == VK_NULL_HANDLE || lights_.empty() || cmd == VK_NULL_HANDLE) {
         return;
     }
-    const VkDeviceSize bytes = sizeof(Light) * lights_.size();
-    void* mapped = nullptr;
-    if (vkMapMemory(device_->get_device(), light_buffer_memory_, 0, bytes, 0, &mapped) != VK_SUCCESS) {
-        spdlog::warn("VulkanLightingPass::upload_lights: vkMapMemory failed");
-        return;
-    }
-    std::memcpy(mapped, lights_.data(), static_cast<size_t>(bytes));
-    vkUnmapMemory(device_->get_device(), light_buffer_memory_);
+    // In the command stream, not a memcpy into the one buffer: with two frames
+    // in flight that overwrote the lights the previous frame was still lighting
+    // with -- a muzzle flash's light could blink on the frame before.
+    const size_t n = std::min<size_t>(lights_.size(), config_.max_lights);
+    cmd_update_storage(cmd, light_buffer_, lights_.data(), sizeof(Light) * n);
 }
 
 void VulkanLightingPass::add_light(const Light& light) {
@@ -1414,8 +1412,8 @@ void VulkanLightingPass::begin_pass(VkCommandBuffer cmd, uint32_t width, uint32_
     }
 
     // Push the latest CPU-side light list to the GPU buffer just before the
-    // pass executes. Buffer is host-coherent so no flush is required.
-    upload_lights();
+    // pass executes (outside the render pass: an in-stream update).
+    upload_lights(cmd);
 
     VkClearValue clear{};
     clear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};

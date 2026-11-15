@@ -22,9 +22,11 @@ std::unique_ptr<VulkanIndirectDrawBuffer> VulkanIndirectDrawBuffer::create(
 
 VulkanIndirectDrawBuffer::~VulkanIndirectDrawBuffer() {
     if (vk_ == VK_NULL_HANDLE) return;
-    if (mapped_) { vkUnmapMemory(vk_, memory_); mapped_ = nullptr; }
-    if (buffer_) vkDestroyBuffer(vk_, buffer_, nullptr);
-    if (memory_) vkFreeMemory(vk_, memory_, nullptr);
+    for (uint32_t s = 0; s < kRing; ++s) {
+        if (mapped_[s]) { vkUnmapMemory(vk_, memory_[s]); mapped_[s] = nullptr; }
+        if (buffer_[s]) vkDestroyBuffer(vk_, buffer_[s], nullptr);
+        if (memory_[s]) vkFreeMemory(vk_, memory_[s], nullptr);
+    }
     // The device is idle by the time the renderer tears its buffers down, so
     // anything still on the retirement list can go now.
     for (const Retired& r : retired_) {
@@ -41,6 +43,7 @@ static constexpr uint64_t kIndirectRetireFrames = 8;
 
 void VulkanIndirectDrawBuffer::begin_frame() {
     ++frame_;
+    cur_ = static_cast<uint32_t>(frame_ % kRing);   // last read three frames ago
 
     // Free buffers retired long enough ago that no in-flight frame can still
     // be reading them.
@@ -59,7 +62,7 @@ void VulkanIndirectDrawBuffer::begin_frame() {
     // A frame that reveals more geometry than any before it can still grow
     // mid-recording -- grow() retires safely now -- but it no longer happens
     // every time a big mesh comes into view.
-    if (high_water_ > capacity_) {
+    if (high_water_ > capacity_[cur_]) {
         grow(high_water_ * 3 / 2 + 256);
     }
 
@@ -73,27 +76,32 @@ bool VulkanIndirectDrawBuffer::init(VulkanDevice* device, uint32_t initial_comma
     vk_         = device->get_device();
     multi_draw_ = device->multi_draw_indirect_enabled();
 
-    if (!grow(initial_commands == 0 ? 1024 : initial_commands)) return false;
+    for (cur_ = 0; cur_ < kRing; ++cur_)
+        if (!grow(initial_commands == 0 ? 1024 : initial_commands)) return false;
+    cur_ = 0;
 
-    spdlog::info("[Indirect] draw buffer ready — {} commands, multiDrawIndirect {}",
-                 capacity_, multi_draw_ ? "ON" : "OFF (falling back to a loop)");
+    spdlog::info("[Indirect] draw buffers ready — {} x {} commands, multiDrawIndirect {}",
+                 kRing, capacity_[0], multi_draw_ ? "ON" : "OFF (falling back to a loop)");
     return true;
 }
 
 bool VulkanIndirectDrawBuffer::grow(uint32_t commands) {
     const VkDeviceSize bytes = VkDeviceSize(commands) * sizeof(VkDrawIndexedIndirectCommand);
 
-    if (mapped_) { vkUnmapMemory(vk_, memory_); mapped_ = nullptr; }
+    VkBuffer&       buffer_c   = buffer_[cur_];
+    VkDeviceMemory& memory_c   = memory_[cur_];
+    void*&          mapped_c   = mapped_[cur_];
+    if (mapped_c) { vkUnmapMemory(vk_, memory_c); mapped_c = nullptr; }
     // Retire, never destroy here. Draws recorded earlier in THIS frame's
     // command buffer -- and draws still executing from previous frames --
     // reference the outgoing buffer by handle. Destroying it on the spot is a
     // use-after-free that validation catches as
     // VUID-vkDestroyBuffer-buffer-00922 and that a driver reports, much later
     // and much less helpfully, as a device loss.
-    if (buffer_ || memory_) {
-        retired_.push_back(Retired{buffer_, memory_, frame_});
-        buffer_ = VK_NULL_HANDLE;
-        memory_ = VK_NULL_HANDLE;
+    if (buffer_c || memory_c) {
+        retired_.push_back(Retired{buffer_c, memory_c, frame_});
+        buffer_c = VK_NULL_HANDLE;
+        memory_c = VK_NULL_HANDLE;
     }
 
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -104,13 +112,13 @@ bool VulkanIndirectDrawBuffer::grow(uint32_t commands) {
     // so it costs nothing to declare the intent now.
     bi.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(vk_, &bi, nullptr, &buffer_) != VK_SUCCESS) {
+    if (vkCreateBuffer(vk_, &bi, nullptr, &buffer_c) != VK_SUCCESS) {
         spdlog::error("[Indirect] buffer creation failed ({} commands)", commands);
         return false;
     }
 
     VkMemoryRequirements req{};
-    vkGetBufferMemoryRequirements(vk_, buffer_, &req);
+    vkGetBufferMemoryRequirements(vk_, buffer_c, &req);
 
     VkPhysicalDeviceMemoryProperties mp{};
     vkGetPhysicalDeviceMemoryProperties(device_->get_physical_device(), &mp);
@@ -129,17 +137,17 @@ bool VulkanIndirectDrawBuffer::grow(uint32_t commands) {
     VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     ai.allocationSize  = req.size;
     ai.memoryTypeIndex = type_index;
-    if (vkAllocateMemory(vk_, &ai, nullptr, &memory_) != VK_SUCCESS) {
+    if (vkAllocateMemory(vk_, &ai, nullptr, &memory_c) != VK_SUCCESS) {
         spdlog::error("[Indirect] memory allocation failed");
         return false;
     }
-    vkBindBufferMemory(vk_, buffer_, memory_, 0);
-    if (vkMapMemory(vk_, memory_, 0, bytes, 0, &mapped_) != VK_SUCCESS) {
+    vkBindBufferMemory(vk_, buffer_c, memory_c, 0);
+    if (vkMapMemory(vk_, memory_c, 0, bytes, 0, &mapped_c) != VK_SUCCESS) {
         spdlog::error("[Indirect] memory map failed");
         return false;
     }
 
-    capacity_ = commands;
+    capacity_[cur_] = commands;
     return true;
 }
 
@@ -174,11 +182,11 @@ bool VulkanIndirectDrawBuffer::upload() {
     // VUID-vkDestroyBuffer-buffer-00922.
     static const bool force_grow = std::getenv("GWS_STRESS_INDIRECT_GROW") != nullptr;
     if (force_grow) {
-        if (!grow(capacity_ + 1)) return false;
+        if (!grow(capacity_[cur_] + 1)) return false;
         uploaded_ = 0;
     }
 
-    if (commands_.size() > capacity_) {
+    if (commands_.size() > capacity_[cur_]) {
         const uint32_t want = static_cast<uint32_t>(commands_.size() * 3 / 2 + 256);
         if (!grow(want)) return false;
         // grow() destroys the old buffer and creates a new one, so nothing in
@@ -190,7 +198,7 @@ bool VulkanIndirectDrawBuffer::upload() {
     if (uploaded_ >= have) return true;   // nothing new since the last call
 
     const size_t stride = sizeof(VkDrawIndexedIndirectCommand);
-    std::memcpy(static_cast<uint8_t*>(mapped_) + uploaded_ * stride,
+    std::memcpy(static_cast<uint8_t*>(mapped_[cur_]) + uploaded_ * stride,
                 commands_.data() + uploaded_,
                 (have - uploaded_) * stride);
     uploaded_ = have;
@@ -199,7 +207,8 @@ bool VulkanIndirectDrawBuffer::upload() {
 
 void VulkanIndirectDrawBuffer::draw(VkCommandBuffer cmd, uint32_t first, uint32_t count) const {
     last_submission_count_ = 0;
-    if (cmd == VK_NULL_HANDLE || buffer_ == VK_NULL_HANDLE || count == 0) return;
+    const VkBuffer buf = buffer_[cur_];
+    if (cmd == VK_NULL_HANDLE || buf == VK_NULL_HANDLE || count == 0) return;
     if (first + count > commands_.size()) return;   // never read past what was uploaded
 
     const uint32_t stride = sizeof(VkDrawIndexedIndirectCommand);
@@ -207,7 +216,7 @@ void VulkanIndirectDrawBuffer::draw(VkCommandBuffer cmd, uint32_t first, uint32_
 
     if (multi_draw_) {
         // The whole point: one submission regardless of how many draws.
-        vkCmdDrawIndexedIndirect(cmd, buffer_, offset, count, stride);
+        vkCmdDrawIndexedIndirect(cmd, buf, offset, count, stride);
         last_submission_count_ = 1;
         return;
     }
@@ -215,7 +224,7 @@ void VulkanIndirectDrawBuffer::draw(VkCommandBuffer cmd, uint32_t first, uint32_
     // Still indirect -- the arguments come from the buffer, so a compute pass
     // editing them works either way. Only the batching is lost.
     for (uint32_t i = 0; i < count; ++i)
-        vkCmdDrawIndexedIndirect(cmd, buffer_, offset + VkDeviceSize(i) * stride, 1, stride);
+        vkCmdDrawIndexedIndirect(cmd, buf, offset + VkDeviceSize(i) * stride, 1, stride);
     last_submission_count_ = count;
 }
 

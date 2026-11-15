@@ -459,7 +459,7 @@ private:
     void create_dummy_shadow_textures();
     void create_ltc_textures();
     void update_descriptor_set();
-    void upload_lights();
+    void upload_lights(VkCommandBuffer cmd);
     void cleanup();
 };
 

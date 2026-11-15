@@ -79,6 +79,7 @@ private:
     VkBuffer       bone_ssbo_  = VK_NULL_HANDLE;     // mat4[] skinning matrices
     VkDeviceMemory bone_mem_   = VK_NULL_HANDLE;
     void*          bone_mapped_ = nullptr;
+    std::vector<glm::mat4> bone_scratch_;   // this frame's matrices, before the in-stream upload
 
     VkDescriptorSetLayout dsl_      = VK_NULL_HANDLE;
     VkDescriptorPool      pool_     = VK_NULL_HANDLE;

@@ -4,6 +4,7 @@
 
 #include "vulkan_skinned_mesh.h"
 #include "vulkan_device.h"
+#include "vulkan_inline_update.h"   // per-frame data in the command stream
 #include "skinning_spirv.h"
 
 #include <spdlog/spdlog.h>
@@ -108,7 +109,7 @@ bool SkinnedMesh::init(VulkanDevice* device, const std::vector<SkinnedVertex>& v
 
     // 3) Bone SSBO (skinning matrices), host-visible + persistently mapped.
     const VkDeviceSize bone_size = sizeof(glm::mat4) * bone_count_;
-    if (!make_host_buffer(device, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, bone_size,
+    if (!make_host_buffer(device, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, bone_size,
                           bone_ssbo_, bone_mem_)) return false;
     if (vkMapMemory(vk, bone_mem_, 0, bone_size, 0, &bone_mapped_) != VK_SUCCESS) return false;
     // Initialise to the inverse-bind's inverse? No — leave identity-ish until
@@ -186,10 +187,13 @@ void SkinnedMesh::skin(VkCommandBuffer cmd, const std::vector<glm::mat4>& bone_g
     if (pipeline_ == VK_NULL_HANDLE || bone_global.empty()) return;
 
     // skinning[j] = boneGlobal[j] * inverseBind[j]  (CPU precompute → upload).
+    // In the command stream: a memcpy into the one mapped buffer overwrote the
+    // pose the previous frame (still in flight) was skinning with.
     const uint32_t n = std::min<uint32_t>(bone_count_, static_cast<uint32_t>(bone_global.size()));
-    auto* dst = static_cast<glm::mat4*>(bone_mapped_);
-    for (uint32_t j = 0; j < n; ++j) dst[j] = bone_global[j] * inverse_bind_[j];
-    for (uint32_t j = n; j < bone_count_; ++j) dst[j] = glm::mat4(1.0f);
+    bone_scratch_.resize(bone_count_);
+    for (uint32_t j = 0; j < n; ++j) bone_scratch_[j] = bone_global[j] * inverse_bind_[j];
+    for (uint32_t j = n; j < bone_count_; ++j) bone_scratch_[j] = glm::mat4(1.0f);
+    cmd_update_storage(cmd, bone_ssbo_, bone_scratch_.data(), sizeof(glm::mat4) * bone_count_);
 
     const VkBuffer vbo = output_->get_vertex_buffer();
     auto buf_barrier = [&](VkAccessFlags src, VkAccessFlags dst_a,
@@ -203,9 +207,11 @@ void SkinnedMesh::skin(VkCommandBuffer cmd, const std::vector<glm::mat4>& bone_g
         vkCmdPipelineBarrier(cmd, ss, ds, 0, 0, nullptr, 1, &b, 0, nullptr);
     };
 
-    // Previous frame's vertex-attribute read must finish before we overwrite.
-    buf_barrier(VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    // Every earlier read must finish before we overwrite: vertex fetch, and
+    // the shadow pass, a BLAS build and reflections reading it later in the
+    // previous frame (ALL_COMMANDS: a WAR needs only the execution order).
+    buf_barrier(VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout_, 0, 1, &set_, 0, nullptr);

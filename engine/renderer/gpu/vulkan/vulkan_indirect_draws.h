@@ -28,6 +28,13 @@
 // Host-visible and persistently mapped. The command list is rebuilt every frame
 // from a visibility set that changes every frame; a staging copy would add a
 // transfer and a barrier to move data that is written once and read once.
+//
+// THREE buffers in a ring, one a frame (two frames are in flight): the one
+// written now was last read three frames ago. With one buffer, each frame's
+// commands were written over the ones the GPU was still drawing the previous
+// frame with -- a mesh drawn by meshlets (a tree's leaves) got another frame's
+// index ranges and vanished or broke for a frame, whenever the camera moved
+// (standing still, every frame writes the same commands, so nothing showed).
 // ============================================================================
 
 #include <vulkan/vulkan.h>
@@ -86,7 +93,7 @@ public:
     void draw(VkCommandBuffer cmd, uint32_t first, uint32_t count) const;
 
     uint32_t command_count() const { return static_cast<uint32_t>(commands_.size()); }
-    VkBuffer buffer()        const { return buffer_; }
+    VkBuffer buffer()        const { return buffer_[cur_]; }
 
     /// Real GPU submissions issued by the last draw() -- 1 when multi-draw is
     /// available, `count` when it is not. Reported rather than assumed, because
@@ -98,12 +105,14 @@ private:
     bool init(VulkanDevice* device, uint32_t initial_commands);
     bool grow(uint32_t commands);
 
+    static constexpr uint32_t kRing = 3;
     VulkanDevice*  device_ = nullptr;
     VkDevice       vk_     = VK_NULL_HANDLE;
-    VkBuffer       buffer_ = VK_NULL_HANDLE;
-    VkDeviceMemory memory_ = VK_NULL_HANDLE;
-    void*          mapped_ = nullptr;
-    uint32_t       capacity_ = 0;
+    VkBuffer       buffer_[kRing]   = {};
+    VkDeviceMemory memory_[kRing]   = {};
+    void*          mapped_[kRing]   = {};
+    uint32_t       capacity_[kRing] = {};
+    uint32_t       cur_ = 0;   // this frame's buffer
     bool           multi_draw_ = false;
 
     /// Buffers replaced by grow(). They cannot be destroyed on the spot: the

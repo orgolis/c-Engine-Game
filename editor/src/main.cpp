@@ -190,6 +190,7 @@
 #include <fstream>
 #include <cctype>
 #include <chrono>
+#include <thread>
 #include <cstdio>
 #include <cfloat>
 #include <cmath>
@@ -1133,6 +1134,202 @@ static void write_held_shots(const std::vector<HeldShot>& held, const std::strin
     }
     if (!held.empty()) spdlog::info("[screenshot] wrote {} held frame(s) ({}x{})", held.size(), held[0].w, held[0].h);
 }
+
+// GWS_FLICKER_DIR=<dir>: the flicker recorder. Every frame's picture (half
+// size) and its numbers -- the camera, the frame time, what occlusion culling
+// and foliage did -- go into a ring of the last 240 frames. F10, and the end of
+// the run, write the ring to <dir>/<n>/: what was on screen just before
+// someone saw something wrong, at the game's own timing. The copy is read when
+// that frame's fence is waited on anyway (nothing waits for it), from
+// CPU-cached memory, at half size.
+struct FlickerRecorder {
+    struct Slot {
+        VkBuffer       buf = VK_NULL_HANDLE;
+        VkDeviceMemory mem = VK_NULL_HANDLE;
+        void*          map = nullptr;
+        bool           coherent = true;
+        VkImage        img = VK_NULL_HANDLE;   // the frame at half size (a GPU blit)
+        VkDeviceMemory img_mem = VK_NULL_HANDLE;
+        bool           img_fresh = true;       // its layout is still UNDEFINED
+        uint32_t       w = 0, h = 0, frame = 0;   // w, h: the half size
+        bool           pending = false;
+        std::string    line;
+    };
+    static constexpr size_t kRing = 240;
+    std::string dir;
+    Slot        slots[4];
+    std::vector<HeldShot>    ring;
+    std::vector<std::string> lines;
+    size_t next = 0, filled = 0;
+    int    dumps = 0;
+    bool   f10_was = false;
+    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+
+    bool enabled() const { return !dir.empty(); }
+
+    bool ensure(gws::renderer::gpu::VulkanDevice& device, Slot& s, uint32_t w, uint32_t h, VkFormat fmt) {
+        if (s.buf != VK_NULL_HANDLE && s.w == w && s.h == h) return true;
+        free_slot(device, s);
+        VkDevice vk = device.get_device();
+        {
+            VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+            ii.imageType = VK_IMAGE_TYPE_2D;
+            ii.format = fmt;
+            ii.extent = {w, h, 1};
+            ii.mipLevels = ii.arrayLayers = 1;
+            ii.samples = VK_SAMPLE_COUNT_1_BIT;
+            ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+            ii.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            if (vkCreateImage(vk, &ii, nullptr, &s.img) != VK_SUCCESS) { s.img = VK_NULL_HANDLE; return false; }
+            VkMemoryRequirements ir{};
+            vkGetImageMemoryRequirements(vk, s.img, &ir);
+            VkMemoryAllocateInfo ia{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            ia.allocationSize = ir.size;
+            ia.memoryTypeIndex = device.find_memory_type(ir.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            if (vkAllocateMemory(vk, &ia, nullptr, &s.img_mem) != VK_SUCCESS) { free_slot(device, s); return false; }
+            vkBindImageMemory(vk, s.img, s.img_mem, 0);
+            s.img_fresh = true;
+        }
+        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bi.size = VkDeviceSize(w) * h * 4;
+        bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if (vkCreateBuffer(vk, &bi, nullptr, &s.buf) != VK_SUCCESS) { s.buf = VK_NULL_HANDLE; return false; }
+        VkMemoryRequirements req{};
+        vkGetBufferMemoryRequirements(vk, s.buf, &req);
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ai.allocationSize = req.size;
+        // Cached memory: the CPU reads it every frame (uncached reads crawl).
+        try {
+            ai.memoryTypeIndex = device.find_memory_type(req.memoryTypeBits,
+                                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+            VkPhysicalDeviceMemoryProperties mp{};
+            vkGetPhysicalDeviceMemoryProperties(device.get_physical_device(), &mp);
+            s.coherent = (mp.memoryTypes[ai.memoryTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+        } catch (...) {
+            ai.memoryTypeIndex = device.find_memory_type(req.memoryTypeBits,
+                                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            s.coherent = true;
+        }
+        if (vkAllocateMemory(vk, &ai, nullptr, &s.mem) != VK_SUCCESS) { free_slot(device, s); return false; }
+        vkBindBufferMemory(vk, s.buf, s.mem, 0);
+        if (vkMapMemory(vk, s.mem, 0, VK_WHOLE_SIZE, 0, &s.map) != VK_SUCCESS) { free_slot(device, s); return false; }
+        s.w = w;
+        s.h = h;
+        return true;
+    }
+    void free_slot(gws::renderer::gpu::VulkanDevice& device, Slot& s) {
+        VkDevice vk = device.get_device();
+        if (s.map) vkUnmapMemory(vk, s.mem);
+        if (s.buf) vkDestroyBuffer(vk, s.buf, nullptr);
+        if (s.mem) vkFreeMemory(vk, s.mem, nullptr);
+        if (s.img) vkDestroyImage(vk, s.img, nullptr);
+        if (s.img_mem) vkFreeMemory(vk, s.img_mem, nullptr);
+        s = Slot{};
+    }
+    /// Record this frame's copy (after the UI pass, the image in PRESENT_SRC).
+    void record(gws::renderer::gpu::VulkanDevice& device, gws::renderer::gpu::VulkanSwapchain* swapchain,
+                uint32_t image_index, VkCommandBuffer cmd, Slot& s, uint32_t frame, std::string line) {
+        if (!swapchain) return;
+        const uint32_t fw = swapchain->get_width(), fh = swapchain->get_height();
+        if (!ensure(device, s, fw / 2, fh / 2, swapchain->get_format())) return;
+        const VkImage src = swapchain->get_image(image_index);
+        auto barrier_on = [&](VkImage im, VkImageLayout from, VkImageLayout to, VkAccessFlags sa, VkAccessFlags da,
+                              VkPipelineStageFlags ss, VkPipelineStageFlags ds) {
+            VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            b.oldLayout = from; b.newLayout = to;
+            b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.image = im;
+            b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            b.srcAccessMask = sa; b.dstAccessMask = da;
+            vkCmdPipelineBarrier(cmd, ss, ds, 0, 0, nullptr, 0, nullptr, 1, &b);
+        };
+        auto barrier = [&](VkImageLayout from, VkImageLayout to, VkAccessFlags sa, VkAccessFlags da,
+                           VkPipelineStageFlags ss, VkPipelineStageFlags ds) { barrier_on(src, from, to, sa, da, ss, ds); };
+        barrier(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        // Half size on the GPU, then a quarter of the bytes over the bus.
+        barrier_on(s.img, s.img_fresh ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        s.img_fresh = false;
+        VkImageBlit blit{};
+        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.srcOffsets[1] = {static_cast<int32_t>(s.w * 2), static_cast<int32_t>(s.h * 2), 1};
+        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.dstOffsets[1] = {static_cast<int32_t>(s.w), static_cast<int32_t>(s.h), 1};
+        vkCmdBlitImage(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                       VK_FILTER_NEAREST);
+        barrier_on(s.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {s.w, s.h, 1};
+        vkCmdCopyImageToBuffer(cmd, s.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s.buf, 1, &region);
+        VkBufferMemoryBarrier hb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        hb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        hb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        hb.srcQueueFamilyIndex = hb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hb.buffer = s.buf;
+        hb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &hb, 0, nullptr);
+        barrier(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                VK_ACCESS_TRANSFER_READ_BIT, 0,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        s.frame = frame;
+        s.line = std::move(line);
+        s.pending = true;
+    }
+    /// The frame that used this slot has finished (its fence): into the ring.
+    void take(gws::renderer::gpu::VulkanDevice& device, Slot& s) {
+        if (!s.pending || !s.map) return;
+        s.pending = false;
+        if (!s.coherent) {
+            VkMappedMemoryRange r{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+            r.memory = s.mem;
+            r.size = VK_WHOLE_SIZE;
+            vkInvalidateMappedMemoryRanges(device.get_device(), 1, &r);
+        }
+        if (ring.size() < kRing) { ring.resize(kRing); lines.resize(kRing); }
+        HeldShot& o = ring[next];
+        o.frame = s.frame;
+        o.w = s.w;
+        o.h = s.h;
+        o.bgr.resize(size_t(o.w) * o.h * 3);
+        const uint8_t* px = static_cast<const uint8_t*>(s.map);
+        uint8_t* out = o.bgr.data();
+        for (size_t i = 0, n = size_t(o.w) * o.h; i < n; ++i, px += 4, out += 3) { out[0] = px[0]; out[1] = px[1]; out[2] = px[2]; }
+        lines[next] = std::move(s.line);
+        next = (next + 1) % kRing;
+        filled = std::min(filled + 1, kRing);
+    }
+    /// The ring to <dir>/<n>/ on a thread of its own (the game goes on).
+    void dump(const char* why) {
+        if (filled == 0) return;
+        std::vector<HeldShot> shots;
+        std::vector<std::string> ls;
+        shots.reserve(filled);
+        for (size_t i = 0; i < filled; ++i) {
+            const size_t k = (next + kRing - filled + i) % kRing;
+            shots.push_back(ring[k]);
+            ls.push_back(lines[k]);
+        }
+        const std::string out = dir + "/" + std::to_string(++dumps);
+        std::error_code ec;
+        std::filesystem::create_directories(out, ec);
+        spdlog::info("[flicker] {}: writing the last {} frame(s) ({} .. {}) to {}", why, shots.size(), shots.front().frame,
+                     shots.back().frame, out);
+        std::thread([out, shots = std::move(shots), ls = std::move(ls)]() {
+            write_held_shots(shots, out + "/f.tga");
+            std::ofstream csv(out + "/frames.csv", std::ios::trunc);
+            csv << "frame,t_ms,dt_ms,cam_x,cam_y,cam_z,fwd_x,fwd_y,fwd_z,draws,drawn,hzb_off,hzb_partly,hzb_behind,pyramid,"
+                   "moved_fast,foliage_instances,foliage_draws,playing\n";
+            for (const auto& l : ls) csv << l << "\n";
+        }).detach();
+    }
+};
 
 // Last RESOLVED per-stage GPU times (ms). Captured right after
 // resolve_timings() because the graph clears its *_us fields during the next
@@ -9129,6 +9326,12 @@ int main(int argc, char** argv) {
         SwapchainCapture async_caps[kMaxFrames] = {};
         uint32_t         async_cap_frame[kMaxFrames] = {};
         std::vector<HeldShot> held_shots;
+        FlickerRecorder flicker;
+        if (const char* fd = std::getenv("GWS_FLICKER_DIR"); fd && *fd) {
+            flicker.dir = fd;
+            spdlog::info("[flicker] recording the last {} frames; F10 writes them to {}", FlickerRecorder::kRing, flicker.dir);
+        }
+        struct { float cam[6] = {}; uint32_t draws = 0, drawn = 0, why[4] = {}; int pyramid = -1; bool fast = false; } rec_now;
         VkCommandBuffer frame_cmds[kMaxFrames]    = {};
         VkSemaphore     acquire_sems[kMaxFrames]  = {};
         VkFence         frame_fences[kMaxFrames]  = {};
@@ -13199,6 +13402,12 @@ int main(int argc, char** argv) {
             }
             if (async_caps[current_frame].buf != VK_NULL_HANDLE)
                 hold_swapchain_capture(device, async_caps[current_frame], async_cap_frame[current_frame], held_shots);
+            if (flicker.enabled()) {
+                flicker.take(device, flicker.slots[current_frame]);
+                const bool f10 = glfwGetKey(glfw_window, GLFW_KEY_F10) == GLFW_PRESS;
+                if (f10 && !flicker.f10_was) flicker.dump("F10");
+                flicker.f10_was = f10;
+            }
             // The previous frame's occlusion queries are guaranteed available
             // after its fence. Pull the results into the culler so this
             // frame can skip occluded draws.
@@ -14415,6 +14624,18 @@ int main(int argc, char** argv) {
                 // a flicker hunt needs without capturing frames, which waits
                 // for the GPU and so hides anything timing-dependent).
                 static const bool cull_log = std::getenv("GWS_CULL_LOG") != nullptr;
+                rec_now.draws = static_cast<uint32_t>(draw_n);
+                rec_now.drawn = static_cast<uint32_t>(hzb_did_filter ? geometry_draws.size() : draw_n);
+                rec_now.pyramid = use_slot;
+                rec_now.fast = camera_moved_fast;
+                rec_now.cam[0] = cam.position.x; rec_now.cam[1] = cam.position.y; rec_now.cam[2] = cam.position.z;
+                rec_now.cam[3] = view_fwd.x; rec_now.cam[4] = view_fwd.y; rec_now.cam[5] = view_fwd.z;
+                if (flicker.enabled() && !cull_log) {
+                    for (uint32_t& v : rec_now.why) v = 0;
+                    if (hzb_did_filter)
+                        for (size_t i = 0; i < draw_n; ++i)
+                            if (hzb_streak_of_last(i) >= 2) ++rec_now.why[hzb_culler->cull_reason(static_cast<uint32_t>(i)) & 3];
+                }
                 if (cull_log) {
                     uint32_t why[4] = {0, 0, 0, 0};
                     if (hzb_did_filter)
@@ -14531,7 +14752,8 @@ int main(int argc, char** argv) {
             // G-Buffer, or clear the hook so it takes the direct path. Set every
             // frame so the toggle takes effect immediately rather than at the
             // next restart -- comparing the two paths is the point.
-            if (indirect_draws && editor_state.use_indirect_draws) {
+            static const bool no_indirect = std::getenv("GWS_NO_INDIRECT") != nullptr;   // A/B: every draw direct
+            if (indirect_draws && editor_state.use_indirect_draws && !no_indirect) {
                 indirect_draws->begin_frame();
                 g_buffer->set_indirect_draws(indirect_draws.get());
             } else {
@@ -14902,6 +15124,17 @@ int main(int argc, char** argv) {
             }();
             const bool shot_now = !last_frame &&
                 std::find(test_shots.begin(), test_shots.end(), static_cast<uint32_t>(frame_count + 1)) != test_shots.end();
+            if (flicker.enabled()) {
+                const double t_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - flicker.t0).count();
+                char line[512];
+                std::snprintf(line, sizeof line, "%u,%.1f,%.2f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%u,%u,%u,%u,%u,%d,%d,%zu,%zu,%d",
+                              static_cast<unsigned>(frame_count + 1), t_ms, delta_time * 1000.0f, rec_now.cam[0], rec_now.cam[1],
+                              rec_now.cam[2], rec_now.cam[3], rec_now.cam[4], rec_now.cam[5], rec_now.draws, rec_now.drawn,
+                              rec_now.why[1], rec_now.why[2], rec_now.why[3], rec_now.pyramid, rec_now.fast ? 1 : 0,
+                              foliage_renderer.stats().instances, foliage_renderer.stats().draws,
+                              (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) ? 1 : 0);
+                flicker.record(device, swapchain, image_index, cmd, flicker.slots[current_frame], static_cast<uint32_t>(frame_count + 1), line);
+            }
             if (shot_now && shots_async && !screenshot_path.empty() &&
                 record_swapchain_capture(device, swapchain, image_index, cmd, async_caps[current_frame]))
                 async_cap_frame[current_frame] = frame_count + 1;
@@ -15139,6 +15372,13 @@ int main(int argc, char** argv) {
         foliage_renderer.release();
         // Rigged characters: the first-person guns, every actor, then the files
         // and textures they shared -- all before the pools and the device.
+        if (flicker.enabled()) {
+            device.wait_idle();
+            for (auto& s : flicker.slots) flicker.take(device, s);
+            flicker.dump("the run ended");
+            std::this_thread::sleep_for(std::chrono::seconds(6));   // let the writer finish
+            for (auto& s : flicker.slots) flicker.free_slot(device, s);
+        }
         viewmodels.clear();
         skinned_actors.clear();
         schizo::editor::clear_skinned_asset_cache();

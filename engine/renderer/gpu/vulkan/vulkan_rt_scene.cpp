@@ -375,11 +375,14 @@ bool VulkanRtScene::ensure_blas(VkCommandBuffer cmd, const Mesh* mesh) {
     const VkAccelerationStructureBuildRangeInfoKHR* p_range = ranges.data();
     fns_->cmdBuildAccelerationStructures(cmd, 1, &build, &p_range);
 
-    // Make this BLAS visible to the upcoming TLAS build.
+    // Make this BLAS visible to the upcoming TLAS build -- and finish with the
+    // scratch buffer before the next build writes it (every build shares it:
+    // without WRITE here two builds could overlap in it,
+    // SYNC-HAZARD-WRITE-AFTER-WRITE, and corrupt a structure).
     VkMemoryBarrier mb{};
     mb.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     mb.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-    mb.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    mb.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
     vkCmdPipelineBarrier(cmd,
                          VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
                          VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
