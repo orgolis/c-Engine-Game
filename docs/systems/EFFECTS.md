@@ -55,7 +55,12 @@ and bloom.
 **Guns** -- for a gun with id `shotgun`: `shotgun_muzzle` when it fires,
 `shotgun_tracer` along each tracer round (`tracer` in its weapon block),
 `shotgun_impact` where a round hits the world, `shotgun_hit` where it hits
-someone. Each falls back to `muzzle`, `tracer`, `impact`, `impact_actor`.
+someone, `shotgun_splash` where it goes into water. Each falls back to
+`muzzle`, `tracer`, `impact`, `impact_actor`, `splash`.
+
+**Water** -- `splash` where a round, a beam or something flying goes into
+water, `splash_big` where a blast (an area ability, a grenade) meets it; rings
+spread on the water with each (docs/systems/WORLDS_AND_WATER.md).
 
 **Abilities** -- by the ability's `vfx` name and the stage:
 

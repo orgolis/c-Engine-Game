@@ -452,6 +452,23 @@ void write_entity_block(std::ofstream& file,
         file << "WATER_WAVES="   << wc->GetWaveHeight() << "," << wc->GetWaveSpeed()
              << "," << wc->GetWaveScale() << "\n";
         file << "WATER_LOOK="    << wc->GetClarity() << "," << wc->GetReflectivity() << "\n";
+        if (wc->HasMask()) {
+            // nx,nz, then run lengths: water-free, water, water-free, ... row by row
+            file << "WATER_MASK=" << wc->GetMaskNx() << "," << wc->GetMaskNz() << ",";
+            const auto& m = wc->GetMask();
+            uint8_t cur = 0;
+            size_t  run = 0;
+            bool    first = true;
+            for (size_t i = 0; i <= m.size(); ++i) {
+                const uint8_t v = i < m.size() ? (m[i] ? 1 : 0) : static_cast<uint8_t>(cur ^ 1u);
+                if (v == cur) { ++run; continue; }
+                file << (first ? "" : " ") << run;
+                first = false;
+                cur = v;
+                run = 1;
+            }
+            file << "\n";
+        }
         if (wc->IsRiver()) {
             // x,z,level,half-width per point, ';' between them
             file << "WATER_PATH=";
@@ -719,6 +736,8 @@ struct ParsedEntity {
     glm::vec3 water_waves     = glm::vec3(0.18f, 1.0f, 14.0f);   // height, speed, scale
     glm::vec2 water_look      = glm::vec2(4.0f, 0.8f);           // clarity, reflectivity
     std::vector<glm::vec4> water_path;                          // a river (x, z, level, half width)
+    int water_mask_nx = 0, water_mask_nz = 0;                   // a lake's shape
+    std::vector<uint8_t> water_mask;
 };
 
 // Helper: does `line` start with `key=`? If so, return the value portion.
@@ -1058,6 +1077,23 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
     if (starts_with(line, "WATER_SHALLOW", v)) { std::sscanf(v.c_str(), "%f,%f,%f", &p.water_shallow.r, &p.water_shallow.g, &p.water_shallow.b); return; }
     if (starts_with(line, "WATER_WAVES", v))   { std::sscanf(v.c_str(), "%f,%f,%f", &p.water_waves.x, &p.water_waves.y, &p.water_waves.z); return; }
     if (starts_with(line, "WATER_LOOK", v))    { std::sscanf(v.c_str(), "%f,%f", &p.water_look.x, &p.water_look.y); return; }
+    if (starts_with(line, "WATER_MASK", v)) {
+        p.water_mask.clear();
+        int nx = 0, nz = 0, used = 0;
+        if (std::sscanf(v.c_str(), "%d,%d,%n", &nx, &nz, &used) >= 2 && nx > 0 && nz > 0 && nx * nz <= 16 * 1024 * 1024) {
+            std::istringstream runs(v.substr(static_cast<size_t>(used)));
+            const size_t total = static_cast<size_t>(nx) * nz;
+            size_t  r = 0;
+            uint8_t cur = 0;
+            while (runs >> r && p.water_mask.size() < total) {
+                p.water_mask.insert(p.water_mask.end(), std::min(r, total - p.water_mask.size()), cur);
+                cur ^= 1u;
+            }
+            if (p.water_mask.size() == total) { p.water_mask_nx = nx; p.water_mask_nz = nz; }
+            else p.water_mask.clear();
+        }
+        return;
+    }
     if (starts_with(line, "WATER_PATH", v)) {
         p.water_path.clear();
         size_t at = 0;
@@ -1351,6 +1387,7 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
             wc->SetClarity(p.water_look.x);
             wc->SetReflectivity(p.water_look.y);
             if (p.water_path.size() >= 2) wc->SetPath(p.water_path);
+            if (p.water_mask_nx > 0) wc->SetMask(p.water_mask_nx, p.water_mask_nz, p.water_mask);
         }
     }
 

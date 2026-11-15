@@ -16,6 +16,20 @@
 > camera, so while the camera moved a visible object could be dropped for a
 > frame. `GWS_NO_HZB=1` turns the culler off for an A/B. The sections below
 > describe the original design.
+>
+> **0.8.49.** A box off the pyramid's screen -- wholly or in part -- is not
+> hidden: the pyramid (in practice two frames old: its frame's fence is not
+> done yet when the next frame culls) knows nothing outside its view. It used
+> to count a box wholly off its screen as hidden, and test a box partly off it
+> by its on-screen part alone, so what came into view at the edges while
+> turning or walking was dropped for a frame or two. Such a box is now kept
+> unless it is wholly off THIS frame's screen too. Test hooks:
+> `GWS_CULL_LOG=1` logs each frame's verdicts (why each was culled, and how
+> many culled boxes were not hidden in their own frame's depth -- an upper
+> bound: the pyramid is coarse) without capturing frames, and
+> `GWS_TEST_SHOTS_ASYNC=1` makes `GWS_TEST_SHOTS` read frames back without
+> stalling the GPU (capturing the ordinary way waits for each frame, which
+> hides anything timing-dependent).
 
 ---
 

@@ -9,6 +9,11 @@
 // desaturates to grey as the camera moves to face it. Metering only
 // scene geometry keeps the sky's apparent brightness stable.
 //
+// NEAR EXCLUSION: nor are pixels nearer than `near_depth` (about 1.5 m: what
+// is that close is gear in hand -- the gun seen in first person -- not the
+// scene). A dark gun filling a corner of the screen otherwise pulled the
+// average down and the whole scene came out brighter whenever one was held.
+//
 // Dispatched once per frame with a single workgroup of 16x16 threads.
 // Each thread strides over the HDR target. Shared-memory reduction
 // collapses the workgroup's contributions (sum of log-luminance + count
@@ -32,7 +37,7 @@ layout(push_constant) uniform PC {
     float key;
     float min_exposure;
     float max_exposure;
-    float _pad;
+    float near_depth;   // stored depth of the nearest metered point; 0: none excluded
 } pc;
 
 shared float s_log_lum[256];
@@ -52,8 +57,9 @@ void main() {
     // Sky pixels (depth at far plane) are excluded from metering.
     float depth = texelFetch(depthTex, px, 0).r;
     bool  is_sky = depth >= (1.0 - 1e-5);
+    bool  in_hand = depth < pc.near_depth;
 
-    if (is_sky) {
+    if (is_sky || in_hand) {
         s_log_lum[gl_LocalInvocationIndex] = 0.0;
         s_count[gl_LocalInvocationIndex]   = 0.0;
     } else {

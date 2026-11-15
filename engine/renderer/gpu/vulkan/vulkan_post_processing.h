@@ -179,6 +179,12 @@ public:
      *        to the static `config.tone_mapping.exposure` value.
      */
     void set_auto_exposure_enabled(bool enabled) { auto_exposure_enabled_ = enabled; }
+    /**
+     * @brief Auto-exposure leaves out pixels nearer than this stored depth
+     *        (the depth of a point ~1.5 m ahead: gear in hand, not the
+     *        scene). 0 meters everything.
+     */
+    void set_meter_near_depth(float d) { meter_near_depth_ = d; }
     bool is_auto_exposure_enabled() const { return auto_exposure_enabled_; }
 
     /**
@@ -389,6 +395,7 @@ private:
     bool pixelate_enabled_ = false;
     bool scanlines_enabled_ = false;
     bool auto_exposure_enabled_ = true;
+    float meter_near_depth_ = 0.0f;
 
     // Auto-exposure resources. Buffer persists across frames so the
     // smoothed exposure value carries over without CPU readback.

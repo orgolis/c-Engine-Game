@@ -134,6 +134,11 @@ struct MaterialDesc {
     MaterialAlphaMode alpha_mode   = MaterialAlphaMode::Opaque;
     float             alpha_cutoff = 0.5f;   // Cutout only; glTF's default
     bool              double_sided = false;
+    /// Metres: the surface dissolves (a dither) as the camera comes nearer
+    /// than this, and is gone at under half of it. 0: never. For foliage the
+    /// player walks through -- branches at head height otherwise sweep across
+    /// the whole view and slice through the gun in hand. Shadows keep it.
+    float             near_fade    = 0.0f;
 
     // ---- Texture maps ----
     // These are the five slots gbuffer_scene.frag already samples, in binding
@@ -220,6 +225,7 @@ struct MaterialDesc {
         const uint8_t flags = static_cast<uint8_t>(alpha_mode) |
                               (double_sided ? 0x80u : 0u);
         mix64(fbits(parallax_depth) | (uint64_t(flags) << 32));
+        mix64(fbits(near_fade));
         mix_s(detail_albedo_map); mix_s(detail_normal_map); mix_s(height_map);
         mix_s(albedo_map); mix_s(normal_map); mix_s(metallic_roughness_map);
         mix_s(occlusion_map); mix_s(emissive_map);
@@ -322,6 +328,7 @@ inline std::string material_to_text(const MaterialDesc& m) {
     o << "ALPHA_MODE=" << static_cast<int>(m.alpha_mode) << "\n";
     o << "ALPHA_CUTOFF=" << m.alpha_cutoff << "\n";
     o << "DOUBLE_SIDED=" << (m.double_sided ? 1 : 0) << "\n";
+    if (m.near_fade > 0.0f) o << "NEAR_FADE=" << m.near_fade << "\n";
     o << "ALBEDO_MAP=" << m.albedo_map << "\n";
     o << "NORMAL_MAP=" << m.normal_map << "\n";
     o << "MR_MAP=" << m.metallic_roughness_map << "\n";
@@ -371,6 +378,7 @@ inline MaterialDesc material_from_text(const std::string& text) {
                                                   std::clamp(detail::parse_int(val, 0), 0, 2));
         else if (key == "ALPHA_CUTOFF")       m.alpha_cutoff = detail::parse_float(val, m.alpha_cutoff);
         else if (key == "DOUBLE_SIDED")       m.double_sided = detail::parse_int(val, 0) != 0;
+        else if (key == "NEAR_FADE")          m.near_fade = detail::parse_float(val, m.near_fade);
         else if (key == "ALBEDO_MAP")         m.albedo_map = val;
         else if (key == "NORMAL_MAP")         m.normal_map = val;
         else if (key == "MR_MAP")             m.metallic_roughness_map = val;

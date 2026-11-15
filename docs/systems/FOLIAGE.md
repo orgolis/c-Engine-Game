@@ -30,6 +30,12 @@ field. Nearer than 45% of the draw distance a clump is full, farther a lighter
 one; past 60% the clumps thin out. Nothing grows under water when a world is
 built (docs/systems/WORLDS_AND_WATER.md).
 
+A tree's leaves **fade out near the camera** -- a dither from 2 m, gone by
+0.9 m -- so walking through low branches does not fill the view with leaves or
+cut through the gun in hand; they still cast their shadows. Trunks stay (they
+are solid: the camera never gets inside one). The same is any material's
+`NEAR_FADE=<metres>` (in a `.mat`; 0, the default: never).
+
 Trees cast shadows -- and break the sun into light shafts (Volumetric light,
 Render Settings) -- from a **directional light** that casts shadows: put a
 Light (Directional, Cast Shadow) on the scene's sun. A scene without one is lit

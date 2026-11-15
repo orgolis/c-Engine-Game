@@ -19,6 +19,7 @@ layout(set = 0, binding = 0) uniform FrameUBO {
     vec4 sun_color;    // xyz
     vec4 resolution;   // xy = render target size
     mat4 inv_view_proj; // inverse(proj * view): scene position from depth (F5)
+    vec4 ripples[24];   // rings: x, z, start time, strength (0: none)
 } u;
 
 layout(set = 0, binding = 1) uniform sampler2D depthTex;     // G-buffer depth (1.0 = sky)
@@ -115,6 +116,28 @@ void main() {
     float w0  = 1.0 - abs(2.0 * ph0 - 1.0);
     vec3  rn  = normalize(mix(n1, n0, w0));
     N = normalize(vec3(N.xz + rn.xz, 0.0).xzy + vec3(0.0, N.y * rn.y, 0.0));
+
+    // Rings: from where something touched the water (a step, a round, a
+    // blast), a few wavelets spreading out and fading over three seconds.
+    vec2  rgrad = vec2(0.0);
+    float rfoam = 0.0;
+    for (int i = 0; i < 24; ++i) {
+        vec4 r = u.ripples[i];
+        if (r.w <= 0.0) continue;
+        float age = t - r.z;
+        if (age < 0.0 || age > 3.0) continue;
+        vec2  dv = inWorldPos.xz - r.xy;
+        float d = length(dv);
+        float front = 0.15 + age * (1.1 + 0.5 * r.w);
+        float x = d - front;
+        float width = 0.12 + age * 0.22;
+        float life = 1.0 - age / 3.0;
+        float env = exp(-x * x / (width * width)) * r.w * life * life / (1.0 + front * 0.5);
+        float k = 6.2831853 / (0.28 + age * 0.14);
+        if (d > 1e-3) rgrad += dv / d * cos(x * k) * env * 1.4;
+        rfoam = max(rfoam, env * (1.0 - smoothstep(0.0, 0.9, age)) * 1.6);
+    }
+    N = normalize(N - vec3(rgrad.x, 0.0, rgrad.y));
     if (V.y < 0.0) N = -N;                             // looking up from below
 
     // ---- colour from depth ----
@@ -144,6 +167,7 @@ void main() {
     float shore  = 1.0 - smoothstep(0.0, 0.45, thickness * max(abs(V.y), 0.25));
     float rapids = is_river ? smoothstep(1.4, 3.0, length(flow)) * (0.35 + 0.65 * abs(inAlong.y)) : 0.0;
     float foam   = clamp(smoothstep(0.52, 0.72, fn) * shore + smoothstep(0.55, 0.75, fn) * rapids, 0.0, 1.0) * fade;
+    foam = max(foam, clamp(rfoam * (0.55 + 0.45 * fn), 0.0, 0.85));   // the white of a fresh ring
     color = mix(color, vec3(0.85, 0.88, 0.88) * (0.35 + 0.65 * max(dot(vec3(0.0, 1.0, 0.0), L), 0.0)), foam * 0.85);
     alpha = max(alpha, foam * 0.9);
 

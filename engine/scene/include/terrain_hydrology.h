@@ -45,6 +45,8 @@ struct WaterRun {
         float min_x = 0.0f, min_z = 0.0f, max_x = 0.0f, max_z = 0.0f;
         float deepest_x = 0.0f, deepest_z = 0.0f;  // where it is deepest
         int   cells = 0;
+        std::vector<int> cell_index;               // the terrain vertices under it (z * n + x)
+        size_t at_river = 0;                       // river points before it (downstream order)
     };
     std::vector<Point> river;        // downhill order; a lake's stretch is skipped
     std::vector<size_t> breaks;      // indices into `river` where a new stretch starts (after a lake)
@@ -161,6 +163,8 @@ inline WaterRun trace_water(const TerrainComponent& tc, float lx, float lz, cons
         }
         WaterRun::Lake lake;
         lake.level = level;
+        lake.at_river = run.river.size();
+        lake.cell_index = filled;
         lake.min_x = lake.min_z = std::numeric_limits<float>::max();
         lake.max_x = lake.max_z = std::numeric_limits<float>::lowest();
         float deepest = std::numeric_limits<float>::max();
@@ -271,6 +275,7 @@ inline WaterRun trace_water_routed(const TerrainComponent& tc, float lx, float l
             if (!in_lake[i]) {
                 WaterRun::Lake lake;
                 lake.level = F[i];
+                lake.at_river = run.river.size();
                 lake.min_x = lake.min_z = std::numeric_limits<float>::max();
                 lake.max_x = lake.max_z = std::numeric_limits<float>::lowest();
                 float deepest = std::numeric_limits<float>::max();
@@ -282,6 +287,7 @@ inline WaterRun trace_water_routed(const TerrainComponent& tc, float lx, float l
                     stack.pop_back();
                     const int x = vi % n, z = vi / n;
                     ++lake.cells;
+                    lake.cell_index.push_back(vi);
                     lake.level = std::max(lake.level, F[static_cast<size_t>(vi)]);
                     lake.min_x = std::min(lake.min_x, wx(x)); lake.max_x = std::max(lake.max_x, wx(x));
                     lake.min_z = std::min(lake.min_z, wx(z)); lake.max_z = std::max(lake.max_z, wx(z));
@@ -415,6 +421,46 @@ inline std::vector<WaterPath> river_paths(const WaterRun& run, float width, floa
         if (wp.points.size() >= 2) out.push_back(std::move(wp));
     }
     return out;
+}
+
+/// A lake as water to place: its rect (centre, local x, z; sides) and which
+/// cells of it are water -- the lake's own terrain vertices, one cell each,
+/// grown by `pad` cells so its edge runs on under the shore. Not its bounding
+/// box: that flooded every low place inside it.
+struct LakeShape {
+    float x = 0.0f, z = 0.0f, size_x = 0.0f, size_z = 0.0f;
+    int   nx = 0, nz = 0;
+    std::vector<uint8_t> mask;   // nz rows of nx, nonzero = water
+};
+inline LakeShape lake_shape(const WaterRun::Lake& l, int n, float cell, float half, int pad = 2) {
+    LakeShape s;
+    if (l.cell_index.empty() || n <= 0) return s;
+    int x0 = n, z0 = n, x1 = -1, z1 = -1;
+    for (int vi : l.cell_index) {
+        x0 = std::min(x0, vi % n); x1 = std::max(x1, vi % n);
+        z0 = std::min(z0, vi / n); z1 = std::max(z1, vi / n);
+    }
+    x0 -= pad; z0 -= pad; x1 += pad; z1 += pad;
+    s.nx = x1 - x0 + 1;
+    s.nz = z1 - z0 + 1;
+    std::vector<uint8_t> core(static_cast<size_t>(s.nx) * s.nz, 0);
+    for (int vi : l.cell_index) core[static_cast<size_t>(vi / n - z0) * s.nx + (vi % n - x0)] = 1;
+    s.mask.assign(core.size(), 0);
+    for (int z = 0; z < s.nz; ++z)
+        for (int x = 0; x < s.nx; ++x) {
+            bool w = false;
+            for (int dz = -pad; dz <= pad && !w; ++dz)
+                for (int dx = -pad; dx <= pad && !w; ++dx) {
+                    const int qx = x + dx, qz = z + dz;
+                    w = qx >= 0 && qz >= 0 && qx < s.nx && qz < s.nz && core[static_cast<size_t>(qz) * s.nx + qx];
+                }
+            s.mask[static_cast<size_t>(z) * s.nx + x] = w ? 1 : 0;
+        }
+    s.size_x = s.nx * cell;
+    s.size_z = s.nz * cell;
+    s.x = -half + x0 * cell - cell * 0.5f + s.size_x * 0.5f;
+    s.z = -half + z0 * cell - cell * 0.5f + s.size_z * 0.5f;
+    return s;
 }
 
 /// A flat water surface to place: centre (local x, z), level, and side length.

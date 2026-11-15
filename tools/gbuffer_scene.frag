@@ -23,7 +23,7 @@ layout(set = 1, binding = 0) uniform MaterialUBO {
     // declare it still reads every field above at the same offset.
     vec4  uv_transform;
     vec4  detail;   // x=tiling multiplier, y=albedo strength, z=normal strength
-    vec4  parallax; // x=depth scale, 0 = disabled
+    vec4  parallax; // x=depth scale, 0 = disabled; y=near fade (m), 0 = never
 } mat;
 layout(set = 1, binding = 1) uniform sampler2D albedoMap;
 layout(set = 1, binding = 2) uniform sampler2D normalMap;
@@ -138,6 +138,17 @@ void main() {
 
     float alpha_cutoff = mat.emissive_factor.a;
     if (alpha_cutoff > 0.0 && base.a < alpha_cutoff) discard;
+
+    // Near fade (foliage): dissolve with an ordered dither as the camera
+    // comes within mat.parallax.y metres, gone at under 45% of it. Branches at
+    // head height otherwise fill the view as the player walks through them,
+    // and slice through the gun held in first person.
+    if (mat.parallax.y > 0.0) {
+        float keep = smoothstep(mat.parallax.y * 0.45, mat.parallax.y, view_dist);
+        // interleaved gradient noise: a stable screen-space threshold
+        float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        if (keep < 1.0 && keep <= n) discard;
+    }
 
     vec3 nmap = texture(normalMap, uv).xyz * 2.0 - 1.0;
     // Detail normal, added in TANGENT space before the TBN transform. The xy of

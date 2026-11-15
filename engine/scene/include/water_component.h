@@ -2,6 +2,9 @@
 
 #include "entity.h"
 #include <glm/glm.hpp>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <vector>
 
 namespace schizo::scene {
@@ -70,8 +73,37 @@ public:
     void SetPath(std::vector<glm::vec4> p) { MarkChanged(); path_ = std::move(p); }
     bool IsRiver() const { return path_.size() >= 2; }
 
+    // ---- Lake shape ----
+    /// Which parts of the rect are water: `nx` x `nz` cells over it, row by
+    /// row (z, then x), nonzero = water. Without one the whole rect is. A lake
+    /// is its basin, not its bounding box: the rect alone flooded every low
+    /// place inside it -- a river valley crossing the box, another lake --
+    /// and drew water over them.
+    int  GetMaskNx() const { return mask_nx_; }
+    int  GetMaskNz() const { return mask_nz_; }
+    const std::vector<uint8_t>& GetMask() const { return mask_; }
+    bool HasMask() const { return mask_nx_ > 0 && mask_nz_ > 0 && mask_.size() == static_cast<size_t>(mask_nx_) * mask_nz_; }
+    void SetMask(int nx, int nz, std::vector<uint8_t> m) {
+        MarkChanged();
+        if (nx <= 0 || nz <= 0 || m.size() != static_cast<size_t>(nx) * nz) { mask_nx_ = mask_nz_ = 0; mask_.clear(); return; }
+        mask_nx_ = nx; mask_nz_ = nz; mask_ = std::move(m);
+    }
+    void ClearMask() { MarkChanged(); mask_nx_ = mask_nz_ = 0; mask_.clear(); }
+    /// Water at (dx, dz) from the centre (entity-local)? True everywhere in
+    /// the rect without a mask; false outside it.
+    bool IsWaterAt(float dx, float dz) const {
+        if (std::abs(dx) > size_.x * 0.5f || std::abs(dz) > size_.y * 0.5f) return false;
+        if (!HasMask()) return true;
+        const int ix = std::clamp(static_cast<int>((dx / size_.x + 0.5f) * mask_nx_), 0, mask_nx_ - 1);
+        const int iz = std::clamp(static_cast<int>((dz / size_.y + 0.5f) * mask_nz_), 0, mask_nz_ - 1);
+        return mask_[static_cast<size_t>(iz) * mask_nx_ + ix] != 0;
+    }
+
 private:
     std::vector<glm::vec4> path_;
+    std::vector<uint8_t>   mask_;
+    int       mask_nx_       = 0;
+    int       mask_nz_       = 0;
     bool      physical_      = true;
     glm::vec2 size_          = glm::vec2(60.0f, 60.0f);
     glm::vec3 deep_color_    = glm::vec3(0.02f, 0.12f, 0.18f);

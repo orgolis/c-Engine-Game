@@ -129,10 +129,17 @@ public:
         // A river: world (x, z, level, half width) points; the water is
         // within half width of the path, at the level there.
         std::vector<glm::vec4> path;
+        // A lake's shape over the rect (nz rows of nx; empty: all of it).
+        std::vector<uint8_t> mask;
+        int mask_nx = 0, mask_nz = 0;
     };
     /// Water surface height above `pos` (XZ containment), or -FLT_MAX when
     /// not over any physical water volume.
     float WaterLevelAt(const glm::vec3& pos) const;
+    /// Where the segment a -> b first goes from above physical water into it
+    /// (`at` on the surface). False when it never does.
+    bool WaterCrossing(const glm::vec3& a, const glm::vec3& b, glm::vec3& at) const;
+    bool HasWater() const { return !water_volumes_.empty(); }
 
     /**
      * Update scene during playback (called each frame)

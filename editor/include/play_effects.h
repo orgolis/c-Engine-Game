@@ -9,6 +9,9 @@
 //   a shot     <weapon>_muzzle at the muzzle, <weapon>_tracer along each
 //              tracer round, <weapon>_impact where a round hits the world,
 //              <weapon>_hit where it hits someone (each else the plain name)
+//   water      <weapon>_splash (else splash) where a round, a beam or
+//              something in flight meets water, splash_big where something
+//              lands in it with an area -- and rings spread on the water
 //   an ability <vfx>_windup while it is cast, _cast as it goes off, _beam to
 //              where an instant aimed one reached, _trail while one flies,
 //              _hit where it lands, _area around the caster, _self on it --
@@ -23,9 +26,12 @@
 #include "vfx/effects.h"
 
 #include <glm/glm.hpp>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -33,6 +39,40 @@ namespace schizo::editor {
 
 class PlayEffects {
 public:
+    // ---- water -----------------------------------------------------------------------------
+    /// Where the segment a -> b first goes into water (set by the editor in
+    /// Play: the physical water volumes); none: no splashes.
+    std::function<bool(const glm::vec3& a, const glm::vec3& b, glm::vec3& at)> water_crossing;
+    /// A ring on the water at `at`, `strength` about 0.2 (a step) to 2 (a blast).
+    std::function<void(const glm::vec3& at, float strength)> on_ripple;
+    /// Something touched the water at `at`: a splash and its rings.
+    void splash(const glm::vec3& at, float strength, const std::string& own = std::string()) {
+        using schizo::vfx::find_effect_of;
+        schizo::vfx::EffectSpawn s;
+        s.pos = at + glm::vec3(0.0f, 0.02f, 0.0f);
+        s.dir = glm::vec3(0.0f, 1.0f, 0.0f);
+        s.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+        const auto* e = strength >= 1.2f ? find_effect_of({own.empty() ? std::string("splash_big") : own + "_splash", "splash_big"})
+                                         : find_effect_of({own.empty() ? std::string("splash") : own + "_splash", "splash"});
+        if (e) fx_.burst(*e, s);
+        if (on_ripple) on_ripple(at, strength);
+        static const bool log_splash = std::getenv("GWS_TEST_PLAY") != nullptr;
+        if (log_splash)
+            spdlog::info("[test] water: a splash at ({:.1f}, {:.2f}, {:.1f}), strength {:.2f}", at.x, at.y, at.z, strength);
+    }
+    /// A round, a beam: a splash where a -> b goes into water (before what it hit).
+    bool splash_along(const glm::vec3& a, const glm::vec3& b, float strength, const std::string& own = std::string()) {
+        glm::vec3 w;
+        const bool hit = water_crossing && water_crossing(a, b, w);
+        static const bool log_water = std::getenv("GWS_TEST_WATER_LOG") != nullptr;
+        if (log_water)
+            spdlog::info("[test] water: ({:.1f}, {:.2f}, {:.1f}) -> ({:.1f}, {:.2f}, {:.1f}): {}", a.x, a.y, a.z, b.x, b.y, b.z,
+                         !water_crossing ? "no test" : hit ? "goes in" : "stays out");
+        if (!hit) return false;
+        splash(w, strength, own);
+        return true;
+    }
+
     // ---- guns ------------------------------------------------------------------------------
     void gun_fired(const schizo::ecs::WeaponDef& wd, const glm::vec3& muzzle, const glm::vec3& dir,
                    const std::vector<schizo::ecs::ShotTrace>& shots) {
@@ -52,7 +92,10 @@ public:
                     tr.reach = len;
                     fx_.burst(*t, tr);
                 }
+            // Into water on the way: a splash where it went in.
+            const bool wet = splash_along(muzzle, s.end, 0.55f, wd.id);
             if (s.hit == schizo::ecs::ShotTrace::Hit::None) continue;
+            if (wet && s.hit == schizo::ecs::ShotTrace::Hit::World) continue;   // under water: no sparks on the bed
             schizo::vfx::EffectSpawn hit;
             hit.pos = s.end;
             hit.dir = len > 1e-5f ? path / len : at.dir;
@@ -93,6 +136,7 @@ public:
         // At once: a beam to where it reached, and what it does there.
         const glm::vec3 path = f.point - hand;
         const float len = glm::length(path);
+        if (len > 0.3f) splash_along(hand, f.point, d.targeting == AbilityTargeting::AreaAtAim ? 1.4f : 0.6f);
         if (d.targeting == AbilityTargeting::Aimed && len > 0.3f)
             if (const auto* e = effect(d, "beam")) {
                 schizo::vfx::EffectSpawn b;
@@ -111,6 +155,8 @@ public:
     /// One in flight moved from `from` to `to` this frame.
     void ability_flight(const schizo::ecs::AbilityDef& d, const glm::vec3& from, const glm::vec3& to, float dt) {
         if (const auto* e = effect(d, "trail")) fx_.stream(*e, from, to, dt);
+        // Into water this frame (a grenade, a firebolt over a lake): a splash.
+        splash_along(from, to, d.targeting == schizo::ecs::AbilityTargeting::AreaAtAim ? 1.4f : 0.7f);
     }
     /// One in flight took effect.
     void ability_impact(const schizo::ecs::AbilityDef& d, const schizo::ecs::AbilityImpact& im) {
@@ -120,6 +166,10 @@ public:
         at.normal = im.normal;
         if (d.targeting == schizo::ecs::AbilityTargeting::AreaAtAim) at.scale = std::max(0.3f, d.radius / 3.0f);
         if (const auto* e = effect(d, "hit")) fx_.burst(*e, at);
+        // Landed in shallow water or on the bed under it: the blast throws water.
+        if (d.targeting == schizo::ecs::AbilityTargeting::AreaAtAim)
+            splash_along(im.point + glm::vec3(0.0f, 3.0f, 0.0f), im.point - glm::vec3(0.0f, 0.2f, 0.0f),
+                         std::max(1.2f, d.radius / 2.0f));
     }
 
     // ---- the frame -------------------------------------------------------------------------

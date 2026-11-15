@@ -32,6 +32,7 @@
 #include "mesh_renderer_component.h"
 #include "terrain_component.h"
 
+#include <cstdint>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -90,6 +91,15 @@ int main() {
         auto river = scn->CreateEntity("River");
         if (auto wc = river->AddComponent<scene::WaterComponent>())
             wc->SetPath({glm::vec4(-10.0f, 4.0f, 2.5f, 3.3f), glm::vec4(0.0f, 5.0f, 2.25f, 3.3f), glm::vec4(12.5f, 6.0f, 1.75f, 3.6f)});
+        // A lake with a shape: water in an L, starting and ending dry.
+        auto lake = scn->CreateEntity("Lake");
+        if (auto wc = lake->AddComponent<scene::WaterComponent>()) {
+            wc->SetSize(glm::vec2(10.0f, 8.0f));
+            std::vector<uint8_t> m(5 * 4, 0);
+            for (int x = 1; x < 4; ++x) m[1 * 5 + x] = 1;
+            for (int z = 1; z < 4; ++z) m[z * 5 + 1] = 1;
+            wc->SetMask(5, 4, m);
+        }
 
         auto ground = scn->CreateEntity("Ground");
         ground->AddComponent<scene::TerrainComponent>();
@@ -373,6 +383,22 @@ int main() {
         check(wc && wc->IsRiver() && wc->GetPath().size() == 3 &&
                   glm::length(wc->GetPath()[2] - glm::vec4(12.5f, 6.0f, 1.75f, 3.6f)) < 1e-4f,
               "a river keeps its path: every point, its level and its width");
+    }
+
+    // ---- the lake's shape came back -------------------------------------------
+    {
+        auto lake = loaded->GetEntityByName("Lake");
+        auto wc = lake ? lake->GetComponent<scene::WaterComponent>() : nullptr;
+        bool same = wc && wc->HasMask() && wc->GetMaskNx() == 5 && wc->GetMaskNz() == 4;
+        if (same)
+            for (int z = 0; z < 4; ++z)
+                for (int x = 0; x < 5; ++x) {
+                    const bool want = (z == 1 && x >= 1 && x < 4) || (x == 1 && z >= 1 && z < 4);
+                    same = same && (wc->GetMask()[static_cast<size_t>(z) * 5 + x] != 0) == want;
+                }
+        // cell (3, 1) is water, (3, 3) is not: x 1..2 m right, z 0..2 m forward of the centre... per 2 m cells
+        check(same && wc->IsWaterAt(2.0f, -2.0f) && !wc->IsWaterAt(2.0f, 3.0f) && !wc->IsWaterAt(6.0f, 0.0f),
+              "a lake keeps its shape: water where it was, dry where it was not");
     }
 
     // ---- the agent came back -------------------------------------------------

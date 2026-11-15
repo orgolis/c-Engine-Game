@@ -71,10 +71,14 @@ public:
     // Pointer + count form — lets callers pass per-frame scratch (e.g. a
     // frame-allocator array) without building a std::vector. The vector
     // overload below forwards to it.
+    /// `now_view_proj` (optional): THIS frame's camera. A box off the
+    /// pyramid's screen is not hidden -- the pyramid knows nothing there --
+    /// unless it is off this frame's screen as well.
     void test_visibility(const glm::vec3* aabb_mins,
                          const glm::vec3* aabb_maxs,
                          size_t count,
-                         const glm::mat4& view_proj);
+                         const glm::mat4& view_proj,
+                         const glm::mat4* now_view_proj = nullptr);
     void test_visibility(const std::vector<glm::vec3>& aabb_mins,
                          const std::vector<glm::vec3>& aabb_maxs,
                          const glm::mat4& view_proj) {
@@ -105,6 +109,9 @@ public:
     bool     is_enabled() const  { return enabled_; }
     uint32_t get_visible_count() const { return last_visible_count_; }
     uint32_t get_culled_count()  const { return last_culled_count_; }
+    /// Why a draw tested hidden (diagnostics): 1 off the pyramid's screen
+    /// entirely, 2 partly off it, 3 on it and behind its depth.
+    uint8_t  cull_reason(uint32_t i) const { return i < reason_.size() ? reason_[i] : 0; }
     uint32_t get_mip_count() const { return mip_count_; }
 
     /// Follow a resized scene (F1): the pyramid, its mip views, descriptor
@@ -168,6 +175,7 @@ private:
 
     // ---- Per-frame visibility ----
     std::vector<uint8_t> visibility_;
+    std::vector<uint8_t> reason_;
     uint32_t             last_visible_count_ = 0;
     uint32_t             last_culled_count_  = 0;
     bool                 have_results_       = false;

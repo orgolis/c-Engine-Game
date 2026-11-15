@@ -290,6 +290,24 @@ int main() {
               "the lake rises to the lowest point of its rim, no higher");
         check(run.reached_edge && !run.reached_sea && run.river.back().x > 60.0f, "then it spills over and runs on to the edge of the land");
         {
+            // The lake's shape: water over every vertex it filled, and not
+            // over the land far from the bowl inside its rect's corners.
+            bool shape_ok = !run.lakes.empty() && !run.lakes[0].cell_index.empty();
+            if (shape_ok) {
+                const LakeShape s = lake_shape(run.lakes[0], t.VertsPerSide(), t.CellSize(), 64.0f, 2);
+                auto water = [&](float x, float z) {
+                    const int ix = static_cast<int>((x - (s.x - s.size_x * 0.5f)) / (s.size_x / s.nx));
+                    const int iz = static_cast<int>((z - (s.z - s.size_z * 0.5f)) / (s.size_z / s.nz));
+                    return ix >= 0 && iz >= 0 && ix < s.nx && iz < s.nz && s.mask[static_cast<size_t>(iz) * s.nx + ix] != 0;
+                };
+                for (int vi : run.lakes[0].cell_index)
+                    shape_ok = shape_ok && water(-64.0f + vi % t.VertsPerSide(), -64.0f + vi / t.VertsPerSide());
+                const float cx0 = s.x - s.size_x * 0.5f + 0.5f, cz0 = s.z - s.size_z * 0.5f + 0.5f;
+                shape_ok = shape_ok && !water(cx0, cz0) && water(run.lakes[0].deepest_x, run.lakes[0].deepest_z);
+            }
+            check(shape_ok, "a lake's shape is its basin: water over every point it filled, none in the corners of its box");
+        }
+        {
             // A hollow shallower than the breach depth is cut through: no
             // lake, one unbroken stretch. The 8-deep bowl still fills.
             HydrologySettings cut_through;
@@ -585,8 +603,54 @@ int main() {
                                             ++drowned;
                                     }
             ok = ok && drowned == 0;
+            // One river at most on any bed: a river that reaches another
+            // joins it and ends there, instead of running on top of it.
+            size_t doubled = 0;
+            std::vector<const WaterComponent*> rivers;
+            for (const auto& m : w.made)
+                if (auto wc = m->GetComponent<WaterComponent>(); wc && wc->IsRiver()) rivers.push_back(wc.get());
+            for (size_t a = 0; a < rivers.size(); ++a)
+                for (size_t b = a + 1; b < rivers.size(); ++b) {
+                    size_t near_pts = 0;
+                    for (const glm::vec4& q : rivers[a]->GetPath())
+                        for (const glm::vec4& r : rivers[b]->GetPath())
+                            if (glm::length(glm::vec2(q.x - r.x, q.y - r.y)) < 2.0f) { ++near_pts; break; }
+                    if (near_pts > 4) ++doubled;
+                }
+            // Every lake has its shape.
+            size_t shapeless = 0;
+            for (const auto& m : w.made)
+                if (auto wc = m->GetComponent<WaterComponent>(); wc && !wc->IsRiver() && !wc->HasMask()) ++shapeless;
+            ok = ok && doubled == 0 && shapeless == 0;
             check(ok, p.name + ": ground from 0 to " + std::to_string(static_cast<int>(hi)) + ", " + std::to_string(w.rivers) +
-                          " river(s), " + std::to_string(trees) + " plants (none in a river), " + std::to_string(used) + " biomes in use");
+                          " river(s) (none on another), " + std::to_string(w.lakes) + " lake(s) with their shapes, " +
+                          std::to_string(trees) + " plants (none in a river), " + std::to_string(used) + " biomes in use");
+        }
+        {
+            // The test game's world (gws world --size 1024 --rivers 4 --seed 7):
+            // there two rivers met and the second ran on top of the first to
+            // the edge -- two water surfaces on one bed, flickering.
+            WorldPreset big = world_presets()[0];
+            big.resolution = static_cast<int>(std::lround(1024.0f / (big.size / static_cast<float>(big.resolution))));
+            big.size = 1024.0f;
+            big.rivers = 4;
+            Scene s("big");
+            const BuiltWorld w = build_world(s, big, 7u, std::string());
+            std::vector<const WaterComponent*> rivers;
+            for (const auto& m : w.made)
+                if (auto wc = m->GetComponent<WaterComponent>(); wc && wc->IsRiver()) rivers.push_back(wc.get());
+            size_t doubled = 0;
+            for (size_t i = 0; i < rivers.size(); ++i)
+                for (size_t j = i + 1; j < rivers.size(); ++j) {
+                    size_t near_pts = 0;
+                    for (const glm::vec4& q : rivers[i]->GetPath())
+                        for (const glm::vec4& r : rivers[j]->GetPath())
+                            if (glm::length(glm::vec2(q.x - r.x, q.y - r.y)) < 2.0f) { ++near_pts; break; }
+                    if (near_pts > 4) ++doubled;
+                }
+            check(rivers.size() >= 4 && doubled == 0,
+                  "1024 m, 4 rivers, seed 7: " + std::to_string(rivers.size()) + " river stretches, none running on another (" +
+                      std::to_string(doubled) + " pairs)");
         }
         Scene a("a"), b("b");
         const WorldPreset hills = world_presets()[0];

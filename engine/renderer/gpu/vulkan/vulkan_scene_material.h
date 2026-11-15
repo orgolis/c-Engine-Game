@@ -63,7 +63,9 @@ struct MaterialUniforms {
     /// Both strengths default to 0, which makes the blend an exact identity --
     /// so a material without detail maps is bit-for-bit what it was.
     glm::vec4 detail               = glm::vec4(8.0f, 0.0f, 0.0f, 0.0f);
-    /// Parallax: x = depth scale (0 disables), y/z/w unused.
+    /// Parallax: x = depth scale (0 disables); y = near fade in metres (the
+    /// surface dithers away nearer than this to the camera; 0: never); z/w
+    /// unused.
     ///
     /// Depth 0 is an exact bypass, not a scale of zero -- the ray march is
     /// skipped entirely, so a material without a height map costs nothing.

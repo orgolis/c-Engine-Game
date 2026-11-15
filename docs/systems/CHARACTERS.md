@@ -89,7 +89,10 @@ when it is switched to, `Fire` on each shot, `Reload`, and `Idle` between. It
 bobs as the player walks, kicks back with each shot and comes to the middle
 when aiming. Its `muzzle` bone is where the player's rounds, tracers and flash
 start. It casts no shadow (the player model's own does). The model faces +Z
-(its barrel), as glTF models do.
+(its barrel), as glTF models do. Against something solid right ahead (a
+trunk, a rock, a wall within about a metre) it comes back and points down
+instead of going through it. Auto-exposure does not meter it: a dark gun in
+the corner of the view does not make the rest of the scene brighter.
 
 ## In the scene file
 

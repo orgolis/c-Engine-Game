@@ -124,7 +124,8 @@ handed over the same way (`hud32`, `ui_output_srgb`).
 Creates a glow effect from bright areas of the image.
 
 **In the Vulkan renderer:** a mip chain. A bright-pass measured on the EXPOSED
-image (the auto-exposure the tone map uses -- only what will look brighter than
+image (the auto-exposure the tone map uses; it meters the scene, not the sky
+and not what is nearer than 1.5 m -- gear in hand -- only what will look brighter than
 white glows, with a soft knee) and a 13-tap downsample into five mips (1/2 to
 1/32), then a tent-filtered upsample back up, each added into the mip above;
 the tone map adds the result. Wide and soft, stable as the camera moves: muzzle

@@ -165,7 +165,7 @@ public:
         // Depth 0 whenever there is no height map, so the shader's bypass is
         // taken and the ray march never runs against a flat white default.
         params.parallax = glm::vec4(
-            desc.height_map.empty() ? 0.0f : desc.parallax_depth, 0.0f, 0.0f, 0.0f);
+            desc.height_map.empty() ? 0.0f : desc.parallax_depth, desc.near_fade, 0.0f, 0.0f);
         // emissive_factor.a doubles as the G-Buffer's alpha_cutoff (see
         // MaterialUniforms). Cutoff 0 means "opaque, no discard"; Blend needs a
         // non-zero cutoff anyway so it casts a binarised shadow, since it skips

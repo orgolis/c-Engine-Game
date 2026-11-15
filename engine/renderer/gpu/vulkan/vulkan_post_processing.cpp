@@ -2321,7 +2321,7 @@ void VulkanPostProcessing::apply_auto_exposure(VkCommandBuffer cmd, float delta_
         float key;
         float min_exposure;
         float max_exposure;
-        float _pad;
+        float near_depth;
     } pc{};
     pc.w = static_cast<int32_t>(config_.width);
     pc.h = static_cast<int32_t>(config_.height);
@@ -2330,6 +2330,7 @@ void VulkanPostProcessing::apply_auto_exposure(VkCommandBuffer cmd, float delta_
     pc.key         = 0.18f;       // middle grey
     pc.min_exposure = 0.05f;
     pc.max_exposure = 8.0f;
+    pc.near_depth   = meter_near_depth_;
     vkCmdPushConstants(cmd, auto_exposure_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(pc), &pc);
     vkCmdDispatch(cmd, 1, 1, 1);

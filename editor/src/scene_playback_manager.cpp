@@ -839,6 +839,11 @@ void ScenePlaybackManager::BuildPhysicsWorld() {
                     v.center_xz = glm::vec2(wp.x, wp.z);
                     v.half_size = wcomp->GetSize() * 0.5f;
                     v.level     = wp.y;
+                    if (wcomp->HasMask()) {
+                        v.mask = wcomp->GetMask();
+                        v.mask_nx = wcomp->GetMaskNx();
+                        v.mask_nz = wcomp->GetMaskNz();
+                    }
                     if (wcomp->IsRiver()) {
                         // World space, with a box round it for a quick reject.
                         glm::vec2 lo(1e30f), hi(-1e30f);
@@ -1038,6 +1043,12 @@ float ScenePlaybackManager::WaterLevelAt(const glm::vec3& pos) const {
             std::abs(pos.z - v.center_xz.y) > v.half_size.y)
             continue;
         if (v.path.size() < 2) {
+            if (!v.mask.empty()) {   // a lake: within its shape, not just its rect
+                const glm::vec2 f = (glm::vec2(pos.x, pos.z) - v.center_xz) / (v.half_size * 2.0f) + 0.5f;
+                const int ix = std::clamp(static_cast<int>(f.x * v.mask_nx), 0, v.mask_nx - 1);
+                const int iz = std::clamp(static_cast<int>(f.y * v.mask_nz), 0, v.mask_nz - 1);
+                if (!v.mask[static_cast<size_t>(iz) * v.mask_nx + ix]) continue;
+            }
             best = std::max(best, v.level);
             continue;
         }
@@ -1053,6 +1064,33 @@ float ScenePlaybackManager::WaterLevelAt(const glm::vec3& pos) const {
         }
     }
     return best;
+}
+
+bool ScenePlaybackManager::WaterCrossing(const glm::vec3& a, const glm::vec3& b, glm::vec3& at) const {
+    if (water_volumes_.empty()) return false;
+    const float len = glm::length(b - a);
+    if (len < 1e-3f) return false;
+    // Above the water at a -> under it somewhere: march, then halve the step.
+    auto under = [&](const glm::vec3& p) { return p.y < WaterLevelAt(p); };
+    if (under(a)) return false;   // started in it
+    const int steps = std::clamp(static_cast<int>(len / 1.5f), 1, 400);
+    glm::vec3 prev = a;
+    for (int i = 1; i <= steps; ++i) {
+        const glm::vec3 p = a + (b - a) * (static_cast<float>(i) / steps);
+        if (under(p)) {
+            glm::vec3 lo = prev, hi = p;
+            for (int k = 0; k < 12; ++k) {
+                const glm::vec3 m = (lo + hi) * 0.5f;
+                (under(m) ? hi : lo) = m;
+            }
+            at = hi;
+            const float lvl = WaterLevelAt(hi);
+            if (lvl > -1e30f) at.y = lvl;
+            return true;
+        }
+        prev = p;
+    }
+    return false;
 }
 
 uint32_t ScenePlaybackManager::BodyForEntity(uint32_t entity_id) const {

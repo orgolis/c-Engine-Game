@@ -1086,6 +1086,54 @@ static void write_swapchain_capture(gws::renderer::gpu::VulkanDevice& device,
     cap = SwapchainCapture{};
 }
 
+// GWS_TEST_SHOTS_ASYNC: a capture read back once its frame's fence has been
+// waited on anyway (no stall), kept in memory at half size, and written when
+// the run ends -- a sequence of frames with the timing of an ordinary run.
+struct HeldShot {
+    uint32_t frame = 0, w = 0, h = 0;
+    std::vector<uint8_t> bgr;   // top-down rows
+};
+static void hold_swapchain_capture(gws::renderer::gpu::VulkanDevice& device, SwapchainCapture& cap, uint32_t frame,
+                                   std::vector<HeldShot>& held) {
+    VkDevice vk = device.get_device();
+    if (cap.buf == VK_NULL_HANDLE) return;
+    void* mapped = nullptr;
+    const VkDeviceSize bytes = VkDeviceSize(cap.w) * cap.h * 4;
+    if (vkMapMemory(vk, cap.mem, 0, bytes, 0, &mapped) == VK_SUCCESS && mapped) {
+        HeldShot s;
+        s.frame = frame;
+        s.w = cap.w / 2;
+        s.h = cap.h / 2;
+        s.bgr.resize(size_t(s.w) * s.h * 3);
+        const uint8_t* px = static_cast<const uint8_t*>(mapped);
+        for (uint32_t y = 0; y < s.h; ++y)
+            for (uint32_t x = 0; x < s.w; ++x) {
+                const uint8_t* p = px + (size_t(y * 2) * cap.w + x * 2) * 4;
+                uint8_t* o = &s.bgr[(size_t(y) * s.w + x) * 3];
+                o[0] = p[0]; o[1] = p[1]; o[2] = p[2];
+            }
+        vkUnmapMemory(vk, cap.mem);
+        held.push_back(std::move(s));
+    }
+    vkFreeMemory(vk, cap.mem, nullptr);
+    vkDestroyBuffer(vk, cap.buf, nullptr);
+    cap = SwapchainCapture{};
+}
+static void write_held_shots(const std::vector<HeldShot>& held, const std::string& path) {
+    for (const HeldShot& s : held) {
+        std::string p = path;
+        const size_t dot = p.rfind('.');
+        p.insert(dot == std::string::npos ? p.size() : dot, "_" + std::to_string(s.frame));
+        std::ofstream f(p, std::ios::binary | std::ios::trunc);
+        const uint8_t hdr[18] = {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                 uint8_t(s.w & 0xFF), uint8_t((s.w >> 8) & 0xFF),
+                                 uint8_t(s.h & 0xFF), uint8_t((s.h >> 8) & 0xFF), 24, 0x20};   // top-down
+        f.write(reinterpret_cast<const char*>(hdr), 18);
+        f.write(reinterpret_cast<const char*>(s.bgr.data()), static_cast<std::streamsize>(s.bgr.size()));
+    }
+    if (!held.empty()) spdlog::info("[screenshot] wrote {} held frame(s) ({}x{})", held.size(), held[0].w, held[0].h);
+}
+
 // Last RESOLVED per-stage GPU times (ms). Captured right after
 // resolve_timings() because the graph clears its *_us fields during the next
 // execute(), so any later read reports zero.
@@ -8940,7 +8988,7 @@ int main(int argc, char** argv) {
             int  idle = -1, fire = -1, reload = -1, draw = -1;
         };
         std::unordered_map<std::string, ViewModel> viewmodels;
-        struct { std::string weapon; bool reloading = false; float kick = 0.0f, bob = 0.0f, aim = 0.0f; } vm_state;
+        struct { std::string weapon; bool reloading = false; float kick = 0.0f, bob = 0.0f, aim = 0.0f, pull = 0.0f; } vm_state;
         // Per frame: actors drawn only into shadows (the player's own model in
         // first person), drawn without a shadow (the first-person gun), and
         // drawn though they are no scene entity's (the first-person gun).
@@ -9077,6 +9125,10 @@ int main(int argc, char** argv) {
         // Per-frame synchronisation (double-buffered)
         // ----------------------------------------------------------------
         constexpr uint32_t kMaxFrames = 2;
+        static const bool shots_async = std::getenv("GWS_TEST_SHOTS_ASYNC") != nullptr;
+        SwapchainCapture async_caps[kMaxFrames] = {};
+        uint32_t         async_cap_frame[kMaxFrames] = {};
+        std::vector<HeldShot> held_shots;
         VkCommandBuffer frame_cmds[kMaxFrames]    = {};
         VkSemaphore     acquire_sems[kMaxFrames]  = {};
         VkFence         frame_fences[kMaxFrames]  = {};
@@ -10726,16 +10778,31 @@ int main(int argc, char** argv) {
                         off.y += vm_state.aim * 0.05f;
                         const glm::vec3 kick(0.0f, 0.004f * vm_state.kick, -0.045f * vm_state.kick);
                         const glm::mat4 cam_world = vcam->GetTransform()->GetWorldMatrix();
+                        // Something solid right ahead (a trunk, a rock, a wall): the gun
+                        // comes back and points down instead of going through it.
+                        float obstruct = 0.0f;
+                        if (auto* vpw = sk_pm->GetPhysicsWorld()) {
+                            const glm::vec3 vfwd = glm::normalize(-glm::vec3(cam_world[2]));
+                            const auto vh = vpw->raycast(glm::vec3(cam_world[3]), vfwd, 1.1f);
+                            if (vh.hit) obstruct = std::clamp((1.1f - vh.distance) / 0.6f, 0.0f, 1.0f);
+                        }
+                        vm_state.pull += (obstruct - vm_state.pull) * std::min(1.0f, delta_time * 10.0f);
+                        static const bool log_pull = std::getenv("GWS_TEST_LOG_PULL") != nullptr;
+                        if (log_pull && obstruct > 0.0f) spdlog::info("[test] gun: something {:.2f} m ahead, pulled back {:.2f}", 1.1f - obstruct * 0.6f, vm_state.pull);
+                        off.z -= 0.25f * vm_state.pull;
+                        off.y -= 0.08f * vm_state.pull;
                         // The model faces +Z; the eye looks down -Z.
                         const glm::mat4 vm = cam_world *
                                              glm::translate(glm::mat4(1.0f), glm::vec3(off.x, off.y, -off.z) + bob + kick) *
-                                             glm::rotate(glm::mat4(1.0f), glm::radians(3.5f * vm_state.kick), glm::vec3(1, 0, 0)) *
+                                             glm::rotate(glm::mat4(1.0f), glm::radians(3.5f * vm_state.kick - 38.0f * vm_state.pull),
+                                                         glm::vec3(1, 0, 0)) *
                                              glm::rotate(glm::mat4(1.0f), glm::radians(180.0f), glm::vec3(0, 1, 0));
                         va->advance(delta_time);
                         va->set_model(vm);
                         const int mb = va->find_bone("muzzle");
                         if (mb >= 0) editor_state.player_weapon.set_view_muzzle(glm::vec3(va->bone_world(mb)[3]));
-                        extra_skinned.push_back(va);
+                        static const bool no_vm = std::getenv("GWS_TEST_NO_VIEWMODEL") != nullptr;   // A/B: the frame without it
+                        if (!no_vm) extra_skinned.push_back(va);
                         no_shadow_actors.insert(va);
                     }
                 } else {
@@ -11055,6 +11122,16 @@ int main(int argc, char** argv) {
             if (editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()) {
                 auto& pm = *editor_state.scene_playback_manager;
                 auto& ui = schizo::editor::play_ui();
+                // Shots, beams and landings that meet water splash it and ring it.
+                if (!editor_state.play_effects.water_crossing) {
+                    auto* pmp = editor_state.scene_playback_manager.get();
+                    editor_state.play_effects.water_crossing = [pmp](const glm::vec3& a, const glm::vec3& b, glm::vec3& at) {
+                        return pmp && pmp->IsPlaying() && pmp->WaterCrossing(a, b, at);
+                    };
+                    auto* wpp = water_pass.get();
+                    static const bool no_rings = std::getenv("GWS_TEST_NO_RIPPLES") != nullptr;   // A/B
+                    editor_state.play_effects.on_ripple = [wpp](const glm::vec3& at, float s) { if (wpp && !no_rings) wpp->add_ripple(at, s); };
+                }
                 // The controls, once a frame, by action.
                 auto& ps = schizo::editor::play_settings();
                 static int test_press_key = 0, test_press_frames = 0;   // GWS_TEST_UI press:<action>
@@ -11320,9 +11397,11 @@ int main(int argc, char** argv) {
                             }
                             ecs_bridge.events().publish(ev);
                         } else if (what == "press") {
-                            // press:<action> -- its key held for a few frames, as the player would
-                            test_press_key = ps.map.key(arg);
-                            test_press_frames = 4;
+                            // press:<action>[~<frames>] -- its key held for a few frames, as the
+                            // player would (or for that many: walking about)
+                            const size_t tl = arg.find('~');
+                            test_press_key = ps.map.key(arg.substr(0, tl));
+                            test_press_frames = tl == std::string::npos ? 4 : std::max(1, std::atoi(arg.c_str() + tl + 1));
                             spdlog::info("[test] ui: press {} (key {}) -- mouse held by Play {}, menu has input {}, game view focused {}",
                                          arg, test_press_key, pm.IsCursorCaptured(), pm.UiHasInput(), editor_state.viewport_input_focused);
                         } else if (what == "event") {
@@ -11901,6 +11980,34 @@ int main(int argc, char** argv) {
                     }
                     editor_state.shot_effects.update(delta_time);
                     editor_state.play_effects.update(delta_time);
+                    // Characters in water: rings where they wade, a splash going in.
+                    if (pm.HasWater()) {
+                        struct Wader { glm::vec3 last{0.0f}; float since = 0.0f; bool in = false; float vy = 0.0f; };
+                        static std::unordered_map<uint32_t, Wader> waders;
+                        auto wade = [&](uint32_t id, const glm::vec3& centre, float half_height) {
+                            Wader& w = waders[id];
+                            const glm::vec3 feet = centre - glm::vec3(0.0f, half_height, 0.0f);
+                            const float lvl = pm.WaterLevelAt(feet);
+                            const bool in = lvl > feet.y + 0.03f && lvl < centre.y + half_height + 0.3f;
+                            const float moved = glm::length(glm::vec2(centre.x - w.last.x, centre.z - w.last.z));
+                            const float vy = delta_time > 0.0f ? (centre.y - w.last.y) / delta_time : 0.0f;
+                            w.since += delta_time;
+                            if (in && !w.in && vy < -2.5f) editor_state.play_effects.splash(glm::vec3(feet.x, lvl, feet.z), 1.0f);
+                            else if (in && (moved > 0.9f || (w.since > 0.45f && moved > 0.15f)))
+                                editor_state.play_effects.on_ripple
+                                    ? editor_state.play_effects.on_ripple(glm::vec3(centre.x, lvl, centre.z), std::clamp(moved * 0.6f, 0.25f, 0.7f))
+                                    : void();
+                            if (!in || moved > 0.9f || (w.since > 0.45f && moved > 0.15f)) { w.last = centre; w.since = 0.0f; }
+                            w.in = in;
+                            w.vy = vy;
+                        };
+                        if (auto* wpl = pm.GetPlayerEntity()) wade(wpl->GetId(), wpl->GetTransform()->GetWorldPosition(), 0.95f);
+                        if (auto wsc = editor_state.editor_scene->GetScene())
+                            for (const auto& we : wsc->GetEntities())
+                                if (we && we->IsActiveInHierarchy())
+                                    if (const auto* na = std::as_const(*we).GetNpcAgentComponent(); na && na->enabled)
+                                        wade(we->GetId(), we->GetTransform()->GetWorldPosition(), 0.9f);
+                    }
                     for (auto& h : editor_state.hud_hits) h.age += delta_time;
                     editor_state.hud_hits.erase(std::remove_if(editor_state.hud_hits.begin(), editor_state.hud_hits.end(),
                                                                [](const auto& h) { return h.age > 1.4f; }),
@@ -13090,6 +13197,8 @@ int main(int argc, char** argv) {
             vkWaitForFences(device.get_device(), 1, &frame_fences[current_frame],
                             VK_TRUE, UINT64_MAX);
             }
+            if (async_caps[current_frame].buf != VK_NULL_HANDLE)
+                hold_swapchain_capture(device, async_caps[current_frame], async_cap_frame[current_frame], held_shots);
             // The previous frame's occlusion queries are guaranteed available
             // after its fence. Pull the results into the culler so this
             // frame can skip occluded draws.
@@ -13320,6 +13429,12 @@ int main(int argc, char** argv) {
 
             cam.proj[1][1] *= -1.0f;  // GL → Vulkan Y flip
             graph->set_camera(cam);
+            // Auto-exposure meters the scene, not what is held 1.5 m from
+            // the eye (the first-person gun): the stored depth of that point.
+            if (post_processing) {
+                const glm::vec4 near_clip = cam.proj * glm::vec4(0.0f, 0.0f, -1.5f, 1.0f);
+                post_processing->set_meter_near_depth(near_clip.w > 0.0f ? std::max(0.0f, near_clip.z / near_clip.w) : 0.0f);
+            }
             // The lighting pass now needs view+proj so the in-shader sky
             // branch can reconstruct world-space view rays at empty pixels.
             lighting->set_view_projection(cam.view, cam.proj);
@@ -14190,6 +14305,33 @@ int main(int argc, char** argv) {
                 else if (hzb_slots[slot_now].valid)
                     use_slot = static_cast<int>(slot_now);
                 if (use_slot >= 0) hzb_culler->pull_readback(static_cast<uint32_t>(use_slot));
+                // GWS_CULL_LOG: the boxes a frame culled, tested once its own
+                // pyramid is read back (the same slot) against its OWN depth with
+                // its own camera. One that tests visible there was culled though
+                // nothing hid it: a draw missing from a frame it should have
+                // been in -- the flicker a player sees.
+                static std::vector<glm::vec3> fc_min[kSlots], fc_max[kSlots];
+                static std::vector<uint8_t> fc_why[kSlots];
+                static int fc_false = -1, fc_total = 0;
+                static int fc_false_why[4] = {0, 0, 0, 0};
+                fc_false = -1;
+                fc_total = 0;
+                for (int& v : fc_false_why) v = 0;
+                if (std::getenv("GWS_CULL_LOG") && use_slot >= 0) {
+                    auto& mn = fc_min[use_slot];
+                    auto& mx = fc_max[use_slot];
+                    fc_total = static_cast<int>(mn.size());
+                    if (!mn.empty()) {
+                        hzb_culler->test_visibility(mn.data(), mx.data(), mn.size(), hzb_slots[static_cast<size_t>(use_slot)].vp,
+                                                    &hzb_slots[static_cast<size_t>(use_slot)].vp);
+                        fc_false = static_cast<int>(hzb_culler->get_visible_count());
+                        for (size_t j = 0; j < mn.size(); ++j)
+                            if (hzb_culler->was_visible(static_cast<uint32_t>(j))) ++fc_false_why[fc_why[use_slot][j] & 3];
+                    } else fc_false = 0;
+                    mn.clear();
+                    mx.clear();
+                    fc_why[use_slot].clear();
+                }
                 const HzbSlot* hs = use_slot >= 0 ? &hzb_slots[static_cast<size_t>(use_slot)] : nullptr;
                 // Camera-motion gate: the pyramid is a frame or two old, so on
                 // a cut or fast pan/rotation the test would falsely cull
@@ -14197,6 +14339,7 @@ int main(int argc, char** argv) {
                 // frames (frustum culling still applies).
                 const glm::vec3 view_fwd = glm::normalize(
                     glm::vec3(-cam.view[0][2], -cam.view[1][2], -cam.view[2][2]));
+                std::function<uint8_t(size_t)> hzb_streak_of_last = [](size_t) { return uint8_t(0); };
                 const bool camera_moved_fast = hs != nullptr &&
                     (glm::length(cam.position - hs->pos) > 1.0f ||
                      glm::dot(view_fwd, hs->fwd) < 0.996f);
@@ -14206,7 +14349,8 @@ int main(int argc, char** argv) {
                     // Test with the view-proj of the frame that BUILT the
                     // pyramid -- never the current camera.
                     lap_.reset(); lap_.emplace("hzb.test");
-                    hzb_culler->test_visibility(aabb_mins, aabb_maxs, draw_n, hs->vp);
+                    const glm::mat4 now_vp = cam.proj * cam.view;
+                    hzb_culler->test_visibility(aabb_mins, aabb_maxs, draw_n, hs->vp, &now_vp);
                     lap_.reset(); lap_.emplace("hzb.filter");
 
                     // Filter with 2-frame hysteresis: only drop a draw that
@@ -14231,6 +14375,7 @@ int main(int argc, char** argv) {
                     // so it is made in parallel; the order-preserving copy and
                     // the new streak table stay serial.
                     static std::vector<uint8_t>  hzb_streak_of;   // 0 = visible this frame
+                    hzb_streak_of_last = [](size_t i) { return i < hzb_streak_of.size() ? hzb_streak_of[i] : uint8_t(0); };
                     static std::vector<uint64_t> hzb_key_of;
                     hzb_streak_of.resize(draw_n);
                     hzb_key_of.resize(draw_n);
@@ -14264,6 +14409,29 @@ int main(int argc, char** argv) {
                     // No trustworthy pyramid this frame — everything visible,
                     // and streaks reset so nothing is culled on stale data.
                     hzb_occluded_streak.clear();
+                }
+
+                // GWS_CULL_LOG=1: each frame's occlusion decision, one line (what
+                // a flicker hunt needs without capturing frames, which waits
+                // for the GPU and so hides anything timing-dependent).
+                static const bool cull_log = std::getenv("GWS_CULL_LOG") != nullptr;
+                if (cull_log) {
+                    uint32_t why[4] = {0, 0, 0, 0};
+                    if (hzb_did_filter)
+                        for (size_t i = 0; i < draw_n; ++i)
+                            if (hzb_streak_of_last(i) >= 2) {
+                                ++why[hzb_culler->cull_reason(static_cast<uint32_t>(i)) & 3];
+                                // only the ones in THIS frame's view count (the frustum
+                                // test is loose at the corners)
+                                fc_min[slot_now].push_back(aabb_mins[i]);
+                                fc_max[slot_now].push_back(aabb_maxs[i]);
+                                fc_why[slot_now].push_back(hzb_culler->cull_reason(static_cast<uint32_t>(i)));
+                            }
+                    spdlog::info("[cull] frame {} draws {} drawn {} pyramid {} moved_fast {} filtered {} culled off {} partly {} behind {} "
+                                 "| an earlier frame: culled {} of them not hidden {} (off {} partly {} behind {}) | cam {:.4f} {:.4f} {:.4f} fwd {:.5f} {:.5f} {:.5f}",
+                                 frame_count, draw_n, hzb_did_filter ? geometry_draws.size() : draw_n, use_slot, camera_moved_fast,
+                                 hzb_did_filter, why[1], why[2], why[3], fc_total, fc_false, fc_false_why[1], fc_false_why[2], fc_false_why[3],
+                                 cam.position.x, cam.position.y, cam.position.z, view_fwd.x, view_fwd.y, view_fwd.z);
                 }
 
                 // This frame's pyramid (built from THIS frame's depth, in the
@@ -14559,6 +14727,14 @@ int main(int argc, char** argv) {
                                     water_pass->add_river(wpath, wc->GetDeepColor(), wc->GetShallowColor(),
                                                           wc->GetWaveHeight(), wc->GetWaveSpeed(), wc->GetWaveScale(),
                                                           wc->GetClarity(), wc->GetReflectivity());
+                                } else if (wc->HasMask()) {
+                                    // A lake with a shape: water over its basin only.
+                                    water_pass->add_lake(
+                                        went->GetTransform()->GetWorldPosition(),
+                                        wc->GetSize(), wc->GetMaskNx(), wc->GetMaskNz(), wc->GetMask(),
+                                        wc->GetDeepColor(), wc->GetShallowColor(),
+                                        wc->GetWaveHeight(), wc->GetWaveSpeed(), wc->GetWaveScale(),
+                                        wc->GetClarity(), wc->GetReflectivity());
                                 } else {
                                     water_pass->add_water(
                                         went->GetTransform()->GetWorldPosition(),
@@ -14726,7 +14902,10 @@ int main(int argc, char** argv) {
             }();
             const bool shot_now = !last_frame &&
                 std::find(test_shots.begin(), test_shots.end(), static_cast<uint32_t>(frame_count + 1)) != test_shots.end();
-            const bool capturing = (last_frame || shot_now) && !screenshot_path.empty() &&
+            if (shot_now && shots_async && !screenshot_path.empty() &&
+                record_swapchain_capture(device, swapchain, image_index, cmd, async_caps[current_frame]))
+                async_cap_frame[current_frame] = frame_count + 1;
+            const bool capturing = (last_frame || (shot_now && !shots_async)) && !screenshot_path.empty() &&
                                    record_swapchain_capture(device, swapchain, image_index, cmd, capture);
             vkEndCommandBuffer(cmd);
 
@@ -14805,6 +14984,15 @@ int main(int argc, char** argv) {
                 write_swapchain_capture(device, capture, shot_path);
             }
             if (frame_limit > 0 && frame_count >= frame_limit) {
+                if (shots_async) {
+                    device.wait_idle();
+                    for (uint32_t i = 0; i < kMaxFrames; ++i)
+                        if (async_caps[i].buf != VK_NULL_HANDLE)
+                            hold_swapchain_capture(device, async_caps[i], async_cap_frame[i], held_shots);
+                    std::sort(held_shots.begin(), held_shots.end(),
+                              [](const HeldShot& a, const HeldShot& b) { return a.frame < b.frame; });
+                    write_held_shots(held_shots, screenshot_path);
+                }
                 spdlog::info("[frames] rendered {} frame(s); exiting as requested", frame_count);
                 device.log_memory_stats();
                 break;

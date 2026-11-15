@@ -236,6 +236,16 @@ effect impact
   layer dust   count 9 life 0.6 1.3 speed 0.4 1.8 dir normal spread 50 size 0.1 0.7 color 0.45 0.41 0.35 0.4 to 0.47 0.44 0.4 0 blend drag 3.5 gravity -0.15 jitter 0.05
   layer chips  count 5 life 0.4 0.8 speed 2 5.5 dir normal spread 50 size 0.035 0.03 color 0.18 0.16 0.13 0.95 to 0.18 0.16 0.13 0.7 blend gravity 9.8 shape soft
 end
+effect splash
+  layer spray  count 16 life 0.35 0.8 speed 2 5.5 dir normal spread 20 size 0.05 0.025 color 0.8 0.86 0.9 0.9 to 0.75 0.82 0.86 0 blend gravity 9.8 drag 0.6 shape soft
+  layer column count 4 life 0.25 0.5 speed 1.5 3.6 dir normal spread 6 size 0.1 0.22 color 0.85 0.9 0.95 0.7 to 0.8 0.86 0.9 0 blend gravity 7 drag 1 shape soft
+  layer mist   count 5 life 0.5 1 speed 0.3 1 dir normal spread 70 size 0.2 0.6 color 0.82 0.88 0.92 0.28 to 0.82 0.88 0.92 0 blend drag 3 jitter 0.03 shape smoke
+end
+effect splash_big
+  layer column count 14 life 0.6 1.2 speed 5 11 dir normal spread 14 size 0.25 0.45 color 0.85 0.9 0.95 0.85 to 0.8 0.86 0.9 0 blend gravity 9.8 drag 0.5 shape soft
+  layer spray  count 40 life 0.5 1.1 speed 3 8 dir normal spread 45 size 0.07 0.035 color 0.8 0.86 0.9 0.9 to 0.75 0.82 0.86 0 blend gravity 9.8 drag 0.6 shape soft
+  layer mist   count 14 life 1 2 speed 0.5 2 dir any size 0.6 2 color 0.82 0.88 0.92 0.3 to 0.82 0.88 0.92 0 blend drag 2.5 gravity -0.3 jitter 0.1 shape smoke
+end
 effect impact_actor
   layer burst  count 1 life 0.05 size 0.24 0.1 color 3 0.6 0.4 1 to 1 0.1 0.1 0
   layer spray  count 14 life 0.25 0.55 speed 1.5 4.5 dir normal spread 55 size 0.05 0.025 color 0.45 0.04 0.03 0.95 to 0.3 0.02 0.02 0.6 blend gravity 9.8 drag 0.8 shape soft

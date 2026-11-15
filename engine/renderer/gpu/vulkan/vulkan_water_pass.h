@@ -68,6 +68,20 @@ public:
                    float wave_height, float flow_speed, float wave_scale,
                    float clarity, float reflectivity);
 
+    /// A lake with a shape: the rect at `center` (world; y = level) of `size`,
+    /// water only where `mask` (nz rows of nx) is set. Drawn as a mesh over
+    /// those cells, not the whole rect -- so it does not flood a river valley
+    /// or another lake inside its bounding box. The mesh is kept between
+    /// frames while the lake does not change.
+    void add_lake(const glm::vec3& center, const glm::vec2& size, int nx, int nz, const std::vector<uint8_t>& mask,
+                  const glm::vec3& deep_color, const glm::vec3& shallow_color,
+                  float wave_height, float wave_speed, float wave_scale,
+                  float clarity, float reflectivity);
+    /// A ring spreading on the water from `at` (a step, a round going in, a
+    /// blast): `strength` about 0.2 to 2. The latest few dozen show at once.
+    void add_ripple(const glm::vec3& at, float strength) {
+        ripples_[ripple_next_++ % kRipples] = glm::vec4(at.x, at.z, time_now_, strength);
+    }
     /// Sun direction (light -> scene) + colour, for the specular glint.
     void set_sun(const glm::vec3& direction, const glm::vec3& color) {
         sun_direction_ = direction; sun_color_ = color;
@@ -110,6 +124,16 @@ private:
     };
     std::vector<RiverDraw>   rivers_;
     std::vector<RiverVertex> river_verts_;
+    struct LakeMesh {
+        uint64_t key = 0;
+        std::vector<RiverVertex> verts;
+        uint32_t used = 0;   // frames since it was last asked for
+    };
+    std::vector<LakeMesh> lake_meshes_;
+    static constexpr uint32_t kRipples = 24;   // must match water.frag
+    glm::vec4 ripples_[kRipples] = {};         // x, z, start time, strength
+    uint32_t  ripple_next_ = 0;
+    float     time_now_ = 0.0f;
     // Vertex buffers for the rivers, a ring of three: the one written this
     // frame was last read three frames ago (two in flight), so it is free.
     static constexpr uint32_t kRiverRing = 3;
@@ -129,6 +153,7 @@ private:
         glm::vec4 sun_color;
         glm::vec4 resolution;
         glm::mat4 inv_view_proj;   // scene position from depth (F5)
+        glm::vec4 ripples[kRipples];   // x, z, start time, strength (0: none)
     };
 
     bool initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,

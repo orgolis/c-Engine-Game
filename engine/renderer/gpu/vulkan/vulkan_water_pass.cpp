@@ -373,6 +373,62 @@ void VulkanWaterPass::add_river(const std::vector<glm::vec4>& path,
     rivers_.push_back(rd);
 }
 
+void VulkanWaterPass::add_lake(const glm::vec3& center, const glm::vec2& size, int nx, int nz,
+                               const std::vector<uint8_t>& mask,
+                               const glm::vec3& deep_color, const glm::vec3& shallow_color,
+                               float wave_height, float wave_speed, float wave_scale,
+                               float clarity, float reflectivity) {
+    if (nx <= 0 || nz <= 0 || mask.size() != static_cast<size_t>(nx) * nz) return;
+    // The mesh only changes with the lake: keyed on where it is and its cells.
+    uint64_t key = 1469598103934665603ull;
+    auto mix = [&key](uint64_t v) { key ^= v; key *= 1099511628211ull; };
+    auto fb = [](float f) { uint32_t u; std::memcpy(&u, &f, 4); return static_cast<uint64_t>(u); };
+    mix(fb(center.x)); mix(fb(center.y)); mix(fb(center.z)); mix(fb(size.x)); mix(fb(size.y));
+    mix(static_cast<uint64_t>(nx)); mix(static_cast<uint64_t>(nz)); mix(fb(wave_speed));
+    for (size_t i = 0; i < mask.size(); i += 8) {
+        uint64_t w = 0;
+        for (size_t b = 0; b < 8 && i + b < mask.size(); ++b) w |= static_cast<uint64_t>(mask[i + b] ? 1 : 0) << b;
+        mix(w);
+    }
+    LakeMesh* lm = nullptr;
+    for (LakeMesh& m : lake_meshes_)
+        if (m.key == key) { lm = &m; break; }
+    if (!lm) {
+        lake_meshes_.push_back(LakeMesh{});
+        lm = &lake_meshes_.back();
+        lm->key = key;
+        // One quad per run of water cells along a row: the surface is flat
+        // (the vertex stage adds the swell), so a row needs no inner vertices.
+        const glm::vec2 cell(size.x / nx, size.y / nz);
+        const glm::vec2 lo(center.x - size.x * 0.5f, center.z - size.y * 0.5f);
+        const glm::vec2 drift = glm::vec2(0.10f, 0.04f) * wave_speed;   // still water: a slow drift
+        for (int z = 0; z < nz; ++z) {
+            int x = 0;
+            while (x < nx) {
+                if (!mask[static_cast<size_t>(z) * nx + x]) { ++x; continue; }
+                const int x0 = x;
+                while (x < nx && mask[static_cast<size_t>(z) * nx + x]) ++x;
+                const float ax = lo.x + x0 * cell.x, bx = lo.x + x * cell.x;
+                const float az = lo.y + z * cell.y, bz = lo.y + (z + 1) * cell.y;
+                auto v = [&](float px, float pz) { return RiverVertex{glm::vec3(px, center.y, pz), drift, glm::vec2(px, pz)}; };
+                const RiverVertex a = v(ax, az), b = v(bx, az), c = v(ax, bz), d = v(bx, bz);
+                lm->verts.insert(lm->verts.end(), {a, c, b, b, c, d});
+            }
+        }
+    }
+    lm->used = 0;
+    RiverDraw rd;
+    rd.pc.center_sx    = glm::vec4(center, size.x);
+    rd.pc.p0           = glm::vec4(size.y, wave_height, wave_speed, wave_scale);
+    rd.pc.deep_clarity = glm::vec4(deep_color, clarity);
+    rd.pc.shallow_refl = glm::vec4(shallow_color, reflectivity);
+    rd.pc.river        = glm::vec4(0.0f);   // shaded as still water
+    rd.first = static_cast<uint32_t>(river_verts_.size());
+    river_verts_.insert(river_verts_.end(), lm->verts.begin(), lm->verts.end());
+    rd.count = static_cast<uint32_t>(lm->verts.size());
+    if (rd.count) rivers_.push_back(rd);
+}
+
 bool VulkanWaterPass::ensure_river_buffer(uint32_t slot, VkDeviceSize bytes) {
     if (bytes <= river_cap_[slot] && river_mapped_[slot]) return true;
     VkDevice vk = device_->get_device();
@@ -407,6 +463,11 @@ void VulkanWaterPass::execute(VkCommandBuffer cmd,
                               const glm::mat4& proj,
                               const glm::vec3& camera_position,
                               float time_seconds) {
+    // Lake meshes no lake has asked for in a while (a lake removed or changed).
+    for (LakeMesh& m : lake_meshes_) ++m.used;
+    lake_meshes_.erase(std::remove_if(lake_meshes_.begin(), lake_meshes_.end(),
+                                      [](const LakeMesh& m) { return m.used > 120; }),
+                       lake_meshes_.end());
     if (!enabled_ || (draws_.empty() && rivers_.empty()) || pipeline_ == VK_NULL_HANDLE) return;
     // The rivers' vertices, into this frame's slot of the ring.
     const uint32_t slot = river_frame_++ % kRiverRing;
@@ -422,6 +483,8 @@ void VulkanWaterPass::execute(VkCommandBuffer cmd,
     u.sun_dir    = glm::vec4(sun_direction_, 0.0f);
     u.sun_color  = glm::vec4(sun_color_, 0.0f);
     u.resolution = glm::vec4(static_cast<float>(width_), static_cast<float>(height_), 0, 0);
+    time_now_ = time_seconds;
+    for (uint32_t i = 0; i < kRipples; ++i) u.ripples[i] = ripples_[i];
     cmd_update_uniform(cmd, ubo_, &u, sizeof(u));   // not a memcpy: a frame in flight may read it
 
     VkRenderPassBeginInfo rb{};

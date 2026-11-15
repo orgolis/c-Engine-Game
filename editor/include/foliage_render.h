@@ -248,11 +248,13 @@ public:
                     ld.name = "foliage";
                     ld.base_color = glm::vec4(l.color_a, 1.0f);
                     ld.roughness = 0.8f;
+                    ld.near_fade = 2.0f;   // walked through: not a wall of leaves in the eye, nor through the gun
                     leaf_mat = mats.get_or_create(ld, device, mat_layout, mat_pool, textures);
                     gws::assets::MaterialDesc bd;
                     bd.name = "foliage";
                     bd.base_color = glm::vec4(l.color_b, 1.0f);
                     bd.roughness = 0.92f;
+                    // Bark stays: a trunk is solid, the camera never gets inside it.
                     bark_mat = mats.get_or_create(bd, device, mat_layout, mat_pool, textures);
                 }
                 // Grass: three tints of the layer's colour, one per clump by

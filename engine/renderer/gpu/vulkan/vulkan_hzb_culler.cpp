@@ -503,7 +503,8 @@ void VulkanHzbCuller::pull_readback(uint32_t slot) {
 void VulkanHzbCuller::test_visibility(const glm::vec3* aabb_mins,
                                       const glm::vec3* aabb_maxs,
                                       size_t count,
-                                      const glm::mat4& view_proj) {
+                                      const glm::mat4& view_proj,
+                                      const glm::mat4* now_view_proj) {
     // Every draw is tested. This used to stop at config_.max_draws (4096): on
     // a front-to-back list that meant only the NEAREST 4096 draws were ever
     // occlusion-tested and every draw past them -- the far ones, the likeliest
@@ -511,6 +512,7 @@ void VulkanHzbCuller::test_visibility(const glm::vec3* aabb_mins,
     // capacity now.
     const size_t draw_count = count;
     if (visibility_.size() < draw_count) visibility_.resize(draw_count, 1);
+    if (reason_.size() < draw_count) reason_.resize(draw_count, 0);
 
     if (!enabled_ || !cpu_hzb_valid_) {
         std::fill(visibility_.begin(), visibility_.begin() + draw_count, 1);
@@ -522,6 +524,22 @@ void VulkanHzbCuller::test_visibility(const glm::vec3* aabb_mins,
 
     const float w = static_cast<float>(readback_width_);
     const float h = static_cast<float>(readback_height_);
+
+    // Wholly off THIS frame's screen (the frustum test passes boxes near its
+    // corners that are not on it): not drawn, whatever the pyramid says.
+    auto off_screen_now = [&](const glm::vec3& mn, const glm::vec3& mx) {
+        if (!now_view_proj) return false;
+        bool left = true, right = true, below = true, above = true;
+        for (int c = 0; c < 8; ++c) {
+            const glm::vec4 clip = *now_view_proj * glm::vec4((c & 1) ? mx.x : mn.x, (c & 2) ? mx.y : mn.y, (c & 4) ? mx.z : mn.z, 1.0f);
+            if (clip.w <= 0.0f) return false;   // round the camera: keep it
+            left  = left  && clip.x < -clip.w;
+            right = right && clip.x >  clip.w;
+            below = below && clip.y < -clip.w;
+            above = above && clip.y >  clip.w;
+        }
+        return left || right || below || above;
+    };
 
     // One draw's verdict: reads only its own AABB and the CPU pyramid, so the
     // draws are tested in parallel above a few thousand.
@@ -558,12 +576,21 @@ void VulkanHzbCuller::test_visibility(const glm::vec3* aabb_mins,
             min_z = std::min(min_z, ndc_z);
         }
 
-        // Clip AABB against the frustum sides; if entirely off-screen,
-        // mark invisible (frustum culling already does this but the HZB
-        // sample requires on-screen coords anyway).
-        if (max_x < -1.0f || min_x > 1.0f || max_y < -1.0f || min_y > 1.0f ||
-            min_z >  1.0f) {
-            return 0;
+        // Off the pyramid's screen -- wholly or in part -- is NOT hidden: the
+        // pyramid is a frame or two old and knows nothing about what lay
+        // outside its view. The draws tested here already passed THIS frame's
+        // frustum, so a box off the old screen is one the camera has turned
+        // or moved toward. This returned "hidden" for a box wholly off the
+        // old screen, and tested a box partly off it by its on-screen part
+        // alone: whatever came into view at the edges while turning or
+        // walking was dropped for a frame or two -- shown, gone, shown.
+        if (max_x < -1.0f || min_x > 1.0f || max_y < -1.0f || min_y > 1.0f || min_z > 1.0f) {
+            reason_[i] = 1;
+            return off_screen_now(mn, mx) ? 0 : 1;
+        }
+        if (min_x < -1.0f || max_x > 1.0f || min_y < -1.0f || max_y > 1.0f) {
+            reason_[i] = 2;
+            return off_screen_now(mn, mx) ? 0 : 1;
         }
 
         // NDC → [0,1] UV, then to readback texel coords.
@@ -592,6 +619,7 @@ void VulkanHzbCuller::test_visibility(const glm::vec3* aabb_mins,
                 region_max = std::max(region_max, d);
             }
         }
+        reason_[i] = 3;
         return (min_z > region_max + 1e-4f) ? 0 : 1;
     };
 

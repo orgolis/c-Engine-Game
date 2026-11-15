@@ -221,6 +221,12 @@ inline BuiltWorld build_world(Scene& scene, const WorldPreset& p, uint32_t seed,
     std::vector<WaterSurface> lakes_made;
     const int n = tc->VertsPerSide();
     const float half = tc->GetSize() * 0.5f, cell = tc->CellSize();
+    // Where water already runs or stands: a later river that reaches it joins
+    // it there and ends, instead of running on along the same bed to the edge
+    // -- two water surfaces one on the other, all the way down.
+    std::vector<uint8_t> wet(static_cast<size_t>(n) * n, 0);
+    auto grid = [&](float v) { return std::clamp(static_cast<int>(std::lround((v + half) / cell)), 0, n - 1); };
+    auto is_wet = [&](float x, float z) { return wet[static_cast<size_t>(grid(z)) * n + grid(x)] != 0; };
     for (int r = 0; r < p.rivers; ++r) {
         size_t best = 0;
         float  bh = -1e30f;
@@ -237,6 +243,25 @@ inline BuiltWorld build_world(Scene& scene, const WorldPreset& p, uint32_t seed,
         const glm::vec2 spring(-half + static_cast<float>(best % n) * cell, -half + static_cast<float>(best / n) * cell);
         springs.push_back(spring);
         WaterRun run = trace_water(*tc, spring.x, spring.y, hs);
+        {
+            size_t cut = run.river.size();
+            for (size_t i = 0; i < run.river.size(); ++i)
+                if (is_wet(run.river[i].x, run.river[i].z)) { cut = i + 1; break; }
+            for (const WaterRun::Lake& l : run.lakes) {
+                bool touches = false;
+                for (int vi : l.cell_index) touches = touches || wet[static_cast<size_t>(vi)] != 0;
+                if (touches) cut = std::min(cut, l.at_river);
+            }
+            if (cut < run.river.size() || cut == 0) {
+                run.river.resize(cut);
+                run.breaks.erase(std::remove_if(run.breaks.begin(), run.breaks.end(), [&](size_t b) { return b >= cut; }),
+                                 run.breaks.end());
+                run.lakes.erase(std::remove_if(run.lakes.begin(), run.lakes.end(),
+                                               [&](const WaterRun::Lake& l) { return l.at_river >= cut && l.at_river > 0; }),
+                                run.lakes.end());
+                run.reached_edge = run.reached_sea = false;
+            }
+        }
         if (run.river.size() < 8) continue;
         carve_river(*tc, run, p.river_width, p.river_depth);
         auto river = scene.CreateEntity(p.name + " river " + std::to_string(++w.rivers));
@@ -246,8 +271,17 @@ inline BuiltWorld build_world(Scene& scene, const WorldPreset& p, uint32_t seed,
         // The lakes: one surface each, at its level over its extent -- once,
         // when two rivers run into the same one.
         int k = 0;
-        for (const WaterSurface& s : river_surfaces(run, p.river_width, p.river_depth * 0.7f, 0.6f, 240)) {
-            if (!s.lake) continue;
+        for (const WaterRun::Lake& lk : run.lakes) {
+            if (lk.cells < 8) continue;   // a puddle: the river's own water covers it
+            const LakeShape shape = lake_shape(lk, n, cell, half);
+            if (shape.nx <= 0) continue;
+            WaterSurface s;
+            s.lake = true;
+            s.level = lk.level;
+            s.x = shape.x;
+            s.z = shape.z;
+            s.size_x = shape.size_x;
+            s.size_z = shape.size_z;
             bool known = false;
             for (const WaterSurface& o : lakes_made)
                 known = known || (std::fabs(o.level - s.level) < 1.5f && std::fabs(o.x - s.x) < (o.size_x + s.size_x) * 0.5f &&
@@ -260,6 +294,7 @@ inline BuiltWorld build_world(Scene& scene, const WorldPreset& p, uint32_t seed,
             part->GetTransform()->SetWorldPosition(e->GetTransform()->GetWorldPosition() + glm::vec3(s.x, s.level, s.z));
             if (auto wc = part->AddComponent<WaterComponent>()) {
                 wc->SetSize(glm::vec2(s.size_x, s.size_z));
+                wc->SetMask(shape.nx, shape.nz, shape.mask);
                 wc->SetWaveHeight(0.04f);
                 wc->SetWaveScale(8.0f);
                 wc->SetClarity(3.0f);
@@ -287,6 +322,18 @@ inline BuiltWorld build_world(Scene& scene, const WorldPreset& p, uint32_t seed,
             }
             w.made.push_back(part);
         }
+        // This river's bed and lakes are water now, for the rivers after it.
+        const int reach = static_cast<int>(std::ceil(p.river_width / std::max(cell, 1e-3f))) + 1;
+        for (const WaterRun::Point& q : run.river) {
+            const int gx = grid(q.x), gz = grid(q.z);
+            for (int dz = -reach; dz <= reach; ++dz)
+                for (int dx = -reach; dx <= reach; ++dx) {
+                    const int x = gx + dx, z = gz + dz;
+                    if (x >= 0 && z >= 0 && x < n && z < n) wet[static_cast<size_t>(z) * n + x] = 1;
+                }
+        }
+        for (const WaterRun::Lake& lk : run.lakes)
+            for (int vi : lk.cell_index) wet[static_cast<size_t>(vi)] = 1;
     }
 
     // Foliage and biomes, the biomes seeing the rivers as water.
