@@ -11,6 +11,7 @@
 // the user about before they go looking in the wrong place.
 // ============================================================================
 #include "anim_graph.h"
+#include "two_bone_ik.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -170,6 +171,24 @@ int main() {
         check(cond_uses_threshold(AnimGraphCondOp::Greater), "'>' takes a threshold");
         check(!cond_uses_threshold(AnimGraphCondOp::True), "'is true' does not");
         check(!cond_uses_threshold(AnimGraphCondOp::TriggerSet), "nor does a trigger");
+    }
+
+    // ---- two-bone IK (the first-person arms) -----------------------------------
+    {
+        using schizo::renderer::solve_two_bone_ik;
+        const glm::vec3 s(0, 0, 0), e(0, -0.3f, 0), w(0, -0.57f, 0);   // an arm hanging down
+        const glm::vec3 target(0.15f, -0.1f, -0.4f), pole(0.3f, -1.0f, 0.2f);
+        const auto ik = solve_two_bone_ik(s, e, w, target, pole);
+        const glm::vec3 e2 = s + ik.upper * (e - s);
+        const glm::vec3 w2 = e2 + ik.fore * (ik.upper * (w - e));
+        check(ik.reached && glm::length(w2 - target) < 1e-4f, "IK: the wrist lands on a target in reach");
+        check(std::fabs(glm::length(e2 - s) - 0.3f) < 1e-4f && std::fabs(glm::length(w2 - e2) - 0.27f) < 1e-4f, "IK: the bones keep their lengths");
+        const glm::vec3 dir = glm::normalize(target - s);
+        const glm::vec3 bend = (e2 - s) - dir * glm::dot(e2 - s, dir);
+        check(glm::dot(bend, pole - dir * glm::dot(pole, dir)) > 0.0f, "IK: the elbow bends toward the pole");
+        const auto far = solve_two_bone_ik(s, e, w, glm::vec3(0, 0, -2.0f), pole);
+        const glm::vec3 fe = s + far.upper * (e - s), fw = fe + far.fore * (far.upper * (w - e));
+        check(!far.reached && glm::length(fw - glm::vec3(0, 0, -0.57f)) < 2e-3f, "IK: out of reach, the arm stretches straight at it");
     }
 
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);

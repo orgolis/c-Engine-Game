@@ -117,6 +117,9 @@ public:
         std::vector<std::pair<glm::vec3, glm::vec3>> calls;   // (who noticed, where the target is)
 
         std::unordered_map<uint32_t, bool> seen;
+        // Targets by name, looked up once an update (it was once an agent: a
+        // name search over every object, for every agent, every frame).
+        std::unordered_map<std::string, std::shared_ptr<schizo::scene::Entity>> targets;
         for (const auto& ent : scene->GetEntities()) {
             if (!ent || !ent->IsActive()) continue;
             const auto* ag = std::as_const(*ent).GetNpcAgentComponent();
@@ -141,7 +144,9 @@ public:
             glm::vec3 target_pos(0.0f);
             bool has_target = false;
             schizo::scene::Entity* target_ent = nullptr;
-            if (auto tgt = scene->GetEntityByName(ag->target_name)) {
+            auto tit = targets.find(ag->target_name);
+            if (tit == targets.end()) tit = targets.emplace(ag->target_name, scene->GetEntityByName(ag->target_name)).first;
+            if (auto tgt = tit->second) {
                 if (tgt->IsActive() && tgt.get() != ent.get() && !(bridge && dead(*bridge, tgt->GetTransform()))) {
                     if (auto* ttf = tgt->GetTransform()) {
                         target_pos = ttf->GetWorldPosition();
@@ -153,9 +158,13 @@ public:
             const glm::vec3 fwd = glm::normalize(glm::vec3(tf->GetWorldMatrix() * glm::vec4(0, 0, 1, 0)));
             const glm::vec3 eye = pos + glm::vec3(0.0f, 0.6f, 0.0f);
             const float dist = has_target ? glm::length(target_pos - pos) : 1e9f;
-            const bool clear_line = has_target && (!has_world || line_clear(*world, eye, target_pos + glm::vec3(0.0f, 0.3f, 0.0f)));
-            const bool in_view = has_target && clear_line &&
-                                 schizo::ecs::can_see(pos, fwd, ag->sight_fov_deg, ag->sight_range, target_pos);
+            // The line of sight only when it can matter -- the target in sight
+            // range, or a chase on -- not a ray across half the world for every
+            // agent, every frame, to a player it could not have seen anyway.
+            const bool could_see = has_target && schizo::ecs::can_see(pos, fwd, ag->sight_fov_deg, ag->sight_range, target_pos);
+            const bool need_line = has_target && (could_see || st.mode == Mode::Chase || dist <= ag->sight_range);
+            const bool clear_line = need_line && (!has_world || line_clear(*world, eye, target_pos + glm::vec3(0.0f, 0.3f, 0.0f)));
+            const bool in_view = could_see && clear_line;
             const bool heard = has_target && dist <= ag->sight_range * 0.4f;
             bool hurt = false;
             schizo::ecs::Entity me = schizo::ecs::null_entity;

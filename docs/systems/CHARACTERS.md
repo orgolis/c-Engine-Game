@@ -92,7 +92,34 @@ start. It casts no shadow (the player model's own does). The model faces +Z
 (its barrel), as glTF models do. Against something solid right ahead (a
 trunk, a rock, a wall within about a metre) it comes back and points down
 instead of going through it. Auto-exposure does not meter it: a dark gun in
-the corner of the view does not make the rest of the scene brighter.
+the corner of the view does not make the rest of the scene brighter. It is
+placed from the camera as it is drawn that frame (placed before the player
+moved, it shook while running: 15 mm a frame at a sprint).
+
+**The player's arms hold it.** In first person a second copy of the player's
+model is drawn fixed to the eye, its head folded away, posed by the player's
+clips for the way the gun is held (`aim`, `fire`, `reload`; `aim_pistol=` ...
+for a pistol -- the weapon's `hold`). Each arm is bent (two-bone inverse
+kinematics, the elbow down and out) so the right hand is where the weapon's
+`grip` puts it on the gun and the left where the clip holds it relative to a
+gun in the right hand: on the handguard of a rifle, cupping a pistol. The
+hands follow the gun's `weapon` bone, so they kick, tilt in a reload and swing
+a sword with it. A long gun is held bladed (the body turned 30 degrees, the
+left shoulder forward); a melee weapon is held in the right hand alone. The
+arm bones are found as `upper_arm`/`forearm`/`hand` with `.R`/`.L` (or
+`RightArm`-style names); without such a model the gun is drawn alone.
+
+## Level of detail
+
+In Play a character is animated (posed on the CPU, skinned on the GPU) every
+frame when it is within 30 m or in view within 70 m; farther ones every 2nd
+or 4th frame and ones well out of view every 8th, each turn with the time it
+skipped -- drawn meanwhile with the pose it has, moving smoothly. The cost
+follows how many characters are near, not how many there are.
+`GWS_NO_ANIM_LOD=1` animates them all every frame.
+
+A skinned model is culled by a box that holds it in any pose (not its bind
+pose), whole: a limb posed away from where it is bound is never culled.
 
 ## In the scene file
 
@@ -118,7 +145,8 @@ idle, fire, reload and draw clips). Each soldier is an NPC agent with a
 
 ## Known limits
 
-- No inverse kinematics: the support hand follows the clip, not the gun.
+- Inverse kinematics only for the first-person arms: a third-person support
+  hand follows the clip, not the gun.
 - Root motion is not used: characters move by their controller or agent and
   the clip's speed follows.
 - One material per model.

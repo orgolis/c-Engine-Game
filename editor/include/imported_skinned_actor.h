@@ -25,6 +25,7 @@
 #include "vulkan/vulkan_render_graph.h"   // DrawItem
 
 #include "skeleton.h"
+#include "two_bone_ik.h"
 #include "animation.h"
 
 #include <glm/glm.hpp>
@@ -172,6 +173,25 @@ public:
         for (size_t b = 0; b < bones.size(); ++b) if (bones[b].name.rfind(name, 0) == 0) return static_cast<int>(b);
         return -1;
     }
+    /// How the mesh around a bone is moved from where the model has it (the
+    /// bone's skinning transform, in the world): a held thing follows this.
+    glm::mat4 bone_skin(int bone) const {
+        if (!skeleton_ || !shared_ || bone < 0 || static_cast<uint32_t>(bone) >= skeleton_->GetBoneCount() ||
+            static_cast<size_t>(bone) >= shared_->model.inverse_bind.size())
+            return model();
+        return model() * skeleton_->GetWorldMatrix(static_cast<uint16_t>(bone)) * shared_->model.inverse_bind[static_cast<size_t>(bone)];
+    }
+    /// A bone's parent (-1 for a root or none) and its name.
+    int bone_parent(int bone) const {
+        if (!skeleton_ || bone < 0 || static_cast<uint32_t>(bone) >= skeleton_->GetBoneCount()) return -1;
+        return skeleton_->GetBone(static_cast<uint16_t>(bone))->parent_id;
+    }
+    std::string bone_name(int bone) const {
+        if (!skeleton_ || bone < 0 || static_cast<uint32_t>(bone) >= skeleton_->GetBoneCount()) return {};
+        std::string n = skeleton_->GetBone(static_cast<uint16_t>(bone))->name;
+        if (const size_t at = n.find("__"); at != std::string::npos) n.resize(at);   // the loader's "<name>__<node>"
+        return n;
+    }
     /// A bone's place in the world (the actor's model x the posed bone).
     glm::mat4 bone_world(int bone) const {
         if (!skeleton_ || bone < 0 || static_cast<uint32_t>(bone) >= skeleton_->GetBoneCount()) return model();
@@ -180,8 +200,64 @@ public:
 
     /// GPU: record the skinning dispatch from the current pose. Call right after
     /// the frame command buffer begins (before shadow/geometry read the vbo).
+    // ---- first person ------------------------------------------------------
+    /// An arm to bend: its three bones (upper arm, forearm, hand), where the
+    /// hand is to be (world, with its orientation), and which way the elbow
+    /// points (a world direction).
+    struct ArmTarget {
+        int       upper = -1, fore = -1, hand = -1;
+        glm::mat4 target{1.0f};
+        glm::vec3 pole{0.0f, -1.0f, 0.0f};
+    };
+    /// After advance(): fold `fold` bones away (scaled to nothing -- the head
+    /// the eye sits in) and bend each arm so its hand is at its target. The
+    /// skinning then draws this pose. Model first (set_model).
+    void pose_first_person(const std::vector<int>& fold, const ArmTarget* arms, int count) {
+        if (!skeleton_) return;
+        const auto n = static_cast<int>(skeleton_->GetBoneCount());
+        for (int b : fold)
+            if (b >= 0 && b < n) {
+                schizo::renderer::BoneTransform tf = skeleton_->GetBone(static_cast<uint16_t>(b))->local_transform;
+                tf.scale = glm::vec3(1e-3f);
+                skeleton_->SetBoneLocalTransform(static_cast<uint16_t>(b), tf);
+            }
+        skeleton_->UpdateWorldTransforms();
+        const glm::mat4 inv = glm::inverse(model());
+        auto rot = [](const glm::mat4& m) {
+            return glm::normalize(glm::quat_cast(glm::mat3(glm::normalize(glm::vec3(m[0])), glm::normalize(glm::vec3(m[1])),
+                                                           glm::normalize(glm::vec3(m[2])))));
+        };
+        auto set_rot = [&](int b, const glm::quat& q) {
+            schizo::renderer::BoneTransform tf = skeleton_->GetBone(static_cast<uint16_t>(b))->local_transform;
+            tf.rotation = glm::normalize(q);
+            skeleton_->SetBoneLocalTransform(static_cast<uint16_t>(b), tf);
+        };
+        for (int k = 0; k < count; ++k) {
+            const ArmTarget& a = arms[k];
+            if (a.upper < 0 || a.fore < 0 || a.hand < 0 || a.upper >= n || a.fore >= n || a.hand >= n) continue;
+            const glm::mat4 gu = skeleton_->GetWorldMatrix(static_cast<uint16_t>(a.upper));
+            const glm::mat4 gf = skeleton_->GetWorldMatrix(static_cast<uint16_t>(a.fore));
+            const glm::mat4 gh = skeleton_->GetWorldMatrix(static_cast<uint16_t>(a.hand));
+            const glm::mat4 tgt = inv * a.target;   // in the model's space, as the bones are
+            const auto ik = schizo::renderer::solve_two_bone_ik(glm::vec3(gu[3]), glm::vec3(gf[3]), glm::vec3(gh[3]),
+                                                                glm::vec3(tgt[3]), glm::mat3(inv) * a.pole);
+            const glm::quat ru = ik.upper * rot(gu);
+            const glm::quat rf = ik.fore * ik.upper * rot(gf);
+            const glm::quat rh = rot(tgt);
+            const int parent = skeleton_->GetBone(static_cast<uint16_t>(a.upper))->parent_id;
+            const glm::quat rp = parent >= 0 ? rot(skeleton_->GetWorldMatrix(static_cast<uint16_t>(parent))) : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            set_rot(a.upper, glm::inverse(rp) * ru);
+            set_rot(a.fore, glm::inverse(ru) * rf);
+            set_rot(a.hand, glm::inverse(rf) * rh);
+            skeleton_->UpdateWorldTransforms();
+        }
+    }
+
+    /// Skinned at least once (its vertex buffer holds a pose, not the bind pose).
+    bool skinned_once() const { return skinned_once_; }
     void record_skin(VkCommandBuffer cmd) {
         if (!mesh_ || !skeleton_) return;
+        skinned_once_ = true;
         const uint32_t n = skeleton_->GetBoneCount();
         std::vector<glm::mat4> globals(n);
         for (uint32_t i = 0; i < n; ++i)
@@ -326,6 +402,7 @@ private:
     std::vector<uint8_t> upper_mask_;
 
     glm::mat4 model_{1.0f};
+    bool skinned_once_ = false;
     bool      use_model_ = false;   // set once an entity Transform drives this
     glm::vec3 world_pos_{0.0f};
     float     scale_ = 1.0f;

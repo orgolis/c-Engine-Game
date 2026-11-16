@@ -8,6 +8,19 @@ it in the editor.
 
 ## What is in it
 
+- **Six lands** (biomes, painted -- the editor's Apply biomes gives the same):
+  the Meadow in the west where the game starts, a Pine Forest to the north,
+  Autumn Woods in the middle, Dry Plains to the south, the Snowy Highlands in
+  the east round the beacon, and Wetland along the rivers. Each has its ground
+  (textured: meadow grass, forest floor, dry earth, snow), its plants and its
+  air: flowers and bushes in the meadow; ferns, fallen logs, stumps and
+  mushrooms under the pines; orange trees in the autumn woods; dry grass,
+  cacti and dead bushes on the plains; snow-laden pines and boulders in the
+  highlands; reeds by the water.
+- **Buildings**: a village and a farm in the meadow (cottages, barns), ruins
+  in the forests and on the plains, log cabins in the snow -- walk in through
+  their doors -- and at every soldiers' outpost a bunker, sandbag walls and a
+  watchtower.
 - **The world** (`scenes/main.scene`): 1024 m of rolling hills (built with
   `gws world`, docs/systems/WORLDS_AND_WATER.md) with four rivers and their
   lakes under an HDR
@@ -18,8 +31,9 @@ it in the editor.
   the start, the caches, checkpoints, the beacon and the camps is kept clear.
 - **The player**: first person (a rigged soldier, seen in third person and in
   its shadow), the gun in hand seen and animated, the full movement set (sprint, crouch, slide,
-  dash, mantle, climb), three weapon slots -- a rifle and a pistol to start,
-  the third empty (keys 1, 2, 3; the mouse wheel or Q switches too) -- two
+  dash, mantle, climb), three weapon slots -- a rifle, a pistol and a sword
+  to start (keys 1, 2, 3; the mouse wheel or Q switches too), held by the
+  player's own arms in first person -- two
   frag grenades (G, thrown: aim up to throw far), Firebolt in the first of
   three ability slots (Z), health potions; mortal, comes back from the last
   checkpoint. No mana: abilities cost only their cooldowns. The HUD has
@@ -53,7 +67,9 @@ it in the editor.
 - **Inventory** (I): the three weapon slots (click a gun to draw it; Put in
   bag), what is worn (click to take it off) and the bag (pick an item, then
   Use / equip: potions, gear, guns).
-- **Soldiers** (docs/systems/CHARACTERS.md): three outposts of riflemen and
+- **84 enemies**: 37 soldiers at ten outposts and 47 creatures in thirteen
+  camps, spread over every land.
+- **Soldiers** (docs/systems/CHARACTERS.md): ten outposts of riflemen and
   heavy gunners -- rigged, animated models with guns in their hands -- who
   patrol, aim, shoot (rifle shots and machine-gun bursts that spread at range)
   from cover distance, stagger when hit and fall when killed. Their guns and

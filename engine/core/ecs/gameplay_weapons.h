@@ -69,6 +69,24 @@ struct WeaponDef {
     // forward, metres), its muzzle where shots and the flash come from.
     std::string model;
     glm::vec3   view_offset = glm::vec3(0.16f, -0.17f, 0.34f);
+    glm::vec3   view_angles = glm::vec3(0.0f);   // degrees: turned in (yaw), tipped (pitch), rolled
+    // How it is held: "rifle" (two hands, the default), "pistol", "melee" --
+    // a character's clips for it are <state>_<hold> (aim_pistol=...) when it
+    // has them, and the first-person arms hold it so.
+    std::string hold;
+    // How a character's hand holds it: the gun's root relative to `grip_bone`
+    // (default weapon_socket), moved by grip_pos, turned by grip_rot (degrees)
+    // -- the same numbers as a held gun's Held at parent bone. The first-person
+    // arms put the right hand there.
+    std::string grip_bone;
+    glm::vec3   grip_pos = glm::vec3(0.0f);
+    glm::vec3   grip_rot = glm::vec3(0.0f);
+    // A melee weapon (a sword): no rounds; a swing reaches everyone within
+    // `melee_reach` metres in front, inside `melee_arc` degrees, not through
+    // walls. `rpm` is swings a minute.
+    bool        melee = false;
+    float       melee_reach = 2.2f;
+    float       melee_arc = 100.0f;
 };
 
 inline std::vector<WeaponDef>& weapon_registry() { static std::vector<WeaponDef> r; return r; }
@@ -182,10 +200,14 @@ inline Entity hitscan_target(World& w, Entity shooter, const glm::vec3& origin, 
 // With `world`, hitscan rounds also stop at level geometry (a wall shields
 // the one behind it); with `shots`, each round's path is reported for tracers
 // and impact marks. Recoil goes into ws.kick_* for the view to take.
+inline bool melee_swing(World& w, Entity shooter, const glm::vec3& origin, const glm::vec3& aim, WeaponState& ws,
+                        const WeaponDef& wd, GameplayEventBus* bus, const WorldRayFn* world, std::vector<ShotTrace>* shots);
+
 inline bool fire_weapon(World& w, Entity shooter, const glm::vec3& origin, const glm::vec3& aim,
                         WeaponState& ws, GameplayEventBus* bus = nullptr, uint64_t seed = 1,
                         const WorldRayFn* world = nullptr, std::vector<ShotTrace>* shots = nullptr) {
     const WeaponDef* wd = find_weapon(ws.weapon_id);
+    if (wd && wd->melee) return melee_swing(w, shooter, origin, aim, ws, *wd, bus, world, shots);
     if (!wd || ws.reloading > 0.0f || ws.cooldown > 0.0f || ws.ammo_in_mag <= 0) return false;
     --ws.ammo_in_mag;
     ws.cooldown = 60.0f / (wd->rpm > 1.0f ? wd->rpm : 1.0f);
@@ -245,6 +267,63 @@ inline bool fire_weapon(World& w, Entity shooter, const glm::vec3& origin, const
     return true;
 }
 
+/// A melee weapon's swing: everyone within its reach in front of `origin`,
+/// inside its arc around `aim`, with nothing solid between -- each takes the
+/// weapon's damage (and the swinger's Damage bonus). Reported like shots: a
+/// trace to each one reached, else to what the swing met (a wall, a tree).
+inline bool melee_swing(World& w, Entity shooter, const glm::vec3& origin, const glm::vec3& aim, WeaponState& ws,
+                        const WeaponDef& wd, GameplayEventBus* bus, const WorldRayFn* world, std::vector<ShotTrace>* shots) {
+    if (ws.cooldown > 0.0f) return false;
+    ws.cooldown = 60.0f / (wd.rpm > 1.0f ? wd.rpm : 1.0f);
+    ++ws.rounds_fired;
+    if (bus) { GameplayEvent ev; ev.name = "weapon.fire"; ev.instigator = shooter; ev.param = ws.weapon_id; bus->publish(ev); }
+    const glm::vec3 fwd = glm::length(aim) > 1e-6f ? glm::normalize(aim) : glm::vec3(0.0f, 0.0f, -1.0f);
+    const float cos_half = std::cos(glm::radians(std::clamp(wd.melee_arc, 1.0f, 360.0f) * 0.5f));
+    const float dmg = wd.damage * (1.0f + bonus_stat(w.try_get<AttributeSet>(shooter), "Damage") / 100.0f);
+    int reached = 0;
+    w.each<CombatActor, Transform>([&](Entity e, CombatActor& ca, Transform& t) {
+        if (e == shooter) return;
+        const HitSphere hb = combat_hurtbox(ca, t.position);
+        glm::vec3 to = hb.center - origin;
+        const float dist = std::max(0.0f, glm::length(to) - hb.radius);
+        if (dist > wd.melee_reach) return;
+        const float len = glm::length(to);
+        const glm::vec3 dir = len > 1e-4f ? to / len : fwd;
+        if (len > hb.radius && glm::dot(dir, fwd) < cos_half) return;
+        float wall_t = 0.0f;
+        glm::vec3 wall_n(0.0f, 1.0f, 0.0f);
+        if (world && *world && (*world)(origin, dir, len, wall_t, wall_n) && wall_t < dist) return;   // behind a wall
+        const float dealt = apply_damage(w, e, DamageInfo{dmg, wd.damage_type});
+        ++reached;
+        if (bus) { GameplayEvent ev; ev.name = "weapon.hit"; ev.instigator = shooter; ev.target = e;
+                   ev.value = dealt; ev.param = wd.damage_type; bus->publish(ev); }
+        if (shots) {
+            ShotTrace st;
+            st.start = origin;
+            st.end = origin + dir * std::max(0.0f, len - hb.radius * 0.5f);
+            st.hit = ShotTrace::Hit::Actor;
+            st.target = e;
+            st.normal = -dir;
+            shots->push_back(st);
+        }
+    });
+    if (reached == 0 && shots) {   // the blade meets the world, or the air
+        ShotTrace st;
+        st.start = origin;
+        float wall_t = wd.melee_reach;
+        glm::vec3 wall_n(0.0f, 1.0f, 0.0f);
+        if (world && *world && (*world)(origin, fwd, wd.melee_reach, wall_t, wall_n)) {
+            st.end = origin + fwd * wall_t;
+            st.hit = ShotTrace::Hit::World;
+            st.normal = wall_n;
+            if (bus) { GameplayEvent ev; ev.name = "weapon.impact"; ev.instigator = shooter; ev.value = wall_t;
+                       ev.param = ws.weapon_id; bus->publish(ev); }
+            shots->push_back(st);
+        }
+    }
+    return true;
+}
+
 /// Trigger handling for a held button: `pressed` is this frame's edge, `held`
 /// whether it is down. Semi fires on the press, Auto while held, Burst fires
 /// `burst` rounds from one press. Returns rounds fired this call.
@@ -292,7 +371,7 @@ inline void take_recoil(WeaponState& ws, float& pitch, float& yaw) {
 
 inline void reload_weapon(WeaponState& ws) {
     const WeaponDef* wd = find_weapon(ws.weapon_id);
-    if (!wd || ws.reloading > 0.0f || ws.ammo_in_mag >= wd->mag_size || ws.reserve <= 0) return;
+    if (!wd || wd->melee || ws.reloading > 0.0f || ws.ammo_in_mag >= wd->mag_size || ws.reserve <= 0) return;
     ws.reloading = wd->reload_time;
 }
 

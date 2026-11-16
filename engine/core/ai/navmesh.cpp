@@ -89,10 +89,65 @@ bool NavMesh::build(const std::vector<glm::vec3>& tv, float weld_eps) {
             }
         }
     }
+    build_grid();
     return true;
 }
 
+void NavMesh::build_grid() {
+    cell_start_.clear();
+    cell_tris_.clear();
+    grid_w_ = grid_h_ = 0;
+    if (tris_.empty()) return;
+    glm::vec2 mn(std::numeric_limits<float>::max()), mx(-std::numeric_limits<float>::max());
+    for (const Tri& t : tris_)
+        for (const glm::vec3& v : t.v) { mn = glm::min(mn, glm::vec2(v.x, v.z)); mx = glm::max(mx, glm::vec2(v.x, v.z)); }
+    const glm::vec2 ext = glm::max(mx - mn, glm::vec2(1e-3f));
+    // About eight triangles a cell; never more than ~4M cells.
+    cell_ = std::clamp(std::sqrt(ext.x * ext.y / static_cast<float>(tris_.size()) * 8.0f), 0.25f, 256.0f);
+    while ((ext.x / cell_ + 1.0f) * (ext.y / cell_ + 1.0f) > 4.0e6f) cell_ *= 1.5f;
+    grid_min_ = mn;
+    grid_w_ = static_cast<int>(ext.x / cell_) + 1;
+    grid_h_ = static_cast<int>(ext.y / cell_) + 1;
+    const size_t cells = static_cast<size_t>(grid_w_) * grid_h_;
+    auto span = [&](const Tri& t, int& x0, int& z0, int& x1, int& z1) {
+        float ax = t.v[0].x, bx = t.v[0].x, az = t.v[0].z, bz = t.v[0].z;
+        for (int k = 1; k < 3; ++k) { ax = std::min(ax, t.v[k].x); bx = std::max(bx, t.v[k].x); az = std::min(az, t.v[k].z); bz = std::max(bz, t.v[k].z); }
+        x0 = std::clamp(static_cast<int>((ax - grid_min_.x) / cell_), 0, grid_w_ - 1);
+        x1 = std::clamp(static_cast<int>((bx - grid_min_.x) / cell_), 0, grid_w_ - 1);
+        z0 = std::clamp(static_cast<int>((az - grid_min_.y) / cell_), 0, grid_h_ - 1);
+        z1 = std::clamp(static_cast<int>((bz - grid_min_.y) / cell_), 0, grid_h_ - 1);
+    };
+    std::vector<uint32_t> count(cells + 1, 0);
+    for (const Tri& t : tris_) {
+        int x0, z0, x1, z1;
+        span(t, x0, z0, x1, z1);
+        for (int z = z0; z <= z1; ++z)
+            for (int x = x0; x <= x1; ++x) ++count[static_cast<size_t>(z) * grid_w_ + x];
+    }
+    cell_start_.assign(cells + 1, 0);
+    for (size_t c = 0; c < cells; ++c) cell_start_[c + 1] = cell_start_[c] + count[c];
+    cell_tris_.assign(cell_start_[cells], -1);
+    std::vector<uint32_t> fill(cell_start_.begin(), cell_start_.end() - 1);
+    for (int i = 0; i < static_cast<int>(tris_.size()); ++i) {
+        int x0, z0, x1, z1;
+        span(tris_[i], x0, z0, x1, z1);
+        for (int z = z0; z <= z1; ++z)
+            for (int x = x0; x <= x1; ++x) cell_tris_[fill[static_cast<size_t>(z) * grid_w_ + x]++] = i;
+    }
+}
+
 bool NavMesh::contains(const glm::vec3& p) const {
+    if (grid_w_ > 0) {
+        const int cx = static_cast<int>(std::floor((p.x - grid_min_.x) / cell_));
+        const int cz = static_cast<int>(std::floor((p.z - grid_min_.y) / cell_));
+        if (cx < 0 || cz < 0 || cx >= grid_w_ || cz >= grid_h_) return false;
+        const size_t c = static_cast<size_t>(cz) * grid_w_ + cx;
+        for (uint32_t k = cell_start_[c]; k < cell_start_[c + 1]; ++k) {
+            const Tri& t = tris_[static_cast<size_t>(cell_tris_[k])];
+            if (point_in_tri_xz(p, t.v[0], t.v[1], t.v[2])) return true;
+        }
+        return false;
+    }
     for (const Tri& t : tris_)
         if (point_in_tri_xz(p, t.v[0], t.v[1], t.v[2])) return true;
     return false;
@@ -100,6 +155,48 @@ bool NavMesh::contains(const glm::vec3& p) const {
 
 int NavMesh::nearest_tri(const glm::vec3& p) const {
     if (tris_.empty()) return -1;
+    if (grid_w_ > 0) {
+        const int cx = static_cast<int>(std::floor((p.x - grid_min_.x) / cell_));
+        const int cz = static_cast<int>(std::floor((p.z - grid_min_.y) / cell_));
+        // Containing: of those stacked here, the nearest in height.
+        if (cx >= 0 && cz >= 0 && cx < grid_w_ && cz < grid_h_) {
+            const size_t c = static_cast<size_t>(cz) * grid_w_ + cx;
+            int best = -1;
+            float bd = std::numeric_limits<float>::max();
+            for (uint32_t k = cell_start_[c]; k < cell_start_[c + 1]; ++k) {
+                const int t = cell_tris_[k];
+                const Tri& tr = tris_[static_cast<size_t>(t)];
+                if (!point_in_tri_xz(p, tr.v[0], tr.v[1], tr.v[2])) continue;
+                const float d = std::fabs(height_on(t, p) - p.y);
+                if (d < bd) { bd = d; best = t; }
+            }
+            if (best >= 0) return best;
+        }
+        // Nearest centroid: rings of cells outward, until no nearer cell is left.
+        const int ccx = std::clamp(cx, 0, grid_w_ - 1), ccz = std::clamp(cz, 0, grid_h_ - 1);
+        const float outside = std::max({grid_min_.x - p.x, p.x - (grid_min_.x + grid_w_ * cell_),
+                                         grid_min_.y - p.z, p.z - (grid_min_.y + grid_h_ * cell_), 0.0f});
+        int best = -1;
+        float bd = std::numeric_limits<float>::max();
+        const int rmax = std::max(grid_w_, grid_h_);
+        for (int r = 0; r <= rmax; ++r) {
+            if (best >= 0 && (static_cast<float>(r) - 1.0f) * cell_ + outside > bd) break;
+            for (int z = ccz - r; z <= ccz + r; ++z) {
+                if (z < 0 || z >= grid_h_) continue;
+                const bool edge_row = z == ccz - r || z == ccz + r;
+                for (int x = ccx - r; x <= ccx + r; x += edge_row ? 1 : 2 * std::max(r, 1)) {
+                    if (x < 0 || x >= grid_w_) continue;
+                    const size_t c = static_cast<size_t>(z) * grid_w_ + x;
+                    for (uint32_t k = cell_start_[c]; k < cell_start_[c + 1]; ++k) {
+                        const int t = cell_tris_[k];
+                        const float d = glm::length(tris_[static_cast<size_t>(t)].centroid - p);
+                        if (d < bd) { bd = d; best = t; }
+                    }
+                }
+            }
+        }
+        if (best >= 0) return best;
+    }
     // Prefer a triangle whose XZ footprint contains p.
     for (int t = 0; t < static_cast<int>(tris_.size()); ++t)
         if (point_in_tri_xz(p, tris_[t].v[0], tris_[t].v[1], tris_[t].v[2])) return t;

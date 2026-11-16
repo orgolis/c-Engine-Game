@@ -168,7 +168,23 @@ inline std::vector<WeaponDef> parse_weapons_text(const std::string& text) {
         else if (key == "flash")    { cur.muzzle_flash = true; }
         else if (key == "ammo")     { ls >> cur.ammo_item; }
         else if (key == "model")    { ls >> cur.model; }
-        else if (key == "view")     { ls >> cur.view_offset.x >> cur.view_offset.y >> cur.view_offset.z; }
+        else if (key == "view")     {
+            ls >> cur.view_offset.x >> cur.view_offset.y >> cur.view_offset.z;
+            float yaw, pitch, roll;
+            if (ls >> yaw) { cur.view_angles.x = yaw; if (ls >> pitch) { cur.view_angles.y = pitch; if (ls >> roll) cur.view_angles.z = roll; } }
+        }
+        else if (key == "hold")     { ls >> cur.hold; }
+        else if (key == "grip")     {
+            ls >> cur.grip_bone;
+            float x, y, z;
+            if (ls >> x >> y >> z) { cur.grip_pos = glm::vec3(x, y, z); if (ls >> x >> y >> z) cur.grip_rot = glm::vec3(x, y, z); }
+        }
+        else if (key == "melee")    {
+            cur.melee = true;
+            cur.mag_size = 0;
+            float r, a;
+            if (ls >> r) { cur.melee_reach = r; if (ls >> a) cur.melee_arc = a; }
+        }
     }
     flush();
     return out;
@@ -383,7 +399,8 @@ inline std::string weapon_def_text(const WeaponDef& w) {
     if (w.fire_mode == FireMode::Burst || w.burst != def.burst) s += "  burst " + std::to_string(w.burst) + "\n";
     s += "  damage " + num(w.damage) + (w.damage_type.empty() ? "" : " " + w.damage_type) + "\n";
     s += "  rpm " + num(w.rpm) + "\n";
-    s += "  magazine " + std::to_string(w.mag_size) + "\n";
+    if (w.melee) s += "  melee " + num(w.melee_reach) + " " + num(w.melee_arc) + "\n";
+    else s += "  magazine " + std::to_string(w.mag_size) + "\n";
     if (w.draw_time != def.draw_time) s += "  draw " + num(w.draw_time) + "\n";
     if (w.reload_time != def.reload_time) s += "  reload " + num(w.reload_time) + "\n";
     if (w.pellets != def.pellets) s += "  pellets " + std::to_string(w.pellets) + "\n";
@@ -405,6 +422,17 @@ inline std::string weapon_def_text(const WeaponDef& w) {
     if (w.impact_size != 0.0f) s += "  impact " + num(w.impact_size) + "\n";
     if (w.muzzle_flash) s += "  flash\n";
     if (!w.ammo_item.empty()) s += "  ammo " + w.ammo_item + "\n";
+    if (!w.hold.empty()) s += "  hold " + w.hold + "\n";
+    if (!w.grip_bone.empty())
+        s += "  grip " + w.grip_bone + " " + num(w.grip_pos.x) + " " + num(w.grip_pos.y) + " " + num(w.grip_pos.z) + " " +
+             num(w.grip_rot.x) + " " + num(w.grip_rot.y) + " " + num(w.grip_rot.z) + "\n";
+    if (!w.model.empty()) s += "  model " + w.model + "\n";
+    if (w.view_offset != def.view_offset || w.view_angles != def.view_angles) {
+        s += "  view " + num(w.view_offset.x) + " " + num(w.view_offset.y) + " " + num(w.view_offset.z);
+        if (w.view_angles != def.view_angles)
+            s += " " + num(w.view_angles.x) + " " + num(w.view_angles.y) + " " + num(w.view_angles.z);
+        s += "\n";
+    }
     return s + "end\n";
 }
 

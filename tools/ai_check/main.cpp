@@ -265,6 +265,63 @@ int main() {
         REQUIRE(steps < 2000, "agent arrived in a bounded number of steps");
     }
 
+    // ---- the grid over the mesh: the answers looking at every triangle gives --
+    {
+        std::vector<glm::vec3> tv;
+        for (int z = 0; z < 40; ++z)
+            for (int x = 0; x < 40; ++x) add_cell(tv, x, z);
+        const glm::vec3 fa(10, 3, 10), fb(14, 3, 10), fc(14, 3, 14), fd(10, 3, 14);   // a floor 3 m up over part of it
+        tv.insert(tv.end(), {fa, fb, fc, fa, fc, fd});
+        NavMesh nav;
+        nav.build(tv);
+        auto brute = [&](const glm::vec3& p, bool& inside) {
+            // The rule: of the triangles holding p (XZ), the nearest in height; else the nearest centroid.
+            int best = -1; float bd = 1e30f; inside = false;
+            for (int t = 0; t < static_cast<int>(tv.size() / 3); ++t) {
+                const glm::vec3 a = tv[t * 3], b = tv[t * 3 + 1], c = tv[t * 3 + 2];
+                auto side = [](glm::vec3 p0, glm::vec3 p1, glm::vec3 q) { return (p1.x - p0.x) * (q.z - p0.z) - (p1.z - p0.z) * (q.x - p0.x); };
+                const float s0 = side(a, b, p), s1 = side(b, c, p), s2 = side(c, a, p);
+                const bool in = (s0 >= 0 && s1 >= 0 && s2 >= 0) || (s0 <= 0 && s1 <= 0 && s2 <= 0);
+                if (in) {
+                    const float d = std::fabs(a.y - p.y);   // flat triangles: their height is any corner's
+                    if (!inside || d < bd) { bd = d; best = t; inside = true; }
+                }
+            }
+            if (inside) return bd;
+            for (int t = 0; t < static_cast<int>(tv.size() / 3); ++t) {
+                const glm::vec3 cc = (tv[t * 3] + tv[t * 3 + 1] + tv[t * 3 + 2]) / 3.0f;
+                bd = std::min(bd, glm::length(cc - p));
+            }
+            return bd;
+        };
+        uint32_t s = 12345u;
+        auto rnd = [&s](float lo, float hi) { s = s * 1664525u + 1013904223u; return lo + (hi - lo) * ((s >> 8) & 0xFFFF) / 65535.0f; };
+        int agree = 0, total = 0;
+        for (int k = 0; k < 400; ++k) {
+            const glm::vec3 p(rnd(-8.0f, 48.0f), rnd(-1.0f, 4.0f), rnd(-8.0f, 48.0f));
+            bool inside = false;
+            const float want = brute(p, inside);
+            const int t = nav.nearest_tri(p);
+            float got;
+            if (inside) got = std::fabs(nav.height_on(t, p) - p.y);
+            else {
+                const glm::vec3 a = tv[t * 3], b = tv[t * 3 + 1], c = tv[t * 3 + 2];
+                got = glm::length((a + b + c) / 3.0f - p);
+            }
+            ++total;
+            if (std::fabs(got - want) < 1e-3f && nav.contains(p) == inside) ++agree;
+        }
+        std::printf("       grid vs every triangle: %d of %d points agree\n", agree, total);
+        REQUIRE(agree == total, "the grid finds what a look at every triangle finds (on, off and beside the mesh)");
+        REQUIRE(std::fabs(nav.height_on(nav.nearest_tri(glm::vec3(12, 2.8f, 12)), glm::vec3(12, 2.8f, 12)) - 3.0f) < 1e-4f &&
+                std::fabs(nav.height_on(nav.nearest_tri(glm::vec3(12, 0.2f, 12)), glm::vec3(12, 0.2f, 12))) < 1e-4f,
+                "stacked surfaces: the one at the point's height (a floor over the ground)");
+        nav.translate(glm::vec3(100.0f, 0.0f, 0.0f));
+        REQUIRE(std::fabs(nav.height_on(nav.nearest_tri(glm::vec3(112, 2.8f, 12)), glm::vec3(112, 2.8f, 12)) - 3.0f) < 1e-4f &&
+                nav.contains(glm::vec3(105.5f, 0, 5.5f)) && !nav.contains(glm::vec3(5.5f, 0, 5.5f)),
+                "the grid moves with the mesh (a rebase)");
+    }
+
     std::printf("ai_check: ALL OK (%d checks)\n", g_checks);
     return 0;
 }

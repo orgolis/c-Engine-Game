@@ -45,8 +45,11 @@ public:
     /// ground have to ask this instead.
     bool contains(const glm::vec3& p) const;
 
-    /// Index of the triangle containing `p` (XZ), else the nearest by centroid.
-    /// -1 if the mesh is empty.
+    /// Index of the triangle containing `p` (XZ) -- of several stacked there (a
+    /// floor over the ground), the one nearest p in height -- else the nearest
+    /// by centroid. -1 if the mesh is empty. Through a grid over the mesh: a
+    /// world-sized mesh (half a million triangles) was scanned whole, twice a
+    /// path, and dozens of agents choosing paths took milliseconds a frame.
     int nearest_tri(const glm::vec3& p) const;
 
     /// Interpolated mesh height (world Y) at XZ `p` on triangle `tri`.
@@ -62,6 +65,7 @@ public:
     /// the positions move and nothing has to be rebuilt.
     void translate(const glm::vec3& d) {
         if (d == glm::vec3(0.0f)) return;
+        grid_min_ += glm::vec2(d.x, d.z);   // the cells move with it; what is in them does not change
         for (Tri& t : tris_) {
             t.v[0] += d; t.v[1] += d; t.v[2] += d;
             // RECOMPUTED, not shifted. Translating the stored centroid loses
@@ -92,6 +96,15 @@ private:
                const glm::vec3& end, std::vector<int>& out_polys) const;
     void funnel(const std::vector<int>& polys, const glm::vec3& start,
                 const glm::vec3& end, std::vector<glm::vec3>& out) const;
+
+    // The grid over the mesh (XZ): each cell lists the triangles whose bounds
+    // overlap it (CSR: cell_start_[c]..cell_start_[c+1] into cell_tris_).
+    float                 cell_ = 0.0f;
+    glm::vec2             grid_min_{0.0f};
+    int                   grid_w_ = 0, grid_h_ = 0;
+    std::vector<uint32_t> cell_start_;
+    std::vector<int>      cell_tris_;
+    void build_grid();
 };
 
 } // namespace schizo::ai

@@ -299,8 +299,9 @@ endif()
 # throws, none logs, and the symptom is always "the character does not do the
 # thing" -- which points at the animation rather than the graph.
 add_executable(animgraph_check animgraph_check/main.cpp ../editor/src/anim_graph.cpp)
-target_include_directories(animgraph_check PRIVATE ../editor/include)
+target_include_directories(animgraph_check PRIVATE ../editor/include ../engine/renderer/include)   # two_bone_ik.h
 target_compile_features(animgraph_check PRIVATE cxx_std_20)
+target_link_libraries(animgraph_check PRIVATE glm)
 if(MINGW)
     target_link_options(animgraph_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()

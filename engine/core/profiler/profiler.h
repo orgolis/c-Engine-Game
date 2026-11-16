@@ -122,7 +122,11 @@ public:
             ++slow_frames_;
             // Unbounded logging would itself stall a machine that is already
             // stalling; the first 40 are plenty to find a culprit.
-            if (slow_frames_ <= 40) {
+            static const uint64_t slow_max = [] {   // GWS_SLOW_FRAME_MAX: more of them (a measurement run)
+                const char* v = std::getenv("GWS_SLOW_FRAME_MAX");
+                return v ? static_cast<uint64_t>(std::atoll(v)) : uint64_t(40);
+            }();
+            if (slow_frames_ <= slow_max) {
                 // spdlog rather than stderr: the Hub launches the editor with no
                 // console, so a stderr-only report is lost in exactly the case
                 // this exists for -- someone reproducing a freeze on their own

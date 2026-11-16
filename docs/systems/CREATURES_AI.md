@@ -40,7 +40,16 @@ out of trees, rocks and walls and on the ground.
   flies and can be dodged.
 - **Moving**: it steers round solid foliage and rocks ahead of it, slides
   along what it touches, keeps apart from the others, and follows the ground.
-  Hurt, it staggers back for a moment.
+  Hurt, it staggers back for a moment. Its paths are on the navmesh baked at
+  Play: the terrain and the tops of box colliders, with the ground under a
+  wall (a box collider taller than a step) and an agent's width round it left
+  out -- paths go round buildings and through their doorways, not through
+  their walls.
+
+A world of dozens of agents is cheap: an agent looks along its line of sight
+only when the target is in its sight range or it is chasing, and finding a
+path looks only at the navmesh near its ends (a grid over the mesh) -- 84
+agents on a 1024 m world take under 2 ms a frame.
 
 ```
 ability claw

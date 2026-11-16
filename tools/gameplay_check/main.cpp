@@ -2781,6 +2781,55 @@ int main() {
         check("ReloadSpeed: 100% faster (a 2 s reload done in 1)", w.get<ecs::WeaponState>(me).ammo_in_mag == 10);
     }
 
+    // A melee weapon (a sword): no rounds; one swing reaches those within its
+    // reach in front, inside its arc -- not behind, not through a wall.
+    {
+        ecs::register_items_text("weapon s52_sword\n  name Sword\n  damage 40 physical\n  rpm 120\n  melee 2.5 100\n"
+                                 "  hold melee\n  grip weapon_socket 0 0 0 90 0 180\n  model m/sword.glb\n"
+                                 "  view 0.2 -0.2 0.3 -10 -20 25\nend\n");
+        const ecs::WeaponDef* wd = ecs::find_weapon("s52_sword");
+        check("weapon data: melee (reach, arc), hold, grip and view angles",
+              wd && wd->melee && wd->mag_size == 0 && wd->melee_reach == 2.5f && wd->melee_arc == 100.0f && wd->hold == "melee" &&
+              wd->grip_bone == "weapon_socket" && wd->grip_rot == glm::vec3(90, 0, 180) && wd->view_angles == glm::vec3(-10, -20, 25));
+        if (wd) {
+            const auto back = ecs::parse_weapons_text(ecs::weapon_def_text(*wd));
+            check("weapon data: written back whole by the Items editor (model, view, grip, hold, melee)",
+                  back.size() == 1 && back[0].melee && back[0].melee_reach == 2.5f && back[0].model == "m/sword.glb" &&
+                  back[0].view_offset == wd->view_offset && back[0].view_angles == wd->view_angles && back[0].hold == "melee" &&
+                  back[0].grip_rot == wd->grip_rot);
+        }
+        ecs::World w;
+        const ecs::Entity me = w.create();
+        w.add<ecs::Transform>(me, ecs::Transform{});
+        auto target = [&](glm::vec3 p) {
+            const ecs::Entity e = w.create();
+            ecs::Transform t; t.position = p;
+            w.add<ecs::Transform>(e, t);
+            w.add<ecs::CombatActor>(e, ecs::CombatActor{});
+            w.add<ecs::AttributeSet>(e, ecs::AttributeSet{});
+            w.get<ecs::AttributeSet>(e).define("Health", 100, 0, 100);
+            return e;
+        };
+        const ecs::Entity ahead = target(glm::vec3(0, 0, -1.9f)), side = target(glm::vec3(-1.2f, 0, -1.3f)),
+                          behind = target(glm::vec3(0, 0, 1.6f)), far_one = target(glm::vec3(0, 0, -5.0f));
+        auto hp = [&](ecs::Entity e) { return w.get<ecs::AttributeSet>(e).get("Health"); };
+        ecs::WeaponState ws; ws.weapon_id = "s52_sword";
+        const glm::vec3 eye(0, ecs::CombatActor{}.hurt_height, 0), fwd(0, 0, -1);
+        std::vector<ecs::ShotTrace> shots;
+        const bool swung = ecs::fire_weapon(w, me, eye, fwd, ws, nullptr, 1, nullptr, &shots);
+        check("melee: a swing with no rounds reaches those in front within reach and arc, not behind, not far",
+              swung && hp(ahead) == 60.0f && hp(side) == 60.0f && hp(behind) == 100.0f && hp(far_one) == 100.0f && shots.size() == 2);
+        check("melee: then a pause between swings (rpm)", !ecs::fire_weapon(w, me, eye, fwd, ws));
+        ecs::reload_weapon(ws);
+        check("melee: nothing to reload", ws.reloading == 0.0f);
+        ws.cooldown = 0.0f;
+        const ecs::WorldRayFn wall = [](const glm::vec3&, const glm::vec3&, float, float& t, glm::vec3& n) { t = 0.6f; n = glm::vec3(0, 0, 1); return true; };
+        shots.clear();
+        ecs::fire_weapon(w, me, eye, fwd, ws, nullptr, 1, &wall, &shots);
+        check("melee: not through a wall (the blade meets it)", hp(ahead) == 60.0f && shots.size() == 1 &&
+                                                                 shots[0].hit == ecs::ShotTrace::Hit::World);
+    }
+
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }
     std::cout << "gameplay_check: " << g_fail << " FAILED\n";
     return 1;

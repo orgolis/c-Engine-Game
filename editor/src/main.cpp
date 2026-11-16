@@ -9252,6 +9252,7 @@ int main(int argc, char** argv) {
             const void* resolved_actor = nullptr;
             uint32_t shots = 0;
             bool fired_now = false, reload_now = false, reloading = false, staggered = false, dead = false;
+            float pending = 0.0f;   // seconds not yet advanced (animation level of detail)
         };
         std::unordered_map<uint32_t, CharAnim> char_anim;
         // The gun seen in first person, one actor per model file.
@@ -9262,6 +9263,24 @@ int main(int argc, char** argv) {
         };
         std::unordered_map<std::string, ViewModel> viewmodels;
         struct { std::string weapon; bool reloading = false; float kick = 0.0f, bob = 0.0f, aim = 0.0f, pull = 0.0f; } vm_state;
+        const schizo::editor::ImportedSkinnedActor* vm_drawn = nullptr;   // the first-person gun this frame (GWS_TEST_LOG_MOTION)
+        // The gun is placed before Play moves the player this frame; it is put
+        // back in front of the camera as drawn once it has moved (vm_local:
+        // where it is held, in the camera's space).
+        schizo::editor::ImportedSkinnedActor* vm_follow = nullptr;
+        glm::mat4 vm_local(1.0f);
+        // The player's own arms holding the gun in first person: a second copy
+        // of the player's model, fixed to the eye, its head folded away, its
+        // arms bent so its hands hold the gun where its third-person hands would.
+        struct FpBody {
+            std::unique_ptr<schizo::editor::ImportedSkinnedActor> actor;
+            std::string path, clip_key;
+            bool tried = false;
+            int  aim = -1, fire = -1, reload = -1;
+            int  head = -1, hand_r = -1, fore_r = -1, upper_r = -1, hand_l = -1, fore_l = -1, upper_l = -1;
+        } fp_body;
+        std::string fp_src_path, fp_src_clips;                 // the player's model this frame
+        const schizo::ecs::WeaponDef* fp_def = nullptr;        // the gun it holds this frame (null: no arms)
         // Per frame: actors drawn only into shadows (the player's own model in
         // first person), drawn without a shadow (the first-person gun), and
         // drawn though they are no scene entity's (the first-person gun).
@@ -9445,6 +9464,27 @@ int main(int argc, char** argv) {
             vkCreateFence(device.get_device(), &fence_info, nullptr, &frame_fences[i]);
         }
         uint32_t current_frame = 0;
+        // GWS_TEST_GPU_SPAN=<file>: two timestamps a frame -- the first and the last
+        // command of its command buffer -- written per frame with the CPU's own
+        // times: when the GPU starts and ends each frame, and the gaps between.
+        static const char* gpu_span_path = std::getenv("GWS_TEST_GPU_SPAN");
+        VkQueryPool span_pool = VK_NULL_HANDLE;
+        uint64_t    span_frame[kMaxFrames] = {};
+        double      span_submit_ms[kMaxFrames] = {};
+        uint32_t    span_skinned[kMaxFrames] = {};
+        double      span_period_ns = 1.0;
+        std::ofstream span_csv;
+        if (gpu_span_path) {
+            VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            qi.queryType  = VK_QUERY_TYPE_TIMESTAMP;
+            qi.queryCount = kMaxFrames * 6;
+            vkCreateQueryPool(device.get_device(), &qi, nullptr, &span_pool);
+            VkPhysicalDeviceProperties pp{};
+            vkGetPhysicalDeviceProperties(device.get_physical_device(), &pp);
+            span_period_ns = pp.limits.timestampPeriod;
+            span_csv.open(gpu_span_path, std::ios::trunc);
+            span_csv << "frame,submit_cpu_ms,gpu_start_ms,gpu_end_ms,gpu_scene_start_ms,gpu_scene_end_ms,gpu_first_skin_ms,gpu_all_skin_ms,skinned\n";
+        }
 
         // ----------------------------------------------------------------
         // Viewport texture — register post-processing output with ImGui
@@ -10740,9 +10780,10 @@ int main(int argc, char** argv) {
                 // The physics world: line of sight, trees and rocks in the way, the ground.
                 const schizo::ecs::WorldRayFn npc_world =
                     schizo::editor::physics_world_ray(editor_state.scene_playback_manager->GetPhysicsWorld());
+                { GWS_PROFILE_ZONE("npc_agents");
                 editor_state.npc_agents.update(editor_state.editor_scene->GetScene(),
                                                editor_state.scene_navmesh, delta_time,
-                                               editor_state.ecs_bridge, &npc_world, &editor_state.play_effects);
+                                               editor_state.ecs_bridge, &npc_world, &editor_state.play_effects); }
                 for (const auto& from : editor_state.npc_agents.attack_sources())
                     editor_state.hud_hits.push_back({from, 0.0f});
                 // Automated runs: what the creatures are doing, once a second.
@@ -10766,10 +10807,11 @@ int main(int argc, char** argv) {
             // Particle emitters (3.9). Fed the rebase shift because particles
             // hold WORLD-space positions: without it an emitter walks away from
             // its own smoke the first time the floating origin moves.
+            { GWS_PROFILE_ZONE("particles_update");
             editor_state.particles.update(
                 editor_state.editor_scene->GetScene(), delta_time,
                 editor_state.viewport_camera.GetPosition(), glm::vec3(0.0f, 1.0f, 0.0f),
-                origin_shift_this_frame);
+                origin_shift_this_frame); }
             // Deliberately NOT cleared here: the skinned-character tick below
             // also needs it, and the declaration at the top of the loop body
             // already resets it every frame. Clearing here made the rebase
@@ -10789,7 +10831,11 @@ int main(int argc, char** argv) {
             fp_hidden_actors.clear();
             no_shadow_actors.clear();
             extra_skinned.clear();
+            fp_src_path.clear();
+            fp_src_clips.clear();
+            fp_def = nullptr;
             if (auto sk_scene = editor_state.editor_scene->GetScene()) {
+                GWS_PROFILE_ZONE("characters");
                 const bool sk_playing = editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying();
                 auto* sk_pm = editor_state.scene_playback_manager.get();
                 const schizo::scene::Entity* sk_player = sk_playing ? sk_pm->GetPlayerEntity() : nullptr;
@@ -10829,6 +10875,37 @@ int main(int argc, char** argv) {
                     }
                 };
 
+                // Animation level of detail on the CPU (Play): the same schedule as the
+                // GPU skinning -- a character near or in view within 70 m is posed every
+                // frame, farther ones every 2nd or 4th, ones well out of view every 8th,
+                // each turn with the time it skipped: posing scales with how many
+                // are near, not with how many there are. GWS_NO_ANIM_LOD: all.
+                static const bool no_anim_lod_cpu = std::getenv("GWS_NO_ANIM_LOD") != nullptr;
+                glm::vec3 alod_eye(0.0f), alod_fwd(0.0f, 0.0f, -1.0f);
+                bool alod_on = false;
+                if (!no_anim_lod_cpu && sk_playing)
+                    if (auto* lc = sk_pm->GetPlaybackCamera(); lc && lc->GetTransform()) {
+                        alod_eye = lc->GetTransform()->GetWorldPosition();
+                        alod_fwd = lc->GetTransform()->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f);
+                        alod_on = true;
+                    }
+                // Seconds to advance this actor now, or < 0: not this frame.
+                auto anim_dt = [&](uint32_t id, const schizo::editor::ImportedSkinnedActor& a, const glm::vec3& at, bool always) {
+                    CharAnim& c = char_anim[id];
+                    c.pending += delta_time;
+                    bool now = always || !alod_on || !a.skinned_once();
+                    if (!now) {
+                        const glm::vec3 d = at - alod_eye;
+                        const float dist = glm::length(d);
+                        const bool ahead = glm::dot(d, alod_fwd) > dist * 0.34f;
+                        const uint32_t every = dist < 30.0f ? 1u : !ahead ? 8u : dist < 70.0f ? 1u : dist < 140.0f ? 2u : 4u;
+                        now = (static_cast<uint32_t>(frame_count) + id) % every == 0;
+                    }
+                    if (!now) return -1.0f;
+                    const float out = std::min(c.pending, 0.5f);
+                    c.pending = 0.0f;
+                    return out;
+                };
                 for (int sk_pass = 0; sk_pass < 2; ++sk_pass)
                 for (const auto& ent : sk_scene->GetEntities()) {
                     if (!ent) continue;
@@ -10846,6 +10923,7 @@ int main(int argc, char** argv) {
 
                     CharAnim& ca = char_anim[ent->GetId()];
                     const bool is_player = is_player_part(ent.get());
+                    if (is_player && !attached && fp_src_path.empty()) { fp_src_path = smc->gltf_path; fp_src_clips = smc->clips; }
 
                     if (attached) {
                         // Held: drawn at the parent's bone.
@@ -10872,8 +10950,9 @@ int main(int argc, char** argv) {
                                      ca.clip[CharAnim::Idle] >= 0)
                                 actor->play(ca.clip[CharAnim::Idle], true, 0.1f);
                         }
-                        if (smc->playing) actor->advance(delta_time * smc->speed);
-                        else              actor->refresh_pose();
+                        if (!smc->playing) actor->refresh_pose();
+                        else if (const float adt = anim_dt(ent->GetId(), *actor, glm::vec3(at[3]), is_player); adt >= 0.0f)
+                            actor->advance(adt * smc->speed);
                         actor->set_model(at);
                         if (is_player && sk_first_person && sk_playing) fp_hidden_actors.insert(actor);
                         continue;
@@ -10981,7 +11060,8 @@ int main(int argc, char** argv) {
                                 else if (legs >= 0) actor->play(legs, true, 0.2f, rate);
                             }
                         }
-                        actor->advance(delta_time * smc->speed);
+                        if (const float adt = anim_dt(ent->GetId(), *actor, sk_tf->GetWorldPosition(), is_player); adt >= 0.0f)
+                            actor->advance(adt * smc->speed);
                         actor->set_model(sk_tf->GetWorldMatrix());
                         if (is_player && sk_first_person) fp_hidden_actors.insert(actor);
                         continue;
@@ -11006,8 +11086,9 @@ int main(int argc, char** argv) {
                     }
                     if (static_cast<size_t>(want_clip) != actor->clip_index())
                         actor->set_clip(static_cast<size_t>(want_clip));
-                    if (smc->playing) actor->advance(delta_time * smc->speed);
-                    else              actor->refresh_pose();   // hold the pose, not bind pose
+                    if (!smc->playing) actor->refresh_pose();   // hold the pose, not bind pose
+                    else if (const float adt = anim_dt(ent->GetId(), *actor, sk_tf->GetWorldPosition(), is_player); adt >= 0.0f)
+                        actor->advance(adt * smc->speed);
                     actor->set_model(sk_tf->GetWorldMatrix());
                 }
 
@@ -11036,6 +11117,8 @@ int main(int argc, char** argv) {
 
                 // ---- the gun in the player's hands, in first person ---------------
                 editor_state.player_weapon.clear_view_muzzle();
+                vm_drawn = nullptr;
+                vm_follow = nullptr;
                 const schizo::ecs::WeaponDef* vwd = (sk_playing && sk_first_person && pw_hud.armed && !pw_hud.weapon_id.empty())
                                                         ? schizo::ecs::find_weapon(pw_hud.weapon_id) : nullptr;
                 const auto* vcam = sk_playing ? sk_pm->GetPlaybackCamera() : nullptr;
@@ -11055,6 +11138,7 @@ int main(int argc, char** argv) {
                         }
                     }
                     if (auto* va = slot.actor.get()) {
+                        const bool fp_reload_start = pw_hud.reloading && !vm_state.reloading;
                         // Drawn when switched to; fires, reloads; idle between.
                         if (vm_state.weapon != pw_hud.weapon_id) {
                             vm_state.weapon = pw_hud.weapon_id;
@@ -11093,16 +11177,23 @@ int main(int argc, char** argv) {
                             if (vh.hit) obstruct = std::clamp((1.1f - vh.distance) / 0.6f, 0.0f, 1.0f);
                         }
                         vm_state.pull += (obstruct - vm_state.pull) * std::min(1.0f, delta_time * 10.0f);
+                        // A melee weapon is not aimed down: it stays where it is held.
+                        if (vwd->melee) vm_state.aim = 0.0f;
                         static const bool log_pull = std::getenv("GWS_TEST_LOG_PULL") != nullptr;
                         if (log_pull && obstruct > 0.0f) spdlog::info("[test] gun: something {:.2f} m ahead, pulled back {:.2f}", 1.1f - obstruct * 0.6f, vm_state.pull);
                         off.z -= 0.25f * vm_state.pull;
                         off.y -= 0.08f * vm_state.pull;
-                        // The model faces +Z; the eye looks down -Z.
-                        const glm::mat4 vm = cam_world *
-                                             glm::translate(glm::mat4(1.0f), glm::vec3(off.x, off.y, -off.z) + bob + kick) *
-                                             glm::rotate(glm::mat4(1.0f), glm::radians(3.5f * vm_state.kick - 38.0f * vm_state.pull),
-                                                         glm::vec3(1, 0, 0)) *
-                                             glm::rotate(glm::mat4(1.0f), glm::radians(180.0f), glm::vec3(0, 1, 0));
+                        // The model faces +Z; the eye looks down -Z. Its `view` angles
+                        // turn it in toward the crosshair, tip and roll it (fading
+                        // while aiming down the sights).
+                        const glm::vec3 va_deg = vwd->view_angles * (1.0f - vm_state.aim);
+                        vm_local = glm::translate(glm::mat4(1.0f), glm::vec3(off.x, off.y, -off.z) + bob + kick) *
+                                   glm::rotate(glm::mat4(1.0f), glm::radians(va_deg.x), glm::vec3(0, 1, 0)) *
+                                   glm::rotate(glm::mat4(1.0f), glm::radians(3.5f * vm_state.kick - 38.0f * vm_state.pull + va_deg.y),
+                                               glm::vec3(1, 0, 0)) *
+                                   glm::rotate(glm::mat4(1.0f), glm::radians(va_deg.z), glm::vec3(0, 0, 1)) *
+                                   glm::rotate(glm::mat4(1.0f), glm::radians(180.0f), glm::vec3(0, 1, 0));
+                        const glm::mat4 vm = cam_world * vm_local;
                         va->advance(delta_time);
                         va->set_model(vm);
                         const int mb = va->find_bone("muzzle");
@@ -11110,6 +11201,80 @@ int main(int argc, char** argv) {
                         static const bool no_vm = std::getenv("GWS_TEST_NO_VIEWMODEL") != nullptr;   // A/B: the frame without it
                         if (!no_vm) extra_skinned.push_back(va);
                         no_shadow_actors.insert(va);
+                        vm_drawn = va;
+                        vm_follow = va;
+                        // The arms: the player's model, posed by its clips for this gun
+                        // (<state>_<weapon id>, then <state>_<hold>, then <state>).
+                        static const bool no_arms = std::getenv("GWS_TEST_NO_ARMS") != nullptr;   // A/B: the gun alone
+                        if (!no_arms && !fp_src_path.empty()) {
+                            if (fp_body.path != fp_src_path) { fp_body.actor.reset(); fp_body = FpBody{}; fp_body.path = fp_src_path; }
+                            if (!fp_body.tried) {
+                                fp_body.tried = true;
+                                std::string ferr;
+                                fp_body.actor = schizo::editor::ImportedSkinnedActor::create(&device, mat_layout, mat_pool, &texture_manager,
+                                                                                             fp_body.path, glm::vec3(0.0f), &ferr);
+                                if (!fp_body.actor) spdlog::error("[fp-arms] '{}' failed to load: {}", fp_body.path, ferr);
+                                else {
+                                    auto* fa = fp_body.actor.get();
+                                    auto mirror = [](std::string n) {
+                                        for (auto [a, b] : {std::pair<const char*, const char*>{".R", ".L"}, {"_R", "_L"}, {"Right", "Left"},
+                                                            {"right", "left"}, {"_r", "_l"}})
+                                            if (const size_t at = n.rfind(a); at != std::string::npos) return n.replace(at, std::strlen(a), b);
+                                        return n;
+                                    };
+                                    const auto& bones_r = fa;   // (names through find_bone)
+                                    fp_body.hand_r = bones_r->find_bone("hand.R");
+                                    if (fp_body.hand_r < 0) fp_body.hand_r = fa->find_bone("RightHand");
+                                    fp_body.fore_r = fp_body.hand_r >= 0 ? fa->bone_parent(fp_body.hand_r) : -1;
+                                    fp_body.upper_r = fp_body.fore_r >= 0 ? fa->bone_parent(fp_body.fore_r) : -1;
+                                    if (fp_body.hand_r >= 0) fp_body.hand_l = fa->find_bone(mirror(fa->bone_name(fp_body.hand_r)));
+                                    fp_body.fore_l = fp_body.hand_l >= 0 ? fa->bone_parent(fp_body.hand_l) : -1;
+                                    fp_body.upper_l = fp_body.fore_l >= 0 ? fa->bone_parent(fp_body.fore_l) : -1;
+                                    fp_body.head = fa->find_bone("head");
+                                    if (fp_body.head < 0) fp_body.head = fa->find_bone("Head");
+                                    spdlog::info("[fp-arms] '{}': right arm {}/{}/{}, left {}/{}/{}, head {}", fp_body.path, fp_body.upper_r,
+                                                 fp_body.fore_r, fp_body.hand_r, fp_body.upper_l, fp_body.fore_l, fp_body.hand_l, fp_body.head);
+                                }
+                            }
+                            if (auto* fa = fp_body.actor.get(); fa && fp_body.hand_r >= 0 && fp_body.upper_r >= 0) {
+                                const std::string hold = vwd->hold.empty() ? std::string("rifle") : vwd->hold;
+                                const std::string key = vwd->id + "|" + hold;
+                                auto clip_named = [](const std::string& clips, const std::string& state) {
+                                    size_t at = 0;
+                                    while (at < clips.size()) {
+                                        const size_t endp = clips.find(',', at);
+                                        const std::string item = clips.substr(at, endp == std::string::npos ? std::string::npos : endp - at);
+                                        const size_t eq = item.find('=');
+                                        if (eq != std::string::npos && item.substr(0, eq) == state) return item.substr(eq + 1);
+                                        if (endp == std::string::npos) break;
+                                        at = endp + 1;
+                                    }
+                                    return std::string();
+                                };
+                                auto pick = [&](const std::string& state, const char* last) {
+                                    for (const std::string& k : {state + "_" + vwd->id, state + "_" + hold, std::string(last)}) {
+                                        const std::string n = clip_named(fp_src_clips, k);
+                                        if (!n.empty())
+                                            if (const int c = fa->find_clip(n); c >= 0) return c;
+                                    }
+                                    return -1;
+                                };
+                                if (fp_body.clip_key != key) {
+                                    fp_body.clip_key = key;
+                                    fp_body.aim = pick("aim", hold == "melee" ? "idle" : "aim");
+                                    fp_body.fire = pick("fire", hold == "melee" ? "" : "fire");
+                                    fp_body.reload = pick("reload", "reload");
+                                    if (fp_body.aim >= 0) fa->play(fp_body.aim, true, 0.0f);
+                                }
+                                if (pw_hud.fired && fp_body.fire >= 0) fa->play(fp_body.fire, false, 0.02f, 1.0f, true);
+                                else if (fp_reload_start && fp_body.reload >= 0) fa->play(fp_body.reload, false, 0.1f, 1.0f, true);
+                                else if (fa->finished() && fp_body.aim >= 0) fa->play(fp_body.aim, true, 0.15f);
+                                fa->advance(delta_time);
+                                fp_def = vwd;
+                                if (!no_vm) extra_skinned.push_back(fa);
+                                no_shadow_actors.insert(fa);
+                            }
+                        }
                     }
                 } else {
                     vm_state.weapon.clear();
@@ -11441,6 +11606,7 @@ int main(int argc, char** argv) {
                 // The controls, once a frame, by action.
                 auto& ps = schizo::editor::play_settings();
                 static int test_press_key = 0, test_press_frames = 0;   // GWS_TEST_UI press:<action>
+                static std::vector<int> test_press_more;                // press:<action>+<action>: held together
                 // The wheel: each notch one press (down a frame, up a frame), only while the game has the mouse.
                 static int  wheel_up_left = 0, wheel_down_left = 0;
                 static bool wheel_up_now = false, wheel_down_now = false;
@@ -11456,7 +11622,9 @@ int main(int argc, char** argv) {
                     if (wheel_down_now) --wheel_down_left;
                 }
                 auto key_held = [&](int code) {
-                    if (test_press_frames > 0 && code == test_press_key) return true;
+                    if (test_press_frames > 0 && (code == test_press_key ||
+                                                  std::find(test_press_more.begin(), test_press_more.end(), code) != test_press_more.end()))
+                        return true;
                     if (code == schizo::input::kMouseWheelUp) return wheel_up_now;
                     if (code == schizo::input::kMouseWheelDown) return wheel_down_now;
                     if (code >= schizo::input::kMouseButton)
@@ -11571,6 +11739,8 @@ int main(int argc, char** argv) {
                         const auto* ws = w.try_get<schizo::ecs::WeaponState>(pe);
                         if (!ws) return v;
                         v.found = true;
+                        const auto* wdm = schizo::ecs::find_weapon(ws->weapon_id);
+                        if ((what == "ammo" || what == "reserve") && wdm && wdm->melee) { v.text = "-"; return v; }   // a blade: no rounds
                         if (what == "ammo") v.value = ws->ammo_in_mag;
                         else if (what == "reserve") v.value = ws->reserve;
                         else { const auto* d = schizo::ecs::find_weapon(ws->weapon_id); v.text = d ? d->name : ws->weapon_id; if (v.text.empty()) v.text = "-"; }
@@ -11796,7 +11966,11 @@ int main(int argc, char** argv) {
                             // press:<action>[~<frames>] -- its key held for a few frames, as the
                             // player would (or for that many: walking about)
                             const size_t tl = arg.find('~');
-                            test_press_key = ps.map.key(arg.substr(0, tl));
+                            std::string acts = arg.substr(0, tl);
+                            test_press_more.clear();
+                            for (size_t plus; (plus = acts.rfind('+')) != std::string::npos; acts.resize(plus))
+                                test_press_more.push_back(ps.map.key(acts.substr(plus + 1)));
+                            test_press_key = ps.map.key(acts);
                             test_press_frames = tl == std::string::npos ? 4 : std::max(1, std::atoi(arg.c_str() + tl + 1));
                             spdlog::info("[test] ui: press {} (key {}) -- mouse held by Play {}, menu has input {}, game view focused {}",
                                          arg, test_press_key, pm.IsCursorCaptured(), pm.UiHasInput(), editor_state.viewport_input_focused);
@@ -13707,8 +13881,107 @@ int main(int argc, char** argv) {
                 VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
             begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             vkBeginCommandBuffer(cmd, &begin_info);
+            if (span_pool) {
+                uint64_t ts[6] = {};
+                if (span_frame[current_frame] &&
+                    vkGetQueryPoolResults(device.get_device(), span_pool, current_frame * 6, 6, sizeof ts, ts, sizeof(uint64_t),
+                                          VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+                    // GPU ticks and CPU time share no clock: both are written, the
+                    // analysis compares GPU to GPU (busy, gaps) and CPU to CPU.
+                    char sl[200];
+                    std::snprintf(sl, sizeof sl, "%llu,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u\n", static_cast<unsigned long long>(span_frame[current_frame]),
+                                  span_submit_ms[current_frame], ts[0] * span_period_ns / 1e6, ts[1] * span_period_ns / 1e6,
+                                  ts[2] * span_period_ns / 1e6, ts[3] * span_period_ns / 1e6, ts[4] * span_period_ns / 1e6,
+                                  ts[5] * span_period_ns / 1e6, span_skinned[current_frame]);
+                    span_csv << sl;
+                }
+                vkCmdResetQueryPool(cmd, span_pool, current_frame * 6, 6);
+                vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, span_pool, current_frame * 6);
+            }
 
             g_cp.mark("pre_skinning");
+            // The first-person gun in front of the camera as it is drawn this frame
+            // (Play has moved the player since it was placed: a frame behind, it
+            // shook while moving -- 14 mm a frame at a run, its bob is 10).
+            if (static const bool vm_lag = std::getenv("GWS_TEST_VM_LAG") != nullptr; vm_follow && !vm_lag &&
+                editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying())
+                if (auto* fcam = editor_state.scene_playback_manager->GetPlaybackCamera(); fcam && fcam->GetTransform()) {
+                    const glm::mat4 fcw = fcam->GetTransform()->GetWorldMatrix();
+                    vm_follow->set_model(fcw * vm_local);
+                    if (const int mb = vm_follow->find_bone("muzzle"); mb >= 0)
+                        editor_state.player_weapon.set_view_muzzle(glm::vec3(vm_follow->bone_world(mb)[3]));
+                    // The arms: the body fixed to the eye (facing where the camera
+                    // looks), its hands on the gun -- the right where it holds the gun
+                    // (the gun's `grip`), the left where its clip has it relative to
+                    // the gun (on a rifle: at the gun's support grip).
+                    if (auto* fa = fp_body.actor.get(); fa && fp_def) {
+                        const auto* fd = fp_def;
+                        fa->set_model(glm::mat4(1.0f));
+                        const glm::vec3 head = fp_body.head >= 0 ? glm::vec3(fa->bone_world(fp_body.head)[3]) : glm::vec3(0.0f, 1.6f, 0.0f);
+                        // The eye a little behind the head (it is folded away): the
+                        // shoulders come forward, so the hands reach a rifle's front
+                        // grip as they do when it is shouldered. The model faces +Z.
+                        static const glm::vec3 eye_off = [] {
+                            glm::vec3 v(0.0f, 0.06f, -0.08f);
+                            if (const char* e = std::getenv("GWS_TEST_FP_EYE")) std::sscanf(e, "%f,%f,%f", &v.x, &v.y, &v.z);
+                            return v;
+                        }();
+                        const glm::vec3 eye = head + eye_off;
+                        // A long gun is held bladed: the body turned so the left
+                        // shoulder comes forward (a pistol: nearly square).
+                        static const float blade_rifle = [] { const char* e = std::getenv("GWS_TEST_FP_BLADE"); return e ? static_cast<float>(std::atof(e)) : 30.0f; }();
+                        const bool long_gun = fp_def->hold.empty() || fp_def->hold == "rifle";
+                        const float blade = long_gun ? blade_rifle : fp_def->hold == "pistol" ? 8.0f : 0.0f;
+                        fa->set_model(fcw * glm::rotate(glm::mat4(1.0f), glm::radians(-blade), glm::vec3(0, 1, 0)) *
+                                      glm::rotate(glm::mat4(1.0f), glm::radians(180.0f), glm::vec3(0, 1, 0)) *
+                                      glm::translate(glm::mat4(1.0f), -eye));
+                        // The gun as drawn: its `weapon` bone's movement (a kick, a reload's
+                        // tilt, a sword's swing) carries the hands with it.
+                        const int gwb = vm_follow->find_bone("weapon");
+                        const glm::mat4 gun = gwb >= 0 ? vm_follow->bone_skin(gwb) : vm_follow->model();
+                        // The gun's root relative to the bone holding it.
+                        const int gb = fa->find_bone(fd->grip_bone.empty() ? std::string("weapon_socket") : fd->grip_bone);
+                        const glm::mat4 grip = glm::translate(glm::mat4(1.0f), fd->grip_pos) *
+                                               glm::mat4_cast(glm::quat(glm::radians(fd->grip_rot)));
+                        // Where that bone sits on the hand, as the model has it.
+                        const glm::mat4 bone_in_hand = gb >= 0 ? glm::inverse(fa->bone_world(fp_body.hand_r)) * fa->bone_world(gb) : glm::mat4(1.0f);
+                        const glm::mat4 hand_r = gun * glm::inverse(grip) * glm::inverse(bone_in_hand);
+                        // The left hand: where the clip holds it relative to a gun in the right hand.
+                        const glm::mat4 gun_in_clip = fa->bone_world(fp_body.hand_r) * bone_in_hand * grip;
+                        glm::mat4 hand_l = gun * glm::inverse(gun_in_clip) * (fp_body.hand_l >= 0 ? fa->bone_world(fp_body.hand_l) : glm::mat4(1.0f));
+                        const bool rifle = fd->hold.empty() || fd->hold == "rifle";
+                        // GWS_TEST_FP_SUPPORT=1: the wrist at the gun's support grip, not where the clip holds it.
+                        static const bool to_support = std::getenv("GWS_TEST_FP_SUPPORT") != nullptr;
+                        if (rifle && to_support)
+                            if (const int sg = vm_follow->find_bone("support_grip"); sg >= 0) hand_l[3] = glm::vec4(glm::vec3(vm_follow->bone_world(sg)[3]), 1.0f);
+                        const glm::mat3 cr(fcw);
+                        schizo::editor::ImportedSkinnedActor::ArmTarget arms[2];
+                        arms[0].upper = fp_body.upper_r; arms[0].fore = fp_body.fore_r; arms[0].hand = fp_body.hand_r;
+                        arms[0].target = hand_r;
+                        arms[0].pole = cr * glm::normalize(glm::vec3(0.5f, -1.0f, 0.25f));
+                        int n_arms = 1;
+                        if (fd->hold != "melee" && fp_body.hand_l >= 0 && fp_body.upper_l >= 0) {
+                            arms[1].upper = fp_body.upper_l; arms[1].fore = fp_body.fore_l; arms[1].hand = fp_body.hand_l;
+                            arms[1].target = hand_l;
+                            arms[1].pole = cr * glm::normalize(glm::vec3(-0.5f, -1.0f, 0.25f));
+                            n_arms = 2;
+                        }
+                        fa->pose_first_person({fp_body.head}, arms, n_arms);
+                        // GWS_TEST_LOG_ARMS=1: the arms in the eye's space (x right, y up, -z ahead), once a second.
+                        if (static const bool log_arms = std::getenv("GWS_TEST_LOG_ARMS") != nullptr; log_arms && frame_count % 60 == 0) {
+                            const glm::mat4 ie = glm::inverse(fcw);
+                            auto at = [&](const glm::vec3& w) { return glm::vec3(ie * glm::vec4(w, 1.0f)); };
+                            const glm::vec3 sh = at(glm::vec3(fa->bone_world(fp_body.upper_r)[3]));
+                            const glm::vec3 tr = at(glm::vec3(hand_r[3])), hr = at(glm::vec3(fa->bone_world(fp_body.hand_r)[3]));
+                            const glm::vec3 tl = at(glm::vec3(hand_l[3])), hl = at(glm::vec3(fp_body.hand_l >= 0 ? fa->bone_world(fp_body.hand_l)[3] : glm::vec4(0.0f)));
+                            const glm::vec3 gp = at(glm::vec3(gun[3]));
+                            spdlog::info("[test] arms: gun ({:.2f},{:.2f},{:.2f}) shoulder R ({:.2f},{:.2f},{:.2f}) hand R target ({:.2f},{:.2f},{:.2f}) "
+                                         "at ({:.2f},{:.2f},{:.2f}) | hand L target ({:.2f},{:.2f},{:.2f}) at ({:.2f},{:.2f},{:.2f}) | eye model ({:.2f},{:.2f},{:.2f})",
+                                         gp.x, gp.y, gp.z, sh.x, sh.y, sh.z, tr.x, tr.y, tr.z, hr.x, hr.y, hr.z, tl.x, tl.y, tl.z, hl.x, hl.y, hl.z,
+                                         eye.x, eye.y, eye.z);
+                        }
+                    }
+                }
             // Record the skinned-rig compute skinning FIRST, so its output
             // vertex buffer is ready before the RT-BLAS build, shadow pass, and
             // geometry pass all read it this frame.
@@ -13741,6 +14014,29 @@ int main(int argc, char** argv) {
                     sk_js.parallel_for(0, sk_ents.size(), [&probe](size_t i) { probe(i); });
                 else
                     for (size_t i = 0; i < sk_ents.size(); ++i) probe(i);
+                // Animation level of detail (Play): a character near the camera or in
+                // view within 70 m is skinned every frame; farther ones every 2nd or
+                // 4th frame, ones well out of view every 8th -- drawn meanwhile with
+                // the pose they have. 24 characters skinned every frame were 1.5 ms of
+                // GPU time; more enemies would have made it more. GWS_NO_ANIM_LOD: all.
+                static const bool no_anim_lod = std::getenv("GWS_NO_ANIM_LOD") != nullptr;
+                glm::vec3 lod_eye(0.0f), lod_fwd(0.0f, 0.0f, -1.0f);
+                bool lod_on = false;
+                if (!no_anim_lod && editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying())
+                    if (auto* lc = editor_state.scene_playback_manager->GetPlaybackCamera(); lc && lc->GetTransform()) {
+                        lod_eye = lc->GetTransform()->GetWorldPosition();
+                        lod_fwd = lc->GetTransform()->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f);
+                        lod_on = true;
+                    }
+                auto skin_now = [&](const schizo::editor::ImportedSkinnedActor& a, uint32_t id) {
+                    if (!lod_on || !a.skinned_once()) return true;
+                    const glm::vec3 d = glm::vec3(a.model()[3]) - lod_eye;
+                    const float dist = glm::length(d);
+                    if (dist < 30.0f) return true;                          // near: its shadow may be in view
+                    const bool ahead = glm::dot(d, lod_fwd) > dist * 0.34f;  // within ~70 degrees of the view
+                    const uint32_t every = !ahead ? 8u : dist < 70.0f ? 1u : dist < 140.0f ? 2u : 4u;
+                    return (static_cast<uint32_t>(frame_count) + id) % every == 0;
+                };
                 for (size_t i = 0; i < sk_ents.size(); ++i) {
                     if (!is_skinned[i]) continue;
                     const auto& ent = sk_ents[i];
@@ -13750,13 +14046,19 @@ int main(int argc, char** argv) {
                     if (auto* a = skinned_actors.get_or_create(
                             ent->GetId(), std::as_const(*ent).GetSkinnedMeshComponent()->gltf_path, &device,
                             mat_layout, mat_pool, &texture_manager)) {
-                        a->record_skin(cmd);
+                        if (skin_now(*a, ent->GetId())) a->record_skin(cmd);
+                        if (span_pool && frame_skinned.empty())
+                            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, span_pool, current_frame * 6 + 4);
                         frame_skinned.push_back(a);
                     }
                 }
                 for (auto* a : extra_skinned) {
                     a->record_skin(cmd);
                     frame_skinned.push_back(a);
+                }
+                if (span_pool) {
+                    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, span_pool, current_frame * 6 + 5);
+                    span_skinned[current_frame] = static_cast<uint32_t>(frame_skinned.size());
                 }
             }
 
@@ -13839,6 +14141,25 @@ int main(int argc, char** argv) {
 
             cam.proj[1][1] *= -1.0f;  // GL → Vulkan Y flip
             graph->set_camera(cam);
+            // GWS_TEST_LOG_MOTION=<file.csv>: in Play, a line a frame -- the frame's
+            // time, the camera drawn from, the player, and where the first-person
+            // gun is drawn in that camera's space (it should stay put but for its bob).
+            if (static const char* mlog = std::getenv("GWS_TEST_LOG_MOTION"); mlog && editor_state.scene_playback_manager &&
+                editor_state.scene_playback_manager->IsPlaying()) {
+                static std::ofstream mcsv(mlog, std::ios::trunc);
+                static bool mhead = false;
+                if (!mhead) { mcsv << "frame,dt_ms,cam_x,cam_y,cam_z,player_x,player_y,player_z,gun_vx,gun_vy,gun_vz\n"; mhead = true; }
+                glm::vec3 pp(0.0f);
+                if (auto* mpl = editor_state.scene_playback_manager->GetPlayerEntity()) pp = mpl->GetTransform()->GetWorldPosition();
+                glm::vec3 gv(0.0f);
+                if (vm_drawn) gv = glm::vec3(cam.view * glm::vec4(glm::vec3(vm_drawn->model()[3]), 1.0f));
+                char line[256];
+                std::snprintf(line, sizeof line, "%llu,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f\n",
+                              static_cast<unsigned long long>(frame_count), delta_time * 1000.0f, cam.position.x, cam.position.y,
+                              cam.position.z, pp.x, pp.y, pp.z, gv.x, gv.y, gv.z);
+                mcsv << line;
+                mcsv.flush();
+            }
             // Auto-exposure meters the scene, not what is held 1.5 m from
             // the eye (the first-person gun): the stored depth of that point.
             if (post_processing) {
@@ -14962,7 +15283,12 @@ int main(int argc, char** argv) {
             }
 
             g_cp.mark("pre_record");
+            if (span_pool) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, span_pool, current_frame * 6 + 2);
             gpu_zones.begin_frame(cmd, gpu_frame++);
+            // GWS_GPU_FRAME_ZONE=1: one zone round everything below -- the GPU's
+            // whole frame, to tell untimed GPU work from the GPU waiting idle.
+            static const bool frame_zone = std::getenv("GWS_GPU_FRAME_ZONE") != nullptr;
+            if (frame_zone) gpu_zones.begin_zone(cmd, "Frame (all)");
             graph->begin_frame(cmd);
             // F8: skipped entirely when nothing displays the scene (see
             // render_scene). The occlusion pyramid is then not rebuilt, so the
@@ -15260,7 +15586,9 @@ int main(int argc, char** argv) {
                 hzb_slots[current_frame % VulkanHzbCuller::kReadbackSlots].valid = false;   // no pyramid built this frame
             }
             graph->end_frame(cmd);
+            if (frame_zone) gpu_zones.end_zone(cmd);
             gpu_zones.end_frame(device.get_device());
+            if (span_pool) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, span_pool, current_frame * 6 + 3);
             engine::vulkan::GPUProfiler::instance().end_gpu_frame();
 
             // The honest GPU breakdown: every pass GPUProfiler knows about,
@@ -15341,6 +15669,11 @@ int main(int argc, char** argv) {
                 async_cap_frame[current_frame] = frame_count + 1;
             const bool capturing = (last_frame || (shot_now && !shots_async)) && !screenshot_path.empty() &&
                                    record_swapchain_capture(device, swapchain, image_index, cmd, capture);
+            if (span_pool) {
+                vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, span_pool, current_frame * 6 + 1);
+                span_frame[current_frame] = static_cast<uint64_t>(frame_count) + 1;
+                span_submit_ms[current_frame] = glfwGetTime() * 1000.0;
+            }
             vkEndCommandBuffer(cmd);
 
             VkPipelineStageFlags wait_stage =
@@ -15439,6 +15772,11 @@ int main(int argc, char** argv) {
             // frames leading into it were already degrading or were fine right
             // up to the stall.
             g_cp.mark("frame_end");
+            // GWS_TEST_LOG_GAPS=<file>: every frame's checkpoint gaps (where a frame's time goes).
+            if (static const char* glog = std::getenv("GWS_TEST_LOG_GAPS"); glog) {
+                static std::ofstream gl(glog, std::ios::trunc);
+                gl << frame_count << " " << g_cp.all_gaps() << "\n";
+            }
             // NOT delta_time: it is clamped to 50ms upstream (that clamp is why
             // the health line reads "20.0 fps" during a multi-second stall), so
             // a threshold on it can never fire. Measure the checkpoints' own span.
@@ -15485,7 +15823,8 @@ int main(int argc, char** argv) {
                         return a->duration_ms > b->duration_ms;
                     });
                     std::string worst;
-                    for (size_t i = 0; i < top.size() && i < 3; ++i) {
+                    static const size_t gpu_listed = std::getenv("GWS_HEALTH_ALL_GPU") ? 64 : 3;   // every timed pass
+                    for (size_t i = 0; i < top.size() && i < gpu_listed; ++i) {
                         if (top[i]->duration_ms < 0.005f) break;
                         char b[64];
                         std::snprintf(b, sizeof b, " %s %.2f", top[i]->name.c_str(),
@@ -15587,6 +15926,7 @@ int main(int argc, char** argv) {
             for (auto& s : flicker.slots) flicker.free_slot(device, s);
         }
         viewmodels.clear();
+        fp_body.actor.reset();
         skinned_actors.clear();
         schizo::editor::clear_skinned_asset_cache();
         vkDestroyDescriptorPool(device.get_device(), terrain_mat_pool, nullptr);

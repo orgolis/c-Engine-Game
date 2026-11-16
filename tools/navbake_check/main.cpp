@@ -162,6 +162,41 @@ int main() {
               "every path point lies on the terrain's real position, not near the origin");
     }
 
+    // ---- 7. walls: the ground under them (and round them) is not walkable ---
+    // Without this a building's walls left the ground under them on the
+    // navmesh and agents planned paths straight through the walls.
+    {
+        auto s = std::make_shared<scene::Scene>("t");
+        add_terrain(s, "Ground", 40, 40.0f);   // 1 m cells
+        auto w = s->CreateEntity("Wall");
+        w->GetTransform()->SetLocalPosition(glm::vec3(0.0f, 1.5f, 0.0f));
+        auto c = w->AddComponent<scene::ColliderComponent>();
+        c->SetShape(scene::ColliderShape::Box);
+        c->SetHalfExtents(glm::vec3(6.0f, 1.5f, 0.3f));
+        auto low = s->CreateEntity("Step");
+        low->GetTransform()->SetLocalPosition(glm::vec3(10.0f, 0.2f, 10.0f));
+        auto lc = low->AddComponent<scene::ColliderComponent>();
+        lc->SetShape(scene::ColliderShape::Box);
+        lc->SetHalfExtents(glm::vec3(2.0f, 0.2f, 2.0f));
+        ai::NavMesh nav;
+        const auto st = editor::bake_navmesh_from_scene(s, nav);
+        // 12 m of wall, 0.6 m thick, an agent's 0.4 m round it: 12.8 m by 1.4 m -- the
+        // two rows of 1 m cells along it, 12 cells whole and a triangle of the cell
+        // at each end (a triangle goes when its middle is in): 2 x 26.
+        check(st.carved == 2 * 26, "the ground under a wall and an agent's width round it is left out (" + std::to_string(st.carved) + ")");
+        check(!nav.contains(glm::vec3(0.0f, 0.0f, 0.2f)) || nav.nearest_tri(glm::vec3(0.0f, 0.0f, 0.2f)) >= 0, "the wall's line is off the ground mesh");
+        check(nav.contains(glm::vec3(10.0f, 0.0f, 10.0f)), "a low box (a step) carves nothing");
+        std::vector<glm::vec3> path;
+        const bool found = nav.find_path(glm::vec3(0.0f, 0.0f, -3.0f), glm::vec3(0.0f, 0.0f, 3.0f), path);
+        bool through = false;
+        for (size_t k = 1; k < path.size(); ++k)
+            if ((path[k - 1].z < 0.0f) != (path[k].z < 0.0f)) {
+                const float t = path[k - 1].z / (path[k - 1].z - path[k].z);
+                through = through || std::fabs(path[k - 1].x + (path[k].x - path[k - 1].x) * t) < 6.0f;
+            }
+        check(found && !through, "a path from one side to the other goes round the wall, not through it");
+    }
+
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     if (g_fail) std::printf("FAIL navbake_check\n");
     return g_fail ? 1 : 0;

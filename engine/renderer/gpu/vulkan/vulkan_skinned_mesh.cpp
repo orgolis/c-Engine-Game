@@ -6,6 +6,7 @@
 #include "vulkan_device.h"
 #include "vulkan_inline_update.h"   // per-frame data in the command stream
 #include "skinning_spirv.h"
+#include "vk_mem_alloc.h"
 
 #include <spdlog/spdlog.h>
 #include <array>
@@ -83,9 +84,23 @@ bool SkinnedMesh::init(VulkanDevice* device, const std::vector<SkinnedVertex>& v
     bind.reserve(vertices.size());
     for (const SkinnedVertex& sv : vertices)
         bind.push_back(SceneVertex{sv.position, sv.normal, sv.uv, sv.tangent});
+    // No meshlets: their bounds and cones are the bind pose's, and the renderer
+    // culls meshlet by meshlet -- a limb posed away from where it is bound was
+    // culled whenever its bind-pose cluster was out of view (the first-person
+    // arms, fixed to the eye, vanished entirely).
     output_ = Mesh::create(device, bind, indices, std::move(submeshes),
-                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr, /*bake_meshlets=*/false);
     if (!output_) { spdlog::error("SkinnedMesh: output Mesh::create failed"); return false; }
+    {
+        // Bounds for every pose: the sphere round the bind-pose box, as a box.
+        const AABB b = output_->bounding_box();
+        const glm::vec3 c = (b.min + b.max) * 0.5f;
+        const float r = glm::length(b.max - b.min) * 0.5f;
+        AABB any;
+        any.min = c - glm::vec3(r);
+        any.max = c + glm::vec3(r);
+        output_->set_bounding_box(any);
+    }
 
     // 2) Input SSBO (packed std430), uploaded once.
     std::vector<GpuSkinnedVertex> packed(vertices.size());
@@ -97,14 +112,35 @@ bool SkinnedMesh::init(VulkanDevice* device, const std::vector<SkinnedVertex>& v
         packed[i].joints  = s.joints;
         packed[i].weights = s.weights;
     }
+    // In device-local memory, copied in once. It was host-visible: every
+    // skinning dispatch then read all of it (80 bytes a vertex) across PCIe,
+    // every frame -- 24 characters cost 9 ms of GPU time a frame.
     const VkDeviceSize in_size = sizeof(GpuSkinnedVertex) * packed.size();
-    if (!make_host_buffer(device, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, in_size,
-                          in_ssbo_, in_mem_)) return false;
-    {
+    static const bool skin_host = std::getenv("GWS_TEST_SKIN_HOST") != nullptr;   // A/B: the old way
+    if (skin_host) {
+        if (!make_host_buffer(device, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, in_size,
+                              in_ssbo_, in_mem_)) return false;
         void* p = nullptr;
         vkMapMemory(vk, in_mem_, 0, in_size, 0, &p);
         std::memcpy(p, packed.data(), static_cast<size_t>(in_size));
         vkUnmapMemory(vk, in_mem_);
+    } else {
+        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bi.size        = in_size;
+        bi.usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VmaAllocationCreateInfo ai{};
+        ai.usage         = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        ai.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        if (vmaCreateBuffer(device->allocator(), &bi, &ai, &in_ssbo_, &in_alloc_, nullptr) != VK_SUCCESS) {
+            in_ssbo_ = VK_NULL_HANDLE;
+            in_alloc_ = nullptr;
+            spdlog::error("SkinnedMesh: the input buffer could not be made ({} bytes)", in_size);
+            return false;
+        }
+        MeshUploadBatch up(device);
+        up.stage(in_ssbo_, packed.data(), in_size);
+        if (!up.flush()) { spdlog::error("SkinnedMesh: the input upload failed"); return false; }
     }
 
     // 3) Bone SSBO (skinning matrices), host-visible + persistently mapped.
@@ -258,12 +294,13 @@ void SkinnedMesh::destroy() {
     if (bone_mapped_) vkUnmapMemory(vk, bone_mem_);
     if (bone_ssbo_) vkDestroyBuffer(vk, bone_ssbo_, nullptr);
     if (bone_mem_)  vkFreeMemory(vk, bone_mem_, nullptr);
-    if (in_ssbo_)   vkDestroyBuffer(vk, in_ssbo_, nullptr);
+    if (in_alloc_)  vmaDestroyBuffer(device_->allocator(), in_ssbo_, in_alloc_);
+    else if (in_ssbo_) vkDestroyBuffer(vk, in_ssbo_, nullptr);
     if (in_mem_)    vkFreeMemory(vk, in_mem_, nullptr);
     output_.reset();
     pipeline_ = VK_NULL_HANDLE; layout_ = VK_NULL_HANDLE; pool_ = VK_NULL_HANDLE;
     dsl_ = VK_NULL_HANDLE; bone_ssbo_ = VK_NULL_HANDLE; bone_mem_ = VK_NULL_HANDLE;
-    bone_mapped_ = nullptr; in_ssbo_ = VK_NULL_HANDLE; in_mem_ = VK_NULL_HANDLE;
+    bone_mapped_ = nullptr; in_ssbo_ = VK_NULL_HANDLE; in_mem_ = VK_NULL_HANDLE; in_alloc_ = nullptr;
     device_ = nullptr;
 }
 

@@ -75,7 +75,8 @@ private:
     uint32_t bone_count_   = 0;
 
     VkBuffer       in_ssbo_    = VK_NULL_HANDLE;     // GpuSkinnedVertex[] (bind pose)
-    VkDeviceMemory in_mem_     = VK_NULL_HANDLE;
+    VkDeviceMemory in_mem_     = VK_NULL_HANDLE;     // (GWS_TEST_SKIN_HOST: the old host-memory input)
+    VmaAllocation  in_alloc_   = nullptr;            // device-local, from the device's VMA
     VkBuffer       bone_ssbo_  = VK_NULL_HANDLE;     // mat4[] skinning matrices
     VkDeviceMemory bone_mem_   = VK_NULL_HANDLE;
     void*          bone_mapped_ = nullptr;

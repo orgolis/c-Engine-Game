@@ -227,6 +227,8 @@ public:
 
     /// Get the mesh's bounding box in local space (computed at load time).
     const AABB& bounding_box() const { return bounding_box_; }
+    /// Replace it -- a skinned mesh's output covers every pose, not the bind pose.
+    void set_bounding_box(const AABB& b) { bounding_box_ = b; }
 
     /// True when the mesh's triangle winding is not trustworthy and the
     /// G-Buffer renderer must draw it from both sides. OBJ assets set this

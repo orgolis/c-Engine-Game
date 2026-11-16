@@ -26,7 +26,10 @@ weapon shotgun
   flash                 # a muzzle flash
   ammo shotgun_shells   # the item it loads from the bag
   model assets/models/guns/shotgun.glb   # seen in first person (a rigged model)
-  view 0.21 -0.23 0.38  # where it is held: right, up, forward from the eye (m)
+  view 0.21 -0.23 0.38 -3 1 -2   # where it is held: right, up, forward from the eye (m);
+                                 # then turned in, tipped, rolled (degrees; optional)
+  grip weapon_socket 0 0 0 90 0 180   # how a hand holds it: the bone, offset, turn
+  hold rifle            # rifle (two hands, the default), pistol, melee
 end
 ```
 
@@ -34,6 +37,34 @@ With a `model`, the drawn gun is seen in first person: it plays its `Draw`,
 `Fire`, `Reload` and `Idle` clips, bobs, kicks and comes to the middle when
 aiming, and its `muzzle` bone is where rounds and the flash start
 (docs/systems/CHARACTERS.md).
+
+In first person the player's own arms hold it (docs/systems/CHARACTERS.md):
+the right hand where `grip` puts it, the left where the player's clip for the
+way it is held has it. `hold` picks those clips -- `aim_pistol=...` in the
+player model's clip list, or `aim_<weapon id>=...` for one gun; a gun's own
+reload is `reload_<weapon id>=...`.
+
+### Melee weapons
+
+```
+weapon sword
+  name Sword
+  damage 55 physical
+  rpm 100               # swings a minute
+  melee 2.4 110         # reach (m) and arc (degrees) in front
+  hold melee
+  model assets/models/weapons/sword.glb   # its Fire clip is the swing
+  view 0.17 -0.21 0.38 -10 -20 25
+  grip weapon_socket 0 0 0 90 0 180
+end
+```
+
+A melee weapon needs no rounds and has no magazine or reload. A swing reaches
+everyone within its reach in front of the eye, inside its arc, with nothing
+solid between (each is a hit, with the Damage bonus); with no one there, the
+blade meets what is ahead (an impact). The model plays its `Fire` clip as the
+swing, and the first-person arm follows the blade. The HUD shows "-" for its
+rounds.
 
 A gun's muzzle flash and smoke, its tracers, and the sparks and dust where its
 rounds land are effects: `<gun>_muzzle`, `<gun>_tracer`, `<gun>_impact`,
