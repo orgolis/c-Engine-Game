@@ -14,6 +14,17 @@ How they were used: the engine release notes for v0.8.52 (the first-person gun's
 `GWS_TEST_VM_LAG=1` places the first-person gun the old way (a frame behind
 the camera) -- the A/B for the gun's shake.
 
+## Driving the editor and game UI
+
+| | |
+|---|---|
+| `GWS_TEST_UI=click:<id>@<frame>,...` | a game UI button clicked at that Play frame (`click:<grid>.<cell>` picks a slot) |
+| `... type:<text>@<frame>`, `key:Enter@<frame>` | text typed into what has the keyboard (a code field); Enter / Escape / Backspace pressed |
+| `... press:<action>[~<frames>]@<frame>` | an action's key held (see above) |
+| `GWS_TEST_EXPORT_DIALOG=<frame>` | Project > Export Game opens at that frame (absolute, not Play, frames) |
+| `GWS_TEST_EXPORT_RUN=<frame>` | the export dialog's Export, with the project's saved settings |
+| `GWS_TEST_EXPORT_PICK=<frame>[,<frame>]` | the export folder's Choose... pressed (the folder picker opens) |
+
 ## Where a frame's time goes
 
 | | |

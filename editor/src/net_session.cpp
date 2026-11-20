@@ -22,6 +22,7 @@
 
 #include "replication.h"          // write_snapshot / apply_snapshot + kSnapshotMagic
 #include "transport.h"
+#include "lobby_client.h"         // host_lobby: lobby codes through a relay
 #include "ecs/world.h"
 #include "ecs/components.h"
 
@@ -108,6 +109,7 @@ struct NetSession::Impl {
     std::vector<NetGameMessage> messages;
     std::unordered_set<uint64_t> removed_ids;
     std::unique_ptr<net::Transport> transport;
+    std::unique_ptr<net::lobby::HostLink> lobby;   // host_lobby(): the lobby riding on `transport`
 
     ecs::World net_world;                                     // props + avatars
     std::unordered_map<uint64_t, ecs::Entity> ent_by_netid;   // host: prop mirror
@@ -447,7 +449,13 @@ struct NetSession::Impl {
 };
 
 NetSession::NetSession() : impl_(std::make_unique<Impl>()) {}
-NetSession::~NetSession() { impl_->transport.reset(); }
+NetSession::~NetSession() {
+    // The lobby before the transport it rides on: it says CLOSE through it and
+    // takes its handler back -- the other way round it would touch a freed transport.
+    if (impl_->lobby) impl_->lobby->stop();
+    impl_->lobby.reset();
+    impl_->transport.reset();
+}
 
 bool NetSession::host(uint16_t port,uint32_t max_clients) {
     shutdown();
@@ -489,7 +497,39 @@ bool NetSession::join(const std::string& ip, uint16_t port) {
     return true;
 }
 
+bool NetSession::host_lobby(const std::string& server, const std::string& game_id, int max_players,
+                            const std::string& title) {
+    net::lobby::Endpoint at;
+    if (!net::lobby::parse_endpoint(server, at)) {
+        spdlog::error("[net] lobby server '{}' is not host:port", server);
+        return false;
+    }
+    if (!host(0, static_cast<uint32_t>(std::max(1, max_players - 1)))) return false;
+    impl_->lobby = std::make_unique<net::lobby::HostLink>();
+    impl_->lobby->start(*impl_->transport, at, game_id, max_players, title);
+    status_.endpoint = "lobby " + server;
+    spdlog::info("[net] opening a lobby on {}", server);
+    return true;
+}
+
+NetSession::LobbyState NetSession::lobby_state() const {
+    if (!impl_->lobby) return LobbyState::Off;
+    switch (impl_->lobby->state()) {
+        case net::lobby::HostLink::State::Registering: return LobbyState::Registering;
+        case net::lobby::HostLink::State::Open:        return LobbyState::Open;
+        case net::lobby::HostLink::State::Failed:      return LobbyState::Failed;
+        default:                                       return LobbyState::Off;
+    }
+}
+std::string NetSession::lobby_code() const { return impl_->lobby ? impl_->lobby->code() : std::string(); }
+std::string NetSession::lobby_error() const { return impl_->lobby ? impl_->lobby->error() : std::string(); }
+
 void NetSession::shutdown() {
+    // The lobby first: its CLOSE goes out on the transport about to go.
+    if (impl_->lobby) {
+        impl_->lobby->stop();
+        impl_->lobby.reset();
+    }
     impl_->messages.clear();
     impl_->removed_ids.clear();
     if (impl_->transport)
@@ -575,6 +615,7 @@ void NetSession::tick_frame(const std::shared_ptr<schizo::scene::Scene>& scene, 
     impl_->last_scene = scene;
     if (status_.role == NetRole::Host)        impl_->tick_host(scene, dt, status_);
     else if (status_.role == NetRole::Client) impl_->tick_client(scene, dt, status_);
+    if (impl_->lobby) impl_->lobby->update(dt);   // after the poll that delivered the server's datagrams
 }
 
 }  // namespace schizo::editor

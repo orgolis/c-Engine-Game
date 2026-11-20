@@ -102,7 +102,8 @@ jobs:
             vehiclemove_check \
             audiobus_check extension_check docio_check gpuzones_check \
             rendersettings_check userdirs_check gbuffer_reconstruct_check             shadersource_check terrainmat_check             componentlookup_check ecssync_check scenehooks_check draworder_check assetbrowserpaths_check             primitivelod_check shadowskip_check shadowvote_check rtsync_check presentsync_check hierarchygen_check hzbstreak_check ecsincremental_check componentstamp_check gbufferresize_check \
-            script_check assetcook dedicated_server editor gws headless docgen projectctl worldgen innerloop_check
+            script_check assetcook dedicated_server editor gws headless docgen projectctl worldgen innerloop_check \
+            export_check lobby_check lobby_server
 
       - name: Run the check suite
         # Driven through `gws test` rather than a shell loop. The tool owns
@@ -233,7 +234,7 @@ jobs:
             audiobus_check extension_check docio_check gpuzones_check \
             rendersettings_check userdirs_check gbuffer_reconstruct_check             shadersource_check terrainmat_check             componentlookup_check ecssync_check scenehooks_check draworder_check assetbrowserpaths_check             primitivelod_check shadowskip_check shadowvote_check rtsync_check presentsync_check hierarchygen_check hzbstreak_check ecsincremental_check componentstamp_check gbufferresize_check \
             script_check assetcook dedicated_server editor gws headless docgen projectctl worldgen \
-            innerloop_check gws_tests
+            innerloop_check gws_tests export_check lobby_check lobby_server
 
       - name: Run the headless check suite
         run: |

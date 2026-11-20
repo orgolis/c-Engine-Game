@@ -1,8 +1,10 @@
 #include "online_game.h"
 #include "script_system.h"
 #include <cstdint>
+#include <cctype>
 #include <future>
 #include "net_session.h"
+#include "lobby_client.h"
 #include "game_session_protocol.h"
 #include "ecs_bridge.h"
 #include "scene_playback_manager.h"
@@ -92,6 +94,22 @@ struct OnlineGame::Impl {
  std::vector<std::pair<std::string,int>> supplies;
  std::string endpoint = "127.0.0.1:7777", previous_endpoint;
  bool editing_endpoint = false, local_session = false;
+ // Lobby codes (config lobby_server=host:port): online_lobby_<n> hosts mode n
+ // with a code, online_code is where one is typed, online_join_code joins.
+ std::string lobby_server, code_input, previous_code, shown_code;
+ bool editing_code = false, via_lobby = false;
+ std::future<engine::network::lobby::JoinResult> lookup;
+ void start_code_join(){
+  namespace lb=engine::network::lobby;
+  if(lookup.valid())return;
+  if(code_input.empty())code_input=previous_code;
+  const std::string code=lb::normalize_code(code_input);
+  if(code.empty()){status=lb::explain_error("code");return;}
+  lb::Endpoint server;
+  if(lobby_server.empty()||!lb::parse_endpoint(lobby_server,server)){status="This game has no lobby server (lobby_server in config/multiplayer.ini).";return;}
+  code_input=code;status="Looking for game "+code+"...";
+  lookup=std::async(std::launch::async,[server,game=settings["game_id"],code]{return lb::resolve(server,game,code);});
+ }
  std::future<std::string> preparation;
  std::string preparing_scene;
 
@@ -139,14 +157,17 @@ struct OnlineGame::Impl {
  uint64_t own_avatar()const{return net?net->status().my_avatar:0;}
 
  void reset_scene(){fighters.clear();replica.clear();spawned.clear();scene_ids.clear();inputs.clear();death_time.clear();sent_skills.clear();sent_equipment.clear();visuals.clear();bones.clear();clips.clear();texts.clear();shown_ui.clear();initialized=false;first_state=true;age=0;snapshot=last_snapshot=0;tracked_objects.clear();culled=false;send_timer=0;sent_components.clear();sent_metadata.clear();full_snapshot=true;round_delay=empty_time=0;countdown=rounds()?5:0;}
- void leave(const std::string& why){if(net&&session&&!local_session){Writer bye(is_client?Message::Leave:Message::Reject,epoch);if(!is_client)bye.str("The host closed the session.");net->send_game(0,bye.bytes);}if(net)net->shutdown();session=false;is_client=false;ready=false;menu=true;mode=0;travel=start_scene;status=why;result.clear();show_session=false;reset_scene();}
+ void leave(const std::string& why){via_lobby=false;shown_code.clear();if(net&&session&&!local_session){Writer bye(is_client?Message::Leave:Message::Reject,epoch);if(!is_client)bye.str("The host closed the session.");net->send_game(0,bye.bytes);}if(net)net->shutdown();session=false;is_client=false;ready=false;menu=true;mode=0;travel=start_scene;status=why;result.clear();show_session=false;reset_scene();}
  void begin(int m,bool host,bool local_only=false){
   if(!net)return;net->shutdown();local_session=local_only;mode=host?m:0;reset_scene();session=true;is_client=!host;ready=false;hello=false;menu=!host;selected_mode=m;mode=host?m:0;++epoch;host_score=guest_score=0;round=1;result.clear();connect_timer=0;peer_ready.clear();welcomes.clear();
-  bool ok=local_only || (host?net->host(uint16_t(port),modes.at(m).players-1):net->join(address,uint16_t(port)));
-  if(!ok){session=false;menu=true;status="Could not open the connection. Check the address and port.";return;}
-  status=host?"Hosting. Share your address and port with your friends.":"Connecting to host...";
-  if(host){travel=maps[m];ready=false;}
-  spdlog::info("[online] {} mode {} on port {}",local_only?"local":host?"host":"join",m,port);
+  shown_code.clear();
+  bool ok=local_only || (host?(via_lobby?net->host_lobby(lobby_server,settings["game_id"],modes.at(m).players,modes.at(m).title)
+                                        :net->host(uint16_t(port),modes.at(m).players-1)):net->join(address,uint16_t(port)));
+  if(!ok){session=false;menu=true;via_lobby=false;status="Could not open the connection. Check the address and port.";return;}
+  status=host?(via_lobby?"Opening an online game...":"Hosting. Share your address and port with your friends."):"Connecting to host...";
+  if(host){travel=via_lobby?std::string():maps[m];ready=false;}   // through a lobby: travel once the code is there
+  if(host&&via_lobby)spdlog::info("[online] host mode {} through the lobby server {}",m,lobby_server);
+  else spdlog::info("[online] {} mode {} on port {}",local_only?"local":host?"host":"join",m,port);
  }
  void send(Message type,const std::string& text,uint32_t peer=0){Writer w(type,epoch);w.str(text);net->send_game(peer,w.bytes);}
  void welcome(uint32_t peer){Writer w(Message::Welcome,epoch);w.pod(uint32_t(mode));w.str(maps[mode]);w.pod(fingerprint(maps[mode],compatibility_files));net->send_game(peer,w.bytes);welcomes[peer]=age;}
@@ -201,6 +222,9 @@ void OnlineGame::configure(const std::string& root) {
         if (at != std::string::npos && line.front() != '#') cfg[line.substr(0,at)] = line.substr(at+1);
     }
     p.start_scene = cfg["start_scene"];
+    p.lobby_server = cfg["lobby_server"];
+    if (const char* e = std::getenv("GWS_LOBBY_SERVER")) p.lobby_server = e;
+    while (!p.lobby_server.empty() && std::isspace(static_cast<unsigned char>(p.lobby_server.back()))) p.lobby_server.pop_back();
     p.flags = split(cfg["sync_flags"]);
     p.sync_ui = split(cfg["sync_ui"]);
     p.hidden_ui = split(cfg["session_hide"]);
@@ -444,6 +468,28 @@ void OnlineGame::update(float dt,const std::shared_ptr<scene::Scene>& scene,cons
  p.age+=dt;
  if(std::getenv("GWS_ONLINE_TEST_CLOSE")&&p.session&&p.rounds()&&p.initialized&&p.age<.35f)p.place(p.local_id(),{0,1,p.is_client?-6.f:6.f});
  // Test-only environment switches exercise the same menu actions as a player.
+ // A code looked up in the background: join its relay port, or say why not.
+ if(p.lookup.valid()&&p.lookup.wait_for(std::chrono::seconds(0))==std::future_status::ready){
+  auto found=p.lookup.get();
+  if(found.ok&&!p.session){
+   std::snprintf(p.address,sizeof p.address,"%s",found.relay_host.c_str());p.port=found.relay_port;p.via_lobby=false;
+   spdlog::info("[online] code {} -> relay {}:{}",p.code_input,found.relay_host,found.relay_port);
+   p.begin(p.modes.begin()->first,false);p.status="Joining game "+p.code_input+"...";
+  }else if(!found.ok)p.status=found.error;
+ }
+ // Hosting with a code: tell the host its code once the lobby is open.
+ if(p.session&&!p.is_client&&p.via_lobby){
+  const auto st=net.lobby_state();
+  if(st==NetSession::LobbyState::Failed){p.leave("Could not open an online game: "+net.lobby_error());return;}
+  if(st==NetSession::LobbyState::Open&&p.shown_code!=net.lobby_code()){
+   if(p.shown_code.empty())p.travel=p.maps[p.mode];   // the lobby is open: into the mode's world
+   p.shown_code=net.lobby_code();
+   spdlog::info("[online] lobby code {} (server {})",p.shown_code,p.lobby_server);
+   p.status="Online. Your code: "+p.shown_code+"  -- friends type it under Join with code.";
+  }
+ }
+ // Test switches: GWS_ONLINE_LOBBY=<mode key> hosts it with a code; GWS_ONLINE_CODE=<code> joins one.
+ if(!p.session&&p.menu){static bool test_lobby_done=false;if(!test_lobby_done){if(const char* key=std::getenv("GWS_ONLINE_LOBBY")){for(const auto& [id,m]:p.modes)if(m.key==key){test_lobby_done=true;p.via_lobby=true;p.begin(id,true);return;}}else if(const char* code=std::getenv("GWS_ONLINE_CODE")){test_lobby_done=true;p.code_input=code;p.start_code_join();}}}
  if(!p.session&&p.menu){if(const char* host=std::getenv("GWS_ONLINE_HOST")){int mode=0;for(const auto& [id,m]:p.modes)if(m.key==host)mode=id;if(!mode)return;if(const char* port=std::getenv("GWS_ONLINE_PORT"))p.port=std::clamp(std::atoi(port),1024,65535);p.begin(mode,true);}else if(const char* join=std::getenv("GWS_ONLINE_JOIN")){std::snprintf(p.address,sizeof p.address,"%s",join);if(const char* port=std::getenv("GWS_ONLINE_PORT"))p.port=std::clamp(std::atoi(port),1024,65535);p.begin(1,false);}}
  auto& w=bridge.world();auto& policy=w.registry().ctx().emplace<ecs::DamageAuthority>();policy.authoritative=!p.session||!p.is_client;policy.friendly_fire=p.rounds();
  if(!p.session)return;
@@ -494,6 +540,26 @@ void OnlineGame::Impl::action(const std::string& id) {
                 return;
             }
         }
+        for (const auto& [n,m] : modes) if (id == "online_lobby_" + std::to_string(n)) {
+            editing_endpoint = editing_code = false;
+            if (lobby_server.empty()) { status = "This game has no lobby server (lobby_server in config/multiplayer.ini)."; return; }
+            via_lobby = true;
+            begin(n, true);
+            return;
+        }
+        if (id == "online_code") {
+            previous_code = code_input;
+            code_input.clear();
+            editing_code = true;
+            editing_endpoint = false;
+            status = "Type the code the host was given, then Join with code (or Enter).";
+            return;
+        }
+        if (id == "online_join_code") {
+            editing_code = false;
+            start_code_join();
+            return;
+        }
         if (id == "online_endpoint") {
             previous_endpoint = endpoint;
             endpoint.clear();
@@ -534,6 +600,20 @@ void OnlineGame::draw_ui(ScenePlaybackManager& play,NetSession&) {
     if (!p.configured || !play.IsPlaying()) return;
     auto& ui=play_ui();
     if (p.session && !p.menu && ImGui::IsKeyPressed(ImGuiKey_F10,false)) p.show_session=!p.show_session;
+    if (p.editing_code) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape,false)) {
+            p.code_input=p.previous_code; p.editing_code=false; p.status.clear();
+        } else if (ImGui::IsKeyPressed(ImGuiKey_Enter,false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter,false)) {
+            p.editing_code=false; p.start_code_join();
+        } else {
+            if(ImGui::IsKeyPressed(ImGuiKey_Backspace,true)&&!p.code_input.empty())p.code_input.pop_back();
+            auto append=[&](unsigned c){if(std::isalnum(static_cast<int>(c))&&c<127&&p.code_input.size()<8)p.code_input.push_back(static_cast<char>(std::toupper(static_cast<int>(c))));};
+            const auto& io=ImGui::GetIO();
+            if(io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V,false)) {
+                if(const char* clipboard=ImGui::GetClipboardText())for(const char* c=clipboard;*c;++c)append(static_cast<unsigned char>(*c));
+            } else for(auto c:io.InputQueueCharacters) append(c);
+        }
+    }
     if (p.editing_endpoint) {
         if (ImGui::IsKeyPressed(ImGuiKey_Escape,false)) {
             p.endpoint=p.previous_endpoint; p.editing_endpoint=false; p.status.clear();
@@ -562,10 +642,12 @@ void OnlineGame::draw_ui(ScenePlaybackManager& play,NetSession&) {
     auto hud=document("status_ui",p.session&&!connecting&&!p.show_session);
     if(p.menu&&!p.session) {
         ui.set_text(menu,"online_endpoint",p.endpoint+(p.editing_endpoint?"_":""));
+        ui.set_text(menu,"online_code",p.code_input.empty()&&!p.editing_code?std::string("Click to type a code"):p.code_input+(p.editing_code?"_":""));
         ui.set_text(menu,"message",p.status);
     }
     if(p.session) {
         std::string details=p.rules().title+"   /   "+(p.local_session?"Solo":p.is_client?"Guest":"Host")+"   /   "+std::to_string(p.fighters.size())+" players";
+        if(!p.shown_code.empty())details+="   /   code "+p.shown_code;
         ui.set_visible(panel,"online_restart",!p.is_client && p.ready && !p.result.empty());
         ui.set_visible(panel,"online_back",!connecting);
         ui.set_text(panel,"details",details); ui.set_text(panel,"message",p.status);

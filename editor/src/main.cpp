@@ -2580,8 +2580,20 @@ static void ShowWindowsExportDialog(EditorState& es) {
         es.export_plan_changed_at = ImGui::GetTime();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Choose...##out")) {
+    // GWS_TEST_EXPORT_PICK=<frame>[,<frame>]: this button pressed at those frames (tests).
+    static const std::vector<int> pick_frames = [] {
+        std::vector<int> v;
+        if (const char* e = std::getenv("GWS_TEST_EXPORT_PICK")) {
+            std::stringstream ss(e);
+            std::string tok;
+            while (std::getline(ss, tok, ',')) v.push_back(std::atoi(tok.c_str()));
+        }
+        return v;
+    }();
+    const bool test_pick = std::find(pick_frames.begin(), pick_frames.end(), ImGui::GetFrameCount()) != pick_frames.end();
+    if (ImGui::Button("Choose...##out") || test_pick) {
         const std::string picked = gws::platform::browse_folder("Choose where to export the game");
+        spdlog::info("[export] folder picker returned '{}'", picked);
         if (!picked.empty()) {
             export_copy(b.output, sizeof b.output, picked);
             ExportSettingsFromText(es);
@@ -8778,7 +8790,9 @@ int main(int argc, char** argv) {
             gws::diag::install_crash_handler(cc);
             // Seconds before a stalled frame is treated as a hang. Override
             // with GWS_HANG_SECONDS to catch shorter stalls.
-            {
+            // Not for --export-game: no frames tick while it exports, and a
+            // script build takes longer than the watchdog waits.
+            if (export_game_dir.empty()) {
                 const char* hs = std::getenv("GWS_HANG_SECONDS");
                 const double secs = (hs != nullptr) ? std::atof(hs) : 0.0;
                 gws::diag::install_hang_watchdog(secs > 0.0 ? secs : 5.0);
@@ -12570,7 +12584,9 @@ int main(int argc, char** argv) {
                 // button or show a document at a Play frame (menus seen without a person).
                 if (const char* tu = std::getenv("GWS_TEST_UI")) {
                     static int ui_frames = 0, mouse_up_at = -1, report_at = -1;
+                    static ImGuiKey test_key_up = ImGuiKey_None;   // key:<name>, released a frame later
                     ++ui_frames;
+                    if (test_key_up != ImGuiKey_None) { ImGui::GetIO().AddKeyEvent(test_key_up, false); test_key_up = ImGuiKey_None; }
                     if (ui_frames == mouse_up_at) ImGui::GetIO().AddMouseButtonEvent(ImGuiMouseButton_Left, false);
                     if (ui_frames == report_at)
                         spdlog::info("[test] ui: after the click -- mouse held by Play {}, game view focused {} (ImGui's own: {})",
@@ -12608,6 +12624,14 @@ int main(int argc, char** argv) {
                             test_press_frames = tl == std::string::npos ? 4 : std::max(1, std::atoi(arg.c_str() + tl + 1));
                             spdlog::info("[test] ui: press {} (key {}) -- mouse held by Play {}, menu has input {}, game view focused {}",
                                          arg, test_press_key, pm.IsCursorCaptured(), pm.UiHasInput(), editor_state.viewport_input_focused);
+                        } else if (what == "type") {
+                            // type:<text> -- typed into whatever has the keyboard (a code field)
+                            for (char c : arg) ImGui::GetIO().AddInputCharacter(static_cast<unsigned char>(c));
+                        } else if (what == "key") {
+                            // key:Enter / key:Escape / key:Backspace -- pressed for one frame
+                            const ImGuiKey k = arg == "Enter" ? ImGuiKey_Enter : arg == "Escape" ? ImGuiKey_Escape
+                                             : arg == "Backspace" ? ImGuiKey_Backspace : ImGuiKey_None;
+                            if (k != ImGuiKey_None) { ImGui::GetIO().AddKeyEvent(k, true); test_key_up = k; }
                         } else if (what == "event") {
                             // event:<name>=<param> on the gameplay bus, about the player (a creature's death...)
                             schizo::ecs::GameplayEvent ev;

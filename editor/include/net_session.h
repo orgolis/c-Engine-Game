@@ -60,6 +60,19 @@ public:
     bool host(uint16_t port, uint32_t max_clients=16);
     // Connect to a host at ip:port as a client. Returns false on failure.
     bool join(const std::string& ip, uint16_t port);
+
+    // Host through a lobby server ("host:port", engine/core/network/include/
+    // lobby_client.h): as host(), on any free port, with a lobby registered
+    // from the game's own socket so players behind any router can join through
+    // the server's relay, with lobby_code(). `max_players` counts the host.
+    // The lobby opens over the next frames (lobby_state); join() a relay port
+    // from lobby::resolve() to play in one.
+    bool host_lobby(const std::string& server, const std::string& game_id, int max_players,
+                    const std::string& title);
+    enum class LobbyState { Off, Registering, Open, Failed };
+    LobbyState  lobby_state() const;
+    std::string lobby_code() const;
+    std::string lobby_error() const;
     // Tear the session down (safe to call when already offline).
     void shutdown();
 

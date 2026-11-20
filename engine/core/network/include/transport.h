@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -69,6 +70,19 @@ public:
 
     // N4 profiler hook: cumulative traffic counters + live RTT/loss.
     virtual NetStats stats() const = 0;
+
+    // Lobby codes (lobby_client.h) ride on the game's own socket, so the
+    // host's router lets the relayed game traffic back in on it: a datagram
+    // sent from that socket, and the lobby server's datagrams (lobby_protocol.h
+    // control messages) handed to `handler` before the game protocol sees
+    // them -- `from_ip` dotted IPv4. Valid after start_server / start_client.
+    using RawHandler = std::function<void(const std::string& from_ip, uint16_t from_port,
+                                          const uint8_t* data, size_t size)>;
+    virtual bool send_raw(const std::string& host, uint16_t port, const void* data, size_t size) {
+        (void)host; (void)port; (void)data; (void)size;
+        return false;
+    }
+    virtual void set_raw_handler(RawHandler handler) { (void)handler; }
 };
 
 std::unique_ptr<Transport> create_enet_transport();

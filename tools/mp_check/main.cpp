@@ -210,8 +210,20 @@ int main() {
     host.shutdown();
     client.shutdown();
 
+    // Hosting through a lobby server (none answers here: it stays registering),
+    // then the session is destroyed while hosting -- the lobby must go before the
+    // transport it rides on (quitting the game while hosting online).
+    bool lobby_ok = false;
+    {
+        editor::NetSession online;
+        lobby_ok = online.host_lobby("127.0.0.1:17899", "mp.check", 4, "Check") &&
+                   online.lobby_state() == editor::NetSession::LobbyState::Registering;
+        online.tick_frame(hs, 0.016f);
+    }
+    std::printf("  lobby host: registering, then destroyed while hosting %s\n", lobby_ok ? "OK" : "FAIL");
+
     const bool ok = ok_h && ok_c && no_self && clone_ok && prop_ok && player_safe &&
-                    assigned && restart_ok && origin_ok;
+                    assigned && restart_ok && origin_ok && lobby_ok;
     std::printf("mp_check: %s\n", ok ? "ALL OK" : "FAIL");
     return ok ? 0 : 1;
 }

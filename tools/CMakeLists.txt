@@ -709,6 +709,27 @@ if(MINGW)
     target_link_options(physics_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# lobby_server: lobby codes and the relay for online games
+# (engine/core/network/include/lobby_server.h). Shipped with the engine, to be
+# run on a machine the internet reaches; docs/systems/ONLINE_PLAY.md.
+add_executable(lobby_server lobby_server/main.cpp)
+target_link_libraries(lobby_server PRIVATE gws_lobby)
+target_compile_features(lobby_server PRIVATE cxx_std_17)
+if(MINGW)
+    target_link_options(lobby_server PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
+# lobby_check: a lobby server in-process; a host's game registers a lobby and
+# gets a code, joiners resolve it and connect real ENet transports through the
+# relay (messages both ways, one split into many datagrams); wrong code,
+# another game, full, closed, no server.
+add_executable(lobby_check lobby_check/main.cpp)
+target_link_libraries(lobby_check PRIVATE network gws_lobby)
+target_compile_features(lobby_check PRIVATE cxx_std_17)
+if(MINGW)
+    target_link_options(lobby_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # net_check: Stage 7 transport verification (ENet loopback connect + ping/pong).
 add_executable(net_check net_check/main.cpp)
 target_link_libraries(net_check PRIVATE network)
@@ -1090,7 +1111,7 @@ endif()
 # docgen, `world` needs worldgen.
 #
 # CPACK_STRIP_FILES strips these in the package, so the download cost is small.
-install(TARGETS gws headless projectctl docgen assetcook worldgen
+install(TARGETS gws headless projectctl docgen assetcook worldgen lobby_server
         RUNTIME DESTINATION "${GWS_ENGINE_DEST}" COMPONENT engine)
 
 # innerloop_check: measure the inner loop so it can be defended (issue #13).

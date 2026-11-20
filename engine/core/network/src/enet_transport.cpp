@@ -1,11 +1,13 @@
 // ENet-backed Transport (Stage 7). The only TU that includes ENet.
 
 #include "transport.h"
+#include "lobby_protocol.h"
 
 #include <enet/enet.h>
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <unordered_map>
 
 namespace engine::network {
@@ -23,12 +25,51 @@ void release_enet() {
     if (g_enet_refs.fetch_sub(1) == 1) enet_deinitialize();
 }
 
+class EnetTransport;
+// ENet's host carries no user pointer: which transport an intercepted datagram
+// belongs to.
+std::mutex g_hosts_mutex;
+std::unordered_map<ENetHost*, EnetTransport*> g_hosts;
+int ENET_CALLBACK intercept_raw(ENetHost* host, ENetEvent* event);
+
 class EnetTransport final : public Transport {
 public:
     EnetTransport() { inited_ = ensure_enet(); }
     ~EnetTransport() override {
-        if (host_) enet_host_destroy(host_);
+        if (host_) {
+            {
+                std::lock_guard<std::mutex> lock(g_hosts_mutex);
+                g_hosts.erase(host_);
+            }
+            enet_host_destroy(host_);
+        }
         if (inited_) release_enet();
+    }
+
+    bool send_raw(const std::string& host, uint16_t port, const void* data, size_t size) override {
+        if (!host_) return false;
+        ENetAddress addr{};
+        if (enet_address_set_host(&addr, host.c_str()) != 0) return false;
+        addr.port = port;
+        ENetBuffer b;
+        b.data = const_cast<void*>(data);
+        b.dataLength = size;
+        return enet_socket_send(host_->socket, &addr, &b, 1) >= 0;
+    }
+    void set_raw_handler(RawHandler handler) override {
+        raw_handler_ = std::move(handler);
+        if (!host_) return;
+        std::lock_guard<std::mutex> lock(g_hosts_mutex);
+        g_hosts[host_] = this;
+        host_->intercept = intercept_raw;
+    }
+    // From the intercept: a lobby control message is ours, never ENet's.
+    int on_raw(ENetHost* host) {
+        if (!raw_handler_ || !lobby::is_control(host->receivedData, host->receivedDataLength)) return 0;
+        char ip[64] = "";
+        enet_address_get_host_ip(&host->receivedAddress, ip, sizeof ip);
+        raw_handler_(ip, host->receivedAddress.port, host->receivedData, host->receivedDataLength);
+        return 1;
     }
 
     bool start_server(uint16_t port, uint32_t max_peers) override {
@@ -158,10 +199,21 @@ private:
 
     ENetHost* host_   = nullptr;
     bool      inited_ = false;
+    RawHandler raw_handler_;
     PeerId    next_id_ = 0;
     NetStats  traffic_{};   // cumulative; rtt/loss filled live in stats()
     std::unordered_map<PeerId, ENetPeer*> peers_;
 };
+
+int ENET_CALLBACK intercept_raw(ENetHost* host, ENetEvent*) {
+    EnetTransport* t = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_hosts_mutex);
+        auto it = g_hosts.find(host);
+        if (it != g_hosts.end()) t = it->second;
+    }
+    return t ? t->on_raw(host) : 0;
+}
 
 }  // namespace
 

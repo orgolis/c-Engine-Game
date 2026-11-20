@@ -10,7 +10,7 @@ target_include_directories(gws_platform
 
 if(WIN32)
     target_sources(gws_platform PRIVATE src/file_dialog_windows.cpp)
-    target_link_libraries(gws_platform PRIVATE shell32 ole32)
+    target_link_libraries(gws_platform PRIVATE shell32 ole32 comdlg32 uuid)
 elseif(UNIX)
     target_sources(gws_platform PRIVATE src/file_dialog_linux.cpp)
 else()
