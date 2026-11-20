@@ -150,6 +150,7 @@
 #include "ability_system_panel.h"
 #include "network_system_panel.h"
 #include "net_session.h"
+#include "online_game.h"
 #include "script_system.h"       // Stage 12: custom scripts (Python/C++/C#)
 #include "script_api_editor.h"
 #include "script_component.h"
@@ -492,6 +493,7 @@ struct EditorState {
     // Multiplayer (Stage 7): live host/join session on the verified net stack.
     // Ticked every frame; replicates scene transforms host->clients.
     schizo::editor::NetSession net_session;
+    schizo::editor::OnlineGame online_game;
     bool show_network_window = false;
     char net_host_port[16] = "7777";
     char net_join_ip[64]   = "127.0.0.1";
@@ -647,6 +649,7 @@ struct EditorState {
     // component's value (health, ammunition, inventory...).
     std::vector<uint32_t> play_baseline_ids;
     std::string           play_gameplay_snapshot;
+    std::optional<schizo::editor::EditorScene> play_origin;
 };
 
 // ============================================================================
@@ -668,7 +671,7 @@ static void BeginPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::
     st.play_gameplay_snapshot.clear();
     if (st.ecs_bridge) {
         std::error_code ec;
-        const auto snap = std::filesystem::temp_directory_path(ec) / "gws_play_snapshot.gameplay";
+        const auto snap = std::filesystem::temp_directory_path(ec) / ("gws_play_" + std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count()) + ".gameplay");
         if (!ec && st.ecs_bridge->save_gameplay(scene, snap.string())) st.play_gameplay_snapshot = snap.string();
     }
     // Agents walk the navmesh: bake it now when there are agents and none.
@@ -689,10 +692,11 @@ static void BeginPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::
 
 static void EndPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::Scene>& scene) {
     if (!st.scene_playback_manager) return;
+    st.online_game.end_play();
     st.play_cursor_released_by_escape = false;
     // Diff BEFORE stopping: StopPlayback restores the authored transforms, so
     // after it runs the play-end values are gone.
-    if (st.play_changes.has_baseline() && scene)
+    if (!st.play_origin && st.play_changes.has_baseline() && scene)
         st.pending_play_changes = st.play_changes.Diff(scene, st.ecs_bridge);
     else
         st.pending_play_changes = {};
@@ -705,16 +709,32 @@ static void EndPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::Sc
     // as they were (the entity list is back to its order, so the snapshot's
     // index keys match).
     st.play_loop.end(scene);
-    if (scene && !st.play_baseline_ids.empty()) {
+    auto authored = scene;
+    if (st.play_origin) {
+        st.script_system.clear();
+        *st.editor_scene = std::move(*st.play_origin);
+        st.play_origin.reset();
+        authored = st.editor_scene->GetScene();
+        spdlog::info("Stop: returned to edited scene {}",st.editor_scene->GetSceneFilepath());
+        if(st.ecs_bridge)st.ecs_bridge->load_logic(st.play_gameplay_snapshot + ".logic");
+        st.scene_navmesh = schizo::ai::NavMesh{};
+    }
+    st.scene_playback_manager->SetNetClientMode(false);
+    if (authored && !st.play_baseline_ids.empty()) {
         std::vector<std::shared_ptr<schizo::scene::Entity>> made;
-        for (const auto& e : scene->GetEntities())
+        for (const auto& e : authored->GetEntities())
             if (e && std::find(st.play_baseline_ids.begin(), st.play_baseline_ids.end(), e->GetId()) == st.play_baseline_ids.end())
                 made.push_back(e);
-        for (auto& e : made) scene->RemoveEntity(e);
+        for (auto& e : made) authored->RemoveEntity(e);
         if (!made.empty()) spdlog::info("Stop: removed {} object(s) made during Play", made.size());
     }
-    if (scene && st.ecs_bridge && !st.play_gameplay_snapshot.empty())
-        st.ecs_bridge->load_gameplay(scene, st.play_gameplay_snapshot);
+    if (authored && st.ecs_bridge && !st.play_gameplay_snapshot.empty())
+        st.ecs_bridge->load_gameplay(authored, st.play_gameplay_snapshot);
+    if (!st.play_gameplay_snapshot.empty()) {
+        std::error_code ignored;
+        std::filesystem::remove(st.play_gameplay_snapshot, ignored);
+        std::filesystem::remove(st.play_gameplay_snapshot + ".logic", ignored);
+    }
     st.play_baseline_ids.clear();
     st.play_gameplay_snapshot.clear();
     st.play_changes.Clear();
@@ -6404,6 +6424,9 @@ void ShowViewport(EditorState& editor_state) {
                         dl->AddText(ImVec2(p0.x + (w - ts.x) * 0.5f, p0.y - ts.y - 2), schizo::editor::hud32(235, 240, 250, 240), ah.cast_name.c_str());
                     }
                 }
+                if (viewport_playing && editor_state.script_ctx.environment_whiteout > 0.0f)
+                    ImGui::GetWindowDrawList()->AddRectFilled(image_min, image_max,
+                        IM_COL32(240,245,255,static_cast<int>(255*editor_state.script_ctx.environment_whiteout)));
                 // The project's UI documents, over the game view.
                 if (viewport_playing && !schizo::editor::play_ui().empty()) {
                     auto& ui = schizo::editor::play_ui();
@@ -8464,7 +8487,7 @@ int main(int argc, char** argv) {
         glfwGetFramebufferSize(glfw_window, &fbw, &fbh);
         if (fbw <= 0 || fbh <= 0) { fbw = static_cast<int>(win_w); fbh = static_cast<int>(win_h); }
 
-        const float rscale = render_settings.render_scale;
+        const float rscale = std::getenv("GWS_TEST_RENDER_SCALE") ? std::clamp(std::strtof(std::getenv("GWS_TEST_RENDER_SCALE"),nullptr),.25f,1.f) : render_settings.render_scale;
         // At least 2 so a degenerate scale can never produce a zero-sized image.
         const uint32_t kW = static_cast<uint32_t>(std::max(2.0f, fbw * rscale));
         const uint32_t kH = static_cast<uint32_t>(std::max(2.0f, fbh * rscale));
@@ -10105,6 +10128,7 @@ int main(int argc, char** argv) {
                 }
                 editor_state.in_launcher = false;
                 spdlog::info("[project] opened via --project: '{}' ({})", pm.name, scene_path);
+                if(!std::getenv("GWS_ONLINE_DISABLE"))editor_state.online_game.configure(pm.project_dir);
             } else {
                 spdlog::error("[project] --project load failed: {}", startup_project);
             }
@@ -10732,6 +10756,38 @@ int main(int argc, char** argv) {
             }();
             if (g_fixed_dt > 0.0f) delta_time = g_fixed_dt;
 
+            if(auto path=editor_state.online_game.take_travel();!path.empty()){
+                auto old=editor_state.editor_scene->GetScene();
+                editor_state.scene_playback_manager->StopPlayback();editor_state.play_loop.end(old);
+                editor_state.script_system.clear();schizo::editor::play_ui().reset();editor_state.play_effects.clear();
+                editor_state.scene_navmesh=schizo::ai::NavMesh{};editor_state.script_ctx.environment_darkness=editor_state.script_ctx.environment_whiteout=0;
+                editor_state.script_ctx.feed_incoming.clear();editor_state.script_ctx.feed_current.clear();
+                if (!game_window_mode && !editor_state.play_origin) {
+                    if (!editor_state.play_gameplay_snapshot.empty())
+                        ecs_bridge.save_logic(editor_state.play_gameplay_snapshot + ".logic");
+                    editor_state.play_origin.emplace(std::move(*editor_state.editor_scene));
+                    editor_state.editor_scene->SetEcsBridge(&ecs_bridge);
+                }
+                if(editor_state.editor_scene->LoadScene(path)){
+                    auto scene=editor_state.editor_scene->GetScene();editor_state.scene_playback_manager->SetNetClientMode(editor_state.online_game.client());
+                    if(!editor_state.online_game.client()){bool agents=false;for(const auto& object:scene->GetEntities())if(object){const auto* npc=std::as_const(*object).GetNpcAgentComponent();if(npc&&npc->enabled){agents=true;break;}}if(agents)editor_state.nav_stats=schizo::editor::bake_navmesh_from_scene(scene,editor_state.scene_navmesh);}
+                    editor_state.scene_playback_manager->StartPlayback(scene);editor_state.net_autoplay_started=false;editor_state.net_autoplay_failed=false;
+                    editor_state.online_game.scene_ready(scene,path,*editor_state.scene_playback_manager,ecs_bridge,editor_state.net_session);
+                    spdlog::info("[online] scene travel completed: {}",path);
+                }else {
+                    spdlog::error("[online] could not load scene {}",path);
+                    EndPlayMode(editor_state,old);
+                }
+            }
+            editor_state.script_system.network_client=editor_state.online_game.client();
+            editor_state.play_loop.network_client=editor_state.online_game.client();
+            editor_state.play_loop.managed_players=editor_state.online_game.active();
+            editor_state.play_loop.network_interact=[&](uint32_t target){return editor_state.online_game.interact(target);};
+            editor_state.player_weapon.network_input=[&](const std::string& id,const glm::vec3& o,const glm::vec3& d,uint32_t f){editor_state.online_game.weapon(id,o,d,f);};
+            editor_state.player_abilities.network_input=[&](const std::string& id,int slot,const glm::vec3& o,const glm::vec3& d,bool held,bool moving){editor_state.online_game.ability(id,slot,o,d,held,moving);};
+            editor_state.play_effects.network_gun=[&](const schizo::ecs::WeaponDef& d,const glm::vec3& o,const glm::vec3& aim,const std::vector<schizo::ecs::ShotTrace>& shots){editor_state.online_game.combat_visual(6,d.id,o,shots.empty()?o+aim*d.range:shots.front().end,shots.empty()?0.f:float(int(shots.front().hit)));};
+            editor_state.play_effects.network_ability=[&](int type,const std::string& id,const glm::vec3& a,const glm::vec3& b,float value){editor_state.online_game.combat_visual(type,id,a,b,value);};
+
             // Tick the skinned-animation test rig (CPU: state machine + root
             // motion + foot IK). Done early so the pose is current for both the
             // skinning dispatch and the DrawItem appended below.
@@ -10776,7 +10832,7 @@ int main(int argc, char** argv) {
             // patrols while you are editing would move things under the gizmo.
             if (editor_state.scene_playback_manager &&
                 editor_state.scene_playback_manager->IsPlaying() &&
-                !editor_state.scene_playback_manager->IsGamePaused()) {
+                !editor_state.scene_playback_manager->IsGamePaused() && !editor_state.online_game.client()) {
                 // The physics world: line of sight, trees and rocks in the way, the ground.
                 const schizo::ecs::WorldRayFn npc_world =
                     schizo::editor::physics_world_ray(editor_state.scene_playback_manager->GetPhysicsWorld());
@@ -10984,10 +11040,14 @@ int main(int argc, char** argv) {
                         // child of the player), else the NPC agent it is or
                         // belongs to (a body under an agent).
                         const schizo::scene::Entity* who = ent.get();
+                        bool network_fighter=false;
                         if (is_player) who = sk_player;
                         else
-                            for (const schizo::scene::Entity* q = ent.get(); q; q = q->GetParent().get())
+                            for (const schizo::scene::Entity* q = ent.get(); q; q = q->GetParent().get()) {
+                                auto id=ecs_bridge.ecs_entity_id(q->GetTransform());auto e=static_cast<schizo::ecs::Entity>(id);
+                                if(id!=schizo::editor::kNoEcsEntity&&ecs_bridge.world().valid(e))if(auto* tags=ecs_bridge.world().try_get<schizo::ecs::GameplayTags>(e);tags&&tags->has("network.fighter")){who=q;network_fighter=true;break;}
                                 if (const auto* qa = std::as_const(*q).GetNpcAgentComponent(); qa && qa->enabled) { who = q; break; }
+                            }
                         const bool dead = schizo::editor::EditorNpcAgents::dead(ecs_bridge, who->GetTransform());
                         bool aiming = false, staggered = false;
                         uint32_t shots = ca.shots;
@@ -11005,6 +11065,10 @@ int main(int argc, char** argv) {
                             aiming = ai.aiming;
                             shots = ai.shots;
                             staggered = ai.staggered;
+                            if(network_fighter||editor_state.online_game.client()){
+                                auto id=ecs_bridge.ecs_entity_id(who->GetTransform());auto e=static_cast<schizo::ecs::Entity>(id);
+                                if(id!=schizo::editor::kNoEcsEntity&&ecs_bridge.world().valid(e))if(auto* ws=ecs_bridge.world().try_get<schizo::ecs::WeaponState>(e)){aiming=!ws->weapon_id.empty();shots=uint32_t(ws->rounds_fired);reloading=ws->reloading>0;}
+                            }
                         }
                         ca.fired_now = shots != ca.shots;
                         ca.shots = shots;
@@ -11621,7 +11685,15 @@ int main(int argc, char** argv) {
                     wheel_down_now = !wheel_down_now && wheel_down_left > 0;
                     if (wheel_down_now) --wheel_down_left;
                 }
+                bool player_stunned = false;
+                if (auto* player = pm.GetPlayerEntity(); player && editor_state.ecs_bridge) {
+                    const auto id = editor_state.ecs_bridge->ecs_entity_id(player->GetTransform());
+                    if (id != schizo::editor::kNoEcsEntity)
+                        if (auto* tags = editor_state.ecs_bridge->world().try_get<schizo::ecs::GameplayTags>(static_cast<schizo::ecs::Entity>(id)))
+                            player_stunned = tags->has("status.stunned");
+                }
                 auto key_held = [&](int code) {
+                    if (player_stunned) return false;
                     if (test_press_frames > 0 && (code == test_press_key ||
                                                   std::find(test_press_more.begin(), test_press_more.end(), code) != test_press_more.end()))
                         return true;
@@ -11634,6 +11706,7 @@ int main(int argc, char** argv) {
                 // The key that just ended a rebinding is not the game's until it is let go.
                 if (ps.swallowed_key && !key_held(ps.swallowed_key)) ps.swallowed_key = 0;
                 ps.states.update(ps.map, [&](int code) { return code != ps.swallowed_key && key_held(code); });
+                editor_state.script_ctx.simulated_key = test_press_frames > 0 ? test_press_key : 0;
                 if (test_press_frames > 0) --test_press_frames;
                 pm.SetActions(&ps.states);
                 pm.SetLook(ps.map.mouse_sensitivity, ps.map.invert_y);
@@ -11823,6 +11896,15 @@ int main(int argc, char** argv) {
                     if (src == "player.abilities" || src == "player.known_abilities") {
                         const auto* bar = gw.try_get<schizo::ecs::AbilityBar>(pe);
                         if (!bar) return out;
+                        auto ability_info = [&](const schizo::ecs::AbilityDef* d) {
+                            if (!d) return std::string();
+                            char meta[128];
+                            const float cd = d->cooldown * (1.0f - std::clamp(schizo::ecs::bonus_stat(gw.try_get<schizo::ecs::AttributeSet>(pe), "CooldownReduction"), 0.0f, 75.0f) / 100.0f);
+                            if (!d->cost_attribute.empty() && d->cost > 0)
+                                std::snprintf(meta, sizeof meta, "   |   %.0f %s   |   %.1fs cooldown", d->cost, d->cost_attribute.c_str(), cd);
+                            else std::snprintf(meta, sizeof meta, "   |   Free   |   %.1fs cooldown", cd);
+                            return d->about + meta;
+                        };
                         if (src == "player.abilities") {
                             // The slots: each its key in the corner, the ability, its cooldown
                             // darkening the cell from the top and the seconds left over it.
@@ -11835,7 +11917,7 @@ int main(int argc, char** argv) {
                                 if (i < static_cast<int>(bar->slots.size()) && !bar->slots[static_cast<size_t>(i)].empty()) {
                                     const auto* d = schizo::ecs::find_ability_def(bar->slots[static_cast<size_t>(i)]);
                                     s.name = d ? d->name : bar->slots[static_cast<size_t>(i)];
-                                    if (d) s.info = d->about;
+                                    if (d) s.info = ability_info(d);
                                     const float cd = static_cast<size_t>(i) < bar->cooldown.size() ? bar->cooldown[static_cast<size_t>(i)] : 0.0f;
                                     const float total = d ? d->cooldown * (1.0f - cdr / 100.0f) : 0.0f;
                                     if (cd > 0.0f && total > 0.0f) {
@@ -11843,6 +11925,10 @@ int main(int argc, char** argv) {
                                         char b[16];
                                         std::snprintf(b, sizeof b, cd >= 10.0f ? "%.0f" : "%.1f", cd);
                                         s.overlay = b;
+                                    }
+                                    else if (d && !schizo::ecs::ability_detail::affordable(gw, pe, *d)) {
+                                        s.shade = 0.65f;
+                                        s.overlay = "LOW " + d->cost_attribute;
                                     }
                                     s.marked = bar->casting == i;
                                 }
@@ -11855,7 +11941,7 @@ int main(int argc, char** argv) {
                             const auto* d = schizo::ecs::find_ability_def(id);
                             schizo::ui::UiSlot s;
                             s.name = d ? d->name : id;
-                            if (d) s.info = d->about;
+                            if (d) s.info = ability_info(d);
                             for (size_t k = 0; k < bar->slots.size(); ++k)
                                 if (bar->slots[k] == id) { s.detail = "slot " + std::to_string(k + 1); s.marked = true; }
                             out.push_back(std::move(s));
@@ -11970,7 +12056,7 @@ int main(int argc, char** argv) {
                             test_press_more.clear();
                             for (size_t plus; (plus = acts.rfind('+')) != std::string::npos; acts.resize(plus))
                                 test_press_more.push_back(ps.map.key(acts.substr(plus + 1)));
-                            test_press_key = ps.map.key(acts);
+                            test_press_key = acts=="Escape" ? GLFW_KEY_ESCAPE : ps.map.key(acts);
                             test_press_frames = tl == std::string::npos ? 4 : std::max(1, std::atoi(arg.c_str() + tl + 1));
                             spdlog::info("[test] ui: press {} (key {}) -- mouse held by Play {}, menu has input {}, game view focused {}",
                                          arg, test_press_key, pm.IsCursorCaptured(), pm.UiHasInput(), editor_state.viewport_input_focused);
@@ -12005,6 +12091,8 @@ int main(int argc, char** argv) {
                                     editor_state.play_effects.particles().burst(*d, at);
                                 }
                             }
+                        } else if (what == "check") {
+                            spdlog::info("[test] document {} shown={} captured={} paused={}",arg,ui.shown(arg),pm.IsCursorCaptured(),pm.IsGamePaused());
                         } else if (what == "show") {
                             ui.show(arg);
                         } else if (what == "mouse") {
@@ -12023,11 +12111,11 @@ int main(int argc, char** argv) {
                     ev.value = static_cast<float>(cell);   // a grid's cell (-1 for a button)
                     ecs_bridge.events().publish(ev);
                 }
-                pm.SetGamePaused(ui.pauses());
+                pm.SetGamePaused(ui.pauses() && !editor_state.online_game.networked() && !editor_state.online_game.in_menu());
                 // A modal document frees the mouse for its buttons; when the last
                 // one goes, the game takes the mouse back.
                 static bool released_for_ui = false;
-                const bool modal = ui.modal();
+                const bool modal = ui.modal() || editor_state.online_game.input_blocked();
                 if (modal && pm.IsCursorCaptured()) { pm.SetCursorCaptured(false); released_for_ui = true; }
                 if (!modal && released_for_ui) {
                     released_for_ui = false;
@@ -12035,7 +12123,7 @@ int main(int argc, char** argv) {
                 }
                 static const bool ui_assume_focus = std::getenv("GWS_TEST_ASSUME_FOCUS") != nullptr;   // automated runs
                 const bool app_focused = ui_assume_focus || glfwGetWindowAttrib(glfw_window, GLFW_FOCUSED) == GLFW_TRUE;
-                pm.SetUiHasInput(modal && app_focused && (game_window_mode || editor_state.viewport_input_focused));
+                pm.SetUiHasInput((modal || editor_state.online_game.input_blocked()) && app_focused && (game_window_mode || editor_state.viewport_input_focused));
                 if (ui.quit_requested) {
                     ui.quit_requested = false;
                     if (game_window_mode) glfwSetWindowShouldClose(glfw_window, GLFW_TRUE);
@@ -12511,6 +12599,8 @@ int main(int argc, char** argv) {
                     editor_state.play_loop.update(delta_time, pm, ecs_bridge, editor_state.editor_scene->GetScene(), ek && !prev_e);
                     prev_e = ek;
                     if (auto* pc = pm.GetPlaybackCamera()) {
+                        editor_state.online_game.test_aim();
+                        if(std::getenv("GWS_ONLINE_TEST_FIRE")&&editor_state.online_game.active()){in.fire_held=true;in.fire_pressed=false;}
                         const auto* ct = pc->GetTransform();
                         editor_state.player_weapon.update(delta_time, pm, ecs_bridge, ct->GetWorldPosition(),
                                                           ct->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f), in,
@@ -12614,8 +12704,63 @@ int main(int argc, char** argv) {
                 ctx.playback = editor_state.scene_playback_manager.get();
                 ctx.window   = glfw_window;
                 ctx.bridge   = editor_state.ecs_bridge;   // gameplay ECS (G0–G4) for scripts
-                ctx.dt       = delta_time;                // for continuous calls (e.g. drive)
+                ctx.dt       = ctx.playback && ctx.playback->IsGamePaused() ? 0.f : delta_time;                // for continuous calls (e.g. drive)
+                if ((!script_play || !editor_state.scene_playback_manager->IsPaused()) && !editor_state.online_game.client()) {
+                    ctx.environment_darkness = 0.0f;
+                    ctx.environment_whiteout = 0.0f;
+                }
+                ctx.spawn_effect = [&](const char* name, const float* p, const float* d, float scale, float reach) {
+                    if (!std::isfinite(scale) || !std::isfinite(reach)) return false;
+                    for (int i=0;i<3;++i) if (!std::isfinite(p[i]) || !std::isfinite(d[i])) return false;
+                    const auto* effect = schizo::vfx::find_effect(name);
+                    if (!effect) return false;
+                    schizo::vfx::EffectSpawn at;
+                    at.pos = glm::vec3(p[0],p[1],p[2]);
+                    at.dir = glm::length(glm::vec3(d[0],d[1],d[2])) > 0.0001f ? glm::normalize(glm::vec3(d[0],d[1],d[2])) : glm::vec3(0,1,0);
+                    at.normal = glm::vec3(0,1,0);
+                    at.scale = std::clamp(scale, 0.01f, 30.0f);
+                    at.reach = std::clamp(reach, 0.0f, 500.0f);
+                    editor_state.play_effects.particles().burst(*effect, at);
+                    editor_state.online_game.effect(name,at.pos,at.dir,scale,reach);
+                    return true;
+                };
+                ctx.set_bone_rotation = [&](uint32_t id, const std::string& bone, const float* r) {
+                    editor_state.online_game.bone(id,bone,glm::vec3(r[0],r[1],r[2]));
+                    auto* actor = skinned_actors.find(id);
+                    return actor && std::isfinite(r[0]) && std::isfinite(r[1]) && std::isfinite(r[2]) &&
+                           actor->set_bone_rotation(bone, glm::vec3(r[0],r[1],r[2]));
+                };
+                ctx.play_animation = [&](uint32_t id, const std::string& clip, bool loop, float speed, float blend, bool restart) {
+                    auto e = editor_state.script_ctx.scene->GetEntityById(id);
+                    auto* a = skinned_actors.find(id);
+                    if (!e || !a || !std::isfinite(speed) || speed <= 0.0f || !std::isfinite(blend)) return false;
+                    auto* smc = e->GetSkinnedMeshComponent();
+                    const int index = a->find_clip(clip);
+                    if (!smc || index < 0) return false;
+                    smc->drive_from_motion = false;
+                    smc->drive_from_gameplay = false;
+                    smc->clip_index = index;
+                    smc->playing = true;
+                    a->play(index, loop, std::max(0.0f, blend), speed, restart);
+                    editor_state.online_game.animation(id,clip,loop,speed,blend,restart);
+                    return true;
+                };
+                ctx.bone_position = [&](uint32_t id, const std::string& bone, float* out) {
+                    auto e = editor_state.script_ctx.scene->GetEntityById(id);
+                    auto* a = skinned_actors.find(id);
+                    if (!e || !a) return false;
+                    const int index = a->find_bone(bone);
+                    if (index < 0) return false;
+                    a->set_model(e->GetTransform()->GetWorldMatrix());
+                    const glm::vec3 p(a->bone_world(index)[3]);
+                    out[0] = p.x; out[1] = p.y; out[2] = p.z;
+                    return true;
+                };
                 ++ctx.frame;                              // one event-feed page per frame
+                ctx.network_ui=[&](int action,const std::string& file,const std::string& id,const std::string& text){editor_state.online_game.ui_message(action,file,id,text);};
+                ctx.network_force=[&](uint32_t id,const float* v,int kind){return editor_state.online_game.force_player(id,v,kind);};
+                ctx.network_xp=[&](uint32_t id,float amount){editor_state.online_game.share_xp(id,amount);};
+                ctx.network_active=editor_state.online_game.active();
                 // Cursor delta for scripts (independent of the play-mode
                 // capture pipeline, which only tracks while captured).
                 {
@@ -12627,7 +12772,7 @@ int main(int argc, char** argv) {
                     ctx.mouse_dy = primed ? static_cast<float>(sy - last_sy) : 0.0f;
                     last_sx = sx; last_sy = sy; primed = true;
                 }
-                editor_state.script_api.dt   = delta_time;
+                editor_state.script_api.dt   = ctx.dt;
                 editor_state.script_api.time = editor_state.script_play_time;
                 // A paused game does not run its scripts. (Still called when
                 // Play has ended, which is what releases them.)
@@ -12635,7 +12780,7 @@ int main(int argc, char** argv) {
                                            editor_state.scene_playback_manager->IsPaused();
                 if (!script_paused)
                     editor_state.script_system.update(ctx.scene, script_play,
-                                                      delta_time, editor_state.script_api);
+                                                      ctx.dt, editor_state.script_api);
 
                 // A logic script stopped at a breakpoint stops the game with it
                 // and lets go of the mouse; continuing the script continues the
@@ -12669,7 +12814,7 @@ int main(int argc, char** argv) {
                 ectx.playback = ctx.playback;
                 ectx.window   = ctx.window;
                 ectx.bridge   = ctx.bridge;
-                ectx.dt       = delta_time;
+                ectx.dt       = ctx.playback && ctx.playback->IsGamePaused() ? 0.f : delta_time;
                 editor_state.extension_api.dt   = delta_time;
                 editor_state.extension_api.time = editor_state.script_play_time;
                 editor_state.extensions.poll(editor_state.commands,
@@ -12695,11 +12840,13 @@ int main(int argc, char** argv) {
             }
             editor_state.net_session.tick_frame(
                 editor_state.editor_scene->GetScene(), delta_time);
+            if(editor_state.scene_playback_manager)
+                editor_state.online_game.update(delta_time,editor_state.editor_scene->GetScene(),editor_state.editor_scene->GetSceneFilepath(),*editor_state.scene_playback_manager,ecs_bridge,editor_state.net_session,editor_state.script_ctx,editor_state.play_effects);
 
             // Host: ghost kinematic capsules for remote players, so clients
             // physically push dynamic props in the authoritative simulation
             // (results replicate back to everyone next snapshot).
-            if (editor_state.net_session.role() == schizo::editor::NetRole::Host &&
+            if ((editor_state.net_session.role() == schizo::editor::NetRole::Host || editor_state.online_game.active()) &&
                 editor_state.scene_playback_manager &&
                 editor_state.scene_playback_manager->IsPlaying()) {
                 std::vector<glm::vec3> remote_players;
@@ -12760,6 +12907,9 @@ int main(int argc, char** argv) {
                     ImGui::GetBackgroundDrawList()->AddImage(
                         (ImTextureID)(void*)editor_state.viewport_texture_id,
                         ImVec2(0.0f, 0.0f), gio.DisplaySize);
+                    if (editor_state.script_ctx.environment_whiteout > 0.0f)
+                        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0,0),gio.DisplaySize,
+                            IM_COL32(240,245,255,static_cast<int>(255*editor_state.script_ctx.environment_whiteout)));
                 }
                 if (!schizo::editor::play_ui().empty() && editor_state.scene_playback_manager)
                     schizo::editor::play_ui().frame(ImGui::GetForegroundDrawList(), ImVec2(0.0f, 0.0f), gio.DisplaySize,
@@ -12811,6 +12961,7 @@ int main(int argc, char** argv) {
                     // Enter the project sandbox (project folder becomes the CWD)
                     // and re-scope the asset browser to it.
                     schizo::editor::set_project_root(chosen.project_dir);
+                    if(!std::getenv("GWS_ONLINE_DISABLE"))editor_state.online_game.configure(chosen.project_dir);
                     if (editor_state.ecs_bridge) {
                         const int n = editor_state.ecs_bridge->load_gameplay_data("assets/gameplay");
                         spdlog::info("[project] {} gameplay definition(s) from assets/gameplay", n);
@@ -13751,6 +13902,7 @@ int main(int argc, char** argv) {
                 ImGui::End();
             }
             } // end of editor UI (skipped entirely in game-window mode)
+            if(editor_state.scene_playback_manager)editor_state.online_game.draw_ui(*editor_state.scene_playback_manager,editor_state.net_session);
 
             // ------------------------------------------------------------
             // GPU frame
@@ -14139,6 +14291,17 @@ int main(int argc, char** argv) {
                 cam.proj = editor_state.viewport_camera.GetProjectionMatrix(aspect);
             }
 
+            // GWS_TEST_PLAY_CAMERA=1 (with GWS_TEST_CAMERA): in Play too, draw from that
+            // fixed camera -- an encounter seen from the side. Never changes scene data.
+            if (static const bool play_cam = std::getenv("GWS_TEST_PLAY_CAMERA") != nullptr; play_cam) {
+                if (const char* tc = std::getenv("GWS_TEST_CAMERA")) {
+                    float v[6]{};
+                    if (std::sscanf(tc,"%f,%f,%f,%f,%f,%f",&v[0],&v[1],&v[2],&v[3],&v[4],&v[5])==6) {
+                        cam.position = glm::vec3(v[0],v[1],v[2]);
+                        cam.view = glm::lookAt(cam.position,glm::vec3(v[3],v[4],v[5]),glm::vec3(0,1,0));
+                    }
+                }
+            }
             cam.proj[1][1] *= -1.0f;  // GL → Vulkan Y flip
             graph->set_camera(cam);
             // GWS_TEST_LOG_MOTION=<file.csv>: in Play, a line a frame -- the frame's
@@ -15435,6 +15598,14 @@ int main(int argc, char** argv) {
                     ddgi->set_view_proj(cam.proj * cam.view);   // composite reads depth (F5)
                     ddgi->execute_trace(cmd);
                 }
+                lighting->set_encounter_darkness(editor_state.script_ctx.environment_darkness);
+                {
+                    auto scene = editor_state.editor_scene->GetScene();
+                    const float sky = scene ? scene->GetSkyIntensity() : 1.0f;
+                    lighting->set_sky_intensity(sky * (1.0f - 0.92f * editor_state.script_ctx.environment_darkness));
+                    if (static const bool log_env = std::getenv("GWS_TEST_LOG_ENVIRONMENT") != nullptr; log_env && frame_count % 120 == 0)
+                        spdlog::info("[encounter] darkness {:.3f}, sky intensity {:.4f}", editor_state.script_ctx.environment_darkness, sky * (1.0f - 0.92f * editor_state.script_ctx.environment_darkness));
+                }
                 { GWS_PROFILE_ZONE("stage_lighting");
                   graph->execute_stage(cmd, RenderGraphStage::Lighting,   {}); }
                 // DDGI composite — adds probe irradiance (indirect diffuse) onto
@@ -15519,15 +15690,15 @@ int main(int argc, char** argv) {
                 // Volumetric clouds — distant sky layer; composite before the
                 // light shafts so shafts scatter in front of the clouds.
                 if (clouds) {
-                    clouds->set_sun(sun_dir_for_rt, sun_color_for_rt);
-                    clouds->set_ambient(l_cfg.ambient_color);
+                    clouds->set_sun(sun_dir_for_rt, sun_color_for_rt * (1.0f - 0.9f * editor_state.script_ctx.environment_darkness));
+                    clouds->set_ambient(l_cfg.ambient_color * (1.0f - 0.9f * editor_state.script_ctx.environment_darkness));
                     { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "Clouds");
                     clouds->execute(cmd, cam.view, cam.proj, cam.position); }
                 }
                 // Volumetric sun lighting / light shafts — feed it the same sun +
                 // shadow VP the deferred lighting/shadow stage used, then march.
                 if (volumetric_light) {
-                    volumetric_light->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                    volumetric_light->set_sun(sun_dir_for_rt, sun_color_for_rt * (1.0f - 0.9f * editor_state.script_ctx.environment_darkness));
                     volumetric_light->set_shadow_matrix(shadow_view_proj);
                     if (clouds) volumetric_light->set_cloud_shadow_params(clouds->get_shadow_params());
                     { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "VolumetricLight");
@@ -15536,7 +15707,7 @@ int main(int argc, char** argv) {
                 // Froxel fog — nearest homogeneous medium; composite last (over the
                 // shafts/clouds) so it fogs everything already lit this frame.
                 if (froxel_fog && froxel_fog->is_enabled() && !g_no_froxel) {
-                    froxel_fog->set_sun(sun_dir_for_rt, sun_color_for_rt);
+                    froxel_fog->set_sun(sun_dir_for_rt, sun_color_for_rt * (1.0f - 0.9f * editor_state.script_ctx.environment_darkness));
                     froxel_fog->set_shadow_matrix(shadow_view_proj);
                     froxel_fog->set_light_count(lighting->get_light_count());
                     // The biome under the camera thickens or thins the fog and tints it.
@@ -15544,7 +15715,8 @@ int main(int argc, char** argv) {
                     {
                         auto& fcfg = froxel_fog->mutable_config();
                         fcfg.density *= biome_fog_scale;
-                        if (biome_fog_weight > 0.0f) fcfg.ambient = glm::mix(fcfg.ambient, biome_fog_color, std::min(1.0f, biome_fog_weight));
+                        fcfg.ambient *= 1.0f - 0.9f * editor_state.script_ctx.environment_darkness;
+                        if (biome_fog_weight > 0.0f) fcfg.ambient = glm::mix(fcfg.ambient, biome_fog_color * (1.0f - 0.9f * editor_state.script_ctx.environment_darkness), std::min(1.0f, biome_fog_weight));
                     }
                     { engine::vulkan::ScopedGpuZone _z(&gpu_zones, cmd, "FroxelFog");
                     froxel_fog->execute(cmd, cam.view, cam.proj, cam.position); }

@@ -29,6 +29,7 @@ namespace schizo::editor {
 
 class PlayerAbilities {
 public:
+    std::function<void(const std::string&,int,const glm::vec3&,const glm::vec3&,bool,bool)> network_input;
     struct Input {
         int  pressed = -1;    // slot whose key went down this frame
         bool held[8] = {};    // which slot keys are down
@@ -118,6 +119,7 @@ public:
         ci.caster_pos = player->GetTransform()->GetWorldPosition();
         const auto& mst = play.GetPlayerMovementState();
         ci.moving = glm::length(glm::vec2(mst.velocity.x, mst.velocity.z)) > 0.5f;
+        if(network_input){int slot=ci.pressed>=0?ci.pressed:bar->casting;const std::string id=slot>=0&&slot<int(bar->slots.size())?bar->slots[slot]:std::string();network_input(id,ci.pressed,ci.origin,ci.aim,ci.held,ci.moving);}
         std::vector<ecs::AbilityFired> fired;
         ecs::step_ability_bar(w, e, *bar, ci, &world, &bridge.events(), dt, &fired);
 
@@ -140,7 +142,8 @@ public:
             Slot& s = hud_.slots[i];
             s.name = d ? d->name : bar->slots[i] + "?";
             s.cooldown = i < bar->cooldown.size() ? bar->cooldown[i] : 0.0f;
-            s.cooldown_total = d ? d->cooldown : 0.0f;
+            const float cdr = std::clamp(ecs::bonus_stat(w.try_get<ecs::AttributeSet>(e), "CooldownReduction"), 0.0f, 75.0f);
+            s.cooldown_total = d ? d->cooldown * (1.0f - cdr / 100.0f) : 0.0f;
             s.ready = bar->casting < 0 && ecs::ability_slot_ready(w, e, *bar, static_cast<int>(i));
         }
         hud_.casting = bar->casting;

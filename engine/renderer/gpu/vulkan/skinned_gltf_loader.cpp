@@ -129,37 +129,29 @@ BoneTransform node_local(const tinygltf::Node& n) {
 }
 
 // Sample a VEC3 animation sampler at time t (LINEAR).
-glm::vec3 sample_vec3(const tinygltf::Model& m, const tinygltf::AnimationSampler& s,
+glm::vec3 sample_vec3(const std::vector<float>& in, const std::vector<float>& out,
                       float t, glm::vec3 fallback) {
-    std::vector<float> in = read_floats(m, s.input);
-    std::vector<float> out = read_floats(m, s.output);
     if (in.empty() || out.size() < in.size() * 3) return fallback;
     auto V = [&](size_t k) { return glm::vec3(out[k*3], out[k*3+1], out[k*3+2]); };
     if (t <= in.front()) return V(0);
     if (t >= in.back())  return V(in.size() - 1);
-    for (size_t i = 0; i + 1 < in.size(); ++i)
-        if (t >= in[i] && t <= in[i+1]) {
-            float a = (in[i+1] > in[i]) ? (t - in[i]) / (in[i+1] - in[i]) : 0.0f;
-            return glm::mix(V(i), V(i+1), a);
-        }
-    return fallback;
+    const auto next = std::lower_bound(in.begin()+1, in.end(), t);
+    const size_t i = static_cast<size_t>(next-in.begin()-1);
+    const float a = (in[i+1] > in[i]) ? (t-in[i])/(in[i+1]-in[i]) : 0.0f;
+    return glm::mix(V(i), V(i+1), a);
 }
 
 // Sample a VEC4 quaternion animation sampler at time t (SLERP).
-glm::quat sample_quat(const tinygltf::Model& m, const tinygltf::AnimationSampler& s,
+glm::quat sample_quat(const std::vector<float>& in, const std::vector<float>& out,
                       float t, glm::quat fallback) {
-    std::vector<float> in = read_floats(m, s.input);
-    std::vector<float> out = read_floats(m, s.output);
     if (in.empty() || out.size() < in.size() * 4) return fallback;
     auto Q = [&](size_t k) { return glm::quat(out[k*4+3], out[k*4+0], out[k*4+1], out[k*4+2]); };
     if (t <= in.front()) return Q(0);
     if (t >= in.back())  return Q(in.size() - 1);
-    for (size_t i = 0; i + 1 < in.size(); ++i)
-        if (t >= in[i] && t <= in[i+1]) {
-            float a = (in[i+1] > in[i]) ? (t - in[i]) / (in[i+1] - in[i]) : 0.0f;
-            return glm::normalize(glm::slerp(Q(i), Q(i+1), a));
-        }
-    return fallback;
+    const auto next = std::lower_bound(in.begin()+1, in.end(), t);
+    const size_t i = static_cast<size_t>(next-in.begin()-1);
+    const float a = (in[i+1] > in[i]) ? (t-in[i])/(in[i+1]-in[i]) : 0.0f;
+    return glm::normalize(glm::slerp(Q(i), Q(i+1), a));
 }
 
 } // namespace
@@ -285,6 +277,14 @@ LoadedSkinnedModel load_skinned_gltf(const std::string& path) {
     if (R.vertices.empty()) { R.error = "skinned mesh has no vertices"; return R; }
 
     // ---- animations (glTF samplers/channels → AnimationClip per animation) ----
+    // An accessor is shared across many keyframes and often across channels.
+    // Decode each one once for this import instead of copying it at every sample.
+    std::map<int,std::vector<float>> samples;
+    auto values = [&](int accessor) -> const std::vector<float>& {
+        auto [it, inserted] = samples.try_emplace(accessor);
+        if (inserted) it->second = read_floats(model, accessor);
+        return it->second;
+    };
     for (const auto& ga : model.animations) {
         auto clip = std::make_shared<AnimationClip>(ga.name.empty() ? "clip" : ga.name, 30.0f);
         struct Chans { int t = -1, r = -1, s = -1; };
@@ -304,16 +304,16 @@ LoadedSkinnedModel load_skinned_gltf(const std::string& path) {
             std::set<float> times;
             auto add_times = [&](int samp) {
                 if (samp < 0) return;
-                for (float t : read_floats(model, ga.samplers[samp].input)) times.insert(t);
+                for (float t : values(ga.samplers[samp].input)) times.insert(t);
             };
             add_times(c.t); add_times(c.r); add_times(c.s);
             if (times.empty()) continue;
             auto* track = clip->AddBoneAnimation((uint16_t)bone);
             for (float t : times) {
                 BoneTransform bt = bind;
-                if (c.t >= 0) bt.position = sample_vec3(model, ga.samplers[c.t], t, bind.position);
-                if (c.r >= 0) bt.rotation = sample_quat(model, ga.samplers[c.r], t, bind.rotation);
-                if (c.s >= 0) bt.scale    = sample_vec3(model, ga.samplers[c.s], t, bind.scale);
+                if (c.t >= 0) bt.position = sample_vec3(values(ga.samplers[c.t].input), values(ga.samplers[c.t].output), t, bind.position);
+                if (c.r >= 0) bt.rotation = sample_quat(values(ga.samplers[c.r].input), values(ga.samplers[c.r].output), t, bind.rotation);
+                if (c.s >= 0) bt.scale    = sample_vec3(values(ga.samplers[c.s].input), values(ga.samplers[c.s].output), t, bind.scale);
                 track->AddKeyframe(t, bt);
             }
         }
@@ -356,6 +356,9 @@ LoadedSkinnedModel load_skinned_gltf(const std::string& path) {
             decode(gm.pbrMetallicRoughness.baseColorTexture.index, M.base_color);
             decode(gm.pbrMetallicRoughness.metallicRoughnessTexture.index, M.metallic_roughness);
             decode(gm.normalTexture.index, M.normal);
+            decode(gm.emissiveTexture.index, M.emissive);
+            if (gm.emissiveFactor.size() == 3)
+                M.emissive_factor = glm::vec3(gm.emissiveFactor[0], gm.emissiveFactor[1], gm.emissiveFactor[2]);
         }
     }
 

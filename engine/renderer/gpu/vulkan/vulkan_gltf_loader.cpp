@@ -296,6 +296,8 @@ std::unique_ptr<Scene> GltfLoader::build(VulkanDevice* device,
                                           gm.emissiveFactor[2],
                                           cutoff);
 
+        // glTF emissive factors multiply their texture; primitive colors add.
+        u.parallax.w = resolve_tex(gm.emissiveTexture.index) ? 1.0f : 0.0f;
         material_is_blend.push_back(gm.alphaMode == "BLEND");
 
         auto mat = Material::create(device, material_layout, material_pool, u,

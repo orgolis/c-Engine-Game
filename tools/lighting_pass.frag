@@ -686,7 +686,8 @@ void main() {
         vec2 ndc = inTexCoord * 2.0 - 1.0;
         vec4 dir4 = pc.invViewProj * vec4(ndc, 1.0, 1.0);
         vec3 viewDir = normalize(dir4.xyz / dir4.w);
-        outColor = vec4(texture(envCubemap, viewDir).rgb, 1.0);
+        float skyIntensity = float((int(pc.flags) >> 12) & 2047) / 256.0;
+        outColor = vec4(texture(envCubemap, viewDir).rgb * skyIntensity, 1.0);
         return;
     }
 

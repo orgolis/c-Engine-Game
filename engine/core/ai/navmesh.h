@@ -88,6 +88,7 @@ private:
     struct Tri {
         glm::vec3 v[3];
         glm::vec3 centroid{0.0f};
+        int       island = -1;
         int       neighbor[3] = {-1, -1, -1};  // across edge i = (v[i] -> v[i+1])
     };
     std::vector<Tri> tris_;

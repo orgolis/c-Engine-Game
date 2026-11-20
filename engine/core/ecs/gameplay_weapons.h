@@ -206,6 +206,9 @@ inline bool melee_swing(World& w, Entity shooter, const glm::vec3& origin, const
 inline bool fire_weapon(World& w, Entity shooter, const glm::vec3& origin, const glm::vec3& aim,
                         WeaponState& ws, GameplayEventBus* bus = nullptr, uint64_t seed = 1,
                         const WorldRayFn* world = nullptr, std::vector<ShotTrace>* shots = nullptr) {
+    if (const auto* tags = w.try_get<GameplayTags>(shooter); tags && (tags->has("status.stunned") || tags->has("state.stunned"))) return false;
+    if (const auto* attrs = w.try_get<AttributeSet>(shooter))
+        if (const auto* hp = attrs->find("Health"); hp && hp->current <= 0.0f) return false;
     const WeaponDef* wd = find_weapon(ws.weapon_id);
     if (wd && wd->melee) return melee_swing(w, shooter, origin, aim, ws, *wd, bus, world, shots);
     if (!wd || ws.reloading > 0.0f || ws.cooldown > 0.0f || ws.ammo_in_mag <= 0) return false;
@@ -214,7 +217,8 @@ inline bool fire_weapon(World& w, Entity shooter, const glm::vec3& origin, const
     ++ws.rounds_fired;
     if (bus) { GameplayEvent ev; ev.name = "weapon.fire"; ev.instigator = shooter; ev.param = ws.weapon_id; bus->publish(ev); }
 
-    const float spread = current_spread(*wd, ws);
+    const float handling = 1.0f - std::clamp(bonus_stat(w.try_get<AttributeSet>(shooter), "WeaponHandling"), 0.0f, 60.0f) / 100.0f;
+    const float spread = current_spread(*wd, ws) * handling;
     const int pellets = wd->pellets > 0 ? wd->pellets : 1;
     for (int i = 0; i < pellets; ++i) {
         const glm::vec3 dir = apply_spread(aim, spread, seed + static_cast<uint64_t>(i));
@@ -225,7 +229,7 @@ inline bool fire_weapon(World& w, Entity shooter, const glm::vec3& origin, const
         if (wd->projectile_speed > 0.0f) {
             const Entity pe = w.create();
             Transform t; t.position = origin; w.add<Transform>(pe, t);
-            w.add<Projectile>(pe, Projectile{dir * wd->projectile_speed, wd->damage, wd->damage_type,
+            w.add<Projectile>(pe, Projectile{dir * wd->projectile_speed, wd->damage * damage_bonus(w.try_get<AttributeSet>(shooter), "WeaponDamage"), wd->damage_type,
                                              static_cast<uint32_t>(shooter), wd->range / wd->projectile_speed + 0.1f, 0.1f});
             st.end = origin + dir * std::min(wd->range, 2.0f);   // the muzzle end; the projectile draws itself
         } else {
@@ -236,8 +240,8 @@ inline bool fire_weapon(World& w, Entity shooter, const glm::vec3& origin, const
             const Entity hit = hitscan_target(w, shooter, origin, dir, wall ? wall_t : wd->range, t);
             if (hit != null_entity) {
                 // The shooter's Damage bonus (a passive, a buff).
-                const float dmg = wd->damage * (1.0f + bonus_stat(w.try_get<AttributeSet>(shooter), "Damage") / 100.0f);
-                const float dealt = apply_damage(w, hit, DamageInfo{dmg, wd->damage_type});
+                const float dmg = wd->damage * damage_bonus(w.try_get<AttributeSet>(shooter), "WeaponDamage");
+                const float dealt = apply_damage(w, hit, DamageInfo{dmg, wd->damage_type,"Health",shooter});
                 if (bus) { GameplayEvent ev; ev.name = "weapon.hit"; ev.instigator = shooter; ev.target = hit;
                            ev.value = dealt; ev.param = wd->damage_type; bus->publish(ev); }
                 st.end = origin + dir * t;
@@ -261,8 +265,8 @@ inline bool fire_weapon(World& w, Entity shooter, const glm::vec3& origin, const
     if (wd->recoil_pitch != 0.0f || wd->recoil_yaw != 0.0f) {
         Rng rng(mix_seed(seed * 2654435761u + 17u));
         const float ads = 1.0f - 0.35f * ws.aim;   // a braced aim kicks less
-        ws.kick_pitch += wd->recoil_pitch * ads;
-        ws.kick_yaw += (rng.unit() * 2.0f - 1.0f) * wd->recoil_yaw * ads;
+        ws.kick_pitch += wd->recoil_pitch * ads * handling;
+        ws.kick_yaw += (rng.unit() * 2.0f - 1.0f) * wd->recoil_yaw * ads * handling;
     }
     return true;
 }
@@ -279,7 +283,8 @@ inline bool melee_swing(World& w, Entity shooter, const glm::vec3& origin, const
     if (bus) { GameplayEvent ev; ev.name = "weapon.fire"; ev.instigator = shooter; ev.param = ws.weapon_id; bus->publish(ev); }
     const glm::vec3 fwd = glm::length(aim) > 1e-6f ? glm::normalize(aim) : glm::vec3(0.0f, 0.0f, -1.0f);
     const float cos_half = std::cos(glm::radians(std::clamp(wd.melee_arc, 1.0f, 360.0f) * 0.5f));
-    const float dmg = wd.damage * (1.0f + bonus_stat(w.try_get<AttributeSet>(shooter), "Damage") / 100.0f);
+    const float dmg = wd.damage * damage_bonus(w.try_get<AttributeSet>(shooter), "WeaponDamage");
+    std::vector<Entity> hit_owners;
     int reached = 0;
     w.each<CombatActor, Transform>([&](Entity e, CombatActor& ca, Transform& t) {
         if (e == shooter) return;
@@ -293,7 +298,10 @@ inline bool melee_swing(World& w, Entity shooter, const glm::vec3& origin, const
         float wall_t = 0.0f;
         glm::vec3 wall_n(0.0f, 1.0f, 0.0f);
         if (world && *world && (*world)(origin, dir, len, wall_t, wall_n) && wall_t < dist) return;   // behind a wall
-        const float dealt = apply_damage(w, e, DamageInfo{dmg, wd.damage_type});
+        const Entity owner = damage_owner(w, e);
+        if (owner == null_entity || std::find(hit_owners.begin(), hit_owners.end(), owner) != hit_owners.end()) return;
+        hit_owners.push_back(owner);
+        const float dealt = apply_damage(w, owner, DamageInfo{dmg, wd.damage_type,"Health",shooter});
         ++reached;
         if (bus) { GameplayEvent ev; ev.name = "weapon.hit"; ev.instigator = shooter; ev.target = e;
                    ev.value = dealt; ev.param = wd.damage_type; bus->publish(ev); }
@@ -412,7 +420,7 @@ inline void tick_projectiles(World& w, float dt, GameplayEventBus* bus = nullptr
             const glm::vec3 d = t.position - hb.center;
             const float rr = hb.radius + pr.radius;
             if (glm::dot(d, d) <= rr * rr) {
-                const float dealt = apply_damage(w, te, DamageInfo{pr.damage, pr.damage_type});
+                const float dealt = apply_damage(w, te, DamageInfo{pr.damage, pr.damage_type,"Health",static_cast<Entity>(pr.owner)});
                 if (bus) { GameplayEvent ev; ev.name = "projectile.hit"; ev.instigator = static_cast<Entity>(pr.owner);
                            ev.target = te; ev.value = dealt; bus->publish(ev); }
                 hit = true;

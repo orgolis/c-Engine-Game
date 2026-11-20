@@ -46,6 +46,11 @@ out of trees, rocks and walls and on the ground.
   out -- paths go round buildings and through their doorways, not through
   their walls.
 
+Paths are not asked for every frame by everyone at once: agents' route
+requests are spread over frames and a failed one waits before it tries again;
+a goal on a part of the navmesh the agent cannot reach (an island) is refused
+at once instead of searching the whole mesh.
+
 A world of dozens of agents is cheap: an agent looks along its line of sight
 only when the target is in its sight range or it is chasing, and finding a
 path looks only at the navmesh near its ends (a grid over the mesh) -- 84

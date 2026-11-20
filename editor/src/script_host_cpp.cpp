@@ -18,8 +18,11 @@
 #include <spdlog/spdlog.h>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <array>
 #include <string>
 
 #ifdef _WIN32
@@ -82,7 +85,9 @@ using CommandFn = void (*)(const SchizoScriptApi*);
 // Run a command line, capture combined stdout+stderr, return exit code.
 int run_capture(const std::string& cmd, std::string& out) {
     out.clear();
-    const std::string full = cmd + " 2>&1";
+    // cmd.exe strips the outer quote pair. Keep the compiler and the script's
+    // own quoted paths intact, including installs/projects containing spaces.
+    const std::string full = "\"" + cmd + " 2>&1\"";
     FILE* p = _popen(full.c_str(), "r");
     if (!p) return -1;
     char buf[512];
@@ -138,15 +143,9 @@ private:
     UpdateFn         update_;
 };
 
-class CppHost final : public ScriptHost {
-public:
-    const char* language() const override { return "C++ (g++ dll)"; }
-
-    std::unique_ptr<ScriptInstance> create(const std::string& source_path,
-                                           const ScriptApi* api,
-                                           std::string& err) override {
+bool build_cpp_script(const std::string& source_path, std::string& dll, std::string& err) {
         namespace fs = std::filesystem;
-        if (!fs::exists(source_path)) { err = "cannot open " + source_path; return nullptr; }
+        if (!fs::exists(source_path)) { err = "cannot open " + source_path; return false; }
 
         std::error_code ec;
         fs::create_directories("script_cache", ec);
@@ -154,26 +153,86 @@ public:
         // Fresh dll per compile — loaded DLLs are locked, so never overwrite.
         static std::atomic<uint32_t> gen{0};
         const std::string stem = fs::path(source_path).stem().string();
-        const std::string dll  = "script_cache/" + stem + "_" +
-                                 std::to_string(gen++) + ".dll";
+        dll = "script_cache/" + stem + "_" +
+                                 std::to_string(GetCurrentProcessId()) + "_" + std::to_string(gen++) + ".dll";
 
         // -I the script's own dir + assets/scripts so `#include
         // "schizo_script.h"` resolves wherever the script lives.
         const std::string src_dir = fs::path(source_path).parent_path().string();
-        std::string cmd = "g++ -std=c++17 -O2 -shared "
-                          "-o \"" + dll + "\" \"" + source_path + "\" "
-                          "-I \"assets/scripts\"";
-        if (!src_dir.empty()) cmd += " -I \"" + src_dir + "\"";
-
-        spdlog::info("[script] compiling '{}' -> {}", source_path, dll);
+        // A Hub-launched editor does not inherit a developer shell's PATH.
+        // Prefer the configured compiler, then the project's pinned Windows
+        // toolchain, with PATH lookup available for other MinGW installations.
+        std::string compiler = "g++";
+        if (const char* configured = std::getenv("GWS_SCRIPT_CXX"); configured && fs::is_regular_file(configured, ec))
+            compiler = configured;
+        else if (fs::is_regular_file("C:/Strawberry/c/bin/g++.exe", ec))
+            compiler = "C:/Strawberry/c/bin/g++.exe";
+        // Hash the preprocessed translation unit. GCC resolves nested includes,
+        // conditionals and SDK headers exactly as it will for the real build.
+        // Each instance still loads a private DLL (scripts can have globals).
+        const std::string options = " -std=c++17 -O2 -shared ";
+        const std::string prefix = "\"" + compiler + "\"" + options;
+        const fs::path preprocessed = dll + ".ii";
+        struct TempFile {
+            fs::path path;
+            ~TempFile() { std::error_code ignored; fs::remove(path, ignored); }
+        } cleanup{preprocessed};
+        std::string preprocess = prefix + "-E \"" + source_path + "\" -o \"" +
+                                 preprocessed.string() + "\" -I \"assets/scripts\"";
+        if (!src_dir.empty()) preprocess += " -I \"" + src_dir + "\"";
         std::string output;
-        const int rc = run_capture(cmd, output);
-        if (rc != 0) {
-            // First lines of g++'s message are the useful ones.
-            err = "compile failed: " + output.substr(0, 600);
-            return nullptr;
+        if (run_capture(preprocess, output) != 0) {
+            err = "preprocessing failed: " + output.substr(0, 600);
+            return false;
+        }
+        uint64_t digest = 14695981039346656037ull;
+        auto hash = [&](const char* data, size_t length) {
+            for (size_t i = 0; i < length; ++i)
+                digest = (digest ^ static_cast<unsigned char>(data[i])) * 1099511628211ull;
+        };
+        // SearchPath also resolves an unqualified compiler from PATH.
+        char resolved[MAX_PATH]{};
+        SearchPathA(nullptr, compiler.c_str(), ".exe", MAX_PATH, resolved, nullptr);
+        const fs::path tool = resolved[0] ? resolved : compiler;
+        auto stamp = fs::last_write_time(tool, ec).time_since_epoch().count();
+        const std::string identity = tool.string() + options + std::to_string(stamp);
+        hash(identity.data(), identity.size());
+        std::ifstream input(preprocessed, std::ios::binary);
+        std::array<char, 16384> buffer;
+        while (input) {
+            input.read(buffer.data(), buffer.size());
+            hash(buffer.data(), static_cast<size_t>(input.gcount()));
+        }
+        if (!input.eof()) { err = "cannot read preprocessed script"; return false; }
+        input.close();
+        const fs::path cached = fs::path("script_cache") / ("compiled_" + std::to_string(digest) + ".dll");
+        if (fs::copy_file(cached, dll, fs::copy_options::overwrite_existing, ec)) {
+            spdlog::info("[script] reused compiled '{}'", source_path);
+        } else {
+            spdlog::info("[script] compiling '{}' -> {}", source_path, dll);
+            const std::string build = prefix + "-o \"" + dll + "\" \"" + preprocessed.string() + "\"";
+            if (run_capture(build, output) != 0) {
+                err = "compile failed: " + output.substr(0, 600);
+                return false;
+            }
+            // Publish a complete image atomically if two game processes race.
+            TempFile stage{dll + ".publishing"};
+            if (fs::copy_file(dll, stage.path, fs::copy_options::overwrite_existing, ec))
+                fs::rename(stage.path, cached, ec);
         }
 
+        return true;
+}
+
+class CppHost final : public ScriptHost {
+public:
+    const char* language() const override { return "C++ (g++ dll)"; }
+
+    std::unique_ptr<ScriptInstance> create(const std::string& source_path,
+                                           const ScriptApi* api,
+                                           std::string& err) override {
+        std::string dll;
+        if (!build_cpp_script(source_path,dll,err)) return nullptr;
         HMODULE mod = LoadLibraryA(dll.c_str());
         if (!mod) {
             err = "LoadLibrary failed (err " +
@@ -194,10 +253,19 @@ public:
 
 }  // namespace
 
+bool prepare_cpp_script(const std::string& path,std::string& error) {
+    std::string instance;
+    bool ok=build_cpp_script(path,instance,error);
+    std::error_code ignored;
+    if (!instance.empty()) std::filesystem::remove(instance,ignored);
+    return ok;
+}
+
 std::unique_ptr<ScriptHost> make_cpp_host() { return std::make_unique<CppHost>(); }
 
 #else  // !_WIN32
 
+bool prepare_cpp_script(const std::string&,std::string&) { return true; }
 std::unique_ptr<ScriptHost> make_cpp_host() { return nullptr; }
 
 #endif

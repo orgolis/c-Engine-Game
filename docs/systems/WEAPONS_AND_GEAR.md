@@ -59,6 +59,10 @@ weapon sword
 end
 ```
 
+The shooter's `WeaponDamage` (and `Damage`) bonus raises a weapon's damage;
+`WeaponHandling` takes a share off its spread and recoil (at most 60%). The
+dead and the stunned cannot fire.
+
 A melee weapon needs no rounds and has no magazine or reload. A swing reaches
 everyone within its reach in front of the eye, inside its arc, with nothing
 solid between (each is a hit, with the Damage bonus); with no one there, the

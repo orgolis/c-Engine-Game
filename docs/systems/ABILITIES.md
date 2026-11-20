@@ -132,10 +132,22 @@ attributes are read by the engine's systems when the player has them, and a
 | `CooldownReduction` | % shorter ability cooldowns (at most 75) |
 | `ReloadSpeed` | % faster reloads |
 | `HealthRegen` | health a second, while alive |
+| `ManaRegen` | Mana a second, while alive (a game that has Mana) |
 | `ExtraJumps` | jumps in mid-air |
+| `WeaponDamage` | % more damage from guns and melee only (on top of `Damage`) |
+| `AbilityDamage` | % more damage from abilities only (on top of `Damage`) |
+| `WeaponHandling` | % less spread and recoil (at most 60) |
+| `resist.<type>` | a share of that damage type taken off (0.25: a quarter; above 1 immune; below 0 a weakness: more) |
 
 `grant MoveSpeed 10` is +10% move speed for good; `self Damage 30 8` is +30%
-damage for 8 seconds. A UI shows them as `{player.MoveSpeed}` (0 until raised).
+damage for 8 seconds. Cast again while it lasts, a buff starts its time again
+rather than stacking; when it ends it takes back exactly what it gave (a stat
+at its limit is not pushed below where it was).
+
+The dead (Health 0) and the stunned (`status.stunned`) cannot cast, and a
+stun interrupts a wind-up or a channel. Letting go of a channel ends it at
+once, without one more pulse. A skill that costs points needs a progression
+(levels, points) on the entity. A UI shows them as `{player.MoveSpeed}` (0 until raised).
 
 | Node | |
 |---|---|

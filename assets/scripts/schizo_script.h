@@ -165,6 +165,18 @@ typedef struct SchizoScriptApi {
                                int name_size);
     /* Ability slots: a known ability (its place in the known list) into a bar slot. */
     bool     (*equip_ability)(void* ctx, unsigned e, int known_index, int slot);
+    /* Named skeletal clips and animated attachment points. Appended ABI entries. */
+    bool     (*play_animation)(void* ctx, unsigned e, const char* clip, bool loop,
+                               float speed, float blend, bool restart);
+    bool     (*bone_position)(void* ctx, unsigned e, const char* bone, float out[3]);
+    /* 0.8.53: named project VFX, frame-local environment, additive bone pose,
+       and non-colliding visual meshes. Probe engine.encounter_api before use. */
+    bool     (*spawn_effect)(void* ctx, const char* effect, const float pos[3], const float dir[3], float scale, float reach);
+    void     (*set_environment)(void* ctx, float darkness, float whiteout);
+    bool     (*set_bone_rotation)(void* ctx, unsigned e, const char* bone, const float degrees[3]);
+    unsigned (*spawn_mesh)(void* ctx, const char* path, const float pos[3], float scale);
+    /* 0.8.53: query engine.combat_api before accessing this appended field. */
+    bool (*set_damage_receiver)(void* ctx, unsigned part, unsigned owner, float multiplier);
 } SchizoScriptApi;
 
 }  // extern "C"

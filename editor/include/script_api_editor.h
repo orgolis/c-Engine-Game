@@ -28,12 +28,22 @@ class EcsSceneBridge;
 /// instance (the table captures its address) and refreshes the pointers +
 /// mouse delta every frame.
 struct EditorScriptCtx {
+    int simulated_key = 0;  // existing Play test input, also visible to script key events
     std::shared_ptr<schizo::scene::Scene> scene;
     ScenePlaybackManager* playback = nullptr;
     GLFWwindow*           window   = nullptr;
     EcsSceneBridge*       bridge   = nullptr;   // ECS gameplay components (G0–G4)
     float dt = 0.0f;                            // this frame's delta time (s), for continuous gameplay calls
     float mouse_dx = 0.0f, mouse_dy = 0.0f;   // this frame's cursor delta (px)
+    std::function<bool(uint32_t, const std::string&, bool, float, float, bool)> play_animation;
+    std::function<bool(uint32_t, const std::string&, float*)> bone_position;
+    std::function<bool(const char*, const float*, const float*, float, float)> spawn_effect;
+    std::function<bool(uint32_t, const std::string&, const float*)> set_bone_rotation;
+    float environment_darkness = 0.0f, environment_whiteout = 0.0f;
+    std::function<void(int,const std::string&,const std::string&,const std::string&)> network_ui;
+    std::function<bool(uint32_t,const float*,int)> network_force;
+    std::function<void(uint32_t,float)> network_xp;
+    bool network_active=false;
 
     // ---- gameplay event feed (ScriptApi::event_count / event_get) ----
     // The bus hands events to `feed_incoming` as it flushes; the first query of

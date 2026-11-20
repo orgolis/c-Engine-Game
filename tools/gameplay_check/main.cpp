@@ -67,6 +67,21 @@ static void setup_combat_pair(ecs::World& w, ecs::Entity& atk, ecs::Entity& tgt,
 }
 
 int main() {
+    // Online hosts own damage; co-op filters player friendly fire while duels allow it.
+    {
+        ecs::World w;auto a=w.create(),b=w.create(),enemy=w.create(),part=w.create();
+        for(auto e:{a,b,enemy}){ecs::AttributeSet stats;stats.define("Health",100,0,100);w.add<ecs::AttributeSet>(e,stats);}
+        ecs::GameplayTags players;players.add("team.player");w.add<ecs::GameplayTags>(a,players);w.add<ecs::GameplayTags>(b,players);
+        w.add<ecs::DamageReceiver>(part,ecs::DamageReceiver{b,2.f});
+        auto& policy=w.registry().ctx().emplace<ecs::DamageAuthority>();policy.authoritative=false;
+        check("network clients cannot apply predicted damage",ecs::apply_damage(w,enemy,ecs::DamageInfo{25,"kinetic","Health",a})==0&&w.get<ecs::AttributeSet>(enemy).get("Health")==100);
+        policy.authoritative=true;policy.friendly_fire=false;
+        check("co-op protects allied multipart hurtboxes",ecs::apply_damage(w,part,ecs::DamageInfo{25,"kinetic","Health",a})==0&&w.get<ecs::AttributeSet>(b).get("Health")==100);
+        check("co-op still damages enemies",ecs::apply_damage(w,enemy,ecs::DamageInfo{25,"kinetic","Health",a})==25);
+        policy.friendly_fire=true;
+        check("PvP permits authoritative player damage",ecs::apply_damage(w,b,ecs::DamageInfo{25,"kinetic","Health",a})==25);
+    }
+
     ecs::register_core_components();
 
     // The registry the inspector iterates.
@@ -917,9 +932,10 @@ int main() {
         for (int i = 0; i < 10; ++i) frame(-1, true);
         check("still: moving breaks the cast; standing it goes off on the caster",
               broke && w.get<ecs::AttributeSet>(me).get("Health") == 80.0f);
-        // Area at the aimed point (no wall: at full range).
+        // The blast intersects hurt spheres, including the actor at its edge.
+        const float before_blast = hp(ahead);
         frame(4, true);
-        check("area at the aim: those around where it lands", hp(at_aim) == 50.0f && hp(ahead) == before - 30.0f);   // untouched by it: the channels' 25 + 5 only
+        check("area at the aim: intersects nearby hurt spheres but not distant actors", hp(at_aim) == 50.0f && hp(ahead) == std::max(0.0f, before_blast - 50.0f) && hp(far1) == 100.0f);
         // Out of mana: does not start.
         w.get<ecs::AttributeSet>(me).set("Mana", 5.0f);
         bar.cooldown[0] = 0.0f;
@@ -2828,6 +2844,79 @@ int main() {
         ecs::fire_weapon(w, me, eye, fwd, ws, nullptr, 1, &wall, &shots);
         check("melee: not through a wall (the blade meets it)", hp(ahead) == 60.0f && shots.size() == 1 &&
                                                                  shots[0].hit == ecs::ShotTrace::Hit::World);
+    }
+
+    // 0.8.53: multipart boss damage, specializations and resource/cast correctness.
+    {
+        ecs::World w;
+        auto me=w.create(), boss=w.create(), head=w.create(), body=w.create();
+        w.add<ecs::AttributeSet>(me, ecs::AttributeSet{});
+        auto& ma=w.get<ecs::AttributeSet>(me);
+        ma.define("Health",100); ma.define("Mana",100); ma.define("ManaRegen",8,0,100);
+        ma.define("Damage",10,0,1000); ma.define("WeaponDamage",40,0,1000); ma.define("AbilityDamage",20,0,1000);
+        for (auto e : {boss,head,body}) {
+            w.add<ecs::Transform>(e,ecs::Transform{}); w.add<ecs::CombatActor>(e,ecs::CombatActor{});
+            w.add<ecs::AttributeSet>(e,ecs::AttributeSet{});w.get<ecs::AttributeSet>(e).define("Health",1000,0,1000);
+        }
+        w.get<ecs::AttributeSet>(boss).define("resist.kinetic",.5f,0,1);
+        w.add<ecs::DamageReceiver>(head,ecs::DamageReceiver{boss,1.75f});w.add<ecs::DamageReceiver>(body,ecs::DamageReceiver{boss,1});
+        auto hp=[&]{return w.get<ecs::AttributeSet>(boss).get("Health");};
+        check("multipart: each pellet reaches the same health pool with one resistance pass",
+              ecs::apply_damage(w,head,{20,"kinetic"})==17.5f && ecs::apply_damage(w,body,{20,"kinetic"})==10 && hp()==972.5f);
+        ecs::AbilityDef area;area.id="multipart_test";area.targeting=ecs::AbilityTargeting::AreaAroundSelf;area.radius=4;area.damage=100;area.damage_type="kinetic";
+        ecs::AbilityCastInput aim;
+        const auto blast=ecs::ability_detail::fire(w,me,area,0,aim,nullptr,nullptr);
+        check("multipart: area damage resolves one owner, with spell bonus and without point-hit weakspot multiplier",
+              blast.targets==1 && std::abs(hp()-907.5f)<.01f);
+        check("damage: negative and non-finite inputs cannot heal a target",ecs::apply_damage(w,boss,{-100,"kinetic"})==0 && hp()==907.5f);
+        ecs::WeaponDef gun;gun.id="combat55_gun";gun.damage=20;gun.damage_type="kinetic";gun.mag_size=8;gun.projectile_speed=40;gun.range=100;
+        ecs::register_weapon(gun);ecs::WeaponState ws;ws.weapon_id=gun.id;ws.ammo_in_mag=8;
+        check("weapon: projectile uses generic and weapon-only bonuses",ecs::fire_weapon(w,me,{},glm::vec3(0,0,1),ws));
+        float shot_damage=0;w.each<ecs::Projectile>([&](ecs::Entity,ecs::Projectile& p){shot_damage=p.damage;});
+        check("weapon: projectile specialization is captured at launch",std::abs(shot_damage-30)<.01f);
+        w.add<ecs::GameplayTags>(me,ecs::GameplayTags{});w.get<ecs::GameplayTags>(me).add("status.stunned");ws.cooldown=0;
+        check("combat: stun prevents firing without spending ammunition",!ecs::fire_weapon(w,me,{},glm::vec3(0,0,1),ws)&&ws.ammo_in_mag==7);
+        w.get<ecs::GameplayTags>(me).remove_exact("status.stunned");
+        auto& mana=w.get<ecs::AttributeSet>(me);mana.set("Mana",20);ecs::tick_regen(w,2);
+        check("resource: living caster regenerates Mana",mana.get("Mana")==36);
+        mana.set("Health",0);ecs::tick_regen(w,2);
+        check("resource: death stops passive Mana regeneration",mana.get("Mana")==36);
+        check("combat: dead shooter cannot fire",!ecs::fire_weapon(w,me,{},glm::vec3(0,0,1),ws));mana.set("Health",100);
+        auto buff=ecs::to_gameplay_effect({"Damage",30,5},"combat55_buff");
+        ecs::apply_effect(w,me,buff);ecs::tick_effects(w,2);ecs::apply_effect(w,me,buff);
+        check("ability: recasting a buff refreshes duration without stacking its bonus",mana.get("Damage")==40&&w.get<ecs::ActiveEffects>(me).effects.size()==1);
+        ecs::tick_effects(w,5);check("ability: refreshed buff expires back to its original value",mana.get("Damage")==10);
+        mana.define("MoveSpeed",990,-1000,1000);ecs::apply_effect(w,me,ecs::to_gameplay_effect({"MoveSpeed",40,1},"combat55_clamp"));ecs::tick_effects(w,1);
+        check("effect: a clamped temporary bonus reverts its actual contribution",mana.get("MoveSpeed")==990);
+        mana.set("Health",50);ecs::apply_effect(w,me,ecs::make_dot("combat55_period","Health",5,.5f,1));ecs::tick_effects(w,5);
+        check("effect: long frame does not tick a periodic effect beyond its lifetime",mana.get("Health")==60);
+        ecs::AbilityDef channel;channel.id="combat55_channel";channel.channel_time=3;channel.channel_period=.5f;channel.cooldown=10;channel.targeting=ecs::AbilityTargeting::Self;channel.cost_attribute="Mana";channel.cost=10;
+        ecs::register_ability_def(channel);ecs::AbilityBar bar;bar.slots={channel.id};aim.pressed=0;aim.held=true;
+        std::vector<ecs::AbilityFired> pulses;ecs::step_ability_bar(w,me,bar,aim,nullptr,nullptr,.01f,&pulses);
+        check("channel: initial pulse pays resource exactly once",pulses.size()==1&&mana.get("Mana")==26);
+        aim.pressed=-1;aim.held=false;ecs::step_ability_bar(w,me,bar,aim,nullptr,nullptr,.6f,&pulses);
+        check("channel: released key emits no extra pulse and starts cooldown",pulses.size()==1&&bar.casting==-1&&bar.cooldown[0]==10);
+        bar.cooldown[0]=0;aim.pressed=0;aim.held=true;ecs::step_ability_bar(w,me,bar,aim,nullptr,nullptr,.01f,&pulses);
+        w.get<ecs::GameplayTags>(me).add("status.stunned");aim.pressed=-1;ecs::step_ability_bar(w,me,bar,aim,nullptr,nullptr,.6f,&pulses);
+        check("channel: stun interrupts an active channel before another pulse",pulses.size()==2&&bar.casting==-1&&bar.cooldown[0]==10);
+        w.destroy(boss);check("multipart: destroyed owners ignore late hits",ecs::apply_damage(w,head,{100,"kinetic"})==0);
+    }
+    // Resistance: a share of a damage type off; above 1 immune; below 0 a weakness.
+    {
+        ecs::World w;
+        auto foe = [&](float resist) {
+            const ecs::Entity e = w.create();
+            w.add<ecs::AttributeSet>(e, ecs::AttributeSet{});
+            w.get<ecs::AttributeSet>(e).define("Health", 100, 0, 100);
+            w.get<ecs::AttributeSet>(e).define("resist.fire", resist, -10, 10);
+            return e;
+        };
+        const ecs::Entity weak = foe(-0.5f), tough = foe(0.25f), immune = foe(1.5f);
+        const float a = ecs::apply_damage(w, weak, ecs::DamageInfo{20.0f, "fire"});
+        const float b = ecs::apply_damage(w, tough, ecs::DamageInfo{20.0f, "fire"});
+        const float c = ecs::apply_damage(w, immune, ecs::DamageInfo{20.0f, "fire"});
+        check("resistance: a share off (25% -> 15), immune above 1 (0), a weakness below 0 (-50% -> 30)",
+              a == 30.0f && b == 15.0f && c == 0.0f);
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }

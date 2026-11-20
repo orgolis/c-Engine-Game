@@ -69,7 +69,8 @@ It has these **companion** plans (all current):
 `DEFERRED-RENDERING-SYSTEM.md` · `LIGHTING-SYSTEM.md` · `MATERIAL-AND-PBR-SYSTEM.md` ·
 `MESH-AND-GEOMETRY-SYSTEM.md` · `POST-PROCESSING-SYSTEM.md` · `SCENE-MANAGEMENT-SYSTEM.md` ·
 `WORLDS_AND_WATER.md` (world presets, rivers and lakes, `gws world`) · `FOLIAGE.md` ·
-`CHARACTERS.md` (rigged characters, clips from gameplay, held guns, the first-person gun)
+`CHARACTERS.md` (rigged characters, clips from gameplay, held guns, the first-person gun) ·
+`ONLINE_PLAY.md` (hosted co-op, raids and duels over the network) · `SCRIPTED_ENCOUNTERS.md` (bosses: script verbs for clips, bones, effects, darkness, multipart damage)
 
 ### `references/` — quick-reference cheat sheets
 One `*-QUICK-REFERENCE.md` per system (deferred rendering, graphics, lighting, material,

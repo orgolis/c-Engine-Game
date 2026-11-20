@@ -144,6 +144,37 @@ static void check(const char* what, bool ok) {
 static bool approx(float a, float b, float eps = 1e-3f) { return std::abs(a - b) < eps; }
 
 int main(int argc, char** argv) {
+    // Validate an existing production asset without overwriting it with the
+    // fixture. This also exercises the loader's real bone remapping and poses.
+    if (argc == 3 && std::string(argv[1]) == "--load") {
+        auto r = load_skinned_gltf(argv[2]);
+        check("asset imported", r.valid);
+        if (!r.valid) { std::cout << r.error << "\n"; return 1; }
+        check("skinned geometry", !r.vertices.empty() && !r.indices.empty());
+        check("embedded texture decoded", r.material.present && !r.material.base_color.rgba.empty());
+        check("animation clips", !r.animations.empty());
+        for (const auto& clip : r.animations) {
+            bool sane = clip->GetDuration() > 0.0f;
+            for (float fraction : {0.0f, 0.5f, 1.0f}) {
+                clip->Sample(*r.skeleton, clip->GetDuration() * fraction, false);
+                r.skeleton->UpdateWorldTransforms();
+                for (const auto& v : r.vertices) {
+                    glm::vec4 posed(0.0f);
+                    for (int k = 0; k < 4; ++k) {
+                        if (v.joints[k] >= r.inverse_bind.size()) { sane = false; continue; }
+                        posed += v.weights[k] * r.skeleton->GetWorldMatrix(static_cast<uint16_t>(v.joints[k])) *
+                                 r.inverse_bind[v.joints[k]] * glm::vec4(v.position, 1.0f);
+                    }
+                    sane = sane && std::isfinite(posed.x) && std::isfinite(posed.y) && std::isfinite(posed.z) &&
+                           glm::length(glm::vec3(posed)) < 10000.0f;
+                }
+            }
+            check(("pose " + clip->GetName()).c_str(), sane);
+        }
+        std::cout << "asset: " << r.vertices.size() << " vertices, " << r.skeleton->GetBoneCount()
+                  << " bones, " << r.animations.size() << " clips\n";
+        return g_fail ? 1 : 0;
+    }
     std::string gltf_path;
     bool keep = false;
     if (argc > 1) { gltf_path = argv[1]; keep = true; }

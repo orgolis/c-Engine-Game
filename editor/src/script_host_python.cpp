@@ -450,6 +450,18 @@ void build_engine_module(pkpy::VM* vm) {
         return vec3_tuple(vm, v);
     });
 
+    vm->bind(mod, "play_animation(e: int, clip: str, loop: bool, speed: float, blend: float, restart: bool) -> bool",
+             [](pkpy::VM* vm, pkpy::ArgsView args) {
+        return VAR(g_api && g_api->play_animation && g_api->play_animation(g_api->ctx, earg(vm, args[0]),
+            sarg(vm, args[1]).c_str(), CAST(bool, args[2]), farg(vm, args[3]), farg(vm, args[4]), CAST(bool, args[5])));
+    });
+    vm->bind(mod, "bone_position(e: int, bone: str)", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        float p[3]{};
+        if (!g_api || !g_api->bone_position || !g_api->bone_position(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(), p))
+            return vm->None;
+        return vec3_tuple(vm, p);
+    });
+
     // Common key / button constants (GLFW codes) so scripts don't hardcode.
     auto set_const = [&](const char* name, pkpy::i64 v) { mod->attr().set(name, VAR(v)); };
     set_const("KEY_SPACE", 32);

@@ -50,6 +50,8 @@ layout(set = 1, binding = 0) uniform MaterialUBO {
     // xy = UV scale, zw = UV offset. Appended, so a shader that does not
     // declare it still reads every field above at the same offset.
     vec4  uv_transform;
+    vec4  detail;
+    vec4  parallax; // w selects multiplicative glTF emission
 } mat;
 layout(set = 1, binding = 1) uniform sampler2D albedoMap;
 layout(set = 1, binding = 2) uniform sampler2D normalMap;
@@ -170,7 +172,9 @@ void main() {
     float roughness = clamp(mr.g * mat.roughness_factor, 0.04, 1.0);
     float metallic  = clamp(mr.b * mat.metallic_factor, 0.0,  1.0);
     float ao   = texture(aoMap, uv).r * mat.occlusion_strength;
-    vec3  emis = mat.emissive_factor.rgb + texture(emissiveMap, uv).rgb;
+    vec3 sampledEmission = texture(emissiveMap, uv).rgb;
+    vec3 emis = mat.parallax.w > 0.5 ? mat.emissive_factor.rgb * sampledEmission
+                                     : mat.emissive_factor.rgb + sampledEmission;
     vec3 V = normalize(env.camera_position.xyz - inWorldPos);
 
     vec3 direct = vec3(0.0);

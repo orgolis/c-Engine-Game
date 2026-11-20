@@ -83,6 +83,7 @@ void ScriptSystem::update(const std::shared_ptr<schizo::scene::Scene>& scene,
         if (!ent || !ent->IsActiveInHierarchy()) continue;
         auto sc = ent->GetComponent<schizo::scene::ScriptComponent>();
         if (!sc || !sc->IsEnabled() || sc->GetScriptPath().empty()) continue;
+        if(network_client&&std::filesystem::path(sc->GetScriptPath()).extension()!=".lgraph") continue;
         const uint32_t eid = ent->GetId();
         seen.insert(eid);
 

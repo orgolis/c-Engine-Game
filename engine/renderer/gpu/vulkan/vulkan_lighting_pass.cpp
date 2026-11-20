@@ -16,6 +16,7 @@
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <cstring>
 #include <cstdint>
@@ -1505,15 +1506,17 @@ void VulkanLightingPass::render(VkCommandBuffer cmd) {
     pc.camera_x = camera_position_.x;
     pc.camera_y = camera_position_.y;
     pc.camera_z = camera_position_.z;
-    pc.ambient_intensity = config_.global_ambient;
+    pc.ambient_intensity = config_.global_ambient * (1.0f - 0.45f * encounter_darkness_);
     pc.ambient_r = config_.ambient_color.r;
     pc.ambient_g = config_.ambient_color.g;
     pc.ambient_b = config_.ambient_color.b;
     pc.light_count = light_count_;
     pc.ibl_prefilter_mips = ibl_prefilter_mips_ > 0 ? float(ibl_prefilter_mips_ - 1) : 0.0f;
-    pc.ibl_intensity      = ibl_prefilter_mips_ > 0 ? ibl_intensity_ : 0.0f;
+    pc.ibl_intensity      = ibl_prefilter_mips_ > 0 ? ibl_intensity_ * (1.0f - 0.45f * encounter_darkness_) : 0.0f;
     const bool rt_active  = (rt_enabled_ && tlas_ != VK_NULL_HANDLE);
     int flag_bits = 0;
+    // Bits 12..22 carry Q8 sky exposure (ray count owns bits 8..11). No push-block growth beyond 128 bytes.
+    flag_bits |= static_cast<int>(std::round(std::clamp(sky_intensity_, 0.0f, 7.99f) * 256.0f)) << 12;
     if (rt_active)                       flag_bits |= 1 << 0;
     if (rt_active && rt_ao_enabled_)     flag_bits |= 1 << 1;
     if (cloud_params_.w > 0.5f)          flag_bits |= 1 << 2;

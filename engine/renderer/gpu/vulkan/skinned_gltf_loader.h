@@ -41,6 +41,8 @@ struct LoadedSkinnedMaterial {
     LoadedImage base_color;          // sRGB
     LoadedImage metallic_roughness;  // linear: green = roughness, blue = metallic
     LoadedImage normal;              // linear, tangent space
+    LoadedImage emissive;
+    glm::vec3 emissive_factor{0.0f};
 };
 
 struct LoadedSkinnedModel {

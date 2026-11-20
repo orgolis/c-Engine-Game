@@ -39,6 +39,9 @@ namespace schizo::editor {
 
 class PlayGameLoop {
 public:
+    bool network_client=false;
+    bool managed_players=false;
+    std::function<bool(uint32_t)> network_interact;
     struct Hud {
         std::string prompt;          // "E  Pick up Health Potion", empty when nothing is in reach
         bool        player_dead = false;
@@ -82,7 +85,8 @@ public:
 
         // Life and death.
         std::vector<ecs::LifeEvent> events;
-        ecs::tick_life(w, dt, &bridge.events(), rng_, events);
+        if(!network_client)ecs::tick_life(w, dt, &bridge.events(), rng_, events);
+        if(managed_players&&have_player)hud_.player_dead=false; // the room HUD explains raid/duel respawns
         for (const auto& ev : events) {
             auto ent = scene_entity_of(bridge, scene, ev.entity);
             const bool is_player = have_player && ev.entity == pe;
@@ -128,7 +132,7 @@ public:
             });
             if (best != ecs::null_entity) {
                 hud_.prompt = "E  " + w.get<ecs::Interactable>(best).prompt;
-                if (interact_pressed && ecs::interact(w, pe, best, &bridge.events())) {
+                if (interact_pressed && !(network_interact&&network_interact(uint32_t(best))) && ecs::interact(w, pe, best, &bridge.events())) {
                     const auto* it = w.try_get<ecs::Interactable>(best);
                     if (it && !it->enabled)
                         if (auto ent = scene_entity_of(bridge, scene, best); ent && ent->IsActive()) {

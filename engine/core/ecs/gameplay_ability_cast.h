@@ -82,10 +82,11 @@ struct AbilityEffect {
 inline GameplayEffect to_gameplay_effect(const AbilityEffect& e, const std::string& name) {
     if (e.duration <= 0.0f) return make_instant(name, e.attribute, e.amount);
     GameplayEffect fx;
-    fx.name = name;
+    fx.name = "ability:" + name + ":" + e.attribute;
     fx.duration_type = EffectDurationType::Duration;
     fx.duration = e.duration;
     fx.revert_on_end = true;
+    fx.refresh_existing = true;
     fx.modifiers.push_back({e.attribute, EffectOp::Add, e.amount});
     return fx;
 }
@@ -198,7 +199,10 @@ inline void pay(World& w, Entity caster, const AbilityDef& d) {
     if (AttributeSet* a = w.try_get<AttributeSet>(caster)) a->set(d.cost_attribute, a->get(d.cost_attribute) - d.cost);
 }
 inline bool tags_allow(World& w, Entity caster, const AbilityDef& d) {
+    if (const auto* attrs = w.try_get<AttributeSet>(caster))
+        if (const auto* health = attrs->find("Health"); health && health->current <= 0.0f) return false;
     const GameplayTags* tags = w.try_get<GameplayTags>(caster);
+    if (tags && (tags->has("status.stunned") || tags->has("state.stunned"))) return false;
     for (const auto& t : d.require_tags) if (!tags || !tags->has(t)) return false;
     if (tags) for (const auto& t : d.block_tags) if (tags->has(t)) return false;
     return true;
@@ -209,6 +213,16 @@ inline std::string team_of(World& w, Entity e) {
         for (const auto& s : t->tags)
             if (s.rfind("team.", 0) == 0) return s;
     return {};
+}
+inline bool in_area(World& w, Entity e, const Transform& t, const glm::vec3& centre, float radius) {
+    glm::vec3 point = t.position;
+    if (const auto* ca = w.try_get<CombatActor>(e)) {
+        const auto sphere = combat_hurtbox(*ca, t.position);
+        point = sphere.center;
+        radius += sphere.radius;
+    }
+    const auto delta = point - centre;
+    return glm::dot(delta, delta) <= radius * radius;
 }
 /// The nearest hurtbox along a ray that is not the caster's nor its team's.
 inline Entity target_along(World& w, Entity caster, const glm::vec3& origin, const glm::vec3& dir, float max_t, float& out_t) {
@@ -232,21 +246,20 @@ inline int reach_targets(World& w, Entity caster, const AbilityDef& d, const glm
     if (d.targeting == AbilityTargeting::Aimed) {
         if (hit != null_entity) hits.push_back(hit);
     } else if (d.targeting == AbilityTargeting::AreaAtAim || d.targeting == AbilityTargeting::AreaAroundSelf) {
-        const float r2 = d.radius * d.radius;
         const std::string team = team_of(w, caster);
         w.each<Transform>([&](Entity e, Transform& t) {
             if (e == caster) return;
             if (!w.has<CombatActor>(e) && !w.has<AttributeSet>(e)) return;
             if (!team.empty() && team_of(w, e) == team) return;   // not its own side
-            const glm::vec3 dd = t.position - centre;
-            if (glm::dot(dd, dd) <= r2) hits.push_back(e);
+            if (in_area(w, e, t, centre, d.radius)) hits.push_back(e);
         });
     }
-    const float dmg = d.damage * (1.0f + bonus_stat(w.valid(caster) ? w.try_get<AttributeSet>(caster) : nullptr, "Damage") / 100.0f);
+    if (d.targeting != AbilityTargeting::Aimed) unique_damage_owners(w, hits);
+    const float dmg = d.damage * damage_bonus(w.try_get<AttributeSet>(caster), "AbilityDamage");
     for (Entity e : hits) {
         float dealt = 0.0f;
-        if (d.damage > 0.0f) dealt = apply_damage(w, e, DamageInfo{dmg, d.damage_type});
-        for (const auto& fx : d.target_effects) apply_effect(w, e, to_gameplay_effect(fx, d.name));
+        if (d.damage > 0.0f) dealt = apply_damage(w, e, DamageInfo{dmg, d.damage_type,"Health",caster});
+        for (const auto& fx : d.target_effects) if (const Entity owner = damage_owner(w, e); owner != null_entity) apply_effect(w, owner, to_gameplay_effect(fx, d.id));
         publish(bus, "ability.hit", caster, e, dealt, d.id);
     }
     return static_cast<int>(hits.size());
@@ -323,14 +336,12 @@ inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot,
             [[fallthrough]];
         case AbilityTargeting::AreaAroundSelf: {
             f.point = centre;
-            const float r2 = d.radius * d.radius;
             const std::string team = team_of(w, caster);
             w.each<Transform>([&](Entity e, Transform& t) {
                 if (e == caster) return;
                 if (!w.has<CombatActor>(e) && !w.has<AttributeSet>(e)) return;
                 if (!team.empty() && team_of(w, e) == team) return;   // not its own side
-                const glm::vec3 dd = t.position - centre;
-                if (glm::dot(dd, dd) <= r2) hits.push_back(e);
+                if (in_area(w, e, t, centre, d.radius)) hits.push_back(e);
             });
             break;
         }
@@ -339,11 +350,12 @@ inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot,
     f.move = d.move;
     f.move_a = d.move_a;
     f.move_b = d.move_b;
-    const float dmg = d.damage * (1.0f + bonus_stat(w.try_get<AttributeSet>(caster), "Damage") / 100.0f);
+    if (d.targeting != AbilityTargeting::Aimed) unique_damage_owners(w, hits);
+    const float dmg = d.damage * damage_bonus(w.try_get<AttributeSet>(caster), "AbilityDamage");
     for (Entity e : hits) {
         float dealt = 0.0f;
-        if (d.damage > 0.0f) dealt = apply_damage(w, e, DamageInfo{dmg, d.damage_type});
-        for (const auto& fx : d.target_effects) apply_effect(w, e, to_gameplay_effect(fx, d.name));
+        if (d.damage > 0.0f) dealt = apply_damage(w, e, DamageInfo{dmg, d.damage_type,"Health",caster});
+        for (const auto& fx : d.target_effects) if (const Entity owner = damage_owner(w, e); owner != null_entity) apply_effect(w, owner, to_gameplay_effect(fx, d.id));
         publish(bus, "ability.hit", caster, e, dealt, d.id);
     }
     f.targets = static_cast<int>(hits.size());
@@ -448,6 +460,14 @@ inline int step_ability_bar(World& w, Entity caster, AbilityBar& bar, const Abil
     const AbilityDef& d = *dp;
     const int slot = bar.casting;
 
+    // Stuns and changing requirements interrupt channels as well as wind-ups.
+    if (!tags_allow(w, caster, d)) {
+        if (bar.channelling) start_cooldown(slot, d);
+        publish(bus, "ability.interrupted", caster, null_entity, bar.cast_timer, d.id);
+        end_cast();
+        return count;
+    }
+
     if (!bar.channelling) {
         // Wind-up. Moving breaks a cast that needs standing still.
         if (!d.cast_while_moving && in.moving) {
@@ -474,6 +494,13 @@ inline int step_ability_bar(World& w, Entity caster, AbilityBar& bar, const Abil
         bar.channel_timer = 0.0f;
         bar.tick_timer = 0.0f;
         go(slot, d);   // the first pulse as the channel begins
+        return count;
+    }
+    // Releasing must stop before another pulse can be emitted this frame.
+    if (!in.held) {
+        start_cooldown(slot, d);
+        publish(bus, "ability.end", caster, null_entity, bar.channel_timer, d.id);
+        end_cast();
         return count;
     }
     // Channel: a pulse every period while the key is held.

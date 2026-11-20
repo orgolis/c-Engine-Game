@@ -209,6 +209,7 @@ private:
 
 class PlayerWeapon {
 public:
+    std::function<void(const std::string&,const glm::vec3&,const glm::vec3&,uint32_t)> network_input;
     struct Input {
         bool fire_pressed = false, fire_held = false, aim_held = false, reload_pressed = false;
         int  cycle = 0;         // +1 next gun, -1 previous
@@ -272,6 +273,7 @@ public:
         const bool third_person = glm::length(origin - (cam_pos + glm::normalize(cam_fwd) * 0.3f)) > 0.05f;
         const int fired = ecs::trigger_weapon(w, e, origin, fwd, *ws, in.fire_pressed, in.fire_held, &bridge.events(),
                                               ++seed_, &world, &shots);
+        if(network_input)network_input(wd->id,origin,fwd,(in.fire_pressed?1u:0u)|(in.fire_held?2u:0u)|(in.reload_pressed?4u:0u)|(in.aim_held?8u:0u)|(fired>0?16u:0u));
         hud_.fired = fired > 0;
         if (fired > 0) {
             // The muzzle sits a little right of and below the eye.
@@ -294,7 +296,8 @@ public:
         }
 
         hud_.armed = true;
-        hud_.spread_deg = ecs::current_spread(*wd, *ws);
+        hud_.spread_deg = ecs::current_spread(*wd, *ws) *
+            (1.0f - std::clamp(ecs::bonus_stat(w.try_get<ecs::AttributeSet>(e), "WeaponHandling"), 0.0f, 60.0f) / 100.0f);
         hud_.view_zoom = 1.0f + (wd->ads_fov_scale - 1.0f) * ws->aim;
         hud_.aiming = ws->aiming;
         hud_.ammo = ws->ammo_in_mag;

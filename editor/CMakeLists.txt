@@ -91,6 +91,7 @@ target_sources(editor
         src/ability_system_panel.cpp
         src/network_system_panel.cpp
         src/net_session.cpp
+        src/online_game.cpp
         src/script_system.cpp
         src/script_host_python.cpp
         src/script_host_cpp.cpp

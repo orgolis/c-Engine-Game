@@ -62,11 +62,16 @@ struct AttributeSet {
 //   ReloadSpeed        % faster reloading
 //   HealthRegen        health a second (while alive)
 //   ExtraJumps         jumps in the air
+//   WeaponDamage       additional % firearm / melee damage
+//   AbilityDamage      additional % spell damage
+//   WeaponHandling     % less weapon spread and recoil (capped at 60)
+//   ManaRegen          Mana a second while alive
 // A skill's `grant` or an effect on one the entity does not have yet adds it
 // (from 0, room up to +-1000): passives and buffs need no setup.
 inline bool is_bonus_stat(const std::string& n) {
     return n == "MoveSpeed" || n == "Damage" || n == "CooldownReduction" || n == "ReloadSpeed" ||
-           n == "HealthRegen" || n == "ExtraJumps";
+           n == "HealthRegen" || n == "ExtraJumps" || n == "ManaRegen" ||
+           n == "WeaponDamage" || n == "AbilityDamage" || n == "WeaponHandling" || n.rfind("resist.", 0) == 0;
 }
 inline Attribute* ensure_bonus_stat(AttributeSet& s, const std::string& n) {
     if (Attribute* a = s.find(n)) return a;
@@ -78,6 +83,10 @@ inline float bonus_stat(const AttributeSet* s, const char* n) {
     if (!s) return 0.0f;
     const Attribute* a = s->find(n);
     return a ? a->current : 0.0f;
+}
+
+inline float damage_bonus(const AttributeSet* s, const char* specialization) {
+    return std::max(0.0f, 1.0f + (bonus_stat(s, "Damage") + bonus_stat(s, specialization)) / 100.0f);
 }
 
 // ---- custom serialization: count, then per attribute (name, base, current, min, max) ----

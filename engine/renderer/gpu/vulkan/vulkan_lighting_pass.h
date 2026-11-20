@@ -216,6 +216,8 @@ public:
     /// IBL contribution scale [0, 1]. 0 = ignore IBL (use legacy ambient).
     /// 1 = use only the split-sum IBL term as ambient. Default 1.
     void set_ibl_intensity(float intensity) { ibl_intensity_ = intensity; }
+    void set_sky_intensity(float v) { sky_intensity_ = v; }
+    void set_encounter_darkness(float v) { encounter_darkness_ = v; }
 
     /// How far light spreads into a shadow. 0 keeps the old hard edge; larger
     /// widens the penumbra -- a bigger PCF radius for the shadow-map path, and
@@ -416,6 +418,7 @@ private:
     // Open outdoor scenes can push this up to ~0.8 from the inspector;
     // for true PBR-correct lighting on a clear outdoor scene, 1.0.
     float       ibl_intensity_         = 0.4f;
+    float       sky_intensity_ = 1.0f, encounter_darkness_ = 0.0f;
     float       shadow_softness_       = 0.35f;
     int   shadow_ray_count_ = 8;   // cone rays for RT soft shadows (see the setter)   // a visible penumbra by default
     float       shadow_persistence_    = 0.05f;   // shadows are dark, not voids

@@ -243,6 +243,18 @@ struct ScriptApi {
     // ---- ability slots (added v0.8.51; new entries go at the end) ----
     // A known ability (its place in the known list, from 0) into a bar slot (from 0).
     bool (*equip_ability)(void* ctx, uint32_t e, int known_index, int slot) = nullptr;
+
+    // Script-controlled characters and animated effect attachment points.
+    // Explicitly takes over automatic locomotion/gameplay clip selection.
+    bool (*play_animation)(void* ctx, uint32_t e, const char* clip, bool loop,
+                           float speed, float blend, bool restart) = nullptr;
+    bool (*bone_position)(void* ctx, uint32_t e, const char* bone, float out[3]) = nullptr;
+    // Project-defined VFX and transient encounter presentation (0.8.53).
+    bool (*spawn_effect)(void* ctx, const char* effect, const float pos[3], const float dir[3], float scale, float reach) = nullptr;
+    void (*set_environment)(void* ctx, float darkness, float whiteout) = nullptr;
+    bool (*set_bone_rotation)(void* ctx, uint32_t e, const char* bone, const float degrees[3]) = nullptr;
+    uint32_t (*spawn_mesh)(void* ctx, const char* path, const float pos[3], float scale) = nullptr;
+    bool (*set_damage_receiver)(void* ctx, uint32_t part, uint32_t owner, float multiplier) = nullptr;
 };
 
 }  // namespace schizo::editor

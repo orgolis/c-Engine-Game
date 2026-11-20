@@ -17,6 +17,7 @@
 #include "entity.h"
 #include "transform.h"
 #include "entity_factory.h"
+#include "mesh_component.h"
 #include "mesh_renderer_component.h"
 #include "collider_component.h"
 #include "audio_components.h"
@@ -42,6 +43,7 @@
 #include "ecs/gameplay_events.h"        // GameplayEvent (emit_event)
 
 #include <GLFW/glfw3.h>
+#include <imgui.h>
 #include <glm/gtc/quaternion.hpp>
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -82,6 +84,13 @@ bool api_get_pos(void* ctx, uint32_t e, float out[3]) {
     return true;
 }
 void api_set_pos(void* ctx, uint32_t e, const float p[3]) {
+    auto* c = C(ctx);
+    if(c->network_force&&c->network_force(e,p,2))return;
+    if (c->playback && c->playback->IsPlaying())
+        if (auto* player = c->playback->GetPlayerEntity(); player && player->GetId() == e) {
+            c->playback->TeleportPlayer(glm::vec3(p[0],p[1],p[2]), player->GetTransform()->GetWorldRotation());
+            return;
+        }
     if (auto ent = ent_of(ctx, e))
         ent->GetTransform()->SetWorldPosition(glm::vec3(p[0], p[1], p[2]));
 }
@@ -110,8 +119,15 @@ void api_set_scale(void* ctx, uint32_t e, const float s[3]) {
 }
 
 // ---- input ----
-bool accepts_gameplay_input(const EditorScriptCtx* c) {
+bool accepts_gameplay_input(const EditorScriptCtx* c, bool movement_or_combat = true) {
     if (!c || !c->window) return false;
+    if (movement_or_combat && c->playback && c->bridge)
+        if (auto* player = c->playback->GetPlayerEntity()) {
+            const auto id = c->bridge->ecs_entity_id(player->GetTransform());
+            if (id != kNoEcsEntity)
+                if (auto* tags = c->bridge->world().try_get<schizo::ecs::GameplayTags>(static_cast<schizo::ecs::Entity>(id));
+                    tags && tags->has("status.stunned")) return false;
+        }
     // Editor extensions may use input outside Play mode. During Play, however,
     // cursor capture is the single source of truth for gameplay focus: Escape
     // releases it and every script sees neutral input until the scene is clicked.
@@ -123,7 +139,12 @@ bool api_key_down(void* ctx, int key) {
     auto* c = C(ctx);
     // A key that just ended a rebinding (Esc cancelling it) is not the game's yet.
     if (key == schizo::editor::play_settings().swallowed_key) return false;
-    return accepts_gameplay_input(c) && glfwGetKey(c->window, key) == GLFW_PRESS;
+    if (!accepts_gameplay_input(c, key != GLFW_KEY_ESCAPE)) return false;
+    // The backend queues press/release separately even for a tap completed
+    // between polls. Every listening script sees the same menu press.
+    const bool menu_press = key == GLFW_KEY_ESCAPE && ImGui::GetCurrentContext() &&
+                            ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    return menu_press || key == c->simulated_key || glfwGetKey(c->window, key) == GLFW_PRESS;
 }
 bool api_mouse_down(void* ctx, int button) {
     auto* c = C(ctx);
@@ -185,7 +206,12 @@ void api_destroy(void* ctx, uint32_t e) {
 // ---- physics ----
 void api_set_velocity(void* ctx, uint32_t e, const float v[3]) {
     auto* c = C(ctx);
+    if(c->network_force&&c->network_force(e,v,0))return;
     if (!c->playback) return;
+    if (auto* player = c->playback->GetPlayerEntity(); player && player->GetId() == e) {
+        c->playback->LaunchPlayer(glm::vec3(v[0], v[1], v[2]));
+        return;
+    }
     auto* pw = c->playback->GetPhysicsWorld();
     const uint32_t body = c->playback->BodyForEntity(e);
     if (pw && body != 0xFFFFFFFFu)
@@ -193,7 +219,12 @@ void api_set_velocity(void* ctx, uint32_t e, const float v[3]) {
 }
 void api_add_impulse(void* ctx, uint32_t e, const float i[3]) {
     auto* c = C(ctx);
+    if(c->network_force&&c->network_force(e,i,1))return;
     if (!c->playback) return;
+    if (auto* player = c->playback->GetPlayerEntity(); player && player->GetId() == e) {
+        c->playback->LaunchPlayer(c->playback->GetPlayerMovementState().velocity + glm::vec3(i[0], i[1], i[2]));
+        return;
+    }
     auto* pw = c->playback->GetPhysicsWorld();
     const uint32_t body = c->playback->BodyForEntity(e);
     if (pw && body != 0xFFFFFFFFu)
@@ -259,6 +290,8 @@ float api_get_attribute(void* ctx, uint32_t e, const char* name) {
     ecs::World* w; ecs::Entity ent;
     if (!gp_entity(ctx, e, w, ent) || !name) return 0.0f;
     auto* a = w->try_get<ecs::AttributeSet>(ent);
+    if (a && std::strcmp(name, "MaxHealth") == 0 && !a->find(name))
+        if (const auto* health = a->find("Health")) return health->max;
     return a ? a->get(name) : 0.0f;
 }
 void api_set_attribute(void* ctx, uint32_t e, const char* name, float value) {
@@ -309,6 +342,7 @@ void api_grant_xp(void* ctx, uint32_t e, float amount) {
     ecs::World* w; ecs::Entity ent;
     if (!gp_entity(ctx, e, w, ent)) return;
     ecs::grant_xp(*w, ent, amount, &C(ctx)->bridge->events());
+    if(C(ctx)->network_xp)C(ctx)->network_xp(e,amount);
 }
 int api_get_level(void* ctx, uint32_t e) {
     ecs::World* w; ecs::Entity ent;
@@ -370,6 +404,7 @@ bool api_interact(void* ctx, uint32_t e) {
 bool api_fire_weapon(void* ctx, uint32_t e) {
     ecs::World* w; ecs::Entity ent;
     if (!gp_entity(ctx, e, w, ent)) return false;
+    if (auto* tags = w->try_get<ecs::GameplayTags>(ent); tags && tags->has("status.stunned")) return false;
     auto* ws = w->try_get<ecs::WeaponState>(ent);
     auto* tf = w->try_get<ecs::Transform>(ent);
     if (!ws || !tf) return false;
@@ -478,11 +513,13 @@ int api_biome_at(void* ctx, uint32_t e, char* name_out, int name_size, float* we
 
 // ---- saving in Play ----
 bool api_save_game(void* ctx, const char* slot) {
+    if(C(ctx)->network_active)return false;
     auto* c = C(ctx);
     if (!c->playback || !c->bridge) return false;
     return schizo::editor::save_play(slot ? slot : "quick", *c->playback, *c->bridge);
 }
 bool api_load_game(void* ctx, const char* slot) {
+    if(C(ctx)->network_active)return false;
     auto* c = C(ctx);
     if (!c->playback || !c->bridge) return false;
     return schizo::editor::load_play(slot ? slot : "quick", *c->playback, *c->bridge);
@@ -500,12 +537,14 @@ bool api_ui_show(void* ctx, const char* path) {
     if (!path || !*path) return false;
     std::string err;
     const bool ok = schizo::editor::play_ui().show(path, &err);
+    if(ok&&C(ctx)->network_ui)C(ctx)->network_ui(1,path,"","");
     if (!err.empty()) spdlog::warn("[ui] {}", err);
     (void)ctx;
     return ok;
 }
-void api_ui_hide(void*, const char* path) { if (path) schizo::editor::play_ui().hide(path); }
-bool api_ui_set_text(void*, const char* path, const char* id, const char* text) {
+void api_ui_hide(void* ctx, const char* path) { if (path) {schizo::editor::play_ui().hide(path);if(C(ctx)->network_ui)C(ctx)->network_ui(2,path,"","");} }
+bool api_ui_set_text(void* ctx, const char* path, const char* id, const char* text) {
+    if(path&&id&&C(ctx)->network_ui)C(ctx)->network_ui(3,path,id,text?text:"");
     return path && id && schizo::editor::play_ui().set_text(path, id, text ? text : "");
 }
 bool api_ui_shown(void*, const char* path) { return path && schizo::editor::play_ui().shown(path); }
@@ -531,6 +570,14 @@ bool api_set_setting(void*, const char* name, const char* value) {
     return name && value && schizo::editor::play_settings().set(name, value);
 }
 int api_get_setting(void*, const char* name, char* out, int size) {
+    // A capability query through the stable, older ABI prefix lets a newer
+    // native script refuse an older runtime before reading appended pointers.
+    if (name && std::strcmp(name, "engine.skeletal_animation_api") == 0)
+        return copy_out("1", out, size);
+    if (name && std::strcmp(name, "engine.encounter_api") == 0)
+        return copy_out("1", out, size);
+    if (name && std::strcmp(name, "engine.combat_api") == 0)
+        return copy_out("1", out, size);
     return copy_out(name ? schizo::editor::play_settings().get(name) : std::string(), out, size);
 }
 int api_next_setting(void*, const char* name, char* out, int size) {
@@ -781,6 +828,46 @@ void api_set_status(void* ctx, const char* msg) {
 
 void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.ctx                = ctx;
+    api.play_animation = [](void* p, uint32_t e, const char* clip, bool loop, float speed, float blend, bool restart) {
+        auto* c = C(p);
+        return clip && c->play_animation && c->play_animation(e, clip, loop, speed, blend, restart);
+    };
+    api.bone_position = [](void* p, uint32_t e, const char* bone, float out[3]) {
+        auto* c = C(p);
+        return bone && out && c->bone_position && c->bone_position(e, bone, out);
+    };
+    api.spawn_effect = [](void* p, const char* name, const float* pos, const float* dir, float scale, float reach) {
+        auto* c = C(p);
+        return name && pos && dir && c->spawn_effect && c->spawn_effect(name, pos, dir, scale, reach);
+    };
+    api.set_environment = [](void* p, float darkness, float whiteout) {
+        auto* c = C(p);
+        c->environment_darkness = std::isfinite(darkness) ? std::clamp(darkness, 0.0f, 1.0f) : 0.0f;
+        c->environment_whiteout = std::isfinite(whiteout) ? std::clamp(whiteout, 0.0f, 1.0f) : 0.0f;
+    };
+    api.set_bone_rotation = [](void* p, uint32_t e, const char* bone, const float* degrees) {
+        auto* c = C(p);
+        return bone && degrees && c->set_bone_rotation && c->set_bone_rotation(e, bone, degrees);
+    };
+    api.spawn_mesh = [](void* p, const char* path, const float* pos, float scale) -> uint32_t {
+        auto* c = C(p);
+        if (!c->scene || !path || !pos || !std::isfinite(scale) || scale <= 0) return 0;
+        auto ent = c->scene->CreateEntity("script_visual");
+        auto mc = ent->GetMeshComponent();
+        mc->mesh_path = path; mc->use_asset_mesh = true;
+        ent->GetTransform()->SetWorldPosition(glm::vec3(pos[0],pos[1],pos[2]));
+        ent->GetTransform()->SetLocalScale(glm::vec3(scale));
+        return ent->GetId();
+    };
+    api.set_damage_receiver = [](void* p, uint32_t part, uint32_t owner, float multiplier) {
+        ecs::World* w; ecs::Entity ent;
+        ecs::World* ow; ecs::Entity target;
+        if (!gp_entity(p, part, w, ent) || !gp_entity(p, owner, ow, target) || w != ow || ent == target ||
+            !std::isfinite(multiplier) || multiplier <= 0 || w->has<ecs::DamageReceiver>(target)) return false;
+        if (auto* r = w->try_get<ecs::DamageReceiver>(ent)) *r = {target, multiplier};
+        else w->add<ecs::DamageReceiver>(ent, ecs::DamageReceiver{target, multiplier});
+        return true;
+    };
     api.log                = &api_log;
     api.find_entity        = &api_find;
     api.get_position       = &api_get_pos;
@@ -872,6 +959,11 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;
 
+    // Scene discovery is read-only and is also needed by multiplayer gameplay.
+    api.entity_count = &api_entity_count;
+    api.entity_at = &api_entity_at;
+    api.entity_name = &api_entity_name;
+
     // Editor-extension entries: bound only when this ctx was given a registry,
     // so a gameplay script's table keeps them null and a gameplay script cannot
     // register editor commands even by accident.
@@ -880,9 +972,6 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
         api.run_command      = &api_run_command;
         api.selected_entity  = &api_selected_entity;
         api.select_entity    = &api_select_entity;
-        api.entity_count     = &api_entity_count;
-        api.entity_at        = &api_entity_at;
-        api.entity_name      = &api_entity_name;
         api.set_status       = &api_set_status;
     }
 }

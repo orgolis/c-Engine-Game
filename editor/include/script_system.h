@@ -65,6 +65,7 @@ public:
 std::unique_ptr<ScriptHost> make_python_host();
 /// Factory for the native C++ (g++ -> DLL) backend — script_host_cpp.cpp.
 /// Returns nullptr on non-Windows platforms.
+bool prepare_cpp_script(const std::string& path, std::string& error);
 std::unique_ptr<ScriptHost> make_cpp_host();
 /// Factory for the C# (.NET via hostfxr + dotnet build) backend —
 /// script_host_cs.cpp. Returns nullptr on non-Windows platforms.
@@ -75,6 +76,7 @@ std::unique_ptr<ScriptHost> make_logic_host();
 
 class ScriptSystem {
 public:
+    bool network_client=false; // Native simulation runs on the host; UI graphs remain local.
     // Map a file extension (".py") to a backend.
     void register_host(const std::string& ext, std::unique_ptr<ScriptHost> host) {
         hosts_[ext] = std::move(host);

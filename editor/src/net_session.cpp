@@ -39,6 +39,7 @@
 #include <unordered_set>
 #include <vector>
 #include <cstdint>
+#include <cmath>
 
 namespace schizo::editor {
 
@@ -55,6 +56,7 @@ inline constexpr uint64_t kAvatarNetIdBase = 1'000'000ull;
 
 inline constexpr uint32_t kMsgAssign    = 0x4E475341u;  // "ASGN"
 inline constexpr uint32_t kMsgPlayerPos = 0x534F5050u;  // "PPOS"
+inline constexpr uint32_t kMsgGame = 0x314D474Fu;
 
 void ensure_components_registered() {
     static bool done = false;
@@ -76,6 +78,8 @@ glm::vec4 avatar_color(uint64_t netid) {
 // copied — proxies are visual-only.
 void copy_visuals(const std::shared_ptr<schizo::scene::Entity>& src,
                   const std::shared_ptr<schizo::scene::Entity>& dst) {
+    if (const auto* skin=std::as_const(*src).GetSkinnedMeshComponent();skin&&!skin->gltf_path.empty())
+        *dst->GetSkinnedMeshComponent()=*skin;
     if (const auto* mc = std::as_const(*src).GetMeshComponent(); mc && !mc->mesh_path.empty())
         dst->SetMesh(mc->mesh_path);
     if (auto mr = src->GetComponent<schizo::scene::MeshRendererComponent>()) {
@@ -94,12 +98,15 @@ void copy_visuals(const std::shared_ptr<schizo::scene::Entity>& src,
 }
 
 bool has_visuals(const std::shared_ptr<schizo::scene::Entity>& e) {
+    if (const auto* skin=std::as_const(*e).GetSkinnedMeshComponent();skin&&!skin->gltf_path.empty()) return true;
     if (const auto* mc = std::as_const(*e).GetMeshComponent(); mc && !mc->mesh_path.empty()) return true;
     return e->GetComponent<schizo::scene::MeshRendererComponent>() != nullptr;
 }
 }  // namespace
 
 struct NetSession::Impl {
+    std::vector<NetGameMessage> messages;
+    std::unordered_set<uint64_t> removed_ids;
     std::unique_ptr<net::Transport> transport;
 
     ecs::World net_world;                                     // props + avatars
@@ -271,6 +278,7 @@ struct NetSession::Impl {
             } else if (ev.type == net::NetEvent::Type::Disconnect) {
                 auto it = avatar_by_peer.find(ev.peer);
                 if (it != avatar_by_peer.end()) {
+                    removed_ids.insert(it->second);
                     auto ae = avatar_ent.find(it->second);
                     if (ae != avatar_ent.end()) {
                         if (net_world.valid(ae->second)) net_world.destroy(ae->second);
@@ -284,11 +292,15 @@ struct NetSession::Impl {
                 if (ev.data.size() >= sizeof(uint32_t)) {
                     uint32_t magic = 0;
                     std::memcpy(&magic, ev.data.data(), sizeof(magic));
+                    if(magic==kMsgGame&&ev.data.size()<=262148&&messages.size()<256)
+                        messages.push_back({ev.peer,{ev.data.begin()+4,ev.data.end()}});
                     if (magic == kMsgPlayerPos &&
                         ev.data.size() >= sizeof(uint32_t) + 3 * sizeof(float)) {
                         float p[3];
                         std::memcpy(p, ev.data.data() + sizeof(uint32_t), 3 * sizeof(float));
-                        peer_pos[ev.peer] = glm::vec3(p[0], p[1], p[2]);
+                        if(std::isfinite(p[0])&&std::isfinite(p[1])&&std::isfinite(p[2])&&std::abs(p[0])<1000000&&std::abs(p[1])<1000000&&std::abs(p[2])<1000000)
+                            peer_pos[ev.peer] = glm::vec3(p[0], p[1], p[2]);
+                        else transport->disconnect(ev.peer);
                     }
                 }
             }
@@ -310,6 +322,7 @@ struct NetSession::Impl {
                 auto* tf = ents[i]->GetTransform();
                 if (!tf) continue;
                 const uint64_t nid = kSceneNetIdBase + static_cast<uint64_t>(i);
+                removed_ids.erase(nid);
                 present.insert(nid);
                 ecs::Entity e;
                 auto it = ent_by_netid.find(nid);
@@ -330,12 +343,15 @@ struct NetSession::Impl {
         }
         for (auto it = ent_by_netid.begin(); it != ent_by_netid.end();) {
             if (present.count(it->first) == 0) {
+                removed_ids.insert(it->first);
                 if (net_world.valid(it->second)) net_world.destroy(it->second);
                 it = ent_by_netid.erase(it);
             } else { ++it; }
         }
 
-        const std::vector<uint8_t> snap = net::write_snapshot(net_world, tick);
+        std::vector<uint8_t> snap = net::write_snapshot(net_world, tick);
+        uint32_t removed=uint32_t(removed_ids.size());const auto* count_bytes=reinterpret_cast<const uint8_t*>(&removed);snap.insert(snap.end(),count_bytes,count_bytes+4);
+        for(auto id:removed_ids){const auto* bytes=reinterpret_cast<const uint8_t*>(&id);snap.insert(snap.end(),bytes,bytes+8);}
         transport->broadcast(snap.data(), snap.size(), net::Channel::Unreliable);
         transport->flush();
 
@@ -366,7 +382,10 @@ struct NetSession::Impl {
                     if (ev.data.size() < sizeof(uint32_t)) break;
                     uint32_t magic = 0;
                     std::memcpy(&magic, ev.data.data(), sizeof(magic));
+                    if(magic==kMsgGame&&ev.data.size()<=262148&&messages.size()<256)
+                        messages.push_back({ev.peer,{ev.data.begin()+4,ev.data.end()}});
                     if (magic == net::kSnapshotMagic) {
+                        uint64_t incoming=0;if(ev.data.size()>=12)std::memcpy(&incoming,ev.data.data()+4,8);if(incoming<=tick)break;
                         tick = net::apply_snapshot(net_world, netid_map, ev.data);
                     } else if (magic == kMsgAssign &&
                                ev.data.size() >= sizeof(uint32_t) + sizeof(uint64_t)) {
@@ -430,11 +449,11 @@ struct NetSession::Impl {
 NetSession::NetSession() : impl_(std::make_unique<Impl>()) {}
 NetSession::~NetSession() { impl_->transport.reset(); }
 
-bool NetSession::host(uint16_t port) {
+bool NetSession::host(uint16_t port,uint32_t max_clients) {
     shutdown();
     ensure_components_registered();
     impl_->transport = net::create_enet_transport();
-    if (!impl_->transport || !impl_->transport->start_server(port, 16)) {
+    if (!impl_->transport || !impl_->transport->start_server(port, std::clamp(max_clients,1u,16u))) {
         spdlog::error("[net] host: failed to start server on port {}", port);
         impl_->transport.reset();
         return false;
@@ -471,6 +490,8 @@ bool NetSession::join(const std::string& ip, uint16_t port) {
 }
 
 void NetSession::shutdown() {
+    impl_->messages.clear();
+    impl_->removed_ids.clear();
     if (impl_->transport)
         spdlog::info("[net] session shut down ({})",
                      status_.role == NetRole::Host ? "host" : "client");
@@ -511,6 +532,20 @@ glm::vec3 NetSession::origin_offset() const {
     return impl_->origin_offset;
 }
 
+bool NetSession::send_game(uint32_t peer,const std::vector<uint8_t>& data) {
+    if(!impl_->transport||data.empty()||data.size()>262144) return false;
+    std::vector<uint8_t> msg(4+data.size());std::memcpy(msg.data(),&kMsgGame,4);std::memcpy(msg.data()+4,data.data(),data.size());
+    if(role()==NetRole::Client) impl_->transport->send(impl_->server_peer,msg.data(),msg.size(),net::Channel::Reliable);
+    else if(peer) impl_->transport->send(peer,msg.data(),msg.size(),net::Channel::Reliable);
+    else impl_->transport->broadcast(msg.data(),msg.size(),net::Channel::Reliable);
+    impl_->transport->flush();return true;
+}
+std::vector<NetGameMessage> NetSession::take_game_messages(){auto result=std::move(impl_->messages);impl_->messages.clear();return result;}
+std::vector<uint32_t> NetSession::peers()const{std::vector<uint32_t> result;for(const auto& [peer,id]:impl_->avatar_by_peer)result.push_back(peer);return result;}
+uint64_t NetSession::peer_avatar(uint32_t peer)const{auto it=impl_->avatar_by_peer.find(peer);return it==impl_->avatar_by_peer.end()?0:it->second;}
+uint32_t NetSession::avatar_entity(uint64_t avatar)const{auto it=impl_->proxy.find(avatar);return it==impl_->proxy.end()||it->second.empty()?0:it->second.front()->GetId();}
+void NetSession::disconnect_peer(uint32_t peer){if(impl_->transport){impl_->transport->disconnect(peer);impl_->transport->flush();}}
+
 void NetSession::set_local_player(uint32_t scene_entity_id, const glm::vec3& pos) {
     impl_->local_player_id  = scene_entity_id;
     impl_->local_player_pos = pos - impl_->origin_offset;    // -> wire frame
@@ -528,6 +563,15 @@ void NetSession::remote_player_positions(std::vector<glm::vec3>& out) {
 
 void NetSession::tick_frame(const std::shared_ptr<schizo::scene::Scene>& scene, float dt) {
     if (!impl_->transport) return;
+    if(impl_->last_scene.lock()!=scene){
+        if(auto old=impl_->last_scene.lock())impl_->remove_all_proxies(old);
+        impl_->proxy.clear();impl_->proxy_ids.clear();
+        for(auto& [id,e]:impl_->ent_by_netid)if(impl_->net_world.valid(e))impl_->net_world.destroy(e);
+        impl_->ent_by_netid.clear();
+        std::vector<ecs::Entity> old_props;impl_->net_world.each<ecs::NetId>([&](ecs::Entity e,ecs::NetId& id){if(id.value<kAvatarNetIdBase)old_props.push_back(e);});
+        for(auto e:old_props)impl_->net_world.destroy(e);
+        for(auto it=impl_->netid_map.begin();it!=impl_->netid_map.end();)if(it->first<kAvatarNetIdBase)it=impl_->netid_map.erase(it);else++it;
+    }
     impl_->last_scene = scene;
     if (status_.role == NetRole::Host)        impl_->tick_host(scene, dt, status_);
     else if (status_.role == NetRole::Client) impl_->tick_client(scene, dt, status_);

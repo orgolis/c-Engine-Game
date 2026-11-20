@@ -398,6 +398,34 @@ int main() {
         std::remove("script_check_api2.py");
     }
 
+    bool animation_api_ok = false;
+    {
+        write_file("script_check_animation.py",
+            "import engine\n"
+            "def on_update(e, dt):\n"
+            "    ok = engine.play_animation(e, 'mouth_beam', False, 0.62, 0.12, True)\n"
+            "    p = engine.bone_position(e, 'mouth')\n"
+            "    missing = engine.bone_position(e, 'missing')\n"
+            "    if ok and p is not None and missing is None:\n"
+            "        engine.set_position(e, p[0], p[1], p[2])\n");
+        auto o = scn->CreateEntity("AnimationAPI");
+        auto* component = o->AddComponent<scene::ScriptComponent>(std::string("script_check_animation.py")).get();
+        auto copy = api;
+        copy.play_animation = [](void*, uint32_t, const char* clip, bool loop, float speed, float blend, bool restart) {
+            return std::string(clip) == "mouth_beam" && !loop && std::abs(speed-.62f)<.001f && std::abs(blend-.12f)<.001f && restart;
+        };
+        copy.bone_position = [](void*, uint32_t, const char* bone, float* p) {
+            if (std::string(bone) != "mouth") return false;
+            p[0]=3; p[1]=4; p[2]=5; return true;
+        };
+        editor::ScriptSystem s2; s2.register_host(".py", editor::make_python_host());
+        s2.update(scn, true, .016f, copy);
+        animation_api_ok = glm::length(o->GetTransform()->GetWorldPosition()-glm::vec3(3,4,5)) < .001f && component->GetStatus() == "running";
+        s2.update(scn, false, .016f, copy);
+        std::printf("  named animation + locator API: %s\n", animation_api_ok ? "OK" : "FAIL");
+        std::remove("script_check_animation.py");
+    }
+
     // ================= logic graph backend (.lgraph) =================
     // A visual script through the same ScriptSystem: Begin Play places the
     // entity, Tick moves it along X by 2 * dt, and a broken graph reports the
@@ -806,7 +834,7 @@ int main() {
     std::remove("script_check_tmp.py");
     std::remove("script_check_bad.py");
     const bool ok = moved && spawned && running && reloaded && errored && torn_down &&
-                    cpp_ok && cs_ok && params_ok && fields_ok && api2_ok && logic_ok;
+                    cpp_ok && cs_ok && params_ok && fields_ok && api2_ok && animation_api_ok && logic_ok;
     std::printf("script_check: %s\n", ok ? "ALL OK" : "FAIL");
     return ok ? 0 : 1;
 }

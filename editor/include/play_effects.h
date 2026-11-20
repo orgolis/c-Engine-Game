@@ -39,6 +39,8 @@ namespace schizo::editor {
 
 class PlayEffects {
 public:
+    std::function<void(const schizo::ecs::WeaponDef&,const glm::vec3&,const glm::vec3&,const std::vector<schizo::ecs::ShotTrace>&)> network_gun;
+    std::function<void(int,const std::string&,const glm::vec3&,const glm::vec3&,float)> network_ability;
     // ---- water -----------------------------------------------------------------------------
     /// Where the segment a -> b first goes into water (set by the editor in
     /// Play: the physical water volumes); none: no splashes.
@@ -76,6 +78,7 @@ public:
     // ---- guns ------------------------------------------------------------------------------
     void gun_fired(const schizo::ecs::WeaponDef& wd, const glm::vec3& muzzle, const glm::vec3& dir,
                    const std::vector<schizo::ecs::ShotTrace>& shots) {
+        if(network_gun)network_gun(wd,muzzle,dir,shots);
         using schizo::vfx::find_effect_of;
         schizo::vfx::EffectSpawn at;
         at.pos = muzzle;
@@ -114,6 +117,7 @@ public:
     }
     /// It went off: from `hand` (what the eye sees it start from).
     void ability_fired(const schizo::ecs::AbilityDef& d, const schizo::ecs::AbilityFired& f, const glm::vec3& hand) {
+        if(network_ability)network_ability(7,d.id,f.point,f.dir,0);
         using schizo::ecs::AbilityTargeting;
         schizo::vfx::EffectSpawn at;
         at.pos = hand;
@@ -154,12 +158,14 @@ public:
     }
     /// One in flight moved from `from` to `to` this frame.
     void ability_flight(const schizo::ecs::AbilityDef& d, const glm::vec3& from, const glm::vec3& to, float dt) {
+        if(network_ability)network_ability(9,d.id,from,to,dt);
         if (const auto* e = effect(d, "trail")) fx_.stream(*e, from, to, dt);
         // Into water this frame (a grenade, a firebolt over a lake): a splash.
         splash_along(from, to, d.targeting == schizo::ecs::AbilityTargeting::AreaAtAim ? 1.4f : 0.7f);
     }
     /// One in flight took effect.
     void ability_impact(const schizo::ecs::AbilityDef& d, const schizo::ecs::AbilityImpact& im) {
+        if(network_ability)network_ability(8,d.id,im.point,im.normal,im.on_actor?1.f:0.f);
         schizo::vfx::EffectSpawn at;
         at.pos = im.point + im.normal * 0.05f;
         at.dir = -im.normal;

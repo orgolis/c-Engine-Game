@@ -165,7 +165,9 @@ void main() {
     float metallic  = clamp(mr.b * mat.metallic_factor, 0.0, 1.0);
 
     float ao   = texture(aoMap, uv).r * mat.occlusion_strength;
-    vec3  emis = mat.emissive_factor.rgb + texture(emissiveMap, uv).rgb;
+    vec3 sampledEmission = texture(emissiveMap, uv).rgb;
+    vec3 emis = mat.parallax.w > 0.5 ? mat.emissive_factor.rgb * sampledEmission
+                                     : mat.emissive_factor.rgb + sampledEmission;
 
     outNormalRoughness  = vec4(N, roughness);
     outAlbedoMetallic   = vec4(base.rgb, metallic);

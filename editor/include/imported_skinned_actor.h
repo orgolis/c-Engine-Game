@@ -48,7 +48,7 @@ namespace schizo::editor {
 /// keeps its own skeleton (its pose) and its own skinned GPU mesh.
 struct SharedSkinnedAsset {
     gws::renderer::gpu::LoadedSkinnedModel model;
-    std::unique_ptr<gws::renderer::gpu::Texture> albedo, mr, normal;
+    std::unique_ptr<gws::renderer::gpu::Texture> albedo, mr, normal, emissive;
 };
 inline std::unordered_map<std::string, std::shared_ptr<SharedSkinnedAsset>>& skinned_asset_cache() {
     static std::unordered_map<std::string, std::shared_ptr<SharedSkinnedAsset>> cache;
@@ -152,6 +152,19 @@ public:
     /// posed on the first frame, or it renders in bind pose until you press
     /// play -- which reads as "the model is broken", not "it is paused".
     void refresh_pose() { pose(); }
+
+    /// Absolute additive offset from the sampled clip, never accumulated.
+    bool set_bone_rotation(const std::string& name, const glm::vec3& degrees) {
+        const int b = find_bone(name);
+        if (b < 0 || static_cast<size_t>(b) >= pose_a_.size()) return false;
+        if (procedural_.size() != pose_a_.size()) procedural_.resize(pose_a_.size(), glm::quat(1,0,0,0));
+        procedural_[b] = glm::quat(glm::radians(degrees));
+        auto tf = pose_a_[b];
+        tf.rotation = tf.rotation * procedural_[b];
+        skeleton_->SetBoneLocalTransform(static_cast<uint16_t>(b), tf);
+        skeleton_->UpdateWorldTransforms();
+        return true;
+    }
 
     /// Place the actor with a full transform, so an entity's Transform (with
     /// rotation and non-uniform scale) drives it rather than the position+scale
@@ -329,7 +342,11 @@ private:
             for (size_t b = 0; b < pose_a_.size() && b < upper_mask_.size(); ++b)
                 if (upper_mask_[b]) pose_a_[b] = BoneTransform::Slerp(pose_a_[b], pose_b_[b], upper_w_);
         }
-        for (size_t b = 0; b < pose_a_.size(); ++b) skeleton_->SetBoneLocalTransform(static_cast<uint16_t>(b), pose_a_[b]);
+        for (size_t b = 0; b < pose_a_.size(); ++b) {
+            auto tf = pose_a_[b];
+            if (b < procedural_.size()) tf.rotation = tf.rotation * procedural_[b];
+            skeleton_->SetBoneLocalTransform(static_cast<uint16_t>(b), tf);
+        }
         skeleton_->UpdateWorldTransforms();
     }
 
@@ -354,6 +371,7 @@ private:
             sa->albedo = upload(lm0.base_color, true);
             sa->mr     = upload(lm0.metallic_roughness, false);
             sa->normal = upload(lm0.normal, false);
+            sa->emissive = upload(lm0.emissive, true);
             it = cache.emplace(gltf_path, std::move(sa)).first;
         }
         shared_ = it->second;
@@ -379,12 +397,14 @@ private:
             mu.base_color_factor = lm.base_color_factor;
             mu.metallic_factor   = lm.metallic_factor;
             mu.roughness_factor  = lm.roughness_factor;
+            mu.emissive_factor = glm::vec4(lm.emissive_factor, 0.0f);
+            mu.parallax.w = lm.emissive.empty() ? 0.0f : 1.0f;
         }
         const gws::renderer::gpu::Texture* dw = textures ? textures->white()  : nullptr;
         const gws::renderer::gpu::Texture* dn = textures ? textures->normal() : nullptr;
         const gws::renderer::gpu::Texture* db = textures ? textures->black()  : nullptr;
         mat_ = gws::renderer::gpu::Material::create(device, mat_layout, mat_pool, mu,
-                                                    shared_->albedo.get(), shared_->normal.get(), shared_->mr.get(), nullptr, nullptr,
+                                                    shared_->albedo.get(), shared_->normal.get(), shared_->mr.get(), nullptr, shared_->emissive.get(),
                                                     dw, dn, db);
         return mat_ != nullptr;
     }
@@ -395,6 +415,7 @@ private:
     std::shared_ptr<SharedSkinnedAsset>              shared_;   // the file and its textures (shared)
     std::unique_ptr<gws::renderer::gpu::Material>    mat_;
     std::vector<schizo::renderer::BoneTransform>     bind_, pose_a_, pose_b_;
+    std::vector<glm::quat> procedural_;
 
     Track base_, prev_, upper_;
     float fade_ = 0.0f, fade_len_ = 0.0f;

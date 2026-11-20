@@ -97,6 +97,10 @@ public:
         docs_.erase(std::remove_if(docs_.begin(), docs_.end(), [&](const auto& d) { return d->path == key; }), docs_.end());
     }
     bool shown(const std::string& path) const { return find(norm(path)) != nullptr; }
+    void set_visible(const std::string& path, const std::string& id, bool visible) {
+        if (auto* d = find(norm(path)))
+            if (auto it = d->ids.find(id); it != d->ids.end()) it->second->visible = visible;
+    }
     bool set_text(const std::string& path, const std::string& id, const std::string& text) {
         auto* d = find(norm(path));
         return d && schizo::ui::set_ui_text(*d, id, text);
@@ -159,6 +163,7 @@ public:
         schizo::ui::UiDocument* top_modal = nullptr;
         for (auto& d : docs_) if (d->modal) top_modal = d.get();
         const ImGuiIO& io = ImGui::GetIO();
+        out->PushClipRect(vmin, vmax, true);
         for (auto& d : docs_) {
             d->canvas.layout(w, h);
             if (pointer && d.get() == top_modal) {
@@ -168,6 +173,7 @@ public:
             }
             draw(d->canvas.paint(), d->canvas.scale(), out, vmin);
         }
+        out->PopClipRect();
     }
 
     /// Buttons and grid cells clicked since the last call: (id, cell or -1).

@@ -64,8 +64,9 @@ struct MaterialUniforms {
     /// so a material without detail maps is bit-for-bit what it was.
     glm::vec4 detail               = glm::vec4(8.0f, 0.0f, 0.0f, 0.0f);
     /// Parallax: x = depth scale (0 disables); y = near fade in metres (the
-    /// surface dithers away nearer than this to the camera; 0: never); z/w
-    /// unused.
+    /// surface dithers away nearer than this to the camera; 0: never); z is
+    /// reserved; w selects glTF multiplicative textured emission (1) versus
+    /// the additive primitive convention (0).
     ///
     /// Depth 0 is an exact bypass, not a scale of zero -- the ray march is
     /// skipped entirely, so a material without a height map costs nothing.

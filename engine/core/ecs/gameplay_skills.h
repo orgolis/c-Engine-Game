@@ -68,9 +68,9 @@ inline bool can_unlock(World& w, Entity e, const std::string& node_id) {
     const UnlockedSkills* un  = w.try_get<UnlockedSkills>(e);
     if (!tree || !un) return false;
     const SkillNode* n = find_node(*tree, node_id);
-    if (!n || skill_unlocked(*un, node_id)) return false;
-    if (const Progression* prog = w.try_get<Progression>(e))
-        if (prog->skill_points < n->cost) return false;
+    if (!n || n->cost < 0 || skill_unlocked(*un, node_id)) return false;
+    const Progression* prog = w.try_get<Progression>(e);
+    if (n->cost > 0 && (!prog || prog->skill_points < n->cost)) return false;
     for (const auto& pre : n->prerequisites)
         if (!skill_unlocked(*un, pre)) return false;
     return true;

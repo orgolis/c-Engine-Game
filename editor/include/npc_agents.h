@@ -116,10 +116,16 @@ public:
         }
         std::vector<std::pair<glm::vec3, glm::vec3>> calls;   // (who noticed, where the target is)
 
+        unsigned path_budget = 4; // spread route planning across frames
         std::unordered_map<uint32_t, bool> seen;
         // Targets by name, looked up once an update (it was once an agent: a
         // name search over every object, for every agent, every frame).
         std::unordered_map<std::string, std::shared_ptr<schizo::scene::Entity>> targets;
+        std::vector<std::shared_ptr<schizo::scene::Entity>> player_targets;
+        if(bridge)for(const auto& object:scene->GetEntities())if(object&&object->IsActive()){
+            auto id=bridge->ecs_entity_id(object->GetTransform());auto e=static_cast<schizo::ecs::Entity>(id);
+            if(id!=kNoEcsEntity&&bridge->world().valid(e))if(auto* tags=bridge->world().try_get<schizo::ecs::GameplayTags>(e);tags&&tags->has("team.player")&&!dead(*bridge,object->GetTransform()))player_targets.push_back(object);
+        }
         for (const auto& ent : scene->GetEntities()) {
             if (!ent || !ent->IsActive()) continue;
             const auto* ag = std::as_const(*ent).GetNpcAgentComponent();
@@ -156,6 +162,7 @@ public:
                 }
             }
             const glm::vec3 fwd = glm::normalize(glm::vec3(tf->GetWorldMatrix() * glm::vec4(0, 0, 1, 0)));
+            if(ag->target_name=="Player")for(const auto& candidate:player_targets){auto p=candidate->GetTransform()->GetWorldPosition();if(!has_target||glm::distance(p,pos)<glm::distance(target_pos,pos)){target_pos=p;target_ent=candidate.get();has_target=true;}}
             const glm::vec3 eye = pos + glm::vec3(0.0f, 0.6f, 0.0f);
             const float dist = has_target ? glm::length(target_pos - pos) : 1e9f;
             // The line of sight only when it can matter -- the target in sight
@@ -344,7 +351,10 @@ public:
             if (st.mode == Mode::Chase && !in_range) ++chasing_;   // closing in (or going to where it was seen)
 
             // --- move along the navmesh, round what is in the way ------------
-            if (!st.follower.active() || glm::length(goal - st.last_goal) > 1.0f) {
+            st.path_retry = std::max(0.0f, st.path_retry - dt);
+            if (path_budget && st.path_retry <= 0 && (!st.follower.active() || glm::length(goal - st.last_goal) > 1.0f)) {
+                --path_budget;
+                st.path_retry = dist < 60 ? .25f : 1.f;
                 std::vector<glm::vec3> path;
                 if (nav.find_path(pos, goal, path) && !path.empty()) {
                     st.follower.set_path(std::move(path));
@@ -496,6 +506,7 @@ private:
         Mode      mode = Mode::Patrol;
         glm::vec3 spawn{0.0f};
         glm::vec3 patrol_goal{0.0f};
+        float path_retry = 0;
         glm::vec3 last_goal{1e9f};     // forces a path on the first tick
         glm::vec3 last_seen{0.0f}, wander{0.0f}, prev_target{0.0f};
         bool      prev_target_known = false;

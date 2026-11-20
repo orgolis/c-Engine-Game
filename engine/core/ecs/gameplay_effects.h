@@ -46,6 +46,7 @@ struct GameplayEffect {
     std::vector<EffectModifier> modifiers;
     std::vector<std::string>    granted_tags;   // granted while active
     bool revert_on_end = false;             // non-periodic Duration: undo Add modifiers on expiry
+    bool refresh_existing = false;          // recasting a named ability refreshes rather than stacks
 };
 
 // Apply modifiers to an AttributeSet once (sign=-1 reverts Add/Multiply).
@@ -68,6 +69,7 @@ struct ActiveEffect {
     GameplayEffect def;
     float remaining    = 0.0f;   // seconds left (Duration)
     float period_accum = 0.0f;
+    std::vector<EffectModifier> applied;     // actual clamped changes, for exact expiry
 };
 struct ActiveEffects { std::vector<ActiveEffect> effects; };
 
@@ -90,11 +92,25 @@ inline void apply_effect(World& w, Entity e, const GameplayEffect& fx) {
         return;
     }
     if (!w.has<ActiveEffects>(e)) w.add<ActiveEffects>(e, ActiveEffects{});
+    if (fx.refresh_existing && !fx.name.empty())
+        for (auto& active : w.get<ActiveEffects>(e).effects)
+            if (active.def.name == fx.name) {
+                active.remaining = fx.duration;
+                return;
+            }
     ActiveEffect ae;
     ae.def = fx;
     ae.remaining = fx.duration;
     if (fx.period <= 0.0f) {   // non-periodic duration buff: apply once on start
-        if (auto* a = w.try_get<AttributeSet>(e)) apply_modifiers(*a, fx.modifiers, +1.0f);
+        if (auto* a = w.try_get<AttributeSet>(e)) {
+            for (const auto& mod : fx.modifiers) {
+                const float before = a->get(mod.attribute);
+                apply_modifiers(*a, {mod}, +1.0f);
+                auto applied = mod;
+                if (mod.op == EffectOp::Add) applied.magnitude = a->get(mod.attribute) - before;
+                ae.applied.push_back(applied);
+            }
+        }
     }
     grant_tags(w, e, fx.granted_tags);
     w.get<ActiveEffects>(e).effects.push_back(std::move(ae));
@@ -108,7 +124,7 @@ inline void tick_effects(World& w, float dt) {
         for (size_t i = 0; i < ae.effects.size();) {
             ActiveEffect& fx = ae.effects[i];
             if (fx.def.period > 0.0f && attrs) {
-                fx.period_accum += dt;
+                fx.period_accum += fx.def.duration_type == EffectDurationType::Duration ? std::min(dt, std::max(0.0f, fx.remaining)) : dt;
                 while (fx.period_accum >= fx.def.period) {
                     apply_modifiers(*attrs, fx.def.modifiers, +1.0f);
                     fx.period_accum -= fx.def.period;
@@ -121,7 +137,7 @@ inline void tick_effects(World& w, float dt) {
             }
             if (expired) {
                 if (fx.def.period <= 0.0f && fx.def.revert_on_end && attrs)
-                    apply_modifiers(*attrs, fx.def.modifiers, -1.0f);
+                    apply_modifiers(*attrs, fx.applied, -1.0f);
                 ungrant_tags(w, e, fx.def.granted_tags);
                 ae.effects.erase(ae.effects.begin() + i);
             } else {

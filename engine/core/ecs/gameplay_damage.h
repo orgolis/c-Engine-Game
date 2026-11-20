@@ -17,6 +17,7 @@
 #include "gameplay_effects.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 namespace schizo::ecs {
@@ -25,23 +26,65 @@ struct DamageInfo {
     float       amount = 0.0f;
     std::string type;                        // "" = untyped (no resist/immunity)
     std::string health_attribute = "Health"; // which attribute the damage subtracts from
+    Entity instigator = null_entity;
 };
+struct DamageAuthority { bool authoritative=true; bool friendly_fire=true; };
+
+// Runtime multipart hurtboxes share one health pool. Each pellet resolves once;
+// areas resolve the owner once, rather than multiplying by overlapping regions.
+struct DamageReceiver { Entity owner = null_entity; float multiplier = 1.0f; };
+inline Entity damage_owner(World& w, Entity e) {
+    if (const auto* r = w.try_get<DamageReceiver>(e))
+        return w.valid(r->owner) ? r->owner : null_entity;
+    return e;
+}
+inline void unique_damage_owners(World& w, std::vector<Entity>& hits) {
+    std::vector<Entity> owners;
+    for (Entity e : hits) {
+        e = damage_owner(w, e);
+        if (e != null_entity && std::find(owners.begin(), owners.end(), e) == owners.end()) owners.push_back(e);
+    }
+    hits = std::move(owners);
+}
 
 // Resolve + apply damage to a target. Returns the final damage dealt.
 inline float apply_damage(World& w, Entity target, const DamageInfo& dmg) {
+    const auto* policy=w.registry().ctx().find<DamageAuthority>();
+    if(policy&&!policy->authoritative) return 0.0f;
+    if (!w.valid(target) || !std::isfinite(dmg.amount) || dmg.amount <= 0.0f) return 0.0f;
+    float multiplier = 1.0f;
+    if (const auto* receiver = w.try_get<DamageReceiver>(target)) {
+        multiplier = std::max(0.0f, receiver->multiplier);
+        target = damage_owner(w, target);
+        if (target == null_entity) return 0.0f;
+    }
+    if(policy&&!policy->friendly_fire&&w.valid(dmg.instigator)&&target!=dmg.instigator) {
+        const auto* source_tags=w.try_get<GameplayTags>(dmg.instigator);
+        const auto* target_tags=w.try_get<GameplayTags>(target);
+        if(source_tags&&target_tags&&source_tags->has("team.player")&&target_tags->has("team.player"))return 0;
+    }
     if (!dmg.type.empty())
         if (const GameplayTags* tags = w.try_get<GameplayTags>(target))
             if (tags->has("immune." + dmg.type)) return 0.0f;
 
-    float amount = dmg.amount;
+    float amount = dmg.amount * multiplier;
     if (!dmg.type.empty())
         if (const AttributeSet* attrs = w.try_get<AttributeSet>(target)) {
-            const float resist = attrs->get("resist." + dmg.type, 0.0f);   // 0..1 fraction
+            float resist = attrs->get("resist." + dmg.type, 0.0f);   // 0..1 fraction
+            // Shredded armor retains one fifth of physical protection.
+            if (dmg.type == "physical" || dmg.type == "kinetic")
+                if (const auto* tags = w.try_get<GameplayTags>(target); tags && tags->has("status.shredded"))
+                    resist *= 0.2f;
+            // Above 1: immune; below 0: a weakness (more damage) -- as before 0.8.53.
             amount *= std::max(0.0f, 1.0f - resist);
         }
 
-    apply_effect(w, target, make_instant("Damage", dmg.health_attribute, -amount));
-    return amount;
+    auto* attrs = w.try_get<AttributeSet>(target);
+    const auto* health = attrs ? attrs->find(dmg.health_attribute) : nullptr;
+    if (!health || health->current <= health->min) return 0.0f;
+    const float before = health->current;
+    attrs->adjust(dmg.health_attribute, -amount);
+    return before - attrs->get(dmg.health_attribute);
 }
 
 }  // namespace schizo::ecs

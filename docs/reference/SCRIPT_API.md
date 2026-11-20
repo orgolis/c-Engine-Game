@@ -6,7 +6,7 @@ One shared C table is exposed identically to all three scripting backends (Pytho
 so every verb below is callable from any of them. The table is the contract: its layout is
 static_asserted, and adding a verb once exposes it everywhere.
 
-**53 verbs** exposed.
+**103 verbs** exposed.
 
 | signature | notes |
 |---|---|
@@ -63,4 +63,54 @@ static_asserted, and adding a verb once exposes it everywhere.
 | `float (*distance)(void* ctx, unsigned a, unsigned b)` |  |
 | `void  (*translate)(void* ctx, unsigned e, const float delta[3])` |  |
 | `bool  (*get_forward)(void* ctx, unsigned e, float out[3])` |  |
+| `void (*register_command)(void* ctx, const char* title, const char* category,` |  |
+| `bool (*run_command)(void* ctx, const char* title)` |  |
+| `unsigned (*selected_entity)(void* ctx)` |  |
+| `void     (*select_entity)(void* ctx, unsigned e)` |  |
+| `int      (*entity_count)(void* ctx)` |  |
+| `unsigned (*entity_at)(void* ctx, int index)` |  |
+| `int      (*entity_name)(void* ctx, unsigned e, char* out, int out_size)` |  |
+| `void     (*set_status)(void* ctx, const char* msg)` |  |
+| `int      (*event_count)(void* ctx)` |  |
+| `bool     (*event_get)(void* ctx, int index, char* name_out, int name_size,` |  |
+| `int      (*biome_at)(void* ctx, unsigned e, char* name_out, int name_size, float* weight)` |  |
+| `bool     (*save_game)(void* ctx, const char* slot)` |  |
+| `bool     (*load_game)(void* ctx, const char* slot)` |  |
+| `void     (*show_message)(void* ctx, const char* text, float seconds)` |  |
+| `bool     (*ui_show)(void* ctx, const char* path)` |  |
+| `void     (*ui_hide)(void* ctx, const char* path)` |  |
+| `bool     (*ui_set_text)(void* ctx, const char* path, const char* id, const char* text)` |  |
+| `bool     (*ui_shown)(void* ctx, const char* path)` |  |
+| `void     (*set_game_paused)(void* ctx, bool paused)` |  |
+| `void     (*quit_game)(void* ctx)` |  |
+| `bool     (*action_down)(void* ctx, const char* action)` |  |
+| `void     (*rebind_action)(void* ctx, const char* action)` |  |
+| `void     (*reset_controls)(void* ctx)` |  |
+| `int      (*key_for_action)(void* ctx, const char* action, char* out, int out_size)` |  |
+| `bool     (*set_setting)(void* ctx, const char* name, const char* value)` |  |
+| `int      (*get_setting)(void* ctx, const char* name, char* out, int out_size)` |  |
+| `int      (*next_setting)(void* ctx, const char* name, char* out, int out_size)` |  |
+| `bool     (*set_skill_tree)(void* ctx, unsigned e, const char* tree)` |  |
+| `void     (*add_skill_points)(void* ctx, unsigned e, int points)` |  |
+| `int      (*skill_state)(void* ctx, unsigned e, const char* skill)` |  |
+| `int      (*skill_points)(void* ctx, unsigned e)` |  |
+| `int      (*ui_selected)(void* ctx, const char* path, const char* id)` |  |
+| `bool     (*item_in_slot)(void* ctx, unsigned e, int index, char* id_out, int id_size, char* name_out, int name_size,` |  |
+| `bool     (*give_weapon)(void* ctx, unsigned e, const char* weapon)` |  |
+| `bool     (*select_weapon)(void* ctx, unsigned e, int index)` |  |
+| `int      (*current_weapon)(void* ctx, unsigned e, char* id_out, int id_size)` |  |
+| `bool     (*unequip_item)(void* ctx, unsigned e, const char* slot)` |  |
+| `bool     (*equipped_item)(void* ctx, unsigned e, const char* slot, char* id_out, int id_size, char* name_out,` |  |
+| `bool     (*stow_weapon)(void* ctx, unsigned e, int index)` |  |
+| `bool     (*equip_weapon)(void* ctx, unsigned e, const char* weapon, int slot)` |  |
+| `void     (*set_weapon_slots)(void* ctx, unsigned e, int count)` |  |
+| `bool     (*weapon_in_slot)(void* ctx, unsigned e, int index, char* id_out, int id_size, char* name_out,` |  |
+| `bool     (*equip_ability)(void* ctx, unsigned e, int known_index, int slot)` |  |
+| `bool     (*play_animation)(void* ctx, unsigned e, const char* clip, bool loop,` |  |
+| `bool     (*bone_position)(void* ctx, unsigned e, const char* bone, float out[3])` |  |
+| `bool     (*spawn_effect)(void* ctx, const char* effect, const float pos[3], const float dir[3], float scale, float reach)` |  |
+| `void     (*set_environment)(void* ctx, float darkness, float whiteout)` |  |
+| `bool     (*set_bone_rotation)(void* ctx, unsigned e, const char* bone, const float degrees[3])` |  |
+| `unsigned (*spawn_mesh)(void* ctx, const char* path, const float pos[3], float scale)` |  |
+| `bool (*set_damage_receiver)(void* ctx, unsigned part, unsigned owner, float multiplier)` |  |
 

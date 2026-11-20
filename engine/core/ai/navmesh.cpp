@@ -89,6 +89,22 @@ bool NavMesh::build(const std::vector<glm::vec3>& tv, float weld_eps) {
             }
         }
     }
+    // Cache connectivity once: unreachable island queries must not flood A*.
+    std::vector<int> pending;
+    int island = 0;
+    for (int root = 0; root < static_cast<int>(tris_.size()); ++root) {
+        if (tris_[root].island >= 0) continue;
+        tris_[root].island = island;
+        pending.push_back(root);
+        while (!pending.empty()) {
+            const int t = pending.back(); pending.pop_back();
+            for (int neighbor : tris_[t].neighbor) if (neighbor >= 0 && tris_[neighbor].island < 0) {
+                tris_[neighbor].island = island;
+                pending.push_back(neighbor);
+            }
+        }
+        ++island;
+    }
     build_grid();
     return true;
 }
@@ -226,6 +242,7 @@ bool NavMesh::astar(int s, int e, const glm::vec3& start, const glm::vec3& end,
     out.clear();
     if (s < 0 || e < 0) return false;
     if (s == e) { out.push_back(s); return true; }
+    if (tris_[s].island != tris_[e].island) return false;
 
     const int N = static_cast<int>(tris_.size());
     std::vector<float> g(N, std::numeric_limits<float>::max());

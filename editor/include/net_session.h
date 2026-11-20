@@ -46,6 +46,7 @@ struct NetSessionStatus {
     uint64_t my_avatar     = 0;       // this instance's own avatar NetId (0 = none)
     std::string endpoint;             // "host :port" or "ip:port"
 };
+struct NetGameMessage { uint32_t peer=0; std::vector<uint8_t> data; };
 
 class NetSession {
 public:
@@ -56,7 +57,7 @@ public:
     NetSession& operator=(const NetSession&) = delete;
 
     // Start hosting on `port` (authoritative). Returns false on failure.
-    bool host(uint16_t port);
+    bool host(uint16_t port, uint32_t max_clients=16);
     // Connect to a host at ip:port as a client. Returns false on failure.
     bool join(const std::string& ip, uint16_t port);
     // Tear the session down (safe to call when already offline).
@@ -65,6 +66,14 @@ public:
     NetRole role() const { return status_.role; }
     bool    active() const { return status_.role != NetRole::Offline; }
     const NetSessionStatus& status() const { return status_; }
+    // Reliable application messages on the established ENet session. Host peer
+    // zero broadcasts; clients always send to their server. Bounded to 256 KiB.
+    bool send_game(uint32_t peer, const std::vector<uint8_t>& data);
+    std::vector<NetGameMessage> take_game_messages();
+    std::vector<uint32_t> peers() const;
+    uint64_t peer_avatar(uint32_t peer) const;
+    uint32_t avatar_entity(uint64_t avatar) const;
+    void disconnect_peer(uint32_t peer);
 
     // Feed this instance's local player for the current frame: the play
     // character's scene entity id (0 if none) + its world position.
