@@ -673,6 +673,21 @@ if(MINGW)
     target_link_options(movement_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# export_check: what an exported game contains and how it is made
+# (editor/include/game_export.h): settings, patterns, the plan, game.ini, the
+# icon file, and a whole export read back -- the folder, the manifest, scripts
+# built, icon and version inside the program, no console window, the .zip.
+add_executable(export_check export_check/main.cpp ${CMAKE_SOURCE_DIR}/editor/src/game_export.cpp)
+target_include_directories(export_check PRIVATE ${CMAKE_SOURCE_DIR}/editor/include)
+target_link_libraries(export_check PRIVATE stb_image)
+target_compile_features(export_check PRIVATE cxx_std_20)
+if(WIN32)
+    target_link_libraries(export_check PRIVATE version)
+endif()
+if(MINGW)
+    target_link_options(export_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # physrebase_check: a floating-origin rebase must be a change of coordinates and
 # nothing else. Without it the Jolt world stays at the old origin and writes
 # pre-rebase positions back over the entities -- the dynamic half of the level

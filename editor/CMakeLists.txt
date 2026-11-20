@@ -29,6 +29,7 @@ target_link_libraries(editor
         network
         renderer
         gws_platform       # OS integration (dialogs, shell helpers, ...)
+        stb_image          # game export: icons (the decoder is built in the renderer)
         gws_jobs           # work-stealing job system (Stage 0.3)
         gws_profiler       # core CPU profiler - scoped zones (Stage 0.6)
         gws_ecs            # ECS World + components (Stage 1)
@@ -53,6 +54,7 @@ target_sources(editor
         src/project.cpp
         src/project_launcher.cpp
         src/project_paths.cpp
+        src/game_export.cpp
         src/ecs_bridge.cpp
         src/component_inspector.cpp
         src/play_mode_changes.cpp
@@ -143,7 +145,7 @@ endif()
 if(WIN32)
     # comdlg32: GetOpenFileName/GetSaveFileName (scene dialogs).
     # shell32 + ole32: other remaining native shell integrations.
-    target_link_libraries(editor PRIVATE comdlg32 shell32 ole32)
+    target_link_libraries(editor PRIVATE comdlg32 shell32 ole32 version)
 elseif(UNIX AND NOT APPLE)
     # forkpty() is provided by libutil on Linux.
     target_link_libraries(editor PRIVATE util)
@@ -178,10 +180,9 @@ if(UNIX AND NOT APPLE)
             ${CMAKE_SOURCE_DIR}/tools/export_game_linux.sh
             ${CMAKE_SOURCE_DIR}/tools/export_game_windows_cross.sh
             DESTINATION "${GWS_ENGINE_DEST}/tools" COMPONENT engine)
-elseif(WIN32)
-    install(FILES ${CMAKE_SOURCE_DIR}/tools/export_game_windows.ps1
-            DESTINATION "${GWS_ENGINE_DEST}/tools" COMPONENT engine)
 endif()
+# Windows exports in the editor itself (editor/src/game_export.cpp; also
+# `editor --project <manifest> --export-game <folder>`): no script to ship.
 
 # ---------------------------------------------------------------------------
 # Header self-containment. See cmake/HeaderSelfContain.cmake for why a full

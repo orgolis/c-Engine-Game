@@ -70,6 +70,25 @@ std::unique_ptr<ScriptHost> make_cpp_host();
 /// Factory for the C# (.NET via hostfxr + dotnet build) backend —
 /// script_host_cs.cpp. Returns nullptr on non-Windows platforms.
 std::unique_ptr<ScriptHost> make_cs_host();
+
+/// An exported game's scripts are built at export (game_export.h) and never
+/// compiled on the player's computer. With `dir` set, the C++ and C# backends
+/// load a script from dir/<prebuilt_key(source)> (.dll for C++, a folder for
+/// C#), through a private copy per instance in `instance_dir` -- writable,
+/// unlike a game installed under Program Files -- so two entities running one
+/// script keep their own globals, as when it is compiled per instance.
+struct PrebuiltScripts {
+    std::string dir;            // "" = compile as usual (the editor)
+    std::string instance_dir;
+};
+inline PrebuiltScripts& prebuilt_scripts() { static PrebuiltScripts p; return p; }
+
+/// Export: build one script for a game. `rel_source` is project-relative and
+/// the current directory is the project. C++ -> one self-contained .dll (its
+/// C++ runtime linked in, so it depends on nothing beside the game); C# -> a
+/// folder with the assembly and its runtimeconfig.
+bool export_cpp_script(const std::string& rel_source, const std::string& out_dll, std::string& error);
+bool export_cs_script(const std::string& rel_source, const std::string& out_dir, std::string& error);
 /// Factory for the logic-graph backend (visual scripts, ".lgraph") --
 /// script_host_logic.cpp. Every ScriptApi entry is a node there.
 std::unique_ptr<ScriptHost> make_logic_host();

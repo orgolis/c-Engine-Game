@@ -100,8 +100,8 @@ dash = Q
 ```
 
 A player rebinds them in the game; their choices (and mouse sensitivity,
-invert-Y, field of view) are kept per user and game, in the config folder
-(`games/<project>/controls.txt`).
+invert-Y, field of view, full screen) are kept per user and game, in the config
+folder (`games/<project>/controls.txt`).
 
 | Node | |
 |---|---|
@@ -115,8 +115,10 @@ Settings by name: `quality` (Low, Medium, High), `ambient_occlusion`,
 `reflections`, `clouds`, `volumetric` (On, Off), `shadow_quality` (Low, Medium,
 High, Ultra), `render_scale` (50%, 67%, 75%, 100% -- on restart), `vsync` (On,
 Off -- on restart), `fov` (Camera, 70 .. 110), `mouse_sensitivity` (0.05 .. 10),
-`invert_y` (On, Off). Graphics settings are the machine's: the same as the
-editor's render settings. Next Setting Value steps through a setting's
+`invert_y` (On, Off), `fullscreen` (On, Off -- also F11 and, in a game, Alt+Enter).
+Graphics settings in the editor are the machine's: the same as the editor's
+render settings; an exported game keeps its own per player
+(`games/<project>/render_settings.txt`, docs/EXPORTING_A_GAME.md). Next Setting Value steps through a setting's
 choices, so a settings menu needs one button per setting.
 
 In UI documents, `{key.<action>}` shows an action's key ("press a key..."

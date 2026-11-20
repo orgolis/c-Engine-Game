@@ -47,7 +47,8 @@ bakes the navmesh by itself when the scene has agents and no navmesh yet.
 - **F6** saves, **F9** loads (the slot "quick").
 - Logic scripts have **Save Game** and **Load Game** nodes with a slot name,
   for checkpoints; C++ scripts have `save_game` / `load_game` in the API table.
-- Saves go to `saves/<slot>.sav` in the project.
+- Saves go to `saves/<slot>.sav` in the project; in an exported game to the
+  player's own folder, `%APPDATA%\GameWorldshaper\games\<project>\saves\`.
 
 A save holds where the player stands and looks, and every object with a
 **Save Id** (Inspector > Gameplay Components) with all its gameplay

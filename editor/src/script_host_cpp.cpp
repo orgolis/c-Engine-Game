@@ -14,6 +14,7 @@
 // the documented trade-off of the native backend.
 
 #include "script_system.h"
+#include "game_export.h"   // prebuilt_key
 
 #include <spdlog/spdlog.h>
 #include <atomic>
@@ -143,30 +144,63 @@ private:
     UpdateFn         update_;
 };
 
+// A Hub-launched editor does not inherit a developer shell's PATH. Prefer the
+// configured compiler, then the project's pinned Windows toolchain, with PATH
+// lookup available for other MinGW installations.
+std::string script_compiler() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (const char* configured = std::getenv("GWS_SCRIPT_CXX"); configured && fs::is_regular_file(configured, ec))
+        return configured;
+    if (fs::is_regular_file("C:/Strawberry/c/bin/g++.exe", ec)) return "C:/Strawberry/c/bin/g++.exe";
+    return "g++";
+}
+
+// The script's path as the export keyed it: project-relative.
+std::string project_relative(const std::string& source_path) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path sp(source_path);
+    if (!sp.is_absolute()) return sp.generic_string();
+    const fs::path rel = fs::relative(sp, fs::current_path(ec), ec);
+    return ec ? sp.generic_string() : rel.generic_string();
+}
+
 bool build_cpp_script(const std::string& source_path, std::string& dll, std::string& err) {
         namespace fs = std::filesystem;
-        if (!fs::exists(source_path)) { err = "cannot open " + source_path; return false; }
-
+        static std::atomic<uint32_t> gen{0};
         std::error_code ec;
+        const std::string stem = fs::path(source_path).stem().string();
+
+        // An exported game: the script was built at export; load a private
+        // copy of it (never a compiler on the player's computer).
+        if (const PrebuiltScripts& pb = prebuilt_scripts(); !pb.dir.empty()) {
+            const std::string rel = project_relative(source_path);
+            const fs::path pre = fs::path(pb.dir) / (gexport::prebuilt_key(rel) + ".dll");
+            if (!fs::is_regular_file(pre, ec)) {
+                err = "this game was exported without the script " + rel + " (export it again)";
+                return false;
+            }
+            fs::create_directories(pb.instance_dir, ec);
+            dll = (fs::path(pb.instance_dir) / (stem + "_" + std::to_string(GetCurrentProcessId()) + "_" +
+                                                std::to_string(gen++) + ".dll")).string();
+            fs::copy_file(pre, dll, fs::copy_options::overwrite_existing, ec);
+            if (ec) { err = "cannot prepare " + rel + ": " + ec.message(); return false; }
+            spdlog::info("[script] '{}' built for this game", rel);
+            return true;
+        }
+
+        if (!fs::exists(source_path)) { err = "cannot open " + source_path; return false; }
         fs::create_directories("script_cache", ec);
 
         // Fresh dll per compile — loaded DLLs are locked, so never overwrite.
-        static std::atomic<uint32_t> gen{0};
-        const std::string stem = fs::path(source_path).stem().string();
         dll = "script_cache/" + stem + "_" +
                                  std::to_string(GetCurrentProcessId()) + "_" + std::to_string(gen++) + ".dll";
 
         // -I the script's own dir + assets/scripts so `#include
         // "schizo_script.h"` resolves wherever the script lives.
         const std::string src_dir = fs::path(source_path).parent_path().string();
-        // A Hub-launched editor does not inherit a developer shell's PATH.
-        // Prefer the configured compiler, then the project's pinned Windows
-        // toolchain, with PATH lookup available for other MinGW installations.
-        std::string compiler = "g++";
-        if (const char* configured = std::getenv("GWS_SCRIPT_CXX"); configured && fs::is_regular_file(configured, ec))
-            compiler = configured;
-        else if (fs::is_regular_file("C:/Strawberry/c/bin/g++.exe", ec))
-            compiler = "C:/Strawberry/c/bin/g++.exe";
+        const std::string compiler = script_compiler();
         // Hash the preprocessed translation unit. GCC resolves nested includes,
         // conditionals and SDK headers exactly as it will for the real build.
         // Each instance still loads a private DLL (scripts can have globals).
@@ -253,6 +287,27 @@ public:
 
 }  // namespace
 
+bool export_cpp_script(const std::string& rel_source, const std::string& out_dll, std::string& error) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_regular_file(rel_source, ec)) { error = "cannot open " + rel_source; return false; }
+    fs::create_directories(fs::path(out_dll).parent_path(), ec);
+    // -static: the C++ runtime inside the DLL, so it depends on nothing but
+    // Windows (the compiler's own runtime DLLs are not the engine's). -s: no
+    // symbols in a shipped game.
+    const std::string src_dir = fs::path(rel_source).parent_path().string();
+    std::string cmd = "\"" + script_compiler() + "\" -std=c++17 -O2 -shared -static -s -o \"" + out_dll + "\" \"" +
+                      rel_source + "\" -I \"assets/scripts\"";
+    if (!src_dir.empty()) cmd += " -I \"" + src_dir + "\"";
+    std::string output;
+    if (run_capture(cmd, output) != 0 || !fs::is_regular_file(out_dll, ec)) {
+        error = output.empty() ? std::string("the compiler did not run (is g++ installed? GWS_SCRIPT_CXX names it)")
+                               : output.substr(0, 1500);
+        return false;
+    }
+    return true;
+}
+
 bool prepare_cpp_script(const std::string& path,std::string& error) {
     std::string instance;
     bool ok=build_cpp_script(path,instance,error);
@@ -266,6 +321,10 @@ std::unique_ptr<ScriptHost> make_cpp_host() { return std::make_unique<CppHost>()
 #else  // !_WIN32
 
 bool prepare_cpp_script(const std::string&,std::string&) { return true; }
+bool export_cpp_script(const std::string&, const std::string&, std::string& error) {
+    error = "C++ scripts are built for Windows games only";
+    return false;
+}
 std::unique_ptr<ScriptHost> make_cpp_host() { return nullptr; }
 
 #endif

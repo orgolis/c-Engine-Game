@@ -17,9 +17,11 @@
 // detected at startup and the backend reports a clear error if missing.
 
 #include "script_system.h"
+#include "game_export.h"     // prebuilt_key
 
 #include <spdlog/spdlog.h>
 #include <atomic>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -187,6 +189,74 @@ private:
     std::unordered_map<std::string, CsCommandFn> commands_;
 };
 
+// The SDK source compiled with every script (the NativeApi mirror + Bridge).
+std::string find_cs_sdk() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    // Beside the running program: an installed engine's assets/scripts.
+    wchar_t exe[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    for (const fs::path& c : { fs::path("assets/scripts/SchizoScript.cs"), fs::path("../../assets/scripts/SchizoScript.cs"),
+                               fs::path(exe).parent_path() / "assets" / "scripts" / "SchizoScript.cs" })
+        if (fs::exists(c, ec)) return c.string();
+    return {};
+}
+
+// Manual copy: fs::copy_file(overwrite_existing) unreliably reports "File
+// exists" on this MinGW libstdc++ when the target is present.
+bool stage_file(const std::string& from, const std::filesystem::path& to) {
+    std::ifstream in(from, std::ios::binary);
+    if (!in.is_open()) return false;
+    std::ofstream out(to, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return false;
+    out << in.rdbuf();
+    return true;
+}
+
+// A project for one script in `dir` (Bridge.cs + User.cs), built into `out_dir`.
+bool dotnet_build(const std::string& source_path, const std::filesystem::path& dir, const std::string& asm_name,
+                  const std::string& out_dir, std::string& err) {
+    namespace fs = std::filesystem;
+    const std::string sdk = find_cs_sdk();
+    if (sdk.empty()) { err = "SchizoScript.cs SDK not found under assets/scripts"; return false; }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    {
+        std::ofstream proj(dir / "script.csproj", std::ios::trunc);
+        proj << "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
+                "  <PropertyGroup>\n"
+                "    <TargetFramework>net9.0</TargetFramework>\n"
+                "    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>\n"
+                "    <Nullable>enable</Nullable>\n"
+                "    <AssemblyName>" << asm_name << "</AssemblyName>\n"
+                "    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>\n"
+                "    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>\n"
+                "  </PropertyGroup>\n"
+                "</Project>\n";
+    }
+    if (!stage_file(sdk, dir / "Bridge.cs") || !stage_file(source_path, dir / "User.cs")) {
+        err = "failed to stage sources into " + dir.string();
+        return false;
+    }
+    spdlog::info("[script] dotnet build '{}' -> {}", source_path, out_dir);
+    std::string output;
+    const int rc = run_capture(
+        "dotnet build \"" + (dir / "script.csproj").string() +
+        "\" -c Release -o \"" + out_dir + "\" --nologo -v q", output);
+    if (rc != 0) {
+        err = "C# compile failed: " + output.substr(0, 600);
+        return false;
+    }
+    return true;
+}
+
+// The assembly name a prebuilt script carries: from its key, a valid name.
+std::string prebuilt_assembly_name(const std::string& key) {
+    std::string n = "schizo_";
+    for (char c : key) n += std::isalnum(static_cast<unsigned char>(c)) ? c : '_';
+    return n;
+}
+
 class CsHost final : public ScriptHost {
 public:
     const char* language() const override { return "C# (.NET)"; }
@@ -195,61 +265,42 @@ public:
                                            const ScriptApi* api,
                                            std::string& err) override {
         namespace fs = std::filesystem;
-        if (!fs::exists(source_path)) { err = "cannot open " + source_path; return nullptr; }
-
-        // Locate the shipped SDK source to compile alongside the user script.
-        std::string sdk;
-        for (const char* c : { "assets/scripts/SchizoScript.cs",
-                               "../../assets/scripts/SchizoScript.cs" })
-            if (fs::exists(c)) { sdk = c; break; }
-        if (sdk.empty()) { err = "SchizoScript.cs SDK not found under assets/scripts"; return nullptr; }
-
-        // Fresh project per compile — unique assembly name because the default
-        // AssemblyLoadContext cannot unload (hot reload = load a new assembly).
         static std::atomic<uint32_t> gen{0};
         const uint32_t n = gen++;
-        const std::string asm_name = "schizo_script_" + std::to_string(n);
-        const fs::path dir = fs::path("script_cache") / ("cs_" + std::to_string(n));
         std::error_code ec;
-        fs::create_directories(dir, ec);
+        std::string asm_name, out_dir;
 
-        {
-            std::ofstream proj(dir / "script.csproj", std::ios::trunc);
-            proj << "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
-                    "  <PropertyGroup>\n"
-                    "    <TargetFramework>net9.0</TargetFramework>\n"
-                    "    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>\n"
-                    "    <Nullable>enable</Nullable>\n"
-                    "    <AssemblyName>" << asm_name << "</AssemblyName>\n"
-                    "    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>\n"
-                    "    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>\n"
-                    "  </PropertyGroup>\n"
-                    "</Project>\n";
-        }
-        // Manual copy: fs::copy_file(overwrite_existing) unreliably reports
-        // "File exists" on this MinGW libstdc++ when the target is present.
-        auto stage = [](const std::string& from, const fs::path& to) -> bool {
-            std::ifstream in(from, std::ios::binary);
-            if (!in.is_open()) return false;
-            std::ofstream out(to, std::ios::binary | std::ios::trunc);
-            if (!out.is_open()) return false;
-            out << in.rdbuf();
-            return true;
-        };
-        if (!stage(sdk, dir / "Bridge.cs") || !stage(source_path, dir / "User.cs")) {
-            err = "failed to stage sources into " + dir.string();
-            return nullptr;
-        }
-
-        const std::string out_dir = (dir / "out").string();
-        spdlog::info("[script] dotnet build '{}' -> {}", source_path, out_dir);
-        std::string output;
-        const int rc = run_capture(
-            "dotnet build \"" + (dir / "script.csproj").string() +
-            "\" -c Release -o \"" + out_dir + "\" --nologo -v q", output);
-        if (rc != 0) {
-            err = "C# compile failed: " + output.substr(0, 600);
-            return nullptr;
+        if (const PrebuiltScripts& pb = prebuilt_scripts(); !pb.dir.empty()) {
+            // An exported game: the assembly was built at export. Each instance
+            // loads its own copy (its own load context, so its own statics --
+            // as a per-instance compile gives in the editor).
+            std::string rel = source_path;
+            if (fs::path(source_path).is_absolute()) rel = fs::relative(source_path, fs::current_path(ec), ec).generic_string();
+            const std::string key = gexport::prebuilt_key(rel);
+            const fs::path pre = fs::path(pb.dir) / key;
+            asm_name = prebuilt_assembly_name(key);
+            if (!fs::is_regular_file(pre / (asm_name + ".dll"), ec)) {
+                err = "this game was exported without the script " + rel + " (export it again)";
+                return nullptr;
+            }
+            const fs::path inst = fs::path(pb.instance_dir) /
+                                  ("cs_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(n));
+            fs::create_directories(inst, ec);
+            for (const auto& f : fs::directory_iterator(pre, ec))
+                if (f.is_regular_file() && !stage_file(f.path().string(), inst / f.path().filename())) {
+                    err = "cannot prepare " + rel + " in " + inst.string();
+                    return nullptr;
+                }
+            out_dir = inst.string();
+            spdlog::info("[script] '{}' built for this game", rel);
+        } else {
+            if (!fs::exists(source_path)) { err = "cannot open " + source_path; return nullptr; }
+            // Fresh project per compile — unique assembly name because the default
+            // AssemblyLoadContext cannot unload (hot reload = load a new assembly).
+            asm_name = "schizo_script_" + std::to_string(n);
+            const fs::path dir = fs::path("script_cache") / ("cs_" + std::to_string(n));
+            out_dir = (dir / "out").string();
+            if (!dotnet_build(source_path, dir, asm_name, out_dir, err)) return nullptr;
         }
 
         const std::string asm_path = out_dir + "\\" + asm_name + ".dll";
@@ -283,9 +334,32 @@ public:
 
 std::unique_ptr<ScriptHost> make_cs_host() { return std::make_unique<CsHost>(); }
 
+bool export_cs_script(const std::string& rel_source, const std::string& out_dir, std::string& error) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_regular_file(rel_source, ec)) { error = "cannot open " + rel_source; return false; }
+    const std::string key = gexport::prebuilt_key(rel_source);
+    // The build's own project lives in the temp folder: nothing is written
+    // into the project being exported.
+    const fs::path dir = fs::temp_directory_path(ec) /
+                         ("gws-export-cs-" + std::to_string(GetCurrentProcessId()) + "-" + key);
+    fs::remove_all(dir, ec);
+    const bool ok = dotnet_build(rel_source, dir, prebuilt_assembly_name(key), out_dir, error);
+    fs::remove_all(dir, ec);
+    if (ok && !fs::is_regular_file(fs::path(out_dir) / (prebuilt_assembly_name(key) + ".dll"), ec)) {
+        error = "dotnet build reported success but made no assembly in " + out_dir;
+        return false;
+    }
+    return ok;
+}
+
 #else  // !_WIN32
 
 std::unique_ptr<ScriptHost> make_cs_host() { return nullptr; }
+bool export_cs_script(const std::string&, const std::string&, std::string& error) {
+    error = "C# scripts are built for Windows games only";
+    return false;
+}
 
 #endif
 

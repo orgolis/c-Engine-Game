@@ -34,6 +34,10 @@ struct PlayMessage {
 };
 inline PlayMessage& play_message() { static PlayMessage m; return m; }
 
+/// Where saves go when not the project's saves/ folder: an exported game sets
+/// its per-player folder (<config>/games/<project>/saves).
+inline std::string& play_save_dir_override() { static std::string d; return d; }
+
 /// saves/<slot>.sav, the slot reduced to letters, digits, '-' and '_'.
 inline std::string play_save_path(const std::string& slot) {
     std::string s;
@@ -42,7 +46,13 @@ inline std::string play_save_path(const std::string& slot) {
     if (s.empty()) s = "quick";
     // GWS_SAVE_DIR puts saves elsewhere (tests keep them out of the project).
     const char* dir = std::getenv("GWS_SAVE_DIR");
-    return std::string(dir && *dir ? dir : "saves") + "/" + s + ".sav";
+    if (dir && *dir) return std::string(dir) + "/" + s + ".sav";
+    if (!play_save_dir_override().empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(play_save_dir_override(), ec);
+        return play_save_dir_override() + "/" + s + ".sav";
+    }
+    return "saves/" + s + ".sav";
 }
 
 namespace play_save_detail {

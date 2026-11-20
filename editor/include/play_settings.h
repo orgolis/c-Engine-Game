@@ -22,8 +22,10 @@
 //   fov                Camera, 70, 80, 90, 100, 110 (game; Camera = the camera's own)
 //   mouse_sensitivity  0.25 .. 4                    (controls)
 //   invert_y           On, Off                      (controls)
+//   fullscreen         On, Off                      (the game on the whole screen; F11 / Alt+Enter)
 // Graphics settings are the machine's (the same as the editor's Render
-// Settings, saved there); main applies requests and publishes what is set.
+// Settings, saved there) -- an exported game's are its own, per player (in
+// user_game_dir); main applies requests and publishes what is set.
 
 #include "input/action_map.h"
 #include "gws/platform/user_dirs.h"
@@ -49,6 +51,7 @@ public:
     std::string rebinding;           // the action waiting for its new key ("" none)
     int         swallowed_key = 0;   // the key that ended a rebinding: held back from the game until released
     float       fov = 0.0f;          // degrees; 0 = the camera's own
+    int         fullscreen = -1;     // the player's last choice: 1 / 0; -1 none yet (an exported game starts as game.ini says)
 
     // Graphics: what is set now (published by main as text) and changes asked
     // for (applied by main, which holds the renderer's settings).
@@ -60,6 +63,7 @@ public:
         project_dir_ = project_dir;
         map.reset();
         fov = 0.0f;
+        fullscreen = -1;
         rebinding.clear();
         states.clear();
         std::string text;
@@ -77,6 +81,7 @@ public:
         char buf[48];
         std::snprintf(buf, sizeof buf, "fov = %.0f\n", static_cast<double>(fov));
         f << buf;
+        if (fullscreen >= 0) f << "fullscreen = " << fullscreen << "\n";
     }
     /// The project's controls again (its input.cfg over the engine's).
     void reset_controls() {
@@ -93,7 +98,7 @@ public:
         if (name == "render_scale") return {"50%", "67%", "75%", "100%"};
         if (name == "fov") return {"Camera", "70", "80", "90", "100", "110"};
         if (name == "ambient_occlusion" || name == "reflections" || name == "clouds" || name == "volumetric" ||
-            name == "vsync" || name == "invert_y")
+            name == "vsync" || name == "invert_y" || name == "fullscreen")
             return {"On", "Off"};
         return {};
     }
@@ -156,6 +161,12 @@ private:
         out = ss.str();
         return true;
     }
+public:
+    /// A player's folder for one game: controls.txt; an exported game's
+    /// saves/ and render_settings.txt too. GWS_SETTINGS_DIR moves it (tests).
+    static std::filesystem::path user_game_dir(const std::string& project) { return settings_dir(project); }
+
+private:
     static std::filesystem::path settings_dir(const std::string& project) {
         std::string safe;
         for (char c : project) safe += (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') ? c : '_';
@@ -171,6 +182,10 @@ private:
         while (std::getline(in, line)) {
             if (line.rfind("fov", 0) == 0 && line.find('=') != std::string::npos) {
                 fov = static_cast<float>(std::atof(line.substr(line.find('=') + 1).c_str()));
+                continue;
+            }
+            if (line.rfind("fullscreen", 0) == 0 && line.find('=') != std::string::npos) {
+                fullscreen = std::atoi(line.substr(line.find('=') + 1).c_str()) != 0 ? 1 : 0;
                 continue;
             }
             rest += line + "\n";

@@ -110,8 +110,9 @@ order to ship commercially free of charge.
    so every package from 0.8.6 on carries them, Windows and Linux; the Linux package
    adds them itself even when built from an older tag, so 0.8.5's has them too.
    Windows packages up to 0.8.5 shipped without them and cannot be changed after
-   the fact. **Still open:** exported games (`tools/export_game_*`) do not copy them,
-   and a Product that embeds the Engine has the same obligation (licence section 6).
+   the fact. Games exported on Windows (0.8.54 on) carry both in their `licenses/`
+   folder. **Still open:** the Linux exporters (`tools/export_game_*.sh`) do not copy
+   them, and a Product that embeds the Engine has the same obligation (licence section 6).
 6. **Attribution enforcement is honour-based** and that is fine, but the engine could
    make compliance the path of least resistance — a built-in "Made with
    GameWorldshaper" splash that a product gets for free unless it opts out.

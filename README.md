@@ -53,9 +53,11 @@ audio mixer.
 crafting, quests, factions, NPCs and save/load, plus genre modules for shooters,
 vehicles, building, survival and stealth.
 
-**Shipping** — **Project → Export Game…** packages the open project as a playable
-game: a portable folder and `.zip` on Windows, a folder and a single `.run` file on
-Linux. See [`docs/EXPORTING_A_LINUX_GAME.md`](docs/EXPORTING_A_LINUX_GAME.md).
+**Shipping** — **Project → Export Game…** makes the project into a game: on Windows
+a folder with the game's own program (its name, icon and version; no console), its
+C++ and C# scripts built ahead so players need no compiler, the player's settings and
+saves kept per player, and a `.zip` to share; a single `.run` file on Linux. See
+[`docs/EXPORTING_A_GAME.md`](docs/EXPORTING_A_GAME.md).
 
 **Tooling** — `gws`, a CLI covering `test`, `cook`, `validate`, `docs`, `project`,
 `run`, `build`, `crash`, `shaders` and `screenshot`. Crash reports symbolise against

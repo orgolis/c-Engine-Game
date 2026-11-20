@@ -65,6 +65,9 @@ It has these **companion** plans (all current):
 - `PHASE_7_GPU_PROFILER.md`, `PHASE_7_GPU_PROFILER_COMPLETE.md` — GPU profiling
 - `physics_module.md` — physics (Jolt) system
 
+### Shipping
+`EXPORTING_A_GAME.md` — Project > Export Game: what goes in, scripts built ahead, the player's files, `--export-game`
+
 ### `systems/` — engine subsystem deep-dives
 `DEFERRED-RENDERING-SYSTEM.md` · `LIGHTING-SYSTEM.md` · `MATERIAL-AND-PBR-SYSTEM.md` ·
 `MESH-AND-GEOMETRY-SYSTEM.md` · `POST-PROCESSING-SYSTEM.md` · `SCENE-MANAGEMENT-SYSTEM.md` ·

@@ -28,6 +28,7 @@
 // ============================================================================
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 
 namespace schizo::editor {
@@ -120,6 +121,10 @@ bool save_render_settings(const RenderSettings& s);
 /// process running with GWS_RENDER_SETTINGS_OVERRIDE must not write its
 /// overridden values into the user's file.
 void block_render_settings_saves();
+/// An exported game: its graphics settings in this file, not the machine's
+/// (the editor's) -- a player's choices for one game, picked on first start
+/// from the GPU like the editor's.
+void set_render_settings_file(const std::filesystem::path& file);
 
 /// A sane starting preset for the device actually present. An integrated GPU
 /// should get a usable first launch without anyone finding the settings menu,

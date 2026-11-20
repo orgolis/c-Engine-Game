@@ -189,6 +189,7 @@ new engine — and a 2D game exercises a small fraction of the systems already b
 
 | Target | Status | Notes |
 |---|---|---|
+| **Desktop game export** | ✅ Windows (0.8.54) · 🟡 Linux | Project > Export Game makes a game folder with its own program (title, icon, version, no console), C++/C# scripts built ahead so players need no compiler, settings and saves per player, nothing written into the game's folder, and a zip; `--export-game` for scripts. The Linux exporters are still the older scripts (no `config/export.ini`, no prebuilt scripts). [`EXPORTING_A_GAME.md`](../EXPORTING_A_GAME.md) |
 | **Web export** | 🔴 | How small games get discovered; a playable demo converts far better than a trailer, and it makes the engine demonstrable in a link. Large effort with Vulkan, but the highest-reach target after Linux — and unlike consoles, no NDA. |
 | **Camera system library** | 🔴 | Third-person orbit, first-person, over-the-shoulder, fixed survival-horror angles, top-down, isometric, 2.5D side-on, cinematic rigs. Already listed as missing in G1. **Camera is what most defines how a game reads.** Small effort, immediately changes which genres feel native. |
 | Split-screen / local multiplayer | 🔴 | Multiple viewports, per-player input devices and UI. Structurally invasive if retrofitted late; cheap if camera + input assume it now. |

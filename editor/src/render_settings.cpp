@@ -14,7 +14,11 @@ namespace fs = std::filesystem;
 namespace schizo::editor {
 namespace {
 
+fs::path& settings_file_override() { static fs::path p; return p; }
+
 fs::path settings_path() {
+    // An exported game keeps its own (set_render_settings_file).
+    if (!settings_file_override().empty()) return settings_file_override();
     // Per-machine, beside the Hub's own config. This describes the hardware in
     // front of the user, not the project they happen to have open.
     const fs::path dir = gws::platform::user_dir(gws::platform::UserDir::Config);
@@ -172,6 +176,12 @@ bool load_render_settings(RenderSettings& out) {
 namespace { bool g_saves_blocked = false; }
 
 void block_render_settings_saves() { g_saves_blocked = true; }
+
+void set_render_settings_file(const std::filesystem::path& file) {
+    settings_file_override() = file;
+    std::error_code ec;
+    if (file.has_parent_path()) fs::create_directories(file.parent_path(), ec);
+}
 
 bool save_render_settings(const RenderSettings& s) {
     if (g_saves_blocked) return true;   // GWS_RENDER_SETTINGS_OVERRIDE: never persist it

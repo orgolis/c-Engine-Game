@@ -101,6 +101,8 @@
 #include "project.h"            // modular project model (manifest + features)
 #include "project_launcher.h"  // first-run project launcher UI
 #include "project_paths.h"     // per-project content sandbox (working-dir scoping)
+#include "game_export.h"       // Project > Export Game: the exporter, game.ini
+#include <stb_image.h>         // an exported game's window icon (decoder linked from the renderer)
 #include "gws/platform/file_dialog.h" // project export destination picker
 #include "gws/platform/user_dirs.h"   // diagnostics directory
 #include "scene.h"
@@ -180,6 +182,7 @@
   #define NOMINMAX
   #include <windows.h>
   #include <commdlg.h>
+  #include <shellapi.h>   // Export Game: Open Folder
   #define GLFW_EXPOSE_NATIVE_WIN32
   #include <GLFW/glfw3native.h>
 #elif defined(__linux__)
@@ -565,6 +568,16 @@ struct EditorState {
 #else
         GameExportTarget::Linux;
 #endif
+    // The Windows exporter's dialog: settings (config/export.ini), what an
+    // export would make (refreshed as they change), and the last result.
+    schizo::editor::gexport::Settings export_settings;
+    schizo::editor::gexport::Plan     export_plan;
+    bool        export_plan_dirty = true;
+    bool        export_settings_changed = false;
+    double      export_plan_changed_at = 0.0;
+    bool        export_save_scene = true;
+    std::filesystem::path game_export_folder, game_export_exe;
+    std::vector<std::string> game_export_warnings;
 
     bool feature_on(schizo::project::Feature f) const { return features.has(f); }
 
@@ -2032,6 +2045,9 @@ static void BuildEditorDockLayout(ImGuiID dockspace_id, ImVec2 size) {
 // Menu Functions
 // ============================================================================
 
+#if !defined(_WIN32)
+// The Linux editor exports through tools/export_game_linux.sh and
+// tools/export_game_windows_cross.sh; Windows has its own exporter below.
 static std::string ShellQuoteForExport(const std::string& text) {
 #if defined(_WIN32)
     std::string quoted = "\"";
@@ -2265,6 +2281,398 @@ static void StartGameExport(EditorState& editor_state,
     } else {
         editor_state.game_export_task_id = task_id;
     }
+}
+#endif
+
+// ---- Export Game (Windows) ---------------------------------------------------
+//
+// One dialog: the game's name, version, start scene, icon, how it starts, what
+// is left out -- with what an export would make shown live -- then the export
+// in the background (game_export.h does the work), then Play / Open Folder.
+#if defined(_WIN32)
+namespace {
+struct ExportDialogText {
+    char title[128]{}, version[32]{}, icon[260]{}, output[520]{}, exclude[4096]{}, include[2048]{};
+};
+ExportDialogText& export_text() { static ExportDialogText b; return b; }
+
+void export_copy(char* dst, size_t n, const std::string& s) { std::snprintf(dst, n, "%s", s.c_str()); }
+
+std::string export_trim(const std::string& s) {
+    const size_t b = s.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return {};
+    return s.substr(b, s.find_last_not_of(" \t\r\n") - b + 1);
+}
+
+std::vector<std::string> export_lines(const char* text) {
+    std::vector<std::string> out;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line))
+        if (!export_trim(line).empty()) out.push_back(export_trim(line));
+    return out;
+}
+
+std::string export_size(uint64_t b) {
+    char buf[32];
+    if (b >= 1024ull * 1024 * 1024) std::snprintf(buf, sizeof buf, "%.1f GB", b / (1024.0 * 1024 * 1024));
+    else if (b >= 1024ull * 1024)   std::snprintf(buf, sizeof buf, "%.1f MB", b / (1024.0 * 1024));
+    else                            std::snprintf(buf, sizeof buf, "%.0f KB", b / 1024.0);
+    return buf;
+}
+
+std::filesystem::path this_program() {
+    wchar_t buf[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    return std::filesystem::path(buf);
+}
+}  // namespace
+
+static void LoadExportDialog(EditorState& es) {
+    namespace gx = schizo::editor::gexport;
+    es.export_settings = gx::load_settings(es.project.project_dir);
+    if (es.export_settings.start_scene.empty()) es.export_settings.start_scene = es.project.default_scene;
+    auto& b = export_text();
+    const auto& s = es.export_settings;
+    export_copy(b.title, sizeof b.title, s.title.empty() ? es.project.name : s.title);
+    export_copy(b.version, sizeof b.version, s.version);
+    export_copy(b.icon, sizeof b.icon, s.icon);
+    export_copy(b.output, sizeof b.output, s.output_dir);
+    std::string ex, in;
+    for (const auto& e : s.exclude) ex += e + "\n";
+    for (const auto& i : s.include) in += i + "\n";
+    export_copy(b.exclude, sizeof b.exclude, ex);
+    export_copy(b.include, sizeof b.include, in);
+    es.export_plan_dirty = true;
+    es.export_plan_changed_at = -1.0;
+    es.export_settings_changed = false;
+    es.export_save_scene = true;
+}
+
+static void ExportSettingsFromText(EditorState& es) {
+    auto& s = es.export_settings;
+    const auto& b = export_text();
+    s.title = export_trim(b.title);
+    s.version = export_trim(b.version);
+    s.icon = export_trim(b.icon);
+    s.output_dir = export_trim(b.output);
+    s.exclude = export_lines(b.exclude);
+    s.include = export_lines(b.include);
+}
+
+static void StartWindowsGameExport(EditorState& es) {
+    namespace gx = schizo::editor::gexport;
+    gx::Request rq;
+    rq.project_dir = std::filesystem::absolute(es.project.project_dir);
+    rq.project_name = es.project.name;
+    rq.default_scene = es.project.default_scene;
+    rq.engine_version = GWS_ENGINE_VERSION;
+    rq.settings = es.export_settings;
+    rq.runtime_exe = this_program();
+    rq.engine_root = schizo::editor::base_dir();
+    rq.build_native = [](const std::string& rel, const std::filesystem::path& out, std::string& err) {
+        return schizo::editor::export_cpp_script(rel, out.string(), err);
+    };
+    rq.build_csharp = [](const std::string& rel, const std::filesystem::path& out, std::string& err) {
+        return schizo::editor::export_cs_script(rel, out.string(), err);
+    };
+    auto result = std::make_shared<gx::Result>();
+    es.game_export_running = true;
+    es.game_export_succeeded = false;
+    es.game_export_platform = "Windows";
+    es.game_export_result.clear();
+    es.game_export_warnings.clear();
+    es.game_export_folder.clear();
+    es.game_export_exe.clear();
+    es.show_game_export_dialog = true;
+    es.set_status("Exporting the game...");
+    const uint64_t task_id = es.tasks.submit(
+        "Export game",
+        [rq, result](gws::tasks::TaskContext& ctx) {
+            gx::Request r = rq;
+            r.progress = [&ctx](float f, const std::string& what) { ctx.set_progress(f, what); };
+            *result = gx::run(r);
+            if (!result->ok) throw std::runtime_error(result->message);
+        },
+        [&es, result](const gws::tasks::TaskInfo& info) {
+            es.game_export_running = false;
+            es.game_export_succeeded = info.state == gws::tasks::TaskState::Succeeded;
+            es.game_export_result = es.game_export_succeeded ? result->message
+                                    : (info.error.empty() ? std::string("The export was cancelled.") : info.error);
+            es.game_export_warnings = result->warnings;
+            es.game_export_folder = result->folder;
+            es.game_export_exe = result->exe;
+            es.set_status(es.game_export_succeeded ? "Game exported" : "Game export failed");
+            spdlog::info("[export] {}", es.game_export_succeeded ? "done: " + result->folder.string() : "failed: " + es.game_export_result);
+        });
+    if (task_id == 0) {
+        es.game_export_running = false;
+        es.game_export_result = "The background export task could not be created.";
+    } else {
+        es.game_export_task_id = task_id;
+    }
+}
+
+static void ShowWindowsExportDialog(EditorState& es) {
+    namespace gx = schizo::editor::gexport;
+    namespace fs = std::filesystem;
+    if (es.show_game_export_options) {
+        es.show_game_export_options = false;
+        LoadExportDialog(es);
+        ImGui::OpenPopup("Export Game##settings");
+    }
+    ImGui::SetNextWindowSize(ImVec2(820.0f, 0.0f), ImGuiCond_Always);   // height: what it holds
+    if (!ImGui::BeginPopupModal("Export Game##settings", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize)) return;
+    auto& b = export_text();
+    auto& s = es.export_settings;
+    const fs::path proj = es.project.project_dir;
+    bool changed = false;
+    const float label_w = 140.0f;
+    auto label = [&](const char* text) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(text);
+        ImGui::SameLine(label_w);
+    };
+
+    ImGui::Text("Export %s as a Windows game", es.project.name.c_str());
+    ImGui::TextDisabled("A folder players run, and a .zip to share. Settings are kept in config/export.ini.");
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    label("Title");
+    ImGui::SetNextItemWidth(360.0f);
+    changed |= ImGui::InputText("##title", b.title, sizeof b.title);
+    ImGui::SameLine();
+    ImGui::TextUnformatted("Version");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
+    changed |= ImGui::InputText("##version", b.version, sizeof b.version);
+
+    label("Start scene");
+    ImGui::SetNextItemWidth(460.0f);
+    if (ImGui::BeginCombo("##start", s.start_scene.c_str())) {
+        for (const auto& f : es.export_plan.files) {
+            if (f.size() < 6 || f.compare(f.size() - 6, 6, ".scene") != 0) continue;
+            if (ImGui::Selectable(f.c_str(), f == s.start_scene)) { s.start_scene = f; changed = true; }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("the game starts here");
+
+    label("Icon");
+    ImGui::SetNextItemWidth(460.0f);
+    changed |= ImGui::InputTextWithHint("##icon", "an image in the project, e.g. config/icon.png", b.icon, sizeof b.icon);
+    ImGui::SameLine();
+    if (ImGui::Button("Choose...##icon")) {
+        const std::string picked = gws::platform::browse_file("Choose the game's icon (a .png)");
+        if (!picked.empty()) {
+            std::error_code ec;
+            fs::path rel = fs::relative(fs::path(picked), proj, ec);
+            if (ec || rel.empty() || *rel.begin() == "..") {
+                // From outside the project: copied in, so it travels with it.
+                const fs::path dst = proj / "config" / ("icon" + fs::path(picked).extension().string());
+                fs::create_directories(dst.parent_path(), ec);
+                fs::copy_file(picked, dst, fs::copy_options::overwrite_existing, ec);
+                rel = fs::relative(dst, proj, ec);
+                es.set_status("Copied the icon into the project: " + rel.generic_string());
+            }
+            export_copy(b.icon, sizeof b.icon, rel.generic_string());
+            changed = true;
+        }
+    }
+
+    ImGui::SetCursorPosX(label_w);
+    changed |= ImGui::Checkbox("Start in full screen (players switch with F11 or Alt+Enter)", &s.fullscreen);
+    ImGui::SetCursorPosX(label_w);
+    changed |= ImGui::Checkbox("Also make a .zip to share", &s.make_zip);
+    const bool unsaved = es.editor_scene && es.editor_scene->HasUnsavedChanges();
+    if (unsaved) {
+        ImGui::SetCursorPosX(label_w);
+        ImGui::Checkbox("Save the open scene first (it has unsaved changes)", &es.export_save_scene);
+    }
+
+    ImGui::Spacing();
+    ImGui::BeginGroup();
+    ImGui::TextUnformatted("Leave out (patterns, one a line)");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        std::string tip = "Always left out:\n";
+        int col = 0;
+        for (const auto& d : gx::default_excludes()) { tip += d + (++col % 6 == 0 ? "\n" : "   "); }
+        tip += "\n\n*.ext anywhere; name/ a folder; a path with / from the project root.";
+        ImGui::SetTooltip("%s", tip.c_str());
+    }
+    changed |= ImGui::InputTextMultiline("##exclude", b.exclude, sizeof b.exclude, ImVec2(390.0f, 64.0f));
+    ImGui::EndGroup();
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    ImGui::TextUnformatted("Keep anyway (patterns)");
+    changed |= ImGui::InputTextMultiline("##include", b.include, sizeof b.include, ImVec2(-1.0f, 64.0f));
+    ImGui::EndGroup();
+
+    if (changed) {
+        ExportSettingsFromText(es);
+        es.export_plan_dirty = true;
+        es.export_settings_changed = true;
+        es.export_plan_changed_at = ImGui::GetTime();
+    }
+    if (es.export_plan_dirty && ImGui::GetTime() - es.export_plan_changed_at > 0.35) {
+        ExportSettingsFromText(es);
+        es.export_plan = gx::make_plan(proj, es.project.name, es.project.default_scene, s);
+        es.export_plan_dirty = false;
+    }
+    const gx::Plan& p = es.export_plan;
+
+    ImGui::Spacing();
+    ImGui::BeginChild("##export_plan", ImVec2(0.0f, 210.0f), true);
+    if (es.export_plan_dirty) {
+        ImGui::TextDisabled("Looking at the project...");
+    } else {
+        ImGui::Text("Goes in: %zu project files, %s", p.files.size(), export_size(p.bytes).c_str());
+        if (!p.native_scripts.empty() || !p.csharp_scripts.empty()) {
+            std::string what;
+            auto part = [&](size_t n, const char* lang) {
+                if (n == 0) return;
+                if (!what.empty()) what += " and ";
+                what += std::to_string(n) + " " + lang + (n == 1 ? " script" : " scripts");
+            };
+            part(p.native_scripts.size(), "C++");
+            part(p.csharp_scripts.size(), "C#");
+            ImGui::Text("Built for the game now: %s (players need no compiler)", what.c_str());
+        }
+        if (!p.left_out.empty()) {
+            ImGui::TextDisabled("Left out:");
+            if (ImGui::BeginTable("##left_out", 3, ImGuiTableFlags_SizingFixedFit)) {
+                ImGui::TableSetupColumn("what", ImGuiTableColumnFlags_WidthFixed, 260.0f);
+                ImGui::TableSetupColumn("size", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+                ImGui::TableSetupColumn("files", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+                int shown = 0;
+                for (const auto& lo : p.left_out) {
+                    if (++shown > 6) break;
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::TextDisabled("   %s", lo.what.c_str());
+                    ImGui::TableNextColumn();
+                    const std::string sz = export_size(lo.bytes);
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 80.0f - ImGui::CalcTextSize(sz.c_str()).x);
+                    ImGui::TextDisabled("%s", sz.c_str());
+                    ImGui::TableNextColumn();
+                    ImGui::TextDisabled("%d file%s", lo.files, lo.files == 1 ? "" : "s");
+                }
+                ImGui::EndTable();
+            }
+            if (p.left_out.size() > 6) ImGui::TextDisabled("   ... and %zu more", p.left_out.size() - 6);
+        }
+        for (const auto& w : p.warnings) ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.35f, 1.0f), "%s", w.c_str());
+        for (const auto& e : p.errors) ImGui::TextColored(ImVec4(0.95f, 0.42f, 0.38f, 1.0f), "%s", e.c_str());
+    }
+    ImGui::EndChild();
+
+    ImGui::Spacing();
+    label("Export to");
+    ImGui::SetNextItemWidth(560.0f);
+    if (ImGui::InputTextWithHint("##out", "a folder outside the project", b.output, sizeof b.output)) {
+        ExportSettingsFromText(es);
+        es.export_plan_dirty = true;
+        es.export_settings_changed = true;
+        es.export_plan_changed_at = ImGui::GetTime();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Choose...##out")) {
+        const std::string picked = gws::platform::browse_folder("Choose where to export the game");
+        if (!picked.empty()) {
+            export_copy(b.output, sizeof b.output, picked);
+            ExportSettingsFromText(es);
+            es.export_plan_dirty = true;
+            es.export_settings_changed = true;
+            es.export_plan_changed_at = -1.0;
+        }
+    }
+    if (!p.folder.empty()) {
+        std::error_code ec;
+        ImGui::SetCursorPosX(label_w);
+        const std::string makes = "Makes the folder \"" + p.folder.filename().string() + "\"" +
+                                  (p.archive.empty() ? std::string() : " and " + p.archive.filename().string());
+        ImGui::TextDisabled("%s", makes.c_str());
+        if (fs::exists(p.folder / gx::kMarkerFile, ec)) {
+            ImGui::SetCursorPosX(label_w);
+            ImGui::TextDisabled("(the earlier export there is replaced)");
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    const bool can_export = !es.export_plan_dirty && p.errors.empty() && !s.output_dir.empty() && !es.game_export_running;
+    ImGui::BeginDisabled(!can_export);
+    if (ImGui::Button("Export", ImVec2(130.0f, 0.0f))) {
+        gx::save_settings(proj, s);
+        if (unsaved && es.export_save_scene) {
+            const std::string sp = es.editor_scene->GetSceneFilepath();
+            if (!sp.empty()) es.editor_scene->SaveScene(sp);
+        }
+        StartWindowsGameExport(es);
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Close", ImVec2(110.0f, 0.0f))) {
+        if (es.export_settings_changed) gx::save_settings(proj, s);
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+#endif
+
+// `--project <manifest> --export-game <folder>`: the export with the
+// project's saved settings, no window -- for scripts and checks. Exit 0 when
+// the game was made.
+static int RunHeadlessExport(const std::string& manifest, const std::string& out_dir) {
+    namespace gx = schizo::editor::gexport;
+    namespace fs = std::filesystem;
+#if defined(_WIN32)
+    std::error_code ec;
+    const fs::path out = fs::absolute(out_dir, ec);
+    schizo::project::ProjectManifest pm;
+    if (!schizo::project::ProjectManifest::load(manifest, pm)) {
+        std::fprintf(stderr, "[export] cannot read %s\n", manifest.c_str());
+        return 2;
+    }
+    fs::current_path(pm.project_dir, ec);   // scripts build from the project, as in the editor
+    gx::Request rq;
+    rq.project_dir = fs::absolute(pm.project_dir);
+    rq.project_name = pm.name;
+    rq.default_scene = pm.default_scene;
+    rq.engine_version = GWS_ENGINE_VERSION;
+    rq.settings = gx::load_settings(pm.project_dir);
+    rq.settings.output_dir = out.string();
+    rq.runtime_exe = this_program();
+    rq.engine_root = schizo::editor::base_dir();
+    rq.build_native = [](const std::string& rel, const fs::path& o, std::string& err) {
+        return schizo::editor::export_cpp_script(rel, o.string(), err);
+    };
+    rq.build_csharp = [](const std::string& rel, const fs::path& o, std::string& err) {
+        return schizo::editor::export_cs_script(rel, o.string(), err);
+    };
+    int last = -1;
+    rq.progress = [&last](float f, const std::string& what) {
+        const int pct = static_cast<int>(f * 100.0f);
+        if (pct == last) return;
+        last = pct;
+        std::printf("[export] %3d%%  %s\n", pct, what.c_str());
+        std::fflush(stdout);
+    };
+    const gx::Result r = gx::run(rq);
+    for (const auto& w : r.warnings) std::printf("[export] warning: %s\n", w.c_str());
+    std::printf("%s\n", r.message.c_str());
+    std::fflush(stdout);
+    return r.ok ? 0 : 1;
+#else
+    (void)manifest; (void)out_dir;
+    std::fprintf(stderr, "[export] the Windows exporter runs on Windows; on Linux use tools/export_game_linux.sh\n");
+    return 2;
+#endif
 }
 
 void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
@@ -2587,6 +2995,9 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
         ImGui::EndMainMenuBar();
     }
 
+#if defined(_WIN32)
+    ShowWindowsExportDialog(editor_state);
+#else
     if (editor_state.show_game_export_options) {
         ImGui::OpenPopup("Export Game - Choose Target");
         editor_state.show_game_export_options = false;
@@ -2633,12 +3044,13 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
         if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
+#endif
 
     if (editor_state.show_game_export_dialog) {
         ImGui::OpenPopup("Export Game");
         editor_state.show_game_export_dialog = false;
     }
-    ImGui::SetNextWindowSize(ImVec2(640.0f, 280.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(720.0f, 400.0f), ImGuiCond_Always);
     if (ImGui::BeginPopupModal("Export Game", nullptr, ImGuiWindowFlags_NoResize)) {
         if (editor_state.game_export_running) {
             gws::tasks::TaskInfo export_task;
@@ -2678,9 +3090,31 @@ void ShowMainMenuBar(EditorState& editor_state, GLFWwindow* glfw_window) {
             ImGui::BeginChild("##game_export_result", ImVec2(0.0f, -42.0f), true);
             ImGui::PushTextWrapPos(0.0f);
             ImGui::TextWrapped("%s", editor_state.game_export_result.c_str());
+            for (const auto& w : editor_state.game_export_warnings)
+                ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.35f, 1.0f), "%s", w.c_str());
             ImGui::PopTextWrapPos();
             ImGui::EndChild();
             ImGui::Separator();
+#if defined(_WIN32)
+            if (editor_state.game_export_succeeded && !editor_state.game_export_exe.empty()) {
+                if (ImGui::Button("Play", ImVec2(110.0f, 0.0f))) {
+                    // The exported program itself, from its folder, as a player starts it.
+                    STARTUPINFOW si{};
+                    si.cb = sizeof si;
+                    PROCESS_INFORMATION pi{};
+                    std::wstring cmd = L"\"" + editor_state.game_export_exe.wstring() + L"\"";
+                    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                                       editor_state.game_export_folder.wstring().c_str(), &si, &pi)) {
+                        CloseHandle(pi.hProcess);
+                        CloseHandle(pi.hThread);
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Open Folder", ImVec2(130.0f, 0.0f)))
+                    ShellExecuteW(nullptr, L"open", editor_state.game_export_folder.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                ImGui::SameLine();
+            }
+#endif
             if (ImGui::Button("OK", ImVec2(110.0f, 0.0f))) ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -6190,6 +6624,24 @@ static void SetGameFullscreen(EditorState& es, GLFWwindow* w, bool on) {
     }
 }
 
+// An exported game's window icon: icon.png (or .bmp, .jpg, .tga) beside the
+// program, as the exporter put it there.
+static void SetGameWindowIcon(GLFWwindow* w, const std::filesystem::path& dir) {
+    for (const char* name : {"icon.png", "icon.bmp", "icon.jpg", "icon.jpeg", "icon.tga"}) {
+        std::ifstream f(dir / name, std::ios::binary);
+        if (!f) continue;
+        const std::string bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        int iw = 0, ih = 0, n = 0;
+        stbi_uc* px = stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(bytes.data()),
+                                            static_cast<int>(bytes.size()), &iw, &ih, &n, 4);
+        if (!px) continue;
+        GLFWimage img{iw, ih, px};
+        glfwSetWindowIcon(w, 1, &img);
+        stbi_image_free(px);
+        return;
+    }
+}
+
 void ShowViewport(EditorState& editor_state) {
     if (!editor_state.show_viewport) {
         editor_state.viewport_input_focused = false;
@@ -8138,6 +8590,7 @@ int main(int argc, char** argv) {
     uint16_t    startup_host_port = 0;
     bool        game_window_mode  = false;
     bool        standalone_game_mode = false;
+    std::string export_game_dir;                 // --export-game <folder>: export, no window
     bool        startup_probe     = false;   // --startup-probe: time init, then exit
     int         frame_limit       = 0;       // --frames N: render N frames, then exit
     bool        probe_inner_loop  = false;   // --probe-inner-loop: time the budgeted rows
@@ -8210,6 +8663,10 @@ int main(int argc, char** argv) {
             startup_project = argv[++i];
         } else if (a == "--net-game") {
             game_window_mode = true;
+        } else if (a == "--export-game" && i + 1 < argc) {
+            // With --project: export that project as a game into the folder,
+            // with its saved export settings, and exit (no window).
+            export_game_dir = argv[++i];
         } else if (a == "--game") {
             game_window_mode = true;
             standalone_game_mode = true;
@@ -8339,6 +8796,54 @@ int main(int argc, char** argv) {
         // the editor was launched — repo root, Hub with the exe dir, or install).
         schizo::editor::init_base_dir();
 
+        if (!export_game_dir.empty()) {
+            if (startup_project.empty()) {
+                std::fprintf(stderr, "--export-game needs --project <project.schizo>\n");
+                return 2;
+            }
+            return RunHeadlessExport(startup_project, export_game_dir);
+        }
+
+        // An exported game (game-export.marker beside the program): its title,
+        // and the player's own folders -- graphics settings and saves per player
+        // and game, never in the game's folder (it may be read-only) and never
+        // the editor's -- and its scripts as built at export.
+        schizo::editor::gexport::GameInfo game_info;
+        bool exported_game = false;
+        if (standalone_game_mode) {
+            namespace gx = schizo::editor::gexport;
+            namespace fs = std::filesystem;
+            const fs::path pkg = schizo::editor::executable_dir();
+            std::error_code gec;
+            exported_game = fs::is_regular_file(pkg / gx::kMarkerFile, gec);
+            {
+                std::ifstream gi(pkg / gx::kGameInfoFile, std::ios::binary);
+                std::stringstream gss;
+                gss << gi.rdbuf();
+                game_info = gx::game_info_from_text(gss.str());
+            }
+            schizo::project::ProjectManifest gm;
+            schizo::project::ProjectManifest::load(startup_project, gm);
+            if (game_info.project_name.empty()) game_info.project_name = gm.name;
+            if (game_info.title.empty()) game_info.title = gm.name;
+            if (exported_game) {
+                const fs::path user = schizo::editor::PlaySettings::user_game_dir(game_info.project_name);
+                schizo::editor::set_render_settings_file(user / "render_settings.txt");
+                schizo::editor::play_save_dir_override() = (user / "saves").string();
+                auto& pb = schizo::editor::prebuilt_scripts();
+                pb.dir = (fs::absolute(startup_project).parent_path() / gx::kPrebuiltDir).string();
+                const fs::path inst = fs::temp_directory_path(gec) /
+                                      ("gws-" + gx::prebuilt_key(game_info.project_name) + "-scripts");
+                // Copies left by games that ended; a running game's are locked and stay.
+                std::vector<fs::path> old;
+                for (fs::directory_iterator it(inst, gec), end; !gec && it != end; it.increment(gec)) old.push_back(it->path());
+                for (const auto& o : old) { std::error_code rec; fs::remove_all(o, rec); }
+                pb.instance_dir = inst.string();
+                spdlog::info("[game] '{}' {} -- this player's settings and saves in {}",
+                             game_info.title, game_info.version, user.string());
+            }
+        }
+
         // ----------------------------------------------------------------
         // GLFW + window (Vulkan, no OpenGL context)
         // ----------------------------------------------------------------
@@ -8452,6 +8957,10 @@ int main(int argc, char** argv) {
             spdlog::error("glfwCreateWindow failed");
             glfwTerminate();
             return 1;
+        }
+        if (exported_game) {
+            glfwSetWindowTitle(glfw_window, game_info.title.c_str());
+            SetGameWindowIcon(glfw_window, schizo::editor::executable_dir());
         }
         // ...and off-screen. Not focusing it was not enough: it still opened on
         // top of the desktop, and a window someone minimises mid-run stalls the
@@ -9810,7 +10319,7 @@ int main(int argc, char** argv) {
         // ----------------------------------------------------------------
         {
             auto scene = editor_scene.GetScene();
-            if (scene) {
+            if (scene && !standalone_game_mode) {   // a game opens its own scene at once
                 schizo::scene::EntityFactory::CreateDirectionalLight(scene, "Directional Light",
                     glm::vec3(-0.3f, -1.0f, 0.2f),
                     glm::vec3(1.0f, 0.95f, 0.85f), 1.5f);
@@ -10146,10 +10655,17 @@ int main(int argc, char** argv) {
                 throw std::runtime_error(
                     "standalone game could not start playback (is there a Player and Camera?)");
             }
-            glfwSetWindowTitle(glfw_window, editor_state.project.name.c_str());
+            glfwSetWindowTitle(glfw_window, (game_info.title.empty() ? editor_state.project.name : game_info.title).c_str());
             spdlog::info("[game] started exported project '{}' with scene '{}'",
                          editor_state.project.name,
                          editor_state.editor_scene->GetSceneFilepath());
+            // Full screen as the player last left it, else as the export said.
+            // (Not in a --frames run: that window is a measurement, off-screen.)
+            if (exported_game && frame_limit == 0) {
+                const int remembered = schizo::editor::play_settings().fullscreen;
+                if (remembered == 1 || (remembered < 0 && game_info.fullscreen))
+                    SetGameFullscreen(editor_state, glfw_window, true);
+            }
         }
 
         // Net-spawned / game-window instances skip the launcher and run with
@@ -10527,6 +11043,13 @@ int main(int argc, char** argv) {
                     glfwGetKey(glfw_window, GLFW_KEY_LEFT_SHIFT) != GLFW_PRESS && glfwGetKey(glfw_window, GLFW_KEY_RIGHT_SHIFT) != GLFW_PRESS)
                     editor_state.request_fullscreen_toggle = true;
                 f11_was = f11;
+                // A game also takes Alt+Enter, as players expect.
+                static bool alt_enter_was = false;
+                const bool alt_enter = game_window_mode && glfwGetKey(glfw_window, GLFW_KEY_ENTER) == GLFW_PRESS &&
+                                       (glfwGetKey(glfw_window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
+                                        glfwGetKey(glfw_window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS);
+                if (alt_enter && !alt_enter_was) editor_state.request_fullscreen_toggle = true;
+                alt_enter_was = alt_enter;
                 // GWS_TEST_FULLSCREEN=<frame>[,<frame>]: toggle at those frames (tests).
                 static const std::vector<int> fs_test = [] {
                     std::vector<int> v;
@@ -10539,9 +11062,34 @@ int main(int argc, char** argv) {
                 }();
                 if (std::find(fs_test.begin(), fs_test.end(), static_cast<int>(frame_count)) != fs_test.end())
                     editor_state.request_fullscreen_toggle = true;
+                // GWS_TEST_EXPORT_DIALOG=<frame>: Project > Export Game opens at that frame (screenshots).
+                static const int export_dialog_frame = [] {
+                    const char* e = std::getenv("GWS_TEST_EXPORT_DIALOG");
+                    return e ? std::atoi(e) : -1;
+                }();
+                if (static_cast<int>(frame_count) == export_dialog_frame && editor_state.project_loaded)
+                    editor_state.show_game_export_options = true;
+#if defined(_WIN32)
+                // GWS_TEST_EXPORT_RUN=<frame>: what the dialog's Export button does,
+                // with the project's saved settings (the task, its progress, the result).
+                static const int export_run_frame = [] {
+                    const char* e = std::getenv("GWS_TEST_EXPORT_RUN");
+                    return e ? std::atoi(e) : -1;
+                }();
+                if (static_cast<int>(frame_count) == export_run_frame && editor_state.project_loaded) {
+                    LoadExportDialog(editor_state);
+                    ExportSettingsFromText(editor_state);
+                    StartWindowsGameExport(editor_state);
+                }
+#endif
                 if (editor_state.request_fullscreen_toggle) {
                     editor_state.request_fullscreen_toggle = false;
                     SetGameFullscreen(editor_state, glfw_window, !editor_state.game_fullscreen);
+                    if (exported_game) {   // the player's choice, for next time
+                        auto& ps = schizo::editor::play_settings();
+                        ps.fullscreen = editor_state.game_fullscreen ? 1 : 0;
+                        ps.save();
+                    }
                 }
             }
 
@@ -12138,6 +12686,12 @@ int main(int argc, char** argv) {
                 using QP = schizo::editor::QualityPreset;
                 for (const auto& [name, value] : ps.graphics_requests) {
                     const bool on = value == "On";
+                    if (name == "fullscreen") {
+                        SetGameFullscreen(editor_state, glfw_window, on);
+                        if (exported_game) { ps.fullscreen = on ? 1 : 0; ps.save(); }
+                        spdlog::info("[settings] fullscreen = {}", value);
+                        continue;
+                    }
                     if (name == "quality") render_settings.apply_preset(schizo::editor::quality_preset_from_name(value));
                     else if (name == "ambient_occlusion") render_settings.ssao = on;
                     else if (name == "reflections") render_settings.ssr = on;
@@ -12167,6 +12721,7 @@ int main(int argc, char** argv) {
                     ps.graphics["render_scale"] = std::to_string(pct == 66 ? 67 : pct) + "%";
                 }
                 ps.graphics["vsync"] = onoff(rs.vsync);
+                ps.graphics["fullscreen"] = onoff(editor_state.game_fullscreen);
             }
 
             // F6 saves the game in Play, F9 loads it (slot "quick").
