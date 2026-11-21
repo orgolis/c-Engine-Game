@@ -37,6 +37,7 @@ struct EditorScriptCtx {
     float mouse_dx = 0.0f, mouse_dy = 0.0f;   // this frame's cursor delta (px)
     std::function<bool(uint32_t, const std::string&, bool, float, float, bool)> play_animation;
     std::function<bool(uint32_t, const std::string&, float*)> bone_position;
+    std::function<bool(uint32_t, const std::string&, const float*, float*)> bone_point;
     std::function<bool(const char*, const float*, const float*, float, float)> spawn_effect;
     std::function<bool(uint32_t, const std::string&, const float*)> set_bone_rotation;
     float environment_darkness = 0.0f, environment_whiteout = 0.0f;

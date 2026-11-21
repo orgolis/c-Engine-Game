@@ -259,6 +259,18 @@ if(MINGW)
     target_link_options(locomotion_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# animhooks_check: animation hooks (clip events) and inertialization, headless.
+# A clip event is gameplay -- a bolt leaving its port, the jaws closing -- so it
+# must be heard exactly once a pass at any frame rate; the spring decides whether
+# a change of clip pops or flows.
+add_executable(animhooks_check animhooks_check/main.cpp)
+target_include_directories(animhooks_check PRIVATE ../editor/include)
+target_link_libraries(animhooks_check PRIVATE glm)
+target_compile_features(animhooks_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(animhooks_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # npcagent_check: perception, decision and movement, connected. Each part was
 # verified separately and driven by nothing. Asserts OBSERVABLE behaviour --
 # the failure mode is an agent that ticks happily and never moves.

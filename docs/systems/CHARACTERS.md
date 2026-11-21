@@ -76,7 +76,53 @@ Whose doing it reads:
   "Body"). The agent's aim, shots, stagger and death drive it
   (docs/systems/CREATURES_AI.md).
 
-Changes blend: a new clip fades in over a fraction of a second.
+**Changes flow (inertialization).** A new clip plays at once; what was
+showing and what the new clip says differ, bone by bone, and that difference
+-- with the speed the old pose was moving at -- dies away on a critically
+damped spring (a quarter of the blend time is its half-life). The old motion
+carries on into the new one instead of the two being mixed: no clip is
+sampled twice, a turn already under way does not stall, and a change in the
+middle of another settles from wherever the body is (Bollo, GDC 2018; the
+spring from Holden's "Spring-It-On"). It is the same for clips a script plays.
+
+## Looking and aiming
+
+A character driven by gameplay with a `head` bone under its **Upper body
+bone** turns the chain between them -- spine, chest, neck, head -- toward
+what it looks at: an NPC agent at the target it sees (its gun, held at the
+chest, points there: an aim offset) or, hunting, toward where it last saw
+one (a glance, the head leading). Up to about 70 degrees to the side and 57
+up or down; the angles are the model's own (it faces +Z) and are carried
+into each joint's axes, so any rig works; a spring settles the look instead
+of snapping it, and a dead or calm character's look eases back.
+`GWS_TEST_LOG_ANIM=1` logs what agents look at.
+
+## Animation hooks (clip events)
+
+A blow should land when the clip shows it: the jaws closing, a foot touching
+down, a bolt leaving its port. A model's clips can carry **events** -- a text
+file beside the model, the model's name with `.events` for its extension:
+
+```
+# clip   seconds  event      [param]
+bite     0.45     bite_open
+salvo    1.05     bolt       0
+walk     0.40     footstep   left
+```
+
+A clip is found by name as **Clips** finds one (whole, or part of it). As the
+playing clip passes an event, the engine publishes the gameplay event
+`anim.<event>` (instigator: the character; param: the clip, then `|` and the
+event's param; value: the time): scripts read it from the event feed, logic
+graphs hear it like any other. Each event fires once a pass, at any frame
+rate (a long frame passes several at once, in order); a looping clip fires
+on every pass. A model with events is animated every frame, whatever its
+level of detail. `GWS_TEST_LOG_ANIM_EVENTS=1` logs them.
+
+Scripts that pose a model also get `bone_point(e, bone, model_point, out)`:
+a point of the model, as modelled, carried by a bone as it is posed now (the
+middle of a hit region, the tip of a jaw) -- probe `engine.animation_events`
+(docs/systems/SCRIPTED_ENCOUNTERS.md).
 
 ## Something held
 
@@ -175,7 +221,8 @@ idle, fire, reload and draw clips). Each soldier is an NPC agent with a
 ## Known limits
 
 - Inverse kinematics only for the first-person arms: a third-person support
-  hand follows the clip, not the gun.
+  hand follows the clip, not the gun, and feet are not yet placed on slopes
+  (foot IK: docs/research/NATURAL_ANIMATION.md has the plan).
 - Root motion is not used: characters move by their controller or agent and
   the clip's speed follows.
 - One material per model.
@@ -183,5 +230,7 @@ idle, fire, reload and draw clips). Each soldier is an NPC agent with a
   playing; the gameplay states are seen in Play.
 
 The rules are in `editor/include/imported_skinned_actor.h` (clips, blending,
-upper body, bones) and `editor/src/main.cpp` (which state, held models, the
-first-person gun); the import is checked by `tools/skinned_import_check`.
+upper body, bones, looking), `editor/include/anim_hooks.h` (the spring and the
+clip events) and `editor/src/main.cpp` (which state, held models, the
+first-person gun); the import is checked by `tools/skinned_import_check`, the
+hooks and the spring by `tools/animhooks_check`.

@@ -14,6 +14,21 @@ returns "1" when the verbs after it in the table are there.
 | `set_bone_rotation(e, bone, degrees)` | `engine.encounter_api` | a turn added on top of the animated pose (a head that tracks) |
 | `spawn_mesh(path, pos, scale)` | `engine.encounter_api` | a model with no collision (debris, a visual effect mesh) |
 | `set_damage_receiver(part, owner, multiplier)` | `engine.combat_api` | a hurtbox `part` passes its damage to `owner`'s health, times `multiplier` (a weak point) -- many parts, one health pool |
+| `bone_point(e, bone, model_point, out)` | `engine.animation_events` | a point of the model (its own space, as modelled) carried by a bone as posed now, in the world: a hit region's middle, a jaw's tip |
+
+**Animation hooks.** With `engine.animation_events`, a model's clips can carry
+events (`<model>.events`, docs/systems/CHARACTERS.md): as a clip passes one,
+the event feed (`event_count` / `event_get`) has `anim.<event>`, instigator
+the entity, param the clip (and `|` and the event's own param). A boss can
+land its blow on the frame the clip shows it -- and keep the time it knows
+as a fallback, for an engine without them.
+
+**`set_bone_rotation` turns about the joint's own axes**, as the rig has
+them: a rig made in Blender keeps Blender's Z-up axes inside (its root stands
+them up), so a turn about a model's up is about the joint's Z there. A
+script that knows its rig converts (TestGame's `ender_leviathan.cpp`,
+`joint_degrees`); the engine's own looking and aiming work in the model's
+space for any rig.
 
 Damage through a receiver: a shot or an aimed ability hits the part it meets
 with that part's multiplier; areas and melee count each owner once. Tags the

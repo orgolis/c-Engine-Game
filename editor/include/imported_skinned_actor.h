@@ -27,6 +27,7 @@
 
 #include "skeleton.h"
 #include "two_bone_ik.h"
+#include "anim_hooks.h"   // inertialization and clip events (no GPU: animhooks_check)
 #include "animation.h"
 
 #include <glm/glm.hpp>
@@ -36,6 +37,9 @@
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
+#include <spdlog/spdlog.h>
+#include <sstream>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -50,7 +54,33 @@ namespace schizo::editor {
 struct SharedSkinnedAsset {
     gws::renderer::gpu::LoadedSkinnedModel model;
     std::unique_ptr<gws::renderer::gpu::Texture> albedo, mr, normal, emissive;
+    /// Clip events (animation notifies), by clip index: what happens at which
+    /// second of a clip -- a footstep, the jaws closing, a bolt leaving its port.
+    using ClipEvent = anim::ClipEvent;
+    anim::ClipEvents events;
 };
+
+/// The events of a model's clips, from the text file beside it (the model's path
+/// with `.events` for its extension). A line is `clip seconds name [param]`
+/// (`#` starts a comment); the clip is found by name as play() finds it. Each is
+/// published on the gameplay event bus as `anim.<name>` when its clip passes it,
+/// with the entity as instigator, the clip in `param` (and the event's own param
+/// after a `|`) and the time as `value`: scripts and logic graphs hear it like any
+/// other gameplay event. glTF has no place for them, hence the file.
+inline void load_clip_events(SharedSkinnedAsset& sa, const std::string& model_path,
+                             const std::vector<std::shared_ptr<schizo::renderer::AnimationClip>>& clips) {
+    std::filesystem::path path(model_path);
+    path.replace_extension(".events");
+    std::ifstream in(path);
+    if (!in) return;
+    std::vector<std::string> names;
+    for (const auto& c : clips) names.push_back(c ? c->GetName() : std::string());
+    std::vector<std::string> warnings;
+    const int count = anim::parse_clip_events(in, [&](const std::string& clip) { return anim::find_clip(names, clip); },
+                                              sa.events, &warnings);
+    for (const auto& w : warnings) spdlog::warn("[anim] {}: {}", path.string(), w);
+    if (count) spdlog::info("[anim] {} clip events for '{}'", count, model_path);
+}
 inline std::unordered_map<std::string, std::shared_ptr<SharedSkinnedAsset>>& skinned_asset_cache() {
     static std::unordered_map<std::string, std::shared_ptr<SharedSkinnedAsset>> cache;
     return cache;
@@ -95,15 +125,23 @@ public:
     /// Play clip `i` (looping, or once and holding its last frame), blending
     /// in over `blend` seconds. The clip already playing the same way just
     /// goes on; `restart` starts it again from the beginning (a second shot).
+    ///
+    /// The change is smoothed by inertialization (Bollo, Gears of War, GDC 2018):
+    /// the new clip takes over at once, and the difference between the pose that
+    /// was showing and the new one -- and the way it was moving -- is carried
+    /// along and decays to nothing (a critically damped spring whose half-life
+    /// is a quarter of `blend`). Unlike a crossfade from the old clip, a change
+    /// in the middle of another change never jumps, and the body keeps its
+    /// momentum into the new motion. `blend` 0 cuts.
     void play(int i, bool loop, float blend = 0.2f, float speed = 1.0f, bool restart = false) {
         if (i < 0 || static_cast<size_t>(i) >= clips_.size()) return;
         base_.speed = speed;
         if (!restart && i == base_.clip && loop == base_.loop) return;
-        if (blend > 0.0f && base_.clip >= 0) { prev_ = base_; fade_ = 0.0f; fade_len_ = blend; }
-        else                                  { prev_.clip = -1; }
+        if (base_.clip >= 0) transition(blend);
         base_.clip = i;
         base_.time = 0.0f;
         base_.loop = loop;
+        base_.fresh = true;
     }
 
     /// The upper body (the bones under `set_upper_body`'s bone) plays clip `i`
@@ -113,9 +151,11 @@ public:
         if (i < 0 || static_cast<size_t>(i) >= clips_.size() || upper_mask_.empty()) { upper_target_ = 0.0f; return; }
         upper_target_ = 1.0f;
         if (!restart && i == upper_.clip && loop == upper_.loop && upper_w_ > 0.0f) return;
+        if (upper_w_ > 0.0f) transition(blend);   // a clip already showing gives way smoothly (a second shot, aim -> fire)
         upper_.clip = i;
         upper_.time = 0.0f;
         upper_.loop = loop;
+        upper_.fresh = true;
     }
     /// Which bone's subtree is the upper body (a name, matched as a prefix).
     void set_upper_body(const std::string& bone) {
@@ -140,27 +180,49 @@ public:
     /// CPU tick: advance the clips and pose the skeleton. Call once a frame.
     void advance(float dt) {
         if (!skeleton_ || clips_.empty()) return;
+        if (base_.clip < 0) base_.clip = 0;
+        const float base_was = base_.fresh ? -1e-4f : base_.time;
+        const float upper_was = upper_.fresh ? -1e-4f : upper_.time;
         base_.time += dt * base_.speed;
-        prev_.time += dt * base_.speed;
         upper_.time += dt;
-        fade_ += dt;
+        if (dt > 0.0f) {
+            fire_events(base_, base_was);
+            if (upper_.clip >= 0 && upper_target_ > 0.0f) fire_events(upper_, upper_was);
+            base_.fresh = upper_.fresh = false;
+        }
         const float step = dt / upper_blend_;
         upper_w_ = upper_target_ > upper_w_ ? std::min(upper_target_, upper_w_ + step) : std::max(upper_target_, upper_w_ - step);
-        pose();
+        pose(dt);
     }
+
+    /// A clip's event, as it was passed (`<model>.events`, see load_events).
+    struct FiredEvent {
+        std::string clip, name, param;
+        float time = 0.0f;
+    };
+    /// The events the clips passed since the last call (the caller publishes them).
+    std::vector<FiredEvent> take_events() { std::vector<FiredEvent> out; out.swap(fired_); return out; }
+    /// Whether any clip of this model carries events: such an actor is animated
+    /// every frame (its events are gameplay; they must not wait for a level of detail).
+    bool has_events() const { return shared_ && !shared_->events.empty(); }
+    /// Where the base clip is: its name and seconds into it.
+    std::string clip_name() const {
+        return base_.clip >= 0 && static_cast<size_t>(base_.clip) < clips_.size() ? clips_[static_cast<size_t>(base_.clip)]->GetName() : std::string();
+    }
+    float clip_time() const { return base_.time; }
 
     /// Pose the skeleton WITHOUT advancing time. A paused actor still has to be
     /// posed on the first frame, or it renders in bind pose until you press
     /// play -- which reads as "the model is broken", not "it is paused".
-    void refresh_pose() { pose(); }
+    void refresh_pose() { pose(0.0f); }
 
     /// Absolute additive offset from the sampled clip, never accumulated.
     bool set_bone_rotation(const std::string& name, const glm::vec3& degrees) {
         const int b = find_bone(name);
-        if (b < 0 || static_cast<size_t>(b) >= pose_a_.size()) return false;
-        if (procedural_.size() != pose_a_.size()) procedural_.resize(pose_a_.size(), glm::quat(1,0,0,0));
+        if (b < 0 || static_cast<size_t>(b) >= out_.size()) return false;
+        if (procedural_.size() != out_.size()) procedural_.resize(out_.size(), glm::quat(1,0,0,0));
         procedural_[b] = glm::quat(glm::radians(degrees));
-        auto tf = pose_a_[b];
+        auto tf = out_[b];
         tf.rotation = tf.rotation * procedural_[b];
         skeleton_->SetBoneLocalTransform(static_cast<uint16_t>(b), tf);
         skeleton_->UpdateWorldTransforms();
@@ -267,6 +329,73 @@ public:
         }
     }
 
+    // ---- looking and aiming (an aim offset) ---------------------------------------
+    /// The bones that turn toward what the character looks at: from `base` (the
+    /// spine) up through the chain to `head`. Empty when `head` is not under `base`.
+    void set_look_chain(const std::string& base, const std::string& head) {
+        look_chain_.clear();
+        const int h = find_bone(head), b = find_bone(base);
+        if (h < 0 || b < 0 || !skeleton_) return;
+        for (int at = h; at >= 0; at = skeleton_->GetBone(static_cast<uint16_t>(at))->parent_id) {
+            look_chain_.insert(look_chain_.begin(), at);
+            if (at == b) return;
+        }
+        look_chain_.clear();
+    }
+    bool has_look_chain() const { return !look_chain_.empty(); }
+    /// After advance(): turn the chain toward `world_point`, by `weight` (0..1).
+    /// `aim` 0 is a glance, the head leading and the spine following a little;
+    /// 1 is an aim, the spine and chest taking it all so that what the chest holds
+    /// (a rifle in both hands) points there. The angles are the model's own (it
+    /// faces +Z), so it works whatever axes the rig's joints have; a critically
+    /// damped spring (half-life 0.08 s) makes the look settle instead of snap, and
+    /// a weight of 0 lets it ease back. Model first (set_model).
+    void look_at(const glm::vec3& world_point, float weight, float aim, float dt) {
+        if (look_chain_.empty() || !skeleton_ || dt < 0.0f) return;
+        const glm::vec3 eye(skeleton_->GetWorldMatrix(static_cast<uint16_t>(look_chain_.back()))[3]);
+        const glm::vec3 to = glm::vec3(glm::inverse(model()) * glm::vec4(world_point, 1.0f)) - eye;
+        float yaw = 0.0f, pitch = 0.0f;
+        if (weight > 0.0f && glm::length(to) > 0.3f) {
+            yaw = std::clamp(std::atan2(to.x, to.z), -1.2f, 1.2f) * weight;                       // ~70 degrees either way
+            pitch = std::clamp(std::atan2(to.y, glm::length(glm::vec2(to.x, to.z))), -1.0f, 1.0f) * weight;
+        }
+        auto follow = [&](float& now, float& vel, float goal) {
+            glm::vec3 x(now - goal, 0.0f, 0.0f), v(vel, 0.0f, 0.0f);
+            anim::decay(x, v, 0.08f, dt);
+            now = goal + x.x;
+            vel = v.x;
+        };
+        follow(look_yaw_, look_vyaw_, yaw);
+        follow(look_pitch_, look_vpitch_, pitch);
+        follow(look_aim_, look_vaim_, std::clamp(aim, 0.0f, 1.0f));
+        if (std::abs(look_yaw_) < 1e-4f && std::abs(look_pitch_) < 1e-4f) return;
+        // Shares down the chain: a glance grows toward the head (1, 2, 3...), an
+        // aim is the lower half's alone, evenly.
+        const size_t n = look_chain_.size(), lower = (n + 1) / 2;
+        float glance_total = 0.0f;
+        for (size_t i = 0; i < n; ++i) glance_total += static_cast<float>(i + 1);
+        auto rot = [](const glm::mat4& m) {
+            return glm::normalize(glm::quat_cast(glm::mat3(glm::normalize(glm::vec3(m[0])), glm::normalize(glm::vec3(m[1])),
+                                                           glm::normalize(glm::vec3(m[2])))));
+        };
+        for (size_t i = 0; i < n; ++i) {
+            const float glance = static_cast<float>(i + 1) / glance_total, aimed = i < lower ? 1.0f / static_cast<float>(lower) : 0.0f;
+            const float share = glance + (aimed - glance) * look_aim_;
+            if (share <= 0.0f) continue;
+            // The turn in the model's space (yaw about up, then pitch about the model's x),
+            // carried into the joint's own: L' = P^-1 D P L.
+            const glm::quat d = glm::angleAxis(look_yaw_ * share, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                                glm::angleAxis(-look_pitch_ * share, glm::vec3(1.0f, 0.0f, 0.0f));
+            const int b = look_chain_[i];
+            const int parent = skeleton_->GetBone(static_cast<uint16_t>(b))->parent_id;
+            const glm::quat p = parent >= 0 ? rot(skeleton_->GetWorldMatrix(static_cast<uint16_t>(parent))) : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            schizo::renderer::BoneTransform tf = skeleton_->GetBone(static_cast<uint16_t>(b))->local_transform;
+            tf.rotation = glm::normalize(glm::inverse(p) * d * p * tf.rotation);
+            skeleton_->SetBoneLocalTransform(static_cast<uint16_t>(b), tf);
+            skeleton_->UpdateWorldTransforms();
+        }
+    }
+
     /// Skinned at least once (its vertex buffer holds a pose, not the bind pose).
     bool skinned_once() const { return skinned_once_; }
     /// Every bone's matrix finite and inside 1e5 m (a pose gone wrong -- NaN
@@ -323,6 +452,7 @@ private:
         float time = 0.0f;
         bool  loop = true;
         float speed = 1.0f;
+        bool  fresh = true;   // just started: an event at its first instant still fires
     };
 
     static std::string lower(std::string s) {
@@ -343,24 +473,89 @@ private:
         for (size_t b = 0; b < bones.size(); ++b) out[b] = skeleton_->GetAllBones()[b].local_transform;
     }
 
-    void pose() {
+    // ---- inertialization (anim_hooks.h) ------------------------------------------------
+    static glm::vec3 to_scaled_axis(const glm::quat& q) { return anim::to_scaled_axis(q); }
+    static glm::quat from_scaled_axis(const glm::vec3& a) { return anim::from_scaled_axis(a); }
+    static void decay(glm::vec3& x, glm::vec3& v, float halflife, float dt) { anim::decay(x, v, halflife, dt); }
+    void transition(float blend) {
+        if (blend <= 0.0f) {   // a cut: nothing carried over
+            inert_live_ = false;
+            want_inert_ = false;
+            return;
+        }
+        want_inert_ = true;
+        inert_half_ = anim::halflife_for_blend(blend);
+    }
+
+    // ---- events ----------------------------------------------------------------------
+    void fire_events(const Track& tr, float was) {
+        if (!shared_ || tr.clip < 0) return;
+        auto it = shared_->events.find(tr.clip);
+        if (it == shared_->events.end() || it->second.empty()) return;
+        const float dur = clips_[static_cast<size_t>(tr.clip)]->GetDuration();
+        const float now = tr.time;
+        if (now <= was) return;
+        const std::string& clip = clips_[static_cast<size_t>(tr.clip)]->GetName();
+        passed_.clear();
+        anim::events_passed(it->second, was, now, dur, tr.loop, passed_);
+        for (size_t i : passed_) fired_.push_back({clip, it->second[i].name, it->second[i].param, it->second[i].time});
+    }
+
+    void pose(float dt) {
         if (!skeleton_ || clips_.empty()) return;
         if (base_.clip < 0) base_.clip = 0;
         using schizo::renderer::BoneTransform;
         sample(base_, pose_a_);
-        if (prev_.clip >= 0 && fade_ < fade_len_) {
-            sample(prev_, pose_b_);
-            const float w = fade_ / std::max(fade_len_, 1e-4f);
-            for (size_t b = 0; b < pose_a_.size(); ++b) pose_a_[b] = BoneTransform::Slerp(pose_b_[b], pose_a_[b], w);
-        } else {
-            prev_.clip = -1;
-        }
         if (upper_.clip >= 0 && upper_w_ > 0.0f && !upper_mask_.empty()) {
             sample(upper_, pose_b_);
             for (size_t b = 0; b < pose_a_.size() && b < upper_mask_.size(); ++b)
                 if (upper_mask_[b]) pose_a_[b] = BoneTransform::Slerp(pose_a_[b], pose_b_[b], upper_w_);
         }
-        for (size_t b = 0; b < pose_a_.size(); ++b) {
+        const size_t n = pose_a_.size();
+        // A change of clip: what was showing minus what the clips say now, and how it moved.
+        if (want_inert_ && out_.size() == n) {
+            want_inert_ = false;
+            inert_live_ = true;
+            inert_age_ = 0.0f;
+            off_p_.assign(n, glm::vec3(0.0f));
+            off_vp_.assign(n, glm::vec3(0.0f));
+            off_r_.assign(n, glm::vec3(0.0f));
+            off_vr_.assign(n, glm::vec3(0.0f));
+            const bool moving = out_prev_.size() == n && out_dt_ > 1e-4f && out_dt_ < 0.1f;
+            for (size_t b = 0; b < n; ++b) {
+                off_p_[b] = out_[b].position - pose_a_[b].position;
+                off_r_[b] = to_scaled_axis(out_[b].rotation * glm::inverse(pose_a_[b].rotation));
+                if (moving) {
+                    off_vp_[b] = (out_[b].position - out_prev_[b].position) / out_dt_;
+                    off_vr_[b] = to_scaled_axis(out_[b].rotation * glm::inverse(out_prev_[b].rotation)) / out_dt_;
+                    // (a sudden velocity from a hiccup in the frame time would throw the pose)
+                    if (glm::length(off_vr_[b]) > 30.0f) off_vr_[b] = glm::normalize(off_vr_[b]) * 30.0f;
+                    if (glm::length(off_vp_[b]) > 20.0f) off_vp_[b] = glm::normalize(off_vp_[b]) * 20.0f;
+                }
+            }
+        } else if (want_inert_) {
+            want_inert_ = false;   // nothing was showing yet: nothing to carry
+        }
+        if (inert_live_ && off_p_.size() == n) {
+            if (dt > 0.0f) {
+                for (size_t b = 0; b < n; ++b) {
+                    decay(off_p_[b], off_vp_[b], inert_half_, dt);
+                    decay(off_r_[b], off_vr_[b], inert_half_, dt);
+                }
+                inert_age_ += dt;
+                if (inert_age_ > inert_half_ * 12.0f) inert_live_ = false;   // under 0.03% left
+            }
+            for (size_t b = 0; b < n; ++b) {
+                pose_a_[b].position += off_p_[b];
+                pose_a_[b].rotation = glm::normalize(from_scaled_axis(off_r_[b]) * pose_a_[b].rotation);
+            }
+        }
+        if (dt > 0.0f) {
+            out_prev_.swap(out_);
+            out_dt_ = dt;
+        }
+        out_ = pose_a_;
+        for (size_t b = 0; b < n; ++b) {
             auto tf = pose_a_[b];
             if (b < procedural_.size()) tf.rotation = tf.rotation * procedural_[b];
             skeleton_->SetBoneLocalTransform(static_cast<uint16_t>(b), tf);
@@ -390,6 +585,7 @@ private:
             sa->mr     = upload(lm0.metallic_roughness, false);
             sa->normal = upload(lm0.normal, false);
             sa->emissive = upload(lm0.emissive, true);
+            load_clip_events(*sa, gltf_path, sa->model.animations);
             it = cache.emplace(gltf_path, std::move(sa)).first;
         }
         shared_ = it->second;
@@ -434,9 +630,20 @@ private:
     std::unique_ptr<gws::renderer::gpu::Material>    mat_;
     std::vector<schizo::renderer::BoneTransform>     bind_, pose_a_, pose_b_;
     std::vector<glm::quat> procedural_;
+    // look_at: the chain, and the springs of its yaw, pitch and aim (radians, 0..1).
+    std::vector<int> look_chain_;
+    float look_yaw_ = 0.0f, look_vyaw_ = 0.0f, look_pitch_ = 0.0f, look_vpitch_ = 0.0f, look_aim_ = 0.0f, look_vaim_ = 0.0f;
+    // The pose shown (before the procedural offsets), this frame and the one before.
+    std::vector<schizo::renderer::BoneTransform>     out_, out_prev_;
+    float out_dt_ = 0.0f;
+    // Inertialization: per bone, the offset still to decay and its velocity.
+    std::vector<glm::vec3> off_p_, off_vp_, off_r_, off_vr_;
+    bool  want_inert_ = false, inert_live_ = false;
+    float inert_half_ = 0.05f, inert_age_ = 0.0f;
+    std::vector<size_t> passed_;   // fire_events scratch
+    std::vector<FiredEvent> fired_;
 
-    Track base_, prev_, upper_;
-    float fade_ = 0.0f, fade_len_ = 0.0f;
+    Track base_, upper_;
     float upper_w_ = 0.0f, upper_target_ = 0.0f, upper_blend_ = 0.15f;
     std::vector<uint8_t> upper_mask_;
 

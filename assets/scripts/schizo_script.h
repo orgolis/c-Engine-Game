@@ -177,6 +177,11 @@ typedef struct SchizoScriptApi {
     unsigned (*spawn_mesh)(void* ctx, const char* path, const float pos[3], float scale);
     /* 0.8.53: query engine.combat_api before accessing this appended field. */
     bool (*set_damage_receiver)(void* ctx, unsigned part, unsigned owner, float multiplier);
+    /* 0.8.57 (query engine.animation_events): a point of a skinned model, in the
+       model's own space as modelled, carried by `bone` as it is posed now, in the
+       world. Clip events arrive as gameplay events "anim.<name>" (instigator: the
+       entity; param: the clip). */
+    bool (*bone_point)(void* ctx, unsigned e, const char* bone, const float model_point[3], float out[3]);
 } SchizoScriptApi;
 
 }  // extern "C"

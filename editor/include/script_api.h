@@ -255,6 +255,10 @@ struct ScriptApi {
     bool (*set_bone_rotation)(void* ctx, uint32_t e, const char* bone, const float degrees[3]) = nullptr;
     uint32_t (*spawn_mesh)(void* ctx, const char* path, const float pos[3], float scale) = nullptr;
     bool (*set_damage_receiver)(void* ctx, uint32_t part, uint32_t owner, float multiplier) = nullptr;
+    // 0.8.57: a point of a skinned model (its own space, as modelled) carried by
+    // a bone as it is posed now, in the world (an attachment point, the middle
+    // of a hit region, the tip of a jaw). Query engine.animation_events first.
+    bool (*bone_point)(void* ctx, uint32_t e, const char* bone, const float model_point[3], float out[3]) = nullptr;
 };
 
 }  // namespace schizo::editor

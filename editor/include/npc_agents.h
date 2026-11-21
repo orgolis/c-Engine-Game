@@ -279,6 +279,11 @@ public:
             }
 
             st.aiming = visible && (in_range || attacking);
+            // Where its eyes (and its gun, when it aims) go: at the target it sees,
+            // to where it last saw one while it hunts, nowhere in particular on patrol.
+            if (visible) { st.look = target_pos + glm::vec3(0.0f, 0.4f, 0.0f); st.look_weight = 1.0f; }
+            else if (st.mode == Mode::Chase && st.since_seen < 6.0f) { st.look = st.last_seen + glm::vec3(0.0f, 0.4f, 0.0f); st.look_weight = 0.7f; }
+            else st.look_weight = 0.0f;
 
             // --- where to go -------------------------------------------------
             glm::vec3 goal = pos;
@@ -453,11 +458,13 @@ public:
         bool     aiming = false;      // at a target it can see, in reach
         uint32_t shots = 0;           // attacks made so far
         bool     staggered = false;   // just hurt
+        glm::vec3 look{0.0f};         // what it looks at (world), when look_weight > 0
+        float    look_weight = 0.0f;  // 1: a target in sight; less: where one was last seen
     };
     AnimInfo anim_of(uint32_t id) const {
         auto it = agents_.find(id);
         if (it == agents_.end()) return {};
-        return {it->second->aiming, it->second->shots, it->second->stagger > 0.0f};
+        return {it->second->aiming, it->second->shots, it->second->stagger > 0.0f, it->second->look, it->second->look_weight};
     }
     /// Where an agent's attack leaves from when it holds a weapon (the gun's
     /// muzzle), set by whoever knows where the weapon is drawn. false: from
@@ -523,6 +530,8 @@ private:
         // and how many attacks it has made (a new one: play the shot).
         bool      aiming = false;
         uint32_t  shots = 0;
+        glm::vec3 look{0.0f};
+        float     look_weight = 0.0f;
     };
 
     Agent& state(uint32_t id, const glm::vec3& pos, float patrol_radius) {

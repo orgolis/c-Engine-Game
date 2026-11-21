@@ -9948,6 +9948,7 @@ int main(int argc, char** argv) {
             uint32_t shots = 0;
             bool fired_now = false, reload_now = false, reloading = false, staggered = false, dead = false;
             float pending = 0.0f;   // seconds not yet advanced (animation level of detail)
+            bool look_resolved = false;   // its spine-to-head chain looked for (look_at)
         };
         std::unordered_map<uint32_t, CharAnim> char_anim;
         // The gun seen in first person, one actor per model file.
@@ -11673,7 +11674,7 @@ int main(int argc, char** argv) {
                 auto anim_dt = [&](uint32_t id, const schizo::editor::ImportedSkinnedActor& a, const glm::vec3& at, bool always) {
                     CharAnim& c = char_anim[id];
                     c.pending += delta_time;
-                    bool now = always || !alod_on || !a.skinned_once();
+                    bool now = always || !alod_on || !a.skinned_once() || a.has_events();   // events are gameplay: never late
                     if (!now) {
                         const glm::vec3 d = at - alod_eye;
                         const float dist = glm::length(d);
@@ -11685,6 +11686,24 @@ int main(int argc, char** argv) {
                     const float out = std::min(c.pending, 0.5f);
                     c.pending = 0.0f;
                     return out;
+                };
+                // A clip's events (its `.events` file), on the gameplay event bus as
+                // anim.<name>: the entity is the instigator, the clip the param.
+                auto advance_clip = [&](const std::shared_ptr<schizo::scene::Entity>& who,
+                                        schizo::editor::ImportedSkinnedActor& a, float step) {
+                    a.advance(step);
+                    if (!a.has_events()) return;
+                    for (auto& fe : a.take_events()) {
+                        schizo::ecs::GameplayEvent ev;
+                        ev.name = "anim." + fe.name;
+                        ev.param = fe.param.empty() ? fe.clip : fe.clip + "|" + fe.param;
+                        ev.value = fe.time;
+                        const uint32_t eid = ecs_bridge.ecs_entity_id(who->GetTransform());
+                        if (eid != schizo::editor::kNoEcsEntity) ev.instigator = static_cast<schizo::ecs::Entity>(eid);
+                        ecs_bridge.events().publish(ev);
+                        static const bool log_events = std::getenv("GWS_TEST_LOG_ANIM_EVENTS") != nullptr;
+                        if (log_events) spdlog::info("[test] anim event {} ({} at {:.2f} s) on '{}'", ev.name, fe.clip, fe.time, who->GetName());
+                    }
                 };
                 for (int sk_pass = 0; sk_pass < 2; ++sk_pass)
                 for (const auto& ent : sk_scene->GetEntities()) {
@@ -11732,7 +11751,7 @@ int main(int argc, char** argv) {
                         }
                         if (!smc->playing) actor->refresh_pose();
                         else if (const float adt = anim_dt(ent->GetId(), *actor, glm::vec3(at[3]), is_player); adt >= 0.0f)
-                            actor->advance(adt * smc->speed);
+                            advance_clip(ent, *actor, adt * smc->speed);
                         actor->set_model(at);
                         if (is_player && sk_first_person && sk_playing) fp_hidden_actors.insert(actor);
                         continue;
@@ -11781,6 +11800,8 @@ int main(int argc, char** argv) {
                         float vy = loco.vy;
                         bool grounded = loco.grounded;
                         uint32_t move_events = 0;
+                        glm::vec3 look_point(0.0f);
+                        float look_weight = 0.0f;
                         if (is_player) {
                             aiming = pw_hud.armed;                       // a gun in hand: held up
                             if (pw_hud.fired) ++shots;
@@ -11799,6 +11820,8 @@ int main(int argc, char** argv) {
                             aiming = ai.aiming;
                             shots = ai.shots;
                             staggered = ai.staggered;
+                            look_point = ai.look;
+                            look_weight = ai.look_weight;
                             if(network_fighter||editor_state.online_game.client()){
                                 auto id=ecs_bridge.ecs_entity_id(who->GetTransform());auto e=static_cast<schizo::ecs::Entity>(id);
                                 if(id!=schizo::editor::kNoEcsEntity&&ecs_bridge.world().valid(e))if(auto* ws=ecs_bridge.world().try_get<schizo::ecs::WeaponState>(e)){aiming=!ws->weapon_id.empty();shots=uint32_t(ws->rounds_fired);reloading=ws->reloading>0;
@@ -11917,8 +11940,24 @@ int main(int argc, char** argv) {
                                 else if (legs >= 0) actor->play(legs, legs_loop, legs_loop ? 0.2f : 0.1f, rate);
                             }
                         }
-                        if (const float adt = anim_dt(ent->GetId(), *actor, sk_tf->GetWorldPosition(), is_player); adt >= 0.0f)
-                            actor->advance(adt * smc->speed);
+                        if (const float adt = anim_dt(ent->GetId(), *actor, sk_tf->GetWorldPosition(), is_player); adt >= 0.0f) {
+                            advance_clip(ent, *actor, adt * smc->speed);
+                            // An aim offset: the spine, chest and head turn to what it looks at
+                            // (a rifle held at the chest points there); a spring settles it.
+                            if (!ca.look_resolved) {
+                                ca.look_resolved = true;
+                                actor->set_look_chain(smc->upper_body.empty() ? "spine" : smc->upper_body, "head");
+                            }
+                            if (actor->has_look_chain() && !is_player) {
+                                actor->set_model(sk_tf->GetWorldMatrix());
+                                actor->look_at(look_point, dead ? 0.0f : look_weight, aiming ? 1.0f : 0.0f, adt);
+                                // GWS_TEST_LOG_ANIM=1: what an agent looks at, now and then.
+                                if (static const bool log_look = std::getenv("GWS_TEST_LOG_ANIM") != nullptr; log_look && look_weight > 0.0f && frame_count % 60 == 0)
+                                    spdlog::info("[test] look: '{}' at {:.1f} {:.1f} {:.1f} weight {:.1f}{} (it is at {:.1f} {:.1f} {:.1f})", who->GetName(), look_point.x,
+                                                 look_point.y, look_point.z, look_weight, aiming ? " aiming" : "", sk_tf->GetWorldPosition().x,
+                                                 sk_tf->GetWorldPosition().y, sk_tf->GetWorldPosition().z);
+                            }
+                        }
                         actor->set_model(sk_tf->GetWorldMatrix());
                         if (is_player && sk_first_person) fp_hidden_actors.insert(actor);
                         continue;
@@ -11945,7 +11984,7 @@ int main(int argc, char** argv) {
                         actor->set_clip(static_cast<size_t>(want_clip));
                     if (!smc->playing) actor->refresh_pose();   // hold the pose, not bind pose
                     else if (const float adt = anim_dt(ent->GetId(), *actor, sk_tf->GetWorldPosition(), is_player); adt >= 0.0f)
-                        actor->advance(adt * smc->speed);
+                        advance_clip(ent, *actor, adt * smc->speed);
                     actor->set_model(sk_tf->GetWorldMatrix());
                 }
 
@@ -13610,6 +13649,17 @@ int main(int argc, char** argv) {
                     editor_state.online_game.animation(id,clip,loop,speed,blend,restart);
                     return true;
                 };
+                ctx.bone_point = [&](uint32_t id, const std::string& bone, const float* p, float* out) {
+                    auto e = editor_state.script_ctx.scene->GetEntityById(id);
+                    auto* a = skinned_actors.find(id);
+                    if (!e || !a) return false;
+                    const int index = a->find_bone(bone);
+                    if (index < 0) return false;
+                    a->set_model(e->GetTransform()->GetWorldMatrix());
+                    const glm::vec3 w(a->bone_skin(index) * glm::vec4(p[0], p[1], p[2], 1.0f));
+                    out[0] = w.x; out[1] = w.y; out[2] = w.z;
+                    return std::isfinite(w.x) && std::isfinite(w.y) && std::isfinite(w.z);
+                };
                 ctx.bone_position = [&](uint32_t id, const std::string& bone, float* out) {
                     auto e = editor_state.script_ctx.scene->GetEntityById(id);
                     auto* a = skinned_actors.find(id);
@@ -15187,8 +15237,14 @@ int main(int argc, char** argv) {
                 if (const char* tc = std::getenv("GWS_TEST_CAMERA")) {
                     float v[6]{};
                     if (std::sscanf(tc,"%f,%f,%f,%f,%f,%f",&v[0],&v[1],&v[2],&v[3],&v[4],&v[5])==6) {
-                        cam.position = glm::vec3(v[0],v[1],v[2]);
-                        cam.view = glm::lookAt(cam.position,glm::vec3(v[3],v[4],v[5]),glm::vec3(0,1,0));
+                        // GWS_TEST_CAMERA_FOLLOW=<entity name>: the six numbers are offsets
+                        // from that entity (camera, then the point looked at): it is kept in view.
+                        glm::vec3 base(0.0f);
+                        if (const char* follow = std::getenv("GWS_TEST_CAMERA_FOLLOW"); follow && editor_state.script_ctx.scene)
+                            if (auto who = editor_state.script_ctx.scene->GetEntityByName(follow))
+                                base = who->GetTransform()->GetWorldPosition();
+                        cam.position = base + glm::vec3(v[0],v[1],v[2]);
+                        cam.view = glm::lookAt(cam.position,base + glm::vec3(v[3],v[4],v[5]),glm::vec3(0,1,0));
                     }
                 }
             }

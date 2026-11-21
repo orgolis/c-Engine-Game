@@ -79,7 +79,9 @@ Without `ability`, the agent uses its AbilitySet slot `ability_index` at once
 gameplay plays the agent's idle, walk, run, aim, fire, hit and death clips; a
 gun held at its hand fires with it, and the attack leaves the gun's `muzzle`
 bone (docs/systems/CHARACTERS.md). An ability with a `spread` misses at
-range.
+range. Its spine, chest and head turn toward the target it sees -- the gun
+points at it, above or below -- and, hunting, its head toward where it last
+saw one ("Looking and aiming").
 
 The rules are `editor/include/npc_agents.h`, checked by
 `tools/npcagent_check`.

@@ -578,6 +578,10 @@ int api_get_setting(void*, const char* name, char* out, int size) {
         return copy_out("1", out, size);
     if (name && std::strcmp(name, "engine.combat_api") == 0)
         return copy_out("1", out, size);
+    // 0.8.57: clip events (anim.<name> on the gameplay events) and transitions
+    // that carry the motion through (inertialization).
+    if (name && std::strcmp(name, "engine.animation_events") == 0)
+        return copy_out("1", out, size);
     return copy_out(name ? schizo::editor::play_settings().get(name) : std::string(), out, size);
 }
 int api_next_setting(void*, const char* name, char* out, int size) {
@@ -858,6 +862,10 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
         ent->GetTransform()->SetWorldPosition(glm::vec3(pos[0],pos[1],pos[2]));
         ent->GetTransform()->SetLocalScale(glm::vec3(scale));
         return ent->GetId();
+    };
+    api.bone_point = [](void* p, uint32_t e, const char* bone, const float model_point[3], float out[3]) {
+        auto* c = static_cast<EditorScriptCtx*>(p);
+        return bone && model_point && out && c->bone_point && c->bone_point(e, bone, model_point, out);
     };
     api.set_damage_receiver = [](void* p, uint32_t part, uint32_t owner, float multiplier) {
         ecs::World* w; ecs::Entity ent;

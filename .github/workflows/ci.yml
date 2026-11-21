@@ -95,7 +95,7 @@ jobs:
             vscript_check vfxgraph_check emitter_check scenereflect_check sceneio_check componentsync_check bindless_check material_check \
             animgraph_check assetdrop_check assetops_check assetpath_check assetwatch_check \
             canvasview_check cullbench_check curve_check ecsauthority_check editcoalesce_check \
-            includes_check leveltools_check locomotion_check materialcache_check navbake_check \
+            includes_check leveltools_check locomotion_check animhooks_check materialcache_check navbake_check \
             navrebase_check npcagent_check palette_check phase3exit_check physrebase_check \
             playchanges_check prefab_check reflectio_check sequence_check shadercompile_check \
             shadergraph_check snap_check taskrunner_check terrainbrush_check movement_check uidoc_check controls_check texgen_check undo_check \
@@ -226,7 +226,7 @@ jobs:
             vscript_check vfxgraph_check emitter_check scenereflect_check sceneio_check componentsync_check bindless_check material_check \
             animgraph_check assetdrop_check assetops_check assetpath_check assetwatch_check \
             canvasview_check cullbench_check curve_check ecsauthority_check editcoalesce_check \
-            includes_check leveltools_check locomotion_check materialcache_check navbake_check \
+            includes_check leveltools_check locomotion_check animhooks_check materialcache_check navbake_check \
             navrebase_check npcagent_check palette_check phase3exit_check physrebase_check \
             playchanges_check prefab_check reflectio_check sequence_check shadercompile_check \
             shadergraph_check snap_check taskrunner_check terrainbrush_check movement_check uidoc_check controls_check texgen_check undo_check \
