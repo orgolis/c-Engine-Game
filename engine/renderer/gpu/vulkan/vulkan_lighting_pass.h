@@ -257,7 +257,9 @@ public:
     /// Bind the scene TLAS at descriptor binding 13. Pass VK_NULL_HANDLE
     /// to clear (which also forces the shader's RT branch off via the
     /// push-constant flag). Updates the descriptor set immediately.
-    void set_tlas(VkAccelerationStructureKHR tlas);
+    /// `generation`: VulkanRtScene::get_tlas_generation() -- rebinds when it
+    /// changes even if the handle value did not (a re-created TLAS may reuse it).
+    void set_tlas(VkAccelerationStructureKHR tlas, uint64_t generation = 0);
 
     /// Bind the environment cubemap (typically the base map owned by
     /// VulkanEnvironmentMap). Sampled by the lighting shader's sky branch
@@ -412,6 +414,7 @@ private:
     bool                        rt_enabled_    = false;
     bool                        rt_ao_enabled_ = false;
     VkAccelerationStructureKHR  tlas_          = VK_NULL_HANDLE;
+    uint64_t tlas_gen_ = 0;   // the TLAS generation bound
     // 0.4 default: leaves room for direct lights to dominate well-lit
     // areas (so a placed sun reads as the primary illuminant) while
     // limiting how aggressively the sky bleeds into enclosed spaces.

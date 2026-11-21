@@ -121,6 +121,18 @@ writes into its own folder -- and starts the program. It needs 64-bit Windows
 The game's own log and crash reports go where the engine's do,
 `%LOCALAPPDATA%\GameWorldshaper\diagnostics\`.
 
+**Nothing of the editor in it.** The game draws its whole HUD as Play does in
+the editor -- what E would do and the names of things to pick up, the
+crosshair and ammunition, the ability bar, a script's messages, the death
+notice, stamina, being hit -- and none of the editor's: Esc is only ever the
+game's. With `escape = game` in `project.schizo` the project's own pause menu
+gets it; without, the engine's (Paused: Resume / Quit game). Shift+F1 and the
+editor's "click to resume" do not exist in a game.
+
+**If the graphics driver resets** (a frame ran too long and Windows reset the
+GPU), the game says so and closes rather than staying black, and the log
+names it (`[gpu] the GPU device was lost`).
+
 ### Without the dialog
 
 ```

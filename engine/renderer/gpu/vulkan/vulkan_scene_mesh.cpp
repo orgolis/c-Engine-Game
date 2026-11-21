@@ -198,7 +198,17 @@ bool MeshUploadBatch::flush() {
     return ok;
 }
 
-Mesh::~Mesh() { destroy(); }
+namespace {
+Mesh::DestroyListener g_destroy_fn = nullptr;
+void*                 g_destroy_ctx = nullptr;
+}  // namespace
+void Mesh::set_destroy_listener(DestroyListener fn, void* ctx) { g_destroy_fn = fn; g_destroy_ctx = ctx; }
+void* Mesh::destroy_listener_context() { return g_destroy_ctx; }
+
+Mesh::~Mesh() {
+    if (vbo_ != VK_NULL_HANDLE && g_destroy_fn) g_destroy_fn(g_destroy_ctx, this);   // a live mesh, not a moved-from one
+    destroy();
+}
 
 Mesh::Mesh(Mesh&& other) noexcept
     : device_(other.device_),

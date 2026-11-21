@@ -129,6 +129,15 @@ private:
 
 class Mesh {
 public:
+    /// Told about every live Mesh as it is destroyed (render thread). A cache
+    /// keyed by Mesh* -- the ray-traced scene's acceleration structures -- drops
+    /// what it built for it: a new mesh that later gets the same address must
+    /// never inherit another mesh's structure (traced against its own vertices,
+    /// it walks past their end).
+    using DestroyListener = void (*)(void* ctx, const Mesh* mesh);
+    static void set_destroy_listener(DestroyListener fn, void* ctx);
+    static void* destroy_listener_context();
+
     Mesh() = default;
     ~Mesh();
 

@@ -63,9 +63,17 @@ public:
         g_hosts[host_] = this;
         host_->intercept = intercept_raw;
     }
-    // From the intercept: a lobby control message is ours, never ENet's.
+    uint16_t local_port() const override {
+        if (!host_) return 0;
+        ENetAddress a{};
+        return enet_socket_get_address(host_->socket, &a) == 0 ? a.port : 0;
+    }
+    // From the intercept: a lobby control message (or a STUN server's answer
+    // about the socket's public address) is ours, never ENet's.
     int on_raw(ENetHost* host) {
-        if (!raw_handler_ || !lobby::is_control(host->receivedData, host->receivedDataLength)) return 0;
+        if (!raw_handler_ || !(lobby::is_control(host->receivedData, host->receivedDataLength) ||
+                               lobby::is_stun_response(host->receivedData, host->receivedDataLength)))
+            return 0;
         char ip[64] = "";
         enet_address_get_host_ip(&host->receivedAddress, ip, sizeof ip);
         raw_handler_(ip, host->receivedAddress.port, host->receivedData, host->receivedDataLength);

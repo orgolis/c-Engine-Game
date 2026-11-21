@@ -420,9 +420,10 @@ bool VulkanDdgiPass::initialize(VulkanDevice* device, VulkanGBuffer* g_buffer,
     return true;
 }
 
-void VulkanDdgiPass::set_tlas(VkAccelerationStructureKHR tlas) {
-    if (tlas == tlas_ || tlas == VK_NULL_HANDLE) { tlas_ = tlas; return; }
+void VulkanDdgiPass::set_tlas(VkAccelerationStructureKHR tlas, uint64_t generation) {
+    if ((tlas == tlas_ && generation == tlas_gen_) || tlas == VK_NULL_HANDLE) { tlas_ = tlas; tlas_gen_ = generation; return; }
     tlas_ = tlas;
+    tlas_gen_ = generation;
     VkWriteDescriptorSetAccelerationStructureKHR as_write{};
     as_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
     as_write.accelerationStructureCount = 1;

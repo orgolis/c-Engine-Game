@@ -117,6 +117,26 @@ int main() {
                 got.x, got.y, got.z, ball_target.x, ball_target.y, ball_target.z,
                 prop_ok ? "OK" : "FAIL", player_safe ? "OK" : "FAIL");
 
+    // --- the way each player faces reaches the other ---
+    // Each body turns as its player looks about: the yaw rides with the position.
+    const float host_yaw = 1.2f, cli_yaw = -0.7f;
+    for (int i = 0; i < 200; ++i) {
+        host.set_local_player(h_player->GetId(), hp, host_yaw);
+        client.set_local_player(c_player->GetId(), cp, cli_yaw);
+        host.tick_frame(hs, 0.016f);
+        client.tick_frame(cs, 0.016f);
+    }
+    auto yaw_of = [](const std::shared_ptr<schizo::scene::Entity>& e) {
+        if (!e) return 99.0f;
+        const glm::vec3 f = e->GetTransform()->GetWorldRotation() * glm::vec3(0.0f, 0.0f, 1.0f);
+        return std::atan2(f.x, f.z);
+    };
+    const float seen_host = yaw_of(cs->GetEntityByName("[net] Player 0"));
+    const float seen_cli  = yaw_of(hs->GetEntityByName("[net] Player 1"));
+    const bool facing_ok = std::fabs(seen_host - host_yaw) < 0.02f && std::fabs(seen_cli - cli_yaw) < 0.02f;
+    std::printf("  facing: client sees host at %.2f rad (want %.2f), host sees client at %.2f (want %.2f) -> %s\n",
+                seen_host, host_yaw, seen_cli, cli_yaw, facing_ok ? "OK" : "FAIL");
+
     const bool assigned = client.status().my_avatar == 1'000'001ull;
 
     // --- session restart: shutdown + re-host must leave NO ghosts ---
@@ -223,7 +243,7 @@ int main() {
     std::printf("  lobby host: registering, then destroyed while hosting %s\n", lobby_ok ? "OK" : "FAIL");
 
     const bool ok = ok_h && ok_c && no_self && clone_ok && prop_ok && player_safe &&
-                    assigned && restart_ok && origin_ok && lobby_ok;
+                    assigned && restart_ok && origin_ok && lobby_ok && facing_ok;
     std::printf("mp_check: %s\n", ok ? "ALL OK" : "FAIL");
     return ok ? 0 : 1;
 }

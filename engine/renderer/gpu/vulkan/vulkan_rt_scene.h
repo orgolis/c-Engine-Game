@@ -79,6 +79,12 @@ public:
     /// can target the right scene. Zero before the first `update()`.
     VkDeviceAddress get_tlas_device_address() const { return tlas_.device_address; }
     VkAccelerationStructureKHR get_tlas_handle() const { return tlas_.handle; }
+    /// Counts the TLAS's re-creations (it grows with the scene). A pass bound to
+    /// it rebinds when this changes -- not only when the handle does: a new TLAS
+    /// can come back with the old one's handle VALUE while living somewhere
+    /// else, and a descriptor not rewritten then points into freed memory (every
+    /// ray walks garbage; the driver resets the GPU).
+    uint64_t get_tlas_generation() const { return tlas_generation_; }
 
     /// Number of instances written into the most recent TLAS build.
     uint32_t get_instance_count() const { return last_instance_count_; }
@@ -114,6 +120,7 @@ private:
     // destroy + recreate the TLAS when a frame's required size exceeds
     // this, so steady-state frames just refit / rebuild in place.
     VkDeviceSize          tlas_capacity_ = 0;
+    uint64_t              tlas_generation_ = 0;
 
     // Host-written buffers get one slot per frame in flight, plus one. The CPU
     // records frame N while frame N-1 may still be executing (the renderer
@@ -171,6 +178,14 @@ private:
         uint32_t       frame  = 0;
     };
     std::vector<RetiredBuffer> retired_scratch_;
+    // Structures of meshes that were destroyed, kept until no frame in flight
+    // can still trace through them (Mesh::set_destroy_listener).
+    struct RetiredBlas {
+        AccelerationStructure blas;
+        uint32_t              frame = 0;
+    };
+    std::vector<RetiredBlas> retired_blas_;
+    static void on_mesh_destroyed(void* self, const Mesh* mesh);
     uint32_t                   rt_frame_ = 0;
 
     uint32_t        last_instance_count_   = 0;

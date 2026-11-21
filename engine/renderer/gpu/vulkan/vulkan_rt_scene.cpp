@@ -78,7 +78,19 @@ bool VulkanRtScene::initialize(VulkanDevice* device) {
     device_ = device;
     fns_    = device->get_rt_functions();
     if (fns_ == nullptr) return false;
+    Mesh::set_destroy_listener(&VulkanRtScene::on_mesh_destroyed, this);
     return true;
+}
+
+// A mesh is going: its structure leaves the cache now (nothing new is built
+// on it) and is destroyed once the frames that may still trace through it
+// have finished (update() retires them, as it does scratch buffers).
+void VulkanRtScene::on_mesh_destroyed(void* self, const Mesh* mesh) {
+    auto* rt = static_cast<VulkanRtScene*>(self);
+    auto it = rt->blas_cache_.find(mesh);
+    if (it == rt->blas_cache_.end()) return;
+    rt->retired_blas_.push_back(RetiredBlas{std::move(it->second), rt->rt_frame_});
+    rt->blas_cache_.erase(it);
 }
 
 void VulkanRtScene::clear() {
@@ -94,7 +106,10 @@ void VulkanRtScene::clear() {
         blas.destroy(vk, fns_);
     }
     blas_cache_.clear();
+    for (auto& r : retired_blas_) r.blas.destroy(vk, fns_);
+    retired_blas_.clear();
     tlas_.destroy(vk, fns_);
+    ++tlas_generation_;
     tlas_capacity_       = 0;
     last_instance_count_ = 0;
     // Keep scratch + instance buffers — they're untyped and will be
@@ -104,6 +119,7 @@ void VulkanRtScene::clear() {
 }
 
 VulkanRtScene::~VulkanRtScene() {
+    if (Mesh::destroy_listener_context() == this) Mesh::set_destroy_listener(nullptr, nullptr);
     if (device_ == nullptr) return;
     VkDevice vk = device_->get_device();
 
@@ -111,6 +127,8 @@ VulkanRtScene::~VulkanRtScene() {
         blas.destroy(vk, fns_);
     }
     blas_cache_.clear();
+    for (auto& r : retired_blas_) r.blas.destroy(vk, fns_);
+    retired_blas_.clear();
     tlas_.destroy(vk, fns_);
 
     for (HostSlot& slot : instance_ring_)         destroy_host_slot(slot);
@@ -497,8 +515,10 @@ void VulkanRtScene::rebuild_tlas(VkCommandBuffer cmd, const DrawItem* items, siz
         // through a descriptor set that is about to be rewritten with the new
         // handle. Growth is rare (a scene gaining instances, mostly while a
         // project loads), so drain the GPU rather than track the old one.
+        const VkAccelerationStructureKHR old_handle = tlas_.handle;
         if (tlas_.handle != VK_NULL_HANDLE) vkDeviceWaitIdle(vk);
         tlas_.destroy(vk, fns_);
+        ++tlas_generation_;
         // Allocate with 2x headroom so we don't reallocate on every
         // small instance-count change. Matches the scratch/instance
         // buffer growth policy.
@@ -538,6 +558,9 @@ void VulkanRtScene::rebuild_tlas(VkCommandBuffer cmd, const DrawItem* items, siz
         addr_info.sType                = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
         addr_info.accelerationStructure = tlas_.handle;
         tlas_.device_address = fns_->getAccelerationStructureDeviceAddress(vk, &addr_info);
+        spdlog::info("[rt] TLAS (re)created for {} instances (generation {}){}", written, tlas_generation_,
+                     old_handle != VK_NULL_HANDLE && old_handle == tlas_.handle
+                         ? " -- the driver gave it the old one's handle value" : "");
     }
 
     if (!ensure_scratch(size_info.buildScratchSize)) return;
@@ -604,6 +627,17 @@ void VulkanRtScene::update(VkCommandBuffer cmd, const DrawItem* items, size_t co
     // whole device.
     ++rt_frame_;
     constexpr uint32_t kScratchRetireFrames = 8;
+    if (!retired_blas_.empty() && rt_frame_ > kScratchRetireFrames) {
+        const uint32_t cutoff = rt_frame_ - kScratchRetireFrames;
+        for (auto it = retired_blas_.begin(); it != retired_blas_.end();) {
+            if (it->frame <= cutoff) {
+                it->blas.destroy(device_->get_device(), fns_);
+                it = retired_blas_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
     if (!retired_scratch_.empty() && rt_frame_ > kScratchRetireFrames) {
         const uint32_t cutoff = rt_frame_ - kScratchRetireFrames;
         for (auto it = retired_scratch_.begin(); it != retired_scratch_.end();) {

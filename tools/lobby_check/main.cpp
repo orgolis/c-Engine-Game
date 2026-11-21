@@ -7,16 +7,25 @@
 // large enough to be split into many datagrams -- cross the relay both ways.
 // Then the errors a player can meet: a wrong code, another game, a full
 // lobby, a closed one, and a server that is not there.
+//
+// Codes without a server (lobby_direct.h): SHA-1 and STUN on their own, then
+// a host and players on this PC found through the local network's broadcast,
+// connected directly. `lobby_check --internet` also tries the real thing --
+// public STUN servers and the BitTorrent DHT -- which needs the internet and
+// is not part of the suite.
 
 #include "lobby_client.h"
+#include "lobby_direct.h"
 #include "lobby_protocol.h"
 #include "lobby_server.h"
 #include "transport.h"
 
+#include <array>
 #include <cstdint>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <random>
@@ -52,7 +61,183 @@ static bool pump(std::vector<net::Transport*> ts, lobby::HostLink* link, int ms,
     return done ? done() : true;
 }
 
-int main() {
+
+// Poll transports and tick lobby parts until `done` or `ms` passes.
+static bool run(std::vector<net::Transport*> ts, const std::function<void(float)>& tick, int ms,
+                const std::function<bool()>& done,
+                const std::function<void(net::Transport*, const net::NetEvent&)>& on_event = {}) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    auto last = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() < end) {
+        for (auto* t : ts) {
+            net::NetEvent ev;
+            while (t->poll(ev, 0))
+                if (on_event) on_event(t, ev);
+            t->flush();
+        }
+        const auto now = std::chrono::steady_clock::now();
+        tick(std::chrono::duration<float>(now - last).count());
+        last = now;
+        if (done()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return done();
+}
+
+static std::string hex_of(const lobby::Key& k) {
+    std::string s;
+    char b[3];
+    for (auto c : k) { std::snprintf(b, sizeof b, "%02x", c); s += b; }
+    return s;
+}
+
+static void direct_checks(bool internet) {
+    std::printf("\n  -- codes without a lobby server --\n");
+    check("sha1: \"abc\" and \"\" give their published digests",
+          hex_of(lobby::sha1("abc", 3)) == "a9993e364706816aba3e25717850c26c9cd0d89d" &&
+              hex_of(lobby::sha1("", 0)) == "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+    check("dht: a code's host and join keys differ, and differ between games",
+          lobby::dht_key("g", "K7Q2X9", "host") != lobby::dht_key("g", "K7Q2X9", "join") &&
+              lobby::dht_key("g", "K7Q2X9", "host") != lobby::dht_key("h", "K7Q2X9", "host"));
+    // A STUN answer made by hand: XOR-MAPPED-ADDRESS 203.0.113.7:54321.
+    const std::array<uint8_t, 12> tid{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    std::string resp{0x01, 0x01, 0x00, 0x0C, 0x21, 0x12, static_cast<char>(0xA4), 0x42};
+    resp.append(reinterpret_cast<const char*>(tid.data()), tid.size());
+    const uint16_t xport = 54321 ^ 0x2112;
+    resp += std::string{0x00, 0x20, 0x00, 0x08, 0x00, 0x01, static_cast<char>(xport >> 8), static_cast<char>(xport & 0xFF)};
+    const uint8_t ip4[4] = {203, 0, 113, 7}, cookie[4] = {0x21, 0x12, 0xA4, 0x42};
+    for (int i = 0; i < 4; ++i) resp += static_cast<char>(ip4[i] ^ cookie[i]);
+    std::string mip, ip2;
+    uint16_t mport = 0, p2 = 0;
+    const bool parsed = lobby::stun_mapped(resp.data(), resp.size(), tid, mip, mport);
+    auto other = tid;
+    other[0] ^= 1;
+    check("stun: the public address is read from a Binding response, only for our own request",
+          parsed && mip == "203.0.113.7" && mport == 54321 && !lobby::stun_mapped(resp.data(), resp.size(), other, ip2, p2));
+    check("stun: an answer is told apart from the game's packets and lobby messages",
+          lobby::is_stun_response(resp.data(), resp.size()) && !lobby::is_control(resp.data(), resp.size()));
+    const std::string probe = lobby::stun_request(tid);
+    check("stun: a Binding request is 20 bytes with the magic cookie", probe.size() == 20 && probe[4] == 0x21);
+
+    // ---- this PC, no internet: found by the local network's broadcast ----------
+    lobby::DirectConfig local;
+    local.internet = false;
+    local.lan_port = 27778;
+    local.join_timeout = 3.0f;
+    auto host = net::create_enet_transport();
+    const bool hosting = host->start_server(0, 3);
+    lobby::DirectHost dh;
+    dh.start(*host, "check.game", 2, "Check", local);   // the host and one player
+    run({host.get()}, [&](float dt) { dh.update(dt); }, 2000, [&] { return dh.state() != lobby::DirectHost::State::Opening; });
+    check("direct host: open at once with a code, reachable on this network",
+          hosting && dh.state() == lobby::DirectHost::State::Open && lobby::normalize_code(dh.code()) == dh.code() &&
+              dh.reach() == "local" && host->local_port() != 0);
+
+    auto guest = net::create_enet_transport();
+    guest->start_client();
+    lobby::DirectJoin dj;
+    dj.start(*guest, "check.game", dh.code(), local);
+    const auto t0 = std::chrono::steady_clock::now();
+    run({host.get(), guest.get()}, [&](float dt) { dh.update(dt); dj.update(dt); }, 4000,
+        [&] { return dj.state() != lobby::DirectJoin::State::Searching; });
+    const double found_in = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("         (found in %.2f s at %s:%u, via %s)\n", found_in, dj.host().c_str(), dj.port(), dj.via().c_str());
+    check("direct join: the code finds the host on this network within a second, at its game port",
+          dj.state() == lobby::DirectJoin::State::Found && dj.port() == host->local_port() && dj.via() == "this network" &&
+              found_in < 1.5);
+
+    bool host_saw = false, guest_in = false;
+    std::vector<uint8_t> got;
+    const net::PeerId to_host = guest->connect(dj.host(), dj.port());
+    run({host.get(), guest.get()}, [&](float dt) { dh.update(dt); }, 3000, [&] { return host_saw && guest_in; },
+        [&](net::Transport* t, const net::NetEvent& ev) {
+            if (ev.type == net::NetEvent::Type::Connect) (t == host.get() ? host_saw : guest_in) = true;
+        });
+    const std::string hello = "hello, directly";
+    guest->send(to_host, hello.data(), hello.size());
+    run({host.get(), guest.get()}, [&](float dt) { dh.update(dt); }, 2000, [&] { return !got.empty(); },
+        [&](net::Transport* t, const net::NetEvent& ev) {
+            if (t == host.get() && ev.type == net::NetEvent::Type::Receive) got = ev.data;
+        });
+    check("direct join: the game connects to the host from the same socket, and a message arrives",
+          to_host != net::kInvalidPeer && host_saw && guest_in && std::string(got.begin(), got.end()) == hello);
+
+    auto second = net::create_enet_transport();
+    second->start_client();
+    lobby::DirectJoin full;
+    full.start(*second, "check.game", dh.code(), local);
+    run({host.get(), guest.get(), second.get()}, [&](float dt) { dh.update(dt); full.update(dt); }, 4000,
+        [&] { return full.state() != lobby::DirectJoin::State::Searching; });
+    check("direct join: past the game's players -> \"full\"",
+          full.state() == lobby::DirectJoin::State::Failed && full.error().find("full") != std::string::npos);
+
+    // (Each transport outlives the lobby part riding on it: declared first.)
+    auto third = net::create_enet_transport();
+    third->start_client();
+    auto fourth = net::create_enet_transport();
+    fourth->start_client();
+    lobby::DirectJoin wrong, other_game;
+    wrong.start(*third, "check.game", "ZZZZZZ", local);
+    run({host.get(), third.get()}, [&](float dt) { dh.update(dt); wrong.update(dt); }, 5000,
+        [&] { return wrong.state() != lobby::DirectJoin::State::Searching; });
+    check("direct join: a code nobody has -> \"no game with that code\" after the timeout",
+          wrong.state() == lobby::DirectJoin::State::Failed && wrong.error().find("No game") != std::string::npos);
+    other_game.start(*fourth, "another.game", dh.code(), local);
+    run({host.get(), fourth.get()}, [&](float dt) { dh.update(dt); other_game.update(dt); }, 5000,
+        [&] { return other_game.state() != lobby::DirectJoin::State::Searching; });
+    check("direct join: the right code for another game finds nothing",
+          other_game.state() == lobby::DirectJoin::State::Failed);
+    dh.stop();
+    check("direct host: stopped", dh.state() == lobby::DirectHost::State::Off);
+
+    if (!internet) return;
+    // ---- the internet: public STUN servers and the BitTorrent DHT ----------------
+    std::printf("\n  -- the internet (STUN + the BitTorrent DHT; this PC plays both sides) --\n");
+    lobby::DirectConfig inet;
+    inet.lan = false;
+    inet.join_timeout = 60.0f;
+    auto h2 = net::create_enet_transport();
+    h2->start_server(0, 3);
+    lobby::DirectHost ih;
+    ih.start(*h2, "check.game", 4, "Check", inet);
+    run({h2.get()}, [&](float dt) { ih.update(dt); }, 10000, [&] { return ih.state() != lobby::DirectHost::State::Opening; });
+    std::printf("         host: code %s, reach '%s', note '%s'\n", ih.code().c_str(), ih.reach().c_str(), ih.note().c_str());
+    check("internet: the host learned its public address from STUN", ih.reach() == "internet");
+    // Give the host's announcement a few seconds to reach the DHT.
+    run({h2.get()}, [&](float dt) { ih.update(dt); }, 8000, [] { return false; });
+    auto g2 = net::create_enet_transport();
+    g2->start_client();
+    lobby::DirectJoin ij;
+    ij.start(*g2, "check.game", ih.code(), inet);
+    std::string last;
+    bool saw_found = false;
+    const auto t1 = std::chrono::steady_clock::now();
+    run({h2.get(), g2.get()},
+        [&](float dt) {
+            ih.update(dt);
+            ij.update(dt);
+            if (ij.progress() != last) {
+                last = ij.progress();
+                saw_found |= last.find("Found game") != std::string::npos;
+                std::printf("         %.1f s: %s\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count(), last.c_str());
+            }
+        },
+        62000, [&] { return ij.state() != lobby::DirectJoin::State::Searching; });
+    const std::string outcome = ij.state() == lobby::DirectJoin::State::Found ? std::string("found") : "failed: " + ij.error();
+    std::printf("         joiner: %s %s:%u via %s; the host heard of %d joiner(s)\n", outcome.c_str(),
+                ij.host().c_str(), ij.port(), ij.via().c_str(), ih.joiners_seen());
+    if (std::getenv("GWS_LOBBY_DEBUG")) {
+        std::printf("--- host ---\n%s--- joiner ---\n%s", ih.debug().c_str(), ij.debug().c_str());
+    }
+    check("internet: the joiner found the host's address in the DHT", saw_found || ij.state() == lobby::DirectJoin::State::Found);
+    check("internet: the host found the joiner's address in the DHT", ih.joiners_seen() > 0);
+    std::printf("         (an answer between two games behind the SAME router needs that router to loop back to\n"
+                "          its own public address; between two homes it is not needed)\n");
+}
+
+int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    const bool internet = argc > 1 && std::strcmp(argv[1], "--internet") == 0;
     std::printf("lobby_check\n");
 
     // ---- the protocol on its own -------------------------------------------
@@ -182,6 +367,8 @@ int main() {
     const double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     check("join: no server -> \"did not answer\", after the timeout and not much later",
           !none.ok && none.error.find("did not answer") != std::string::npos && waited < 2.5);
+
+    direct_checks(internet);
 
     std::printf("\nlobby_check: %d passed, %d failed\n", g_pass, g_fail);
     if (g_fail == 0) std::printf("lobby_check: ALL OK\n");

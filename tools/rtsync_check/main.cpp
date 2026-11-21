@@ -118,6 +118,25 @@ int main(int, char** argv) {
     check(cpp.find("if (instance_data_buffer_ != VK_NULL_HANDLE) vkDeviceWaitIdle(vk);\n            destroy_buffer(instance_data_buffer_") != std::string::npos,
           "a grown instance-data SSBO waits before the old one is destroyed");
 
+    // A re-created TLAS can come back with the old one's handle VALUE (the
+    // driver reuses it) while living in new memory. A pass that rebinds only
+    // when the handle differs then keeps tracing the freed structure: the GPU
+    // reset entering the Leviathan raid with ray tracing on (0.8.53-0.8.55).
+    std::printf("\nA re-created TLAS is rebound even when its handle value is reused:\n");
+    check(cpp.find("tlas_.destroy(vk, fns_);\n        ++tlas_generation_;") != std::string::npos,
+          "re-creating the TLAS counts a new generation");
+    for (const char* pass : {"vulkan_lighting_pass.cpp", "vulkan_ssao_pass.cpp", "vulkan_ssr_pass.cpp", "vulkan_ddgi_pass.cpp"}) {
+        const std::string src = read_file(vk / pass);
+        check(src.find("generation == tlas_gen_") != std::string::npos,
+              std::string(pass) + " rebinds on a new generation, not only on a new handle");
+    }
+    {
+        const std::string editor = read_file(root / "editor" / "src" / "main.cpp");
+        size_t n = 0;
+        for (size_t at = 0; (at = editor.find("rt_scene->get_tlas_generation()", at)) != std::string::npos; ++at) ++n;
+        check(n >= 4, "the frame hands every ray-tracing pass the TLAS generation (" + std::to_string(n) + " of 4)");
+    }
+
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     if (g_fail)
         std::printf("FAIL rtsync_check — the RT scene can write or free memory a frame in flight still uses.\n");

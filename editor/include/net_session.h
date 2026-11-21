@@ -69,10 +69,26 @@ public:
     // from lobby::resolve() to play in one.
     bool host_lobby(const std::string& server, const std::string& game_id, int max_players,
                     const std::string& title);
+    // Host with a code and NO lobby server (engine/core/network/include/
+    // lobby_direct.h): friends on this network find the game by a broadcast,
+    // friends elsewhere through the internet's public address book (the
+    // BitTorrent DHT), and connect straight to it. lobby_state / lobby_code
+    // as for host_lobby; lobby_reach() and lobby_note() say who can get in.
+    bool host_direct(const std::string& game_id, int max_players, const std::string& title);
     enum class LobbyState { Off, Registering, Open, Failed };
     LobbyState  lobby_state() const;
     std::string lobby_code() const;
     std::string lobby_error() const;
+    std::string lobby_reach() const;   // direct: "internet" or "local" once open
+    std::string lobby_note() const;    // direct: what limits who can join ("" when nothing)
+
+    // Join a code without a lobby server: the session looks for the host
+    // (join_state Searching, join_message what it is doing), then connects to
+    // it as join() does -- or says why not (Failed, join_message).
+    bool join_direct(const std::string& game_id, const std::string& code);
+    enum class JoinState { Off, Searching, Found, Failed };
+    JoinState   join_state() const;
+    std::string join_message() const;
     // Tear the session down (safe to call when already offline).
     void shutdown();
 
@@ -114,6 +130,9 @@ public:
     glm::vec3 origin_offset() const;
 
     void set_local_player(uint32_t scene_entity_id, const glm::vec3& pos);
+    /// With the way the player faces (radians about +Y; 0 = its +Z): the
+    /// others see its body turn as it looks about, not only when it fires.
+    void set_local_player(uint32_t scene_entity_id, const glm::vec3& pos, float yaw);
 
     // World positions of every OTHER player's avatar (not our own). The host
     // feeds these to ScenePlaybackManager::SyncRemotePlayerBodies so remote

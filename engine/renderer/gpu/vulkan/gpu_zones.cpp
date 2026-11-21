@@ -3,6 +3,9 @@
 // ============================================================================
 
 #include "gpu_zones.h"
+#ifndef GWS_ZONES_NO_VULKAN
+#include "gpu_checkpoints.h"
+#endif
 
 #ifndef GWS_ZONES_NO_VULKAN
 #include "gpu_profiler.h"
@@ -139,6 +142,7 @@ void GpuZones::begin_zone(VkCommandBuffer cmd, const std::string& name) {
     open_zone_ = idx;
     vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                         pool_, begin_slot(idx, write_ring_));
+    if (gws::gpu_ckpt::enabled()) gws::gpu_ckpt::mark(cmd, gws::gpu_ckpt::intern(name));
 }
 
 void GpuZones::end_zone(VkCommandBuffer cmd) {
@@ -146,6 +150,7 @@ void GpuZones::end_zone(VkCommandBuffer cmd) {
     if (open_zone_ == ZoneRegistry::kInvalid) return;   // unbalanced end; ignore
     vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                         pool_, end_slot(open_zone_, write_ring_));
+    if (gws::gpu_ckpt::enabled()) gws::gpu_ckpt::mark(cmd, gws::gpu_ckpt::intern(zones_.name_at(open_zone_) + " (done)"));
     zones_.mark_ran(open_zone_);
     ran_in_ring_[write_ring_][open_zone_] = true;
     open_zone_ = ZoneRegistry::kInvalid;

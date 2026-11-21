@@ -23,6 +23,7 @@
 #include "replication.h"          // write_snapshot / apply_snapshot + kSnapshotMagic
 #include "transport.h"
 #include "lobby_client.h"         // host_lobby: lobby codes through a relay
+#include "lobby_direct.h"         // host_direct / join_direct: codes without a server
 #include "ecs/world.h"
 #include "ecs/components.h"
 
@@ -34,6 +35,7 @@
 #include "collider_component.h"
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <spdlog/spdlog.h>
 #include <cstring>
 #include <unordered_map>
@@ -110,6 +112,17 @@ struct NetSession::Impl {
     std::unordered_set<uint64_t> removed_ids;
     std::unique_ptr<net::Transport> transport;
     std::unique_ptr<net::lobby::HostLink> lobby;   // host_lobby(): the lobby riding on `transport`
+    std::unique_ptr<net::lobby::DirectHost> direct_host;   // host_direct()
+    std::unique_ptr<net::lobby::DirectJoin> direct_join;   // join_direct(), until it connects
+    // Both stop before the transport they ride on goes.
+    void stop_lobbies() {
+        if (lobby) lobby->stop();
+        lobby.reset();
+        if (direct_host) direct_host->stop();
+        direct_host.reset();
+        if (direct_join) direct_join->stop();
+        direct_join.reset();
+    }
 
     ecs::World net_world;                                     // props + avatars
     std::unordered_map<uint64_t, ecs::Entity> ent_by_netid;   // host: prop mirror
@@ -121,6 +134,8 @@ struct NetSession::Impl {
     std::weak_ptr<schizo::scene::Scene> last_scene;
 
     glm::vec3 local_player_pos{0.0f};                         // fed each frame
+    float     local_player_yaw = 0.0f;                        // radians about +Y (0: facing +Z)
+    std::unordered_map<net::PeerId, float> peer_yaw;          // host: each client's, as it last said
     uint32_t  local_player_id = 0;                            // scene entity id (0 = none)
     uint64_t  my_avatar = 0;                                  // our own avatar NetId
 
@@ -151,10 +166,13 @@ struct NetSession::Impl {
         return e;
     }
 
-    void set_avatar_pos(uint64_t netid, const glm::vec3& pos) {
+    void set_avatar_pos(uint64_t netid, const glm::vec3& pos, float yaw) {
         auto it = avatar_ent.find(netid);
         if (it == avatar_ent.end() || !net_world.valid(it->second)) return;
-        if (auto* t = net_world.try_get<ecs::Transform>(it->second)) t->position = pos;
+        if (auto* t = net_world.try_get<ecs::Transform>(it->second)) {
+            t->position = pos;
+            t->rotation = glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f));   // the way it faces, for everyone
+        }
     }
 
     // Build a proxy for a remote player: clone the scene "Player" entity's
@@ -226,8 +244,10 @@ struct NetSession::Impl {
                     pit = proxy.emplace(nid.value, std::move(ents)).first;
                 }
                 if (!pit->second.empty())
-                    if (auto* tf = pit->second.front()->GetTransform())
+                    if (auto* tf = pit->second.front()->GetTransform()) {
                         tf->SetWorldPosition(t.position + origin_offset);   // -> local frame
+                        tf->SetWorldRotation(t.rotation);                    // the way that player faces
+                    }
             });
         for (auto it = proxy.begin(); it != proxy.end();) {
             if (seen.count(it->first) == 0) {
@@ -263,7 +283,7 @@ struct NetSession::Impl {
                    NetSessionStatus& st) {
         my_avatar = kAvatarNetIdBase;
         ensure_avatar_entity(my_avatar, 0, local_player_pos);
-        set_avatar_pos(my_avatar, local_player_pos);
+        set_avatar_pos(my_avatar, local_player_pos, local_player_yaw);
 
         net::NetEvent ev;
         while (transport->poll(ev)) {
@@ -289,6 +309,7 @@ struct NetSession::Impl {
                     avatar_by_peer.erase(it);
                 }
                 peer_pos.erase(ev.peer);
+                peer_yaw.erase(ev.peer);
                 spdlog::info("[net] client peer {} left", ev.peer);
             } else if (ev.type == net::NetEvent::Type::Receive) {
                 if (ev.data.size() >= sizeof(uint32_t)) {
@@ -303,6 +324,12 @@ struct NetSession::Impl {
                         if(std::isfinite(p[0])&&std::isfinite(p[1])&&std::isfinite(p[2])&&std::abs(p[0])<1000000&&std::abs(p[1])<1000000&&std::abs(p[2])<1000000)
                             peer_pos[ev.peer] = glm::vec3(p[0], p[1], p[2]);
                         else transport->disconnect(ev.peer);
+                        // The way it faces, when its engine sends it (a fourth float).
+                        if (ev.data.size() >= sizeof(uint32_t) + 4 * sizeof(float)) {
+                            float y = 0.0f;
+                            std::memcpy(&y, ev.data.data() + sizeof(uint32_t) + 3 * sizeof(float), sizeof(float));
+                            if (std::isfinite(y) && std::abs(y) < 100.0f) peer_yaw[ev.peer] = y;
+                        }
                     }
                 }
             }
@@ -310,7 +337,10 @@ struct NetSession::Impl {
 
         for (auto& [peer, aid] : avatar_by_peer) {
             auto pi = peer_pos.find(peer);
-            if (pi != peer_pos.end()) set_avatar_pos(aid, pi->second);
+            if (pi != peer_pos.end()) {
+                auto yi = peer_yaw.find(peer);
+                set_avatar_pos(aid, pi->second, yi != peer_yaw.end() ? yi->second : 0.0f);
+            }
         }
 
         // Mirror moving props (dynamic-collider scene entities) into net_world
@@ -401,10 +431,10 @@ struct NetSession::Impl {
         }
 
         if (connected && server_peer != net::kInvalidPeer) {
-            std::vector<uint8_t> msg(sizeof(uint32_t) + 3 * sizeof(float));
+            std::vector<uint8_t> msg(sizeof(uint32_t) + 4 * sizeof(float));
             std::memcpy(msg.data(), &kMsgPlayerPos, sizeof(uint32_t));
-            float p[3] = { local_player_pos.x, local_player_pos.y, local_player_pos.z };
-            std::memcpy(msg.data() + sizeof(uint32_t), p, 3 * sizeof(float));
+            float p[4] = { local_player_pos.x, local_player_pos.y, local_player_pos.z, local_player_yaw };
+            std::memcpy(msg.data() + sizeof(uint32_t), p, 4 * sizeof(float));
             transport->send(server_peer, msg.data(), msg.size(), net::Channel::Unreliable);
             transport->flush();
         }
@@ -452,8 +482,7 @@ NetSession::NetSession() : impl_(std::make_unique<Impl>()) {}
 NetSession::~NetSession() {
     // The lobby before the transport it rides on: it says CLOSE through it and
     // takes its handler back -- the other way round it would touch a freed transport.
-    if (impl_->lobby) impl_->lobby->stop();
-    impl_->lobby.reset();
+    impl_->stop_lobbies();
     impl_->transport.reset();
 }
 
@@ -512,7 +541,73 @@ bool NetSession::host_lobby(const std::string& server, const std::string& game_i
     return true;
 }
 
+// Switches for tests and for players who want only one of the two ways:
+// GWS_LOBBY_INTERNET=0 (no STUN, no DHT), GWS_LOBBY_LAN=0 (no broadcast).
+static net::lobby::DirectConfig direct_config() {
+    net::lobby::DirectConfig c;
+    if (const char* v = std::getenv("GWS_LOBBY_INTERNET")) c.internet = std::atoi(v) != 0;
+    if (const char* v = std::getenv("GWS_LOBBY_LAN")) c.lan = std::atoi(v) != 0;
+    return c;
+}
+
+bool NetSession::host_direct(const std::string& game_id, int max_players, const std::string& title) {
+    if (!host(0, static_cast<uint32_t>(std::max(1, max_players - 1)))) return false;
+    const auto cfg = direct_config();
+    impl_->direct_host = std::make_unique<net::lobby::DirectHost>();
+    impl_->direct_host->start(*impl_->transport, game_id, max_players, title, cfg);
+    status_.endpoint = "code (direct)";
+    spdlog::info("[net] opening a game with a code, no lobby server (port {}; {}{})", impl_->transport->local_port(),
+                 cfg.lan ? "this network" : "", cfg.internet ? (cfg.lan ? " + the internet" : "the internet") : "");
+    return true;
+}
+
+bool NetSession::join_direct(const std::string& game_id, const std::string& code) {
+    shutdown();
+    ensure_components_registered();
+    impl_->transport = net::create_enet_transport();
+    if (!impl_->transport || !impl_->transport->start_client()) {
+        spdlog::error("[net] join: failed to start client");
+        impl_->transport.reset();
+        return false;
+    }
+    impl_->direct_join = std::make_unique<net::lobby::DirectJoin>();
+    impl_->direct_join->start(*impl_->transport, game_id, code, direct_config());
+    impl_->server_peer = net::kInvalidPeer;
+    impl_->tick = 0;
+    status_ = NetSessionStatus{};
+    status_.role     = NetRole::Client;
+    status_.endpoint = "code " + code;
+    spdlog::info("[net] looking for game {} (no lobby server)", code);
+    return true;
+}
+
+NetSession::JoinState NetSession::join_state() const {
+    if (!impl_->direct_join) return JoinState::Off;
+    switch (impl_->direct_join->state()) {
+        case net::lobby::DirectJoin::State::Searching: return JoinState::Searching;
+        case net::lobby::DirectJoin::State::Found:     return JoinState::Found;
+        case net::lobby::DirectJoin::State::Failed:    return JoinState::Failed;
+        default:                                       return JoinState::Off;
+    }
+}
+std::string NetSession::join_message() const {
+    if (!impl_->direct_join) return {};
+    return impl_->direct_join->state() == net::lobby::DirectJoin::State::Failed ? impl_->direct_join->error()
+                                                                               : impl_->direct_join->progress();
+}
+
+std::string NetSession::lobby_reach() const { return impl_->direct_host ? impl_->direct_host->reach() : std::string(); }
+std::string NetSession::lobby_note() const { return impl_->direct_host ? impl_->direct_host->note() : std::string(); }
+
 NetSession::LobbyState NetSession::lobby_state() const {
+    if (impl_->direct_host) {
+        switch (impl_->direct_host->state()) {
+            case net::lobby::DirectHost::State::Opening: return LobbyState::Registering;
+            case net::lobby::DirectHost::State::Open:    return LobbyState::Open;
+            case net::lobby::DirectHost::State::Failed:  return LobbyState::Failed;
+            default:                                     return LobbyState::Off;
+        }
+    }
     if (!impl_->lobby) return LobbyState::Off;
     switch (impl_->lobby->state()) {
         case net::lobby::HostLink::State::Registering: return LobbyState::Registering;
@@ -521,15 +616,18 @@ NetSession::LobbyState NetSession::lobby_state() const {
         default:                                       return LobbyState::Off;
     }
 }
-std::string NetSession::lobby_code() const { return impl_->lobby ? impl_->lobby->code() : std::string(); }
-std::string NetSession::lobby_error() const { return impl_->lobby ? impl_->lobby->error() : std::string(); }
+std::string NetSession::lobby_code() const {
+    if (impl_->direct_host) return impl_->direct_host->code();
+    return impl_->lobby ? impl_->lobby->code() : std::string();
+}
+std::string NetSession::lobby_error() const {
+    if (impl_->direct_host) return impl_->direct_host->error();
+    return impl_->lobby ? impl_->lobby->error() : std::string();
+}
 
 void NetSession::shutdown() {
     // The lobby first: its CLOSE goes out on the transport about to go.
-    if (impl_->lobby) {
-        impl_->lobby->stop();
-        impl_->lobby.reset();
-    }
+    impl_->stop_lobbies();
     impl_->messages.clear();
     impl_->removed_ids.clear();
     if (impl_->transport)
@@ -590,6 +688,10 @@ void NetSession::set_local_player(uint32_t scene_entity_id, const glm::vec3& pos
     impl_->local_player_id  = scene_entity_id;
     impl_->local_player_pos = pos - impl_->origin_offset;    // -> wire frame
 }
+void NetSession::set_local_player(uint32_t scene_entity_id, const glm::vec3& pos, float yaw) {
+    set_local_player(scene_entity_id, pos);
+    if (std::isfinite(yaw)) impl_->local_player_yaw = yaw;
+}
 
 void NetSession::remote_player_positions(std::vector<glm::vec3>& out) {
     out.clear();
@@ -613,9 +715,25 @@ void NetSession::tick_frame(const std::shared_ptr<schizo::scene::Scene>& scene, 
         for(auto it=impl_->netid_map.begin();it!=impl_->netid_map.end();)if(it->first<kAvatarNetIdBase)it=impl_->netid_map.erase(it);else++it;
     }
     impl_->last_scene = scene;
+    // Joining a code without a server: look for the host first, then connect
+    // to it from this same socket (its router has let the host in by now).
+    if (impl_->direct_join && impl_->server_peer == net::kInvalidPeer) {
+        net::NetEvent ev;
+        while (impl_->transport->poll(ev, 0)) {}
+        impl_->direct_join->update(dt);
+        if (impl_->direct_join->state() == net::lobby::DirectJoin::State::Found) {
+            const std::string at = impl_->direct_join->host();
+            const uint16_t port = impl_->direct_join->port();
+            impl_->server_peer = impl_->transport->connect(at, port);
+            status_.endpoint = at + ":" + std::to_string(port);
+            spdlog::info("[net] found the game on {} ({}:{}) -- connecting", impl_->direct_join->via(), at, port);
+        }
+        return;
+    }
     if (status_.role == NetRole::Host)        impl_->tick_host(scene, dt, status_);
     else if (status_.role == NetRole::Client) impl_->tick_client(scene, dt, status_);
     if (impl_->lobby) impl_->lobby->update(dt);   // after the poll that delivered the server's datagrams
+    if (impl_->direct_host) impl_->direct_host->update(dt);
 }
 
 }  // namespace schizo::editor

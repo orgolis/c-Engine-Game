@@ -33,6 +33,12 @@ struct LocomotionState {
     bool      has_last = false;
     bool      moving   = false;   // the current decision, not the raw test
     float     speed    = 0.0f;    // last computed speed, for UI / debugging
+    // The motion in more detail, smoothed (a character driven by gameplay picks
+    // its walk by direction, and jumps and falls, from these).
+    glm::vec3 velocity{0.0f};     // horizontal, m/s
+    float     vy       = 0.0f;    // vertical, m/s
+    float     air      = 0.0f;    // seconds of moving up or down faster than walking a slope does
+    bool      grounded = true;
 };
 
 /// Update `st` from a new world position and return true if the MOVE clip
@@ -58,9 +64,14 @@ inline bool locomotion_wants_move(LocomotionState& st,
     // Horizontal speed only. Vertical motion is gravity, terrain following or a
     // rebase — none of which mean "this character is walking".
     glm::vec3 d = pos - st.last_pos;
+    const float k = dt * 10.0f < 1.0f ? dt * 10.0f : 1.0f;
+    st.vy += ((d.y / dt) - st.vy) * k;
     d.y = 0.0f;
     st.speed   = glm::length(d) / dt;
+    st.velocity += (d / dt - st.velocity) * k;
     st.last_pos = pos;
+    st.air = (st.vy > 2.5f || st.vy < -3.0f) ? st.air + dt : 0.0f;
+    st.grounded = st.air < 0.12f;
 
     const float start = threshold;
     const float stop  = threshold * 0.6f;

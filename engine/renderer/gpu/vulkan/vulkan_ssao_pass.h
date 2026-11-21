@@ -85,7 +85,9 @@ public:
     bool is_enabled() const { return enabled_; }
 
     /// Bind the scene TLAS for RT-AO mode (binding 4). No-op otherwise.
-    void set_tlas(VkAccelerationStructureKHR tlas);
+    /// `generation`: VulkanRtScene::get_tlas_generation() -- rebinds when it
+    /// changes even if the handle value did not (a re-created TLAS may reuse it).
+    void set_tlas(VkAccelerationStructureKHR tlas, uint64_t generation = 0);
     bool uses_rt() const { return technique_ == AoTechnique::RT; }
 
     /// Switch the AO algorithm at runtime. Rebuilds the compute pipeline +
@@ -116,6 +118,7 @@ private:
     AoTechnique    technique_ = AoTechnique::SSAO;
     bool           rt_available_ = false;
     VkAccelerationStructureKHR tlas_ = VK_NULL_HANDLE;
+    uint64_t tlas_gen_ = 0;   // the TLAS generation bound
     SsaoConfig     config_{};
 
     // Rebuild just the compute DSL/pool/set/layout/pipeline for the current

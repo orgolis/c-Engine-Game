@@ -70,7 +70,9 @@ public:
     void execute_composite(VkCommandBuffer cmd);
 
     /// Bind the scene TLAS (rebinds the descriptor only on change).
-    void set_tlas(VkAccelerationStructureKHR tlas);
+    /// `generation`: VulkanRtScene::get_tlas_generation() -- rebinds when it
+    /// changes even if the handle value did not (a re-created TLAS may reuse it).
+    void set_tlas(VkAccelerationStructureKHR tlas, uint64_t generation = 0);
     /// Bind the RT instance shading-data SSBO (VulkanRtScene::get_instance_data_buffer).
     void set_instance_data_buffer(VkBuffer buffer);
     /// Sun for probe-hit shading. `direction` points light → scene.
@@ -114,6 +116,8 @@ private:
     DdgiConfig config_{};
 
     VkAccelerationStructureKHR tlas_ = VK_NULL_HANDLE;
+
+    uint64_t tlas_gen_ = 0;   // the TLAS generation bound
     VkBuffer  instance_data_buffer_  = VK_NULL_HANDLE;
     glm::vec3 sun_direction_ = glm::vec3(0.3f, -1.0f, 0.2f);
     glm::vec3 sun_color_     = glm::vec3(1.0f, 0.95f, 0.85f);

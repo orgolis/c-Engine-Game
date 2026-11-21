@@ -83,6 +83,8 @@ public:
         return false;
     }
     virtual void set_raw_handler(RawHandler handler) { (void)handler; }
+    /// The UDP port the transport's socket is bound to (0 when not started or unknown).
+    virtual uint16_t local_port() const { return 0; }
 };
 
 std::unique_ptr<Transport> create_enet_transport();

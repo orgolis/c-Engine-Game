@@ -6,6 +6,7 @@ cmake_minimum_required(VERSION 3.20)
 add_library(gws_lobby STATIC
     src/lobby_server.cpp
     src/lobby_client.cpp
+    src/lobby_direct.cpp     # codes without a server: STUN, the DHT, the local network, hole punching
 )
 target_include_directories(gws_lobby PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(gws_lobby PRIVATE ${CMAKE_SOURCE_DIR}/third_party/enet/include)

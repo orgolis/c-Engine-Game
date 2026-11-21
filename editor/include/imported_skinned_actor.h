@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 // ============================================================================
 // ImportedSkinnedActor — a rigged character loaded from a .gltf/.glb and driven
 // through the SAME proven path as SkinnedAnimDemo (skeleton pose → GPU compute
@@ -268,6 +269,23 @@ public:
 
     /// Skinned at least once (its vertex buffer holds a pose, not the bind pose).
     bool skinned_once() const { return skinned_once_; }
+    /// Every bone's matrix finite and inside 1e5 m (a pose gone wrong -- NaN
+    /// from a zero-length rotation, a scale exploding -- would skin vertices to
+    /// nowhere). `bad` names the first offender. (GWS_TEST_RT_AUDIT)
+    bool pose_sane(std::string* bad = nullptr) const {
+        if (!skeleton_) return true;
+        const uint32_t n = skeleton_->GetBoneCount();
+        for (uint32_t i = 0; i < n; ++i) {
+            const glm::mat4 m = skeleton_->GetWorldMatrix(static_cast<uint16_t>(i));
+            for (int c = 0; c < 4; ++c)
+                for (int r = 0; r < 4; ++r)
+                    if (!std::isfinite(m[c][r]) || std::fabs(m[c][r]) > 1.0e5f) {
+                        if (bad) *bad = bone_name(static_cast<int>(i)) + " (" + std::to_string(m[c][r]) + ")";
+                        return false;
+                    }
+        }
+        return true;
+    }
     void record_skin(VkCommandBuffer cmd) {
         if (!mesh_ || !skeleton_) return;
         skinned_once_ = true;

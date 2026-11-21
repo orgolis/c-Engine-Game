@@ -74,7 +74,9 @@ public:
     /// Bind the scene TLAS for RT mode (no-op in screen-space mode).
     /// Updates the compute descriptor set's binding 7. Cheap when the
     /// handle is unchanged.
-    void set_tlas(VkAccelerationStructureKHR tlas);
+    /// `generation`: VulkanRtScene::get_tlas_generation() -- rebinds when it
+    /// changes even if the handle value did not (a re-created TLAS may reuse it).
+    void set_tlas(VkAccelerationStructureKHR tlas, uint64_t generation = 0);
 
     /// Bind the per-instance shading-data SSBO (binding 8) for RT hit
     /// re-shading. From VulkanRtScene::get_instance_data_buffer().
@@ -156,6 +158,7 @@ private:
     bool           use_rt_   = false;
     bool           rt_available_ = false;
     VkAccelerationStructureKHR tlas_ = VK_NULL_HANDLE;
+    uint64_t tlas_gen_ = 0;   // the TLAS generation bound
     VkBuffer       instance_data_buffer_ = VK_NULL_HANDLE;
     uint32_t       instance_count_       = 0;
     glm::vec3      sun_direction_  = glm::vec3(0.3f, -1.0f, 0.2f);

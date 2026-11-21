@@ -12,7 +12,7 @@ a project without `config/multiplayer.ini` plays exactly as before.
 ```
 game_id=mygame.1                    # both sides must have the same (and the same engine)
 start_scene=scenes/start.scene      # Play opens here: the mode menu
-lobby_server=lobby.example.com:7780 # where lobby codes are made (below); optional
+lobby_server=lobby.example.com:7780 # optional: a relay for lobby codes (below); without it codes still work
 menu_ui=ui/online_start.ui          # the menu (its buttons below)
 session_ui=ui/online_session.ui     # session controls (F10)
 status_ui=ui/online_status.ui       # who is in, scores
@@ -51,7 +51,7 @@ The menu document's buttons are found by id:
 | Id | |
 |---|---|
 | `online_solo_<n>` | play mode n alone (not for a duel) |
-| `online_lobby_<n>` | host mode n **online, with a code** (needs `lobby_server`) |
+| `online_lobby_<n>` | host mode n **online, with a code** |
 | `online_code` | where a player types a code (click, type, Enter) |
 | `online_join_code` | join the game with that code |
 | `online_host_<n>` | host mode n on this computer's address (LAN / forwarded port) |
@@ -62,17 +62,67 @@ Session controls have `online_back`, `online_restart` and `online_return`.
 
 ## Lobby codes
 
-A host presses **Online** on a mode. The game opens a lobby on the lobby
-server and, as soon as it has a code -- six letters and digits, e.g.
-`K7Q2X9` -- goes into the mode's world. The code stays on the HUD
-(`Co-op Expedition / Host / 1 players / code K7Q2X9`) and in the F10 panel.
-Friends click the code field, type it (case, spaces and dashes do not
-matter; there is no 0/O or 1/I to mix up), and press Enter or **Join with
-code**. Everything else -- the scene, the fingerprint check, the session --
-is as with an address.
+A host presses **Online** on a mode and, as soon as it has a code -- six
+letters and digits, e.g. `K7Q2X9` -- goes into the mode's world. The code
+stays on the HUD (`Co-op Expedition / Host / 1 players / code K7Q2X9`) and in
+the F10 panel. Friends click the code field, type it (case, spaces and dashes
+do not matter; there is no 0/O or 1/I to mix up), and press Enter or **Join
+with code**. Everything else -- the scene, the fingerprint check, the
+session -- is as with an address.
 
-**How it gets through routers.** Every connection goes *out* from a home
-network to the lobby server, so nobody has to open a port at home:
+A code works two ways; the project chooses by naming a lobby server or not.
+
+### Without a lobby server (the default)
+
+Nothing to set up and nothing to pay for. The two games find each other and
+then talk directly (`engine/core/network/include/lobby_direct.h`):
+
+1. **Address.** Each game asks a public STUN server (Google's, Cloudflare's)
+   how the internet sees its game socket: its router's public address and the
+   port the router gave that socket.
+2. **Finding.** The host puts that address in the **BitTorrent DHT** -- the
+   public, server-less address book every torrent program shares -- under a
+   key made from the `game_id` and the code (only an address goes there, never
+   a file). A joining game looks the key up, and puts its own address under the
+   code's "join" key, which the host keeps asking for.
+   On the **same network** (or the same PC) a broadcast finds the host at once
+   (UDP port 7778), without any of that.
+3. **Joining.** Both games send packets to each other's public address at the
+   same time (UDP hole punching), so each router sees the other game's packets
+   as answers to its own game's and lets them in; then the joiner's game
+   connects from that same socket.
+
+This gets through most home routers -- those that keep a socket's public port
+the same whatever it sends to (most do). It cannot connect two networks that
+change the port for every destination ("symmetric" NAT: some mobile networks
+and carrier-grade NAT); the host is told when its own router is one of those.
+A lobby server (below) gets through them.
+
+Some DHT nodes answer every lookup with addresses of their own choosing. An
+address is used only when nodes on two different networks report it, and at
+most eight are tried, a few packets each.
+
+**Privacy.** The host's public address is in the DHT, under a key only the
+code leads to, for as long as the game is open (anyone who can join the game
+learns it anyway, as with any direct connection). `lobby_server` keeps
+addresses off the DHT.
+
+**Firewall.** Windows asks the first time a game hosts whether to let it
+through; on a private network say yes, or friends on the same network cannot
+find the game (the internet path still works).
+
+**Two games on one router.** They find each other by the broadcast. A router
+seldom sends a packet addressed to its own public address back inside, so the
+internet path alone does not connect two players behind the same router --
+the player is told to check the firewall or join by the host's local address.
+
+### Through a lobby server
+
+`lobby_server=host:port` in the config makes every code go through that
+server, which relays the games' packets (like a TURN relay): every connection
+goes *out* from a home network to the server, so it works behind any router,
+mobile hotspots and carrier-grade NAT included, and adds the trip to the
+server to everyone's ping. Choose a server near the players.
 
 1. The host's game registers the lobby from its own game socket and says it
    is still there every few seconds.
@@ -82,22 +132,23 @@ network to the lobby server, so nobody has to open a port at home:
 4. The player's game connects to the relay port; the server forwards the two
    games' packets to each other as they are.
 
-The game traffic always passes through the server (like a TURN relay), so it
-works behind any router -- also mobile hotspots and carrier-grade NAT -- and
-adds the trip to the server to everyone's ping. Choose a server near the
-players.
+If the server does not answer, a host opens its game without it (the way
+above) and a joiner looks for the code without it too -- a server that is
+down does not stop anyone playing.
 
-What a player is told: *No game with that code* (mistyped, or the host has
-left), *That game is full*, *That code is for another game* (a different
-`game_id`: another game, or another version of it), *The lobby server did not
-answer* (it is not running, or `lobby_server` names the wrong address). A
-host whose lobby server does not answer is back in the menu after six
-seconds with the reason.
+### What a player is told
 
-A lobby closes when the host leaves (or goes quiet for 20 seconds); a relay
-port closes when its player leaves (30 seconds without traffic). Anyone who
-has the code can join until the mode's `players` are in -- the code is the
-only key, so share it like a party invite.
+*No game with that code* (mistyped, or the host has left), *That game is
+full*, *That code is for another game* (a different `game_id`: another game,
+or another version of it), *Found the game but could not reach it* (two
+networks that block direct connections: a lobby server is needed),
+*...on this same internet connection* (both behind one router: the firewall
+on the host's computer). Looking for a code takes up to 30 seconds before it
+says so.
+
+A game with a code is open until the host leaves; anyone who has the code can
+join until the mode's `players` are in -- the code is the only key, so share
+it like a party invite.
 
 ## Running the lobby server
 
@@ -179,9 +230,13 @@ the box.
 `GWS_ONLINE_DISABLE=1` ignores the configuration (plays solo as before);
 `GWS_ONLINE_DIAGNOSTICS=1` logs each side's state once a second;
 `GWS_LOBBY_SERVER=<host:port>` replaces `lobby_server`;
+`GWS_LOBBY_LAN=0` / `GWS_LOBBY_INTERNET=0` turn off one of the two ways a code
+is found without a server (the broadcast; STUN and the DHT);
 `GWS_ONLINE_LOBBY=<mode key>` hosts that mode with a code and
 `GWS_ONLINE_CODE=<code>` joins one (as the buttons do). The UI test hook
 `GWS_TEST_UI` can click, type and press keys:
 `click:online_code@60,type:k7q-2x9@70,key:Enter@80`.
 `tools/lobby_check` runs a lobby server in-process and plays real game
-traffic through its relay.
+traffic through its relay, and a host and players found by the broadcast;
+`lobby_check --internet` also tries public STUN servers and the DHT (it needs
+the internet, so it is not in the suite).

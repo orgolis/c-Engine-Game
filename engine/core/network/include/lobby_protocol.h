@@ -50,6 +50,15 @@ inline bool is_control(const void* data, size_t size) {
     return true;
 }
 
+/// A STUN Binding response (RFC 5389: its magic cookie at bytes 4..7). The
+/// game's socket asks a STUN server for its public address (lobby_direct.h);
+/// the answer arrives there among the game's own packets.
+inline bool is_stun_response(const void* data, size_t size) {
+    if (size < 20) return false;
+    const auto* c = static_cast<const unsigned char*>(data);
+    return c[0] == 0x01 && (c[1] == 0x01 || c[1] == 0x11) && c[4] == 0x21 && c[5] == 0x12 && c[6] == 0xA4 && c[7] == 0x42;
+}
+
 /// A datagram: the magic, then the fields, tab-separated. Tabs and line
 /// breaks inside a field become spaces.
 inline std::string make(const std::vector<std::string>& fields) {

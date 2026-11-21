@@ -94,10 +94,14 @@ struct OnlineGame::Impl {
  std::vector<std::pair<std::string,int>> supplies;
  std::string endpoint = "127.0.0.1:7777", previous_endpoint;
  bool editing_endpoint = false, local_session = false;
- // Lobby codes (config lobby_server=host:port): online_lobby_<n> hosts mode n
- // with a code, online_code is where one is typed, online_join_code joins.
- std::string lobby_server, code_input, previous_code, shown_code;
- bool editing_code = false, via_lobby = false;
+ // Lobby codes: online_lobby_<n> hosts mode n with a code, online_code is where
+ // one is typed, online_join_code joins. With lobby_server=host:port in the
+ // config the codes go through that server (a relay: gets through any network);
+ // without one -- or when it does not answer -- the games find each other
+ // themselves (lobby_direct.h: this network, and the internet's DHT).
+ std::string lobby_server, code_input, previous_code, shown_code, direct_code;
+ bool editing_code = false, via_lobby = false, host_direct_mode = false;
+ bool hosting_direct() const { return lobby_server.empty() || host_direct_mode; }
  std::future<engine::network::lobby::JoinResult> lookup;
  void start_code_join(){
   namespace lb=engine::network::lobby;
@@ -105,11 +109,18 @@ struct OnlineGame::Impl {
   if(code_input.empty())code_input=previous_code;
   const std::string code=lb::normalize_code(code_input);
   if(code.empty()){status=lb::explain_error("code");return;}
+  code_input=code;
+  // With a lobby server, ask it first (a code made through it is only there);
+  // without one, or when it has no such game, look for the host directly.
   lb::Endpoint server;
-  if(lobby_server.empty()||!lb::parse_endpoint(lobby_server,server)){status="This game has no lobby server (lobby_server in config/multiplayer.ini).";return;}
-  code_input=code;status="Looking for game "+code+"...";
-  lookup=std::async(std::launch::async,[server,game=settings["game_id"],code]{return lb::resolve(server,game,code);});
+  if(!lobby_server.empty()&&lb::parse_endpoint(lobby_server,server)){
+   status="Looking for game "+code+"...";
+   lookup=std::async(std::launch::async,[server,game=settings["game_id"],code]{return lb::resolve(server,game,code);});
+   return;
+  }
+  join_direct(code);
  }
+ void join_direct(const std::string& code){direct_code=code;begin(modes.begin()->first,false);direct_code.clear();}
  std::future<std::string> preparation;
  std::string preparing_scene;
 
@@ -161,12 +172,17 @@ struct OnlineGame::Impl {
  void begin(int m,bool host,bool local_only=false){
   if(!net)return;net->shutdown();local_session=local_only;mode=host?m:0;reset_scene();session=true;is_client=!host;ready=false;hello=false;menu=!host;selected_mode=m;mode=host?m:0;++epoch;host_score=guest_score=0;round=1;result.clear();connect_timer=0;peer_ready.clear();welcomes.clear();
   shown_code.clear();
-  bool ok=local_only || (host?(via_lobby?net->host_lobby(lobby_server,settings["game_id"],modes.at(m).players,modes.at(m).title)
-                                        :net->host(uint16_t(port),modes.at(m).players-1)):net->join(address,uint16_t(port)));
+  const bool direct_join=!host&&!direct_code.empty();
+  bool ok=local_only || (host?(via_lobby?(hosting_direct()?net->host_direct(settings["game_id"],modes.at(m).players,modes.at(m).title)
+                                                          :net->host_lobby(lobby_server,settings["game_id"],modes.at(m).players,modes.at(m).title))
+                                        :net->host(uint16_t(port),modes.at(m).players-1))
+                             :(direct_join?net->join_direct(settings["game_id"],direct_code):net->join(address,uint16_t(port))));
   if(!ok){session=false;menu=true;via_lobby=false;status="Could not open the connection. Check the address and port.";return;}
-  status=host?(via_lobby?"Opening an online game...":"Hosting. Share your address and port with your friends."):"Connecting to host...";
+  status=host?(via_lobby?"Opening an online game...":"Hosting. Share your address and port with your friends."):direct_join?"Looking for game "+direct_code+"...":"Connecting to host...";
   if(host){travel=via_lobby?std::string():maps[m];ready=false;}   // through a lobby: travel once the code is there
-  if(host&&via_lobby)spdlog::info("[online] host mode {} through the lobby server {}",m,lobby_server);
+  if(host&&via_lobby&&hosting_direct())spdlog::info("[online] host mode {} with a code, no lobby server",m);
+  else if(host&&via_lobby)spdlog::info("[online] host mode {} through the lobby server {}",m,lobby_server);
+  else if(direct_join)spdlog::info("[online] join code {} (no lobby server)",direct_code);
   else spdlog::info("[online] {} mode {} on port {}",local_only?"local":host?"host":"join",m,port);
  }
  void send(Message type,const std::string& text,uint32_t peer=0){Writer w(type,epoch);w.str(text);net->send_game(peer,w.bytes);}
@@ -475,17 +491,31 @@ void OnlineGame::update(float dt,const std::shared_ptr<scene::Scene>& scene,cons
    std::snprintf(p.address,sizeof p.address,"%s",found.relay_host.c_str());p.port=found.relay_port;p.via_lobby=false;
    spdlog::info("[online] code {} -> relay {}:{}",p.code_input,found.relay_host,found.relay_port);
    p.begin(p.modes.begin()->first,false);p.status="Joining game "+p.code_input+"...";
-  }else if(!found.ok)p.status=found.error;
+  }else if(!found.ok){
+   // The server does not answer, or does not know the code: perhaps the host
+   // could not reach it either and opened its game without it.
+   if(found.error.find("did not answer")!=std::string::npos||found.error.find("No game")!=std::string::npos){
+    spdlog::info("[online] lobby server: {} -- looking for game {} directly",found.error,p.code_input);
+    p.join_direct(p.code_input);
+   }else p.status=found.error;
+  }
  }
  // Hosting with a code: tell the host its code once the lobby is open.
  if(p.session&&!p.is_client&&p.via_lobby){
   const auto st=net.lobby_state();
-  if(st==NetSession::LobbyState::Failed){p.leave("Could not open an online game: "+net.lobby_error());return;}
+  if(st==NetSession::LobbyState::Failed){
+   if(!p.hosting_direct()){   // the lobby server did not work: open the game without it
+    spdlog::warn("[online] lobby server {}: {} -- opening the game without it",p.lobby_server,net.lobby_error());
+    p.host_direct_mode=true;const int m=p.mode;p.begin(m,true);return;
+   }
+   p.leave("Could not open an online game: "+net.lobby_error());return;
+  }
   if(st==NetSession::LobbyState::Open&&p.shown_code!=net.lobby_code()){
    if(p.shown_code.empty())p.travel=p.maps[p.mode];   // the lobby is open: into the mode's world
    p.shown_code=net.lobby_code();
-   spdlog::info("[online] lobby code {} (server {})",p.shown_code,p.lobby_server);
-   p.status="Online. Your code: "+p.shown_code+"  -- friends type it under Join with code.";
+   if(p.hosting_direct())spdlog::info("[online] lobby code {} (no lobby server; reach {}{})",p.shown_code,net.lobby_reach(),net.lobby_note().empty()?"":"; "+net.lobby_note());
+   else spdlog::info("[online] lobby code {} (server {})",p.shown_code,p.lobby_server);
+   p.status="Online. Your code: "+p.shown_code+"  -- friends type it under Join with code."+(net.lobby_note().empty()?std::string():"  "+net.lobby_note());
   }
  }
  // Test switches: GWS_ONLINE_LOBBY=<mode key> hosts it with a code; GWS_ONLINE_CODE=<code> joins one.
@@ -500,6 +530,9 @@ void OnlineGame::update(float dt,const std::shared_ptr<scene::Scene>& scene,cons
  }
  for(auto& message:net.take_game_messages())try{p.process(message.peer,message.data);}catch(const std::exception& ex){spdlog::warn("[online] rejected malformed packet from {}: {}",message.peer,ex.what());}
  if(p.is_client){
+  // Looking for a code's host (no lobby server): no connection to time out yet.
+  if(const auto js=net.join_state();js==NetSession::JoinState::Searching){p.connect_timer=0;p.status=net.join_message();}
+  else if(js==NetSession::JoinState::Failed){spdlog::info("[online] join failed: {}",net.join_message());p.leave(net.join_message());return;}
   p.connect_timer+=dt;if(net.status().connected){if(!p.hello){p.send(Message::Hello,p.settings["game_id"]);p.hello=true;}}else if(p.hello){p.leave("The host disconnected.");return;}
   if(p.connect_timer>15&&(p.menu||p.first_state)){p.leave("Could not join. Verify the address, UDP port and matching game version.");return;}
  }else{
@@ -542,8 +575,7 @@ void OnlineGame::Impl::action(const std::string& id) {
         }
         for (const auto& [n,m] : modes) if (id == "online_lobby_" + std::to_string(n)) {
             editing_endpoint = editing_code = false;
-            if (lobby_server.empty()) { status = "This game has no lobby server (lobby_server in config/multiplayer.ini)."; return; }
-            via_lobby = true;
+            via_lobby = true;   // through the lobby server, or without one (hosting_direct)
             begin(n, true);
             return;
         }

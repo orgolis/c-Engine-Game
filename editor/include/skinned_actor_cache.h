@@ -46,6 +46,7 @@ public:
             // Path changed on an existing entity (the user picked a different
             // character): drop the old actor and rebuild.
             if (it->second.path == gltf_path) return it->second.actor.get();
+            retire(std::move(it->second.actor));
             entries_.erase(it);
         }
         if (gltf_path.empty() || !device) return nullptr;
@@ -75,15 +76,27 @@ public:
 
     /// Drop actors for entities that no longer exist or no longer carry the
     /// component, so deleting a character releases its GPU memory.
+    ///
+    /// Not freed at once: the last frames that used an actor may still be on
+    /// the GPU -- skinning into its buffers, drawing them, building and tracing
+    /// rays against them (ray-traced reflections read its vertices by address).
+    /// Freeing them under those frames made the GPU read freed memory: with ray
+    /// tracing on, a fault and a driver reset a second or two after a scene
+    /// change (entering the Leviathan raid). An actor waits kRetireFrames
+    /// prune() calls -- one a frame, more than the frames in flight -- first.
     template <typename KeepPredicate>
     void prune(KeepPredicate keep) {
+        for (auto it = retiring_.begin(); it != retiring_.end(); )
+            it = --it->frames_left <= 0 ? retiring_.erase(it) : it + 1;
         for (auto it = entries_.begin(); it != entries_.end(); ) {
             if (keep(it->first)) ++it;
-            else                 it = entries_.erase(it);
+            else { retire(std::move(it->second.actor)); it = entries_.erase(it); }
         }
     }
 
-    void clear() { entries_.clear(); }
+    /// Everything, at once: only after the device is idle (shutdown).
+    void clear() { entries_.clear(); retiring_.clear(); }
+    size_t retiring() const { return retiring_.size(); }
     size_t size() const { return entries_.size(); }
 
 private:
@@ -92,6 +105,16 @@ private:
         std::unique_ptr<ImportedSkinnedActor> actor;  // null = build failed, do not retry
     };
     std::unordered_map<uint32_t, Entry> entries_;
+
+    static constexpr int kRetireFrames = 4;
+    struct Retired {
+        std::unique_ptr<ImportedSkinnedActor> actor;
+        int frames_left = kRetireFrames;
+    };
+    std::vector<Retired> retiring_;
+    void retire(std::unique_ptr<ImportedSkinnedActor> a) {
+        if (a) retiring_.push_back(Retired{std::move(a), kRetireFrames});
+    }
 };
 
 }  // namespace schizo::editor

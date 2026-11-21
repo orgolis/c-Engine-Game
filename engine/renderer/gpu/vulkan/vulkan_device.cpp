@@ -20,6 +20,7 @@
 #include "vulkan_rt_functions.h"
 
 #include "vulkan_device.h"
+#include "gpu_checkpoints.h"
 
 #include <cstdlib>
 #include "vulkan_swapchain.h"
@@ -973,6 +974,11 @@ void VulkanDevice::create_logical_device() {
         return false;
     };
 
+    // GWS_GPU_CHECKPOINTS=1: markers in the command stream, to name the pass a
+    // GPU hang happened in (gpu_checkpoints.h). NVIDIA only; off by default.
+    const bool want_checkpoints = gws::gpu_ckpt::requested() && has_ext(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+    if (want_checkpoints) extensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+
     const bool rt_exts_present =
         has_ext(VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
         has_ext(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
@@ -1203,6 +1209,10 @@ void VulkanDevice::create_logical_device() {
     // Get queues
     vkGetDeviceQueue(device, graphics_queue_family, 0, &graphics_queue);
     vkGetDeviceQueue(device, present_queue_family, 0, &present_queue);
+    if (want_checkpoints) {
+        gws::gpu_ckpt::init(device, graphics_queue);
+        GWS_LOG_INFO("[gpu] checkpoints {} (GWS_GPU_CHECKPOINTS)", gws::gpu_ckpt::enabled() ? "on" : "requested but unavailable");
+    }
 
     GWS_LOG_INFO("✅ Logical device created");
 }

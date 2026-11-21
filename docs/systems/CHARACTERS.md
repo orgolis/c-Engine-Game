@@ -2,7 +2,8 @@
 
 A character is a rigged model -- a glTF or GLB with a skin and its animation
 clips -- on a **Skinned Mesh** (Inspector). In Play it can take its clips
-from what it is doing: standing, walking, running, crouching, aiming, firing,
+from what it is doing: standing, walking (ahead, back, sideways), running,
+crouching, jumping, falling, landing, aiming, firing, swinging a blade,
 reloading, being hit and dying. A gun in its hand is another rigged model,
 held at one of its bones. Nothing about a particular game's characters is in
 the engine: models, clip names and where things are held are project data.
@@ -31,6 +32,13 @@ by part of it (case does not matter): `aim=Aim_Rifle` finds `05_Aim_Rifle`.
 | `idle` | standing still |
 | `walk` | moving (sped up and slowed down with the speed) |
 | `run` | moving faster than **Run above** (m/s; default 3.2) |
+| `walk_back` | moving backwards (the way it faces is the model's +Z) |
+| `strafe_left`, `strafe_right` | moving sideways |
+| `jump` | leaving the ground upwards (once), then `fall` |
+| `fall` | in the air |
+| `land` | back on the ground after a drop (once; not while it walks on) |
+| `melee` | a swing of a melee weapon (once; else `fire`) |
+| `aim_melee` | a melee weapon held ready (else `aim`) |
 | `crouch`, `crouch_walk` | crouched, still and moving (the player) |
 | `aim` | a gun held up: the player armed, a creature that sees its target in range |
 | `fire` | each shot (once) |
@@ -40,7 +48,21 @@ by part of it (case does not matter): `aim=Aim_Rifle` finds `05_Aim_Rifle`.
 | `draw` | drawing a gun |
 
 A state with no clip falls back: no `run` walks, no `crouch_walk` walks, no
-`crouch` stands.
+`crouch` stands, no `walk_back` or `strafe_` walks ahead, no `fall` stands.
+
+**Which way.** The legs follow where the character goes relative to where its
+model faces (+Z, as glTF models do): ahead, back, left or right, kept until
+another way is clearly meant (no flicker on a diagonal). The player's own
+moves come from its movement (jumped, landed, on the ground or not);
+anyone else's from how its position changes (rising or falling faster than a
+walk down a slope does: in the air).
+
+**The player's model faces where the player looks.** A glTF character faces
++Z; the player (and its camera) look down -Z. A model under the player is
+turned half round (`TRANSFORM_ROT=0,1,0,0`) -- without it the body walks
+backwards (and other players see it, in online play, moonwalking away from
+where it aims). `GWS_TEST_LOG_ANIM=1` logs the player's way (`along` 1 when
+ahead) twice a second.
 
 **Upper body bone** (`spine`, say): aim, fire, reload and hit play on that
 bone and everything under it while the legs walk or run -- a soldier can
@@ -86,8 +108,12 @@ end
 
 The drawn gun is shown in first person with its clips found by name: `Draw`
 when it is switched to, `Fire` on each shot, `Reload`, and `Idle` between. It
-bobs as the player walks, kicks back with each shot and comes to the middle
-when aiming. Its `muzzle` bone is where the player's rounds, tracers and flash
+is alive in the hands: it bobs and rolls with the walk, breathes when the
+player stands still, trails the look a little when the mouse moves, is
+lowered and canted in a sprint, dips in a crouch, rises with a jump and
+bounces on landing (a spring, harder after a longer fall), kicks back with
+each shot and comes to the middle when aiming -- which steadies most of the
+rest. Its `muzzle` bone is where the player's rounds, tracers and flash
 start. It casts no shadow (the player model's own does). The model faces +Z
 (its barrel), as glTF models do. Against something solid right ahead (a
 trunk, a rock, a wall within about a metre) it comes back and points down
@@ -138,7 +164,10 @@ SKINNED_ATTACH=weapon_socket|0,0,0|90,0,180   # held: bone | offset | turn (a gu
 
 TestGame (docs/systems/TEST_GAME.md) uses the military pack in
 `assets/models/military/`: player, rifleman and heavy characters (43 bones,
-22 clips) and the eight guns (bolt, magazine, muzzle, grip and trigger bones;
+28 clips: idle with breathing and weight shifts, walk, run, walk back, strafes,
+crouch, aim, fire, reloads, draw, hit, death, jump, fall, land, a sword's
+ready stance and swing -- made by
+`art_source/military_pack/animate_characters.py` in Blender, procedurally) and the eight guns (bolt, magazine, muzzle, grip and trigger bones;
 idle, fire, reload and draw clips). Each soldier is an NPC agent with a
 "Body" (rifleman or heavy, driven by gameplay, upper body from `spine`) and a
 "Gun" held at the body's `weapon_socket`.

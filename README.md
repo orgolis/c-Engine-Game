@@ -54,9 +54,11 @@ crafting, quests, factions, NPCs and save/load, plus genre modules for shooters,
 vehicles, building, survival and stealth.
 
 **Online play** — co-op, raids and duels hosted by a player: friends join with a
-six-character **lobby code** through `lobby_server` (shipped with the engine, run on
-any reachable machine; it relays, so no router setup at home), or by address on a
-LAN. See [`docs/systems/ONLINE_PLAY.md`](docs/systems/ONLINE_PLAY.md).
+six-character **lobby code** -- found on the local network or over the internet
+(the public BitTorrent DHT, then a direct connection through most home routers: no
+server, no account), or through `lobby_server` (shipped with the engine, run on any
+reachable machine; it relays, so it gets through every network) -- or by address on
+a LAN. See [`docs/systems/ONLINE_PLAY.md`](docs/systems/ONLINE_PLAY.md).
 
 **Shipping** — **Project → Export Game…** makes the project into a game: on Windows
 a folder with the game's own program (its name, icon and version; no console), its

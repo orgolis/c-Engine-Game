@@ -164,7 +164,7 @@ bool VulkanSsaoPass::build_compute_for_technique() {
     if (technique_ == AoTechnique::RT && tlas_ != VK_NULL_HANDLE) {
         VkAccelerationStructureKHR t = tlas_;
         tlas_ = VK_NULL_HANDLE; // force set_tlas to perform the write
-        set_tlas(t);
+        set_tlas(t, tlas_gen_);
     }
     return true;
 }
@@ -377,10 +377,11 @@ void VulkanSsaoPass::write_descriptor_set() {
     vkUpdateDescriptorSets(vk, write_count, ws.data(), 0, nullptr);
 }
 
-void VulkanSsaoPass::set_tlas(VkAccelerationStructureKHR tlas) {
+void VulkanSsaoPass::set_tlas(VkAccelerationStructureKHR tlas, uint64_t generation) {
     if (technique_ != AoTechnique::RT) return;
-    if (tlas == tlas_ || tlas == VK_NULL_HANDLE) { tlas_ = tlas; return; }
+    if ((tlas == tlas_ && generation == tlas_gen_) || tlas == VK_NULL_HANDLE) { tlas_ = tlas; tlas_gen_ = generation; return; }
     tlas_ = tlas;
+    tlas_gen_ = generation;
     VkWriteDescriptorSetAccelerationStructureKHR as_write{};
     as_write.sType                      = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
     as_write.accelerationStructureCount = 1;

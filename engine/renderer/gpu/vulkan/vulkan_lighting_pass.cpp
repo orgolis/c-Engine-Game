@@ -1310,7 +1310,7 @@ void VulkanLightingPass::set_point_shadow_map(VkImageView view, VkSampler sample
     update_descriptor_set();
 }
 
-void VulkanLightingPass::set_tlas(VkAccelerationStructureKHR tlas) {
+void VulkanLightingPass::set_tlas(VkAccelerationStructureKHR tlas, uint64_t generation) {
     // Without ray tracing, binding 13 is a sampler slot rather than an
     // acceleration structure -- writing an AS descriptor there would be a type
     // mismatch. In practice no TLAS can exist on such a device, but relying on
@@ -1320,8 +1320,9 @@ void VulkanLightingPass::set_tlas(VkAccelerationStructureKHR tlas) {
     // Skip the descriptor write when the handle hasn't actually changed —
     // main.cpp re-binds every frame for safety, but most frames the TLAS
     // handle is stable. vkUpdateDescriptorSets is not free.
-    if (tlas == tlas_) return;
+    if (tlas == tlas_ && generation == tlas_gen_) return;
     tlas_ = tlas;
+    tlas_gen_ = generation;
     if (descriptor_set_ == VK_NULL_HANDLE) return;
 
     // Write binding 13 with the (possibly null) TLAS. When `tlas` is null,

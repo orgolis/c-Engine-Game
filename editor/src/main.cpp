@@ -61,6 +61,7 @@
 #include "profiler/frame_capture.h" // N5: one-frame draw-list snapshot
 #include "memory/memory_snapshot.h" // N3: per-tag live bytes + allocator registry
 #include "vulkan/gpu_zones.h"        // perf F2: per-pass GPU timestamps for EVERY pass
+#include "vulkan/gpu_checkpoints.h"  // GWS_GPU_CHECKPOINTS: which pass a GPU hang was in
 #include "render_settings.h"        // perf F1/F7: render scale + quality presets
 #include "audio/audio_engine.h"     // Stage 6: miniaudio device + spatial mixer
 #include "audio_mixer_panel.h"       // Phase 4.9: mix-bus faders / mute / solo / meters
@@ -246,6 +247,10 @@ struct EditorState {
     // can still release the cursor for its own UI without the editor treating
     // the next click as a request to jump back into mouse-look.
     bool play_cursor_released_by_escape = false;
+    // An exported game whose project has no pause menu of its own (escape is
+    // not "game"): Esc opens the engine's -- Resume / Quit -- never the editor's
+    // "click to resume".
+    bool game_pause_open = false;
 
     // Transient status line shown over the viewport (mesh apply/import result etc).
     std::string status_message;
@@ -672,6 +677,7 @@ struct EditorState {
 static void BeginPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::Scene>& scene) {
     if (!st.scene_playback_manager || !scene) return;
     st.play_cursor_released_by_escape = false;
+    st.game_pause_open = false;
     schizo::editor::play_ui().reset();
     st.scene_playback_manager->SetGamePaused(false);
     st.scene_playback_manager->SetUiHasInput(false);
@@ -707,6 +713,7 @@ static void EndPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::Sc
     if (!st.scene_playback_manager) return;
     st.online_game.end_play();
     st.play_cursor_released_by_escape = false;
+    st.game_pause_open = false;
     // Diff BEFORE stopping: StopPlayback restores the authored transforms, so
     // after it runs the play-end values are gone.
     if (!st.play_origin && st.play_changes.has_baseline() && scene)
@@ -6654,6 +6661,370 @@ static void SetGameWindowIcon(GLFWwindow* w, const std::filesystem::path& dir) {
     }
 }
 
+// The GPU stopped answering (VK_ERROR_DEVICE_LOST): Windows reset the driver
+// after a frame ran too long, or the driver gave up. Nothing drawn after this
+// reaches the screen -- the window would stay black for good, so the program
+// says what happened (in the log, with the GPU checkpoints when they are on,
+// and to the player) and ends. Not a return: the device cannot be used again.
+[[noreturn]] static void GpuDeviceLost(const char* where, const std::string& title, bool game) {
+    spdlog::critical("[gpu] the GPU device was lost ({}) -- the driver was reset. Last GPU checkpoints: {}", where,
+                     gws::gpu_ckpt::report());
+    spdlog::default_logger()->flush();
+#if defined(_WIN32)
+    const std::string msg = (game ? title : std::string("The editor")) +
+        " has to close: the graphics driver stopped responding and was reset.\n\n"
+        "If this happens again here, turn ray tracing off in the graphics settings" +
+        (game ? std::string(".") : std::string(" (Render Settings), and send the log in %LOCALAPPDATA%\\GameWorldshaper\\diagnostics."));
+    const int wn = MultiByteToWideChar(CP_UTF8, 0, msg.c_str(), -1, nullptr, 0);
+    std::wstring wmsg(static_cast<size_t>(wn > 0 ? wn : 1), L'\0');
+    if (wn > 0) MultiByteToWideChar(CP_UTF8, 0, msg.c_str(), -1, wmsg.data(), wn);
+    if (!std::getenv("GWS_TEST_ASSUME_FOCUS"))   // never a dialog in an automated run
+        MessageBoxW(nullptr, wmsg.c_str(), L"Graphics driver reset", MB_OK | MB_ICONERROR);
+#else
+    (void)title; (void)game;
+#endif
+    std::_Exit(3);
+}
+
+// Things to pick up or use, named where they are: a label over each one near
+// enough to see (fading out with distance, not through walls), in the
+// prompt's colour once it is in reach of E. A Pickup is named by its item.
+static void DrawPickupLabels(EditorState& st, ImDrawList* dl, ImVec2 image_min, ImVec2 image_max,
+                             bool ui_menu_up, float k) {
+    auto* pm = st.scene_playback_manager.get();
+    if (ui_menu_up || !pm || !pm->IsPlaying() || !st.ecs_bridge || !st.editor_scene) return;
+    if (st.play_loop.hud().player_dead) return;
+    auto* cam_e = pm->GetPlaybackCamera();
+    auto scene = st.editor_scene->GetScene();
+    if (!cam_e || !cam_e->GetTransform() || !scene) return;
+    const float vw = image_max.x - image_min.x, vh = image_max.y - image_min.y;
+    if (vw < 50.0f || vh < 50.0f) return;
+    // The camera as the renderer has it this frame (see the frame's CameraData).
+    const glm::vec3 eye = cam_e->GetTransform()->GetWorldPosition();
+    const glm::quat er = cam_e->GetTransform()->GetWorldRotation();
+    const glm::mat4 view = glm::lookAt(eye, eye + er * glm::vec3(0.0f, 0.0f, -1.0f), er * glm::vec3(0.0f, 1.0f, 0.0f));
+    const float aspect = vw / vh;
+    glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 1000.0f);
+    std::shared_ptr<schizo::scene::CameraComponent> cc = cam_e->GetComponent<schizo::scene::CameraComponent>();
+    if (!cc)
+        if (auto par = cam_e->GetParent()) cc = par->GetComponent<schizo::scene::CameraComponent>();
+    if (cc) {
+        proj = cc->GetProjectionMatrix(aspect);
+        if (const float fov = schizo::editor::play_settings().fov;
+            fov > 0.0f && cc->GetProjection() == schizo::scene::CameraProjection::Perspective)
+            proj = glm::perspective(glm::radians(fov), aspect, cc->GetNearPlane(), cc->GetFarPlane());
+    }
+    if (st.player_weapon.hud().armed) {
+        const float z = std::max(0.1f, st.player_weapon.hud().view_zoom);
+        proj[0][0] /= z;
+        proj[1][1] /= z;
+    }
+    proj[1][1] *= -1.0f;   // Vulkan's y, as the image is drawn
+    const glm::mat4 vp = proj * view;
+
+    auto& bridge = *st.ecs_bridge;
+    auto& w = bridge.world();
+    auto* phys = pm->GetPhysicsWorld();
+    const auto* player = pm->GetPlayerEntity();
+    const glm::vec3 me = player ? player->GetTransform()->GetWorldPosition() : eye;
+    constexpr float kSee = 14.0f;   // metres: named this far off, fading over the last third
+    ImFont* font = ImGui::GetFont();
+    const float fs = ImGui::GetFontSize() * 1.05f * k;
+    int drawn = 0;
+    for (const auto& ent : scene->GetEntities()) {
+        if (!ent || !ent->IsActiveInHierarchy()) continue;
+        const uint32_t id = bridge.ecs_entity_id(ent->GetTransform());
+        if (id == schizo::editor::kNoEcsEntity) continue;
+        const auto e = static_cast<schizo::ecs::Entity>(id);
+        if (!w.valid(e)) continue;
+        const auto* ia = w.try_get<schizo::ecs::Interactable>(e);
+        if (!ia || !ia->enabled) continue;
+        const glm::vec3 base = ent->GetTransform()->GetWorldPosition();
+        const glm::vec3 at = base + glm::vec3(0.0f, 0.75f, 0.0f);
+        const float d = glm::length(at - eye);
+        if (d > kSee || d < 0.3f) continue;
+        const glm::vec4 c = vp * glm::vec4(at, 1.0f);
+        if (c.w <= 0.05f) continue;
+        const glm::vec3 ndc = glm::vec3(c) / c.w;
+        if (std::abs(ndc.x) > 1.05f || std::abs(ndc.y) > 1.05f) continue;
+        if (phys) {   // behind a wall, a rock, a hill: not named
+            const auto hit = phys->raycast(eye, (at - eye) / d, d);
+            if (hit.hit && hit.distance < d - 1.0f) continue;
+        }
+        std::string name = ia->prompt;
+        if (const auto* pk = w.try_get<schizo::ecs::Pickup>(e)) {
+            if (!pk->item_id.empty()) name = schizo::ecs::carried_name(pk->item_id);   // an item's or a gun's name
+            if (pk->quantity > 1) name += " x" + std::to_string(pk->quantity);
+        }
+        if (name.empty()) continue;
+        const bool reach = glm::length(base - me) <= ia->range;
+        const float fade = std::clamp((kSee - d) / (kSee / 3.0f), 0.0f, 1.0f);
+        const ImVec2 p(image_min.x + (ndc.x * 0.5f + 0.5f) * vw, image_min.y + (ndc.y * 0.5f + 0.5f) * vh);
+        const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, name.c_str());
+        const float r = 4.5f * k;
+        const ImU32 mark = reach ? schizo::editor::hud32(255, 214, 120, static_cast<int>(255 * fade))
+                                 : schizo::editor::hud32(235, 235, 225, static_cast<int>(210 * fade));
+        dl->AddQuadFilled(ImVec2(p.x, p.y - r), ImVec2(p.x + r, p.y), ImVec2(p.x, p.y + r), ImVec2(p.x - r, p.y), mark);
+        const ImVec2 t0(p.x - ts.x * 0.5f, p.y - r - 7.0f * k - ts.y);
+        dl->AddRectFilled(ImVec2(t0.x - 6.0f * k, t0.y - 3.0f * k), ImVec2(t0.x + ts.x + 6.0f * k, t0.y + ts.y + 3.0f * k),
+                          schizo::editor::hud32(10, 14, 20, static_cast<int>(160 * fade)), 4.0f * k);
+        dl->AddText(font, fs, t0, reach ? schizo::editor::hud32(255, 225, 150, static_cast<int>(255 * fade))
+                                        : schizo::editor::hud32(240, 240, 232, static_cast<int>(235 * fade)), name.c_str());
+        if (++drawn >= 24) break;
+    }
+}
+
+// The game's HUD over the game view -- the editor's Viewport in Play, or a game
+// window (an exported game, a multiplayer window), the same in both: the
+// ability bar, the project's UI documents, a script's message, what E would
+// do (and the names of things to pick up), the death notice, stamina, being
+// hit, low health, the gun's crosshair and ammunition. `hud_dl` is the list it
+// draws into and [image_min, image_max] the game view on screen.
+// `ui_pointer`: the mouse is the UI documents' (a menu is up and has it).
+static void DrawPlayHud(EditorState& editor_state, ImDrawList* hud_dl, ImVec2 image_min, ImVec2 image_max,
+                        bool ui_pointer, bool waiting_for_recapture) {
+    const bool viewport_playing = editor_state.scene_playback_manager &&
+                                  editor_state.scene_playback_manager->IsPlaying();
+    if (!viewport_playing) return;
+    // Text grows with the view, as the rest of the HUD does (1 at 1080 lines).
+    const float hud_k = std::clamp((image_max.y - image_min.y) / 1080.0f, 0.8f, 2.0f);
+    // The ability bar: a box per slot (key, name, cooldown sweep) and
+    // the cast in progress above it.
+    // A modal UI document (a menu) is over the game: the game's own HUD steps back.
+    const bool ui_menu_up = viewport_playing && schizo::editor::play_ui().modal();
+    if (viewport_playing && !ui_menu_up && editor_state.player_abilities.hud().shown &&
+        !schizo::editor::play_ui().binds("player.abilities")) {   // a HUD document shows them itself
+        const auto& ah = editor_state.player_abilities.hud();
+        ImDrawList* dl = hud_dl;
+        const float box = 54.0f, gap = 6.0f;
+        const float total = ah.slots.size() * box + (ah.slots.size() - 1) * gap;
+        const float x0 = (image_min.x + image_max.x) * 0.5f - total * 0.5f;
+        const float y0 = image_max.y - box - 52.0f;
+        for (size_t i = 0; i < ah.slots.size(); ++i) {
+            const auto& s = ah.slots[i];
+            const ImVec2 a(x0 + i * (box + gap), y0), b(a.x + box, a.y + box);
+            const bool active = ah.casting == static_cast<int>(i);
+            dl->AddRectFilled(a, b, schizo::editor::hud32(12, 16, 24, 190), 5.0f);
+            if (s.cooldown > 0.0f && s.cooldown_total > 0.0f) {
+                const float f = std::clamp(s.cooldown / s.cooldown_total, 0.0f, 1.0f);
+                dl->AddRectFilled(ImVec2(a.x, b.y - box * f), b, schizo::editor::hud32(0, 0, 0, 150), 5.0f);
+                char cd[16];
+                std::snprintf(cd, sizeof cd, "%.1f", s.cooldown);
+                const ImVec2 cs = ImGui::CalcTextSize(cd);
+                dl->AddText(ImVec2(a.x + (box - cs.x) * 0.5f, a.y + (box - cs.y) * 0.5f), schizo::editor::hud32(255, 255, 255, 230), cd);
+            }
+            dl->AddRect(a, b, active ? schizo::editor::hud32(120, 200, 255, 255) : s.ready ? schizo::editor::hud32(160, 170, 190, 200)
+                                                                             : schizo::editor::hud32(70, 75, 85, 200),
+                        5.0f, 0, active ? 2.5f : 1.0f);
+            // The key the slot's action is bound to (as the player has it), small when long.
+            const int code = schizo::editor::play_settings().map.key("ability_" + std::to_string(i + 1));
+            const std::string key = code ? schizo::input::key_name(code) : std::string("-");
+            const float kf = key.size() > 2 ? ImGui::GetFontSize() * 0.75f : ImGui::GetFontSize();
+            dl->AddText(ImGui::GetFont(), kf, ImVec2(a.x + 4, a.y + 2), schizo::editor::hud32(200, 210, 230, 220), key.c_str());
+            // The whole name, its text made smaller when it would not fit the slot.
+            const char* nm = s.name.c_str();
+            float fs = ImGui::GetFontSize();
+            ImVec2 ns = ImGui::CalcTextSize(nm);
+            if (ns.x > box - 6.0f && ns.x > 0.0f) {
+                const float k = std::max(0.55f, (box - 6.0f) / ns.x);
+                fs *= k;
+                ns = ImVec2(ns.x * k, ns.y * k);
+            }
+            dl->AddText(ImGui::GetFont(), fs, ImVec2(a.x + (box - ns.x) * 0.5f, b.y - ns.y - 3), schizo::editor::hud32(230, 235, 245, 240), nm);
+        }
+        if (ah.casting >= 0) {
+            const float w = 220.0f, h = 8.0f;
+            const ImVec2 p0((image_min.x + image_max.x) * 0.5f - w * 0.5f, y0 - 30.0f);
+            dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), schizo::editor::hud32(10, 14, 20, 180), 3.0f);
+            dl->AddRectFilled(p0, ImVec2(p0.x + w * ah.cast_progress, p0.y + h),
+                              ah.channelling ? schizo::editor::hud32(120, 200, 255, 230) : schizo::editor::hud32(240, 200, 90, 230), 3.0f);
+            const ImVec2 ts = ImGui::CalcTextSize(ah.cast_name.c_str());
+            dl->AddText(ImVec2(p0.x + (w - ts.x) * 0.5f, p0.y - ts.y - 2), schizo::editor::hud32(235, 240, 250, 240), ah.cast_name.c_str());
+        }
+    }
+    if (viewport_playing && editor_state.script_ctx.environment_whiteout > 0.0f)
+        hud_dl->AddRectFilled(image_min, image_max,
+            IM_COL32(240,245,255,static_cast<int>(255*editor_state.script_ctx.environment_whiteout)));
+    // The project's UI documents, over the game view.
+    if (viewport_playing && !schizo::editor::play_ui().empty()) {
+        auto& ui = schizo::editor::play_ui();
+        ui.frame(hud_dl, image_min, image_max, ui_pointer);
+    }
+    // A script's message (Show Message), across the top of the view --
+    // at its bottom while a menu is up, so it does not cover the menu's title.
+    if (viewport_playing) {
+        const auto& msg = schizo::editor::play_message();
+        if (!msg.text.empty() && editor_state.scene_playback_manager->GetPlaybackTime() < msg.until) {
+            ImDrawList* dl = hud_dl;
+            const float cx = (image_min.x + image_max.x) * 0.5f;
+            const float mfs = ImGui::GetFontSize() * 1.35f * hud_k;
+            const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(mfs, FLT_MAX, 0.0f, msg.text.c_str());
+            const ImVec2 p(cx - ts.x * 0.5f, ui_menu_up ? image_max.y - 18.0f - ts.y : image_min.y + 60.0f);
+            dl->AddRectFilled(ImVec2(p.x - 14, p.y - 8), ImVec2(p.x + ts.x + 14, p.y + ts.y + 8), schizo::editor::hud32(10, 14, 20, 190), 6.0f);
+            dl->AddText(ImGui::GetFont(), mfs, p, schizo::editor::hud32(255, 245, 210, 255), msg.text.c_str());
+        }
+    }
+    // What E would do, and the death notice.
+    if (viewport_playing) {
+        const auto& lh = editor_state.play_loop.hud();
+        ImDrawList* dl = hud_dl;
+        const float cx = (image_min.x + image_max.x) * 0.5f;
+        if (!lh.prompt.empty() && !ui_menu_up) {
+            const float pfs = ImGui::GetFontSize() * 1.2f * hud_k;
+            const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(pfs, FLT_MAX, 0.0f, lh.prompt.c_str());
+            const ImVec2 p(cx - ts.x * 0.5f, (image_min.y + image_max.y) * 0.5f + 44.0f * hud_k);
+            dl->AddRectFilled(ImVec2(p.x - 12 * hud_k, p.y - 6 * hud_k), ImVec2(p.x + ts.x + 12 * hud_k, p.y + ts.y + 6 * hud_k),
+                              schizo::editor::hud32(10, 14, 20, 190), 5.0f * hud_k);
+            dl->AddText(ImGui::GetFont(), pfs, p, schizo::editor::hud32(245, 240, 220, 255), lh.prompt.c_str());
+        }
+        if (lh.player_dead) {
+            dl->AddRectFilled(image_min, image_max, schizo::editor::hud32(60, 0, 0, 90));
+            const char* msg = "You died";
+            const float dfs = ImGui::GetFontSize() * 2.0f * hud_k;
+            const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(dfs, FLT_MAX, 0.0f, msg);
+            dl->AddText(ImGui::GetFont(), dfs, ImVec2(cx - ts.x * 0.5f, (image_min.y + image_max.y) * 0.5f - ts.y),
+                        schizo::editor::hud32(255, 220, 220, 255), msg);
+        }
+    }
+    // Stamina, when the player's Movement limits it and it is not full.
+    if (viewport_playing) {
+        const auto& ms = editor_state.scene_playback_manager->GetPlayerMovementSettings();
+        const auto& mst = editor_state.scene_playback_manager->GetPlayerMovementState();
+        if (ms.stamina > 0.0f && mst.stamina >= 0.0f && mst.stamina < ms.stamina - 0.01f) {
+            ImDrawList* dl = hud_dl;
+            const float w = 180.0f, h = 6.0f, frac = std::clamp(mst.stamina / ms.stamina, 0.0f, 1.0f);
+            const ImVec2 p0((image_min.x + image_max.x) * 0.5f - w * 0.5f, image_max.y - 40.0f);
+            dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), schizo::editor::hud32(10, 14, 20, 170), 3.0f);
+            dl->AddRectFilled(p0, ImVec2(p0.x + w * frac, p0.y + h),
+                              frac > 0.25f ? schizo::editor::hud32(120, 220, 140, 230) : schizo::editor::hud32(240, 150, 60, 230), 3.0f);
+        }
+    }
+    // Being hit: a red arc round the crosshair towards where it came
+    // from, fading; low health: the screen's edges glow red, pulsing.
+    if (viewport_playing && !ui_menu_up) {
+        ImDrawList* dl = hud_dl;
+        const ImVec2 cc((image_min.x + image_max.x) * 0.5f, (image_min.y + image_max.y) * 0.5f);
+        const float k = std::clamp((image_max.y - image_min.y) / 1080.0f, 0.35f, 2.0f);
+        auto* pmh = editor_state.scene_playback_manager.get();
+        auto* plh = pmh ? pmh->GetPlayerEntity() : nullptr;
+        auto* camh = pmh ? pmh->GetPlaybackCamera() : nullptr;
+        if (plh && camh && !editor_state.hud_hits.empty()) {
+            const glm::vec3 me = plh->GetTransform()->GetWorldPosition();
+            glm::vec3 fw = camh->GetTransform()->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f);
+            fw.y = 0.0f;
+            if (glm::length(fw) > 1e-4f) {
+                fw = glm::normalize(fw);
+                const glm::vec3 rt(-fw.z, 0.0f, fw.x);
+                for (const auto& hh : editor_state.hud_hits) {
+                    glm::vec3 to = hh.from - me;
+                    to.y = 0.0f;
+                    if (glm::length(to) < 1e-3f) continue;
+                    to = glm::normalize(to);
+                    const float ang = std::atan2(glm::dot(to, rt), glm::dot(to, fw));   // 0: ahead, +: right
+                    const float a = std::clamp(1.0f - hh.age / 1.4f, 0.0f, 1.0f);
+                    const float rad = 120.0f * k, half = 0.32f;
+                    const int segs = 14;
+                    for (int pass = 0; pass < 2; ++pass) {
+                        dl->PathClear();
+                        for (int i = 0; i <= segs; ++i) {
+                            const float t = ang - half + 2.0f * half * static_cast<float>(i) / segs;
+                            dl->PathLineTo(ImVec2(cc.x + std::sin(t) * rad, cc.y - std::cos(t) * rad));
+                        }
+                        dl->PathStroke(pass == 0 ? schizo::editor::hud32(0, 0, 0, static_cast<int>(120 * a)) : schizo::editor::hud32(255, 60, 40, static_cast<int>(235 * a)),
+                                       0, (pass == 0 ? 9.0f : 5.0f) * k);
+                    }
+                }
+            }
+        }
+        if (plh && editor_state.ecs_bridge) {
+            auto& hb = *editor_state.ecs_bridge;
+            const uint32_t hid = hb.ecs_entity_id(plh->GetTransform());
+            const auto* ha = hid != schizo::editor::kNoEcsEntity
+                                 ? hb.world().try_get<schizo::ecs::AttributeSet>(static_cast<schizo::ecs::Entity>(hid)) : nullptr;
+            const auto* hp = ha ? ha->find("Health") : nullptr;
+            if (hp && hp->max > 0.0f && hp->current > 0.0f && hp->current < hp->max * 0.35f) {
+                const float sev = 1.0f - hp->current / (hp->max * 0.35f);
+                const float pulse = 0.75f + 0.25f * std::sin(static_cast<float>(ImGui::GetTime()) * (4.0f + 4.0f * sev));
+                const int al = static_cast<int>(std::clamp(70.0f + 120.0f * sev, 0.0f, 200.0f) * pulse);
+                const ImU32 red = schizo::editor::hud32(170, 10, 10, al), none = schizo::editor::hud32(170, 10, 10, 0);
+                const float ew = (image_max.x - image_min.x) * 0.16f, eh = (image_max.y - image_min.y) * 0.2f;
+                dl->AddRectFilledMultiColor(image_min, ImVec2(image_min.x + ew, image_max.y), red, none, none, red);
+                dl->AddRectFilledMultiColor(ImVec2(image_max.x - ew, image_min.y), image_max, none, red, red, none);
+                dl->AddRectFilledMultiColor(image_min, ImVec2(image_max.x, image_min.y + eh), red, red, none, none);
+                dl->AddRectFilledMultiColor(ImVec2(image_min.x, image_max.y - eh), image_max, none, none, red, red);
+            }
+        }
+    }
+    DrawPickupLabels(editor_state, hud_dl, image_min, image_max, ui_menu_up, hud_k);
+    if (!ui_menu_up && editor_state.player_weapon.hud().armed && !waiting_for_recapture) {
+        // The gun's HUD: a crosshair whose gap is the spread now,
+        // a hit marker, and the ammunition.
+        const auto& hud = editor_state.player_weapon.hud();
+        ImDrawList* dl = hud_dl;
+        const ImVec2 c((image_min.x + image_max.x) * 0.5f, (image_min.y + image_max.y) * 0.5f);
+        const float  half_h = (image_max.y - image_min.y) * 0.5f;
+        const float  tan_half_fov = std::tan(glm::radians(45.0f) * 0.5f) * std::max(0.1f, hud.view_zoom);
+        const float  gap = std::clamp(std::tan(glm::radians(hud.spread_deg)) / tan_half_fov * half_h, 3.0f, half_h * 0.5f);
+        const float  len = 9.0f;
+        const ImU32  col = schizo::editor::hud32(240, 240, 240, 220), shadow = schizo::editor::hud32(0, 0, 0, 160);
+        for (int pass = 0; pass < 2; ++pass) {
+            const ImU32 k = pass ? col : shadow;
+            const float o = pass ? 0.0f : 1.0f, th = pass ? 1.5f : 3.0f;
+            dl->AddLine(ImVec2(c.x - gap - len + o, c.y + o), ImVec2(c.x - gap + o, c.y + o), k, th);
+            dl->AddLine(ImVec2(c.x + gap + o, c.y + o), ImVec2(c.x + gap + len + o, c.y + o), k, th);
+            dl->AddLine(ImVec2(c.x + o, c.y - gap - len + o), ImVec2(c.x + o, c.y - gap + o), k, th);
+            dl->AddLine(ImVec2(c.x + o, c.y + gap + o), ImVec2(c.x + o, c.y + gap + len + o), k, th);
+        }
+        if (hud.hit_marker > 0.0f) {
+            const ImU32 hm = schizo::editor::hud32(255, 80, 60, static_cast<int>(255 * std::min(1.0f, hud.hit_marker / 0.15f)));
+            dl->AddLine(ImVec2(c.x - 10, c.y - 10), ImVec2(c.x - 5, c.y - 5), hm, 2.0f);
+            dl->AddLine(ImVec2(c.x + 10, c.y - 10), ImVec2(c.x + 5, c.y - 5), hm, 2.0f);
+            dl->AddLine(ImVec2(c.x - 10, c.y + 10), ImVec2(c.x - 5, c.y + 5), hm, 2.0f);
+            dl->AddLine(ImVec2(c.x + 10, c.y + 10), ImVec2(c.x + 5, c.y + 5), hm, 2.0f);
+        }
+        // The ammunition: the gun's name over the rounds in the magazine
+        // (large) and in reserve, a bar of the magazine, the reload's progress
+        // -- unless a HUD document shows the rounds itself.
+        if (!schizo::editor::play_ui().binds("player.ammo")) {
+            const float k = std::clamp((image_max.y - image_min.y) / 1080.0f, 0.35f, 2.0f);
+            ImFont* f = ImGui::GetFont();
+            const float big = 40.0f * k, small = 17.0f * k;
+            char mag[16], res[24];
+            std::snprintf(mag, sizeof mag, "%d", hud.ammo);
+            std::snprintf(res, sizeof res, "/ %d", hud.reserve);
+            const ImVec2 ms = f->CalcTextSizeA(big, FLT_MAX, 0.0f, mag), rs = f->CalcTextSizeA(small * 1.2f, FLT_MAX, 0.0f, res);
+            const ImVec2 ns = f->CalcTextSizeA(small, FLT_MAX, 0.0f, hud.name);
+            const float pw = std::max(ms.x + rs.x + 10.0f * k, ns.x) + 28.0f * k;
+            const float ph = ns.y + ms.y + 22.0f * k;
+            const ImVec2 b1(image_max.x - 18.0f * k, image_max.y - 16.0f * k), b0(b1.x - pw, b1.y - ph);
+            dl->AddRectFilled(ImVec2(b0.x + 3 * k, b0.y + 4 * k), ImVec2(b1.x + 3 * k, b1.y + 4 * k), schizo::editor::hud32(0, 0, 0, 70), 7.0f * k);
+            dl->AddRectFilled(b0, b1, schizo::editor::hud32(9, 13, 19, 200), 7.0f * k);
+            dl->AddRect(b0, b1, schizo::editor::hud32(255, 210, 120, 70), 7.0f * k, 0, 1.5f * k);
+            const bool low = hud.magazine > 0 && hud.ammo <= std::max(1, hud.magazine / 4);
+            const ImU32 mc = hud.ammo <= 0 ? schizo::editor::hud32(255, 90, 70, 255) : low ? schizo::editor::hud32(255, 190, 90, 255) : schizo::editor::hud32(245, 245, 245, 255);
+            dl->AddText(f, small, ImVec2(b1.x - 14.0f * k - ns.x, b0.y + 8.0f * k), schizo::editor::hud32(255, 215, 140, 230), hud.name);
+            const float ty = b0.y + 8.0f * k + ns.y;
+            dl->AddText(f, big, ImVec2(b1.x - 14.0f * k - rs.x - 8.0f * k - ms.x, ty), mc, mag);
+            dl->AddText(f, small * 1.2f, ImVec2(b1.x - 14.0f * k - rs.x, ty + ms.y - rs.y - 4.0f * k), schizo::editor::hud32(200, 205, 215, 220), res);
+            // The magazine as a thin bar along the bottom, or the reload filling it.
+            const ImVec2 r0(b0.x + 12.0f * k, b1.y - 9.0f * k), r1(b1.x - 12.0f * k, b1.y - 6.0f * k);
+            dl->AddRectFilled(r0, r1, schizo::editor::hud32(255, 255, 255, 30), 2.0f);
+            const float fr = hud.reloading ? hud.reload_progress
+                                           : (hud.magazine > 0 ? std::clamp(static_cast<float>(hud.ammo) / static_cast<float>(hud.magazine), 0.0f, 1.0f) : 0.0f);
+            if (fr > 0.0f)
+                dl->AddRectFilled(r0, ImVec2(r0.x + (r1.x - r0.x) * fr, r1.y),
+                                  hud.reloading ? schizo::editor::hud32(120, 200, 255, 230) : low ? schizo::editor::hud32(255, 170, 80, 230) : schizo::editor::hud32(255, 220, 150, 210), 2.0f);
+            if (hud.reloading) {
+                const char* rl = "RELOADING";
+                const ImVec2 rls = f->CalcTextSizeA(small, FLT_MAX, 0.0f, rl);
+                const ImVec2 cc((image_min.x + image_max.x) * 0.5f, (image_min.y + image_max.y) * 0.5f);
+                dl->AddText(f, small, ImVec2(cc.x - rls.x * 0.5f, cc.y + 34.0f * k), schizo::editor::hud32(150, 210, 255, 230), rl);
+            }
+        }
+    }
+}
+
+
 void ShowViewport(EditorState& editor_state) {
     if (!editor_state.show_viewport) {
         editor_state.viewport_input_focused = false;
@@ -6834,246 +7205,17 @@ void ShowViewport(EditorState& editor_state) {
                 const bool waiting_for_recapture =
                     viewport_playing && editor_state.play_cursor_released_by_escape &&
                     !editor_state.scene_playback_manager->IsCursorCaptured();
-                // The ability bar: a box per slot (key, name, cooldown sweep) and
-                // the cast in progress above it.
-                // A modal UI document (a menu) is over the game: the game's own HUD steps back.
+                // The game's HUD -- what a game window draws too (DrawPlayHud).
                 const bool ui_menu_up = viewport_playing && schizo::editor::play_ui().modal();
-                if (viewport_playing && !ui_menu_up && editor_state.player_abilities.hud().shown &&
-                    !schizo::editor::play_ui().binds("player.abilities")) {   // a HUD document shows them itself
-                    const auto& ah = editor_state.player_abilities.hud();
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
-                    const float box = 54.0f, gap = 6.0f;
-                    const float total = ah.slots.size() * box + (ah.slots.size() - 1) * gap;
-                    const float x0 = (image_min.x + image_max.x) * 0.5f - total * 0.5f;
-                    const float y0 = image_max.y - box - 52.0f;
-                    for (size_t i = 0; i < ah.slots.size(); ++i) {
-                        const auto& s = ah.slots[i];
-                        const ImVec2 a(x0 + i * (box + gap), y0), b(a.x + box, a.y + box);
-                        const bool active = ah.casting == static_cast<int>(i);
-                        dl->AddRectFilled(a, b, schizo::editor::hud32(12, 16, 24, 190), 5.0f);
-                        if (s.cooldown > 0.0f && s.cooldown_total > 0.0f) {
-                            const float f = std::clamp(s.cooldown / s.cooldown_total, 0.0f, 1.0f);
-                            dl->AddRectFilled(ImVec2(a.x, b.y - box * f), b, schizo::editor::hud32(0, 0, 0, 150), 5.0f);
-                            char cd[16];
-                            std::snprintf(cd, sizeof cd, "%.1f", s.cooldown);
-                            const ImVec2 cs = ImGui::CalcTextSize(cd);
-                            dl->AddText(ImVec2(a.x + (box - cs.x) * 0.5f, a.y + (box - cs.y) * 0.5f), schizo::editor::hud32(255, 255, 255, 230), cd);
-                        }
-                        dl->AddRect(a, b, active ? schizo::editor::hud32(120, 200, 255, 255) : s.ready ? schizo::editor::hud32(160, 170, 190, 200)
-                                                                                         : schizo::editor::hud32(70, 75, 85, 200),
-                                    5.0f, 0, active ? 2.5f : 1.0f);
-                        // The key the slot's action is bound to (as the player has it), small when long.
-                        const int code = schizo::editor::play_settings().map.key("ability_" + std::to_string(i + 1));
-                        const std::string key = code ? schizo::input::key_name(code) : std::string("-");
-                        const float kf = key.size() > 2 ? ImGui::GetFontSize() * 0.75f : ImGui::GetFontSize();
-                        dl->AddText(ImGui::GetFont(), kf, ImVec2(a.x + 4, a.y + 2), schizo::editor::hud32(200, 210, 230, 220), key.c_str());
-                        // The whole name, its text made smaller when it would not fit the slot.
-                        const char* nm = s.name.c_str();
-                        float fs = ImGui::GetFontSize();
-                        ImVec2 ns = ImGui::CalcTextSize(nm);
-                        if (ns.x > box - 6.0f && ns.x > 0.0f) {
-                            const float k = std::max(0.55f, (box - 6.0f) / ns.x);
-                            fs *= k;
-                            ns = ImVec2(ns.x * k, ns.y * k);
-                        }
-                        dl->AddText(ImGui::GetFont(), fs, ImVec2(a.x + (box - ns.x) * 0.5f, b.y - ns.y - 3), schizo::editor::hud32(230, 235, 245, 240), nm);
-                    }
-                    if (ah.casting >= 0) {
-                        const float w = 220.0f, h = 8.0f;
-                        const ImVec2 p0((image_min.x + image_max.x) * 0.5f - w * 0.5f, y0 - 30.0f);
-                        dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), schizo::editor::hud32(10, 14, 20, 180), 3.0f);
-                        dl->AddRectFilled(p0, ImVec2(p0.x + w * ah.cast_progress, p0.y + h),
-                                          ah.channelling ? schizo::editor::hud32(120, 200, 255, 230) : schizo::editor::hud32(240, 200, 90, 230), 3.0f);
-                        const ImVec2 ts = ImGui::CalcTextSize(ah.cast_name.c_str());
-                        dl->AddText(ImVec2(p0.x + (w - ts.x) * 0.5f, p0.y - ts.y - 2), schizo::editor::hud32(235, 240, 250, 240), ah.cast_name.c_str());
-                    }
-                }
-                if (viewport_playing && editor_state.script_ctx.environment_whiteout > 0.0f)
-                    ImGui::GetWindowDrawList()->AddRectFilled(image_min, image_max,
-                        IM_COL32(240,245,255,static_cast<int>(255*editor_state.script_ctx.environment_whiteout)));
-                // The project's UI documents, over the game view.
-                if (viewport_playing && !schizo::editor::play_ui().empty()) {
-                    auto& ui = schizo::editor::play_ui();
-                    const bool pointer = ui.modal() && !editor_state.scene_playback_manager->IsCursorCaptured() &&
-                                         ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-                    ui.frame(ImGui::GetWindowDrawList(), image_min, image_max, pointer);
-                }
-                // A script's message (Show Message), across the top of the view --
-                // at its bottom while a menu is up, so it does not cover the menu's title.
-                if (viewport_playing) {
-                    const auto& msg = schizo::editor::play_message();
-                    if (!msg.text.empty() && editor_state.scene_playback_manager->GetPlaybackTime() < msg.until) {
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const float cx = (image_min.x + image_max.x) * 0.5f;
-                        ImGui::SetWindowFontScale(1.35f);
-                        const ImVec2 ts = ImGui::CalcTextSize(msg.text.c_str());
-                        const ImVec2 p(cx - ts.x * 0.5f, ui_menu_up ? image_max.y - 18.0f - ts.y : image_min.y + 60.0f);
-                        dl->AddRectFilled(ImVec2(p.x - 14, p.y - 8), ImVec2(p.x + ts.x + 14, p.y + ts.y + 8), schizo::editor::hud32(10, 14, 20, 190), 6.0f);
-                        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), p, schizo::editor::hud32(255, 245, 210, 255), msg.text.c_str());
-                        ImGui::SetWindowFontScale(1.0f);
-                    }
-                }
-                // What E would do, and the death notice.
-                if (viewport_playing) {
-                    const auto& lh = editor_state.play_loop.hud();
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
-                    const float cx = (image_min.x + image_max.x) * 0.5f;
-                    if (!lh.prompt.empty() && !ui_menu_up) {
-                        const ImVec2 ts = ImGui::CalcTextSize(lh.prompt.c_str());
-                        const ImVec2 p(cx - ts.x * 0.5f, (image_min.y + image_max.y) * 0.5f + 40.0f);
-                        dl->AddRectFilled(ImVec2(p.x - 10, p.y - 5), ImVec2(p.x + ts.x + 10, p.y + ts.y + 5), schizo::editor::hud32(10, 14, 20, 180), 4.0f);
-                        dl->AddText(p, schizo::editor::hud32(245, 240, 220, 255), lh.prompt.c_str());
-                    }
-                    if (lh.player_dead) {
-                        dl->AddRectFilled(image_min, image_max, schizo::editor::hud32(60, 0, 0, 90));
-                        const char* msg = "You died";
-                        ImGui::SetWindowFontScale(2.0f);
-                        const ImVec2 ts = ImGui::CalcTextSize(msg);
-                        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(cx - ts.x * 0.5f, (image_min.y + image_max.y) * 0.5f - ts.y),
-                                    schizo::editor::hud32(255, 220, 220, 255), msg);
-                        ImGui::SetWindowFontScale(1.0f);
-                    }
-                }
-                // Stamina, when the player's Movement limits it and it is not full.
-                if (viewport_playing) {
-                    const auto& ms = editor_state.scene_playback_manager->GetPlayerMovementSettings();
-                    const auto& mst = editor_state.scene_playback_manager->GetPlayerMovementState();
-                    if (ms.stamina > 0.0f && mst.stamina >= 0.0f && mst.stamina < ms.stamina - 0.01f) {
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const float w = 180.0f, h = 6.0f, frac = std::clamp(mst.stamina / ms.stamina, 0.0f, 1.0f);
-                        const ImVec2 p0((image_min.x + image_max.x) * 0.5f - w * 0.5f, image_max.y - 40.0f);
-                        dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), schizo::editor::hud32(10, 14, 20, 170), 3.0f);
-                        dl->AddRectFilled(p0, ImVec2(p0.x + w * frac, p0.y + h),
-                                          frac > 0.25f ? schizo::editor::hud32(120, 220, 140, 230) : schizo::editor::hud32(240, 150, 60, 230), 3.0f);
-                    }
-                }
-                // Being hit: a red arc round the crosshair towards where it came
-                // from, fading; low health: the screen's edges glow red, pulsing.
-                if (viewport_playing && !ui_menu_up) {
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
-                    const ImVec2 cc((image_min.x + image_max.x) * 0.5f, (image_min.y + image_max.y) * 0.5f);
-                    const float k = std::clamp((image_max.y - image_min.y) / 1080.0f, 0.35f, 2.0f);
-                    auto* pmh = editor_state.scene_playback_manager.get();
-                    auto* plh = pmh ? pmh->GetPlayerEntity() : nullptr;
-                    auto* camh = pmh ? pmh->GetPlaybackCamera() : nullptr;
-                    if (plh && camh && !editor_state.hud_hits.empty()) {
-                        const glm::vec3 me = plh->GetTransform()->GetWorldPosition();
-                        glm::vec3 fw = camh->GetTransform()->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f);
-                        fw.y = 0.0f;
-                        if (glm::length(fw) > 1e-4f) {
-                            fw = glm::normalize(fw);
-                            const glm::vec3 rt(-fw.z, 0.0f, fw.x);
-                            for (const auto& hh : editor_state.hud_hits) {
-                                glm::vec3 to = hh.from - me;
-                                to.y = 0.0f;
-                                if (glm::length(to) < 1e-3f) continue;
-                                to = glm::normalize(to);
-                                const float ang = std::atan2(glm::dot(to, rt), glm::dot(to, fw));   // 0: ahead, +: right
-                                const float a = std::clamp(1.0f - hh.age / 1.4f, 0.0f, 1.0f);
-                                const float rad = 120.0f * k, half = 0.32f;
-                                const int segs = 14;
-                                for (int pass = 0; pass < 2; ++pass) {
-                                    dl->PathClear();
-                                    for (int i = 0; i <= segs; ++i) {
-                                        const float t = ang - half + 2.0f * half * static_cast<float>(i) / segs;
-                                        dl->PathLineTo(ImVec2(cc.x + std::sin(t) * rad, cc.y - std::cos(t) * rad));
-                                    }
-                                    dl->PathStroke(pass == 0 ? schizo::editor::hud32(0, 0, 0, static_cast<int>(120 * a)) : schizo::editor::hud32(255, 60, 40, static_cast<int>(235 * a)),
-                                                   0, (pass == 0 ? 9.0f : 5.0f) * k);
-                                }
-                            }
-                        }
-                    }
-                    if (plh && editor_state.ecs_bridge) {
-                        auto& hb = *editor_state.ecs_bridge;
-                        const uint32_t hid = hb.ecs_entity_id(plh->GetTransform());
-                        const auto* ha = hid != schizo::editor::kNoEcsEntity
-                                             ? hb.world().try_get<schizo::ecs::AttributeSet>(static_cast<schizo::ecs::Entity>(hid)) : nullptr;
-                        const auto* hp = ha ? ha->find("Health") : nullptr;
-                        if (hp && hp->max > 0.0f && hp->current > 0.0f && hp->current < hp->max * 0.35f) {
-                            const float sev = 1.0f - hp->current / (hp->max * 0.35f);
-                            const float pulse = 0.75f + 0.25f * std::sin(static_cast<float>(ImGui::GetTime()) * (4.0f + 4.0f * sev));
-                            const int al = static_cast<int>(std::clamp(70.0f + 120.0f * sev, 0.0f, 200.0f) * pulse);
-                            const ImU32 red = schizo::editor::hud32(170, 10, 10, al), none = schizo::editor::hud32(170, 10, 10, 0);
-                            const float ew = (image_max.x - image_min.x) * 0.16f, eh = (image_max.y - image_min.y) * 0.2f;
-                            dl->AddRectFilledMultiColor(image_min, ImVec2(image_min.x + ew, image_max.y), red, none, none, red);
-                            dl->AddRectFilledMultiColor(ImVec2(image_max.x - ew, image_min.y), image_max, none, red, red, none);
-                            dl->AddRectFilledMultiColor(image_min, ImVec2(image_max.x, image_min.y + eh), red, red, none, none);
-                            dl->AddRectFilledMultiColor(ImVec2(image_min.x, image_max.y - eh), image_max, none, none, red, red);
-                        }
-                    }
-                }
+                const bool ui_pointer = ui_menu_up && !editor_state.scene_playback_manager->IsCursorCaptured() &&
+                                        ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+                DrawPlayHud(editor_state, ImGui::GetWindowDrawList(), image_min, image_max, ui_pointer, waiting_for_recapture);
                 if (waiting_for_recapture && ImGui::IsItemHovered() &&
                     ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                     editor_state.scene_playback_manager->SetCursorCaptured(true);
                     editor_state.play_cursor_released_by_escape = false;
                     editor_state.set_status("Play input captured — Esc releases the mouse");
                     spdlog::info("Viewport click — recaptured play-mode cursor");
-                } else if (viewport_playing && !ui_menu_up && editor_state.player_weapon.hud().armed && !waiting_for_recapture) {
-                    // The gun's HUD: a crosshair whose gap is the spread now,
-                    // a hit marker, and the ammunition.
-                    const auto& hud = editor_state.player_weapon.hud();
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
-                    const ImVec2 c((image_min.x + image_max.x) * 0.5f, (image_min.y + image_max.y) * 0.5f);
-                    const float  half_h = (image_max.y - image_min.y) * 0.5f;
-                    const float  tan_half_fov = std::tan(glm::radians(45.0f) * 0.5f) * std::max(0.1f, hud.view_zoom);
-                    const float  gap = std::clamp(std::tan(glm::radians(hud.spread_deg)) / tan_half_fov * half_h, 3.0f, half_h * 0.5f);
-                    const float  len = 9.0f;
-                    const ImU32  col = schizo::editor::hud32(240, 240, 240, 220), shadow = schizo::editor::hud32(0, 0, 0, 160);
-                    for (int pass = 0; pass < 2; ++pass) {
-                        const ImU32 k = pass ? col : shadow;
-                        const float o = pass ? 0.0f : 1.0f, th = pass ? 1.5f : 3.0f;
-                        dl->AddLine(ImVec2(c.x - gap - len + o, c.y + o), ImVec2(c.x - gap + o, c.y + o), k, th);
-                        dl->AddLine(ImVec2(c.x + gap + o, c.y + o), ImVec2(c.x + gap + len + o, c.y + o), k, th);
-                        dl->AddLine(ImVec2(c.x + o, c.y - gap - len + o), ImVec2(c.x + o, c.y - gap + o), k, th);
-                        dl->AddLine(ImVec2(c.x + o, c.y + gap + o), ImVec2(c.x + o, c.y + gap + len + o), k, th);
-                    }
-                    if (hud.hit_marker > 0.0f) {
-                        const ImU32 hm = schizo::editor::hud32(255, 80, 60, static_cast<int>(255 * std::min(1.0f, hud.hit_marker / 0.15f)));
-                        dl->AddLine(ImVec2(c.x - 10, c.y - 10), ImVec2(c.x - 5, c.y - 5), hm, 2.0f);
-                        dl->AddLine(ImVec2(c.x + 10, c.y - 10), ImVec2(c.x + 5, c.y - 5), hm, 2.0f);
-                        dl->AddLine(ImVec2(c.x - 10, c.y + 10), ImVec2(c.x - 5, c.y + 5), hm, 2.0f);
-                        dl->AddLine(ImVec2(c.x + 10, c.y + 10), ImVec2(c.x + 5, c.y + 5), hm, 2.0f);
-                    }
-                    // The ammunition: the gun's name over the rounds in the magazine
-                    // (large) and in reserve, a bar of the magazine, the reload's progress
-                    // -- unless a HUD document shows the rounds itself.
-                    if (!schizo::editor::play_ui().binds("player.ammo")) {
-                        const float k = std::clamp((image_max.y - image_min.y) / 1080.0f, 0.35f, 2.0f);
-                        ImFont* f = ImGui::GetFont();
-                        const float big = 40.0f * k, small = 17.0f * k;
-                        char mag[16], res[24];
-                        std::snprintf(mag, sizeof mag, "%d", hud.ammo);
-                        std::snprintf(res, sizeof res, "/ %d", hud.reserve);
-                        const ImVec2 ms = f->CalcTextSizeA(big, FLT_MAX, 0.0f, mag), rs = f->CalcTextSizeA(small * 1.2f, FLT_MAX, 0.0f, res);
-                        const ImVec2 ns = f->CalcTextSizeA(small, FLT_MAX, 0.0f, hud.name);
-                        const float pw = std::max(ms.x + rs.x + 10.0f * k, ns.x) + 28.0f * k;
-                        const float ph = ns.y + ms.y + 22.0f * k;
-                        const ImVec2 b1(image_max.x - 18.0f * k, image_max.y - 16.0f * k), b0(b1.x - pw, b1.y - ph);
-                        dl->AddRectFilled(ImVec2(b0.x + 3 * k, b0.y + 4 * k), ImVec2(b1.x + 3 * k, b1.y + 4 * k), schizo::editor::hud32(0, 0, 0, 70), 7.0f * k);
-                        dl->AddRectFilled(b0, b1, schizo::editor::hud32(9, 13, 19, 200), 7.0f * k);
-                        dl->AddRect(b0, b1, schizo::editor::hud32(255, 210, 120, 70), 7.0f * k, 0, 1.5f * k);
-                        const bool low = hud.magazine > 0 && hud.ammo <= std::max(1, hud.magazine / 4);
-                        const ImU32 mc = hud.ammo <= 0 ? schizo::editor::hud32(255, 90, 70, 255) : low ? schizo::editor::hud32(255, 190, 90, 255) : schizo::editor::hud32(245, 245, 245, 255);
-                        dl->AddText(f, small, ImVec2(b1.x - 14.0f * k - ns.x, b0.y + 8.0f * k), schizo::editor::hud32(255, 215, 140, 230), hud.name);
-                        const float ty = b0.y + 8.0f * k + ns.y;
-                        dl->AddText(f, big, ImVec2(b1.x - 14.0f * k - rs.x - 8.0f * k - ms.x, ty), mc, mag);
-                        dl->AddText(f, small * 1.2f, ImVec2(b1.x - 14.0f * k - rs.x, ty + ms.y - rs.y - 4.0f * k), schizo::editor::hud32(200, 205, 215, 220), res);
-                        // The magazine as a thin bar along the bottom, or the reload filling it.
-                        const ImVec2 r0(b0.x + 12.0f * k, b1.y - 9.0f * k), r1(b1.x - 12.0f * k, b1.y - 6.0f * k);
-                        dl->AddRectFilled(r0, r1, schizo::editor::hud32(255, 255, 255, 30), 2.0f);
-                        const float fr = hud.reloading ? hud.reload_progress
-                                                       : (hud.magazine > 0 ? std::clamp(static_cast<float>(hud.ammo) / static_cast<float>(hud.magazine), 0.0f, 1.0f) : 0.0f);
-                        if (fr > 0.0f)
-                            dl->AddRectFilled(r0, ImVec2(r0.x + (r1.x - r0.x) * fr, r1.y),
-                                              hud.reloading ? schizo::editor::hud32(120, 200, 255, 230) : low ? schizo::editor::hud32(255, 170, 80, 230) : schizo::editor::hud32(255, 220, 150, 210), 2.0f);
-                        if (hud.reloading) {
-                            const char* rl = "RELOADING";
-                            const ImVec2 rls = f->CalcTextSizeA(small, FLT_MAX, 0.0f, rl);
-                            const ImVec2 cc((image_min.x + image_max.x) * 0.5f, (image_min.y + image_max.y) * 0.5f);
-                            dl->AddText(f, small, ImVec2(cc.x - rls.x * 0.5f, cc.y + 34.0f * k), schizo::editor::hud32(150, 210, 255, 230), rl);
-                        }
-                    }
                 } else if (waiting_for_recapture) {
                     const char* hint = "Click viewport to resume input";
                     const ImVec2 text_size = ImGui::CalcTextSize(hint);
@@ -9792,8 +9934,15 @@ int main(int argc, char** argv) {
         schizo::editor::SkinnedActorCache skinned_actors;
         // What each gameplay-driven character is doing (for its clips).
         struct CharAnim {
-            enum : int { Idle, Walk, Run, Crouch, CrouchWalk, Aim, Fire, Reload, Hit, Death, Draw, kStates };
-            int  clip[kStates] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+            enum : int { Idle, Walk, Run, Crouch, CrouchWalk, Aim, Fire, Reload, Hit, Death, Draw,
+                         WalkBack, StrafeLeft, StrafeRight, Jump, Fall, Land, Melee, MeleeIdle, kStates };
+            int  clip[kStates];
+            CharAnim() { for (int& c : clip) c = -1; }
+            // Which way the legs go (0 ahead, 1 back, 2 left, 3 right: kept until
+            // clearly another), and the air: up or down, for how long, how fast it fell.
+            int   dir = 0;
+            bool  airborne = false, jumped = false;
+            float air_time = 0.0f, fall_speed = 0.0f, land_left = 0.0f;
             std::string resolved_from, upper_from;
             const void* resolved_actor = nullptr;
             uint32_t shots = 0;
@@ -9808,7 +9957,15 @@ int main(int argc, char** argv) {
             int  idle = -1, fire = -1, reload = -1, draw = -1;
         };
         std::unordered_map<std::string, ViewModel> viewmodels;
-        struct { std::string weapon; bool reloading = false; float kick = 0.0f, bob = 0.0f, aim = 0.0f, pull = 0.0f; } vm_state;
+        struct {
+            std::string weapon;
+            bool reloading = false;
+            float kick = 0.0f, bob = 0.0f, aim = 0.0f, pull = 0.0f;
+            // The gun's life in the hands: time, the look it trails, a sprint, a crouch,
+            // and the spring a jump or a landing sets going.
+            float t = 0.0f, sprint = 0.0f, crouch = 0.0f, spring = 0.0f, spring_v = 0.0f, air_vy = 0.0f, air = 0.0f;
+            glm::vec3 sway{0.0f};   // x offset (m), yaw and pitch (degrees)
+        } vm_state;
         const schizo::editor::ImportedSkinnedActor* vm_drawn = nullptr;   // the first-person gun this frame (GWS_TEST_LOG_MOTION)
         // The gun is placed before Play moves the player this frame; it is put
         // back in front of the camera as drawn once it has moved (vm_local:
@@ -11465,6 +11622,9 @@ int main(int argc, char** argv) {
                         if (const auto* rig = ecs_bridge.world().try_get<schizo::ecs::CameraRig>(static_cast<schizo::ecs::Entity>(pid)))
                             sk_first_person = !rig->third_person;
                 }
+                // GWS_TEST_PLAY_CAMERA: the game drawn from a fixed camera outside the
+                // player -- the player's own body is seen there, animated.
+                if (static const bool outside = std::getenv("GWS_TEST_PLAY_CAMERA") != nullptr; outside) sk_first_person = false;
                 auto is_player_part = [&](const schizo::scene::Entity* e) {
                     for (const schizo::scene::Entity* q = e; q && sk_player; q = q->GetParent().get())
                         if (q == sk_player) return true;
@@ -11479,7 +11639,9 @@ int main(int argc, char** argv) {
                     ca.resolved_actor = &a;
                     for (int& c : ca.clip) c = -1;
                     static const char* states[CharAnim::kStates] = {"idle", "walk", "run", "crouch", "crouch_walk", "aim",
-                                                                    "fire", "reload", "hit", "death", "draw"};
+                                                                    "fire", "reload", "hit", "death", "draw",
+                                                                    "walk_back", "strafe_left", "strafe_right", "jump", "fall",
+                                                                    "land", "melee", "aim_melee"};
                     size_t at = 0;
                     while (at < clips.size()) {
                         const size_t endp = clips.find(',', at);
@@ -11613,8 +11775,12 @@ int main(int argc, char** argv) {
                         const bool dead = schizo::editor::EditorNpcAgents::dead(ecs_bridge, who->GetTransform());
                         bool aiming = false, staggered = false;
                         uint32_t shots = ca.shots;
-                        bool reloading = false, crouched = false;
+                        bool reloading = false, crouched = false, melee = false;
                         float speed = loco.speed;
+                        glm::vec3 hvel = loco.velocity;
+                        float vy = loco.vy;
+                        bool grounded = loco.grounded;
+                        uint32_t move_events = 0;
                         if (is_player) {
                             aiming = pw_hud.armed;                       // a gun in hand: held up
                             if (pw_hud.fired) ++shots;
@@ -11622,6 +11788,12 @@ int main(int argc, char** argv) {
                             const auto& mst = sk_pm->GetPlayerMovementState();
                             crouched = mst.crouched;
                             speed = glm::length(glm::vec2(mst.velocity.x, mst.velocity.z));
+                            hvel = glm::vec3(mst.velocity.x, 0.0f, mst.velocity.z);
+                            vy = mst.velocity.y;
+                            grounded = mst.grounded || mst.mode == schizo::ecs::MoveMode::Climb ||
+                                       mst.mode == schizo::ecs::MoveMode::Swim || mst.mode == schizo::ecs::MoveMode::Mantle;
+                            move_events = mst.events;
+                            if (const auto* wd = schizo::ecs::find_weapon(pw_hud.weapon_id)) melee = wd->melee;
                         } else {
                             const auto ai = editor_state.npc_agents.anim_of(who->GetId());
                             aiming = ai.aiming;
@@ -11629,7 +11801,8 @@ int main(int argc, char** argv) {
                             staggered = ai.staggered;
                             if(network_fighter||editor_state.online_game.client()){
                                 auto id=ecs_bridge.ecs_entity_id(who->GetTransform());auto e=static_cast<schizo::ecs::Entity>(id);
-                                if(id!=schizo::editor::kNoEcsEntity&&ecs_bridge.world().valid(e))if(auto* ws=ecs_bridge.world().try_get<schizo::ecs::WeaponState>(e)){aiming=!ws->weapon_id.empty();shots=uint32_t(ws->rounds_fired);reloading=ws->reloading>0;}
+                                if(id!=schizo::editor::kNoEcsEntity&&ecs_bridge.world().valid(e))if(auto* ws=ecs_bridge.world().try_get<schizo::ecs::WeaponState>(e)){aiming=!ws->weapon_id.empty();shots=uint32_t(ws->rounds_fired);reloading=ws->reloading>0;
+                                    if(const auto* wd=schizo::ecs::find_weapon(ws->weapon_id))melee=wd->melee;}
                             }
                         }
                         ca.fired_now = shots != ca.shots;
@@ -11647,43 +11820,101 @@ int main(int argc, char** argv) {
                             ca.dead = true;
                         } else {
                             ca.dead = false;
-                            // The legs: standing, walking or running (crouched or not).
+                            // The legs: standing, walking or running (crouched or not), the
+                            // way it moves relative to where it faces (the model's +Z) --
+                            // ahead, back, or sideways; in the air jumping, then falling,
+                            // and landing after a drop.
                             const bool moving = speed > std::max(0.25f, smc->move_threshold);
+                            const float sdt = static_cast<float>(delta_time);
+                            if (moving && glm::length(hvel) > 0.2f) {
+                                glm::vec3 fwd = sk_tf->GetWorldRotation() * glm::vec3(0.0f, 0.0f, 1.0f);
+                                fwd.y = 0.0f;
+                                if (glm::length(fwd) > 1e-3f) {
+                                    fwd = glm::normalize(fwd);
+                                    const glm::vec3 right = glm::cross(fwd, glm::vec3(0.0f, 1.0f, 0.0f));
+                                    const glm::vec3 v = glm::normalize(hvel);
+                                    const float along = glm::dot(v, fwd), across = glm::dot(v, right);
+                                    // Kept until another way is clearly meant (no flicker on diagonals).
+                                    const int want = along < -0.45f ? 1 : across > 0.75f ? 3 : across < -0.75f ? 2 : along > 0.3f ? 0 : ca.dir;
+                                    ca.dir = want;
+                                    // GWS_TEST_LOG_ANIM=1: the player's body -- the way it goes relative to where it faces.
+                                    if (static const bool log_anim = std::getenv("GWS_TEST_LOG_ANIM") != nullptr; log_anim && is_player && frame_count % 20 == 0)
+                                        spdlog::info("[test] anim: player speed {:.1f} along {:.2f} across {:.2f} -> way {} (0 ahead 1 back 2 left 3 right)",
+                                                     speed, along, across, ca.dir);
+                                }
+                            } else {
+                                ca.dir = 0;
+                            }
+                            // The air.
+                            const bool jumped_now = (move_events & schizo::ecs::kMoveJumped) || (move_events & schizo::ecs::kMoveAirJumped) ||
+                                                    (!is_player && !grounded && !ca.airborne && vy > 2.5f);
+                            if (!grounded) {
+                                ca.air_time += sdt;
+                                if (jumped_now) { ca.jumped = true; ca.air_time = std::max(ca.air_time, 0.2f); }
+                                if (ca.air_time > 0.15f) ca.airborne = true;
+                                ca.fall_speed = std::max(ca.fall_speed, -vy);
+                            } else {
+                                const bool landed = ca.airborne;
+                                if (landed && ca.fall_speed > 4.0f && C[CharAnim::Land] >= 0)
+                                    ca.land_left = std::clamp(ca.fall_speed / 14.0f, 0.25f, 0.6f);
+                                ca.airborne = ca.jumped = false;
+                                ca.air_time = ca.fall_speed = 0.0f;
+                            }
+                            ca.land_left = std::max(0.0f, ca.land_left - sdt);
                             int legs = C[CharAnim::Idle];
                             float rate = 1.0f;
-                            if (crouched) {
+                            bool legs_loop = true;
+                            if (ca.airborne && (C[CharAnim::Fall] >= 0 || C[CharAnim::Jump] >= 0)) {
+                                // Up (a jump): its clip once; then the fall loop.
+                                const bool rising = ca.jumped && C[CharAnim::Jump] >= 0 &&
+                                                    !(static_cast<int>(actor->clip_index()) == C[CharAnim::Jump] && actor->finished());
+                                if (rising || C[CharAnim::Fall] < 0) { legs = C[CharAnim::Jump]; legs_loop = false; }
+                                else legs = C[CharAnim::Fall];
+                            } else if (ca.land_left > 0.0f && !moving) {
+                                legs = C[CharAnim::Land];
+                                legs_loop = false;
+                            } else if (crouched) {
                                 legs = moving ? clip_or(C[CharAnim::CrouchWalk], C[CharAnim::Walk]) : clip_or(C[CharAnim::Crouch], C[CharAnim::Idle]);
                                 if (moving) rate = std::clamp(speed / 1.2f, 0.6f, 1.6f);
+                            } else if (moving && ca.dir == 1 && C[CharAnim::WalkBack] >= 0) {
+                                legs = C[CharAnim::WalkBack];
+                                rate = std::clamp(speed / 1.4f, 0.6f, 2.0f);
+                            } else if (moving && ca.dir >= 2 && C[ca.dir == 2 ? CharAnim::StrafeLeft : CharAnim::StrafeRight] >= 0) {
+                                legs = C[ca.dir == 2 ? CharAnim::StrafeLeft : CharAnim::StrafeRight];
+                                rate = std::clamp(speed / 1.6f, 0.6f, 2.0f);
                             } else if (moving && speed > smc->run_speed && C[CharAnim::Run] >= 0) {
                                 legs = C[CharAnim::Run];
-                                rate = std::clamp(speed / 4.5f, 0.7f, 1.5f);
+                                rate = std::clamp(speed / 4.5f, 0.7f, 1.6f);
                             } else if (moving) {
                                 legs = clip_or(C[CharAnim::Walk], C[CharAnim::Idle]);
                                 rate = std::clamp(speed / 1.6f, 0.6f, 1.8f);
                             }
-                            // The arms: fire, reload, hit, or aim while there is a target.
+                            // The arms: fire (or swing a blade), reload, hit, or aim while there is a target.
                             int arms = -1;
                             bool arms_loop = true, arms_restart = false;
-                            if (ca.fired_now && C[CharAnim::Fire] >= 0) { arms = C[CharAnim::Fire]; arms_loop = false; arms_restart = true; }
+                            if (ca.fired_now && melee && C[CharAnim::Melee] >= 0) { arms = C[CharAnim::Melee]; arms_loop = false; arms_restart = true; }
+                            else if (ca.fired_now && C[CharAnim::Fire] >= 0) { arms = C[CharAnim::Fire]; arms_loop = false; arms_restart = true; }
                             else if (ca.reload_now && C[CharAnim::Reload] >= 0) { arms = C[CharAnim::Reload]; arms_loop = false; arms_restart = true; }
                             else if (hit_now && C[CharAnim::Hit] >= 0) { arms = C[CharAnim::Hit]; arms_loop = false; arms_restart = true; }
+                            const int ready = melee ? C[CharAnim::MeleeIdle] : C[CharAnim::Aim];   // what "held up" looks like
                             if (upper) {
-                                actor->play(legs >= 0 ? legs : 0, true, 0.2f, rate);
+                                actor->play(legs >= 0 ? legs : 0, legs_loop, legs_loop ? 0.2f : 0.1f, rate);
                                 if (arms >= 0) actor->play_upper(arms, arms_loop, 0.06f, arms_restart);
                                 else if (!actor->upper_finished() && actor->upper_clip() >= 0 &&
                                          (actor->upper_clip() == C[CharAnim::Fire] || actor->upper_clip() == C[CharAnim::Reload] ||
-                                          actor->upper_clip() == C[CharAnim::Hit])) {
+                                          actor->upper_clip() == C[CharAnim::Hit] || actor->upper_clip() == C[CharAnim::Melee])) {
                                     // let it finish
-                                } else if (aiming && C[CharAnim::Aim] >= 0) actor->play_upper(C[CharAnim::Aim], true, 0.15f);
+                                } else if (aiming && ready >= 0) actor->play_upper(ready, true, 0.15f);
                                 else actor->play_upper(-1, false, 0.2f);
                             } else {
                                 const int busy = static_cast<int>(actor->clip_index());
                                 const bool once_playing = !actor->finished() &&
-                                    (busy == C[CharAnim::Fire] || busy == C[CharAnim::Reload] || busy == C[CharAnim::Hit]);
+                                    (busy == C[CharAnim::Fire] || busy == C[CharAnim::Reload] || busy == C[CharAnim::Hit] ||
+                                     busy == C[CharAnim::Melee]);
                                 if (arms >= 0) actor->play(arms, false, 0.06f, 1.0f, true);
                                 else if (once_playing) { /* let it finish */ }
-                                else if (aiming && !moving && C[CharAnim::Aim] >= 0) actor->play(C[CharAnim::Aim], true, 0.15f);
-                                else if (legs >= 0) actor->play(legs, true, 0.2f, rate);
+                                else if (aiming && !moving && !ca.airborne && ready >= 0) actor->play(ready, true, 0.15f);
+                                else if (legs >= 0) actor->play(legs, legs_loop, legs_loop ? 0.2f : 0.1f, rate);
                             }
                         }
                         if (const float adt = anim_dt(ent->GetId(), *actor, sk_tf->GetWorldPosition(), is_player); adt >= 0.0f)
@@ -11781,14 +12012,57 @@ int main(int argc, char** argv) {
                         }
                         vm_state.reloading = pw_hud.reloading;
                         vm_state.kick = std::max(0.0f, vm_state.kick - delta_time * 9.0f);
-                        // Held in front of the eye: bob while walking, sway, the kick of a shot.
+                        // Held in front of the eye, and alive: a walk's bob and roll,
+                        // breathing when still, the gun trailing the look, lowered and
+                        // turned for a sprint, dipped in a crouch, rising with a jump
+                        // and bouncing on landing; the kick of a shot. Aiming down the
+                        // sights steadies most of it.
                         const auto& mst = sk_pm->GetPlayerMovementState();
                         const float spd = glm::length(glm::vec2(mst.velocity.x, mst.velocity.z));
-                        vm_state.bob += delta_time * (2.0f + spd * 1.6f);
-                        const float bob_amt = std::min(spd / 5.0f, 1.0f) * (mst.grounded ? 1.0f : 0.2f);
-                        const glm::vec3 bob(std::sin(vm_state.bob) * 0.008f * bob_amt, std::abs(std::cos(vm_state.bob)) * 0.010f * bob_amt, 0.0f);
+                        const float vdt = static_cast<float>(delta_time);
+                        vm_state.t += vdt;
+                        vm_state.bob += vdt * (2.0f + spd * 1.6f);
+                        const float bob_amt = std::min(spd / 5.0f, 1.0f) * (mst.grounded ? 1.0f : 0.15f);
                         const float aim_in = pw_hud.aiming ? 1.0f : 0.0f;
-                        vm_state.aim += (aim_in - vm_state.aim) * std::min(1.0f, delta_time * 12.0f);
+                        vm_state.aim += (aim_in - vm_state.aim) * std::min(1.0f, vdt * 12.0f);
+                        const float steady = 1.0f - 0.75f * vm_state.aim;
+                        const float sb = std::sin(vm_state.bob), cb = std::abs(std::cos(vm_state.bob));
+                        glm::vec3 bob(sb * 0.011f * bob_amt, (cb - 0.3f) * 0.014f * bob_amt, 0.0f);
+                        float roll_deg = sb * 1.6f * bob_amt, pitch_deg = (cb - 0.5f) * 1.2f * bob_amt;
+                        // Breathing, standing still.
+                        const float still = 1.0f - std::min(spd / 1.5f, 1.0f);
+                        bob.y += std::sin(vm_state.t * 1.7f) * 0.0022f * still;
+                        bob.x += std::sin(vm_state.t * 0.9f) * 0.0012f * still;
+                        pitch_deg += std::sin(vm_state.t * 1.7f + 0.6f) * 0.35f * still;
+                        // The look it trails (last frame's mouse; the cursor is the game's only then).
+                        const bool look_live = sk_pm->IsCursorCaptured();
+                        const float mdx = look_live ? editor_state.script_ctx.mouse_dx : 0.0f;
+                        const float mdy = look_live ? editor_state.script_ctx.mouse_dy : 0.0f;
+                        const glm::vec3 sway_to(std::clamp(-mdx * 0.00022f, -0.012f, 0.012f),
+                                                std::clamp(mdx * 0.05f, -3.5f, 3.5f), std::clamp(mdy * 0.04f, -2.5f, 2.5f));
+                        vm_state.sway += (sway_to - vm_state.sway) * std::min(1.0f, vdt * 9.0f);
+                        // A sprint lowers and cants it; a crouch dips it.
+                        const bool sprinting = mst.sprinting && mst.grounded && spd > 0.5f && !pw_hud.aiming && !pw_hud.reloading;
+                        vm_state.sprint += ((sprinting ? 1.0f : 0.0f) - vm_state.sprint) * std::min(1.0f, vdt * 8.0f);
+                        vm_state.crouch += ((mst.crouched ? 1.0f : 0.0f) - vm_state.crouch) * std::min(1.0f, vdt * 8.0f);
+                        // Jumping and landing: a spring (about 2 Hz, a little bounce).
+                        if (!mst.grounded) vm_state.air_vy = std::min(vm_state.air_vy, mst.velocity.y);
+                        if (mst.events & schizo::ecs::kMoveJumped) vm_state.spring_v -= 0.12f;
+                        if (mst.events & schizo::ecs::kMoveLanded) {
+                            vm_state.spring_v -= std::clamp(-vm_state.air_vy * 0.025f, 0.05f, 0.45f);
+                            vm_state.air_vy = 0.0f;
+                        }
+                        vm_state.spring_v += (-160.0f * vm_state.spring - 14.0f * vm_state.spring_v) * vdt;
+                        vm_state.spring += vm_state.spring_v * vdt;
+                        vm_state.spring = std::clamp(vm_state.spring, -0.06f, 0.06f);
+                        vm_state.air += ((mst.grounded ? 0.0f : std::clamp(-mst.velocity.y * 0.0016f, -0.012f, 0.012f)) - vm_state.air) *
+                                        std::min(1.0f, vdt * 10.0f);
+                        bob += glm::vec3(vm_state.sway.x, vm_state.spring + vm_state.air, 0.0f);
+                        bob *= steady;
+                        bob += glm::vec3(0.0f, -0.035f, 0.03f) * vm_state.sprint + glm::vec3(0.004f, -0.014f, 0.0f) * vm_state.crouch;
+                        const float life_yaw = vm_state.sway.y * steady + 24.0f * vm_state.sprint;
+                        const float life_pitch = (pitch_deg + vm_state.sway.z) * steady - 12.0f * vm_state.sprint;
+                        const float life_roll = roll_deg * steady + 14.0f * vm_state.sprint + 3.0f * vm_state.crouch;
                         glm::vec3 off = vwd->view_offset;
                         off.x *= 1.0f - vm_state.aim * 0.9f;   // aiming: the gun comes to the middle
                         off.y += vm_state.aim * 0.05f;
@@ -11814,10 +12088,10 @@ int main(int argc, char** argv) {
                         // while aiming down the sights).
                         const glm::vec3 va_deg = vwd->view_angles * (1.0f - vm_state.aim);
                         vm_local = glm::translate(glm::mat4(1.0f), glm::vec3(off.x, off.y, -off.z) + bob + kick) *
-                                   glm::rotate(glm::mat4(1.0f), glm::radians(va_deg.x), glm::vec3(0, 1, 0)) *
-                                   glm::rotate(glm::mat4(1.0f), glm::radians(3.5f * vm_state.kick - 38.0f * vm_state.pull + va_deg.y),
+                                   glm::rotate(glm::mat4(1.0f), glm::radians(va_deg.x + life_yaw), glm::vec3(0, 1, 0)) *
+                                   glm::rotate(glm::mat4(1.0f), glm::radians(3.5f * vm_state.kick - 38.0f * vm_state.pull + va_deg.y + life_pitch),
                                                glm::vec3(1, 0, 0)) *
-                                   glm::rotate(glm::mat4(1.0f), glm::radians(va_deg.z), glm::vec3(0, 0, 1)) *
+                                   glm::rotate(glm::mat4(1.0f), glm::radians(va_deg.z + life_roll), glm::vec3(0, 0, 1)) *
                                    glm::rotate(glm::mat4(1.0f), glm::radians(180.0f), glm::vec3(0, 1, 0));
                         const glm::mat4 vm = cam_world * vm_local;
                         va->advance(delta_time);
@@ -12006,9 +12280,19 @@ int main(int argc, char** argv) {
                 const bool cur_esc = key(GLFW_KEY_ESCAPE);
                 const bool cur_sf1 = key(GLFW_KEY_F1) && (key(GLFW_KEY_LEFT_SHIFT) || key(GLFW_KEY_RIGHT_SHIFT));
                 // Esc frees the mouse unless the project gives Esc to the game
-                // (its pause menu); Shift+F1 always does.
-                const bool free_now = (cur_esc && !prev_esc && editor_state.project.escape != "game") ||
-                                      (cur_sf1 && !prev_sf1);
+                // (its pause menu); Shift+F1 always does. An exported game is
+                // never the editor: there Esc is only ever the game's -- its own
+                // pause menu (escape = game), else the engine's (Resume / Quit).
+                bool free_now = false;
+                if (standalone_game_mode) {
+                    if (cur_esc && !prev_esc && playing && editor_state.project.escape != "game" &&
+                        (editor_state.game_pause_open ||
+                         (!schizo::editor::play_ui().modal() && !editor_state.online_game.input_blocked())))
+                        editor_state.game_pause_open = !editor_state.game_pause_open;
+                } else {
+                    free_now = (cur_esc && !prev_esc && editor_state.project.escape != "game") ||
+                               (cur_sf1 && !prev_sf1);
+                }
                 prev_sf1 = cur_sf1;
                 if (free_now && playing &&
                     editor_state.scene_playback_manager->IsCursorCaptured()) {
@@ -12683,11 +12967,13 @@ int main(int argc, char** argv) {
                     ev.value = static_cast<float>(cell);   // a grid's cell (-1 for a button)
                     ecs_bridge.events().publish(ev);
                 }
-                pm.SetGamePaused(ui.pauses() && !editor_state.online_game.networked() && !editor_state.online_game.in_menu());
+                pm.SetGamePaused((ui.pauses() || editor_state.game_pause_open) &&
+                                 !editor_state.online_game.networked() && !editor_state.online_game.in_menu());
                 // A modal document frees the mouse for its buttons; when the last
-                // one goes, the game takes the mouse back.
+                // one goes, the game takes the mouse back. (So does an exported
+                // game's own pause menu.)
                 static bool released_for_ui = false;
-                const bool modal = ui.modal() || editor_state.online_game.input_blocked();
+                const bool modal = ui.modal() || editor_state.online_game.input_blocked() || editor_state.game_pause_open;
                 if (modal && pm.IsCursorCaptured()) { pm.SetCursorCaptured(false); released_for_ui = true; }
                 if (!modal && released_for_ui) {
                     released_for_ui = false;
@@ -13408,14 +13694,18 @@ int main(int argc, char** argv) {
             if (editor_state.net_session.active()) {
                 glm::vec3 my_pos = editor_state.viewport_camera.GetPosition();
                 uint32_t  my_id  = 0;
+                float     my_yaw = 0.0f;
                 if (editor_state.scene_playback_manager &&
                     editor_state.scene_playback_manager->IsPlaying()) {
                     if (auto* pl = editor_state.scene_playback_manager->GetPlayerEntity()) {
                         my_pos = pl->GetTransform()->GetWorldPosition();
                         my_id  = pl->GetId();
+                        // The way the player faces (its +Z about +Y), for the others' view of it.
+                        const glm::vec3 fz = pl->GetTransform()->GetWorldRotation() * glm::vec3(0.0f, 0.0f, 1.0f);
+                        my_yaw = std::atan2(fz.x, fz.z);
                     }
                 }
-                editor_state.net_session.set_local_player(my_id, my_pos);
+                editor_state.net_session.set_local_player(my_id, my_pos, my_yaw);
             }
             editor_state.net_session.tick_frame(
                 editor_state.editor_scene->GetScene(), delta_time);
@@ -13482,18 +13772,18 @@ int main(int argc, char** argv) {
                 // (the projection reads viewport_panel_size each frame).
                 editor_state.viewport_panel_size = { gio.DisplaySize.x, gio.DisplaySize.y };
                 editor_state.viewport_panel_size_valid = true;
-                if (editor_state.viewport_texture_id != VK_NULL_HANDLE) {
+                if (editor_state.viewport_texture_id != VK_NULL_HANDLE)
                     ImGui::GetBackgroundDrawList()->AddImage(
                         (ImTextureID)(void*)editor_state.viewport_texture_id,
                         ImVec2(0.0f, 0.0f), gio.DisplaySize);
-                    if (editor_state.script_ctx.environment_whiteout > 0.0f)
-                        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0,0),gio.DisplaySize,
-                            IM_COL32(240,245,255,static_cast<int>(255*editor_state.script_ctx.environment_whiteout)));
+                // The game's whole HUD, as the editor's Viewport draws it in Play
+                // (an exported game showed only its UI documents: no prompt
+                // for what E picks up, no crosshair, no "Game saved").
+                if (auto* gpm = editor_state.scene_playback_manager.get()) {
+                    const bool gwait = editor_state.play_cursor_released_by_escape && !gpm->IsCursorCaptured();
+                    DrawPlayHud(editor_state, ImGui::GetBackgroundDrawList(), ImVec2(0.0f, 0.0f), gio.DisplaySize,
+                                schizo::editor::play_ui().modal() && !gpm->IsCursorCaptured(), gwait);
                 }
-                if (!schizo::editor::play_ui().empty() && editor_state.scene_playback_manager)
-                    schizo::editor::play_ui().frame(ImGui::GetForegroundDrawList(), ImVec2(0.0f, 0.0f), gio.DisplaySize,
-                                                    schizo::editor::play_ui().modal() &&
-                                                        !editor_state.scene_playback_manager->IsCursorCaptured());
                 // Multiplayer session HUD. A standalone export stays clean and
                 // only shows help after Escape releases its input focus.
                 if (!standalone_game_mode) {
@@ -13510,6 +13800,26 @@ int main(int argc, char** argv) {
                     if (editor_state.play_cursor_released_by_escape)
                         ImGui::TextUnformatted("Click anywhere to resume input");
                     ImGui::End();
+                } else if (editor_state.game_pause_open) {
+                    // The engine's pause menu for a game that has none of its own.
+                    const float k = std::clamp(gio.DisplaySize.y / 1080.0f, 0.8f, 2.0f);
+                    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0.0f, 0.0f), gio.DisplaySize, IM_COL32(0, 0, 0, 140));
+                    ImGui::SetNextWindowPos(ImVec2(gio.DisplaySize.x * 0.5f, gio.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+                    ImGui::SetNextWindowBgAlpha(0.92f);
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28.0f * k, 22.0f * k));
+                    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f * k, 12.0f * k));
+                    ImGui::Begin("##game_pause", nullptr,
+                                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove);
+                    ImGui::SetWindowFontScale(1.5f * k);
+                    ImGui::TextUnformatted("Paused");
+                    ImGui::SetWindowFontScale(1.2f * k);
+                    const ImVec2 bs(260.0f * k, 0.0f);
+                    if (ImGui::Button("Resume", bs)) editor_state.game_pause_open = false;
+                    if (ImGui::Button("Quit game", bs)) glfwSetWindowShouldClose(glfw_window, GLFW_TRUE);
+                    ImGui::SetWindowFontScale(1.0f);
+                    ImGui::End();
+                    ImGui::PopStyleVar(2);
                 } else if (editor_state.play_cursor_released_by_escape) {
                     const char* hint = "Click to resume input";
                     const ImVec2 text_size = ImGui::CalcTextSize(hint);
@@ -14503,8 +14813,9 @@ int main(int argc, char** argv) {
             // and that is the only question worth asking here. Same defect as
             // the four scope bugs in F12, one layer in.
             { GWS_PROFILE_ZONE("wait_prev_frame_fence");
-            vkWaitForFences(device.get_device(), 1, &frame_fences[current_frame],
-                            VK_TRUE, UINT64_MAX);
+            if (vkWaitForFences(device.get_device(), 1, &frame_fences[current_frame],
+                                VK_TRUE, UINT64_MAX) == VK_ERROR_DEVICE_LOST)
+                GpuDeviceLost("waiting for a frame", game_info.title, standalone_game_mode);
             }
             if (async_caps[current_frame].buf != VK_NULL_HANDLE)
                 hold_swapchain_capture(device, async_caps[current_frame], async_cap_frame[current_frame], held_shots);
@@ -15080,6 +15391,24 @@ int main(int argc, char** argv) {
                     for (const auto& el : editor_state.play_effects.lights())
                         if (el.intensity > 0.01f && light_frustum.is_sphere_visible(el.pos, el.range))
                             lighting->add_point_light(el.pos, el.color, el.intensity, el.range, false);
+                // GWS_TEST_RT_AUDIT=1: the lights this frame lights with, and how many
+                // cast a shadow (each a ray or more per lit pixel with ray tracing).
+                if (static const bool light_audit = std::getenv("GWS_TEST_RT_AUDIT") != nullptr; light_audit) {
+                    static uint32_t last_n = UINT32_MAX, last_casters = UINT32_MAX;
+                    uint32_t casters = 0, points = 0;
+                    float far_range = 0.0f;
+                    for (uint32_t li = 0; li < lighting->get_light_count(); ++li) {
+                        const auto& L = lighting->get_light(li);
+                        casters += L.casts_shadow ? 1u : 0u;
+                        if (L.position.w == 1.0f) { ++points; far_range = std::max(far_range, L.color_radius.w); }
+                    }
+                    if (lighting->get_light_count() != last_n || casters != last_casters) {
+                        last_n = lighting->get_light_count();
+                        last_casters = casters;
+                        spdlog::info("[test] rt-audit: frame {} {} lights ({} point, {} casting shadows; widest point light {:.1f} m)",
+                                     frame_count, last_n, points, casters, far_range);
+                    }
+                }
                 if (lights_culled > 0) {
                     static int light_cull_log = 0;
                     if ((light_cull_log++ % 240) == 0)
@@ -16043,6 +16372,51 @@ int main(int argc, char** argv) {
                 // (starting in Phase 3) will be the Lighting stage. Phase 2
                 // runs this for its own sake — verifies the AS builds work and
                 // produces a log line per frame.
+                // GWS_TEST_RT_AUDIT=1: what this frame would give the ray-traced
+                // scene -- each draw with a non-finite, huge or collapsed transform
+                // (a ray walking bounds made from those may not come back), named
+                // once. Works with ray tracing off, so a scene that resets the GPU
+                // with it on can be looked at safely.
+                if (static const bool rt_audit = std::getenv("GWS_TEST_RT_AUDIT") != nullptr; rt_audit) {
+                    static std::unordered_set<const void*> named;
+                    static size_t last_count = 0;
+                    size_t bad = 0, biggest = 0;
+                    for (const auto& d : build_order_draws) {
+                        if (!d.mesh) continue;
+                        biggest = std::max<size_t>(biggest, d.mesh->vertex_count());
+                        bool finite = true;
+                        float big = 0.0f;
+                        for (int c = 0; c < 4; ++c)
+                            for (int r = 0; r < 4; ++r) {
+                                finite = finite && std::isfinite(d.model[c][r]);
+                                big = std::max(big, std::fabs(d.model[c][r]));
+                            }
+                        const float det = finite ? glm::determinant(glm::mat3(d.model)) : 0.0f;
+                        if (finite && big < 1.0e6f && std::fabs(det) > 1.0e-9f) continue;
+                        ++bad;
+                        if (named.insert(d.mesh).second)
+                            spdlog::warn("[test] rt-audit: frame {} draw with a {} transform (translation {:.4g} {:.4g} {:.4g}, "
+                                         "det {:.3g}): {} vertices, casts shadow {}", frame_count,
+                                         !finite ? "non-finite" : big >= 1.0e6f ? "huge" : "collapsed",
+                                         d.model[3][0], d.model[3][1], d.model[3][2], det, d.mesh->vertex_count(), d.casts_shadow);
+                    }
+                    // The skinned characters' poses: a bone gone to NaN or far away skins
+                    // the mesh into garbage the ray-traced scene is then built from.
+                    for (auto* sa : frame_skinned) {
+                        std::string which;
+                        if (sa && !sa->pose_sane(&which)) {
+                            static std::unordered_set<const void*> told;
+                            if (told.insert(sa).second)
+                                spdlog::warn("[test] rt-audit: frame {} '{}' has a bad pose: bone {}", frame_count, sa->name(), which);
+                        }
+                    }
+                    if (build_order_draws.size() != last_count || bad) {
+                        if (build_order_draws.size() != last_count)
+                            spdlog::info("[test] rt-audit: frame {} {} draws, {} bad, largest mesh {} vertices", frame_count,
+                                         build_order_draws.size(), bad, biggest);
+                        last_count = build_order_draws.size();
+                    }
+                }
                 if (rt_scene) {
                     // NOTE: meshes are owned by the persistent prim_cache /
                     // asset_cache (NOT the scene), so switching scenes does
@@ -16054,15 +16428,17 @@ int main(int argc, char** argv) {
                     // the lighting descriptor pointing at a destroyed TLAS,
                     // which hung the editor on scene load).
                     { GWS_PROFILE_ZONE("rt_scene_update");
-                      rt_scene->update(cmd, build_order_draws.data(), build_order_draws.size()); }
+                      gws::gpu_ckpt::mark(cmd, "rt: acceleration structures");
+                      rt_scene->update(cmd, build_order_draws.data(), build_order_draws.size());
+                      gws::gpu_ckpt::mark(cmd, "rt: acceleration structures (done)"); }
                     // Re-bind the TLAS handle. rebuild_tlas() always produces
                     // a valid handle (empty TLAS for empty scenes), so this is
                     // never null and the descriptor never dangles.
-                    lighting->set_tlas(rt_scene->get_tlas_handle());
+                    lighting->set_tlas(rt_scene->get_tlas_handle(), rt_scene->get_tlas_generation());
                     if (ssao && ssao->uses_rt())
-                        ssao->set_tlas(rt_scene->get_tlas_handle());
+                        ssao->set_tlas(rt_scene->get_tlas_handle(), rt_scene->get_tlas_generation());
                     if (ssr && ssr->uses_rt()) {
-                        ssr->set_tlas(rt_scene->get_tlas_handle());
+                        ssr->set_tlas(rt_scene->get_tlas_handle(), rt_scene->get_tlas_generation());
                         ssr->set_instance_data_buffer(rt_scene->get_instance_data_buffer());
                         // Must travel WITH the buffer above: it is what stops the
                         // shader dereferencing a stale instance slot, and a stale
@@ -16076,7 +16452,7 @@ int main(int argc, char** argv) {
                         ssr->set_ambient(l_cfg.ambient_color, l_cfg.global_ambient);
                     }
                     if (ddgi) {
-                        ddgi->set_tlas(rt_scene->get_tlas_handle());
+                        ddgi->set_tlas(rt_scene->get_tlas_handle(), rt_scene->get_tlas_generation());
                         ddgi->set_instance_data_buffer(rt_scene->get_instance_data_buffer());
                         // Probe-hit shading uses the same sun + ambient as the
                         // deferred lighting so bounced light matches direct light.
@@ -16438,8 +16814,9 @@ int main(int argc, char** argv) {
             submit_info.signalSemaphoreCount = 1;
             submit_info.pSignalSemaphores    = &present_sems[image_index];
             { GWS_PROFILE_ZONE("queue_submit");
-              vkQueueSubmit(device.get_graphics_queue(), 1, &submit_info,
-                            frame_fences[current_frame]); }
+              if (vkQueueSubmit(device.get_graphics_queue(), 1, &submit_info,
+                                frame_fences[current_frame]) == VK_ERROR_DEVICE_LOST)
+                  GpuDeviceLost("submitting a frame", game_info.title, standalone_game_mode); }
 
             g_cp.mark("pre_present");
             { GWS_PROFILE_ZONE("present");

@@ -34,6 +34,10 @@ the camera) -- the A/B for the gun's shake.
 | `GWS_HEALTH_ALL_GPU=1`, `GWS_HEALTH_PERIOD=1` | every timed GPU pass in the `[health]` line, once a second |
 | `GWS_TEST_GPU_SPAN=<file.csv>` | the GPU timeline: timestamps at the start and end of each frame's command buffer, round the scene and after the first and last character's skinning -- GPU work no zone times shows up here |
 | `GWS_GPU_FRAME_ZONE=1` | one GPU zone round the whole scene (the per-pass zones step aside) |
+| `GWS_GPU_CHECKPOINTS=1` | NVIDIA: a marker in the command stream at every timed GPU pass; after a GPU reset the log names the last ones reached (`[gpu] the GPU device was lost ... Last GPU checkpoints: ...`). It serializes the GPU somewhat: a race between passes may hide while it is on |
+| `GWS_TEST_RT_AUDIT=1` | names every draw with a non-finite, huge or collapsed transform, every skinned character with a bad pose, and logs the lights (how many cast shadows) -- also with ray tracing off |
+| `GWS_TEST_LOG_ANIM=1` | in Play, the player's body: speed and the way it goes relative to where its model faces (ahead / back / left / right) |
+| `GWS_TEST_PLAY_CAMERA=1` + `GWS_TEST_CAMERA=x,y,z,tx,ty,tz` | Play drawn from a fixed camera; the player's own body is drawn there (animated), not hidden as in first person |
 
 A/B switches: `GWS_NO_ANIM_LOD=1` (every character animated every frame),
 `GWS_TEST_SKIN_HOST=1` (skinning input in host memory, the old way),

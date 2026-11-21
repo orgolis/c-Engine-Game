@@ -171,6 +171,14 @@ In Play the game holds the mouse; the editor's panels get none of it.
   pause menu: a script listens with Key Pressed (Escape) and shows its menu,
   which, being modal, frees the mouse for its buttons. Closing the menu gives
   the mouse back to the game.
+- **An exported game** never frees the mouse the editor's way: Esc goes to the
+  project's menu (`escape = game`) or, when it has none, the engine's Paused
+  menu (Resume / Quit game) -- docs/EXPORTING_A_GAME.md.
+
+Things the player can pick up or use (an Interactable) are named where they
+are: a label over each one within 14 m in view (not through walls), fading
+with distance, a Pickup by its item's or gun's name; in the prompt's colour
+once it is in reach of E.
 
 ## Full screen
 
