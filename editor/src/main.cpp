@@ -9958,6 +9958,12 @@ int main(int argc, char** argv) {
             int arm_l[3] = {-2, -1, -1};
             float support_w = 0.0f;
             bool hands_busy = false;   // reloading, a blade, dead: the clip's hands
+            // Limp: its ragdoll (in the physics world of that serial), how long it
+            // has lain still; frozen: the physics let go, the pose kept.
+            uint32_t ragdoll = 0;
+            uint64_t ragdoll_world = 0;
+            float ragdoll_still = 0.0f;
+            bool limp = false, ragdoll_failed = false;
         };
         std::unordered_map<uint32_t, CharAnim> char_anim;
         // The gun seen in first person, one actor per model file.
@@ -11698,6 +11704,30 @@ int main(int argc, char** argv) {
                 };
                 // A clip's events (its `.events` file), on the gameplay event bus as
                 // anim.<name>: the entity is the instigator, the clip the param.
+                // GWS_TEST_KILL_NEAR=<play frame>[,radius]: at that frame of Play every NPC
+                // agent within `radius` m (30) of the player loses all its health -- it dies
+                // as if shot (a test of how bodies fall). Never saved.
+                if (static const char* kill_near = std::getenv("GWS_TEST_KILL_NEAR"); kill_near && sk_playing && sk_player) {
+                    static int kill_at = -1, play_frames = 0;
+                    static float kill_radius = 30.0f;
+                    static bool kill_parsed = false, killed = false;
+                    if (!kill_parsed) { kill_parsed = true; std::sscanf(kill_near, "%d,%f", &kill_at, &kill_radius); }
+                    if (!killed && ++play_frames >= kill_at) {
+                        killed = true;
+                        const glm::vec3 me = sk_player->GetTransform()->GetWorldPosition();
+                        int n = 0;
+                        for (const auto& e : sk_scene->GetEntities()) {
+                            if (!e) continue;
+                            const auto* ag = std::as_const(*e).GetNpcAgentComponent();
+                            if (!ag || !ag->enabled || glm::distance(e->GetTransform()->GetWorldPosition(), me) > kill_radius) continue;
+                            const uint32_t eid = ecs_bridge.ecs_entity_id(e->GetTransform());
+                            const auto ee = static_cast<schizo::ecs::Entity>(eid);
+                            if (eid == schizo::editor::kNoEcsEntity || !ecs_bridge.world().valid(ee)) continue;
+                            if (auto* attrs = ecs_bridge.world().try_get<schizo::ecs::AttributeSet>(ee)) { attrs->set("Health", 0.0f); ++n; }
+                        }
+                        spdlog::info("[test] kill near: {} agents within {:.0f} m of the player", n, kill_radius);
+                    }
+                }
                 // Posing runs as jobs: each character's clips, blending and look touch
                 // only its own actor (and read the shared clips), so a pass queues
                 // them and poses them all at once on the job system; what they
@@ -11902,6 +11932,14 @@ int main(int argc, char** argv) {
                         ca.hands_busy = reloading || melee || dead;
                         const bool hit_now = staggered && !ca.staggered;
                         ca.staggered = staggered;
+                        // A hit knocks the upper body away from what it fights (else back),
+                        // over and above the hit clip; the lean's spring brings it back.
+                        if (hit_now && !dead) {
+                            glm::vec3 away = sk_tf->GetWorldPosition() - look_point;
+                            if (look_weight <= 0.0f || glm::length(glm::vec2(away.x, away.z)) < 1e-3f) away = -(sk_tf->GetWorldRotation() * glm::vec3(0.0f, 0.0f, 1.0f));
+                            actor->set_model(sk_tf->GetWorldMatrix());
+                            actor->flinch(away);
+                        }
                         const int* C = ca.clip;
                         auto clip_or = [&](int a, int b) { return a >= 0 ? a : b; };
                         const bool upper = !smc->upper_body.empty();
@@ -12011,6 +12049,54 @@ int main(int argc, char** argv) {
                             }
                         }
                         actor->set_model(sk_tf->GetWorldMatrix());
+                        // ---- limp: a dead character's ragdoll poses it --------------------
+                        // At the moment it dies its bones become bodies where the pose has
+                        // them, moving as it moved, pushed away from what it fought; they
+                        // fall and settle on the world. Lying still 3 s, the physics lets go
+                        // and the pose stays. Alive again (a respawn): its clips again.
+                        // GWS_NO_RAGDOLL=1: the death clip instead.
+                        {
+                            static const bool no_ragdoll = std::getenv("GWS_NO_RAGDOLL") != nullptr;
+                            const uint64_t serial = feet_pw ? feet_pw->instance_serial() : 0;
+                            if (ca.ragdoll_world != serial) { ca.ragdoll = 0; ca.limp = false; ca.ragdoll_failed = false; ca.ragdoll_world = serial; }
+                            if (!dead) {
+                                if (ca.ragdoll && feet_pw) feet_pw->remove_ragdoll(ca.ragdoll);
+                                ca.ragdoll = 0;
+                                ca.limp = ca.ragdoll_failed = false;
+                                ca.ragdoll_still = 0.0f;
+                            } else if (!ca.limp && !ca.ragdoll_failed && !no_ragdoll && !is_player && feet_pw && actor->has_ragdoll_rig()) {
+                                std::vector<schizo::physics::RagdollPart> parts;
+                                for (const auto& st : actor->ragdoll_start()) {
+                                    schizo::physics::RagdollPart rp;
+                                    rp.parent = st.parent; rp.joint = st.joint; rp.rotation = st.rotation; rp.tip = st.tip;
+                                    rp.radius = st.radius; rp.mass = st.mass; rp.hinge = st.hinge; rp.hinge_axis = st.hinge_axis;
+                                    rp.hinge_min = st.hinge_min; rp.hinge_max = st.hinge_max; rp.cone = st.cone; rp.twist = st.twist;
+                                    parts.push_back(rp);
+                                }
+                                ca.ragdoll = feet_pw->add_ragdoll(parts, hvel + glm::vec3(0.0f, vy, 0.0f));
+                                if (!ca.ragdoll) ca.ragdoll_failed = true;
+                                else {
+                                    ca.limp = true;
+                                    ca.ragdoll_still = 0.0f;
+                                    // The blow that killed it: away from what it fought (else back), a little up.
+                                    glm::vec3 away = sk_tf->GetWorldPosition() - look_point;
+                                    away.y = 0.0f;
+                                    if (look_weight <= 0.0f || glm::length(away) < 1e-3f) {
+                                        away = -(sk_tf->GetWorldRotation() * glm::vec3(0.0f, 0.0f, 1.0f));
+                                        away.y = 0.0f;
+                                    }
+                                    if (glm::length(away) > 1e-3f && actor->ragdoll_rig().chest >= 0)
+                                        feet_pw->ragdoll_impulse(ca.ragdoll, actor->ragdoll_rig().chest, glm::normalize(away) * 28.0f + glm::vec3(0.0f, 6.0f, 0.0f));
+                                }
+                            }
+                            if (ca.limp && ca.ragdoll && feet_pw) {
+                                static thread_local std::vector<glm::vec3> rag_pos;
+                                static thread_local std::vector<glm::quat> rag_rot;
+                                if (feet_pw->ragdoll_pose(ca.ragdoll, rag_pos, rag_rot)) actor->apply_ragdoll(rag_pos, rag_rot);
+                                ca.ragdoll_still = feet_pw->ragdoll_asleep(ca.ragdoll) ? ca.ragdoll_still + static_cast<float>(delta_time) : 0.0f;
+                                if (ca.ragdoll_still > 3.0f) { feet_pw->remove_ragdoll(ca.ragdoll); ca.ragdoll = 0; }   // frozen
+                            }
+                        }
                         // Its acceleration, from its velocity through a spring (a frame's jitter is no lean).
                         {
                             const float sdt = static_cast<float>(delta_time);
@@ -12019,7 +12105,7 @@ int main(int argc, char** argv) {
                             schizo::editor::anim::decay(off, ca.acc_s, 0.1f, sdt);
                             ca.vel_s = hvel + off;
                         }
-                        if (const float adt = anim_dt(ent->GetId(), *actor, sk_tf->GetWorldPosition(), is_player); adt >= 0.0f) {
+                        if (const float adt = ca.limp ? -1.0f : anim_dt(ent->GetId(), *actor, sk_tf->GetWorldPosition(), is_player); adt >= 0.0f) {
                             PoseJob& job = advance_clip(ent, *actor, adt * smc->speed);
                             job.look_dt = adt;
                             if (actor->has_feet()) {

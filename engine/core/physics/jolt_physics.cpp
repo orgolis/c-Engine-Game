@@ -23,6 +23,13 @@
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
+#include <Jolt/Physics/Constraints/HingeConstraint.h>
+#include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
+#include <Jolt/Physics/Ragdoll/Ragdoll.h>
+#include <Jolt/Skeleton/Skeleton.h>
+#include <atomic>
+#include <unordered_map>
 #include <Jolt/Geometry/IndexedTriangle.h>
 #include <Jolt/Math/Float3.h>
 
@@ -41,7 +48,8 @@ using namespace JPH;
 namespace {
 constexpr ObjectLayer     LAYER_STATIC   = 0;
 constexpr ObjectLayer     LAYER_MOVING   = 1;
-constexpr uint            NUM_OBJ_LAYERS = 2;
+constexpr ObjectLayer     LAYER_RAGDOLL  = 2;   // limp bodies: the static world and each other only
+constexpr uint            NUM_OBJ_LAYERS = 3;
 const     BroadPhaseLayer BP_STATIC{0};
 const     BroadPhaseLayer BP_MOVING{1};
 constexpr uint            NUM_BP_LAYERS  = 2;
@@ -83,6 +91,9 @@ struct PhysicsWorld::Impl {
     std::vector<glm::vec2>               char_dims;  // per character: radius, cylinder height
     glm::vec3                            gravity{0.0f, -9.81f, 0.0f};
     size_t                               n_bodies = 0;
+    std::unordered_map<uint32_t, Ref<Ragdoll>> ragdolls;   // after `system`: gone before it
+    uint32_t                             next_ragdoll = 1;
+    uint64_t                             serial = 0;
 };
 
 PhysicsWorld::PhysicsWorld() {
@@ -92,8 +103,14 @@ PhysicsWorld::PhysicsWorld() {
     // must run before make_unique<Impl>().
     ensure_jolt_globals();
     impl_ = std::make_unique<Impl>();
+    static std::atomic<uint64_t> worlds{0};
+    impl_->serial = ++worlds;
 }
-PhysicsWorld::~PhysicsWorld() = default;
+PhysicsWorld::~PhysicsWorld() {
+    if (impl_)
+        for (auto& [id, r] : impl_->ragdolls)
+            if (r) r->RemoveFromPhysicsSystem();
+}
 
 bool PhysicsWorld::init(glm::vec3 gravity, uint32_t max_bodies) {
     Impl& m = *impl_;
@@ -104,9 +121,15 @@ bool PhysicsWorld::init(glm::vec3 gravity, uint32_t max_bodies) {
 
     m.bp_interface.MapObjectToBroadPhaseLayer(LAYER_STATIC, BP_STATIC);
     m.bp_interface.MapObjectToBroadPhaseLayer(LAYER_MOVING, BP_MOVING);
-    // Moving collides with everything; static-vs-static never collides.
+    m.bp_interface.MapObjectToBroadPhaseLayer(LAYER_RAGDOLL, BP_MOVING);
+    // Moving collides with everything; static-vs-static never collides; a ragdoll
+    // with the static world and other ragdolls only (not with the character it
+    // was -- its capsule is still there -- nor with crates it would launch).
     m.obj_filter.EnableCollision(LAYER_MOVING, LAYER_STATIC);
     m.obj_filter.EnableCollision(LAYER_MOVING, LAYER_MOVING);
+    m.obj_filter.EnableCollision(LAYER_RAGDOLL, LAYER_STATIC);
+    m.obj_filter.EnableCollision(LAYER_RAGDOLL, LAYER_RAGDOLL);
+    m.obj_filter.DisableCollision(LAYER_RAGDOLL, LAYER_MOVING);
     m.obj_filter.DisableCollision(LAYER_STATIC, LAYER_STATIC);
     m.obj_vs_bp = std::make_unique<ObjectVsBroadPhaseLayerFilterTable>(
         m.bp_interface, NUM_BP_LAYERS, m.obj_filter, NUM_OBJ_LAYERS);
@@ -412,5 +435,132 @@ bool PhysicsWorld::set_character_height(CharacterId id, float cylinder_height) {
 }
 
 size_t PhysicsWorld::body_count() const { return impl_->n_bodies; }
+
+
+// --- Ragdolls ---
+
+namespace {
+Vec3 to_jph(const glm::vec3& v) { return Vec3(v.x, v.y, v.z); }
+Quat to_jph(const glm::quat& q) { return Quat(q.x, q.y, q.z, q.w); }
+// Any unit vector square to `a`.
+glm::vec3 square_to(const glm::vec3& a) {
+    const glm::vec3 t = std::abs(a.y) < 0.9f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+    return glm::normalize(glm::cross(a, t));
+}
+}  // namespace
+
+RagdollId PhysicsWorld::add_ragdoll(const std::vector<RagdollPart>& parts, const glm::vec3& velocity) {
+    Impl& m = *impl_;
+    if (parts.empty() || parts.size() > 64) return 0;
+    Ref<RagdollSettings> settings = new RagdollSettings;
+    settings->mSkeleton = new JPH::Skeleton;
+    settings->mParts.resize(parts.size());
+    for (size_t i = 0; i < parts.size(); ++i) {
+        const RagdollPart& p = parts[i];
+        if (p.parent >= static_cast<int>(i)) return 0;   // parents first
+        settings->mSkeleton->AddJoint("part" + std::to_string(i), p.parent);
+        // The capsule from the pivot to the tip, in the part's own frame (the bone's).
+        const glm::quat q = glm::normalize(p.rotation);
+        glm::vec3 local = glm::inverse(q) * (p.tip - p.joint);
+        float len = glm::length(local);
+        if (len < 1e-3f) { local = glm::vec3(0.0f, 1.0f, 0.0f) * (p.radius * 2.0f); len = glm::length(local); }
+        const float half = std::max(0.005f, 0.5f * len - p.radius * 0.5f);
+        const glm::vec3 dir = local / len;
+        const glm::vec3 y(0.0f, 1.0f, 0.0f);
+        const float cosine = glm::dot(y, dir);   // the shortest turn from +Y onto the capsule's line
+        const glm::quat along = cosine < -0.9999f ? glm::angleAxis(3.14159265f, glm::vec3(1.0f, 0.0f, 0.0f))
+                                                  : glm::normalize(glm::quat(1.0f + cosine, glm::cross(y, dir)));
+        RotatedTranslatedShapeSettings shape(to_jph(local * 0.5f), to_jph(along), new CapsuleShapeSettings(half, p.radius));
+        auto made = shape.Create();
+        if (made.HasError()) return 0;
+        RagdollSettings::Part& part = settings->mParts[i];
+        part.SetShape(made.Get());
+        part.mPosition = RVec3(p.joint.x, p.joint.y, p.joint.z);
+        part.mRotation = to_jph(q);
+        part.mMotionType = EMotionType::Dynamic;
+        part.mObjectLayer = LAYER_RAGDOLL;
+        part.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
+        part.mMassPropertiesOverride.mMass = std::max(0.5f, p.mass);
+        part.mLinearDamping = 0.1f;
+        part.mAngularDamping = 0.6f;
+        part.mFriction = 0.8f;
+        part.mRestitution = 0.0f;
+        if (p.parent < 0) continue;
+        const RVec3 pivot(p.joint.x, p.joint.y, p.joint.z);
+        if (p.hinge) {
+            const glm::vec3 axis = glm::normalize(p.hinge_axis);
+            Ref<HingeConstraintSettings> h = new HingeConstraintSettings;
+            h->mSpace = EConstraintSpace::WorldSpace;
+            h->mPoint1 = h->mPoint2 = pivot;
+            h->mHingeAxis1 = h->mHingeAxis2 = to_jph(axis);
+            h->mNormalAxis1 = h->mNormalAxis2 = to_jph(square_to(axis));
+            h->mLimitsMin = std::min(p.hinge_min, 0.0f);
+            h->mLimitsMax = std::max(p.hinge_max, 0.0f);
+            part.mToParent = h;
+        } else {
+            glm::vec3 twist = p.tip - p.joint;
+            twist = glm::length(twist) > 1e-4f ? glm::normalize(twist) : q * glm::vec3(0.0f, 1.0f, 0.0f);
+            Ref<SwingTwistConstraintSettings> c = new SwingTwistConstraintSettings;
+            c->mSpace = EConstraintSpace::WorldSpace;
+            c->mPosition1 = c->mPosition2 = pivot;
+            c->mTwistAxis1 = c->mTwistAxis2 = to_jph(twist);
+            c->mPlaneAxis1 = c->mPlaneAxis2 = to_jph(square_to(twist));
+            c->mNormalHalfConeAngle = c->mPlaneHalfConeAngle = std::clamp(p.cone, 0.0f, 3.0f);
+            c->mTwistMinAngle = -std::clamp(p.twist, 0.0f, 3.0f);
+            c->mTwistMaxAngle = std::clamp(p.twist, 0.0f, 3.0f);
+            part.mToParent = c;
+        }
+    }
+    settings->Stabilize();
+    settings->DisableParentChildCollisions();
+    settings->CalculateBodyIndexToConstraintIndex();
+    const uint32_t id = m.next_ragdoll++;
+    Ref<Ragdoll> r = settings->CreateRagdoll(static_cast<CollisionGroup::GroupID>(id), 0, &m.system);
+    if (!r) return 0;
+    r->AddToPhysicsSystem(EActivation::Activate);
+    r->SetLinearVelocity(to_jph(velocity));
+    m.ragdolls[id] = r;
+    return id;
+}
+
+void PhysicsWorld::ragdoll_impulse(RagdollId id, int part, const glm::vec3& impulse) {
+    auto it = impl_->ragdolls.find(id);
+    if (it == impl_->ragdolls.end() || part < 0 || part >= static_cast<int>(it->second->GetBodyCount())) return;
+    impl_->system.GetBodyInterface().AddImpulse(it->second->GetBodyID(part), to_jph(impulse));
+}
+
+bool PhysicsWorld::ragdoll_pose(RagdollId id, std::vector<glm::vec3>& positions, std::vector<glm::quat>& rotations) const {
+    auto it = impl_->ragdolls.find(id);
+    if (it == impl_->ragdolls.end()) return false;
+    const auto& r = it->second;
+    const size_t n = r->GetBodyCount();
+    positions.resize(n);
+    rotations.resize(n);
+    const BodyInterface& bi = impl_->system.GetBodyInterface();
+    for (size_t i = 0; i < n; ++i) {
+        RVec3 pos;
+        Quat rot;
+        bi.GetPositionAndRotation(r->GetBodyID(static_cast<int>(i)), pos, rot);
+        positions[i] = glm::vec3(static_cast<float>(pos.GetX()), static_cast<float>(pos.GetY()), static_cast<float>(pos.GetZ()));
+        rotations[i] = glm::quat(rot.GetW(), rot.GetX(), rot.GetY(), rot.GetZ());
+    }
+    return true;
+}
+
+bool PhysicsWorld::ragdoll_asleep(RagdollId id) const {
+    auto it = impl_->ragdolls.find(id);
+    if (it == impl_->ragdolls.end()) return true;
+    return !it->second->IsActive();
+}
+
+void PhysicsWorld::remove_ragdoll(RagdollId id) {
+    auto it = impl_->ragdolls.find(id);
+    if (it == impl_->ragdolls.end()) return;
+    it->second->RemoveFromPhysicsSystem();
+    impl_->ragdolls.erase(it);
+}
+
+size_t PhysicsWorld::ragdoll_count() const { return impl_->ragdolls.size(); }
+uint64_t PhysicsWorld::instance_serial() const { return impl_->serial; }
 
 }  // namespace schizo::physics

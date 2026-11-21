@@ -120,6 +120,24 @@ stops, into a turn -- by half the angle that balances it against gravity, at
 most 12 degrees, over the spine and chest. Its velocity goes through a spring
 first, so a frame's jitter is no lean. `GWS_NO_LEAN=1` turns it off.
 
+## Going limp (ragdolls)
+
+A character that dies goes limp: its bones become a ragdoll -- twelve
+capsules (pelvis, spine, chest, head, upper arms, forearms, thighs, shins),
+found on any rig by its bones' names -- where its pose has them at that
+moment, moving as it moved, pushed away from what it was fighting. Knees and
+elbows are hinges that bend only their way (from the bend they have as it
+falls); the rest are cones with a little twist. The bodies fall and settle on
+the world (terrain, buildings: not on characters or crates) and the bones go
+where they are; hands, feet, fingers and a held gun come along. Lying still
+for 3 seconds the physics lets go and the pose stays. A respawn brings the
+clips back. The local player's own body does not (its camera is in it).
+`GWS_NO_RAGDOLL=1`: the death clip instead.
+
+A hit that does not kill knocks the upper body away from what it fights,
+about 10 degrees, over and above the hit clip, and the lean's spring brings it
+back within a second.
+
 ## The support hand
 
 A gun held in the right hand whose model has a `support_grip` bone gets the
@@ -264,9 +282,9 @@ idle, fire, reload and draw clips). Each soldier is an NPC agent with a
 
 ## Known limits
 
-- No ragdolls yet: a death is its clip (docs/research/NATURAL_ANIMATION.md has
-  what comes next: physical hit reactions and ragdolls, stride and
-  orientation warping, sync markers, spring bones).
+- A ragdoll is a death's: there is no powered ragdoll for a stumble and no
+  getting up (docs/research/NATURAL_ANIMATION.md has what comes next: stride
+  and orientation warping, sync markers, spring bones).
 - Root motion is not used: characters move by their controller or agent and
   the clip's speed follows.
 - One material per model.
@@ -287,9 +305,12 @@ Leviathan's 13 take 1.8 MB (6.1 MB). The load line in the log says how much.
 
 The rules are in `editor/include/imported_skinned_actor.h` (clips, blending,
 upper body, bones), `engine/renderer/include/foot_placement.h` (feet) and
-`pose_layers.h` (looking, aiming, leaning), `editor/include/anim_hooks.h`
+`pose_layers.h` (looking, aiming, leaning, a flinch), `ragdoll_rig.h` (going
+limp; the bodies are Jolt's: `PhysicsWorld::add_ragdoll`), `editor/include/anim_hooks.h`
 (the spring and the clip events), `engine/renderer/src/animation.cpp` (clips)
 and `editor/src/main.cpp` (which state, held models, the support hand, the
 first-person gun); checked by `tools/skinned_import_check` (the import: STEP,
 LINEAR, CUBICSPLINE, channels of their own lengths), `tools/animhooks_check`
-(hooks, the spring) and `tools/footik_check` (feet, looking, aiming, leaning).
+(hooks, the spring), `tools/footik_check` (feet, looking, aiming, leaning, a
+flinch) and `tools/ragdoll_check` (a biped falling onto a floor: joints
+joined, knees and elbows bending only their way, the bones following).

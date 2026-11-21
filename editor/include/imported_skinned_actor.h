@@ -29,6 +29,7 @@
 #include "two_bone_ik.h"
 #include "foot_placement.h"
 #include "pose_layers.h"
+#include "ragdoll_rig.h"
 #include "anim_hooks.h"   // inertialization and clip events (no GPU: animhooks_check)
 #include "animation.h"
 
@@ -388,12 +389,36 @@ public:
     /// A landing: the pelvis is pushed down (m/s) and springs back.
     void pelvis_impulse(float down_speed) { rig_.land_v -= down_speed; }
 
+    // ---- going limp (engine/renderer/include/ragdoll_rig.h) ------------------------------
+    /// Whether the rig can become a ragdoll (legs, spine, head and arms found by name).
+    bool has_ragdoll_rig() {
+        if (!ragdoll_resolved_ && skeleton_) {
+            ragdoll_resolved_ = true;
+            ragdoll_rig_ = schizo::renderer::find_ragdoll_rig(*skeleton_, bind_);
+        }
+        return ragdoll_rig_.valid();
+    }
+    const schizo::renderer::RagdollRig& ragdoll_rig() const { return ragdoll_rig_; }
+    /// Its parts where the pose has them now (model first: set_model).
+    std::vector<schizo::renderer::RagdollPartStart> ragdoll_start() const {
+        return skeleton_ ? schizo::renderer::ragdoll_start(*skeleton_, ragdoll_rig_, model()) : std::vector<schizo::renderer::RagdollPartStart>{};
+    }
+    /// While limp: the bones where the bodies are (model first).
+    void apply_ragdoll(const std::vector<glm::vec3>& positions, const std::vector<glm::quat>& rotations) {
+        if (skeleton_) schizo::renderer::apply_ragdoll_pose(*skeleton_, ragdoll_rig_, model(), positions, rotations);
+    }
+
     // ---- leaning and looking (engine/renderer/include/pose_layers.h) -------------------
     /// After place_feet, before look_at: the body leans into its acceleration
     /// (world, m/s^2), `strength` of the angle that balances it against gravity,
     /// at most 12 degrees, over the lower half of the look chain. Model first.
     void lean_into(const glm::vec3& accel_world, float strength, float dt) {
         if (skeleton_) schizo::renderer::lean_into(*skeleton_, look_chain_, lean_state_, model(), accel_world, strength, dt);
+    }
+    /// A blow knocks the upper body along `world_dir` (the way the hit pushes);
+    /// it comes back on the lean's spring (lean_into must run each frame).
+    void flinch(const glm::vec3& world_dir, float strength = 5.5f) {
+        schizo::renderer::flinch(lean_state_, model(), world_dir, strength);
     }
     /// The bones that turn toward what the character looks at: from `base` (the
     /// spine) up through the chain to `head`. Empty when `head` is not under `base`.
@@ -650,6 +675,8 @@ private:
     std::vector<glm::quat> procedural_;
     // place_feet: the legs, the pelvis and their springs.
     schizo::renderer::FootRig rig_;
+    schizo::renderer::RagdollRig ragdoll_rig_;
+    bool ragdoll_resolved_ = false;
     bool feet_resolved_ = false;
     float log_tick_ = 0.0f;
     schizo::renderer::LeanState lean_state_;

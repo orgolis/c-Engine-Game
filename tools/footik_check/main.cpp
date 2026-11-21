@@ -282,6 +282,18 @@ int main() {
             check(up_side.x < -0.02f && std::abs(up_side.z) < 0.01f, what);
             for (int i = 0; i < 90; ++i) { reset(); lean_into(sk, chain, lean, glm::mat4(1.0f), glm::vec3(0.0f), 0.5f, 1.0f / 60.0f); }
             check(deg(chest_up(), glm::vec3(0, 1, 0)) < 0.5f, "steady: upright again");
+            // A blow from the front (pushing back, -Z): it tips back about 10 degrees and comes back.
+            flinch(lean, glm::mat4(1.0f), glm::vec3(0, 0, -1), 5.5f);
+            float most = 0.0f;
+            for (int i = 0; i < 60; ++i) {
+                reset();
+                lean_into(sk, chain, lean, glm::mat4(1.0f), glm::vec3(0.0f), 0.5f, 1.0f / 60.0f);
+                const glm::vec3 u = chest_up();
+                most = std::max(most, glm::degrees(std::atan2(-u.z, u.y)));
+            }
+            std::snprintf(what, sizeof what, "%sa blow from the front: it tips back (%.1f degrees at most) and is upright again after a second (%.2f)",
+                          turned ? "turned axes: " : "", most, deg(chest_up(), glm::vec3(0, 1, 0)));
+            check(most > 7.0f && most < 13.0f && deg(chest_up(), glm::vec3(0, 1, 0)) < 1.0f, what);
         }
     }
     std::printf("%s (%d failure%s)\n", failures ? "FAILED" : "OK", failures, failures == 1 ? "" : "s");

@@ -57,6 +57,24 @@ struct RayHit {
 // Kinematic capsule character controller (Jolt CharacterVirtual): collide-and-
 // slide against the world with slope + stair handling. Drives the Stage-10
 // movement state machine.
+// A ragdoll: rigid capsules joined by limited joints, in the world as its
+// character's bones are when it goes limp. Its parts collide with the static
+// world and other ragdolls -- never a character (not its own capsule) or a crate.
+struct RagdollPart {
+    int       parent = -1;                  // an earlier part, -1: the root part
+    glm::vec3 joint{0.0f};                  // world: the part's pivot (its bone's joint)
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};   // world: the part's turn (its bone's)
+    glm::vec3 tip{0.0f, 0.3f, 0.0f};        // world: the far end of its capsule
+    float     radius = 0.08f;
+    float     mass   = 5.0f;
+    // The joint to its parent: a hinge (a knee, an elbow) or a cone.
+    bool      hinge = false;
+    glm::vec3 hinge_axis{1.0f, 0.0f, 0.0f}; // world; a turn about it by + bends the joint further
+    float     hinge_min = 0.0f, hinge_max = 0.0f;   // radians, from the pose it starts in
+    float     cone = 0.5f, twist = 0.3f;    // radians: the swing cone's half angle, the twist either way
+};
+using RagdollId = uint32_t;   // 0: none
+
 using CharacterId = uint32_t;
 
 struct CharacterDesc {
@@ -114,6 +132,21 @@ public:
     glm::vec3 get_linear_velocity(BodyId id) const;
     // Instantaneous impulse at the body's center of mass (dynamic bodies).
     void      add_impulse(BodyId id, const glm::vec3& impulse);
+
+    // --- Ragdolls ---
+    // Parts parents first. `velocity` is every part's to start with. 0 on failure.
+    RagdollId add_ragdoll(const std::vector<RagdollPart>& parts, const glm::vec3& velocity);
+    // A push on one part (kg m/s, world).
+    void      ragdoll_impulse(RagdollId id, int part, const glm::vec3& impulse);
+    // Where each part is now (its pivot and turn, world), in part order.
+    bool      ragdoll_pose(RagdollId id, std::vector<glm::vec3>& positions, std::vector<glm::quat>& rotations) const;
+    // Whether it has come to rest (every part asleep).
+    bool      ragdoll_asleep(RagdollId id) const;
+    void      remove_ragdoll(RagdollId id);
+    size_t    ragdoll_count() const;
+    // Different for every world made in this process: a ragdoll id is only good in
+    // the world it was made in (a new Play makes a new world).
+    uint64_t  instance_serial() const;
 
     // --- Character controller (collide-and-slide) ---
     CharacterId add_character(const CharacterDesc& desc);

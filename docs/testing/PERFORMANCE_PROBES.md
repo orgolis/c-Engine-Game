@@ -42,7 +42,8 @@ the camera) -- the A/B for the gun's shake.
 | `GWS_TEST_LOG_ANIM_EVENTS=1` | every clip event (animation hook) as it fires: `anim.<event>`, the clip, the time, the entity |
 | `GWS_TEST_LOG_FEET=1` | for one character standing on a slope, twice a second: each foot's height over the ground under it against its standing height, the pelvis' drop |
 | `GWS_ANIM_SERIAL=1` | characters posed one after another instead of on the job system (to compare the `characters` zone) |
-| `GWS_NO_FOOT_IK=1`, `GWS_NO_LEAN=1`, `GWS_NO_SUPPORT_HAND=1` | a layer of the pose off (to compare) |
+| `GWS_NO_FOOT_IK=1`, `GWS_NO_LEAN=1`, `GWS_NO_SUPPORT_HAND=1`, `GWS_NO_RAGDOLL=1` | a layer of the pose off (to compare) |
+| `GWS_TEST_KILL_NEAR=<play frame>[,radius]` | at that frame of Play every NPC agent within the radius (30 m) of the player loses its health: how bodies fall |
 
 A/B switches: `GWS_NO_ANIM_LOD=1` (every character animated every frame),
 `GWS_TEST_SKIN_HOST=1` (skinning input in host memory, the old way),

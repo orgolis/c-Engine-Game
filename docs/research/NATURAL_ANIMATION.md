@@ -202,7 +202,8 @@ item by item, with what was decided.
 | Stride / orientation warping, distance matching | next (locomotion round) |
 | Motion warping | with melee combat's lunges and traversal |
 | Motion matching | not planned: it needs hours of motion capture; the toolkit above serves hand-made clips |
-| Ragdolls (Jolt), powered hit reactions, get-up | next round (the soldiers' deaths) |
+| Ragdolls (Jolt) | **0.8.59**: twelve bodies by name on any rig, hinged knees and elbows, settle and freeze |
+| Hit reactions | **0.8.59**: a flinch away from the attacker on the lean's spring; powered ragdoll for stumbles and getting up later (no TestGame character gets up) |
 | Spring bones, XPBD cloth, strand hair | spring bones with the first asset that has a chain; cloth and hair later |
 | Procedural creature step planner | with the first legged creature |
 | Facial animation | when a character has a face rig |

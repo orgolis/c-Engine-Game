@@ -8,7 +8,7 @@
 //     what the chest holds, a rifle in both hands, points there: an aim offset);
 //   - lean_into: the body leans into its acceleration, by the angle that
 //     balances it against gravity (forward speeding up, back stopping, into a
-//     turn).
+//     turn); flinch: a blow knocks it the way the hit pushes, and it comes back.
 //
 // The angles are the model's own (it faces +Z, +Y up) and each turn is carried
 // into the joint's axes (L' = P^-1 D P L), so any rig works whatever axes its
@@ -116,6 +116,17 @@ inline void lean_into(Skeleton& sk, const std::vector<int>& chain, LeanState& st
     const glm::vec3 axis = glm::normalize(glm::vec3(st.lean.y, 0.0f, -st.lean.x));
     const size_t lower = (chain.size() + 1) / 2;
     for (size_t i = 0; i < lower; ++i) turn_bone_in_model(sk, chain[i], glm::angleAxis(amount / static_cast<float>(lower), axis));
+}
+
+/// A blow: the upper body is knocked away along `world_dir` (the way the hit
+/// pushes, world) and comes back on the lean's spring. `strength` is the
+/// spring's starting speed in rad/s: 5.5 tips it about 10 degrees.
+inline void flinch(LeanState& st, const glm::mat4& model, const glm::vec3& world_dir, float strength) {
+    glm::vec3 d = glm::inverse(glm::mat3(model)) * world_dir;
+    d.y = 0.0f;
+    if (glm::length(d) < 1e-4f) return;
+    d = glm::normalize(d) * strength;
+    st.lean_v += glm::vec2(d.x, d.z);
 }
 
 }  // namespace schizo::renderer

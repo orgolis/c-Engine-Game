@@ -268,6 +268,16 @@ if(MINGW)
     target_link_options(footik_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# ragdoll_check: a character going limp (ragdoll_rig.h on Jolt's ragdolls),
+# headless: its parts by name, a fall onto a floor, joints joined, knees and
+# elbows bending only their way, the bones following the bodies.
+add_executable(ragdoll_check ragdoll_check/main.cpp)
+target_link_libraries(ragdoll_check PRIVATE renderer gws_physics)
+target_compile_features(ragdoll_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(ragdoll_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # animhooks_check: animation hooks (clip events) and inertialization, headless.
 # A clip event is gameplay -- a bolt leaving its port, the jaws closing -- so it
 # must be heard exactly once a pass at any frame rate; the spring decides whether
