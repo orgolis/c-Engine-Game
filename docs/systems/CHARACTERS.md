@@ -85,6 +85,50 @@ sampled twice, a turn already under way does not stall, and a change in the
 middle of another settles from wherever the body is (Bollo, GDC 2018; the
 spring from Holden's "Spring-It-On"). It is the same for clips a script plays.
 
+## A frame's pose
+
+Each character in Play is posed in this order: its clips (sampled and
+blended, transitions inertialized), then its feet on the ground, then its
+body's lean, then where it looks and aims, then -- once the gun in its hand
+is placed -- its support hand on the gun. The first four touch only its own
+skeleton, so all characters are posed at once on the job system;
+`GWS_ANIM_SERIAL=1` poses them one after another (to compare).
+
+## Feet on the ground
+
+A character with two legs (a foot bone on each side, by name: `foot.L`,
+`LeftFoot`, `l_foot`...; its parent the knee, that one's the hip) stands on
+the ground under it, not on the flat floor its clips were made on. Under each
+foot the ground is found (terrain and buildings only -- never a character or a
+crate) and the foot goes up or down by as much as it differs; the pelvis
+drops as far as the lower foot needs and never rises; each leg bends onto
+its foot by two-bone IK, the knee keeping its way; a foot the clip has down is
+laid on the slope (up to 30 degrees). A foot the clip lifts mid-step follows
+the ground under it too but is not laid flat. Every offset moves on a spring:
+a kerb does not snap a foot. In the air or dead it eases off.
+
+A landing compresses the legs: the pelvis dips with the fall's speed (about
+10 cm from a jump) and comes back on a softer spring, the feet staying put.
+
+`GWS_NO_FOOT_IK=1` turns it off; `GWS_TEST_LOG_FEET=1` logs, for a character
+on a slope, each foot's height over the ground under it.
+
+## Leaning
+
+The body leans into its acceleration -- forward as it sets off, back as it
+stops, into a turn -- by half the angle that balances it against gravity, at
+most 12 degrees, over the spine and chest. Its velocity goes through a spring
+first, so a frame's jitter is no lean. `GWS_NO_LEAN=1` turns it off.
+
+## The support hand
+
+A gun held in the right hand whose model has a `support_grip` bone gets the
+left hand on it: the arm (found by the hand's name, `hand.L` / `LeftHand`) is
+bent so the hand is at the grip, its elbow keeping its way, its hand its
+turn -- whatever the aim, the lean or the clip did. The test game's soldiers'
+clips held it 18 cm off. While the clip needs the hands (a reload, a blade,
+a death) it eases back to the clip. `GWS_NO_SUPPORT_HAND=1` turns it off.
+
 ## Looking and aiming
 
 A character driven by gameplay with a `head` bone under its **Upper body
@@ -220,17 +264,32 @@ idle, fire, reload and draw clips). Each soldier is an NPC agent with a
 
 ## Known limits
 
-- Inverse kinematics only for the first-person arms: a third-person support
-  hand follows the clip, not the gun, and feet are not yet placed on slopes
-  (foot IK: docs/research/NATURAL_ANIMATION.md has the plan).
+- No ragdolls yet: a death is its clip (docs/research/NATURAL_ANIMATION.md has
+  what comes next: physical hit reactions and ragdolls, stride and
+  orientation warping, sync markers, spring bones).
 - Root motion is not used: characters move by their controller or agent and
   the clip's speed follows.
 - One material per model.
 - The editor's Inspector shows the pose of the clip set in **Clip** while not
   playing; the gameplay states are seen in Play.
 
+## How clips are kept
+
+Each channel of a bone's motion (position, rotation, scale) is kept on its
+own, resampled when the model is loaded onto a uniform rate -- its own when
+its keys already are evenly spaced, 60 a second otherwise -- exactly as glTF
+says: STEP holds a key, LINEAR interpolates (slerp for rotations),
+CUBICSPLINE follows its Hermite curve with the keys' tangents. A channel that
+never moves is one value. Sampling is an index, not a search, straight into
+the pose (the skeleton is touched once a frame). The test game's soldiers'
+28 clips take 448 KB (2.8 MB as they were kept before), the Ender
+Leviathan's 13 take 1.8 MB (6.1 MB). The load line in the log says how much.
+
 The rules are in `editor/include/imported_skinned_actor.h` (clips, blending,
-upper body, bones, looking), `editor/include/anim_hooks.h` (the spring and the
-clip events) and `editor/src/main.cpp` (which state, held models, the
-first-person gun); the import is checked by `tools/skinned_import_check`, the
-hooks and the spring by `tools/animhooks_check`.
+upper body, bones), `engine/renderer/include/foot_placement.h` (feet) and
+`pose_layers.h` (looking, aiming, leaning), `editor/include/anim_hooks.h`
+(the spring and the clip events), `engine/renderer/src/animation.cpp` (clips)
+and `editor/src/main.cpp` (which state, held models, the support hand, the
+first-person gun); checked by `tools/skinned_import_check` (the import: STEP,
+LINEAR, CUBICSPLINE, channels of their own lengths), `tools/animhooks_check`
+(hooks, the spring) and `tools/footik_check` (feet, looking, aiming, leaning).

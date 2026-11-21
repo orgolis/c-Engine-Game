@@ -21,7 +21,11 @@ not more clips.
 | Fixed-step logic, interpolated drawing | motion that stutters with the frame rate | **0.8.57**: the Leviathan (20 Hz, drawn in between) |
 | Play-rate matching | feet sliding at speeds the clip was not made for | 0.8.56 (walk, run, back, strafes); limits to tighten |
 | Stride and orientation warping | sliding and crossed legs on diagonals | next |
-| Foot IK (foot placement) | feet floating over or sunk into slopes | next (plan below) |
+| Foot IK (foot placement) | feet floating over or sunk into slopes | **0.8.58**: feet, pelvis, slope, landing compression |
+| Lean into acceleration | a body that starts and stops like a statue on rails | **0.8.58** |
+| Support hand IK | the second hand floating beside the gun (18 cm in TestGame) | **0.8.58** |
+| Clip storage per channel, exact glTF samplers | STEP / CUBICSPLINE clips played wrong; memory | **0.8.58** (a third to a sixth of the memory) |
+| Posing on the job system | animation cost growing with every character | **0.8.58** (0.84 ms to 0.32 ms for the TestGame camp) |
 | Motion matching | needs hours of motion capture | not planned |
 
 ## Inertialization
@@ -130,7 +134,7 @@ four directions.
 - Epic Games, "Locomotion in Unreal Engine" (distance matching): https://dev.epicgames.com/documentation/unreal-engine/locomotion-in-unreal-engine
 - Epic Games, "Adapting Lyra animation to your UE5 game": https://www.unrealengine.com/tech-blog/adapting-lyra-animation-to-your-ue5-game
 
-## Foot IK -- the plan
+## Foot IK (0.8.58; the plan it followed)
 
 The clips are made on flat ground; TestGame's soldiers stand on hills. The
 standard pipeline, after the pose is sampled and blended:
@@ -164,3 +168,44 @@ data; without hours of capture it has nothing to search. Not planned for the
 engine's procedural, hand-made clips.
 
 - S. Clavet, "Motion Matching and The Road to Next-Gen Animation", GDC 2016: https://www.gdcvault.com/play/1022985/Motion-Matching-and-The-Road
+
+## The overhaul roadmap: where each item stands
+
+The animation overhaul report (Parts I-II: architecture, graphs, motion
+matching, IK, physics, combat, traversal, pipeline, GPU, faces, networking)
+item by item, with what was decided.
+
+| Item | Status |
+|---|---|
+| Skeleton: parents first, one pass, no allocation | **0.8.58** (`Skeleton::UpdateWorldTransforms`) |
+| Pose sampled into a buffer, not the skeleton | **0.8.58** (`AnimationClip::SampleLocal`) |
+| Full SoA / SIMD pose (ozz-style) | next round of the core: the linear pass already took the posing from 0.84 to 0.32 ms for 40 characters; SoA pays off at hundreds |
+| glTF STEP / LINEAR / CUBICSPLINE, channels on their own keys | **0.8.58** |
+| Morph targets (`weights`) | with faces: needs a GPU morph pass first; no TestGame asset has them |
+| Clip compression (ACL) | after the clip library: per-channel uniform tracks with constant channels already cut memory 3-6x; quantization next, ACL when clips stream |
+| Notifies / events on clips | **0.8.57** (`<model>.events`, `anim.<event>`) |
+| Float curves on clips | with the clip library (the `.events` file grows a curve line) |
+| Inertialization | **0.8.57** (spring decay; Bollo's quintic is the alternative) |
+| Dead blending | not needed while inertialization covers the transitions |
+| Hemisphere-safe blending | already so (`glm::slerp`); multi-input nlerp aligned to the first (**0.8.58** in channel sampling) |
+| One graph runtime from `.animgraph`, montages / slots | a release of its own: the gameplay clip choice (`main.cpp`) becomes a compiled graph |
+| Sync groups and markers, 2D blend spaces, per-bone layer masks | next (locomotion round) |
+| Posing on the job system | **0.8.58** |
+| Fixed simulation tick; animation on it, drawn in between | needed before deterministic notifies, hit windows and lag compensation; the Leviathan does it in script already |
+| Look-at / aim chain | **0.8.57**, in the engine as `pose_layers.h` in **0.8.58** |
+| Foot IK, pelvis spring, landing compression | **0.8.58** |
+| Support hand IK (third person) | **0.8.58** |
+| Lean into acceleration | **0.8.58** |
+| Head stabilization | not for third-person characters (the bob is small); first-person view has its own |
+| Breathing / idle noise layers | in the clips (TestGame's soldiers, 0.8.56); an additive layer comes with additive clips |
+| FABRIK, CCD, full-body DLS | with climbing (the first need for multi-contact IK) |
+| Stride / orientation warping, distance matching | next (locomotion round) |
+| Motion warping | with melee combat's lunges and traversal |
+| Motion matching | not planned: it needs hours of motion capture; the toolkit above serves hand-made clips |
+| Ragdolls (Jolt), powered hit reactions, get-up | next round (the soldiers' deaths) |
+| Spring bones, XPBD cloth, strand hair | spring bones with the first asset that has a chain; cloth and hair later |
+| Procedural creature step planner | with the first legged creature |
+| Facial animation | when a character has a face rig |
+| Replicate animation parameters, not poses | with the fixed tick (today scripted bone turns are sent per bone) |
+| GPU: shared bind buffers, previous positions for motion vectors, DQS | with the renderer's motion-vector work |
+| Budgeted animation LOD | the distance tiers stay until scenes have hundreds of characters |

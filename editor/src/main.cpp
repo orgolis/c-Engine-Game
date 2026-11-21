@@ -9949,6 +9949,15 @@ int main(int argc, char** argv) {
             bool fired_now = false, reload_now = false, reloading = false, staggered = false, dead = false;
             float pending = 0.0f;   // seconds not yet advanced (animation level of detail)
             bool look_resolved = false;   // its spine-to-head chain looked for (look_at)
+            // Its velocity smoothed by a spring, and the spring's rate: the
+            // acceleration it leans into (lean_into).
+            glm::vec3 vel_s{0.0f}, acc_s{0.0f};
+            bool vel_known = false;
+            // The support hand on a held gun: the left arm's bones (-2: not looked
+            // for yet), and how much the hand is on the gun (eased).
+            int arm_l[3] = {-2, -1, -1};
+            float support_w = 0.0f;
+            bool hands_busy = false;   // reloading, a blade, dead: the clip's hands
         };
         std::unordered_map<uint32_t, CharAnim> char_anim;
         // The gun seen in first person, one actor per model file.
@@ -11689,9 +11698,46 @@ int main(int argc, char** argv) {
                 };
                 // A clip's events (its `.events` file), on the gameplay event bus as
                 // anim.<name>: the entity is the instigator, the clip the param.
+                // Posing runs as jobs: each character's clips, blending and look touch
+                // only its own actor (and read the shared clips), so a pass queues
+                // them and poses them all at once on the job system; what they
+                // publish (clip events) goes out afterwards, in queue order, on this
+                // thread. Held things (pass 1) read their holder's bones, so a pass
+                // is finished before the next begins.
+                struct PoseJob {
+                    std::shared_ptr<schizo::scene::Entity> who;
+                    schizo::editor::ImportedSkinnedActor* actor = nullptr;
+                    float step = 0.0f;
+                    bool look = false;
+                    glm::vec3 look_point{0.0f};
+                    float look_weight = 0.0f, look_aim = 0.0f, look_dt = 0.0f;
+                    bool feet = false, lean = false;
+                    float feet_weight = 0.0f;
+                    glm::vec3 accel{0.0f};
+                };
+                // The ground under feet: static bodies only (terrain, buildings), never a
+                // character. Jolt's queries are safe from the posing jobs (nothing steps now).
+                auto* feet_pw = sk_pm ? sk_pm->GetPhysicsWorld() : nullptr;
+                const schizo::editor::ImportedSkinnedActor::GroundFn feet_ground =
+                    [feet_pw](const glm::vec3& from, const glm::vec3& down, float reach, glm::vec3& hit, glm::vec3& normal) {
+                        if (!feet_pw) return false;
+                        const auto h = feet_pw->raycast_static(from, down, reach);
+                        if (!h.hit) return false;
+                        hit = h.position;
+                        normal = h.normal;
+                        return true;
+                    };
+                // GWS_NO_FOOT_IK=1 / GWS_NO_LEAN=1: without (to compare).
+                static const bool no_foot_ik = std::getenv("GWS_NO_FOOT_IK") != nullptr;
+                static const bool no_lean = std::getenv("GWS_NO_LEAN") != nullptr;
+                std::vector<PoseJob> pose_jobs;
                 auto advance_clip = [&](const std::shared_ptr<schizo::scene::Entity>& who,
-                                        schizo::editor::ImportedSkinnedActor& a, float step) {
-                    a.advance(step);
+                                        schizo::editor::ImportedSkinnedActor& a, float step) -> PoseJob& {
+                    pose_jobs.push_back(PoseJob{who, &a, step});
+                    return pose_jobs.back();
+                };
+                auto publish_clip_events = [&](const std::shared_ptr<schizo::scene::Entity>& who,
+                                               schizo::editor::ImportedSkinnedActor& a) {
                     if (!a.has_events()) return;
                     for (auto& fe : a.take_events()) {
                         schizo::ecs::GameplayEvent ev;
@@ -11705,7 +11751,28 @@ int main(int argc, char** argv) {
                         if (log_events) spdlog::info("[test] anim event {} ({} at {:.2f} s) on '{}'", ev.name, fe.clip, fe.time, who->GetName());
                     }
                 };
-                for (int sk_pass = 0; sk_pass < 2; ++sk_pass)
+                // GWS_ANIM_SERIAL=1: pose on this thread (to compare).
+                static const bool anim_serial = std::getenv("GWS_ANIM_SERIAL") != nullptr;
+                auto flush_poses = [&]() {
+                    if (pose_jobs.empty()) return;
+                    auto pose_one = [&](size_t i) {
+                        PoseJob& j = pose_jobs[i];
+                        // In the order of a frame's pose: the clips, then the feet on the
+                        // ground, then the body's lean, then where it looks and aims.
+                        j.actor->advance(j.step);
+                        if (j.feet) j.actor->place_feet(feet_ground, j.feet_weight, j.look_dt);
+                        if (j.lean) j.actor->lean_into(j.accel, 0.5f, j.look_dt);
+                        if (j.look) j.actor->look_at(j.look_point, j.look_weight, j.look_aim, j.look_dt);
+                    };
+                    if (anim_serial || pose_jobs.size() < 3) {
+                        for (size_t i = 0; i < pose_jobs.size(); ++i) pose_one(i);
+                    } else {
+                        gws::jobs::JobSystem::instance().parallel_for(0, pose_jobs.size(), pose_one, 1);
+                    }
+                    for (PoseJob& j : pose_jobs) publish_clip_events(j.who, *j.actor);
+                    pose_jobs.clear();
+                };
+                for (int sk_pass = 0; sk_pass < 2; ++sk_pass) {
                 for (const auto& ent : sk_scene->GetEntities()) {
                     if (!ent) continue;
                     const auto* smc = std::as_const(*ent).GetSkinnedMeshComponent();
@@ -11832,6 +11899,7 @@ int main(int argc, char** argv) {
                         ca.shots = shots;
                         ca.reload_now = reloading && !ca.reloading;
                         ca.reloading = reloading;
+                        ca.hands_busy = reloading || melee || dead;
                         const bool hit_now = staggered && !ca.staggered;
                         ca.staggered = staggered;
                         const int* C = ca.clip;
@@ -11880,6 +11948,8 @@ int main(int argc, char** argv) {
                                 const bool landed = ca.airborne;
                                 if (landed && ca.fall_speed > 4.0f && C[CharAnim::Land] >= 0)
                                     ca.land_left = std::clamp(ca.fall_speed / 14.0f, 0.25f, 0.6f);
+                                // The legs take the landing: the pelvis dips with the fall and springs back.
+                                if (landed && ca.fall_speed > 2.0f) actor->pelvis_impulse(std::min(ca.fall_speed * 0.5f, 3.5f));
                                 ca.airborne = ca.jumped = false;
                                 ca.air_time = ca.fall_speed = 0.0f;
                             }
@@ -11940,8 +12010,24 @@ int main(int argc, char** argv) {
                                 else if (legs >= 0) actor->play(legs, legs_loop, legs_loop ? 0.2f : 0.1f, rate);
                             }
                         }
+                        actor->set_model(sk_tf->GetWorldMatrix());
+                        // Its acceleration, from its velocity through a spring (a frame's jitter is no lean).
+                        {
+                            const float sdt = static_cast<float>(delta_time);
+                            if (!ca.vel_known) { ca.vel_s = hvel; ca.acc_s = glm::vec3(0.0f); ca.vel_known = true; }
+                            glm::vec3 off = ca.vel_s - hvel;
+                            schizo::editor::anim::decay(off, ca.acc_s, 0.1f, sdt);
+                            ca.vel_s = hvel + off;
+                        }
                         if (const float adt = anim_dt(ent->GetId(), *actor, sk_tf->GetWorldPosition(), is_player); adt >= 0.0f) {
-                            advance_clip(ent, *actor, adt * smc->speed);
+                            PoseJob& job = advance_clip(ent, *actor, adt * smc->speed);
+                            job.look_dt = adt;
+                            if (actor->has_feet()) {
+                                job.feet = true;
+                                job.feet_weight = (!no_foot_ik && grounded && !ca.airborne && !dead) ? 1.0f : 0.0f;
+                            }
+                            job.lean = !no_lean && !dead;
+                            job.accel = ca.acc_s;
                             // An aim offset: the spine, chest and head turn to what it looks at
                             // (a rifle held at the chest points there); a spring settles it.
                             if (!ca.look_resolved) {
@@ -11949,8 +12035,11 @@ int main(int argc, char** argv) {
                                 actor->set_look_chain(smc->upper_body.empty() ? "spine" : smc->upper_body, "head");
                             }
                             if (actor->has_look_chain() && !is_player) {
-                                actor->set_model(sk_tf->GetWorldMatrix());
-                                actor->look_at(look_point, dead ? 0.0f : look_weight, aiming ? 1.0f : 0.0f, adt);
+                                job.look = true;
+                                job.look_point = look_point;
+                                job.look_weight = dead ? 0.0f : look_weight;
+                                job.look_aim = aiming ? 1.0f : 0.0f;
+                                job.look_dt = adt;
                                 // GWS_TEST_LOG_ANIM=1: what an agent looks at, now and then.
                                 if (static const bool log_look = std::getenv("GWS_TEST_LOG_ANIM") != nullptr; log_look && look_weight > 0.0f && frame_count % 60 == 0)
                                     spdlog::info("[test] look: '{}' at {:.1f} {:.1f} {:.1f} weight {:.1f}{} (it is at {:.1f} {:.1f} {:.1f})", who->GetName(), look_point.x,
@@ -11987,6 +12076,61 @@ int main(int argc, char** argv) {
                         advance_clip(ent, *actor, adt * smc->speed);
                     actor->set_model(sk_tf->GetWorldMatrix());
                 }
+                flush_poses();
+                }
+
+                // ---- the support hand on the gun (third person) ---------------------
+                // A gun held at a character's right hand that has a `support_grip` bone:
+                // the left arm is bent so the hand is on it (two-bone IK, the elbow keeping
+                // its way, the hand its turn), whatever the aim, a lean or the clip did to
+                // the arms. Eased out while the clip needs the hands (a reload, a blade, a
+                // death). GWS_NO_SUPPORT_HAND=1: the clip's hand (to compare).
+                static const bool no_support_hand = std::getenv("GWS_NO_SUPPORT_HAND") != nullptr;
+                if (sk_playing)
+                    for (const auto& gun_ent : sk_scene->GetEntities()) {
+                        if (!gun_ent || !gun_ent->GetParent()) continue;
+                        const auto* gsmc = std::as_const(*gun_ent).GetSkinnedMeshComponent();
+                        if (!gsmc || !gsmc->active() || gsmc->attach_bone.empty()) continue;
+                        const auto holder_ent = gun_ent->GetParent();
+                        const auto* hsmc = std::as_const(*holder_ent).GetSkinnedMeshComponent();
+                        if (!hsmc || !hsmc->drive_from_gameplay) continue;
+                        auto* gun = skinned_actors.find(gun_ent->GetId());
+                        auto* holder = skinned_actors.find(holder_ent->GetId());
+                        if (!gun || !holder) continue;
+                        const int grip = gun->find_bone("support_grip");
+                        if (grip < 0) continue;
+                        CharAnim& hc = char_anim[holder_ent->GetId()];
+                        if (hc.arm_l[0] == -2) {   // the left arm, by its hand's name (hand.L, LeftHand...)
+                            hc.arm_l[0] = -1;
+                            for (int b = 0, n = holder->bone_count(); b < n; ++b) {
+                                std::string nm = holder->bone_name(b);
+                                for (char& c : nm) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                                const bool left = nm.find("left") != std::string::npos || (nm.size() > 2 && (nm.compare(nm.size() - 2, 2, ".l") == 0 || nm.compare(nm.size() - 2, 2, "_l") == 0));
+                                if (!left || nm.find("hand") == std::string::npos || nm.find("ik") != std::string::npos) continue;
+                                const int fore = holder->bone_parent(b), upper = fore >= 0 ? holder->bone_parent(fore) : -1;
+                                if (upper < 0) continue;
+                                hc.arm_l[0] = upper; hc.arm_l[1] = fore; hc.arm_l[2] = b;
+                                break;
+                            }
+                        }
+                        if (hc.arm_l[0] < 0) continue;
+                        const float want = (no_support_hand || hc.hands_busy) ? 0.0f : 1.0f;
+                        hc.support_w += (want - hc.support_w) * std::clamp(static_cast<float>(delta_time) * 10.0f, 0.0f, 1.0f);
+                        const glm::mat4 hand = holder->bone_world(hc.arm_l[2]);
+                        const glm::vec3 hand_p(hand[3]), grip_p(gun->bone_world(grip)[3]);
+                        // GWS_TEST_LOG_ANIM=1: how far the clip had the hand from the grip.
+                        if (static const bool log_hand = std::getenv("GWS_TEST_LOG_ANIM") != nullptr; log_hand && frame_count % 120 == 0)
+                            spdlog::info("[test] support hand: '{}' {:.3f} m from its gun's grip as the clip has it (on it: {:.2f})",
+                                         holder_ent->GetName(), glm::distance(hand_p, grip_p), hc.support_w);
+                        if (hc.support_w < 1e-3f) continue;
+                        const glm::vec3 shoulder(holder->bone_world(hc.arm_l[0])[3]), elbow(holder->bone_world(hc.arm_l[1])[3]);
+                        schizo::editor::ImportedSkinnedActor::ArmTarget arm;
+                        arm.upper = hc.arm_l[0]; arm.fore = hc.arm_l[1]; arm.hand = hc.arm_l[2];
+                        arm.target = hand;
+                        arm.target[3] = glm::vec4(glm::mix(hand_p, grip_p, hc.support_w), 1.0f);
+                        arm.pole = elbow - (shoulder + hand_p) * 0.5f;
+                        holder->pose_first_person({}, &arm, 1);
+                    }
 
                 // ---- an agent with a gun fires from its muzzle --------------------
                 editor_state.npc_agents.muzzle_of = [&skinned_actors, sk_scene](uint32_t id, glm::vec3& out) {

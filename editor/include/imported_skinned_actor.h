@@ -27,6 +27,8 @@
 
 #include "skeleton.h"
 #include "two_bone_ik.h"
+#include "foot_placement.h"
+#include "pose_layers.h"
 #include "anim_hooks.h"   // inertialization and clip events (no GPU: animhooks_check)
 #include "animation.h"
 
@@ -34,6 +36,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
@@ -257,6 +260,7 @@ public:
             return model();
         return model() * skeleton_->GetWorldMatrix(static_cast<uint16_t>(bone)) * shared_->model.inverse_bind[static_cast<size_t>(bone)];
     }
+    int bone_count() const { return skeleton_ ? static_cast<int>(skeleton_->GetBoneCount()) : 0; }
     /// A bone's parent (-1 for a root or none) and its name.
     int bone_parent(int bone) const {
         if (!skeleton_ || bone < 0 || static_cast<uint32_t>(bone) >= skeleton_->GetBoneCount()) return -1;
@@ -329,71 +333,81 @@ public:
         }
     }
 
-    // ---- looking and aiming (an aim offset) ---------------------------------------
+    // ---- feet on the ground (foot IK: engine/renderer/include/foot_placement.h) ----
+    using GroundFn = schizo::renderer::FootGroundFn;
+    /// Whether the rig has two legs it can place: a foot bone on each side (by
+    /// name: `foot.L` / `LeftFoot` / `l_foot`...), its parent the knee, that one's
+    /// the hip.
+    bool has_feet() {
+        if (!feet_resolved_ && skeleton_) {
+            feet_resolved_ = true;
+            rig_ = schizo::renderer::find_foot_rig(*skeleton_, bind_);
+            static const bool log_feet = std::getenv("GWS_TEST_LOG_ANIM") != nullptr;
+            if (log_feet && rig_.valid())
+                spdlog::info("[anim] feet: {} > {} > {} and {} > {} > {} (standing {:.3f} / {:.3f} m), pelvis {}", bone_name(rig_.legs[0].hip),
+                             bone_name(rig_.legs[0].knee), bone_name(rig_.legs[0].ankle), bone_name(rig_.legs[1].hip),
+                             bone_name(rig_.legs[1].knee), bone_name(rig_.legs[1].ankle), rig_.legs[0].rest_height,
+                             rig_.legs[1].rest_height, bone_name(rig_.pelvis));
+        }
+        return rig_.valid();
+    }
+    /// After advance(): the feet meet the ground they stand on (foot_placement.h:
+    /// the ground under each foot, the pelvis down for the lower one, two-bone IK,
+    /// a planted foot laid on the slope; springs on everything). `weight` 0..1 (0
+    /// in the air or dead), eased. Model first (set_model). Any thread if `ground`.
+    void place_feet(const GroundFn& ground, float weight, float dt) {
+        if (!has_feet() || !skeleton_ || dt < 0.0f) return;
+        const glm::mat4 M = model();
+        schizo::renderer::place_feet(*skeleton_, rig_, M, ground, weight, dt);
+        const float unit = glm::length(glm::vec3(M[1]));
+        if (unit > 1e-6f) report_feet(ground, M, glm::vec3(M[1]) / unit, unit, dt);
+    }
+    // GWS_TEST_LOG_FEET=1: for one character standing on a slope (the ground under
+    // a foot 6 cm or more off its own), twice a second, each foot's height over the
+    // ground under it against its standing height (0: on it).
+    void report_feet(const GroundFn& ground, const glm::mat4& M, const glm::vec3& up_w, float unit, float dt) {
+        static const bool log_feet = std::getenv("GWS_TEST_LOG_FEET") != nullptr;
+        if (!log_feet) return;
+        static std::atomic<const void*> logged{nullptr};
+        const bool sloped = std::abs(rig_.legs[0].ground) > 0.06f || std::abs(rig_.legs[1].ground) > 0.06f;
+        const void* expected = nullptr;
+        if (!(logged.load() == this || (sloped && logged.compare_exchange_strong(expected, this)))) return;
+        log_tick_ += dt;
+        if (log_tick_ < 0.5f) return;
+        log_tick_ = 0.0f;
+        float gap[2] = {0.0f, 0.0f};
+        for (int k = 0; k < 2; ++k) {
+            const glm::vec3 a(M * skeleton_->GetWorldMatrix(static_cast<uint16_t>(rig_.legs[k].ankle))[3]);
+            glm::vec3 hit, n;
+            gap[k] = ground(a + up_w * (0.6f * unit), -up_w, 2.0f * unit, hit, n) ? glm::dot(a - hit, up_w) / unit - rig_.legs[k].rest_height : 9.0f;
+        }
+        spdlog::info("[test] feet: left {:+.3f} m ({}), right {:+.3f} m ({}), pelvis {:+.3f} m, ground under them {:+.3f} / {:+.3f}",
+                     gap[0], rig_.legs[0].plant > 0.5f ? "down" : "lifted", gap[1], rig_.legs[1].plant > 0.5f ? "down" : "lifted",
+                     rig_.pelvis_off, rig_.legs[0].ground, rig_.legs[1].ground);
+    }
+    /// A landing: the pelvis is pushed down (m/s) and springs back.
+    void pelvis_impulse(float down_speed) { rig_.land_v -= down_speed; }
+
+    // ---- leaning and looking (engine/renderer/include/pose_layers.h) -------------------
+    /// After place_feet, before look_at: the body leans into its acceleration
+    /// (world, m/s^2), `strength` of the angle that balances it against gravity,
+    /// at most 12 degrees, over the lower half of the look chain. Model first.
+    void lean_into(const glm::vec3& accel_world, float strength, float dt) {
+        if (skeleton_) schizo::renderer::lean_into(*skeleton_, look_chain_, lean_state_, model(), accel_world, strength, dt);
+    }
     /// The bones that turn toward what the character looks at: from `base` (the
     /// spine) up through the chain to `head`. Empty when `head` is not under `base`.
     void set_look_chain(const std::string& base, const std::string& head) {
         look_chain_.clear();
         const int h = find_bone(head), b = find_bone(base);
-        if (h < 0 || b < 0 || !skeleton_) return;
-        for (int at = h; at >= 0; at = skeleton_->GetBone(static_cast<uint16_t>(at))->parent_id) {
-            look_chain_.insert(look_chain_.begin(), at);
-            if (at == b) return;
-        }
-        look_chain_.clear();
+        if (h >= 0 && b >= 0 && skeleton_) look_chain_ = schizo::renderer::pose_chain(*skeleton_, b, h);
     }
     bool has_look_chain() const { return !look_chain_.empty(); }
     /// After advance(): turn the chain toward `world_point`, by `weight` (0..1).
-    /// `aim` 0 is a glance, the head leading and the spine following a little;
-    /// 1 is an aim, the spine and chest taking it all so that what the chest holds
-    /// (a rifle in both hands) points there. The angles are the model's own (it
-    /// faces +Z), so it works whatever axes the rig's joints have; a critically
-    /// damped spring (half-life 0.08 s) makes the look settle instead of snap, and
-    /// a weight of 0 lets it ease back. Model first (set_model).
+    /// `aim` 0 is a glance (the head leads), 1 an aim (the spine and chest take it
+    /// all: a rifle at the chest points there). Model first (set_model).
     void look_at(const glm::vec3& world_point, float weight, float aim, float dt) {
-        if (look_chain_.empty() || !skeleton_ || dt < 0.0f) return;
-        const glm::vec3 eye(skeleton_->GetWorldMatrix(static_cast<uint16_t>(look_chain_.back()))[3]);
-        const glm::vec3 to = glm::vec3(glm::inverse(model()) * glm::vec4(world_point, 1.0f)) - eye;
-        float yaw = 0.0f, pitch = 0.0f;
-        if (weight > 0.0f && glm::length(to) > 0.3f) {
-            yaw = std::clamp(std::atan2(to.x, to.z), -1.2f, 1.2f) * weight;                       // ~70 degrees either way
-            pitch = std::clamp(std::atan2(to.y, glm::length(glm::vec2(to.x, to.z))), -1.0f, 1.0f) * weight;
-        }
-        auto follow = [&](float& now, float& vel, float goal) {
-            glm::vec3 x(now - goal, 0.0f, 0.0f), v(vel, 0.0f, 0.0f);
-            anim::decay(x, v, 0.08f, dt);
-            now = goal + x.x;
-            vel = v.x;
-        };
-        follow(look_yaw_, look_vyaw_, yaw);
-        follow(look_pitch_, look_vpitch_, pitch);
-        follow(look_aim_, look_vaim_, std::clamp(aim, 0.0f, 1.0f));
-        if (std::abs(look_yaw_) < 1e-4f && std::abs(look_pitch_) < 1e-4f) return;
-        // Shares down the chain: a glance grows toward the head (1, 2, 3...), an
-        // aim is the lower half's alone, evenly.
-        const size_t n = look_chain_.size(), lower = (n + 1) / 2;
-        float glance_total = 0.0f;
-        for (size_t i = 0; i < n; ++i) glance_total += static_cast<float>(i + 1);
-        auto rot = [](const glm::mat4& m) {
-            return glm::normalize(glm::quat_cast(glm::mat3(glm::normalize(glm::vec3(m[0])), glm::normalize(glm::vec3(m[1])),
-                                                           glm::normalize(glm::vec3(m[2])))));
-        };
-        for (size_t i = 0; i < n; ++i) {
-            const float glance = static_cast<float>(i + 1) / glance_total, aimed = i < lower ? 1.0f / static_cast<float>(lower) : 0.0f;
-            const float share = glance + (aimed - glance) * look_aim_;
-            if (share <= 0.0f) continue;
-            // The turn in the model's space (yaw about up, then pitch about the model's x),
-            // carried into the joint's own: L' = P^-1 D P L.
-            const glm::quat d = glm::angleAxis(look_yaw_ * share, glm::vec3(0.0f, 1.0f, 0.0f)) *
-                                glm::angleAxis(-look_pitch_ * share, glm::vec3(1.0f, 0.0f, 0.0f));
-            const int b = look_chain_[i];
-            const int parent = skeleton_->GetBone(static_cast<uint16_t>(b))->parent_id;
-            const glm::quat p = parent >= 0 ? rot(skeleton_->GetWorldMatrix(static_cast<uint16_t>(parent))) : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-            schizo::renderer::BoneTransform tf = skeleton_->GetBone(static_cast<uint16_t>(b))->local_transform;
-            tf.rotation = glm::normalize(glm::inverse(p) * d * p * tf.rotation);
-            skeleton_->SetBoneLocalTransform(static_cast<uint16_t>(b), tf);
-            skeleton_->UpdateWorldTransforms();
-        }
+        if (skeleton_) schizo::renderer::look_at(*skeleton_, look_chain_, look_state_, model(), world_point, weight, aim, dt);
     }
 
     /// Skinned at least once (its vertex buffer holds a pose, not the bind pose).
@@ -463,14 +477,13 @@ private:
     // Sample one clip from the bind pose (so bones it does not animate are not
     // left where another clip put them) and copy the locals out.
     void sample(const Track& tr, std::vector<schizo::renderer::BoneTransform>& out) {
-        const auto& bones = skeleton_->GetAllBones();
-        for (size_t b = 0; b < bones.size() && b < bind_.size(); ++b)
-            skeleton_->SetBoneLocalTransform(static_cast<uint16_t>(b), bind_[b]);
+        // Straight into the pose: the skeleton is not touched until the pose is set.
+        const size_t n = skeleton_->GetBoneCount();
+        out.assign(bind_.begin(), bind_.begin() + static_cast<std::ptrdiff_t>(std::min(n, bind_.size())));
+        out.resize(n);
         const auto& clip = clips_[static_cast<size_t>(tr.clip)];
         const float t = tr.loop ? tr.time : std::min(tr.time, std::max(0.0f, clip->GetDuration() - 1e-4f));
-        clip->Sample(*skeleton_, t, tr.loop);
-        out.resize(bones.size());
-        for (size_t b = 0; b < bones.size(); ++b) out[b] = skeleton_->GetAllBones()[b].local_transform;
+        clip->SampleLocal(t, tr.loop, out);
     }
 
     // ---- inertialization (anim_hooks.h) ------------------------------------------------
@@ -595,7 +608,12 @@ private:
         clips_     = loaded.animations;                                                                     // read only: shared
         world_pos_ = world_pos;
         name_      = std::filesystem::path(gltf_path).filename().string();
-        for (const auto& b : skeleton_->GetAllBones()) bind_.push_back(b.local_transform);
+        // The bind pose is the loaded skeleton's (Clone resets its copy to identity):
+        // a bone a clip does not animate stays here, not at identity.
+        for (const auto& b : loaded.skeleton->GetAllBones()) bind_.push_back(b.local_transform);
+        for (size_t b = 0; b < bind_.size() && b < skeleton_->GetBoneCount(); ++b)
+            skeleton_->SetBoneLocalTransform(static_cast<uint16_t>(b), bind_[b]);
+        skeleton_->UpdateWorldTransforms();
 
         mesh_ = gws::renderer::gpu::SkinnedMesh::create(
             device, loaded.vertices, loaded.indices, loaded.submeshes, loaded.inverse_bind);
@@ -630,9 +648,14 @@ private:
     std::unique_ptr<gws::renderer::gpu::Material>    mat_;
     std::vector<schizo::renderer::BoneTransform>     bind_, pose_a_, pose_b_;
     std::vector<glm::quat> procedural_;
+    // place_feet: the legs, the pelvis and their springs.
+    schizo::renderer::FootRig rig_;
+    bool feet_resolved_ = false;
+    float log_tick_ = 0.0f;
+    schizo::renderer::LeanState lean_state_;
+    schizo::renderer::LookState look_state_;
     // look_at: the chain, and the springs of its yaw, pitch and aim (radians, 0..1).
     std::vector<int> look_chain_;
-    float look_yaw_ = 0.0f, look_vyaw_ = 0.0f, look_pitch_ = 0.0f, look_vpitch_ = 0.0f, look_aim_ = 0.0f, look_vaim_ = 0.0f;
     // The pose shown (before the procedural offsets), this frame and the one before.
     std::vector<schizo::renderer::BoneTransform>     out_, out_prev_;
     float out_dt_ = 0.0f;

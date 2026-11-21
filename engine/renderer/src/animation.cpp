@@ -22,7 +22,49 @@ void BoneAnimation::AddKeyframe(float time, const BoneTransform& transform) {
     keyframes_.insert(it, kf);
 }
 
+namespace {
+template <typename T> T track_lerp(const T& a, const T& b, float f) { return a + (b - a) * f; }
+inline glm::quat track_lerp(const glm::quat& a, glm::quat b, float f) {
+    // nlerp the short way round: the samples are dense, so this is slerp to within
+    // far less than a degree, and it is cheaper.
+    if (glm::dot(a, b) < 0.0f) b = -b;
+    return glm::normalize(glm::quat(a.w + (b.w - a.w) * f, a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f));
+}
+template <typename T> T track_sample(const UniformTrack<T>& tr, float time) {
+    const size_t n = tr.values.size();
+    if (n == 1) return tr.values[0];
+    float x = time * tr.rate;
+    if (x <= 0.0f) return tr.values[0];
+    const float last = static_cast<float>(n - 1);
+    if (x >= last) return tr.values[n - 1];
+    const size_t i = static_cast<size_t>(x);
+    if (tr.step) return tr.values[i];
+    return track_lerp(tr.values[i], tr.values[i + 1], x - static_cast<float>(i));
+}
+}  // namespace
+
+void BoneAnimation::SetChannels(UniformTrack<glm::vec3> position, UniformTrack<glm::quat> rotation, UniformTrack<glm::vec3> scale) {
+    position_ = std::move(position);
+    rotation_ = std::move(rotation);
+    scale_ = std::move(scale);
+    channel_duration_ = std::max(position_.duration(), std::max(rotation_.duration(), scale_.duration()));
+}
+
+size_t BoneAnimation::DataBytes() const {
+    if (HasChannels())
+        return position_.values.size() * sizeof(glm::vec3) + rotation_.values.size() * sizeof(glm::quat) +
+               scale_.values.size() * sizeof(glm::vec3);
+    return keyframes_.size() * sizeof(Keyframe);
+}
+
 BoneTransform BoneAnimation::Sample(float time) const {
+    if (HasChannels()) {
+        BoneTransform t;
+        t.position = position_.empty() ? glm::vec3(0.0f) : track_sample(position_, time);
+        t.rotation = track_sample(rotation_, time);
+        t.scale = scale_.empty() ? glm::vec3(1.0f) : track_sample(scale_, time);
+        return t;
+    }
     if (keyframes_.empty()) {
         return BoneTransform();
     }
@@ -70,6 +112,7 @@ BoneTransform BoneAnimation::Sample(float time) const {
 }
 
 float BoneAnimation::GetDuration() const {
+    if (HasChannels()) return channel_duration_;
     if (keyframes_.empty()) {
         return 0.0f;
     }
@@ -118,6 +161,19 @@ BoneAnimation* AnimationClip::GetBoneAnimation(uint16_t bone_id) {
         return it->second;
     }
     return nullptr;
+}
+
+void AnimationClip::SampleLocal(float time, bool loop, std::vector<BoneTransform>& pose) const {
+    if (duration_ <= 0.0f) return;
+    float t = time * playback_speed_;
+    if (loop) {
+        t = std::fmod(t, duration_);
+        if (t < 0) t += duration_;
+    }
+    for (const auto& bone_anim : bone_animations_) {
+        const uint16_t id = bone_anim->GetBoneId();
+        if (id < pose.size()) pose[id] = bone_anim->Sample(t);
+    }
 }
 
 void AnimationClip::Sample(Skeleton& skeleton, float time, bool loop) const {

@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <unordered_map>
 #include <memory>
 #include <cstdint>
 
@@ -124,9 +125,15 @@ public:
     
 private:
     std::vector<Bone> bones_;
-    std::map<std::string, uint16_t> bone_name_map_;
-    
-    void UpdateWorldTransformsRecursive(uint16_t bone_id);
+    std::unordered_map<std::string, uint16_t> bone_name_map_;
+    // The order world transforms are worked out in: every parent before its
+    // children. Bones are added after their parents (AddBone finds the parent by
+    // name), so this is normally just 0..n-1 and `order_` stays empty; it is
+    // built only for a hierarchy that is not (a parent changed afterwards).
+    std::vector<uint16_t> order_;
+    bool order_checked_ = false;
+    size_t order_size_ = 0;
+    void CheckOrder();
 };
 
 } // namespace schizo::renderer

@@ -40,6 +40,9 @@ the camera) -- the A/B for the gun's shake.
 | `GWS_TEST_PLAY_CAMERA=1` + `GWS_TEST_CAMERA=x,y,z,tx,ty,tz` | Play drawn from a fixed camera; the player's own body is drawn there (animated), not hidden as in first person |
 | `GWS_TEST_CAMERA_FOLLOW=<entity name>` (with the two above) | the six numbers become offsets from that entity (the camera, then the point looked at): a boss or a soldier kept in view as it moves |
 | `GWS_TEST_LOG_ANIM_EVENTS=1` | every clip event (animation hook) as it fires: `anim.<event>`, the clip, the time, the entity |
+| `GWS_TEST_LOG_FEET=1` | for one character standing on a slope, twice a second: each foot's height over the ground under it against its standing height, the pelvis' drop |
+| `GWS_ANIM_SERIAL=1` | characters posed one after another instead of on the job system (to compare the `characters` zone) |
+| `GWS_NO_FOOT_IK=1`, `GWS_NO_LEAN=1`, `GWS_NO_SUPPORT_HAND=1` | a layer of the pose off (to compare) |
 
 A/B switches: `GWS_NO_ANIM_LOD=1` (every character animated every frame),
 `GWS_TEST_SKIN_HOST=1` (skinning input in host memory, the old way),

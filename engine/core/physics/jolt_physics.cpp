@@ -289,6 +289,16 @@ void PhysicsWorld::add_impulse(BodyId id, const glm::vec3& impulse) {
 
 RayHit PhysicsWorld::raycast(const glm::vec3& origin, const glm::vec3& direction,
                              float max_distance) const {
+    return raycast_filtered(origin, direction, max_distance, false);
+}
+
+RayHit PhysicsWorld::raycast_static(const glm::vec3& origin, const glm::vec3& direction,
+                                    float max_distance) const {
+    return raycast_filtered(origin, direction, max_distance, true);
+}
+
+RayHit PhysicsWorld::raycast_filtered(const glm::vec3& origin, const glm::vec3& direction,
+                                      float max_distance, bool static_only) const {
     RayHit out;
     const float len = glm::length(direction);
     if (len < 1e-6f || max_distance <= 0.0f) return out;
@@ -298,7 +308,11 @@ RayHit PhysicsWorld::raycast(const glm::vec3& origin, const glm::vec3& direction
     // RRayCast = origin + the full segment vector; result fraction is along it.
     RRayCast ray(RVec3(origin.x, origin.y, origin.z), seg);
     RayCastResult result;
-    if (impl_->system.GetNarrowPhaseQuery().CastRay(ray, result)) {
+    const SpecifiedBroadPhaseLayerFilter bp_static(BP_STATIC);
+    const SpecifiedObjectLayerFilter obj_static(LAYER_STATIC);
+    const bool any = static_only ? impl_->system.GetNarrowPhaseQuery().CastRay(ray, result, bp_static, obj_static)
+                                 : impl_->system.GetNarrowPhaseQuery().CastRay(ray, result);
+    if (any) {
         out.hit      = true;
         out.distance = result.mFraction * max_distance;
         out.position = origin + dir * out.distance;

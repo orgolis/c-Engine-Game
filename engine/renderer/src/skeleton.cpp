@@ -11,10 +11,13 @@ namespace schizo::renderer {
 // ============================================================================
 
 glm::mat4 BoneTransform::ToMatrix() const {
-    glm::mat4 pos = glm::translate(glm::mat4(1), position);
-    glm::mat4 rot = glm::mat4_cast(rotation);
-    glm::mat4 scl = glm::scale(glm::mat4(1), scale);
-    return pos * rot * scl;
+    // T * R * S, built directly: the rotation's columns scaled, the translation set.
+    glm::mat4 m = glm::mat4_cast(rotation);
+    m[0] *= scale.x;
+    m[1] *= scale.y;
+    m[2] *= scale.z;
+    m[3] = glm::vec4(position, 1.0f);
+    return m;
 }
 
 BoneTransform BoneTransform::Lerp(const BoneTransform& a, const BoneTransform& b, float t) {
@@ -108,33 +111,36 @@ void Skeleton::SetBoneLocalTransform(const std::string& name, const BoneTransfor
     }
 }
 
-void Skeleton::UpdateWorldTransforms(uint16_t bone_id) {
-    // Update all bones starting from roots
+void Skeleton::CheckOrder() {
+    order_checked_ = true;
+    order_size_ = bones_.size();
+    order_.clear();
+    bool ordered = true;
+    for (size_t i = 0; i < bones_.size() && ordered; ++i)
+        ordered = bones_[i].parent_id < static_cast<int32_t>(i);
+    if (ordered) return;
+    // A parent after its child: a breadth-first order from the roots.
+    std::vector<std::vector<uint16_t>> children(bones_.size());
     for (size_t i = 0; i < bones_.size(); ++i) {
-        if (bones_[i].parent_id < 0) {
-            UpdateWorldTransformsRecursive(i);
-        }
+        const int32_t p = bones_[i].parent_id;
+        if (p >= 0 && p < static_cast<int32_t>(bones_.size())) children[static_cast<size_t>(p)].push_back(static_cast<uint16_t>(i));
     }
+    for (size_t i = 0; i < bones_.size(); ++i)
+        if (bones_[i].parent_id < 0 || bones_[i].parent_id >= static_cast<int32_t>(bones_.size())) order_.push_back(static_cast<uint16_t>(i));
+    for (size_t k = 0; k < order_.size(); ++k)
+        for (uint16_t c : children[order_[k]]) order_.push_back(c);
 }
 
-void Skeleton::UpdateWorldTransformsRecursive(uint16_t bone_id) {
-    if (bone_id >= bones_.size()) return;
-    
-    Bone& bone = bones_[bone_id];
-    
-    if (bone.parent_id < 0) {
-        // Root bone: world = local
-        bone.world_matrix = bone.local_transform.ToMatrix();
-    } else {
-        // Child bone: world = parent.world * local
-        const Bone& parent = bones_[bone.parent_id];
-        bone.world_matrix = parent.world_matrix * bone.local_transform.ToMatrix();
-    }
-    
-    // Update all children
-    std::vector<uint16_t> children = GetChildBones(bone_id);
-    for (uint16_t child_id : children) {
-        UpdateWorldTransformsRecursive(child_id);
+void Skeleton::UpdateWorldTransforms(uint16_t /*bone_id*/) {
+    // One pass, parents first: no recursion, no allocation.
+    if (!order_checked_ || order_size_ != bones_.size()) CheckOrder();
+    const size_t n = order_.empty() ? bones_.size() : order_.size();
+    for (size_t k = 0; k < n; ++k) {
+        Bone& bone = bones_[order_.empty() ? k : order_[k]];
+        const int32_t p = bone.parent_id;
+        bone.world_matrix = p >= 0 && p < static_cast<int32_t>(bones_.size())
+                                ? bones_[static_cast<size_t>(p)].world_matrix * bone.local_transform.ToMatrix()
+                                : bone.local_transform.ToMatrix();
     }
 }
 

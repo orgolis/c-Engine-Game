@@ -25,6 +25,20 @@ struct Keyframe {
  * @class BoneAnimation
  * @brief Animation track for a single bone
  */
+/// One channel of a bone's motion (position, rotation or scale) sampled at a
+/// uniform rate: sampling is an index, not a search. One value: constant (a
+/// channel that never moves costs one value). `step` holds each value until the
+/// next (glTF STEP). The importer resamples every glTF sampler -- STEP, LINEAR
+/// and CUBICSPLINE, each channel on its own key times -- exactly onto this.
+template <typename T>
+struct UniformTrack {
+    std::vector<T> values;
+    float rate = 30.0f;   // samples per second
+    bool  step = false;
+    bool  empty() const { return values.empty(); }
+    float duration() const { return values.size() > 1 ? static_cast<float>(values.size() - 1) / rate : 0.0f; }
+};
+
 class BoneAnimation {
 public:
     BoneAnimation(uint16_t bone_id) : bone_id_(bone_id) {}
@@ -35,16 +49,28 @@ public:
     
     // Sample animation at specific time
     BoneTransform Sample(float time) const;
+    /// Uniform channels (clip format v2): when set, Sample reads them and not the
+    /// keyframes. Each must have at least one value.
+    void SetChannels(UniformTrack<glm::vec3> position, UniformTrack<glm::quat> rotation, UniformTrack<glm::vec3> scale);
+    bool HasChannels() const { return !rotation_.empty(); }
+    const UniformTrack<glm::vec3>& PositionChannel() const { return position_; }
+    const UniformTrack<glm::quat>& RotationChannel() const { return rotation_; }
+    const UniformTrack<glm::vec3>& ScaleChannel() const { return scale_; }
+    /// Bytes of motion data (for the importer's report).
+    size_t DataBytes() const;
     
     // Get keyframe data
     const std::vector<Keyframe>& GetKeyframes() const { return keyframes_; }
     uint16_t GetBoneId() const { return bone_id_; }
     float GetDuration() const;
-    bool IsEmpty() const { return keyframes_.empty(); }
+    bool IsEmpty() const { return keyframes_.empty() && rotation_.empty(); }
     
 private:
     uint16_t bone_id_;
     std::vector<Keyframe> keyframes_;  // Should be sorted by time
+    UniformTrack<glm::vec3> position_, scale_;
+    UniformTrack<glm::quat> rotation_;
+    float channel_duration_ = 0.0f;
     
     // Find surrounding keyframes for interpolation
     int FindKeyframeIndex(float time) const;
@@ -72,6 +98,9 @@ public:
     
     // Sample the entire animation at a specific time
     void Sample(Skeleton& skeleton, float time, bool loop = true) const;
+    /// Sample into a pose (local transforms by bone id) without touching a
+    /// skeleton: bones this clip does not animate keep what `pose` holds.
+    void SampleLocal(float time, bool loop, std::vector<BoneTransform>& pose) const;
     
     // Get all animations
     const std::vector<std::unique_ptr<BoneAnimation>>& GetBoneAnimations() const {
@@ -88,6 +117,7 @@ public:
     
     // Update duration based on bone animations
     void UpdateDuration();
+    void SetDuration(float seconds) { duration_ = seconds; }
     
 private:
     std::string name_;

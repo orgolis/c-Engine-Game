@@ -259,6 +259,15 @@ if(MINGW)
     target_link_options(locomotion_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# footik_check: feet on the ground (foot_placement.h) on a small biped, headless:
+# flat ground, a step, a drop, a slope, a placed model, a lifted foot, a landing.
+add_executable(footik_check footik_check/main.cpp)
+target_link_libraries(footik_check PRIVATE renderer)
+target_compile_features(footik_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(footik_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # animhooks_check: animation hooks (clip events) and inertialization, headless.
 # A clip event is gameplay -- a bolt leaving its port, the jaws closing -- so it
 # must be heard exactly once a pass at any frame rate; the spring decides whether

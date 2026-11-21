@@ -81,6 +81,23 @@ static void write_test_rig(const std::string& gltf_path) {
     static const uint8_t png[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x38, 0x91, 0x62, 0xF4, 0x1F, 0x00, 0x05, 0xB4, 0x02, 0x5E, 0x1F, 0x3A, 0xFB, 0xCB, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82};
     for (uint8_t v : png) b.data.push_back(v);
     while (b.data.size() % 4) b.data.push_back(0);
+    // "steps": the tip's rotation, STEP, keys at 0, 0.5, 1 (identity, 90 X, identity).
+    const size_t off_tin3 = b.data.size();
+    b.f(0.0f); b.f(0.5f); b.f(1.0f);
+    const size_t off_rot3 = b.data.size();
+    b.f(0); b.f(0); b.f(0); b.f(1);
+    b.f(0.70710678f); b.f(0); b.f(0); b.f(0.70710678f);
+    b.f(0); b.f(0); b.f(0); b.f(1);
+    // "spline": the root's translation, CUBICSPLINE, keys at 0 and 1 (input 6):
+    // (in-tangent, value, out-tangent) per key -- 0 to (2,0,0), flat tangents.
+    const size_t off_cub = b.data.size();
+    for (float v : {0.f,0.f,0.f, 0.f,0.f,0.f, 0.f,0.f,0.f,   0.f,0.f,0.f, 2.f,0.f,0.f, 0.f,0.f,0.f}) b.f(v);
+    // "split": the root's translation on keys at 0 and 2 -- (0,0,0) to (0,3,0) --
+    // while the tip's rotation runs 0..1 (input 6, output 7).
+    const size_t off_tin2 = b.data.size();
+    b.f(0.0f); b.f(2.0f);
+    const size_t off_tr2 = b.data.size();
+    for (float v : {0.f,0.f,0.f, 0.f,3.f,0.f}) b.f(v);
     const size_t total = b.data.size();
 
     std::ofstream bin_out(bp, std::ios::binary);
@@ -108,7 +125,13 @@ static void write_test_rig(const std::string& gltf_path) {
     "\"textures\":[{\"source\":0}],\n"
     "\"images\":[{\"bufferView\":8,\"mimeType\":\"image/png\"}],\n"
     "\"animations\":[{\"name\":\"bend\",\"samplers\":[{\"input\":6,\"output\":7,\"interpolation\":\"LINEAR\"}],"
-        "\"channels\":[{\"sampler\":0,\"target\":{\"node\":1,\"path\":\"rotation\"}}]}],\n"
+        "\"channels\":[{\"sampler\":0,\"target\":{\"node\":1,\"path\":\"rotation\"}}]},\n"
+    " {\"name\":\"steps\",\"samplers\":[{\"input\":8,\"output\":9,\"interpolation\":\"STEP\"}],"
+        "\"channels\":[{\"sampler\":0,\"target\":{\"node\":1,\"path\":\"rotation\"}}]},\n"
+    " {\"name\":\"spline\",\"samplers\":[{\"input\":6,\"output\":10,\"interpolation\":\"CUBICSPLINE\"}],"
+        "\"channels\":[{\"sampler\":0,\"target\":{\"node\":0,\"path\":\"translation\"}}]},\n"
+    " {\"name\":\"split\",\"samplers\":[{\"input\":6,\"output\":7,\"interpolation\":\"LINEAR\"},{\"input\":11,\"output\":12,\"interpolation\":\"LINEAR\"}],"
+        "\"channels\":[{\"sampler\":0,\"target\":{\"node\":1,\"path\":\"rotation\"}},{\"sampler\":1,\"target\":{\"node\":0,\"path\":\"translation\"}}]}],\n"
     "\"accessors\":[\n"
     "  {\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},\n"
     "  {\"bufferView\":1,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},\n"
@@ -117,7 +140,12 @@ static void write_test_rig(const std::string& gltf_path) {
     "  {\"bufferView\":4,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"},\n"
     "  {\"bufferView\":5,\"componentType\":5126,\"count\":2,\"type\":\"MAT4\"},\n"
     "  {\"bufferView\":6,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\"},\n"
-    "  {\"bufferView\":7,\"componentType\":5126,\"count\":2,\"type\":\"VEC4\"}\n"
+    "  {\"bufferView\":7,\"componentType\":5126,\"count\":2,\"type\":\"VEC4\"},\n"
+    "  {\"bufferView\":9,\"componentType\":5126,\"count\":3,\"type\":\"SCALAR\"},\n"
+    "  {\"bufferView\":10,\"componentType\":5126,\"count\":3,\"type\":\"VEC4\"},\n"
+    "  {\"bufferView\":11,\"componentType\":5126,\"count\":6,\"type\":\"VEC3\"},\n"
+    "  {\"bufferView\":12,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\"},\n"
+    "  {\"bufferView\":13,\"componentType\":5126,\"count\":2,\"type\":\"VEC3\"}\n"
     "],\n"
     "\"bufferViews\":[\n"
     "  " + bv(off_pos,48) + ",\n"
@@ -128,7 +156,12 @@ static void write_test_rig(const std::string& gltf_path) {
     "  " + bv(off_ibm,128) + ",\n"
     "  " + bv(off_tin,8) + ",\n"
     "  " + bv(off_rot,32) + ",\n"
-    "  " + bv(off_png, sizeof(png)) + "\n"
+    "  " + bv(off_png, sizeof(png)) + ",\n"
+    "  " + bv(off_tin3, 12) + ",\n"
+    "  " + bv(off_rot3, 48) + ",\n"
+    "  " + bv(off_cub, 72) + ",\n"
+    "  " + bv(off_tin2, 8) + ",\n"
+    "  " + bv(off_tr2, 24) + "\n"
     "],\n"
     "\"buffers\":[{\"uri\":\"" + bin_name + "\",\"byteLength\":" + std::to_string(total) + "}]\n"
     "}\n";
@@ -220,12 +253,33 @@ int main(int argc, char** argv) {
         check("tip inverse-bind = translate(0,-1,0)", approx(R.inverse_bind[tip][3].y, -1.0f));
     }
 
-    check("1 animation", R.animations.size() == 1);
-    if (!R.animations.empty() && tip >= 0) {
+    check("4 animations", R.animations.size() == 4);
+    if (R.animations.size() == 4 && tip >= 0 && root >= 0) {
         auto& clip = R.animations[0];
         const auto* track = clip->GetBoneAnimation((uint16_t)tip);
         check("tip has an animation track", track != nullptr);
-        check("track has 2 keyframes", track && track->GetKeyframes().size() == 2);
+        check("its rotation keeps its 2 evenly spaced keys (1 a second); the unanimated position is one value",
+              track && track->HasChannels() && track->RotationChannel().values.size() == 2 &&
+                  approx(track->RotationChannel().rate, 1.0f) && track->PositionChannel().values.size() == 1);
+        // Sampled straight into a pose (from the bind pose), the other clips:
+        std::vector<schizo::renderer::BoneTransform> bind_pose, pose;
+        for (const auto& bone : R.skeleton->GetAllBones()) bind_pose.push_back(bone.local_transform);
+        auto at = [&](int clip_index, float t) { pose = bind_pose; R.animations[clip_index]->SampleLocal(t, false, pose); };
+        at(1, 0.25f);
+        const bool held = approx(pose[tip].rotation.w, 1.0f);
+        at(1, 0.75f);
+        check("STEP: a key is held until the next (identity at 0.25 s, 90 X at 0.75 s)",
+              held && approx(pose[tip].rotation.x, 0.70710678f) && approx(pose[tip].rotation.w, 0.70710678f));
+        at(2, 0.5f);
+        const float mid = pose[root].position.x;
+        at(2, 0.25f);
+        check("CUBICSPLINE: the Hermite curve through the keys, not its tangents (x 1.0 at 0.5 s, 0.3125 at 0.25 s)",
+              approx(mid, 1.0f, 2e-3f) && approx(pose[root].position.x, 0.3125f, 4e-3f));
+        check("a channel lasts as long as its own keys: the clip as long as the longest (2 s)",
+              approx(R.animations[3]->GetDuration(), 2.0f));
+        at(3, 1.5f);
+        check("...the shorter one holds its last value, the longer goes on (90 X held, y 2.25)",
+              approx(pose[tip].rotation.x, 0.70710678f) && approx(pose[root].position.y, 2.25f));
         // Sample at t=1s: tip should be rotated ~90deg about X (quat w,x ~ 0.707).
         clip->Sample(*R.skeleton, 1.0f, false);
         const auto* tb = R.skeleton->GetBone((uint16_t)tip);

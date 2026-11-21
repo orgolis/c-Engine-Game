@@ -99,6 +99,10 @@ public:
     // `max_distance`, returning the closest hit. Used by audio occlusion to test
     // line-of-sight between the listener and a source.
     RayHit    raycast(const glm::vec3& origin, const glm::vec3& direction, float max_distance) const;
+    // The same against static bodies only (terrain, buildings): the ground under
+    // a character's feet, never a character, a crate or the character itself.
+    // Safe from several threads at once while the world is not being stepped.
+    RayHit    raycast_static(const glm::vec3& origin, const glm::vec3& direction, float max_distance) const;
 
     void      set_transform(BodyId id, const glm::vec3& pos, const glm::quat& rot);
     // Kinematic move: sets the body's velocities so it reaches the target pose
@@ -145,6 +149,8 @@ public:
     size_t body_count() const;
 
 private:
+    RayHit raycast_filtered(const glm::vec3& origin, const glm::vec3& direction, float max_distance, bool static_only) const;
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

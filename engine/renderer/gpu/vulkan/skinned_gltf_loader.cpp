@@ -21,6 +21,8 @@ using schizo::renderer::Skeleton;
 using schizo::renderer::AnimationClip;
 using schizo::renderer::BoneTransform;
 using schizo::renderer::Bone;
+using schizo::renderer::UniformTrack;
+using schizo::renderer::Keyframe;
 
 // ---- stride-aware accessor readers (handle interleaved + tightly-packed) ----
 
@@ -128,30 +130,60 @@ BoneTransform node_local(const tinygltf::Node& n) {
     return t;
 }
 
-// Sample a VEC3 animation sampler at time t (LINEAR).
-glm::vec3 sample_vec3(const std::vector<float>& in, const std::vector<float>& out,
-                      float t, glm::vec3 fallback) {
-    if (in.empty() || out.size() < in.size() * 3) return fallback;
-    auto V = [&](size_t k) { return glm::vec3(out[k*3], out[k*3+1], out[k*3+2]); };
-    if (t <= in.front()) return V(0);
-    if (t >= in.back())  return V(in.size() - 1);
-    const auto next = std::lower_bound(in.begin()+1, in.end(), t);
-    const size_t i = static_cast<size_t>(next-in.begin()-1);
-    const float a = (in[i+1] > in[i]) ? (t-in[i])/(in[i+1]-in[i]) : 0.0f;
-    return glm::mix(V(i), V(i+1), a);
+// A glTF animation sampler evaluated exactly at time t, as the spec has it:
+// STEP holds a key, LINEAR interpolates (slerp for rotations), CUBICSPLINE is a
+// Hermite curve through the keys with their in- and out-tangents (the output
+// holds in-tangent, value, out-tangent per key). `comps` 3 (a vector) or 4 (a
+// quaternion, x y z w). Returns false when the data does not fit the sampler.
+enum class SamplerMode { Linear, Step, Cubic };
+bool eval_sampler(const std::vector<float>& in, const std::vector<float>& out, SamplerMode mode, int comps, float t,
+                  glm::vec4& result) {
+    const size_t n = in.size();
+    const size_t stride = mode == SamplerMode::Cubic ? static_cast<size_t>(comps) * 3 : static_cast<size_t>(comps);
+    const size_t voff = mode == SamplerMode::Cubic ? static_cast<size_t>(comps) : 0;
+    if (n == 0 || out.size() < n * stride) return false;
+    auto get = [&](size_t k, size_t off) {
+        glm::vec4 v(0.0f, 0.0f, 0.0f, comps == 4 ? 1.0f : 0.0f);
+        for (int c = 0; c < comps; ++c) v[c] = out[k * stride + off + static_cast<size_t>(c)];
+        return v;
+    };
+    if (t <= in.front() || n == 1) { result = get(0, voff); return true; }
+    if (t >= in.back()) { result = get(n - 1, voff); return true; }
+    const size_t i = static_cast<size_t>(std::upper_bound(in.begin(), in.end(), t) - in.begin()) - 1;
+    const float dt = in[i + 1] - in[i];
+    const float s = dt > 1e-9f ? (t - in[i]) / dt : 0.0f;
+    if (mode == SamplerMode::Step) { result = get(i, voff); return true; }
+    if (mode == SamplerMode::Linear) {
+        const glm::vec4 a = get(i, voff), b = get(i + 1, voff);
+        if (comps == 4) {
+            const glm::quat q = glm::slerp(glm::quat(a.w, a.x, a.y, a.z), glm::quat(b.w, b.x, b.y, b.z), s);
+            result = glm::vec4(q.x, q.y, q.z, q.w);
+        } else {
+            result = a + (b - a) * s;
+        }
+        return true;
+    }
+    const glm::vec4 v0 = get(i, voff), b0 = get(i, voff + static_cast<size_t>(comps)), v1 = get(i + 1, voff), a1 = get(i + 1, 0);
+    const float s2 = s * s, s3 = s2 * s;
+    result = (2 * s3 - 3 * s2 + 1) * v0 + (s3 - 2 * s2 + s) * dt * b0 + (-2 * s3 + 3 * s2) * v1 + (s3 - s2) * dt * a1;
+    return true;
 }
-
-// Sample a VEC4 quaternion animation sampler at time t (SLERP).
-glm::quat sample_quat(const std::vector<float>& in, const std::vector<float>& out,
-                      float t, glm::quat fallback) {
-    if (in.empty() || out.size() < in.size() * 4) return fallback;
-    auto Q = [&](size_t k) { return glm::quat(out[k*4+3], out[k*4+0], out[k*4+1], out[k*4+2]); };
-    if (t <= in.front()) return Q(0);
-    if (t >= in.back())  return Q(in.size() - 1);
-    const auto next = std::lower_bound(in.begin()+1, in.end(), t);
-    const size_t i = static_cast<size_t>(next-in.begin()-1);
-    const float a = (in[i+1] > in[i]) ? (t-in[i])/(in[i+1]-in[i]) : 0.0f;
-    return glm::normalize(glm::slerp(Q(i), Q(i+1), a));
+SamplerMode sampler_mode(const std::string& interpolation) {
+    if (interpolation == "STEP") return SamplerMode::Step;
+    if (interpolation == "CUBICSPLINE") return SamplerMode::Cubic;
+    return SamplerMode::Linear;
+}
+// The rate a channel is kept at: its own when its keys are evenly spaced at 60 a
+// second or fewer and it is not a spline (then its keys are kept exactly), else 60.
+float channel_rate(const std::vector<float>& in, SamplerMode mode) {
+    constexpr float kMax = 60.0f;
+    if (in.size() < 2 || mode == SamplerMode::Cubic) return kMax;
+    const float h = (in.back() - in.front()) / static_cast<float>(in.size() - 1);
+    if (h < 1.0f / kMax - 1e-5f || h <= 0.0f) return kMax;
+    if (std::abs(in.front() - std::round(in.front() / h) * h) > h * 0.01f) return kMax;   // keys on the rate's grid from 0
+    for (size_t k = 1; k < in.size(); ++k)
+        if (std::abs((in[k] - in[k - 1]) - h) > h * 0.01f) return kMax;
+    return 1.0f / h;
 }
 
 } // namespace
@@ -285,6 +317,7 @@ LoadedSkinnedModel load_skinned_gltf(const std::string& path) {
         if (inserted) it->second = read_floats(model, accessor);
         return it->second;
     };
+    size_t clip_bytes_new = 0, clip_bytes_old = 0;
     for (const auto& ga : model.animations) {
         auto clip = std::make_shared<AnimationClip>(ga.name.empty() ? "clip" : ga.name, 30.0f);
         struct Chans { int t = -1, r = -1, s = -1; };
@@ -301,24 +334,77 @@ LoadedSkinnedModel load_skinned_gltf(const std::string& path) {
         for (auto& [bone, c] : per_bone) {
             const Bone* bb = R.skeleton->GetBone((uint16_t)bone);
             const BoneTransform bind = bb ? bb->local_transform : BoneTransform{};
-            std::set<float> times;
-            auto add_times = [&](int samp) {
-                if (samp < 0) return;
-                for (float t : values(ga.samplers[samp].input)) times.insert(t);
+            // Each channel on its own: resampled exactly onto a uniform rate (its
+            // own when its keys already are), a channel that never moves kept as
+            // one value, a missing one as the bind pose.
+            auto vec_channel = [&](int samp, const glm::vec3& rest) {
+                UniformTrack<glm::vec3> tr;
+                tr.values.push_back(rest);
+                if (samp < 0) return tr;
+                const auto& sp = ga.samplers[samp];
+                const auto& in = values(sp.input);
+                const auto& out = values(sp.output);
+                const SamplerMode mode = sampler_mode(sp.interpolation);
+                if (in.empty()) return tr;
+                tr.rate = channel_rate(in, mode);
+                tr.step = mode == SamplerMode::Step;
+                const size_t n = static_cast<size_t>(std::lround(in.back() * tr.rate)) + 1;
+                std::vector<glm::vec3> v;
+                v.reserve(n);
+                glm::vec4 r;
+                for (size_t k = 0; k < n; ++k)
+                    v.push_back(eval_sampler(in, out, mode, 3, static_cast<float>(k) / tr.rate, r) ? glm::vec3(r) : rest);
+                bool constant = true;
+                for (const auto& x : v) constant = constant && glm::length(x - v[0]) <= 1e-6f * (1.0f + glm::length(v[0]));
+                tr.values = constant ? std::vector<glm::vec3>{v[0]} : std::move(v);
+                return tr;
             };
-            add_times(c.t); add_times(c.r); add_times(c.s);
-            if (times.empty()) continue;
-            auto* track = clip->AddBoneAnimation((uint16_t)bone);
-            for (float t : times) {
-                BoneTransform bt = bind;
-                if (c.t >= 0) bt.position = sample_vec3(values(ga.samplers[c.t].input), values(ga.samplers[c.t].output), t, bind.position);
-                if (c.r >= 0) bt.rotation = sample_quat(values(ga.samplers[c.r].input), values(ga.samplers[c.r].output), t, bind.rotation);
-                if (c.s >= 0) bt.scale    = sample_vec3(values(ga.samplers[c.s].input), values(ga.samplers[c.s].output), t, bind.scale);
-                track->AddKeyframe(t, bt);
+            UniformTrack<glm::quat> rot;
+            rot.values.push_back(bind.rotation);
+            if (c.r >= 0) {
+                const auto& sp = ga.samplers[c.r];
+                const auto& in = values(sp.input);
+                const auto& out = values(sp.output);
+                const SamplerMode mode = sampler_mode(sp.interpolation);
+                if (!in.empty()) {
+                    rot.rate = channel_rate(in, mode);
+                    rot.step = mode == SamplerMode::Step;
+                    const size_t n = static_cast<size_t>(std::lround(in.back() * rot.rate)) + 1;
+                    std::vector<glm::quat> v;
+                    v.reserve(n);
+                    glm::vec4 r;
+                    for (size_t k = 0; k < n; ++k) {
+                        glm::quat q = eval_sampler(in, out, mode, 4, static_cast<float>(k) / rot.rate, r)
+                                          ? glm::normalize(glm::quat(r.w, r.x, r.y, r.z)) : bind.rotation;
+                        if (!v.empty() && glm::dot(q, v.back()) < 0.0f) q = -q;   // one hemisphere: no flips between samples
+                        v.push_back(q);
+                    }
+                    bool constant = true;
+                    for (const auto& q : v) constant = constant && std::abs(glm::dot(q, v[0])) >= 1.0f - 1e-7f;
+                    rot.values = constant ? std::vector<glm::quat>{v[0]} : std::move(v);
+                }
             }
+            auto* track = clip->AddBoneAnimation((uint16_t)bone);
+            track->SetChannels(vec_channel(c.t, bind.position), std::move(rot), vec_channel(c.s, bind.scale));
+            clip_bytes_new += track->DataBytes();
+            // (what the keys merged over every channel took, for the report)
+            std::set<float> times;
+            for (int samp : {c.t, c.r, c.s}) if (samp >= 0) for (float t : values(ga.samplers[samp].input)) times.insert(t);
+            clip_bytes_old += times.size() * sizeof(Keyframe);
+        }
+        clip->UpdateDuration();
+        // The clip lasts as long as its longest channel's keys (a channel that ends
+        // early holds its last value).
+        {
+            float longest = clip->GetDuration();
+            for (const auto& ch : ga.channels)
+                if (ch.sampler >= 0 && ch.sampler < (int)ga.samplers.size()) {
+                    const auto& in = values(ga.samplers[ch.sampler].input);
+                    if (!in.empty()) longest = std::max(longest, in.back());
+                }
+            clip->SetDuration(longest);
         }
         clip->SetLooping(true);
-        clip->UpdateDuration();
         R.animations.push_back(clip);
     }
 
@@ -363,9 +449,9 @@ LoadedSkinnedModel load_skinned_gltf(const std::string& path) {
     }
 
     R.valid = true;
-    spdlog::info("[skinned-gltf] '{}' loaded: {} verts, {} bones, {} anim(s), material {}{}",
-                 path, R.vertices.size(), R.skeleton->GetBoneCount(), R.animations.size(),
-                 R.material.present ? "yes" : "no", R.material.base_color.empty() ? "" : " (textured)");
+    spdlog::info("[skinned-gltf] '{}' loaded: {} verts, {} bones, {} anim(s) ({} KB of motion; {} KB as merged keys), material {}{}",
+                 path, R.vertices.size(), R.skeleton->GetBoneCount(), R.animations.size(), (clip_bytes_new + 1023) / 1024,
+                 (clip_bytes_old + 1023) / 1024, R.material.present ? "yes" : "no", R.material.base_color.empty() ? "" : " (textured)");
     return R;
 }
 
