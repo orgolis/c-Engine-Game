@@ -120,8 +120,11 @@ jobs:
           # No --gpu: texture/model/skinning_check need a Vulkan device and
           # runners have no GPU or ICD, so `gws test` skips them and says so.
           # Tracked by #63.
-          ./build/bin/gws.exe test | tee check-output.txt
-          rc=$?
+          # `|| rc=1`, not `rc=$?` on the next line: under the step's `set -e` a
+          # failing suite ended the step right here, before the FAIL lines below
+          # became annotations -- the run said only "exit code 1".
+          rc=0
+          ./build/bin/gws.exe test | tee check-output.txt || rc=1
           # Smoke-test the headless runner too: it must simulate and report,
           # not merely link. --demo seeds a world so a green result means the
           # gameplay systems actually ran.
@@ -162,8 +165,8 @@ jobs:
         # machine, and saying so beats pretending the row is covered.
         run: |
           set -o pipefail
-          ./build/bin/innerloop_check.exe --enforce --tolerance 4 | tee innerloop.txt
-          rc=$?
+          rc=0
+          ./build/bin/innerloop_check.exe --enforce --tolerance 4 | tee innerloop.txt || rc=1
           {
             echo "### Inner-loop budgets"
             echo ""
@@ -239,8 +242,10 @@ jobs:
       - name: Run the headless check suite
         run: |
           set -o pipefail
-          ./build/linux-debug/bin/gws test | tee check-output.txt
-          rc=$?
+          # (`|| rc=1`: see the Windows step -- under `set -e` a failing suite
+          # ended the step before its FAIL lines became annotations.)
+          rc=0
+          ./build/linux-debug/bin/gws test | tee check-output.txt || rc=1
           ./build/linux-debug/bin/gws run --demo --frames 120 --json || rc=1
           {
             echo "### Linux check suite"
@@ -267,8 +272,8 @@ jobs:
       - name: Inner-loop budgets
         run: |
           set -o pipefail
-          ./build/linux-debug/bin/innerloop_check --enforce --tolerance 4 | tee innerloop.txt
-          rc=$?
+          rc=0
+          ./build/linux-debug/bin/innerloop_check --enforce --tolerance 4 | tee innerloop.txt || rc=1
           {
             echo "### Linux inner-loop budgets"
             echo ""
