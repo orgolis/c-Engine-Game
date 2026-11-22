@@ -13,6 +13,8 @@
 // (play_effects.h), from the project's effect blocks or the built-in ones.
 // ============================================================================
 
+#include <spdlog/spdlog.h>
+#include <cstdlib>
 #include "ecs/gameplay_item_file.h"   // weapon blocks in .items files
 #include "ecs/gameplay_loadout.h"     // the guns carried
 #include "ecs/gameplay_weapons.h"
@@ -271,7 +273,53 @@ public:
         glm::vec3 origin, fwd;
         aim_from_view(play, cam_pos, cam_fwd, wd->range, world, origin, fwd);
         const bool third_person = glm::length(origin - (cam_pos + glm::normalize(cam_fwd) * 0.3f)) > 0.05f;
-        const int fired = ecs::trigger_weapon(w, e, origin, fwd, *ws, in.fire_pressed, in.fire_held, &bridge.events(),
+        // A blade swung at someone just out of reach: the player lunges onto them first
+        // (motion warping) and the swing goes off as the lunge lands, at them.
+        // GWS_NO_LUNGE=1: no lunge.
+        bool press = in.fire_pressed, held = in.fire_held;
+        static const bool no_lunge = std::getenv("GWS_NO_LUNGE") != nullptr;
+        if (lunge_left_ > 0.0f) {
+            lunge_left_ -= dt;
+            press = held = false;
+            if (lunge_left_ <= 0.0f) {
+                press = true;
+                const glm::vec3 to = lunge_at_ - origin;
+                if (glm::length(to) > 1e-3f) fwd = glm::normalize(to);
+            }
+        } else if (wd->melee && in.fire_pressed && ws->cooldown <= 0.0f && !no_lunge) {
+            glm::vec3 at(0.0f);
+            float gap = 0.0f;
+            if (ecs::melee_lunge_target(w, e, origin, fwd, *wd, &world, 1.8f, 30.0f, &at, &gap)) {
+                glm::vec3 dir = at - origin;
+                dir.y = 0.0f;
+                if (glm::length(dir) > 1e-3f) {
+                    const float travel = gap - (wd->melee_reach - 0.7f);   // to well inside the reach
+                    play.DashPlayer(glm::normalize(dir), travel, 0.16f);
+                    lunge_left_ = 0.16f;
+                    lunge_at_ = at;
+                    press = false;
+                    if (std::getenv("GWS_TEST_LOG_ANIM")) spdlog::info("[test] lunge: {:.2f} m onto a target {:.2f} m out of reach", travel, gap - wd->melee_reach);
+                }
+            } else if (std::getenv("GWS_TEST_LOG_ANIM")) {
+                // (why not: the nearest few, how far past the reach, how far round, their health)
+                std::string seen;
+                int listed = 0;
+                w.each<ecs::CombatActor, ecs::Transform>([&](ecs::Entity o, ecs::CombatActor& oc, ecs::Transform& ot) {
+                    if (o == e || listed >= 6) return;
+                    const ecs::Entity owner = ecs::damage_owner(w, o);
+                    const ecs::HitSphere hb = ecs::combat_hurtbox(oc, ot.position);
+                    const glm::vec3 to = hb.center - origin;
+                    const float len = glm::length(to);
+                    if (len > 8.0f || len < 1e-4f) return;
+                    const auto* a = w.try_get<ecs::AttributeSet>(owner);
+                    seen += fmt::format(" [{}gap {:.2f} m, {:.0f} deg, health {:.0f}]", owner == e ? "mine, " : "", len - hb.radius,
+                                        glm::degrees(std::acos(std::clamp(glm::dot(to / len, glm::normalize(fwd)), -1.0f, 1.0f))), a ? a->get("Health") : -1.0f);
+                    ++listed;
+                });
+                spdlog::info("[test] lunge: none (reach {:.1f}) -- within 8 m:{}", wd->melee_reach, seen);
+            }
+        }
+        const int fired = ecs::trigger_weapon(w, e, origin, fwd, *ws, press, held, &bridge.events(),
                                               ++seed_, &world, &shots);
         if(network_input)network_input(wd->id,origin,fwd,(in.fire_pressed?1u:0u)|(in.fire_held?2u:0u)|(in.reload_pressed?4u:0u)|(in.aim_held?8u:0u)|(fired>0?16u:0u));
         hud_.fired = fired > 0;
@@ -313,6 +361,8 @@ public:
 private:
     Hud      hud_;
     uint64_t seed_ = 1;
+    float lunge_left_ = 0.0f;   // a lunge under way: seconds until the swing goes off
+    glm::vec3 lunge_at_{0.0f};   // at whom
     glm::vec3 view_muzzle_{0.0f};
     bool      has_view_muzzle_ = false;
 };

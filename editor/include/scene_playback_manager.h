@@ -216,7 +216,7 @@ public:
     /// The player's MoveSpeed (%) and ExtraJumps bonuses this frame (passives, buffs).
     void SetMoveBonus(float speed_pct, int extra_jumps) { move_bonus_pct_ = speed_pct; extra_jumps_ = extra_jumps; }
     /// An ability's movement: a dash along `dir`, a throw (a leap).
-    void DashPlayer(const glm::vec3& dir, float distance) { schizo::ecs::start_dash(player_movement_, dir, distance); }
+    void DashPlayer(const glm::vec3& dir, float distance, float time = 0.22f) { schizo::ecs::start_dash(player_movement_, dir, distance, time); }
     void LaunchPlayer(const glm::vec3& velocity) { schizo::ecs::launch(player_movement_, velocity); }
     const schizo::ecs::MovementState& GetPlayerMovementState() const { return player_movement_.state; }
     const schizo::ecs::MovementSettings& GetPlayerMovementSettings() const { return player_movement_.settings; }

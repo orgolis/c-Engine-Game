@@ -271,6 +271,36 @@ inline bool fire_weapon(World& w, Entity shooter, const glm::vec3& origin, const
     return true;
 }
 
+/// A melee lunge (motion warping onto a target): the nearest one still standing
+/// just out of the blade's reach -- farther than `melee_reach`, within `reach +
+/// extra` m, within `half_angle` degrees of `aim`, not behind a wall. `*at` is
+/// its middle, `*gap` how far its hurtbox is. The swing then waits for the lunge.
+inline bool melee_lunge_target(World& w, Entity shooter, const glm::vec3& origin, const glm::vec3& aim, const WeaponDef& wd,
+                               const WorldRayFn* world, float extra, float half_angle, glm::vec3* at, float* gap) {
+    if (!wd.melee || extra <= 0.0f) return false;
+    const glm::vec3 fwd = glm::length(aim) > 1e-6f ? glm::normalize(aim) : glm::vec3(0.0f, 0.0f, -1.0f);
+    const float cos_half = std::cos(glm::radians(std::clamp(half_angle, 1.0f, 89.0f)));
+    float best = 1e9f;
+    bool found = false;
+    w.each<CombatActor, Transform>([&](Entity e, CombatActor& ca, Transform& t) {
+        if (e == shooter) return;
+        const Entity owner = damage_owner(w, e);
+        if (owner == null_entity || owner == shooter) return;
+        if (const auto* a = w.try_get<AttributeSet>(owner); a && a->get("Health") <= 0.0f) return;
+        const HitSphere hb = combat_hurtbox(ca, t.position);
+        const glm::vec3 to = hb.center - origin;
+        const float len = glm::length(to);
+        const float dist = std::max(0.0f, len - hb.radius);
+        if (dist <= wd.melee_reach || dist > wd.melee_reach + extra || len < 1e-4f) return;
+        if (glm::dot(to / len, fwd) < cos_half) return;
+        float wall_t = 0.0f;
+        glm::vec3 wall_n(0.0f, 1.0f, 0.0f);
+        if (world && *world && (*world)(origin, to / len, len, wall_t, wall_n) && wall_t < dist) return;   // behind a wall
+        if (dist < best) { best = dist; found = true; if (at) *at = hb.center; if (gap) *gap = dist; }
+    });
+    return found;
+}
+
 /// A melee weapon's swing: everyone within its reach in front of `origin`,
 /// inside its arc around `aim`, with nothing solid between -- each takes the
 /// weapon's damage (and the swinger's Damage bonus). Reported like shots: a

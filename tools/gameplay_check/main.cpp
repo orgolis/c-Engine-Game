@@ -2844,6 +2844,37 @@ int main() {
         ecs::fire_weapon(w, me, eye, fwd, ws, nullptr, 1, &wall, &shots);
         check("melee: not through a wall (the blade meets it)", hp(ahead) == 60.0f && shots.size() == 1 &&
                                                                  shots[0].hit == ecs::ShotTrace::Hit::World);
+        // A lunge (motion warping): the nearest one just out of reach, in front, standing, not behind a wall.
+        {
+            const ecs::WeaponDef* sword = ecs::find_weapon("s52_sword");
+            ecs::World lw;
+            const ecs::Entity lme = lw.create();
+            lw.add<ecs::Transform>(lme, ecs::Transform{});
+            auto put = [&](glm::vec3 p, float health) {
+                const ecs::Entity e = lw.create();
+                ecs::Transform t; t.position = p;
+                lw.add<ecs::Transform>(e, t);
+                lw.add<ecs::CombatActor>(e, ecs::CombatActor{});
+                lw.add<ecs::AttributeSet>(e, ecs::AttributeSet{});
+                lw.get<ecs::AttributeSet>(e).define("Health", health, 0, 100);
+                return e;
+            };
+            put(glm::vec3(0, 0, -5.4f), 100);        // out of reach and of the lunge
+            put(glm::vec3(2.6f, 0, -2.6f), 100);     // 45 degrees off
+            put(glm::vec3(0, 0, -3.4f), 0);          // dead
+            glm::vec3 at(0.0f);
+            float gap = 0.0f;
+            check("lunge: none when no one is just out of reach (too far, too far round, dead)",
+                  !ecs::melee_lunge_target(lw, lme, eye, fwd, *sword, nullptr, 1.8f, 30.0f, &at, &gap));
+            put(glm::vec3(0.4f, 0, -3.6f), 100);     // just out of reach, a little to the side
+            const bool found = ecs::melee_lunge_target(lw, lme, eye, fwd, *sword, nullptr, 1.8f, 30.0f, &at, &gap);
+            check("lunge: onto the one just out of reach in front (its gap past the reach)",
+                  found && std::abs(at.x - 0.4f) < 1e-3f && gap > sword->melee_reach && gap < sword->melee_reach + 1.8f);
+            check("lunge: not through a wall", !ecs::melee_lunge_target(lw, lme, eye, fwd, *sword, &wall, 1.8f, 30.0f, &at, &gap));
+            put(glm::vec3(0, 0, -1.5f), 100);
+            ecs::melee_lunge_target(lw, lme, eye, fwd, *sword, nullptr, 1.8f, 30.0f, &at, &gap);
+            check("lunge: one already in reach is no lunge target (the swing reaches it)", std::abs(at.z + 1.5f) > 0.5f);
+        }
     }
 
     // 0.8.53: multipart boss damage, specializations and resource/cast correctness.

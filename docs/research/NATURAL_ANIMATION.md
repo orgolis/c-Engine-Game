@@ -26,6 +26,7 @@ not more clips.
 | Animation graph, 2D blend spaces, montages | clip choice hard-wired in C++; a diagonal as one clip with the legs turned | **0.8.61**: every gameplay character runs a graph (the built-in humanoid one or its own `.animgraph`) |
 | Spring bones (secondary motion) | antennas, straps, tails as rigid as the clip left them | **0.8.63**: chains swing and settle in the world, the same at any frame rate |
 | Knockdown and get-up | a blast that hurts but leaves a soldier standing as before | **0.8.64**: thrown as a ragdoll, then up from where it lies (face up or down) |
+| Motion warping (melee lunge) | a swing at someone a step away cutting the air | **0.8.65**: the player lunges onto them and the swing lands with it |
 | Foot IK (foot placement) | feet floating over or sunk into slopes | **0.8.58**: feet, pelvis, slope, landing compression |
 | Lean into acceleration | a body that starts and stops like a statue on rails | **0.8.58** |
 | Support hand IK | the second hand floating beside the gun (18 cm in TestGame) | **0.8.58** |
@@ -145,7 +146,13 @@ lift-off, on a stretch past a third of the leg or a 35-degree turn (one foot
 at a time) or after a moment standing still off its spot. In the TestGame
 the player's planted feet went from sliding 2.0 m/s (running at 5 m/s, before
 this round) through 0.27 (warps alone) to 0.00 (median, with the lock).
-Distance matching (starts and stops) waits for start and stop clips.
+Distance matching (starts and stops) was evaluated in 0.8.65 and not adopted:
+it pays where a controller speeds up and slows down over a stride or two;
+the TestGame's player and NPC controllers change velocity almost at once, so
+the stop clip would only ever play its last frames. What stops do get: foot
+locking holds the planted feet and a still body steps its feet back into the
+stance -- a game with eased controllers can add stop clips on a distance
+parameter in its graph.
 
 - Epic Games, "Pose Warping in Unreal Engine": https://dev.epicgames.com/documentation/unreal-engine/pose-warping-in-unreal-engine
 - Epic Games, "Locomotion in Unreal Engine" (distance matching): https://dev.epicgames.com/documentation/unreal-engine/locomotion-in-unreal-engine
@@ -220,17 +227,17 @@ item by item, with what was decided.
 | FABRIK, CCD, full-body DLS | with climbing (the first need for multi-contact IK) |
 | Stride / orientation warping | **0.8.60** |
 | Foot locking | **0.8.60** |
-| Distance matching | with start and stop clips |
-| Motion warping | with melee combat's lunges and traversal |
+| Distance matching | **evaluated (0.8.65), not adopted**: the TestGame's controllers change speed almost at once; foot locking and the stance step cover its stops |
+| Motion warping | **0.8.65**: the melee lunge -- a swing at someone just out of reach warps the player onto them, the swing landing with it (`ecs::melee_lunge_target`) |
 | Motion matching | not planned: it needs hours of motion capture; the toolkit above serves hand-made clips |
 | Ragdolls (Jolt) | **0.8.59**: twelve bodies by name on any rig, hinged knees and elbows, settle and freeze |
 | Hit reactions | **0.8.59**: a flinch away from the attacker on the lean's spring |
 | Knockdown and get-up | **0.8.64**: a blast (`knockdown` on an ability) ragdolls a survivor away from it; at rest it gets up face up or face down, its body moved to where it lies, the get-up montage inertialized from the ragdoll's pose |
 | Powered ragdoll (motors holding a pose) | evaluated, not adopted yet: the knockdown and the flinch cover what TestGame needs; motors for stumbles come with a game that wants them |
 | Spring bones | **0.8.63**: `<model>.springs` chains (Verlet in the world, rod bending, relative damping, angle limits, sphere colliders, 60 Hz steps drawn in between); the TestGame heavy's radio antenna |
-| XPBD cloth, strand hair | later (no TestGame asset has cloth or hair) |
+| XPBD cloth, strand hair | **evaluated (0.8.65), deferred**: no TestGame asset has cloth or hair; spring chains (0.8.63) cover straps and tails; cloth comes with the first cape or flag asset |
 | Procedural creature step planner | with the first legged creature |
-| Facial animation | when a character has a face rig |
+| Facial animation | **evaluated (0.8.65), deferred**: no TestGame character has a face rig (blend shapes or face bones); the look-at chain moves the head and eyes' direction |
 | Replicate animation parameters, not poses | **0.8.62**: NPCs' look, aim and flinch, scripts' montages and graph parameters; each machine's graph poses (scripted bone turns still go per bone) |
 | GPU: shared bind buffers, previous positions for motion vectors, DQS | with the renderer's motion-vector work |
-| Budgeted animation LOD | the distance tiers stay until scenes have hundreds of characters |
+| Budgeted animation LOD | **evaluated (0.8.65), not needed yet**: the camp's 38 characters pose in 0.46 ms a frame on the distance tiers; a frame budget pays with hundreds |

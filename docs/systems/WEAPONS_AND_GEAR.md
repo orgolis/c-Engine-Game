@@ -70,6 +70,13 @@ blade meets what is ahead (an impact). The model plays its `Fire` clip as the
 swing, and the first-person arm follows the blade. The HUD shows "-" for its
 rounds.
 
+**The lunge (motion warping).** Swinging at someone just out of reach -- up
+to 1.8 m past it, within 30 degrees of the aim, standing, not behind a wall --
+the player lunges onto them first (a 0.16 s dash to well inside the reach)
+and the swing goes off as the lunge lands, aimed at them. The nearest such
+one is chosen; someone already in reach is swung at where they stand.
+`GWS_NO_LUNGE=1` turns it off. (`ecs::melee_lunge_target` finds the target.)
+
 A gun's muzzle flash and smoke, its tracers, and the sparks and dust where its
 rounds land are effects: `<gun>_muzzle`, `<gun>_tracer`, `<gun>_impact`,
 `<gun>_hit` effect blocks, or the built-in ones (docs/systems/EFFECTS.md).
