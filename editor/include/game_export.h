@@ -80,8 +80,13 @@ std::string file_name_for(const std::string& title);
 /// A prebuilt script's file name from its project-relative source path:
 /// "assets/scripts/Boss.cpp" -> "assets_scripts_boss.cpp". Inline: the script
 /// backends key their lookups with it and link nothing else from here.
+/// A '\' is a separator on every platform (a scene saved on Windows may name
+/// "assets\scripts\boss.cpp"; on Linux std::filesystem reads '\' as part of a
+/// name, so "a\b/../c" lost its "a" there -- the same script, another key).
 inline std::string prebuilt_key(const std::string& rel_source) {
-    std::string r = std::filesystem::path(rel_source).lexically_normal().generic_string();
+    std::string src = rel_source;
+    for (char& c : src) if (c == '\\') c = '/';
+    std::string r = std::filesystem::path(src).lexically_normal().generic_string();
     for (char& c : r) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     while (r.rfind("./", 0) == 0) r.erase(0, 2);
     std::string out;
