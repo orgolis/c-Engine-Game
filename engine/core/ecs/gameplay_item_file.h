@@ -464,6 +464,7 @@ inline std::string ability_def_text(const AbilityDef& a) {
     if (a.speed > 0.0f) s += "  speed " + num(a.speed) + "\n";
     if (a.arc > 0.0f) s += "  arc " + num(a.arc) + "\n";
     if (a.spread > 0.0f) s += "  spread " + num(a.spread) + "\n";
+    if (a.knockdown > 0.0f) s += "  knockdown " + num(a.knockdown) + "\n";
     if (a.move != AbilityDef::Move::None) {
         s += std::string("  move ") + (a.move == AbilityDef::Move::Blink ? "blink" : a.move == AbilityDef::Move::Dash ? "dash" : "leap") +
              " " + num(a.move_a);

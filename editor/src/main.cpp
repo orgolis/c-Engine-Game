@@ -260,6 +260,11 @@ struct EditorState {
     void set_status(const std::string& m) { status_message = m; status_message_time = ImGui::GetTime(); }
     // The Inspector's "Save the graph it runs": that entity (Play does it), -1 none.
     int64_t save_graph_of = -1;
+    // Blasts (an ability with `knockdown`, the knock-near test): where, how far they
+    // knock down, how hard, and the frame they went off (seen by the characters for
+    // two frames, whichever runs first).
+    struct Blast { glm::vec3 at{0.0f}; float reach = 0.0f; float strength = 1.0f; uint64_t frame = 0; };
+    std::vector<Blast> blasts;
 
     // The persistent ECS bridge (set in main). Lets the inspector author gameplay
     // components on an entity's authoritative ECS entity (F1/F2).
@@ -9950,7 +9955,7 @@ int main(int argc, char** argv) {
         struct CharAnim {
             enum : int { Idle, Walk, Run, Crouch, CrouchWalk, Aim, Fire, Reload, Hit, Death, Draw,
                          WalkBack, StrafeLeft, StrafeRight, Jump, Fall, Land, Melee, MeleeIdle,
-                         RunBack, StrafeRunLeft, StrafeRunRight, kStates };
+                         RunBack, StrafeRunLeft, StrafeRunRight, GetUpFaceUp, GetUpFaceDown, kStates };
             int  clip[kStates];
             CharAnim() { for (int& c : clip) c = -1; }
             // Which way the legs go (0 ahead, 1 back, 2 left, 3 right: kept until
@@ -9985,6 +9990,12 @@ int main(int argc, char** argv) {
             const void* graph_actor = nullptr;
             std::string graph_said;   // (GWS_TEST_LOG_ANIM: the states last logged)
             bool graph_saved = false;
+            // Knocked down (a blast): lying as a ragdoll, then getting up (a montage).
+            bool knocked = false, getting_up = false;
+            float knock_t = 0.0f, getup_left = 0.0f;
+            glm::vec3 blast_at{0.0f};
+            float blast_strength = 0.0f;
+            bool blast_near = false;
             uint32_t ragdoll = 0;
             uint64_t ragdoll_world = 0;
             float ragdoll_still = 0.0f;
@@ -11683,7 +11694,8 @@ int main(int argc, char** argv) {
                                                                     "fire", "reload", "hit", "death", "draw",
                                                                     "walk_back", "strafe_left", "strafe_right", "jump", "fall",
                                                                     "land", "melee", "aim_melee",
-                                                                    "run_back", "strafe_run_left", "strafe_run_right"};
+                                                                    "run_back", "strafe_run_left", "strafe_run_right",
+                                                                    "getup_face_up", "getup_face_down"};
                     size_t at = 0;
                     while (at < clips.size()) {
                         const size_t endp = clips.find(',', at);
@@ -11730,9 +11742,43 @@ int main(int argc, char** argv) {
                 };
                 // A clip's events (its `.events` file), on the gameplay event bus as
                 // anim.<name>: the entity is the instigator, the clip the param.
+                // GWS_TEST_BLAST_NEAR=<play frame>[,reach]: at that frame of Play a blast goes
+                // off 2.5 m from the NPC agent nearest the player (toward the player), knocking
+                // down whoever is within `reach` m (5) -- no damage (a test of knockdowns).
                 // GWS_TEST_KILL_NEAR=<play frame>[,radius]: at that frame of Play every NPC
                 // agent within `radius` m (30) of the player loses all its health -- it dies
                 // as if shot (a test of how bodies fall). Never saved.
+                editor_state.blasts.erase(std::remove_if(editor_state.blasts.begin(), editor_state.blasts.end(),
+                                                         [&](const auto& b) { return b.frame + 2 < static_cast<uint64_t>(frame_count); }),
+                                          editor_state.blasts.end());
+                if (static const char* blast_near = std::getenv("GWS_TEST_BLAST_NEAR"); blast_near && sk_playing && sk_player) {
+                    static int blast_at = -1, blast_frames = 0;
+                    static float blast_reach = 5.0f;
+                    static bool blast_parsed = false, blasted = false;
+                    if (!blast_parsed) { blast_parsed = true; std::sscanf(blast_near, "%d,%f", &blast_at, &blast_reach); }
+                    if (!blasted && ++blast_frames >= blast_at) {
+                        blasted = true;
+                        const glm::vec3 me = sk_player->GetTransform()->GetWorldPosition();
+                        const schizo::scene::Entity* nearest = nullptr;
+                        float best = 1e9f;
+                        for (const auto& e : sk_scene->GetEntities()) {
+                            if (!e) continue;
+                            const auto* ag = std::as_const(*e).GetNpcAgentComponent();
+                            if (!ag || !ag->enabled) continue;
+                            const float d = glm::distance(e->GetTransform()->GetWorldPosition(), me);
+                            if (d < best) { best = d; nearest = e.get(); }
+                        }
+                        if (nearest) {
+                            const glm::vec3 at = nearest->GetTransform()->GetWorldPosition();
+                            glm::vec3 to_me = me - at;
+                            to_me.y = 0.0f;
+                            const glm::vec3 blast = at + (glm::length(to_me) > 1e-3f ? glm::normalize(to_me) * 2.5f : glm::vec3(2.5f, 0.0f, 0.0f));
+                            editor_state.blasts.push_back({blast, blast_reach, 1.0f, static_cast<uint64_t>(frame_count)});
+                            spdlog::info("[test] blast near: at {:.1f} {:.1f} {:.1f}, {:.0f} m from '{}' (reach {:.0f} m)", blast.x, blast.y, blast.z, 2.5f,
+                                         nearest->GetName(), blast_reach);
+                        }
+                    }
+                }
                 if (static const char* kill_near = std::getenv("GWS_TEST_KILL_NEAR"); kill_near && sk_playing && sk_player) {
                     static int kill_at = -1, play_frames = 0;
                     static float kill_radius = 30.0f;
@@ -12320,14 +12366,39 @@ int main(int argc, char** argv) {
                         // GWS_NO_RAGDOLL=1: the death clip instead.
                         {
                             static const bool no_ragdoll = std::getenv("GWS_NO_RAGDOLL") != nullptr;
+                            static const bool no_knockdown = std::getenv("GWS_NO_KNOCKDOWN") != nullptr;
                             const uint64_t serial = feet_pw ? feet_pw->instance_serial() : 0;
-                            if (ca.ragdoll_world != serial) { ca.ragdoll = 0; ca.limp = false; ca.ragdoll_failed = false; ca.ragdoll_world = serial; }
-                            if (!dead) {
+                            if (ca.ragdoll_world != serial) { ca.ragdoll = 0; ca.limp = false; ca.ragdoll_failed = false; ca.ragdoll_world = serial; ca.knocked = false; }
+                            // A blast this frame within its reach: dead, it is thrown away from it;
+                            // alive (an NPC), it is knocked down -- a ragdoll until it gets up.
+                            ca.blast_near = false;
+                            if (!is_player)
+                                for (const auto& b : editor_state.blasts) {
+                                    const float d = glm::length(sk_tf->GetWorldPosition() - b.at);
+                                    if (d < b.reach) {
+                                        ca.blast_near = true;
+                                        ca.blast_at = b.at;
+                                        ca.blast_strength = std::clamp(1.0f - d / b.reach, 0.15f, 1.0f) * b.strength;
+                                    }
+                                }
+                            const bool knock_now = ca.blast_near && !dead && !ca.knocked && !ca.getting_up && !no_knockdown && !no_ragdoll &&
+                                                   !is_player && feet_pw && actor->has_ragdoll_rig() && !network_fighter;
+                            if (knock_now) {
+                                ca.knocked = true;
+                                ca.knock_t = 0.0f;
+                                ca.limp = false;
+                                ca.ragdoll_failed = false;
+                                if (static const bool log_knock = std::getenv("GWS_TEST_LOG_ANIM") != nullptr; log_knock)
+                                    spdlog::info("[test] knockdown: '{}' thrown by a blast {:.1f} m away", who->GetName(), glm::length(sk_tf->GetWorldPosition() - ca.blast_at));
+                            }
+                            if (ca.knocked || ca.getting_up) editor_state.npc_agents.knock_down(who->GetId(), 0.5f);   // (it lies, then gets up: no AI)
+                            if (!dead && !ca.knocked) {
                                 if (ca.ragdoll && feet_pw) feet_pw->remove_ragdoll(ca.ragdoll);
                                 ca.ragdoll = 0;
                                 ca.limp = ca.ragdoll_failed = false;
                                 ca.ragdoll_still = 0.0f;
                             } else if (!ca.limp && !ca.ragdoll_failed && !no_ragdoll && !is_player && feet_pw && actor->has_ragdoll_rig()) {
+                                if (dead) ca.knocked = ca.getting_up = false;   // (dead now: it stays down)
                                 std::vector<schizo::physics::RagdollPart> parts;
                                 for (const auto& st : actor->ragdoll_start()) {
                                     schizo::physics::RagdollPart rp;
@@ -12348,8 +12419,18 @@ int main(int argc, char** argv) {
                                         away = -(sk_tf->GetWorldRotation() * glm::vec3(0.0f, 0.0f, 1.0f));
                                         away.y = 0.0f;
                                     }
-                                    if (glm::length(away) > 1e-3f && actor->ragdoll_rig().chest >= 0)
+                                    if (ca.blast_near) {
+                                        // A blast: away from it and up, the harder the nearer, on the chest and the hips.
+                                        glm::vec3 from = sk_tf->GetWorldPosition() - ca.blast_at;
+                                        from.y = 0.0f;
+                                        if (glm::length(from) < 1e-3f) from = -(sk_tf->GetWorldRotation() * glm::vec3(0.0f, 0.0f, 1.0f));
+                                        from = glm::normalize(glm::vec3(from.x, 0.0f, from.z));
+                                        const glm::vec3 push = from * (18.0f + 34.0f * ca.blast_strength) + glm::vec3(0.0f, 8.0f + 10.0f * ca.blast_strength, 0.0f);
+                                        if (actor->ragdoll_rig().chest >= 0) feet_pw->ragdoll_impulse(ca.ragdoll, actor->ragdoll_rig().chest, push);
+                                        feet_pw->ragdoll_impulse(ca.ragdoll, 0, push * 0.8f);
+                                    } else if (glm::length(away) > 1e-3f && actor->ragdoll_rig().chest >= 0) {
                                         feet_pw->ragdoll_impulse(ca.ragdoll, actor->ragdoll_rig().chest, glm::normalize(away) * 28.0f + glm::vec3(0.0f, 6.0f, 0.0f));
+                                    }
                                 }
                             }
                             if (ca.limp && ca.ragdoll && feet_pw) {
@@ -12357,7 +12438,60 @@ int main(int argc, char** argv) {
                                 static thread_local std::vector<glm::quat> rag_rot;
                                 if (feet_pw->ragdoll_pose(ca.ragdoll, rag_pos, rag_rot)) actor->apply_ragdoll(rag_pos, rag_rot);
                                 ca.ragdoll_still = feet_pw->ragdoll_asleep(ca.ragdoll) ? ca.ragdoll_still + static_cast<float>(delta_time) : 0.0f;
-                                if (ca.ragdoll_still > 3.0f) { feet_pw->remove_ragdoll(ca.ragdoll); ca.ragdoll = 0; }   // frozen
+                                if (!ca.knocked && ca.ragdoll_still > 3.0f) { feet_pw->remove_ragdoll(ca.ragdoll); ca.ragdoll = 0; }   // frozen
+                                // Knocked down and come to rest (or long enough): it gets up from where it
+                                // lies -- on its back or face down, the clip for that, its body moved there.
+                                if (ca.knocked) ca.knock_t += static_cast<float>(delta_time);
+                                if (ca.knocked && !dead && ((ca.knock_t > 1.3f && ca.ragdoll_still > 0.25f) || ca.knock_t > 3.5f)) {
+                                    const int b_pelvis = actor->find_bone("pelvis"), b_head = actor->find_bone("head");
+                                    const int b_hl = actor->find_bone("thigh.L"), b_hr = actor->find_bone("thigh.R");
+                                    auto wpos = [&](int b) { return glm::vec3(actor->bone_world(b)[3]); };
+                                    auto who_ent = editor_state.script_ctx.scene ? editor_state.script_ctx.scene->GetEntityById(who->GetId()) : nullptr;
+                                    if (b_pelvis >= 0 && b_head >= 0 && b_hl >= 0 && b_hr >= 0 && who_ent) {
+                                        actor->set_model(sk_tf->GetWorldMatrix());
+                                        const glm::vec3 pelvis = wpos(b_pelvis), head = wpos(b_head);
+                                        const glm::vec3 front = glm::cross(wpos(b_hl) - wpos(b_hr), head - pelvis);
+                                        const bool face_up = front.y > 0.0f;
+                                        glm::vec3 head_dir = head - pelvis;
+                                        head_dir.y = 0.0f;
+                                        head_dir = glm::length(head_dir) > 1e-3f ? glm::normalize(head_dir) : glm::vec3(0.0f, 0.0f, 1.0f);
+                                        // The clip starts lying with its head behind (face up) or ahead (face
+                                        // down) of where it stands: the body turned so, and moved so its hips
+                                        // land where the ragdoll's are.
+                                        const glm::vec3 fwd = face_up ? -head_dir : head_dir;
+                                        const float hips_off = face_up ? -1.15f : 1.11f;   // the clip's hips from its feet, along its forward
+                                        auto* wt = who_ent->GetTransform();
+                                        const glm::vec3 body_off = sk_tf->GetWorldPosition() - wt->GetWorldPosition();
+                                        glm::vec3 to = pelvis - fwd * hips_off - glm::vec3(body_off.x, 0.0f, body_off.z);
+                                        to.y = wt->GetWorldPosition().y;
+                                        wt->SetWorldPosition(to);
+                                        wt->SetWorldRotation(glm::angleAxis(std::atan2(fwd.x, fwd.z), glm::vec3(0.0f, 1.0f, 0.0f)));
+                                        // Its ragdoll's pose, as seen from the body where it is now: the get-up
+                                        // clip comes in from that (inertialized), not from a jump.
+                                        actor->set_model(sk_tf->GetWorldMatrix());
+                                        static thread_local std::vector<glm::vec3> up_pos;
+                                        static thread_local std::vector<glm::quat> up_rot;
+                                        if (feet_pw->ragdoll_pose(ca.ragdoll, up_pos, up_rot)) actor->apply_ragdoll(up_pos, up_rot);
+                                        actor->capture_shown_pose();
+                                        const int clip = C[face_up ? CharAnim::GetUpFaceUp : CharAnim::GetUpFaceDown];
+                                        if (clip >= 0) {
+                                            actor->play_montage(clip, "full", 1.0f, 0.4f, 0.35f);
+                                            ca.getting_up = true;
+                                            ca.getup_left = actor->clip_duration(static_cast<size_t>(clip));
+                                        }
+                                        if (static const bool log_knock = std::getenv("GWS_TEST_LOG_ANIM") != nullptr; log_knock)
+                                            spdlog::info("[test] knockdown: '{}' gets up {} after {:.1f} s", who->GetName(), face_up ? "from its back" : "face down", ca.knock_t);
+                                    }
+                                    feet_pw->remove_ragdoll(ca.ragdoll);
+                                    ca.ragdoll = 0;
+                                    ca.limp = false;
+                                    ca.knocked = false;
+                                    ca.knock_t = 0.0f;
+                                }
+                            }
+                            if (ca.getting_up) {
+                                ca.getup_left -= static_cast<float>(delta_time);
+                                if (ca.getup_left <= 0.0f || dead) ca.getting_up = false;
                             }
                         }
                         // Its acceleration, from its velocity through a spring (a frame's jitter is no lean).
@@ -14038,7 +14172,12 @@ int main(int argc, char** argv) {
                         auto* pl = pm.GetPlayerEntity();
                         const uint32_t pid = pl ? ecs_bridge.ecs_entity_id(pl->GetTransform()) : schizo::editor::kNoEcsEntity;
                         for (const auto& im : impacts) {
-                            if (const auto* d = schizo::ecs::find_ability_def(im.id)) editor_state.play_effects.ability_impact(*d, im);
+                            if (const auto* d = schizo::ecs::find_ability_def(im.id)) {
+                                editor_state.play_effects.ability_impact(*d, im);
+                                // A blast: whoever it leaves standing within its reach goes down.
+                                if (d->knockdown > 0.0f)
+                                    editor_state.blasts.push_back({im.point, d->knockdown, 1.0f, static_cast<uint64_t>(frame_count)});
+                            }
                             if (std::getenv("GWS_TEST_PLAY"))
                                 spdlog::info("[test] abilities: {} landed at ({:.1f}, {:.1f}, {:.1f}){}, reached {}; effect particles {}", im.id,
                                              im.point.x, im.point.y, im.point.z, im.on_actor ? " on someone" : "", im.targets,

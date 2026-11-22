@@ -574,6 +574,17 @@ public:
         return ragdoll_rig_.valid();
     }
     const schizo::renderer::RagdollRig& ragdoll_rig() const { return ragdoll_rig_; }
+    /// What the skeleton shows now (a ragdoll's pose) becomes the pose the next
+    /// change is smoothed from, at rest -- getting up from where a ragdoll lies.
+    void capture_shown_pose() {
+        if (!skeleton_) return;
+        out_.clear();
+        for (const auto& b : skeleton_->GetAllBones()) out_.push_back(b.local_transform);
+        out_prev_ = out_;
+        out_dt_ = 0.0f;
+        inert_live_ = false;
+        inert_reqs_.clear();
+    }
     /// Its parts where the pose has them now (model first: set_model).
     std::vector<schizo::renderer::RagdollPartStart> ragdoll_start() const {
         return skeleton_ ? schizo::renderer::ragdoll_start(*skeleton_, ragdoll_rig_, model()) : std::vector<schizo::renderer::RagdollPartStart>{};

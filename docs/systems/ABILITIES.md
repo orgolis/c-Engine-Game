@@ -22,6 +22,7 @@ ability firebolt
   spread 3              # aimed and area_at_aim: goes this many degrees off the aim, at random (a soldier's rifle)
   radius 3              # area and area_at_aim
   damage 35 fire        # to each one it reaches, with its damage type
+  knockdown 7           # a blast: characters it leaves standing within 7 m are knocked down (they get up again)
   effect Speed -2 3     # to each one reached: attribute, amount, seconds (none: at once)
   self Mana 5           # to the caster, the same way
   require state.armed   # the caster needs this tag

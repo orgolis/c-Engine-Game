@@ -222,7 +222,10 @@ public:
             const schizo::ecs::AbilityDef* def = ag->ability.empty() ? nullptr : schizo::ecs::find_ability_def(ag->ability);
             const float keep = ag->keep_distance >= 0.0f ? ag->keep_distance : (ag->attack_range > 5.0f ? ag->attack_range * 0.6f : 0.0f);
             const float range_xz = [&] { glm::vec3 d = target_pos - pos; d.y = 0.0f; return glm::length(d); }();
-            const bool in_range = visible && ag->attack_range > 0.0f && range_xz <= ag->attack_range && clear_line;
+            // Knocked down (knock_down): it neither attacks nor aims until it is up.
+            const bool down = st.down > 0.0f;
+            if (down) { st.down -= dt; st.windup = 0.0f; }
+            const bool in_range = !down && visible && ag->attack_range > 0.0f && range_xz <= ag->attack_range && clear_line;
             st.cooldown = std::max(0.0f, st.cooldown - dt);
             const glm::vec3 target_vel = st.prev_target_known && dt > 0.0f ? (target_pos - st.prev_target) / dt : glm::vec3(0.0f);
             st.prev_target = target_pos;
@@ -353,6 +356,7 @@ public:
             }
             if (attacking && def) hold = true;   // a wind-up is stood still for: it can be seen coming
             if (st.stagger > 0.0f) { st.stagger -= dt; hold = true; }
+            if (down) hold = true;
             if (st.mode == Mode::Chase && !in_range) ++chasing_;   // closing in (or going to where it was seen)
 
             // --- move along the navmesh, round what is in the way ------------
@@ -380,6 +384,7 @@ public:
                 const float l = glm::length(d);
                 if (l > 1e-3f && l < 1.4f) vel += d / l * (1.4f - l) * 2.5f;
             }
+            if (down) vel = glm::vec3(0.0f);   // (lying where the blast left it)
             const float vlen = glm::length(vel);
             if (has_world && vlen > 0.05f) vel = avoid(*world, st, pos, vel, vlen);
             glm::vec3 next = pos + vel * dt;
@@ -461,6 +466,16 @@ public:
         glm::vec3 look{0.0f};         // what it looks at (world), when look_weight > 0
         float    look_weight = 0.0f;  // 1: a target in sight; less: where one was last seen
     };
+    /// Knocked down for `seconds` more (a blast): it holds still, does not attack
+    /// or aim. Whoever animates it keeps this up while it lies and gets up.
+    void knock_down(uint32_t id, float seconds) {
+        auto it = agents_.find(id);
+        if (it != agents_.end()) it->second->down = std::max(it->second->down, seconds);
+    }
+    bool is_down(uint32_t id) const {
+        auto it = agents_.find(id);
+        return it != agents_.end() && it->second->down > 0.0f;
+    }
     AnimInfo anim_of(uint32_t id) const {
         auto it = agents_.find(id);
         if (it == agents_.end()) return {};
@@ -520,6 +535,7 @@ private:
         int       patrol_leg = 0;
         float     since_seen = 0.0f, search_left = 0.0f, pause = 0.0f, ignore = 0.0f;
         float     cooldown = 0.0f, windup = 0.0f, stagger = 0.0f;
+        float     down = 0.0f;           // knocked down: seconds it stays so (kept up by whoever animates it)
         glm::vec3 knock{0.0f};
         float     strafe = 1.0f, strafe_timer = 0.0f;
         float     last_health = -1.0f;   // to notice being hurt

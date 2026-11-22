@@ -25,6 +25,7 @@ not more clips.
 | Foot locking | the slide left after rate and stride | **0.8.60**: held per foot, one steps at a time (TestGame running: median 0.27 m/s to 0.00) |
 | Animation graph, 2D blend spaces, montages | clip choice hard-wired in C++; a diagonal as one clip with the legs turned | **0.8.61**: every gameplay character runs a graph (the built-in humanoid one or its own `.animgraph`) |
 | Spring bones (secondary motion) | antennas, straps, tails as rigid as the clip left them | **0.8.63**: chains swing and settle in the world, the same at any frame rate |
+| Knockdown and get-up | a blast that hurts but leaves a soldier standing as before | **0.8.64**: thrown as a ragdoll, then up from where it lies (face up or down) |
 | Foot IK (foot placement) | feet floating over or sunk into slopes | **0.8.58**: feet, pelvis, slope, landing compression |
 | Lean into acceleration | a body that starts and stops like a statue on rails | **0.8.58** |
 | Support hand IK | the second hand floating beside the gun (18 cm in TestGame) | **0.8.58** |
@@ -223,7 +224,9 @@ item by item, with what was decided.
 | Motion warping | with melee combat's lunges and traversal |
 | Motion matching | not planned: it needs hours of motion capture; the toolkit above serves hand-made clips |
 | Ragdolls (Jolt) | **0.8.59**: twelve bodies by name on any rig, hinged knees and elbows, settle and freeze |
-| Hit reactions | **0.8.59**: a flinch away from the attacker on the lean's spring; powered ragdoll for stumbles and getting up later (no TestGame character gets up) |
+| Hit reactions | **0.8.59**: a flinch away from the attacker on the lean's spring |
+| Knockdown and get-up | **0.8.64**: a blast (`knockdown` on an ability) ragdolls a survivor away from it; at rest it gets up face up or face down, its body moved to where it lies, the get-up montage inertialized from the ragdoll's pose |
+| Powered ragdoll (motors holding a pose) | evaluated, not adopted yet: the knockdown and the flinch cover what TestGame needs; motors for stumbles come with a game that wants them |
 | Spring bones | **0.8.63**: `<model>.springs` chains (Verlet in the world, rod bending, relative damping, angle limits, sphere colliders, 60 Hz steps drawn in between); the TestGame heavy's radio antenna |
 | XPBD cloth, strand hair | later (no TestGame asset has cloth or hair) |
 | Procedural creature step planner | with the first legged creature |

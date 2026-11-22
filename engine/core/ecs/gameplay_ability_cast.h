@@ -111,6 +111,7 @@ struct AbilityDef {
     float       speed = 0.0f;              // > 0: aimed / area-at-aim abilities fly at this speed (m/s)
     float       arc = 0.0f;                // a flying one falls by this (m/s^2): thrown things
     float       spread = 0.0f;             // aimed: degrees it may go off its aim (a cone; 0: dead on)
+    float       knockdown = 0.0f;          // > 0: characters it leaves alive within this (m) are knocked down (a blast)
     std::string about;                     // what it does, in a sentence
     // Moves the caster as it goes off (the player): `move blink 10` -- there at
     // once, up to 10 m along the aim, stopping short of walls; `move dash 12`
@@ -580,6 +581,7 @@ inline std::vector<AbilityDef> parse_abilities_text(const std::string& text) {
         else if (key == "speed")    { ls >> cur.speed; }
         else if (key == "arc")      { ls >> cur.arc; }
         else if (key == "spread")   { ls >> cur.spread; }
+        else if (key == "knockdown") { ls >> cur.knockdown; }
         else if (key == "about")    { cur.about = rest_of(ls); }
         else if (key == "move")     {
             std::string k;

@@ -36,6 +36,7 @@ by part of it (case does not matter): `aim=Aim_Rifle` finds `05_Aim_Rifle`.
 | `strafe_left`, `strafe_right` | moving sideways |
 | `run_back` | moving backwards faster (a backpedal; else `walk_back` sped up) |
 | `strafe_run_left`, `strafe_run_right` | moving sideways faster (else the strafes sped up) |
+| `getup_face_up`, `getup_face_down` | getting up after a knockdown, from its back or face down (once; without them it stays down until the knockdown ends) |
 | `jump` | leaving the ground upwards (once), then `fall` |
 | `fall` | in the air |
 | `land` | back on the ground after a drop (once; not while it walks on) |
@@ -267,6 +268,18 @@ for 3 seconds the physics lets go and the pose stays. A respawn brings the
 clips back. The local player's own body does not (its camera is in it).
 `GWS_NO_RAGDOLL=1`: the death clip instead.
 
+**Knocked down.** A blast -- an ability with `knockdown <metres>`
+(docs/systems/ABILITIES.md), the TestGame's frag grenade knocks down within 7
+m -- throws an NPC it leaves alive: its bones become a ragdoll where its pose
+has them, pushed away from the blast and up (the harder the nearer), while its
+AI holds (no moving, aiming or shooting). Come to rest (at least 1.3 s, at
+most 3.5 s) it gets up from where it lies: on its back or face down (from
+how its body lies), its body moved and turned so the get-up clip's lying pose
+falls where the ragdoll is, and that clip plays as a full-body montage
+inertialized from the ragdoll's pose -- no jump. Killed while down it stays
+down. A character killed by a blast is thrown away from the blast too.
+`GWS_NO_KNOCKDOWN=1`: blasts do not knock down; `GWS_TEST_BLAST_NEAR` (below).
+
 A hit that does not kill knocks the upper body away from what it fights,
 about 10 degrees, over and above the hit clip, and the lean's spring brings it
 back within a second.
@@ -417,9 +430,9 @@ idle, fire, reload and draw clips). Each soldier is an NPC agent with a
 
 ## Known limits
 
-- A ragdoll is a death's: there is no powered ragdoll for a stumble and no
-  getting up (docs/research/NATURAL_ANIMATION.md has what comes next: blend
-  spaces, motion warping, spring bones).
+- The player is not knocked down (its camera is in its body), knockdowns are
+  not shown to online guests yet, and a ragdoll is not powered (no motors
+  holding a pose for a stumble): a knockdown is limp, then a get-up clip.
 - Feet are held in the world: a character standing on something that moves
   (a lift, a vehicle) would leave its feet behind until they step.
 - No additive layers yet (a breathing or recoil layer added onto any pose), and
