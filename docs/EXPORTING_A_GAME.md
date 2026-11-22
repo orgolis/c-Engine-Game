@@ -125,8 +125,9 @@ The game's own log and crash reports go where the engine's do,
 the editor -- what E would do and the names of things to pick up, the
 crosshair and ammunition, the ability bar, a script's messages, the death
 notice, stamina, being hit -- and none of the editor's: Esc is only ever the
-game's. With `escape = game` in `project.schizo` the project's own pause menu
-gets it; without, the engine's (Paused: Resume / Quit game). Shift+F1 and the
+game's. With `escape = game` in `project.schizo` -- or no `escape` line and game
+logic that listens for Escape -- the project's own pause menu gets it; else the
+engine's (Paused: Resume / Quit game). Shift+F1 and the
 editor's "click to resume" do not exist in a game.
 
 **If the graphics driver resets** (a frame ran too long and Windows reset the

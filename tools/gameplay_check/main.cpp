@@ -4,6 +4,7 @@
 // inspector uses (add component -> walk fields -> edit by offset -> persists).
 // ============================================================================
 #include "ecs/world.h"
+#include "ecs/gameplay_profile.h"
 #include "ecs/authorable_components.h"
 #include "ecs/gameplay_attributes.h"
 #include "ecs/gameplay_tags.h"
@@ -2948,6 +2949,89 @@ int main() {
         const float c = ecs::apply_damage(w, immune, ecs::DamageInfo{20.0f, "fire"});
         check("resistance: a share off (25% -> 15), immune above 1 (0), a weakness below 0 (-50% -> 30)",
               a == 30.0f && b == 15.0f && c == 0.0f);
+    }
+
+    // A player's profile (gameplay_profile.h): what is kept from one of a game's
+    // modes to the next -- level, XP, points, skills, abilities, bag, gear, guns --
+    // applied onto a player fresh from its scene, its bonuses rebuilt.
+    {
+        ecs::register_progression_components();
+        ecs::register_skill_components();
+        ecs::register_inventory_components();
+        ecs::register_loadout_components();
+        ecs::register_weapon_components();
+        ecs::register_ability_cast_components();
+        ecs::register_items_text("item pf_vest\n  name Vest\n  kind armor\n  slot chest\n  mod Health 30\nend\n"
+                                 "item pf_potion\n  name Potion\n  max_stack 5\nend\n");
+        auto make_player = [](ecs::World& w, float base_health) {
+            const ecs::Entity e = w.create();
+            w.add<ecs::Transform>(e, ecs::Transform{});
+            w.add<ecs::AttributeSet>(e, ecs::AttributeSet{});
+            w.get<ecs::AttributeSet>(e).define("Health", base_health, 0, base_health);
+            ecs::Progression pr;
+            pr.points_per_level = 2;
+            pr.per_level_growth = {{"Health", 5.0f}};
+            w.add<ecs::Progression>(e, pr);
+            ecs::SkillTree tree;
+            tree.nodes.push_back({"pf_tough", "Tough", 1, {}, {{"Health", 20.0f}}, {"skill.tough"}});
+            w.add<ecs::SkillTree>(e, tree);
+            w.add<ecs::UnlockedSkills>(e, ecs::UnlockedSkills{});
+            w.add<ecs::Inventory>(e, ecs::Inventory{});
+            w.add<ecs::Equipment>(e, ecs::Equipment{});
+            return e;
+        };
+        ecs::World a;
+        const ecs::Entity pa = make_player(a, 100.0f);
+        const ecs::Progression& pr0 = a.get<ecs::Progression>(pa);
+        ecs::grant_xp(a, pa, pr0.curve.threshold(2) + pr0.curve.threshold(3) + 12.0f);   // two levels and 12 XP
+        ecs::unlock_skill(a, pa, "pf_tough");
+        ecs::inventory_add(a.get<ecs::Inventory>(pa), ecs::ItemInstance{"pf_potion", 3, 0, {}});
+        ecs::equip_item(a, pa, ecs::ItemInstance{"pf_vest", 1, 0, {}});
+        a.get<ecs::AttributeSet>(pa).find("Health")->current = 40.0f;   // hurt
+        const float max_a = a.get<ecs::AttributeSet>(pa).find("Health")->max;
+        check("profile: the player levelled twice, learned a skill, wears a vest (health 100 + 2x5 + 20 + 30 = 160)",
+              a.get<ecs::Progression>(pa).level == 3 && std::abs(max_a - 160.0f) < 1e-3f);
+
+        const ecs::Prefab saved = ecs::Prefab::from_text(ecs::capture_profile(a, pa).to_text());
+        bool only_kept = !saved.components.empty();
+        for (const auto& [name, bytes] : saved.components) {
+            const auto& keep = ecs::profile_component_names();
+            only_kept = only_kept && std::find(keep.begin(), keep.end(), name) != keep.end();
+        }
+        check("profile: it keeps its own components only (no transform, no attributes, no skill tree)", only_kept);
+
+        ecs::World b;
+        const ecs::Entity pb = make_player(b, 100.0f);
+        ecs::apply_profile(b, pb, saved);
+        const auto& prb = b.get<ecs::Progression>(pb);
+        const auto* hb = b.get<ecs::AttributeSet>(pb).find("Health");
+        check("profile: in the next mode -- level, XP and skill points as they were",
+              prb.level == 3 && std::abs(prb.xp - 12.0f) < 1e-3f && prb.skill_points == a.get<ecs::Progression>(pa).skill_points);
+        check("profile: its bonuses rebuilt (160) and at full health (not the 40 it was left at)",
+              hb && std::abs(hb->max - 160.0f) < 1e-3f && std::abs(hb->current - 160.0f) < 1e-3f);
+        const auto& unb = b.get<ecs::UnlockedSkills>(pb).unlocked;
+        check("profile: the skill unlocked, its tag granted",
+              unb.size() == 1 && unb[0] == "pf_tough" && b.has<ecs::GameplayTags>(pb) && b.get<ecs::GameplayTags>(pb).has("skill.tough"));
+        const auto& eqb = b.get<ecs::Equipment>(pb);
+        const auto& invb = b.get<ecs::Inventory>(pb);
+        check("profile: the vest worn, the potions in the bag",
+              eqb.slots.size() == 1 && eqb.slots[0].item.def_id == "pf_vest" && invb.items.size() == 1 &&
+                  invb.items[0].def_id == "pf_potion" && invb.items[0].quantity == 3);
+
+        // The game rebalanced (base health 120 now): a saved player gets it too.
+        ecs::World c;
+        const ecs::Entity pc = make_player(c, 120.0f);
+        ecs::apply_profile(c, pc, saved);
+        check("profile: a change to the game's balance reaches a saved player (120 + 60 = 180)",
+              std::abs(c.get<ecs::AttributeSet>(pc).find("Health")->max - 180.0f) < 1e-3f);
+        // A skill the game no longer has is left out (not an error).
+        ecs::World d;
+        const ecs::Entity pd = make_player(d, 100.0f);
+        d.get<ecs::SkillTree>(pd).nodes.clear();
+        ecs::apply_profile(d, pd, saved);
+        check("profile: a skill gone from the game's tree is dropped, the rest applied",
+              d.get<ecs::UnlockedSkills>(pd).unlocked.empty() && d.get<ecs::Progression>(pd).level == 3 &&
+                  std::abs(d.get<ecs::AttributeSet>(pd).find("Health")->max - 140.0f) < 1e-3f);
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }

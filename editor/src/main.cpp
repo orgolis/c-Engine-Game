@@ -781,6 +781,7 @@ static EditorState* g_editor_state = nullptr;
 // to whoever listened before (ImGui).
 static GLFWscrollfun g_prev_scroll_callback = nullptr;
 static double        g_wheel_notches = 0.0;   // + up, - down, not yet read by Play
+static int           g_test_key_down = 0;     // GWS_TEST_UI press:<action>: its key, held -- for the editor's own key checks too
 static void ScrollCallback(GLFWwindow* window, double dx, double dy) {
     g_wheel_notches += dy;
     if (g_prev_scroll_callback) g_prev_scroll_callback(window, dx, dy);
@@ -7221,11 +7222,13 @@ void ShowViewport(EditorState& editor_state) {
 
                 // Escape deliberately releases mouse-look without ending play.
                 // A click on the running image is the explicit way back in.
-                const bool waiting_for_recapture =
-                    viewport_playing && editor_state.play_cursor_released_by_escape &&
-                    !editor_state.scene_playback_manager->IsCursorCaptured();
                 // The game's HUD -- what a game window draws too (DrawPlayHud).
                 const bool ui_menu_up = viewport_playing && schizo::editor::play_ui().modal();
+                // (Not while a menu of the game's is up: its buttons get the clicks, and
+                // "click to resume" is not drawn over them.)
+                const bool waiting_for_recapture =
+                    viewport_playing && editor_state.play_cursor_released_by_escape &&
+                    !editor_state.scene_playback_manager->IsCursorCaptured() && !ui_menu_up;
                 const bool ui_pointer = ui_menu_up && !editor_state.scene_playback_manager->IsCursorCaptured() &&
                                         ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
                 DrawPlayHud(editor_state, ImGui::GetWindowDrawList(), image_min, image_max, ui_pointer, waiting_for_recapture);
@@ -12874,7 +12877,7 @@ int main(int argc, char** argv) {
 
             g_cp.mark("pre_input");
             // Key input
-            auto key = [&](int k) { return glfwGetKey(glfw_window, k) == GLFW_PRESS; };
+            auto key = [&](int k) { return glfwGetKey(glfw_window, k) == GLFW_PRESS || (g_test_key_down != 0 && k == g_test_key_down); };
             // GWS_TEST_ASSUME_FOCUS=1: automated runs behave as if the window had
             // the OS focus (it does not, and taking it would take the desktop's).
             static const bool assume_focus = std::getenv("GWS_TEST_ASSUME_FOCUS") != nullptr;
@@ -13226,6 +13229,7 @@ int main(int argc, char** argv) {
                 if (ps.swallowed_key && !key_held(ps.swallowed_key)) ps.swallowed_key = 0;
                 ps.states.update(ps.map, [&](int code) { return code != ps.swallowed_key && key_held(code); });
                 editor_state.script_ctx.simulated_key = test_press_frames > 0 ? test_press_key : 0;
+                g_test_key_down = test_press_frames > 0 ? test_press_key : 0;   // (seen by the editor's own Esc too, as a real key is)
                 if (test_press_frames > 0) --test_press_frames;
                 pm.SetActions(&ps.states);
                 pm.SetLook(ps.map.mouse_sensitivity, ps.map.invert_y);
@@ -13545,15 +13549,13 @@ int main(int argc, char** argv) {
                     ++ui_frames;
                     if (test_key_up != ImGuiKey_None) { ImGui::GetIO().AddKeyEvent(test_key_up, false); test_key_up = ImGuiKey_None; }
                     if (ui_frames == mouse_up_at) ImGui::GetIO().AddMouseButtonEvent(ImGuiMouseButton_Left, false);
-                    if (ui_frames == report_at)
-                        spdlog::info("[test] ui: after the click -- mouse held by Play {}, game view focused {} (ImGui's own: {})",
-                                     pm.IsCursorCaptured(), editor_state.viewport_input_focused, editor_state.viewport_imgui_focused);
-                    if (std::strstr(tu, "mouse:") && mouse_up_at < 0)
-                        if (const char* m = std::strstr(tu, "mouse:left@")) {
-                            const int at = std::atoi(m + 11);
-                            mouse_up_at = at + 2;
-                            report_at = at + 10;
-                        }
+                    if (ui_frames == report_at || ui_frames == mouse_up_at - 1) {
+                        const ImGuiContext& g = *ImGui::GetCurrentContext();
+                        spdlog::info("[test] ui: {} the click -- mouse held by Play {}, game view focused {} (ImGui's own: {}); ImGui: no-mouse {}, under the mouse '{}', focused '{}', active id {}",
+                                     ui_frames == report_at ? "after" : "during", pm.IsCursorCaptured(), editor_state.viewport_input_focused,
+                                     editor_state.viewport_imgui_focused, (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_NoMouse) != 0,
+                                     g.HoveredWindow ? g.HoveredWindow->Name : "-", g.NavWindow ? g.NavWindow->Name : "-", g.ActiveId);
+                    }
                     std::stringstream tss(tu);
                     std::string item;
                     while (std::getline(tss, item, ',')) {
@@ -13624,9 +13626,21 @@ int main(int argc, char** argv) {
                             spdlog::info("[test] document {} shown={} captured={} paused={}",arg,ui.shown(arg),pm.IsCursorCaptured(),pm.IsGamePaused());
                         } else if (what == "show") {
                             ui.show(arg);
+                        } else if (what == "point") {
+                            // point:<element id> -- the mouse onto the middle of a shown menu element
+                            // (then mouse:left clicks it, as a person would).
+                            ImVec2 at;
+                            if (ui.element_center(arg, at)) {
+                                ImGui::GetIO().AddMousePosEvent(at.x, at.y);
+                                spdlog::info("[test] ui: the mouse onto '{}' at {:.0f}, {:.0f}", arg, at.x, at.y);
+                            } else {
+                                spdlog::info("[test] ui: no shown element '{}' to point at", arg);
+                            }
                         } else if (what == "mouse") {
-                            // A real left click as the window delivers it (a shot).
+                            // A real left click as the window delivers it (a shot); up two frames later.
                             ImGui::GetIO().AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+                            mouse_up_at = ui_frames + 2;
+                            report_at = ui_frames + 10;
                             spdlog::info("[test] ui: before the click -- mouse held by Play {}, game view focused {} (ImGui's own: {})",
                                          pm.IsCursorCaptured(), editor_state.viewport_input_focused, editor_state.viewport_imgui_focused);
                         }

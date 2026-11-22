@@ -22,6 +22,8 @@
 #include "ecs/gameplay_inventory.h"
 #include "ecs/gameplay_interaction.h"
 #include "ecs/gameplay_progression.h"
+#include "ecs/gameplay_profile.h"
+#include "play_save.h"
 #include <imgui.h>
 #include <glm/gtc/quaternion.hpp>
 #include <spdlog/spdlog.h>
@@ -149,6 +151,27 @@ struct OnlineGame::Impl {
  NetSession* net=nullptr;ScenePlaybackManager* play=nullptr;EcsSceneBridge* bridge=nullptr;EditorScriptCtx* ctx=nullptr;PlayEffects* effects=nullptr;
  std::shared_ptr<scene::Scene> scene;
  ecs::AttributeSet base_attributes;ecs::Inventory base_inventory;ecs::WeaponLoadout base_loadout;ecs::AbilityBar base_bar;ecs::Progression base_progress;
+ // The player's profile (ecs/gameplay_profile.h): level, XP, skills, abilities, bag,
+ // gear and guns kept from one mode to the next, stored locally (saves/profile.sav;
+ // an exported game: the player's own folder). keep_progress=0 turns it off; a duel
+ // (rounds) uses its own rules and leaves the profile alone. A guest sends its
+ // profile with its Hello; the host applies it and marks the guest "player.profile",
+ // and only then does the guest save what comes back.
+ bool profile_ready=false;float profile_timer=0;std::string profile_written;std::map<uint32_t,std::string> guest_profiles;
+ bool keep_progress_set()const{auto it=settings.find("keep_progress");return it==settings.end()||it->second!="0";}
+ bool keeps_progress()const{return keep_progress_set()&&!rounds();}
+ static std::string read_profile(){std::ifstream f(play_save_path("profile"),std::ios::binary);if(!f)return{};std::stringstream ss;ss<<f.rdbuf();return ss.str();}
+ void save_profile(){
+  if(!keeps_progress()||!initialized||!profile_ready||!bridge||!scene)return;
+  auto& w=bridge->world();auto e=entity(local_id());if(!w.valid(e)||!w.has<ecs::Progression>(e))return;
+  const std::string text=ecs::capture_profile(w,e).to_text();if(text==profile_written)return;
+  const std::string path=play_save_path("profile");std::error_code ec;std::filesystem::create_directories(std::filesystem::path(path).parent_path(),ec);
+  {std::ofstream f(path+".tmp",std::ios::binary|std::ios::trunc);if(!f)return;f<<text;if(!f)return;}
+  std::filesystem::rename(path+".tmp",path,ec);if(ec){spdlog::warn("[online] could not save the profile to {}: {}",path,ec.message());return;}
+  profile_written=text;
+  spdlog::info("[online] profile saved: level {}, {} skill(s), {} item(s) in the bag -> {}",w.get<ecs::Progression>(e).level,
+   w.has<ecs::UnlockedSkills>(e)?w.get<ecs::UnlockedSkills>(e).unlocked.size():size_t(0),w.has<ecs::Inventory>(e)?w.get<ecs::Inventory>(e).items.size():size_t(0),path);
+ }
  std::map<uint32_t,bool> peer_ready;std::map<uint32_t,float> welcomes;
  std::map<uint32_t,uint32_t> authored;std::vector<uint32_t> authored_local;
  std::map<uint64_t,uint32_t> fighters;std::map<uint32_t,uint32_t> replica;std::set<uint32_t> spawned,scene_ids;
@@ -171,9 +194,10 @@ struct OnlineGame::Impl {
  uint32_t local_id(){auto* p=play?play->GetPlayerEntity():nullptr;return p?p->GetId():0;}
  uint64_t own_avatar()const{return net?net->status().my_avatar:0;}
 
- void reset_scene(){fighters.clear();replica.clear();spawned.clear();scene_ids.clear();inputs.clear();death_time.clear();sent_skills.clear();sent_equipment.clear();visuals.clear();bones.clear();clips.clear();texts.clear();shown_ui.clear();initialized=false;first_state=true;age=0;snapshot=last_snapshot=0;tracked_objects.clear();culled=false;send_timer=0;sent_components.clear();sent_metadata.clear();full_snapshot=true;round_delay=empty_time=0;countdown=rounds()?5:0;}
- void leave(const std::string& why){via_lobby=false;shown_code.clear();if(net&&session&&!local_session){Writer bye(is_client?Message::Leave:Message::Reject,epoch);if(!is_client)bye.str("The host closed the session.");net->send_game(0,bye.bytes);}if(net)net->shutdown();session=false;is_client=false;ready=false;menu=true;mode=0;travel=start_scene;status=why;result.clear();show_session=false;reset_scene();}
+ void reset_scene(){profile_ready=false;profile_timer=0;fighters.clear();replica.clear();spawned.clear();scene_ids.clear();inputs.clear();death_time.clear();sent_skills.clear();sent_equipment.clear();visuals.clear();bones.clear();clips.clear();texts.clear();shown_ui.clear();initialized=false;first_state=true;age=0;snapshot=last_snapshot=0;tracked_objects.clear();culled=false;send_timer=0;sent_components.clear();sent_metadata.clear();full_snapshot=true;round_delay=empty_time=0;countdown=rounds()?5:0;}
+ void leave(const std::string& why){save_profile();guest_profiles.clear();via_lobby=false;shown_code.clear();if(net&&session&&!local_session){Writer bye(is_client?Message::Leave:Message::Reject,epoch);if(!is_client)bye.str("The host closed the session.");net->send_game(0,bye.bytes);}if(net)net->shutdown();session=false;is_client=false;ready=false;menu=true;mode=0;travel=start_scene;status=why;result.clear();show_session=false;reset_scene();}
  void begin(int m,bool host,bool local_only=false){
+  save_profile();guest_profiles.clear();
   if(!net)return;net->shutdown();local_session=local_only;mode=host?m:0;reset_scene();session=true;is_client=!host;ready=false;hello=false;menu=!host;selected_mode=m;mode=host?m:0;++epoch;host_score=guest_score=0;round=1;result.clear();connect_timer=0;peer_ready.clear();welcomes.clear();
   shown_code.clear();
   const bool direct_join=!host&&!direct_code.empty();
@@ -200,6 +224,10 @@ struct OnlineGame::Impl {
   if(!w.has<ecs::GameplayTags>(e))w.add<ecs::GameplayTags>(e,ecs::GameplayTags{});
   auto& tags=w.get<ecs::GameplayTags>(e);tags.remove_exact("team.player");tags.add(rounds()?(avatar==1000000?"team.duelist.host":"team.duelist.guest"):"team.player");tags.add("network.fighter");
   if(rounds()){auto& a=w.get<ecs::AttributeSet>(e);if(rules().health>0)a.define("Health",rules().health,0,rules().health);w.get<ecs::Progression>(e).skill_points=rules().skill_points;w.get<ecs::Progression>(e).xp=0;}
+  if(!local&&keeps_progress()){
+   for(auto& [peer,text]:guest_profiles)if(net&&net->peer_avatar(peer)==avatar&&!text.empty()){ecs::apply_profile(w,e,ecs::Prefab::from_text(text));spdlog::info("[online] guest {} keeps its progress: level {}",avatar,w.has<ecs::Progression>(e)?w.get<ecs::Progression>(e).level:0);break;}
+   w.get<ecs::GameplayTags>(e).add("player.profile");   // (the guest may save from now on)
+  }
   fighters[avatar]=id;death_time[avatar]=0;respawns[avatar]=1;
   if(!local)place(id,spawn_point+rules().guest_offset);
   if(rounds()&&!local){if(std::getenv("GWS_ONLINE_TEST_CLOSE"))place(id,{0,1,-6});scene->GetEntityById(id)->GetTransform()->SetWorldRotation(glm::angleAxis(3.14159265f,glm::vec3(0,1,0)));}
@@ -211,6 +239,12 @@ struct OnlineGame::Impl {
   if(auto* q=w.try_get<ecs::SkillTree>(e))base_tree=*q;
   if(auto* q=w.try_get<ecs::UnlockedSkills>(e))base_skills=*q;
   base_attributes=w.get<ecs::AttributeSet>(e);if(auto* a=w.try_get<ecs::Inventory>(e))base_inventory=*a;if(auto* a=w.try_get<ecs::WeaponLoadout>(e))base_loadout=*a;base_bar=w.get<ecs::AbilityBar>(e);if(auto* a=w.try_get<ecs::Progression>(e))base_progress=*a;
+  if(keeps_progress()&&!is_client){
+   const std::string text=read_profile();
+   if(!text.empty()){ecs::apply_profile(w,e,ecs::Prefab::from_text(text));profile_written=text;
+    spdlog::info("[online] profile applied: level {} (from {})",w.has<ecs::Progression>(e)?w.get<ecs::Progression>(e).level:0,play_save_path("profile"));}
+   profile_ready=true;
+  }
   fighter_setup(is_client?own_avatar():1000000,local_id(),true);initialized=true;
   if(rounds()&&std::getenv("GWS_ONLINE_TEST_CLOSE"))place(local_id(),{0,1,6});
  }
@@ -279,6 +313,7 @@ void OnlineGame::end_play() {
         auto& policy=p.bridge->world().registry().ctx().emplace<ecs::DamageAuthority>();
         policy.authoritative=true; policy.friendly_fire=false;
     }
+    p.save_profile();   // (Play ends: what the player has now is kept)
     if (p.session) p.leave({});
     p.travel.clear(); p.scene.reset(); p.ready=false; p.menu=false;
     p.show_session=false; p.editing_endpoint=false; p.status.clear();
@@ -330,7 +365,9 @@ void OnlineGame::Impl::process(uint32_t peer,const std::vector<uint8_t>& data){
   if(type==Message::State)snapshot_read(r);else if(type==Message::Visual)visual_read(r);
   return;
  }
- if(type==Message::Hello){if(r.str(80)!=settings["game_id"]){send(Message::Reject,"Incompatible game version.",peer);net->disconnect_peer(peer);return;}welcome(peer);return;}
+ if(type==Message::Hello){if(r.str(80)!=settings["game_id"]){send(Message::Reject,"Incompatible game version.",peer);net->disconnect_peer(peer);return;}
+  if(!r.done())guest_profiles[peer]=r.str(1u<<20);   // (0.8.66: its profile; older guests send none)
+  welcome(peer);return;}
  if(type==Message::Leave){peer_ready.erase(peer);net->disconnect_peer(peer);return;}
  if(generation!=epoch)return;
  if(type==Message::Ready){peer_ready[peer]=true;full_snapshot=true;status="Player connected.";send_timer=0;return;}
@@ -559,7 +596,7 @@ void OnlineGame::update(float dt,const std::shared_ptr<scene::Scene>& scene,cons
   // Looking for a code's host (no lobby server): no connection to time out yet.
   if(const auto js=net.join_state();js==NetSession::JoinState::Searching){p.connect_timer=0;p.status=net.join_message();}
   else if(js==NetSession::JoinState::Failed){spdlog::info("[online] join failed: {}",net.join_message());p.leave(net.join_message());return;}
-  p.connect_timer+=dt;if(net.status().connected){if(!p.hello){p.send(Message::Hello,p.settings["game_id"]);p.hello=true;}}else if(p.hello){p.leave("The host disconnected.");return;}
+  p.connect_timer+=dt;if(net.status().connected){if(!p.hello){Writer hello(Message::Hello,p.epoch);hello.str(p.settings["game_id"]);if(p.keep_progress_set())hello.str(p.read_profile());net.send_game(0,hello.bytes);p.hello=true;}}else if(p.hello){p.leave("The host disconnected.");return;}
   if(p.connect_timer>15&&(p.menu||p.first_state)){p.leave("Could not join. Verify the address, UDP port and matching game version.");return;}
  }else{
   auto peers=net.peers();for(auto it=p.fighters.begin();it!=p.fighters.end();)if(it->first!=1000000&&!net.avatar_entity(it->first))it=p.fighters.erase(it);else++it;for(auto it=p.peer_ready.begin();it!=p.peer_ready.end();){if(std::find(peers.begin(),peers.end(),it->first)==peers.end()){auto a=net.peer_avatar(it->first);p.inputs.erase(it->first);for(auto f=p.fighters.begin();f!=p.fighters.end();)if(f->first!=1000000&&!net.avatar_entity(f->first))f=p.fighters.erase(f);else++f;(void)a;it=p.peer_ready.erase(it);}else++it;}
@@ -568,6 +605,10 @@ void OnlineGame::update(float dt,const std::shared_ptr<scene::Scene>& scene,cons
  if(!p.ready)return;
  if(!p.initialized&&p.age>.25f)p.initialize();
  if(!p.initialized || (p.local_session && play.IsGamePaused()))return;
+ if(p.keeps_progress()){
+  if(p.is_client&&!p.profile_ready){auto pe=p.entity(p.local_id());auto& pw=bridge.world();if(auto* t=pw.valid(pe)?pw.try_get<ecs::GameplayTags>(pe):nullptr;t&&t->has("player.profile"))p.profile_ready=true;}
+  p.profile_timer+=dt;if(p.profile_timer>15.0f){p.profile_timer=0;p.save_profile();}
+ }
  if(p.is_client){
   for(auto& [id,target]:p.smooth)if(auto object=scene->GetEntityById(id)){auto* t=object->GetTransform();float blend=std::min(1.f,dt/.07f);t->SetWorldPosition(glm::mix(t->GetWorldPosition(),target.p,blend));t->SetWorldRotation(glm::slerp(t->GetWorldRotation(),target.q,blend));t->SetLocalScale(target.s);if(auto* physics=play.GetPhysicsWorld()){auto body=play.BodyForEntity(id);if(body!=0xFFFFFFFFu)physics->set_transform(body,t->GetWorldPosition(),t->GetWorldRotation());}}
  }else{

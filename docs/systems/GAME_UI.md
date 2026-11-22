@@ -171,6 +171,15 @@ In Play the game holds the mouse; the editor's panels get none of it.
   pause menu: a script listens with Key Pressed (Escape) and shows its menu,
   which, being modal, frees the mouse for its buttons. Closing the menu gives
   the mouse back to the game.
+- **A project file that does not say** (no `escape` line) but whose game logic
+  listens for Escape (a `.lgraph` with Key Pressed (Escape)) gives Esc to the
+  game too -- the log names the graph. Never both: before 0.8.66 the engine
+  freed the mouse (and drew "Click viewport to resume input" over the game's
+  menu, taking the click meant for its buttons) while the game opened its
+  menu; in an exported game the engine's Paused panel came up beside it.
+  `escape = release` keeps Esc the editor's whatever the logic does.
+- While a menu of the game's is up, the editor never draws "click to resume"
+  over it and a click there goes to its buttons.
 - **An exported game** never frees the mouse the editor's way: Esc goes to the
   project's menu (`escape = game`) or, when it has none, the engine's Paused
   menu (Resume / Quit game) -- docs/EXPORTING_A_GAME.md.

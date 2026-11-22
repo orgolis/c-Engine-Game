@@ -203,6 +203,26 @@ PC's router to it. With `lobby_server=127.0.0.1:7780` two copies of the game
 on the same PC play through it, which is how the TestGame is set up out of
 the box.
 
+## Progress kept between modes
+
+What a player earns stays with them from one mode to the next -- a co-op
+expedition, then the raid, then the expedition again: their level, XP and
+skill points, the skills they unlocked, the abilities in their slots, their bag,
+what they wear and the guns they carry. It is stored on their own computer
+(`saves/profile.sav` in the project; an exported game: the player's own folder,
+`<config>/games/<project>/saves/`), saved every 15 seconds and whenever they
+leave a mode (the start screen, another mode, closing the game).
+
+Each mode starts from the player as its scene makes them; the profile is then
+rebuilt on top -- the levels' growth, each skill's bonus, the gear's modifiers --
+so a change to the game's balance reaches saved players, and every mode starts
+at full health. A skill the game no longer has is dropped.
+
+Online, a guest sends their profile when they join; the host gives the guest
+their own progress (not the host's), and the guest keeps what they earn there.
+A duel (`rounds_to_win`) uses its own rules (health, skill points) and leaves
+the profile alone. `keep_progress=0` in `config/multiplayer.ini` turns it off.
+
 ## How it plays
 
 - **Host** starts mode n -- with a code, or on a UDP port (7777 unless the

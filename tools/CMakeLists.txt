@@ -268,6 +268,16 @@ if(MINGW)
     target_link_options(footik_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# projectfile_check: a project file read without losing a line (another tool's
+# key, a comment), and Esc given to the game when its logic answers Esc and the
+# file does not say (project_file.h).
+add_executable(projectfile_check projectfile_check/main.cpp)
+target_include_directories(projectfile_check PRIVATE ../editor/include)
+target_compile_features(projectfile_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(projectfile_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # springbones_check: secondary motion (spring_bones.h), headless: lengths kept,
 # a sag under gravity, trailing and settling after the body moves, colliders,
 # frame-rate independence, the .springs file.

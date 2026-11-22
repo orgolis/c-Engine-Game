@@ -1,4 +1,5 @@
 #include "project.h"
+#include "project_file.h"
 #include "entity_factory.h"
 #include "scene.h"
 #include "scene_serializer.h"
@@ -151,7 +152,7 @@ bool ProjectManifest::save(const std::string& manifest_path, const ProjectManife
     out << "name = "           << m.name           << "\n";
     out << "engine_version = " << m.engine_version << "\n";
     out << "default_scene = "  << m.default_scene  << "\n";
-    if (m.escape != "release") out << "escape = " << m.escape << "\n";
+    if (m.escape_set) out << "escape = " << m.escape << "\n";   // (not one the game's logic took)
 
     std::string csv;
     for (const auto& fi : feature_table()) {
@@ -161,6 +162,7 @@ bool ProjectManifest::save(const std::string& manifest_path, const ProjectManife
         }
     }
     out << "features = " << csv << "\n";
+    for (const auto& line : m.other_lines) out << line << "\n";
     return true;
 }
 
@@ -174,19 +176,13 @@ bool ProjectManifest::load(const std::string& manifest_path, ProjectManifest& ou
     out.features = FeatureSet::none();  // start empty; manifest is authoritative
     bool saw_features = false;
 
-    std::string line;
-    while (std::getline(in, line)) {
-        std::string t = trim(line);
-        if (t.empty() || t[0] == '#') continue;
-        size_t eq = t.find('=');
-        if (eq == std::string::npos) continue;
-        std::string key = trim(t.substr(0, eq));
-        std::string val = trim(t.substr(eq + 1));
-
+    const schizo::editor::ManifestLines lines = schizo::editor::read_manifest_lines(in, {"name", "engine_version", "default_scene", "escape", "features"});
+    out.other_lines = lines.other;
+    for (const auto& [key, val] : lines.keys) {
         if (key == "name")                out.name           = val;
         else if (key == "engine_version") out.engine_version = val;
         else if (key == "default_scene")  out.default_scene  = val;
-        else if (key == "escape")         out.escape         = val;
+        else if (key == "escape")         { out.escape = val; out.escape_set = true; }
         else if (key == "features") {
             saw_features = true;
             std::stringstream ss(val);
@@ -208,6 +204,16 @@ bool ProjectManifest::load(const std::string& manifest_path, ProjectManifest& ou
     out.project_dir = fs::path(manifest_path).parent_path().string();
     if (out.name.empty())
         out.name = fs::path(out.project_dir).filename().string();
+    // Who answers Esc when the file does not say: the game, if its logic does (its own
+    // pause menu) -- else the engine's and the game's menu both came up on one Esc.
+    if (!out.escape_set) {
+        out.escape_from = schizo::editor::logic_answering_escape(out.project_dir);
+        if (!out.escape_from.empty()) {
+            out.escape = "game";
+            spdlog::info("[project] '{}' answers Esc in its game logic ({}): Esc is the game's in Play (Shift+F1 frees the mouse for the editor)",
+                         out.name, out.escape_from);
+        }
+    }
     return true;
 }
 

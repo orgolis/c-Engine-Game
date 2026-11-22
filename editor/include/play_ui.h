@@ -163,6 +163,7 @@ public:
         schizo::ui::UiDocument* top_modal = nullptr;
         for (auto& d : docs_) if (d->modal) top_modal = d.get();
         const ImGuiIO& io = ImGui::GetIO();
+        last_vmin_ = vmin;
         out->PushClipRect(vmin, vmax, true);
         for (auto& d : docs_) {
             d->canvas.layout(w, h);
@@ -242,6 +243,21 @@ private:
     }
 
     std::vector<std::unique_ptr<schizo::ui::UiDocument>> docs_;
+    ImVec2 last_vmin_{0.0f, 0.0f};
+
+public:
+    /// Where an element of a shown document is on the screen (its middle), as last
+    /// laid out -- the topmost document that has it (tests point the mouse there).
+    bool element_center(const std::string& id, ImVec2& out) const {
+        for (auto it = docs_.rbegin(); it != docs_.rend(); ++it) {
+            auto f = (*it)->ids.find(id);
+            if (f == (*it)->ids.end() || !f->second) continue;
+            const auto& r = f->second->rect;
+            out = ImVec2(last_vmin_.x + r.x + r.w * 0.5f, last_vmin_.y + r.y + r.h * 0.5f);
+            return true;
+        }
+        return false;
+    }
     std::vector<std::pair<std::string, int>> clicks_;
 };
 

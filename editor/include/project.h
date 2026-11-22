@@ -24,7 +24,14 @@ struct ProjectManifest {
     FeatureSet  features       = FeatureSet::defaults();
     // Esc in Play: "release" frees the mouse for the editor (the default);
     // "game" leaves Esc to the game (a pause menu). Shift+F1 always frees it.
+    // Not set in the file and the game's logic answers Esc itself (a pause menu
+    // of its own: `escape_from` names that graph): "game" -- never both.
     std::string escape         = "release";
+    bool        escape_set     = false;   // the file says (written back only then)
+    std::string escape_from;              // the logic graph that took Esc, when the file does not say
+
+    // Every other line of the file (a comment, another tool's key), written back as it was.
+    std::vector<std::string> other_lines;
 
     // Absolute path to the project folder. Filled by load(); not serialized.
     std::string project_dir;
