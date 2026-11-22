@@ -107,6 +107,7 @@ void write_entity_block(std::ofstream& file,
                 file << "SKINNED_GAMEPLAY=" << smc->run_speed << "\n";
                 file << "SKINNED_CLIPS=" << smc->clips << "\n";
                 if (!smc->upper_body.empty()) file << "SKINNED_UPPER=" << smc->upper_body << "\n";
+                if (!smc->graph.empty()) file << "SKINNED_GRAPH=" << smc->graph << "\n";
             }
             if (!smc->attach_bone.empty())
                 file << "SKINNED_ATTACH=" << smc->attach_bone << "|" << smc->attach_pos.x << "," << smc->attach_pos.y << ","
@@ -613,7 +614,7 @@ struct ParsedEntity {
     glm::vec3   skinned_motion_v{0.0f, 1.0f, 0.15f};   // idle clip, move clip, threshold
     bool        skinned_gameplay = false;
     float       skinned_run = 3.2f;
-    std::string skinned_clips, skinned_upper, skinned_attach_bone;
+    std::string skinned_clips, skinned_upper, skinned_attach_bone, skinned_graph;
     glm::vec3   skinned_attach_pos{0.0f}, skinned_attach_rot{0.0f};
     bool mesh_use_asset = false;
 
@@ -806,6 +807,7 @@ void apply_line_to_entity(ParsedEntity& p, const std::string& line) {
     if (starts_with(line, "SKINNED_GAMEPLAY", v)) { p.skinned_gameplay = true; p.skinned_run = static_cast<float>(std::atof(v.c_str())); return; }
     if (starts_with(line, "SKINNED_CLIPS", v))    { p.skinned_clips = v; return; }
     if (starts_with(line, "SKINNED_UPPER", v))    { p.skinned_upper = v; return; }
+    if (starts_with(line, "SKINNED_GRAPH", v))    { p.skinned_graph = v; return; }
     if (starts_with(line, "SKINNED_ATTACH", v)) {
         const size_t a = v.find('|'), b = a == std::string::npos ? std::string::npos : v.find('|', a + 1);
         p.skinned_attach_bone = v.substr(0, a);
@@ -1154,6 +1156,7 @@ std::shared_ptr<schizo::scene::Entity> construct_entity(const ParsedEntity& p,
         smc->run_speed   = p.skinned_run;
         smc->clips       = p.skinned_clips;
         smc->upper_body  = p.skinned_upper;
+        smc->graph       = p.skinned_graph;
         smc->attach_bone = p.skinned_attach_bone;
         smc->attach_pos  = p.skinned_attach_pos;
         smc->attach_rot  = p.skinned_attach_rot;

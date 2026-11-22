@@ -95,11 +95,11 @@ GWS_REFLECT_END()
 // register any new fields and update the number.
 // ---------------------------------------------------------------------------
 #if defined(_LIBCPP_VERSION)
-inline constexpr std::size_t kExpectedSkinnedMeshComponentSize = 160;   // + gameplay drive, clips/upper/attach bone (strings, by hand: SKINNED_*), attach offset
+inline constexpr std::size_t kExpectedSkinnedMeshComponentSize = 184;   // + gameplay drive, clips/upper/attach bone/graph (strings, by hand: SKINNED_*), attach offset
 inline constexpr std::size_t kExpectedParticleEmitterComponentSize = 80;
 inline constexpr std::size_t kExpectedNpcAgentComponentSize = 96;
 #else
-inline constexpr std::size_t kExpectedSkinnedMeshComponentSize = 192;   // + gameplay drive, clips/upper/attach bone (strings, by hand: SKINNED_*), attach offset
+inline constexpr std::size_t kExpectedSkinnedMeshComponentSize = 224;   // + gameplay drive, clips/upper/attach bone/graph (strings, by hand: SKINNED_*), attach offset
 inline constexpr std::size_t kExpectedParticleEmitterComponentSize = 88;
 inline constexpr std::size_t kExpectedNpcAgentComponentSize = 112;   // + ability (by hand: NPCAGENT_ABILITY), 4 floats
 #endif

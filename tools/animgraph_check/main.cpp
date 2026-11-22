@@ -115,10 +115,10 @@ int main() {
         check(g.unreachable_states().empty(), "connecting it clears the report");
     }
 
-    // ---- 7. Any-State transitions do NOT mask unreachability -------------------
-    // They can reach anything, so counting them would call every state
-    // reachable and the check would report nothing, ever -- a validator that
-    // never complains is one nobody reads.
+    // ---- 7. Any-State transitions reach their target, and only it -------------
+    // A death entered from any state is reachable (calling it unreachable is a
+    // false alarm on every graph with one); an orphan nothing points at is still
+    // reported -- a validator that never complains is one nobody reads.
     {
         AnimGraph g;
         const uint32_t idle  = g.entry_state();
@@ -129,9 +129,8 @@ int main() {
         const auto un = g.unreachable_states();
         check(std::find(un.begin(), un.end(), orphan) != un.end(),
               "an orphan is still reported despite an Any-State transition existing");
-        check(std::find(un.begin(), un.end(), death) != un.end(),
-              "and Any-State targets are not counted as reachable — otherwise the "
-              "check would never fire at all");
+        check(std::find(un.begin(), un.end(), death) == un.end(),
+              "and an Any-State target is reachable (it is entered from anywhere)");
         (void)idle;
     }
 

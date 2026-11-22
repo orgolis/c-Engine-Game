@@ -108,6 +108,7 @@ public:
     std::optional<std::pair<float, float>> take_context_menu_at();
 
     uint32_t selected_node() const { return selected_; }
+    void select_node(uint32_t id) { selected_ = id; }
     void     set_selected(uint32_t id) { selected_ = id; }
 
     CanvasView&       view()       { return view_; }
@@ -120,6 +121,8 @@ private:
         float    sx, sy, w, h;          // screen rect
         float    out_x, out_y;          // output pin centre
         std::vector<PinSlot> inputs;
+        std::string title;              // drawn in its header (end_node)
+        uint32_t    header = 0;         // the header's colour (0: the default)
     };
 
     NodeRec* find(uint32_t id);

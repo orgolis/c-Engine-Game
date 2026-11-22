@@ -23,6 +23,7 @@ not more clips.
 | Stride and orientation warping | sliding and crossed legs on diagonals | **0.8.60** |
 | Sync markers (foot plants) | a stumble when walk changes to run | **0.8.60**: measured per clip, switches in step |
 | Foot locking | the slide left after rate and stride | **0.8.60**: held per foot, one steps at a time (TestGame running: median 0.27 m/s to 0.00) |
+| Animation graph, 2D blend spaces, montages | clip choice hard-wired in C++; a diagonal as one clip with the legs turned | **0.8.61**: every gameplay character runs a graph (the built-in humanoid one or its own `.animgraph`) |
 | Foot IK (foot placement) | feet floating over or sunk into slopes | **0.8.58**: feet, pelvis, slope, landing compression |
 | Lean into acceleration | a body that starts and stops like a statue on rails | **0.8.58** |
 | Support hand IK | the second hand floating beside the gun (18 cm in TestGame) | **0.8.58** |
@@ -202,9 +203,10 @@ item by item, with what was decided.
 | Inertialization | **0.8.57** (spring decay; Bollo's quintic is the alternative) |
 | Dead blending | not needed while inertialization covers the transitions |
 | Hemisphere-safe blending | already so (`glm::slerp`); multi-input nlerp aligned to the first (**0.8.58** in channel sampling) |
-| One graph runtime from `.animgraph`, montages / slots | a release of its own: the gameplay clip choice (`main.cpp`) becomes a compiled graph |
+| One graph runtime from `.animgraph`, montages / slots | **0.8.61**: parameters, layered state machines, any-state and exit-time transitions, montage slots; every gameplay character runs one (built-in humanoid or its own file) |
 | Sync groups and markers | **0.8.60**: foot plants measured per clip, in-step switches |
-| 2D blend spaces, per-bone layer masks | with the graph runtime (one clip per way today, legs turned toward the rest) |
+| 2D blend spaces, per-bone layer masks | **0.8.61**: Delaunay blend spaces (radial clamp for locomotion, samples at measured velocities), layer and slot masks; inertialization masked to the bones a change touches |
+| Additive layers, montage sections | with the first additive clips / multi-part montages |
 | Posing on the job system | **0.8.58** |
 | Fixed simulation tick; animation on it, drawn in between | needed before deterministic notifies, hit windows and lag compensation; the Leviathan does it in script already |
 | Look-at / aim chain | **0.8.57**, in the engine as `pose_layers.h` in **0.8.58** |

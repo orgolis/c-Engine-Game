@@ -259,6 +259,16 @@ struct ScriptApi {
     // a bone as it is posed now, in the world (an attachment point, the middle
     // of a hit region, the tip of a jaw). Query engine.animation_events first.
     bool (*bone_point)(void* ctx, uint32_t e, const char* bone, const float model_point[3], float out[3]) = nullptr;
+    // 0.8.61: a skinned character's animation graph. Query engine.animation_graph first.
+    // A one-shot clip over its layers on a slot ("upper", "full", or its graph's own):
+    // it comes in over blend_in and goes at its end over blend_out (no graph: the
+    // whole body plays it).
+    bool (*play_montage)(void* ctx, uint32_t e, const char* clip, const char* slot, float rate, float blend_in, float blend_out) = nullptr;
+    bool (*stop_montage)(void* ctx, uint32_t e, const char* slot, float blend_out) = nullptr;
+    // A parameter of its graph by name (a bool: 0 or 1; a trigger fires when value > 0).
+    bool (*set_anim_param)(void* ctx, uint32_t e, const char* name, float value) = nullptr;
+    // The state a layer of its graph is in (its name into out); -1 without a graph.
+    int (*anim_state)(void* ctx, uint32_t e, int layer, char* out, int out_size) = nullptr;
 };
 
 }  // namespace schizo::editor

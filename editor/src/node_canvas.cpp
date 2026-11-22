@@ -126,6 +126,8 @@ bool NodeCanvas::begin_node(uint32_t id, const std::string& title, float x, floa
     rec.sy = view_.to_screen_y(y, origin_y_);
     rec.w  = kNodeW * view_.zoom;
     rec.h  = kHeaderH * view_.zoom;      // grows as pins are declared
+    rec.title = title;
+    rec.header = title_color;
     nodes_.push_back(rec);
     current_ = &nodes_.back();
     cur_input_row_ = 0;
@@ -149,10 +151,6 @@ bool NodeCanvas::begin_node(uint32_t id, const std::string& title, float x, floa
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) dragging_ = 0xFFFFFFFFu;
     }
 
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImU32 header = title_color ? title_color : col(0.20f, 0.28f, 0.40f);
-    const ImVec2 a(rec.sx, rec.sy);
-    (void)dl; (void)a; (void)header; (void)title;
     return rec.sx + rec.w > origin_x_ && rec.sx < origin_x_ + width_ &&
            rec.sy + 200.0f > origin_y_ && rec.sy < origin_y_ + height_;
 }
@@ -217,7 +215,15 @@ void NodeCanvas::end_node() {
     // left/right EDGES, outside the body rect, so overlap never occurs.
     dl->AddRectFilled(a, b, col(0.14f, 0.15f, 0.18f, 0.96f), r);
     dl->AddRectFilled(a, ImVec2(b.x, a.y + kHeaderH * view_.zoom),
-                      col(0.20f, 0.28f, 0.40f), r);
+                      current_->header ? current_->header : col(0.20f, 0.28f, 0.40f), r);
+    // The title, in the header, cut at the node's edge (it was never drawn: every
+    // node of every graph panel showed a blank header).
+    if (!current_->title.empty() && view_.zoom > 0.45f) {
+        const float fs = ImGui::GetFontSize() * std::min(1.0f, view_.zoom);
+        const ImVec2 at(a.x + 6.0f * view_.zoom, a.y + (kHeaderH * view_.zoom - fs) * 0.5f);
+        const ImVec4 clip(a.x, a.y, b.x - 4.0f * view_.zoom, a.y + kHeaderH * view_.zoom);
+        dl->AddText(ImGui::GetFont(), fs, at, col(0.95f, 0.96f, 0.98f), current_->title.c_str(), nullptr, 0.0f, &clip);
+    }
     dl->AddRect(a, b,
                 current_->id == selected_ ? col(1.0f, 0.82f, 0.30f) : col(1, 1, 1, 0.22f),
                 r, 0, current_->id == selected_ ? 2.0f : 1.0f);

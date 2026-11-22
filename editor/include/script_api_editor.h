@@ -38,6 +38,11 @@ struct EditorScriptCtx {
     std::function<bool(uint32_t, const std::string&, bool, float, float, bool)> play_animation;
     std::function<bool(uint32_t, const std::string&, float*)> bone_position;
     std::function<bool(uint32_t, const std::string&, const float*, float*)> bone_point;
+    // 0.8.61: the animation graph (montages, parameters, states).
+    std::function<bool(uint32_t, const std::string&, const std::string&, float, float, float)> play_montage;
+    std::function<bool(uint32_t, const std::string&, float)> stop_montage;
+    std::function<bool(uint32_t, const std::string&, float)> set_anim_param;
+    std::function<int(uint32_t, int, std::string&)> anim_state;
     std::function<bool(const char*, const float*, const float*, float, float)> spawn_effect;
     std::function<bool(uint32_t, const std::string&, const float*)> set_bone_rotation;
     float environment_darkness = 0.0f, environment_whiteout = 0.0f;

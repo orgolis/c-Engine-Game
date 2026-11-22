@@ -582,6 +582,9 @@ int api_get_setting(void*, const char* name, char* out, int size) {
     // that carry the motion through (inertialization).
     if (name && std::strcmp(name, "engine.animation_events") == 0)
         return copy_out("1", out, size);
+    // 0.8.61: animation graphs (states, blend spaces, layers), montages, parameters.
+    if (name && std::strcmp(name, "engine.animation_graph") == 0)
+        return copy_out("1", out, size);
     return copy_out(name ? schizo::editor::play_settings().get(name) : std::string(), out, size);
 }
 int api_next_setting(void*, const char* name, char* out, int size) {
@@ -866,6 +869,26 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.bone_point = [](void* p, uint32_t e, const char* bone, const float model_point[3], float out[3]) {
         auto* c = static_cast<EditorScriptCtx*>(p);
         return bone && model_point && out && c->bone_point && c->bone_point(e, bone, model_point, out);
+    };
+    api.play_montage = [](void* p, uint32_t e, const char* clip, const char* slot, float rate, float blend_in, float blend_out) {
+        auto* c = static_cast<EditorScriptCtx*>(p);
+        return clip && c->play_montage && c->play_montage(e, clip, slot ? slot : "upper", rate, blend_in, blend_out);
+    };
+    api.stop_montage = [](void* p, uint32_t e, const char* slot, float blend_out) {
+        auto* c = static_cast<EditorScriptCtx*>(p);
+        return c->stop_montage && c->stop_montage(e, slot ? slot : "upper", blend_out);
+    };
+    api.set_anim_param = [](void* p, uint32_t e, const char* name, float value) {
+        auto* c = static_cast<EditorScriptCtx*>(p);
+        return name && c->set_anim_param && c->set_anim_param(e, name, value);
+    };
+    api.anim_state = [](void* p, uint32_t e, int layer, char* out, int out_size) {
+        auto* c = static_cast<EditorScriptCtx*>(p);
+        if (!c->anim_state) return -1;
+        std::string name;
+        const int st = c->anim_state(e, layer, name);
+        if (out && out_size > 0) copy_out(name, out, out_size);
+        return st;
     };
     api.set_damage_receiver = [](void* p, uint32_t part, uint32_t owner, float multiplier) {
         ecs::World* w; ecs::Entity ent;

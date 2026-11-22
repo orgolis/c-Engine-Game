@@ -182,6 +182,16 @@ typedef struct SchizoScriptApi {
        world. Clip events arrive as gameplay events "anim.<name>" (instigator: the
        entity; param: the clip). */
     bool (*bone_point)(void* ctx, unsigned e, const char* bone, const float model_point[3], float out[3]);
+    /* 0.8.61 (query engine.animation_graph): a skinned character's animation graph.
+       play_montage: a one-shot clip over its layers on a slot ("upper", "full", or
+       its graph's own), in over blend_in, out at its end over blend_out (without a
+       graph the whole body plays it). set_anim_param: a parameter by name (a bool 0
+       or 1; a trigger fires when value > 0). anim_state: the state a layer is in
+       (its name into out; -1 without a graph). */
+    bool (*play_montage)(void* ctx, unsigned e, const char* clip, const char* slot, float rate, float blend_in, float blend_out);
+    bool (*stop_montage)(void* ctx, unsigned e, const char* slot, float blend_out);
+    bool (*set_anim_param)(void* ctx, unsigned e, const char* name, float value);
+    int (*anim_state)(void* ctx, unsigned e, int layer, char* out, int out_size);
 } SchizoScriptApi;
 
 }  // extern "C"

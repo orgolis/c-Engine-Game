@@ -43,6 +43,9 @@ the camera) -- the A/B for the gun's shake.
 | `GWS_TEST_LOG_FEET=1` | for the player's body (else one character standing on a slope), twice a second: each foot's height over the ground under it against its standing height, whether it is held, the pelvis' drop, how fast the model goes and how fast its planted feet slide over the ground |
 | `GWS_ANIM_SERIAL=1` | characters posed one after another instead of on the job system (to compare the `characters` zone) |
 | `GWS_NO_FOOT_IK=1`, `GWS_NO_FOOT_LOCK=1`, `GWS_NO_LOCO_WARP=1`, `GWS_NO_LEAN=1`, `GWS_NO_SUPPORT_HAND=1`, `GWS_NO_RAGDOLL=1` | a layer of the pose off (to compare) |
+| `GWS_ANIM_LEGACY=1` | gameplay characters choose clips as before the animation graph (0.8.60), to compare |
+| `GWS_TEST_SAVE_GRAPH=<entity name>` | in Play, that character's running graph is saved to `assets/animgraphs/<model>.animgraph` (as the Inspector's button does) |
+| `GWS_TEST_ANIMGRAPH=<file.animgraph>` | opens it in the Animation State Machine panel at start, its first 2D blend state selected (a screenshot) |
 | `GWS_TEST_KILL_NEAR=<play frame>[,radius]` | at that frame of Play every NPC agent within the radius (30 m) of the player loses its health: how bodies fall |
 
 A/B switches: `GWS_NO_ANIM_LOD=1` (every character animated every frame),

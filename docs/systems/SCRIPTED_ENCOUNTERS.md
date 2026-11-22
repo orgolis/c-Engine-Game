@@ -15,6 +15,10 @@ returns "1" when the verbs after it in the table are there.
 | `spawn_mesh(path, pos, scale)` | `engine.encounter_api` | a model with no collision (debris, a visual effect mesh) |
 | `set_damage_receiver(part, owner, multiplier)` | `engine.combat_api` | a hurtbox `part` passes its damage to `owner`'s health, times `multiplier` (a weak point) -- many parts, one health pool |
 | `bone_point(e, bone, model_point, out)` | `engine.animation_events` | a point of the model (its own space, as modelled) carried by a bone as posed now, in the world: a hit region's middle, a jaw's tip |
+| `play_montage(e, clip, slot, rate, blend_in, blend_out)` | `engine.animation_graph` | a one-shot over a character's graph on a slot's bones (`upper`, `full`, or its graph's own); without a graph, the whole body plays it |
+| `stop_montage(e, slot, blend_out)` | `engine.animation_graph` | the slot's montage goes before its end |
+| `set_anim_param(e, name, value)` | `engine.animation_graph` | a parameter of its graph by name (a bool 0 or 1; a trigger fires when the value is above 0) |
+| `anim_state(e, layer, out, size)` | `engine.animation_graph` | the state a layer of its graph is in (its index; its name into `out`), -1 without a graph |
 
 **Animation hooks.** With `engine.animation_events`, a model's clips can carry
 events (`<model>.events`, docs/systems/CHARACTERS.md): as a clip passes one,

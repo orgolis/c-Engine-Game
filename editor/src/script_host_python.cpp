@@ -455,6 +455,23 @@ void build_engine_module(pkpy::VM* vm) {
         return VAR(g_api && g_api->play_animation && g_api->play_animation(g_api->ctx, earg(vm, args[0]),
             sarg(vm, args[1]).c_str(), CAST(bool, args[2]), farg(vm, args[3]), farg(vm, args[4]), CAST(bool, args[5])));
     });
+    vm->bind(mod, "play_montage(e: int, clip: str, slot: str, rate: float, blend_in: float, blend_out: float) -> bool",
+             [](pkpy::VM* vm, pkpy::ArgsView args) {
+        return VAR(g_api && g_api->play_montage && g_api->play_montage(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(),
+            sarg(vm, args[2]).c_str(), farg(vm, args[3]), farg(vm, args[4]), farg(vm, args[5])));
+    });
+    vm->bind(mod, "stop_montage(e: int, slot: str, blend_out: float) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        return VAR(g_api && g_api->stop_montage && g_api->stop_montage(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(), farg(vm, args[2])));
+    });
+    vm->bind(mod, "set_anim_param(e: int, name: str, value: float) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        return VAR(g_api && g_api->set_anim_param && g_api->set_anim_param(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(), farg(vm, args[2])));
+    });
+    vm->bind(mod, "anim_state(e: int, layer: int) -> str", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        char name[96] = {0};
+        if (!g_api || !g_api->anim_state || g_api->anim_state(g_api->ctx, earg(vm, args[0]), static_cast<int>(CAST(pkpy::i64, args[1])), name, sizeof name) < 0)
+            return vm->None;
+        return VAR(std::string(name));
+    });
     vm->bind(mod, "bone_position(e: int, bone: str)", [](pkpy::VM* vm, pkpy::ArgsView args) {
         float p[3]{};
         if (!g_api || !g_api->bone_position || !g_api->bone_position(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(), p))

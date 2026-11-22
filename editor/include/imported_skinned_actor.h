@@ -31,6 +31,7 @@
 #include "pose_layers.h"
 #include "ragdoll_rig.h"
 #include "locomotion_warp.h"
+#include "anim_graph_runtime.h"
 #include "anim_hooks.h"   // inertialization and clip events (no GPU: animhooks_check)
 #include "animation.h"
 
@@ -67,6 +68,9 @@ struct SharedSkinnedAsset {
     // actor that asks (on the main thread).
     std::vector<schizo::renderer::LocoClipInfo> loco;
     std::vector<char> loco_done;
+    // Each clip's sync markers (its feet's plants, if it is locomotion), for graphs.
+    std::vector<schizo::renderer::animgraph::SyncMarkers> sync;
+    bool sync_done = false;
 };
 
 /// The events of a model's clips, from the text file beside it (the model's path
@@ -189,6 +193,16 @@ public:
     /// CPU tick: advance the clips and pose the skeleton. Call once a frame.
     void advance(float dt) {
         if (!skeleton_ || clips_.empty()) return;
+        if (graph_.ready()) {
+            // A graph: its parameters (set before) choose; it reports what played
+            // (events) and what changed (smoothed away on the bones it touched).
+            graph_.update(dt, graph_src_);
+            if (dt > 0.0f)
+                for (const auto& a : graph_.active()) fire_window(a.clip, a.was, a.now, a.loop);
+            for (const auto& c : graph_.take_changes()) transition(c.blend, c.mask);
+            pose(dt);
+            return;
+        }
         if (base_.clip < 0) base_.clip = 0;
         const float base_was = base_.fresh ? -1e-4f : base_.time;
         const float upper_was = upper_.fresh ? -1e-4f : upper_.time;
@@ -437,6 +451,42 @@ public:
     /// A landing: the pelvis is pushed down (m/s) and springs back.
     void pelvis_impulse(float down_speed) { rig_.land_v -= down_speed; }
 
+    // ---- an animation graph (engine/renderer/include/anim_graph_runtime.h) -------------------
+    /// Runs `def` from now on instead of play()/play_upper(): set its parameters
+    /// (graph()) each frame before advance(). Measures the clips' sync markers
+    /// once per model (main thread). nullptr: back to play().
+    void set_graph(std::shared_ptr<const schizo::renderer::animgraph::GraphDef> def) {
+        if (!def || !skeleton_) { graph_ = {}; return; }
+        prepare_sync();
+        std::vector<int> parent;
+        for (const auto& b : skeleton_->GetAllBones()) parent.push_back(b.parent_id);
+        graph_src_.a = this;
+        graph_.init(std::move(def), parent, [&](const std::string& n) { return find_bone(n); });
+        graph_def_tag_ = nullptr;
+    }
+    bool has_graph() const { return graph_.ready(); }
+    schizo::renderer::animgraph::GraphInstance& graph() { return graph_; }
+    const schizo::renderer::animgraph::GraphInstance& graph() const { return graph_; }
+    /// Who built the running graph (the caller's tag: rebuilds only on a change).
+    const void* graph_tag() const { return graph_def_tag_; }
+    void set_graph_tag(const void* t) { graph_def_tag_ = t; }
+    /// A one-shot over the graph's layers on slot `slot`'s bones (a shot, a reload,
+    /// a hit) -- without a graph, the clip plays on the whole body (play()).
+    void play_montage(int clip, const std::string& slot, float rate = 1.0f, float blend_in = 0.1f, float blend_out = 0.2f, bool loop = false) {
+        if (clip < 0 || static_cast<size_t>(clip) >= clips_.size()) return;
+        if (!graph_.ready()) { play(clip, loop, blend_in, rate, true); return; }
+        graph_.play_montage(graph_.def().slot(slot), clip, rate, blend_in, blend_out, loop);
+    }
+    void stop_montage(const std::string& slot, float blend_out = -1.0f) {
+        if (graph_.ready()) graph_.stop_montage(graph_.def().slot(slot), blend_out);
+    }
+    /// A clip's sync markers (its feet's plants; none unless it is locomotion).
+    const schizo::renderer::animgraph::SyncMarkers& sync_markers(int clip) const {
+        static const schizo::renderer::animgraph::SyncMarkers none;
+        if (!shared_ || clip < 0 || static_cast<size_t>(clip) >= shared_->sync.size()) return none;
+        return shared_->sync[static_cast<size_t>(clip)];
+    }
+
     // ---- locomotion (engine/renderer/include/locomotion_warp.h) ---------------------------
     /// A clip measured as locomotion: where each foot comes down, the ground speed
     /// it was made for, the way its body goes (model x, z). Measured once per model.
@@ -450,7 +500,7 @@ public:
             sa.loco[static_cast<size_t>(clip)] = schizo::renderer::measure_loco_clip(*skeleton_, bind_, rig_, *clips_[static_cast<size_t>(clip)]);
             static const bool log_loco = std::getenv("GWS_TEST_LOG_ANIM") != nullptr;
             const auto& li = sa.loco[static_cast<size_t>(clip)];
-            if (log_loco && !li.valid && li.duration > 0.0f)
+            if (log_loco && !li.valid && li.duration > 0.0f && !li.contact[0].empty() && !li.contact[1].empty())
                 spdlog::info("[anim] not locomotion '{}': feet down {} / {} times, {} planted frames, ankle heights {:.3f}..{:.3f} / {:.3f}..{:.3f}",
                              clips_[static_cast<size_t>(clip)]->GetName(), li.contact[0].size(), li.contact[1].size(), li.planted_frames,
                              li.low[0], li.high[0], li.low[1], li.high[1]);
@@ -610,70 +660,110 @@ private:
     static glm::vec3 to_scaled_axis(const glm::quat& q) { return anim::to_scaled_axis(q); }
     static glm::quat from_scaled_axis(const glm::vec3& a) { return anim::from_scaled_axis(a); }
     static void decay(glm::vec3& x, glm::vec3& v, float halflife, float dt) { anim::decay(x, v, halflife, dt); }
-    void transition(float blend) {
-        if (blend <= 0.0f) {   // a cut: nothing carried over
+    /// A change to smooth away over `blend` seconds on the bones of `mask` (all:
+    /// nullptr); 0 cuts (nothing carried over there).
+    void transition(float blend, const std::vector<uint8_t>* mask = nullptr) {
+        if (blend <= 0.0f && !mask) {   // a cut of everything
             inert_live_ = false;
-            want_inert_ = false;
+            inert_reqs_.clear();
             return;
         }
-        want_inert_ = true;
-        inert_half_ = anim::halflife_for_blend(blend);
+        inert_reqs_.push_back({blend <= 0.0f ? 0.0f : anim::halflife_for_blend(blend), mask ? *mask : std::vector<uint8_t>{}});
     }
 
     // ---- events ----------------------------------------------------------------------
-    void fire_events(const Track& tr, float was) {
-        if (!shared_ || tr.clip < 0) return;
-        auto it = shared_->events.find(tr.clip);
+    void fire_events(const Track& tr, float was) { fire_window(tr.clip, was, tr.time, tr.loop); }
+    void fire_window(int c, float was, float now, bool loop) {
+        if (!shared_ || c < 0 || static_cast<size_t>(c) >= clips_.size()) return;
+        auto it = shared_->events.find(c);
         if (it == shared_->events.end() || it->second.empty()) return;
-        const float dur = clips_[static_cast<size_t>(tr.clip)]->GetDuration();
-        const float now = tr.time;
+        const float dur = clips_[static_cast<size_t>(c)]->GetDuration();
         if (now <= was) return;
-        const std::string& clip = clips_[static_cast<size_t>(tr.clip)]->GetName();
+        const std::string& clip = clips_[static_cast<size_t>(c)]->GetName();
         passed_.clear();
-        anim::events_passed(it->second, was, now, dur, tr.loop, passed_);
+        anim::events_passed(it->second, was, now, dur, loop, passed_);
         for (size_t i : passed_) fired_.push_back({clip, it->second[i].name, it->second[i].param, it->second[i].time});
+    }
+
+    // The graph's view of this model's clips.
+    struct GraphClips final : schizo::renderer::animgraph::ClipSource {
+        const ImportedSkinnedActor* a = nullptr;
+        int clip_count() const override { return static_cast<int>(a->clips_.size()); }
+        float duration(int c) const override { return a->clip_duration(static_cast<size_t>(c)); }
+        void sample(int c, float t, bool loop, schizo::renderer::animgraph::Pose& pose) const override {
+            if (c >= 0 && static_cast<size_t>(c) < a->clips_.size()) a->clips_[static_cast<size_t>(c)]->SampleLocal(t, loop, pose);
+        }
+        const schizo::renderer::animgraph::SyncMarkers& markers(int c) const override { return a->sync_markers(c); }
+        const schizo::renderer::animgraph::Pose& bind() const override { return a->bind_; }
+    };
+    // Every clip's sync markers, measured once per model (on the main thread).
+    void prepare_sync() {
+        if (!shared_ || shared_->sync_done) return;
+        shared_->sync_done = true;
+        shared_->sync.assign(clips_.size(), {});
+        if (!has_feet()) return;
+        for (size_t c = 0; c < clips_.size(); ++c) {
+            const auto& li = loco_info(static_cast<int>(c));
+            if (li.valid) shared_->sync[c] = schizo::renderer::animgraph::SyncMarkers::from_contacts(li.duration, li.contact[0], li.contact[1]);
+        }
     }
 
     void pose(float dt) {
         if (!skeleton_ || clips_.empty()) return;
         if (base_.clip < 0) base_.clip = 0;
         using schizo::renderer::BoneTransform;
-        sample(base_, pose_a_);
-        if (upper_.clip >= 0 && upper_w_ > 0.0f && !upper_mask_.empty()) {
-            sample(upper_, pose_b_);
-            for (size_t b = 0; b < pose_a_.size() && b < upper_mask_.size(); ++b)
-                if (upper_mask_[b]) pose_a_[b] = BoneTransform::Slerp(pose_a_[b], pose_b_[b], upper_w_);
+        if (graph_.ready()) {
+            graph_.evaluate(graph_src_, pose_a_);
+        } else {
+            sample(base_, pose_a_);
+            if (upper_.clip >= 0 && upper_w_ > 0.0f && !upper_mask_.empty()) {
+                sample(upper_, pose_b_);
+                for (size_t b = 0; b < pose_a_.size() && b < upper_mask_.size(); ++b)
+                    if (upper_mask_[b]) pose_a_[b] = BoneTransform::Slerp(pose_a_[b], pose_b_[b], upper_w_);
+            }
         }
         const size_t n = pose_a_.size();
-        // A change of clip: what was showing minus what the clips say now, and how it moved.
-        if (want_inert_ && out_.size() == n) {
-            want_inert_ = false;
+        // A change: on the bones it touches, what was showing minus what the clips
+        // say now, and how it moved; the other bones keep what they carry.
+        if (!inert_reqs_.empty() && out_.size() == n) {
+            if (!inert_live_ || off_p_.size() != n) {
+                off_p_.assign(n, glm::vec3(0.0f));
+                off_vp_.assign(n, glm::vec3(0.0f));
+                off_r_.assign(n, glm::vec3(0.0f));
+                off_vr_.assign(n, glm::vec3(0.0f));
+                off_half_.assign(n, 0.05f);
+            }
             inert_live_ = true;
             inert_age_ = 0.0f;
-            off_p_.assign(n, glm::vec3(0.0f));
-            off_vp_.assign(n, glm::vec3(0.0f));
-            off_r_.assign(n, glm::vec3(0.0f));
-            off_vr_.assign(n, glm::vec3(0.0f));
             const bool moving = out_prev_.size() == n && out_dt_ > 1e-4f && out_dt_ < 0.1f;
-            for (size_t b = 0; b < n; ++b) {
-                off_p_[b] = out_[b].position - pose_a_[b].position;
-                off_r_[b] = to_scaled_axis(out_[b].rotation * glm::inverse(pose_a_[b].rotation));
-                if (moving) {
-                    off_vp_[b] = (out_[b].position - out_prev_[b].position) / out_dt_;
-                    off_vr_[b] = to_scaled_axis(out_[b].rotation * glm::inverse(out_prev_[b].rotation)) / out_dt_;
-                    // (a sudden velocity from a hiccup in the frame time would throw the pose)
-                    if (glm::length(off_vr_[b]) > 30.0f) off_vr_[b] = glm::normalize(off_vr_[b]) * 30.0f;
-                    if (glm::length(off_vp_[b]) > 20.0f) off_vp_[b] = glm::normalize(off_vp_[b]) * 20.0f;
+            for (const auto& rq : inert_reqs_)
+                for (size_t b = 0; b < n; ++b) {
+                    if (!rq.mask.empty() && (b >= rq.mask.size() || !rq.mask[b])) continue;
+                    if (rq.half <= 0.0f) {   // a cut there
+                        off_p_[b] = off_vp_[b] = off_r_[b] = off_vr_[b] = glm::vec3(0.0f);
+                        continue;
+                    }
+                    off_half_[b] = rq.half;
+                    off_p_[b] = out_[b].position - pose_a_[b].position;
+                    off_r_[b] = to_scaled_axis(out_[b].rotation * glm::inverse(pose_a_[b].rotation));
+                    off_vp_[b] = off_vr_[b] = glm::vec3(0.0f);
+                    if (moving) {
+                        off_vp_[b] = (out_[b].position - out_prev_[b].position) / out_dt_;
+                        off_vr_[b] = to_scaled_axis(out_[b].rotation * glm::inverse(out_prev_[b].rotation)) / out_dt_;
+                        // (a sudden velocity from a hiccup in the frame time would throw the pose)
+                        if (glm::length(off_vr_[b]) > 30.0f) off_vr_[b] = glm::normalize(off_vr_[b]) * 30.0f;
+                        if (glm::length(off_vp_[b]) > 20.0f) off_vp_[b] = glm::normalize(off_vp_[b]) * 20.0f;
+                    }
                 }
-            }
-        } else if (want_inert_) {
-            want_inert_ = false;   // nothing was showing yet: nothing to carry
+            inert_half_ = 0.0f;
+            for (float h : off_half_) inert_half_ = std::max(inert_half_, h);
         }
+        inert_reqs_.clear();   // (nothing showing yet: nothing to carry)
         if (inert_live_ && off_p_.size() == n) {
             if (dt > 0.0f) {
                 for (size_t b = 0; b < n; ++b) {
-                    decay(off_p_[b], off_vp_[b], inert_half_, dt);
-                    decay(off_r_[b], off_vr_[b], inert_half_, dt);
+                    decay(off_p_[b], off_vp_[b], off_half_[b], dt);
+                    decay(off_r_[b], off_vr_[b], off_half_[b], dt);
                 }
                 inert_age_ += dt;
                 if (inert_age_ > inert_half_ * 12.0f) inert_live_ = false;   // under 0.03% left
@@ -792,7 +882,13 @@ private:
     float out_dt_ = 0.0f;
     // Inertialization: per bone, the offset still to decay and its velocity.
     std::vector<glm::vec3> off_p_, off_vp_, off_r_, off_vr_;
-    bool  want_inert_ = false, inert_live_ = false;
+    std::vector<float> off_half_;   // each bone's half-life (the change that set it)
+    struct InertReq { float half; std::vector<uint8_t> mask; };
+    std::vector<InertReq> inert_reqs_;
+    schizo::renderer::animgraph::GraphInstance graph_;
+    GraphClips graph_src_;
+    const void* graph_def_tag_ = nullptr;
+    bool  inert_live_ = false;
     float inert_half_ = 0.05f, inert_age_ = 0.0f;
     std::vector<size_t> passed_;   // fire_events scratch
     std::vector<FiredEvent> fired_;

@@ -31,11 +31,11 @@ by part of it (case does not matter): `aim=Aim_Rifle` finds `05_Aim_Rifle`.
 |---|---|
 | `idle` | standing still |
 | `walk` | moving (sped up and slowed down with the speed) |
-| `run` | moving faster than **Run above** (m/s; default 3.2) |
+| `run` | moving faster (placed by its measured speed in the locomotion blend space) |
 | `walk_back` | moving backwards (the way it faces is the model's +Z) |
 | `strafe_left`, `strafe_right` | moving sideways |
-| `run_back` | moving backwards faster than **Run above** (a backpedal; else `walk_back`) |
-| `strafe_run_left`, `strafe_run_right` | moving sideways faster than **Run above** (else the strafes) |
+| `run_back` | moving backwards faster (a backpedal; else `walk_back` sped up) |
+| `strafe_run_left`, `strafe_run_right` | moving sideways faster (else the strafes sped up) |
 | `jump` | leaving the ground upwards (once), then `fall` |
 | `fall` | in the air |
 | `land` | back on the ground after a drop (once; not while it walks on) |
@@ -97,6 +97,66 @@ its body's lean, then where it looks and aims, then -- once the gun in its
 hand is placed -- its support hand on the gun. All but the last touch only its
 own skeleton, so all characters are posed at once on the job system;
 `GWS_ANIM_SERIAL=1` poses them one after another (to compare).
+
+## The animation graph
+
+A character driven by gameplay runs an **animation graph** in Play
+(`engine/renderer/include/anim_graph_runtime.h`): parameters that gameplay sets
+each frame, layers that are state machines, states that play a clip or blend a
+space of clips, transitions, and slots for one-shots. Unless it names a graph
+of its own (**Graph**) it runs the built-in humanoid graph made from its Clips
+(`editor/include/humanoid_graph.h`):
+
+- **Base layer** (the whole body): `Idle`, `Locomotion`, `CrouchIdle`,
+  `CrouchWalk`, `Jump`, `Fall`, `Land`, `Dead`.
+- **Locomotion is a 2D blend space** over the body's velocity in the model
+  (`vx` to its left, `vz` ahead): each walk, run, backpedal and strafe clip sits
+  at the velocity it was measured to move at (below), so a diagonal blends the
+  run and the side run, in step. Slower than a walk it does not blend toward
+  standing: the velocity is taken out to the walk of that way and the clips
+  slow down (rate and stride, below) -- standing is its own state. A way it has
+  no clips for (a model without strafes) is the nearest way it has, with the
+  legs turned toward the rest (up to 50 degrees). Faster than its fastest clip:
+  that clip, the rest by rate and stride. (**Run above** is no longer used: the
+  clips' measured speeds place walk and run.)
+- **Upper layer** (the upper-body bone's subtree; the whole body standing still
+  without one): `None`, `Aim`, `MeleeReady`.
+- **Slots** `upper` and `full`: a shot, a swing, a reload, a hit is a montage
+  on `upper` -- it comes in over 0.06 s, plays once over whatever the layers
+  show, and goes over 0.2 s.
+
+Parameters gameplay sets (a graph of its own gets the ones it declares, by
+name): `vx`, `vz`, `speed`, `moving`, `airborne`, `jumped`, `landing`,
+`crouched`, `dead`, `aiming`, `melee`; the playing state's rate parameter
+(`loco_rate`, `crouch_rate`) gets the rate locomotion asks for.
+
+**Sync groups.** States of one group (the humanoid's `feet`: Locomotion and
+CrouchWalk) and the clips of a blend space keep one phase, measured between
+their foot plants: 0 the left foot down, 0.5 the right. Blended clips put the
+same foot down together; walking into a crouch walk goes on with the same
+foot's step.
+
+**Changes are inertialized, on the bones they touch.** A transition reports its
+blend time and its layer's bones (a slot's, for a montage); what was showing
+there and how it moved decays on a spring, the other bones keep what they
+carry. No clip is sampled twice for a fade.
+
+**A graph of its own.** In Play, the Inspector's **Save the graph it runs**
+writes the graph a character runs to `assets/animgraphs/<model>.animgraph`.
+Open it in the Animation State Machine panel (Tools), change it -- states and
+what they play (a clip by name, a 1D or 2D blend space with its clips at
+measured or typed places, nothing), layers with a mask bone, parameters, slots,
+sync groups, rate parameters -- and set it as the character's **Graph**. A
+clip the model lacks is logged, not fatal; a missing file falls back to the
+built-in graph.
+
+Scripts (`engine.animation_graph`): `play_montage(e, clip, slot, rate,
+blend_in, blend_out)`, `stop_montage(e, slot, blend_out)`, `set_anim_param(e,
+name, value)` (a trigger fires on a value above 0), `anim_state(e, layer,
+out, size)`. `play_animation` takes a character off its graph (the script
+plays it). `GWS_ANIM_LEGACY=1`: the clip choice before graphs (to compare);
+`GWS_TEST_LOG_ANIM=1` logs the player's states as they change and the blend
+weights.
 
 ## Locomotion: the legs fitted to the ground covered
 
@@ -310,6 +370,7 @@ SKINNED_SPEED=1
 SKINNED_GAMEPLAY=3.2                     # driven by gameplay; run above 3.2 m/s
 SKINNED_CLIPS=idle=00_Idle,walk=01_Walk,run=02_Run,aim=05_Aim_Rifle,fire=06_Fire_Rifle,...
 SKINNED_UPPER=spine
+SKINNED_GRAPH=assets/animgraphs/rifleman.animgraph   # its own graph (else the built-in humanoid graph)
 SKINNED_ATTACH=weapon_socket|0,0,0|90,0,180   # held: bone | offset | turn (a gun's entity)
 ```
 
@@ -333,8 +394,9 @@ idle, fire, reload and draw clips). Each soldier is an NPC agent with a
   spaces, motion warping, spring bones).
 - Feet are held in the world: a character standing on something that moves
   (a lift, a vehicle) would leave its feet behind until they step.
-- Locomotion picks one clip for the way it goes (ahead, back, left, right) and
-  turns the legs toward the rest; there is no 2D blend of directional clips.
+- No additive layers yet (a breathing or recoil layer added onto any pose), no
+  montage sections or branching, and a graph's parameters are not sent in
+  online play (each machine runs its own graph from what it sees).
 - Root motion is not used: characters move by their controller or agent and
   the clip's speed follows.
 - One material per model.

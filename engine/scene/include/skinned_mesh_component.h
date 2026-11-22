@@ -71,6 +71,10 @@ struct SkinnedMeshComponent {
     /// A bone: aim, fire, reload and hit play on it and everything under it
     /// while the legs walk or run. Empty: those take the whole body.
     std::string upper_body;
+    /// An .animgraph (project path) the character runs in Play: its states,
+    /// blend spaces, layers and slots. Empty: the built-in humanoid graph made
+    /// from `clips` (docs/systems/CHARACTERS.md).
+    std::string graph;
 
     // ---- held in the parent's hand -----------------------------------------
     // A bone of the PARENT's skinned character (a name, matched as a prefix):

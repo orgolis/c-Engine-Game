@@ -348,8 +348,31 @@ std::string anim_graph_to_text(const AnimGraph& g) {
         o << "STATE." << n << ".SPEED="      << s.speed << "\n";
         o << "STATE." << n << ".ROOTMOTION=" << (s.apply_root_motion ? 1 : 0) << "\n";
         o << "STATE." << n << ".POS="        << s.x << "," << s.y << "\n";
+        if (s.kind != AnimGraphStateKind::Clip) o << "STATE." << n << ".KIND=" << state_kind_name(s.kind) << "\n";
+        if (!s.clip.empty())       o << "STATE." << n << ".CLIPNAME="  << s.clip << "\n";
+        if (s.layer != 0)          o << "STATE." << n << ".LAYER="     << s.layer << "\n";
+        if (!s.param_x.empty())    o << "STATE." << n << ".PARAMX="    << s.param_x << "\n";
+        if (!s.param_y.empty())    o << "STATE." << n << ".PARAMY="    << s.param_y << "\n";
+        if (s.radial)              o << "STATE." << n << ".RADIAL=1\n";
+        if (!s.rate_param.empty()) o << "STATE." << n << ".RATEPARAM=" << s.rate_param << "\n";
+        if (!s.sync.empty())       o << "STATE." << n << ".SYNC="      << s.sync << "\n";
+        // One line a sample: "clip|x|y", or "clip|measured|x|y" (where the clip measures it moves).
+        for (const AnimGraphSample& sm : s.samples)
+            o << "STATE." << n << ".SAMPLE=" << sm.clip << "|" << (sm.measured ? "measured|" : "") << sm.x << "|" << sm.y << "\n";
         ++n;
     }
+    for (size_t p = 0; p < g.params().size(); ++p) {
+        const AnimGraphParam& pr = g.params()[p];
+        o << "PARAM." << p << "=" << pr.name << "|" << (pr.type == 1 ? "bool" : pr.type == 2 ? "trigger" : "float") << "|" << pr.init << "\n";
+    }
+    for (size_t l = 0; l < g.layers().size(); ++l) {
+        const AnimGraphLayer& ly = g.layers()[l];
+        o << "LAYER." << (l + 1) << ".NAME="  << ly.name << "\n";
+        o << "LAYER." << (l + 1) << ".MASK="  << ly.mask_bone << "\n";
+        o << "LAYER." << (l + 1) << ".ENTRY=" << ly.entry << "\n";
+    }
+    for (size_t sl = 0; sl < g.slots().size(); ++sl)
+        o << "SLOT." << sl << "=" << g.slots()[sl].name << "|" << g.slots()[sl].mask_bone << "\n";
 
     size_t t = 0;
     for (const AnimGraphTransition& tr : g.transitions()) {
@@ -374,7 +397,13 @@ std::string anim_graph_to_text(const AnimGraph& g) {
 void anim_graph_from_text(const std::string& text, AnimGraph& out) {
     struct RawState { uint32_t id = 0; std::string name = "State"; int clip = 0;
                       bool loop = true; float speed = 1.0f; bool root = false;
-                      float x = 0, y = 0; bool seen = false; };
+                      float x = 0, y = 0; bool seen = false;
+                      AnimGraphStateKind kind = AnimGraphStateKind::Clip; std::string clip_name, px, py, rate, sync;
+                      bool radial = false; int layer = 0; std::vector<AnimGraphSample> samples; };
+    struct RawLayer { std::string name, mask; uint32_t entry = 0; };
+    std::unordered_map<int, RawLayer> raw_layers;
+    std::vector<AnimGraphParam> raw_params;
+    std::vector<AnimGraphSlot> raw_slots;
     struct RawTrans { uint32_t from = 0, to = 0; float blend = 0.2f;
                       bool has_exit = false; float exit_time = 0.9f;
                       std::vector<AnimGraphCondition> conds; bool seen = false; };
@@ -393,7 +422,38 @@ void anim_graph_from_text(const std::string& text, AnimGraph& out) {
         if (!split_kv(t, key, value)) continue;
 
         if (key == "ENTRY") { entry = parse_uint(trim(value), 0); have_entry = true; continue; }
+        // PARAM.n=name|type|init and SLOT.n=name|bone have no field.
+        if (key.rfind("PARAM.", 0) == 0 || key.rfind("SLOT.", 0) == 0) {
+            std::vector<std::string> parts;
+            size_t at = 0;
+            while (true) {
+                const size_t bar = value.find('|', at);
+                parts.push_back(trim(value.substr(at, bar == std::string::npos ? std::string::npos : bar - at)));
+                if (bar == std::string::npos) break;
+                at = bar + 1;
+            }
+            if (key[0] == 'P') {
+                AnimGraphParam pr;
+                pr.name = parts[0];
+                if (parts.size() > 1) pr.type = parts[1] == "bool" ? 1 : parts[1] == "trigger" ? 2 : 0;
+                if (parts.size() > 2) pr.init = parse_float(parts[2], 0.0f);
+                if (!pr.name.empty()) raw_params.push_back(pr);
+            } else {
+                AnimGraphSlot sl;
+                sl.name = parts[0];
+                if (parts.size() > 1) sl.mask_bone = parts[1];
+                if (!sl.name.empty()) raw_slots.push_back(sl);
+            }
+            continue;
+        }
         if (!split_indexed(key, prefix, idx, field)) continue;
+        if (prefix == "LAYER") {
+            RawLayer& rl = raw_layers[idx];
+            if (field == "NAME") rl.name = value;
+            else if (field == "MASK") rl.mask = trim(value);
+            else if (field == "ENTRY") rl.entry = parse_uint(trim(value), 0);
+            continue;
+        }
 
         if (prefix == "STATE") {
             RawState& r = states[idx];
@@ -407,6 +467,35 @@ void anim_graph_from_text(const std::string& text, AnimGraph& out) {
             else if (field == "POS") {
                 const std::vector<float> v = parse_floats(value);
                 if (v.size() >= 2) { r.x = v[0]; r.y = v[1]; }
+            }
+            else if (field == "KIND") {
+                const std::string k = trim(value);
+                r.kind = k == "blend1d" ? AnimGraphStateKind::Blend1D : k == "blend2d" ? AnimGraphStateKind::Blend2D
+                       : k == "none" ? AnimGraphStateKind::None : AnimGraphStateKind::Clip;
+            }
+            else if (field == "CLIPNAME")  r.clip_name = trim(value);
+            else if (field == "LAYER")     r.layer = parse_int(trim(value), 0);
+            else if (field == "PARAMX")    r.px = trim(value);
+            else if (field == "PARAMY")    r.py = trim(value);
+            else if (field == "RADIAL")    r.radial = parse_bool(value);
+            else if (field == "RATEPARAM") r.rate = trim(value);
+            else if (field == "SYNC")      r.sync = trim(value);
+            else if (field == "SAMPLE") {
+                AnimGraphSample sm;
+                std::vector<std::string> parts;
+                size_t at = 0;
+                while (true) {
+                    const size_t bar = value.find('|', at);
+                    parts.push_back(trim(value.substr(at, bar == std::string::npos ? std::string::npos : bar - at)));
+                    if (bar == std::string::npos) break;
+                    at = bar + 1;
+                }
+                sm.clip = parts[0];
+                size_t k = 1;
+                if (parts.size() > k && parts[k] == "measured") { sm.measured = true; ++k; }
+                if (parts.size() > k) sm.x = parse_float(parts[k], 0.0f);
+                if (parts.size() > k + 1) sm.y = parse_float(parts[k + 1], 0.0f);
+                if (!sm.clip.empty()) r.samples.push_back(sm);
             }
         } else if (prefix == "TRANS") {
             RawTrans& r = transitions[idx];
@@ -447,6 +536,15 @@ void anim_graph_from_text(const std::string& text, AnimGraph& out) {
             s->loop              = r.loop;
             s->speed             = r.speed;
             s->apply_root_motion = r.root;
+            s->kind              = r.kind;
+            s->clip              = r.clip_name;
+            s->layer             = r.layer;
+            s->param_x           = r.px;
+            s->param_y           = r.py;
+            s->radial            = r.radial;
+            s->rate_param        = r.rate;
+            s->sync              = r.sync;
+            s->samples           = r.samples;
         }
     }
 
@@ -480,6 +578,19 @@ void anim_graph_from_text(const std::string& text, AnimGraph& out) {
     if (have_entry) {
         const auto e = remap.find(entry);
         if (e != remap.end()) out.set_entry_state(e->second);
+    }
+    out.params() = raw_params;
+    out.slots() = raw_slots;
+    std::vector<int> layer_keys;
+    for (const auto& kv : raw_layers) layer_keys.push_back(kv.first);
+    std::sort(layer_keys.begin(), layer_keys.end());
+    for (int k : layer_keys) {
+        AnimGraphLayer ly;
+        ly.name = raw_layers[k].name;
+        ly.mask_bone = raw_layers[k].mask;
+        const auto e = remap.find(raw_layers[k].entry);
+        ly.entry = e != remap.end() ? e->second : 0;
+        out.layers().push_back(ly);
     }
 }
 

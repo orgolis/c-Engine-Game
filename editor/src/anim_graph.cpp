@@ -19,6 +19,9 @@ AnimGraph::AnimGraph() {
 void AnimGraph::clear() {
     states_.clear();
     transitions_.clear();
+    params_.clear();
+    layers_.clear();
+    slots_.clear();
     next_id_ = 1;
     entry_   = 0;
 }
@@ -48,6 +51,7 @@ void AnimGraph::remove_state(uint32_t id) {
 
     // The entry state cannot dangle either -- promote the first survivor.
     if (entry_ == id) entry_ = states_.empty() ? 0 : states_.front().id;
+    for (AnimGraphLayer& l : layers_) if (l.entry == id) l.entry = 0;
 }
 
 AnimGraphState* AnimGraph::state(uint32_t id) {
@@ -87,12 +91,18 @@ std::vector<uint32_t> AnimGraph::unreachable_states() const {
     std::vector<uint32_t> out;
     if (states_.empty()) return out;
 
-    // Breadth-first from the entry. Any-State transitions are DELIBERATELY
-    // ignored: they can reach anything, so counting them would call every state
-    // reachable and the check would report nothing, ever.
+    // Breadth-first from the entry. An Any-State transition is entered from
+    // wherever the machine is, so its TARGET is reachable (a death, an aim on an
+    // upper layer) -- and only its target: an orphan nothing points at is still
+    // reported.
     std::unordered_set<uint32_t> seen;
     std::vector<uint32_t> frontier;
     if (state(entry_)) { seen.insert(entry_); frontier.push_back(entry_); }
+    for (const AnimGraphTransition& t : transitions_)
+        if (t.from == kAnyState && state(t.to) && seen.insert(t.to).second) frontier.push_back(t.to);
+    // Each layer above the first starts at its own entry.
+    for (const AnimGraphLayer& l : layers_)
+        if (state(l.entry) && seen.insert(l.entry).second) frontier.push_back(l.entry);
 
     while (!frontier.empty()) {
         const uint32_t cur = frontier.back();

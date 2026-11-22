@@ -268,6 +268,16 @@ if(MINGW)
     target_link_options(footik_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# animgraphrt_check: the animation graph runtime (anim_graph_runtime.h), headless:
+# blend spaces, sync markers, transitions, layers and masks, montages, in step.
+add_executable(animgraphrt_check animgraphrt_check/main.cpp)
+target_include_directories(animgraphrt_check PRIVATE ../engine/renderer/include)
+target_link_libraries(animgraphrt_check PRIVATE glm)
+target_compile_features(animgraphrt_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(animgraphrt_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # ragdoll_check: a character going limp (ragdoll_rig.h on Jolt's ragdolls),
 # headless: its parts by name, a fall onto a floor, joints joined, knees and
 # elbows bending only their way, the bones following the bodies.
@@ -891,7 +901,8 @@ add_executable(docio_check
     ${CMAKE_SOURCE_DIR}/engine/core/shadergraph/material_graph.cpp)
 target_include_directories(docio_check PRIVATE
     ${CMAKE_SOURCE_DIR}/editor/include
-    ${CMAKE_SOURCE_DIR}/engine/core)
+    ${CMAKE_SOURCE_DIR}/engine/core
+    ${CMAKE_SOURCE_DIR}/engine/renderer/include)   # anim_graph_runtime.h
 target_link_libraries(docio_check PRIVATE glm)
 target_compile_features(docio_check PRIVATE cxx_std_20)
 if(MINGW)

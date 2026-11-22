@@ -6,7 +6,7 @@ One shared C table is exposed identically to all three scripting backends (Pytho
 so every verb below is callable from any of them. The table is the contract: its layout is
 static_asserted, and adding a verb once exposes it everywhere.
 
-**104 verbs** exposed.
+**108 verbs** exposed.
 
 | signature | notes |
 |---|---|
@@ -114,4 +114,8 @@ static_asserted, and adding a verb once exposes it everywhere.
 | `unsigned (*spawn_mesh)(void* ctx, const char* path, const float pos[3], float scale)` |  |
 | `bool (*set_damage_receiver)(void* ctx, unsigned part, unsigned owner, float multiplier)` |  |
 | `bool (*bone_point)(void* ctx, unsigned e, const char* bone, const float model_point[3], float out[3])` |  |
+| `bool (*play_montage)(void* ctx, unsigned e, const char* clip, const char* slot, float rate, float blend_in, float blend_out)` |  |
+| `bool (*stop_montage)(void* ctx, unsigned e, const char* slot, float blend_out)` |  |
+| `bool (*set_anim_param)(void* ctx, unsigned e, const char* name, float value)` |  |
+| `int (*anim_state)(void* ctx, unsigned e, int layer, char* out, int out_size)` |  |
 

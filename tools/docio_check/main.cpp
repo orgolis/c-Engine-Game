@@ -27,6 +27,8 @@
 // differ in what it produces.
 
 #include "doc_io.h"
+#include "anim_graph_build.h"
+#include "humanoid_graph.h"
 
 #include <cmath>
 #include <cstdint>
@@ -233,6 +235,83 @@ int main() {
 
         check("validation agrees",  r.validate().size() == before_problems.size());
         check("reachability agrees", r.unreachable_states().size() == before_unreached.size());
+    }
+
+    std::printf("\n[group] anim graph — the runtime graph's parts: layers, blend spaces, slots\n");
+    {
+        // The graph a soldier runs when it names none, from its clips.
+        HumanoidClips hc;
+        hc.idle = 0; hc.walk = 1; hc.run = 2; hc.aim = 5; hc.walk_back = 22; hc.strafe_left = 14; hc.strafe_right = 15;
+        hc.jump = 23; hc.fall = 24; hc.land = 25; hc.run_back = 28; hc.strafe_run_left = 29; hc.strafe_run_right = 30; hc.death = 10;
+        hc.crouch = 3; hc.crouch_walk = 4; hc.melee_idle = 27;
+        auto measured = [](int clip, glm::vec2 fb) {
+            switch (clip) {
+                case 1: return glm::vec2(0.0f, 1.18f);
+                case 2: return glm::vec2(0.0f, 2.67f);
+                case 22: return glm::vec2(0.0f, -0.95f);
+                case 28: return glm::vec2(0.0f, -2.03f);
+                case 14: return glm::vec2(1.02f, 0.0f);
+                case 15: return glm::vec2(-1.02f, 0.0f);
+                case 29: return glm::vec2(2.01f, 0.0f);
+                case 30: return glm::vec2(-2.01f, 0.0f);
+                default: return fb;
+            }
+        };
+        const HumanoidGraph h = build_humanoid_graph(hc, measured, "spine");
+        check("the humanoid graph: a base and an upper layer, two slots", h.def && h.def->layers.size() == 2 && h.def->slots.size() == 2 &&
+                                                                            h.def->layers[1].mask_bone == "spine");
+        const auto& loco = h.def->layers[0].states[static_cast<size_t>(h.s_loco)];
+        check("its locomotion: a 2D space of 8 clips (and the middle) at their measured velocities",
+              loco.kind == schizo::renderer::animgraph::NodeKind::Blend2D && loco.space.samples.size() == 9 && !loco.space.line &&
+                  loco.space.samples[2].at == glm::vec2(0.0f, 2.67f));
+        float slow = 0.0f, turn = 0.0f;
+        const glm::vec2 q = humanoid_loco_query(h, glm::vec2(0.0f, 0.6f), &slow, &turn);
+        check("half a walk's speed is asked at the walk (0, 1.18), its clips half as quick", approx(q.y, 1.18f) && approx(slow, 0.6f / 1.18f) && turn == 0.0f);
+        const glm::vec2 qd = humanoid_loco_query(h, glm::vec2(0.5f, 0.5f), &slow, &turn);
+        check("a slow diagonal: out to the ring between walk and strafe", qd.x > 0.5f && qd.y > 0.5f && slow < 1.0f && turn == 0.0f);
+        HumanoidClips fwd_only;
+        fwd_only.idle = 0; fwd_only.walk = 1; fwd_only.run = 2;
+        const HumanoidGraph hf = build_humanoid_graph(fwd_only, measured, "");
+        humanoid_loco_query(hf, glm::vec2(2.0f, 0.0f), &slow, &turn);
+        check("no strafes: going sideways walks ahead with the legs turned (50 degrees at most)", std::abs(turn) > 0.85f && std::abs(turn) < 0.88f);
+
+        // To a document, a file, a document again, and a runtime graph again.
+        auto name_of = [](int c) { return std::string("clip_") + std::to_string(c); };
+        const AnimGraph doc = document_from_graph(*h.def, name_of);
+        const fs::path gp = root / "humanoid.animgraph";
+        check("the humanoid graph saves as a document", save_anim_graph(gp.string(), doc));
+        AnimGraph back;
+        check("and loads", load_anim_graph(gp.string(), back));
+        check("states, transitions, parameters, layers and slots all come back",
+              back.states().size() == doc.states().size() && back.transitions().size() == doc.transitions().size() &&
+                  back.params().size() == doc.params().size() && back.layers().size() == 1 && back.layers()[0].mask_bone == "spine" &&
+                  back.slots().size() == 2 && back.slots()[0].name == "upper");
+        const AnimGraphState* bl = nullptr;
+        for (const auto& st : back.states()) if (st.name == "Locomotion") bl = &st;
+        check("a blend state's kind, parameters, sync, rate and samples come back",
+              bl && bl->kind == AnimGraphStateKind::Blend2D && bl->param_x == "vx" && bl->param_y == "vz" && bl->radial && bl->sync == "feet" &&
+                  bl->rate_param == "loco_rate" && bl->samples.size() == 9 && bl->samples[2].clip == "clip_2" && bl->samples[2].measured);
+        for (const auto& pr : back.validate()) std::printf("    (problem: %s)\n", pr.c_str());
+        check("no problems with it", back.validate().empty());
+        auto find = [](const std::string& n) { return n.rfind("clip_", 0) == 0 ? std::stoi(n.substr(5)) : -1; };
+        const RuntimeGraphBuild rb = build_runtime_graph(back, find, measured);
+        bool same = rb.def && rb.problems.empty() && rb.def->layers.size() == h.def->layers.size();
+        for (size_t l = 0; same && l < rb.def->layers.size(); ++l) {
+            const auto& a = rb.def->layers[l];
+            const auto& b = h.def->layers[l];
+            same = a.states.size() == b.states.size() && a.transitions.size() == b.transitions.size() && a.entry == b.entry && a.mask_bone == b.mask_bone;
+            for (size_t i = 0; same && i < a.states.size(); ++i)
+                same = a.states[i].name == b.states[i].name && a.states[i].clip == b.states[i].clip && a.states[i].kind == b.states[i].kind &&
+                       a.states[i].space.samples.size() == b.states[i].space.samples.size() && (a.states[i].sync >= 0) == (b.states[i].sync >= 0);
+            for (size_t i = 0; same && i < a.transitions.size(); ++i)
+                same = a.transitions[i].from == b.transitions[i].from && a.transitions[i].to == b.transitions[i].to &&
+                       a.transitions[i].when.size() == b.transitions[i].when.size() && approx(a.transitions[i].blend, b.transitions[i].blend);
+        }
+        check("built again it is the same graph (states, clips, kinds, samples, transitions, entries, masks)", same);
+        AnimGraph bad = back;
+        for (auto& st : bad.states()) if (st.name == "Idle") st.clip = "no such clip";
+        const RuntimeGraphBuild rbad = build_runtime_graph(bad, find, measured);
+        check("a clip the model lacks is listed as a problem, not fatal", rbad.def && rbad.problems.size() == 1);
     }
 
     std::printf("\n[group] anim graph — enums are names, not indices\n");

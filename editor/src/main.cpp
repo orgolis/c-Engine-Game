@@ -78,6 +78,8 @@
 #include "snapping.h"
 #include "anim_graph.h"                       // state machine document (4.6)
 #include "anim_graph_panel.h"                 // and its editor
+#include "humanoid_graph.h"                   // the graph a gameplay character runs
+#include "anim_graph_build.h"                 // a .animgraph as the graph it runs, and back
 #include "items_panel.h"                      // .items files as a form (C1/C3)
 #include "sequence.h"                        // the timeline model (4.4)
 #include "timeline_panel.h"                   // keyframed sequencer (4.4)
@@ -256,6 +258,8 @@ struct EditorState {
     std::string status_message;
     double      status_message_time = 0.0;   // ImGui::GetTime() when last set
     void set_status(const std::string& m) { status_message = m; status_message_time = ImGui::GetTime(); }
+    // The Inspector's "Save the graph it runs": that entity (Play does it), -1 none.
+    int64_t save_graph_of = -1;
 
     // The persistent ECS bridge (set in main). Lets the inspector author gameplay
     // components on an entity's authoritative ECS entity (F1/F2).
@@ -4405,6 +4409,16 @@ void ShowInspector(EditorState& editor_state) {
                     if (ImGui::DragFloat("Run above (m/s)##skinned", &smc->run_speed, 0.05f, 0.5f, 12.0f))
                         editor_state.editor_scene->MarkModified();
                     edit_text("Upper body bone##skinned", smc->upper_body, "aim, fire and reload play on this bone and under it while the legs move");
+                    edit_text("Graph##skinned", smc->graph, "an .animgraph it runs (states, blend spaces, layers, slots);\n"
+                                                            "empty: the built-in humanoid graph made from its Clips");
+                    if (ImGui::SmallButton("Save the graph it runs##skinned")) {
+                        editor_state.save_graph_of = static_cast<int64_t>(selected_entity->GetId());
+                        editor_state.set_status(editor_state.scene_playback_manager && editor_state.scene_playback_manager->IsPlaying()
+                                                    ? "Saving its graph..." : "Its graph is saved in Play (press Play)");
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Writes the graph this character runs to assets/animgraphs/<model>.animgraph\n"
+                                          "(in Play): a starting point to edit in the Animation State Machine panel.");
                 }
                 edit_text("Held at parent bone##skinned", smc->attach_bone, "a bone of the parent's character (a gun in a hand); empty: not held");
                 if (!smc->attach_bone.empty()) {
@@ -9965,6 +9979,12 @@ int main(int argc, char** argv) {
             bool warp = false;
             glm::vec2 warp_dir{0.0f, 1.0f};
             float warp_stride = 1.0f, warp_turn = 0.0f;
+            // Its animation graph (built from its Clips; rebuilt when they or its model change).
+            schizo::editor::GameplayParams gp;
+            std::string graph_from;
+            const void* graph_actor = nullptr;
+            std::string graph_said;   // (GWS_TEST_LOG_ANIM: the states last logged)
+            bool graph_saved = false;
             uint32_t ragdoll = 0;
             uint64_t ragdoll_world = 0;
             float ragdoll_still = 0.0f;
@@ -11954,7 +11974,184 @@ int main(int argc, char** argv) {
                         const int* C = ca.clip;
                         auto clip_or = [&](int a, int b) { return a >= 0 ? a : b; };
                         const bool upper = !smc->upper_body.empty();
-                        if (dead) {
+                        static const bool anim_legacy = std::getenv("GWS_ANIM_LEGACY") != nullptr;
+                        static const bool no_loco_warp_g = std::getenv("GWS_NO_LOCO_WARP") != nullptr;
+                        if (!anim_legacy) {
+                            // ---- its animation graph -----------------------------------------
+                            // Its own .animgraph (Graph), else the humanoid graph built from its
+                            // Clips (editor/include/humanoid_graph.h). Gameplay sets the
+                            // parameters it has (by name); the graph chooses; shots, swings,
+                            // reloads and hits are montages on its "upper" slot.
+                            const std::string graph_key = smc->clips + "|" + smc->upper_body + "|" + smc->graph;
+                            if (ca.graph_from != graph_key || ca.graph_actor != actor || !actor->has_graph()) {
+                                auto measured = [&](int clip, glm::vec2 fallback) {
+                                    const auto& li = actor->loco_info(clip);
+                                    return li.valid ? li.dir * li.speed : fallback;
+                                };
+                                std::shared_ptr<const schizo::renderer::animgraph::GraphDef> def;
+                                if (!smc->graph.empty()) {
+                                    schizo::editor::AnimGraph doc;
+                                    if (schizo::editor::load_anim_graph(schizo::editor::resolve_asset_path(smc->graph), doc)) {
+                                        auto built = schizo::editor::build_runtime_graph(doc, [&](const std::string& n) { return actor->find_clip(n); }, measured);
+                                        for (const auto& p : built.problems) spdlog::warn("[anim] graph '{}': {}", smc->graph, p);
+                                        def = built.def;
+                                    } else {
+                                        spdlog::warn("[anim] graph '{}' could not be read: the built-in humanoid graph instead", smc->graph);
+                                    }
+                                }
+                                if (!def) {
+                                    schizo::editor::HumanoidClips hc;
+                                    hc.idle = C[CharAnim::Idle]; hc.walk = C[CharAnim::Walk]; hc.run = C[CharAnim::Run];
+                                    hc.crouch = C[CharAnim::Crouch]; hc.crouch_walk = C[CharAnim::CrouchWalk]; hc.aim = C[CharAnim::Aim];
+                                    hc.walk_back = C[CharAnim::WalkBack]; hc.strafe_left = C[CharAnim::StrafeLeft]; hc.strafe_right = C[CharAnim::StrafeRight];
+                                    hc.jump = C[CharAnim::Jump]; hc.fall = C[CharAnim::Fall]; hc.land = C[CharAnim::Land];
+                                    hc.melee_idle = C[CharAnim::MeleeIdle]; hc.run_back = C[CharAnim::RunBack];
+                                    hc.strafe_run_left = C[CharAnim::StrafeRunLeft]; hc.strafe_run_right = C[CharAnim::StrafeRunRight];
+                                    hc.death = C[CharAnim::Death];
+                                    def = schizo::editor::build_humanoid_graph(hc, measured, smc->upper_body).def;
+                                }
+                                actor->set_graph(def);
+                                ca.gp = schizo::editor::GameplayParams::find(*def);
+                                ca.graph_from = graph_key;
+                                ca.graph_actor = actor;
+                            }
+                            auto& g = actor->graph();
+                            const auto& gdef = g.def();
+                            const auto& gp = ca.gp;
+                            // The Inspector's "Save the graph it runs": as a document in the project.
+                            // GWS_TEST_SAVE_GRAPH=<entity name>: the same, once, for that entity (a test).
+                            static const char* save_graph_env = std::getenv("GWS_TEST_SAVE_GRAPH");
+                            const bool save_for_test = save_graph_env && !ca.graph_saved && ent->GetName() == save_graph_env;
+                            if (editor_state.save_graph_of == static_cast<int64_t>(ent->GetId()) || save_for_test) {
+                                editor_state.save_graph_of = -1;
+                                ca.graph_saved = true;
+                                const auto doc = schizo::editor::document_from_graph(gdef, [&](int c) { return c >= 0 ? actor->clip_name(static_cast<size_t>(c)) : std::string(); });
+                                std::error_code ec;
+                                std::filesystem::create_directories(schizo::editor::project_root() / "assets" / "animgraphs", ec);
+                                const std::string rel = "assets/animgraphs/" + std::filesystem::path(smc->gltf_path).stem().string() + ".animgraph";
+                                const bool ok = schizo::editor::save_anim_graph((schizo::editor::project_root() / rel).string(), doc);
+                                editor_state.set_status(ok ? "Saved its graph as " + rel + " -- set it as Graph to use it, open it to edit it"
+                                                           : "Could not save " + rel);
+                                spdlog::info("[anim] {} '{}': its graph as {}", ok ? "saved" : "could not save", ent->GetName(), rel);
+                            }
+                            const float sdt = static_cast<float>(delta_time);
+                            const bool moving = speed > std::max(0.25f, smc->move_threshold);
+                            // The air: up (a jump) or falling, and the landing after a drop.
+                            const bool jumped_now = (move_events & schizo::ecs::kMoveJumped) || (move_events & schizo::ecs::kMoveAirJumped) ||
+                                                    (!is_player && !grounded && !ca.airborne && vy > 2.5f);
+                            if (!grounded) {
+                                ca.air_time += sdt;
+                                if (jumped_now) { ca.jumped = true; ca.air_time = std::max(ca.air_time, 0.2f); }
+                                if (ca.air_time > 0.15f) ca.airborne = true;
+                                ca.fall_speed = std::max(ca.fall_speed, -vy);
+                            } else {
+                                const bool landed = ca.airborne;
+                                if (landed && ca.fall_speed > 4.0f) ca.land_left = std::clamp(ca.fall_speed / 14.0f, 0.25f, 0.6f);
+                                if (landed && ca.fall_speed > 2.0f) actor->pelvis_impulse(std::min(ca.fall_speed * 0.5f, 3.5f));
+                                ca.airborne = ca.jumped = false;
+                                ca.air_time = ca.fall_speed = 0.0f;
+                            }
+                            ca.land_left = std::max(0.0f, ca.land_left - sdt);
+                            // Its velocity in the model (+Z ahead, +X its left), and where that falls
+                            // in the locomotion space (slower than a walk: out to the walk, its clips
+                            // slowed; a way it has no clips for: the nearest, legs turned).
+                            glm::vec3 vm = glm::inverse(sk_tf->GetWorldRotation()) * hvel;
+                            const glm::vec2 vel(vm.x, vm.z);
+                            float slow = 1.0f, turn = 0.0f;
+                            const auto& base_states = gdef.layers[0].states;
+                            const glm::vec2 q = gp.loco_state >= 0 ? schizo::editor::loco_query(base_states[static_cast<size_t>(gp.loco_state)].space, vel, &slow, &turn) : vel;
+                            g.set(gp.vx, q.x);
+                            g.set(gp.vz, q.y);
+                            g.set(gp.speed, speed);
+                            g.set_bool(gp.moving, moving);
+                            g.set_bool(gp.airborne, ca.airborne);
+                            g.set_bool(gp.jumped, ca.jumped);
+                            g.set_bool(gp.landing, ca.land_left > 0.0f && !moving);
+                            g.set_bool(gp.crouched, crouched);
+                            g.set_bool(gp.dead, dead);
+                            g.set_bool(gp.aiming, aiming);
+                            g.set_bool(gp.melee, melee);
+                            // Rate and stride share what the playing state's clips (blended where
+                            // the velocity falls) cannot cover: the rate into the state's rate
+                            // parameter, the stride and the legs' turn into the warps. Without
+                            // moving: back to 1. GWS_NO_LOCO_WARP=1: rate alone.
+                            ca.warp = false;
+                            {
+                                using schizo::renderer::animgraph::NodeKind;
+                                const int st = g.state(0);
+                                const auto& sd = base_states[static_cast<size_t>(std::max(0, st))];
+                                float rate = 1.0f;
+                                auto split = [&](float ratio, bool sideways, float& stride_out) {
+                                    stride_out = no_loco_warp_g ? 1.0f : std::clamp(std::sqrt(ratio), 0.8f, sideways ? 1.15f : 1.3f);
+                                    rate = std::clamp(ratio / stride_out, 0.5f, 2.5f);
+                                };
+                                const bool on_feet = moving && grounded && !ca.airborne && !dead;
+                                if (on_feet && st == gp.loco_state && sd.kind == NodeKind::Blend2D) {
+                                    std::vector<schizo::renderer::animgraph::BlendWeight> w;
+                                    float over = 1.0f;
+                                    sd.space.weights(q, sd.radial, w, &over);
+                                    glm::vec2 vb(0.0f);
+                                    for (const auto& x : w) vb += sd.space.samples[static_cast<size_t>(x.sample)].at * x.w;
+                                    if (glm::length(vb) > 0.05f) {
+                                        const glm::vec2 dir = glm::normalize(vb);
+                                        float stride = 1.0f;
+                                        split(speed / glm::length(vb), std::abs(dir.x) > 0.7f, stride);
+                                        ca.warp = !no_loco_warp_g;
+                                        ca.warp_dir = dir;
+                                        ca.warp_stride = stride;
+                                        ca.warp_turn = turn;
+                                    }
+                                    if (static const bool log_warp = std::getenv("GWS_TEST_LOG_ANIM") != nullptr; log_warp && is_player && frame_count % 20 == 0) {
+                                        std::string ws;
+                                        for (const auto& x : w) {
+                                            const int cl = sd.space.samples[static_cast<size_t>(x.sample)].clip;
+                                            ws += fmt::format(" {}={:.2f}", cl >= 0 ? actor->clip_name(static_cast<size_t>(cl)) : std::string("middle"), x.w);
+                                        }
+                                        spdlog::info("[test] warp: player at {:.2f} m/s (in the model toward {:.2f}, {:.2f}), blended{} ({:.2f} m/s): stride x{:.2f}, rate x{:.2f}, legs turned {:.1f} degrees",
+                                                     speed, vel.x, vel.y, ws, glm::length(vb), ca.warp_stride, rate, glm::degrees(turn));
+                                    }
+                                } else if (on_feet && sd.kind == NodeKind::Clip && sd.loop && sd.clip >= 0) {
+                                    // A locomotion clip of its own (a crouch walk): its measured speed and way.
+                                    const auto& li = actor->loco_info(sd.clip);
+                                    if (li.valid && li.speed > 0.1f) {
+                                        float stride = 1.0f;
+                                        split(speed / li.speed, std::abs(li.dir.x) > 0.7f, stride);
+                                        ca.warp = !no_loco_warp_g;
+                                        ca.warp_dir = li.dir;
+                                        ca.warp_stride = stride;
+                                        ca.warp_turn = 0.0f;
+                                        if (glm::length(vel) > 0.2f) {
+                                            const glm::vec2 v = glm::normalize(vel);
+                                            ca.warp_turn = std::clamp(std::atan2(li.dir.y * v.x - li.dir.x * v.y, glm::dot(li.dir, v)), glm::radians(-50.0f), glm::radians(50.0f));
+                                        }
+                                    }
+                                }
+                                if (sd.rate_param >= 0) g.set(sd.rate_param, rate);
+                            }
+                            // The arms: a shot (or a swing), a reload, a hit -- one-shots on the upper slot.
+                            const char* arms_slot = gdef.slot("upper") >= 0 ? "upper" : "full";
+                            if (dead) {
+                                if (!ca.dead) actor->stop_montage(arms_slot, 0.1f);
+                            } else {
+                                int arms = -1;
+                                if (ca.fired_now && melee && C[CharAnim::Melee] >= 0) arms = C[CharAnim::Melee];
+                                else if (ca.fired_now && C[CharAnim::Fire] >= 0) arms = C[CharAnim::Fire];
+                                else if (ca.reload_now && C[CharAnim::Reload] >= 0) arms = C[CharAnim::Reload];
+                                else if (hit_now && C[CharAnim::Hit] >= 0) arms = C[CharAnim::Hit];
+                                if (arms >= 0) actor->play_montage(arms, arms_slot, 1.0f, 0.06f, 0.2f);
+                            }
+                            ca.dead = dead;
+                            // GWS_TEST_LOG_ANIM=1: the player's graph, when its states change.
+                            if (static const bool log_graph = std::getenv("GWS_TEST_LOG_ANIM") != nullptr; log_graph && is_player) {
+                                std::string said;
+                                for (size_t l = 0; l < gdef.layers.size(); ++l) said += (l ? " / " : "") + g.state_name(static_cast<int>(l));
+                                if (said != ca.graph_said) {
+                                    spdlog::info("[test] graph: player {} (speed {:.1f}{}{}{})", said, speed, crouched ? ", crouched" : "",
+                                                 ca.airborne ? ", in the air" : "", aiming ? ", aiming" : "");
+                                    ca.graph_said = said;
+                                }
+                            }
+                        } else if (dead) {
                             if (!ca.dead && C[CharAnim::Death] >= 0) actor->play(C[CharAnim::Death], false, 0.12f);
                             actor->play_upper(-1, false, 0.1f);
                             ca.dead = true;
@@ -13936,9 +14133,42 @@ int main(int argc, char** argv) {
                     smc->drive_from_gameplay = false;
                     smc->clip_index = index;
                     smc->playing = true;
+                    if (a->has_graph()) a->set_graph(nullptr);   // a script plays it now (not its graph)
                     a->play(index, loop, std::max(0.0f, blend), speed, restart);
                     editor_state.online_game.animation(id,clip,loop,speed,blend,restart);
                     return true;
+                };
+                ctx.play_montage = [&](uint32_t id, const std::string& clip, const std::string& slot, float rate, float blend_in, float blend_out) {
+                    auto* a = skinned_actors.find(id);
+                    if (!a || !std::isfinite(rate) || !std::isfinite(blend_in) || !std::isfinite(blend_out)) return false;
+                    const int index = a->find_clip(clip);
+                    if (index < 0) return false;
+                    a->play_montage(index, slot.empty() ? "upper" : slot, rate > 0.0f ? rate : 1.0f, std::max(0.0f, blend_in), std::max(0.0f, blend_out));
+                    return true;
+                };
+                ctx.stop_montage = [&](uint32_t id, const std::string& slot, float blend_out) {
+                    auto* a = skinned_actors.find(id);
+                    if (!a || !a->has_graph()) return false;
+                    a->stop_montage(slot.empty() ? "upper" : slot, std::isfinite(blend_out) ? blend_out : -1.0f);
+                    return true;
+                };
+                ctx.set_anim_param = [&](uint32_t id, const std::string& name, float value) {
+                    auto* a = skinned_actors.find(id);
+                    if (!a || !a->has_graph() || !std::isfinite(value)) return false;
+                    const int p = a->graph().def().param(name);
+                    if (p < 0) return false;
+                    if (a->graph().def().params[static_cast<size_t>(p)].type == schizo::renderer::animgraph::ParamType::Trigger) {
+                        if (value > 0.0f) a->graph().trigger(p);
+                    } else {
+                        a->graph().set(p, value);
+                    }
+                    return true;
+                };
+                ctx.anim_state = [&](uint32_t id, int layer, std::string& out) {
+                    auto* a = skinned_actors.find(id);
+                    if (!a || !a->has_graph()) return -1;
+                    out = a->graph().state_name(layer);
+                    return a->graph().state(layer);
                 };
                 ctx.bone_point = [&](uint32_t id, const std::string& bone, const float* p, float* out) {
                     auto e = editor_state.script_ctx.scene->GetEntityById(id);
@@ -14478,7 +14708,19 @@ int main(int argc, char** argv) {
                     mark(editor_state.items_doc, schizo::ecs::items_doc_to_text(editor_state.items_panel.doc));
             }
 
-            // Animation state machine (4.6).
+            // Animation state machine (4.6). GWS_TEST_ANIMGRAPH=<file.animgraph>: open
+            // it at start, its first blend state selected -- for a screenshot.
+            if (static const char* test_graph = std::getenv("GWS_TEST_ANIMGRAPH"); test_graph) {
+                static bool test_graph_done = false;
+                if (!test_graph_done) {
+                    test_graph_done = true;
+                    if (schizo::editor::load_anim_graph(test_graph, editor_state.anim_graph)) {
+                        editor_state.show_anim_graph = true;
+                        for (const auto& st : editor_state.anim_graph.states())
+                            if (st.kind == schizo::editor::AnimGraphStateKind::Blend2D) { editor_state.anim_canvas.select_node(st.id); break; }
+                    }
+                }
+            }
             if (editor_state.show_anim_graph) {
                 bool changed = false;
                 schizo::editor::draw_anim_graph_panel(

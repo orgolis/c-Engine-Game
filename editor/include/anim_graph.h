@@ -60,6 +60,28 @@ struct AnimGraphCondition {
     float           threshold = 0.0f;
 };
 
+/// What a state plays: one clip, a blend space of clips over one or two
+/// parameters, or nothing (an upper layer letting the one below show).
+enum class AnimGraphStateKind : uint8_t { Clip, Blend1D, Blend2D, None };
+
+inline const char* state_kind_name(AnimGraphStateKind k) {
+    switch (k) {
+        case AnimGraphStateKind::Clip:    return "clip";
+        case AnimGraphStateKind::Blend1D: return "blend1d";
+        case AnimGraphStateKind::Blend2D: return "blend2d";
+        case AnimGraphStateKind::None:    return "none";
+    }
+    return "clip";
+}
+
+/// A clip in a blend space, where it sits; `measured`: at the velocity the clip
+/// was measured to move at (a locomotion clip), x and y only where it cannot be.
+struct AnimGraphSample {
+    std::string clip;
+    float x = 0.0f, y = 0.0f;
+    bool measured = false;
+};
+
 struct AnimGraphState {
     uint32_t    id   = 0;
     std::string name = "State";
@@ -68,6 +90,33 @@ struct AnimGraphState {
     float       speed           = 1.0f;
     bool        apply_root_motion = false;
     float       x = 0.0f, y = 0.0f;      // canvas position
+    // The runtime graph (anim_graph_runtime.h):
+    AnimGraphStateKind kind = AnimGraphStateKind::Clip;
+    std::string clip;                    // the clip by name (used over clip_index when set)
+    std::vector<AnimGraphSample> samples;   // a blend space's
+    std::string param_x, param_y;        // a blend space's parameters
+    bool        radial = false;          // outside the space: clamped from the origin (locomotion)
+    std::string rate_param;              // a float parameter multiplying the speed
+    std::string sync;                    // sync group: in step with the other states of it
+    int         layer = 0;
+};
+
+/// A parameter gameplay sets: 0 float, 1 bool, 2 trigger.
+struct AnimGraphParam {
+    std::string name;
+    int   type = 0;
+    float init = 0.0f;
+};
+/// A layer above the first poses the bones under its mask bone (none: all).
+struct AnimGraphLayer {
+    std::string name;
+    std::string mask_bone;
+    uint32_t    entry = 0;               // its entry state (layer 0's is the graph's)
+};
+/// A slot montages play on (a shot on "upper"), on the bones under its mask bone.
+struct AnimGraphSlot {
+    std::string name;
+    std::string mask_bone;
 };
 
 struct AnimGraphTransition {
@@ -114,6 +163,19 @@ public:
     uint32_t entry_state() const { return entry_; }
     void set_entry_state(uint32_t id);
 
+    std::vector<AnimGraphParam>& params() { return params_; }
+    const std::vector<AnimGraphParam>& params() const { return params_; }
+    /// Layers above the first (index 1 up is layers_[index - 1]).
+    std::vector<AnimGraphLayer>& layers() { return layers_; }
+    const std::vector<AnimGraphLayer>& layers() const { return layers_; }
+    std::vector<AnimGraphSlot>& slots() { return slots_; }
+    const std::vector<AnimGraphSlot>& slots() const { return slots_; }
+    /// A layer's entry state (0: the graph's entry).
+    uint32_t layer_entry(int layer) const {
+        if (layer <= 0) return entry_;
+        return static_cast<size_t>(layer - 1) < layers_.size() ? layers_[static_cast<size_t>(layer - 1)].entry : 0;
+    }
+
     /// States that cannot be reached from the entry state, ignoring Any-State
     /// transitions.
     ///
@@ -129,6 +191,9 @@ public:
 private:
     std::vector<AnimGraphState>      states_;
     std::vector<AnimGraphTransition> transitions_;
+    std::vector<AnimGraphParam>      params_;
+    std::vector<AnimGraphLayer>      layers_;
+    std::vector<AnimGraphSlot>       slots_;
     uint32_t next_id_ = 1;
     uint32_t entry_   = 0;
 };
