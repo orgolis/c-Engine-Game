@@ -32,6 +32,7 @@
 #include "ragdoll_rig.h"
 #include "locomotion_warp.h"
 #include "anim_graph_runtime.h"
+#include "spring_bones.h"
 #include "anim_hooks.h"   // inertialization and clip events (no GPU: animhooks_check)
 #include "animation.h"
 
@@ -46,6 +47,7 @@
 #include <spdlog/spdlog.h>
 #include <sstream>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -71,6 +73,8 @@ struct SharedSkinnedAsset {
     // Each clip's sync markers (its feet's plants, if it is locomotion), for graphs.
     std::vector<schizo::renderer::animgraph::SyncMarkers> sync;
     bool sync_done = false;
+    // Spring chains (`<model>.springs` beside the model): secondary motion.
+    schizo::renderer::SpringFile springs;
 };
 
 /// The events of a model's clips, from the text file beside it (the model's path
@@ -93,6 +97,17 @@ inline void load_clip_events(SharedSkinnedAsset& sa, const std::string& model_pa
                                               sa.events, &warnings);
     for (const auto& w : warnings) spdlog::warn("[anim] {}: {}", path.string(), w);
     if (count) spdlog::info("[anim] {} clip events for '{}'", count, model_path);
+}
+/// A model's spring chains, from `<model>.springs` beside it (spring_bones.h).
+inline void load_springs(SharedSkinnedAsset& sa, const std::string& model_path) {
+    std::filesystem::path path(model_path);
+    path.replace_extension(".springs");
+    std::ifstream in(path);
+    if (!in) return;
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    sa.springs = schizo::renderer::parse_spring_file(text);
+    if (!sa.springs.chains.empty())
+        spdlog::info("[anim] {} spring chain(s), {} collider(s) for '{}'", sa.springs.chains.size(), sa.springs.colliders.size(), model_path);
 }
 inline std::unordered_map<std::string, std::shared_ptr<SharedSkinnedAsset>>& skinned_asset_cache() {
     static std::unordered_map<std::string, std::shared_ptr<SharedSkinnedAsset>> cache;
@@ -450,6 +465,21 @@ public:
     void set_report_feet(bool on) { report_feet_ = on; }
     /// A landing: the pelvis is pushed down (m/s) and springs back.
     void pelvis_impulse(float down_speed) { rig_.land_v -= down_speed; }
+
+    // ---- spring bones (engine/renderer/include/spring_bones.h) --------------------------------
+    /// Whether the model has spring chains (`<model>.springs`).
+    bool has_springs() const { return shared_ && !shared_->springs.chains.empty(); }
+    /// Last, after every other layer of the pose: the chains sway and settle on
+    /// their own with the model where set_model put it. Any thread.
+    void update_springs(float dt) {
+        if (!has_springs() || !skeleton_ || dt < 0.0f) return;
+        if (!springs_ready_) {
+            springs_ready_ = true;
+            springs_.init(*skeleton_, shared_->springs, [&](const std::string& n) { return find_bone(n); });
+        }
+        springs_.update(*skeleton_, model(), dt);
+    }
+    void reset_springs() { springs_.reset(); }
 
     // ---- an animation graph (engine/renderer/include/anim_graph_runtime.h) -------------------
     /// Runs `def` from now on instead of play()/play_upper(): set its parameters
@@ -809,6 +839,7 @@ private:
             sa->normal = upload(lm0.normal, false);
             sa->emissive = upload(lm0.emissive, true);
             load_clip_events(*sa, gltf_path, sa->model.animations);
+            load_springs(*sa, gltf_path);
             it = cache.emplace(gltf_path, std::move(sa)).first;
         }
         shared_ = it->second;
@@ -886,6 +917,8 @@ private:
     struct InertReq { float half; std::vector<uint8_t> mask; };
     std::vector<InertReq> inert_reqs_;
     schizo::renderer::animgraph::GraphInstance graph_;
+    schizo::renderer::SpringBones springs_;
+    bool springs_ready_ = false;
     GraphClips graph_src_;
     const void* graph_def_tag_ = nullptr;
     bool  inert_live_ = false;

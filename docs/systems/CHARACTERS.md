@@ -93,8 +93,9 @@ spring from Holden's "Spring-It-On"). It is the same for clips a script plays.
 Each character in Play is posed in this order: its clips (sampled and
 blended, transitions inertialized), then its legs fitted to how it really
 moves (locomotion warping), then its feet on the ground (and held there), then
-its body's lean, then where it looks and aims, then -- once the gun in its
-hand is placed -- its support hand on the gun. All but the last touch only its
+its body's lean, then where it looks and aims, then its spring chains (an
+antenna, a strap, a tail) swing, then -- once the gun in its hand is placed --
+its support hand on the gun. All but the last touch only its
 own skeleton, so all characters are posed at once on the job system;
 `GWS_ANIM_SERIAL=1` poses them one after another (to compare).
 
@@ -221,6 +222,29 @@ A landing compresses the legs: the pelvis dips with the fall's speed (about
 `GWS_NO_FOOT_IK=1` turns it off; `GWS_TEST_LOG_FEET=1` logs, for the player's
 body (else a character on a slope), each foot's height over the ground under
 it, whether it is held, and how fast its planted feet slide.
+
+## Spring bones (secondary motion)
+
+Chains of bones that hang, sway and settle on their own -- an antenna, a
+strap, a ponytail, a pouch, a tail -- on top of everything else the pose has
+done. A model lists them in `<model>.springs` beside it:
+
+```
+#     first bone  last bone   stiffness damping gravity radius  max bend (degrees)
+chain antenna_01  antenna_04  0.45      0.25    0.3     0.006   45
+collider head 0 0.1 0 0.11    # bone, centre in its space, radius: kept out
+```
+
+Each bone's tip moves in the world (Verlet), so the body's own motion -- a
+start, a stop, a turn -- leaves the chain behind and it catches up: it keeps
+its momentum (less `damping`, taken off motion relative to the body only: at a
+steady speed a chain stands as at rest), is pulled toward where the clip has
+it (`stiffness`, each segment along its parent as that is now: it bends like a
+rod), falls with `gravity` (a fraction of 9.81), keeps its length, bends at
+most `max bend` from its rest, and is pushed out of the colliders. It steps at
+60 Hz and is drawn between the last two steps: the same swing at any frame
+rate. A teleport starts it again from the pose. `GWS_NO_SPRINGS=1` holds the
+chains as the clips have them.
 
 ## Leaning
 

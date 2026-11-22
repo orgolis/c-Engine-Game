@@ -268,6 +268,16 @@ if(MINGW)
     target_link_options(footik_check PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
+# springbones_check: secondary motion (spring_bones.h), headless: lengths kept,
+# a sag under gravity, trailing and settling after the body moves, colliders,
+# frame-rate independence, the .springs file.
+add_executable(springbones_check springbones_check/main.cpp)
+target_link_libraries(springbones_check PRIVATE renderer)
+target_compile_features(springbones_check PRIVATE cxx_std_20)
+if(MINGW)
+    target_link_options(springbones_check PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 # animgraphrt_check: the animation graph runtime (anim_graph_runtime.h), headless:
 # blend spaces, sync markers, transitions, layers and masks, montages, in step.
 add_executable(animgraphrt_check animgraphrt_check/main.cpp)

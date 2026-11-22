@@ -11789,6 +11789,7 @@ int main(int argc, char** argv) {
                 // GWS_NO_FOOT_IK=1 / GWS_NO_FOOT_LOCK=1 / GWS_NO_LEAN=1: without (to compare).
                 static const bool no_foot_ik = std::getenv("GWS_NO_FOOT_IK") != nullptr;
                 static const bool no_foot_lock = std::getenv("GWS_NO_FOOT_LOCK") != nullptr;
+                static const bool no_springs = std::getenv("GWS_NO_SPRINGS") != nullptr;
                 static const bool no_lean = std::getenv("GWS_NO_LEAN") != nullptr;
                 std::vector<PoseJob> pose_jobs;
                 auto advance_clip = [&](const std::shared_ptr<schizo::scene::Entity>& who,
@@ -11824,6 +11825,7 @@ int main(int argc, char** argv) {
                         if (j.feet) j.actor->place_feet(feet_ground, j.feet_weight, j.look_dt, !no_foot_lock);
                         if (j.lean) j.actor->lean_into(j.accel, 0.5f, j.look_dt);
                         if (j.look) j.actor->look_at(j.look_point, j.look_weight, j.look_aim, j.look_dt);
+                        if (!no_springs && j.actor->has_springs()) j.actor->update_springs(j.look_dt);
                     };
                     if (anim_serial || pose_jobs.size() < 3) {
                         for (size_t i = 0; i < pose_jobs.size(); ++i) pose_one(i);
