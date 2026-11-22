@@ -322,6 +322,7 @@ int main() {
                         // and the heel coming up 2 cm toward the end of the stance.
                         if (k % 60 == (side == 0 ? 1 : 61) % 60) x.position.y -= 0.011f;
                         x.position.y += 0.02f * std::max(0.0f, (phase - 0.38f) / 0.12f);
+                        if (phase > 0.22f && phase < 0.30f) x.position.y += 0.03f;   // the heel up out of the band a moment
                     }
                     tr->AddKeyframe(t, x);
                 }
@@ -339,7 +340,7 @@ int main() {
                   near_cycle(wi.contact[0][0], 0.0f, 1.0f) && near_cycle(wi.contact[1][0], 0.5f, 1.0f), what);
         const auto keyed = make(0.6f, 0.4f, "run (keyed)", true);
         const LocoClipInfo ki = measure_loco_clip(b.sk, b.bind, feet, *keyed);
-        std::snprintf(what, sizeof what, "a run keyed as Blender keys it (a foot a frame under the ground landing, the heel up late) measured: %.2f m/s (2.67)", ki.speed);
+        std::snprintf(what, sizeof what, "a run keyed as Blender keys it (a foot a frame under the ground landing, the heel up a moment and late) measured: %.2f m/s (2.67), one step a foot", ki.speed);
         check(ki.valid && std::abs(ki.speed - 2.6667f) < 0.2f && ki.contact[0].size() == 1 && ki.contact[1].size() == 1, what);
         std::snprintf(what, sizeof what, "a run measured: %.2f m/s (2.67)", ri.speed);
         check(ri.valid && std::abs(ri.speed - 2.6667f) < 0.15f, what);

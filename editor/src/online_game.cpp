@@ -162,6 +162,10 @@ struct OnlineGame::Impl {
  struct Visual {int type=0;uint32_t id=0;std::string a,b,c;glm::vec3 p{},d{};float s=1,r=0;uint32_t flags=0;};
  std::vector<Visual> visuals;std::map<std::pair<uint32_t,std::string>,Visual> bones;
  std::map<uint32_t,Visual> clips;std::map<uint32_t,uint64_t> clip_serial;uint64_t next_clip=1;
+ // Animation parameters (0.8.62): montages and graph parameters by serial, and each NPC's look and flags.
+ std::map<std::pair<uint32_t,std::string>,Visual> montages;std::map<std::pair<uint32_t,std::string>,uint64_t> montage_serial,montage_seen;uint64_t next_montage=1;
+ std::map<std::pair<uint32_t,std::string>,Visual> params;std::map<std::pair<uint32_t,std::string>,uint64_t> param_serial,param_seen;uint64_t next_param=1;
+ std::map<uint32_t,OnlineGame::RemoteAnim> actor_anims,remote_anims;uint64_t anim_logs=0;
  std::map<std::string,std::string> texts;std::set<std::string> shown_ui;
  ecs::Entity entity(uint32_t id){auto e=scene?scene->GetEntityById(id):nullptr;return e?static_cast<ecs::Entity>(bridge->ecs_entity_id(e->GetTransform())):ecs::null_entity;}
  uint32_t local_id(){auto* p=play?play->GetPlayerEntity():nullptr;return p?p->GetId():0;}
@@ -355,6 +359,10 @@ void OnlineGame::weapon(const std::string& id,const glm::vec3& origin,const glm:
 void OnlineGame::ability(const std::string& id,int pressed,const glm::vec3& origin,const glm::vec3& aim,bool held,bool moving){auto& p=*impl_;if(!p.session||!p.is_client||!p.ready||!p.net)return;Writer w(Message::Ability,p.epoch);w.str(id);w.pod(int32_t(pressed));vec(w,origin-p.net->origin_offset());vec(w,aim);w.pod(uint32_t(held?1:0)|uint32_t(moving?2:0));p.net->send_game(0,w.bytes);}
 void OnlineGame::effect(const std::string& name,const glm::vec3& at,const glm::vec3& dir,float scale,float reach){auto& p=*impl_;if(p.session&&!p.is_client&&p.visuals.size()<1024)p.visuals.push_back({1,0,name,{},{},at,dir,scale,reach});}
 void OnlineGame::bone(uint32_t id,const std::string& name,const glm::vec3& rotation){auto& p=*impl_;if(p.session&&!p.is_client)p.bones[{id,name}]={2,id,name,{},{},rotation};}
+void OnlineGame::montage(uint32_t id,const std::string& clip,const std::string& slot,float rate,float blend_in,float blend_out){auto& p=*impl_;if(!p.session||p.is_client||p.montages.size()>=1024)return;Impl::Visual v;v.type=4;v.id=id;v.a=clip;v.b=slot;v.s=rate;v.p={blend_in,blend_out,0};p.montages[{id,slot}]=v;p.montage_serial[{id,slot}]=p.next_montage++;}
+void OnlineGame::anim_param(uint32_t id,const std::string& name,float value){auto& p=*impl_;if(!p.session||p.is_client||p.params.size()>=2048)return;Impl::Visual v;v.type=5;v.id=id;v.a=name;v.s=value;p.params[{id,name}]=v;p.param_serial[{id,name}]=p.next_param++;}
+void OnlineGame::actor_anim(uint32_t id,const glm::vec3& look,float look_weight,uint32_t flags){auto& p=*impl_;if(!p.session||p.is_client||p.actor_anims.size()>=4096)return;p.actor_anims[id]={look,look_weight,flags};}
+const OnlineGame::RemoteAnim* OnlineGame::remote_anim(uint32_t local_id)const{const auto& p=*impl_;if(!p.session||!p.is_client)return nullptr;auto it=p.remote_anims.find(local_id);return it==p.remote_anims.end()?nullptr:&it->second;}
 void OnlineGame::animation(uint32_t id,const std::string& name,bool loop,float speed,float blend,bool restart){auto& p=*impl_;if(p.session&&!p.is_client){p.clips[id]={3,id,name,{},{},{},{},speed,blend,uint32_t(loop?1:0)|uint32_t(restart?2:0)};p.clip_serial[id]=p.next_clip++;}}
 void OnlineGame::ui_message(int action,const std::string& file,const std::string& id,const std::string& text){auto& p=*impl_;if(!p.session||p.is_client||(!p.shares_ui(file)&&!(file==p.settings["hud_ui"]&&id==p.settings["objective_id"])))return;if(action==1)p.shown_ui.insert(file);if(action==2)p.shown_ui.erase(file);if(action==3)p.texts[file+"\n"+id]=text;}
 
@@ -396,6 +404,11 @@ void OnlineGame::Impl::snapshot_send(){
  out.pod(uint32_t(bones.size()));for(const auto& [key,v]:bones){out.pod(v.id);out.str(v.a);vec(out,v.p);}
  out.pod(uint32_t(shown_ui.size()));for(const auto& file:shown_ui)out.str(file);
  out.pod(uint32_t(texts.size()));for(const auto& [key,value]:texts){out.str(key);out.str(value);}
+ // 0.8.62, after everything an older client reads: montages, graph parameters, NPCs' look and flags.
+ out.pod(uint32_t(montages.size()));for(const auto& [key,v]:montages){out.pod(v.id);out.pod(montage_serial[key]);out.str(v.a);out.str(v.b);out.pod(v.s);out.pod(v.p.x);out.pod(v.p.y);}
+ out.pod(uint32_t(params.size()));for(const auto& [key,v]:params){out.pod(v.id);out.pod(param_serial[key]);out.str(v.a);out.pod(v.s);}
+ out.pod(uint32_t(actor_anims.size()));for(const auto& [id,a]:actor_anims){out.pod(id);vec(out,a.look-net->origin_offset());out.pod(a.look_weight);out.pod(a.flags);}
+ actor_anims.clear();
  if(out.bytes.size()>262144){spdlog::error("[online] snapshot exceeds packet budget: {}",out.bytes.size());return;}
  for(auto& [peer,yes]:peer_ready)if(yes)net->send_game(peer,out.bytes);full_snapshot=false;
 }
@@ -429,6 +442,19 @@ void OnlineGame::Impl::snapshot_read(Reader& in){
  auto nbones=in.pod<uint32_t>();if(nbones>4096)throw std::runtime_error("too many bones");for(uint32_t i=0;i<nbones;++i){auto id=in.pod<uint32_t>();auto name=in.str(128);auto r=vec(in);float a[]{r.x,r.y,r.z};if(auto local=map_id(id);local&&ctx->set_bone_rotation)ctx->set_bone_rotation(local,name,a);}
  auto nui=in.pod<uint32_t>();if(nui>16)throw std::runtime_error("too many UI files");std::set<std::string> now;for(uint32_t i=0;i<nui;++i){auto file=in.str(256);if(shares_ui(file)){now.insert(file);if(!play_ui().shown(file))play_ui().show(file);}}for(auto& file:shown_ui)if(!now.count(file))play_ui().hide(file);shown_ui=std::move(now);
  auto nt=in.pod<uint32_t>();if(nt>128)throw std::runtime_error("too much UI text");for(uint32_t i=0;i<nt;++i){auto key=in.str(512),text=in.str(2048);auto at=key.find('\n');if(at!=std::string::npos){auto file=key.substr(0,at), id=key.substr(at+1);if(shares_ui(file)||(file==settings["hud_ui"]&&id==settings["objective_id"]))play_ui().set_text(file,id,text);}}
+ // 0.8.62 (absent from an older host's snapshot): montages, graph parameters, NPCs' look and flags.
+ if(!in.done()){
+  auto nm=in.pod<uint32_t>();if(nm>1024)throw std::runtime_error("too many montages");
+  for(uint32_t i=0;i<nm;++i){auto id=in.pod<uint32_t>();auto serial=in.pod<uint64_t>();auto clip=in.str(128);auto slot=in.str(64);float rate=in.number(),bin=in.number(),bout=in.number();auto local=map_id(id);
+   if(local&&montage_seen[{id,slot}]!=serial&&ctx->play_montage&&ctx->play_montage(local,clip,slot,rate,bin,bout))montage_seen[{id,slot}]=serial;}
+  auto np=in.pod<uint32_t>();if(np>2048)throw std::runtime_error("too many animation parameters");
+  for(uint32_t i=0;i<np;++i){auto id=in.pod<uint32_t>();auto serial=in.pod<uint64_t>();auto name=in.str(64);float value=in.number();auto local=map_id(id);
+   if(local&&param_seen[{id,name}]!=serial&&ctx->set_anim_param&&ctx->set_anim_param(local,name,value))param_seen[{id,name}]=serial;}
+  auto na=in.pod<uint32_t>();if(na>4096)throw std::runtime_error("too many animated actors");remote_anims.clear();
+  for(uint32_t i=0;i<na;++i){auto id=in.pod<uint32_t>();auto look=vec(in)+net->origin_offset();float weight=in.number();auto flags=in.pod<uint32_t>();if(auto local=map_id(id))remote_anims[local]={look,weight,flags};}
+  // GWS_TEST_LOG_ANIM=1: now and then, what came for the NPCs' animation.
+  if(static const bool log_anim=std::getenv("GWS_TEST_LOG_ANIM")!=nullptr;log_anim&&(++anim_logs)%120==1){int looking=0,aiming=0;for(auto& [id,a]:remote_anims){looking+=a.look_weight>0;aiming+=(a.flags&1u)!=0;}spdlog::info("[test] online: animation of {} actors from the host ({} looking at something, {} aiming), {} montages, {} parameters",remote_anims.size(),looking,aiming,nm,np);}
+ }
  if(first_state)spdlog::info("[online] client synchronized scene: {} actors, epoch {}",count,epoch);
  first_state=false;status="Connected.";
 }

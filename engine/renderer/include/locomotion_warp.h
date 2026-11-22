@@ -76,7 +76,27 @@ inline LocoClipInfo measure_loco_clip(const Skeleton& sk, const std::vector<Bone
         info.low[leg] = low;
         info.high[leg] = high;
         const float down_band = std::max(0.025f, 0.15f * range), flat_band = std::max(0.01f, 0.08f * range);
-        auto down = [&](int k) { return ankle[leg][static_cast<size_t>((k + steps) % steps)].y < low + down_band; };
+        // Down, with a lift shorter than an eighth of the cycle not counted as a step
+        // (a heel rising out of the band late in the stance and settling again).
+        std::vector<char> is_down(static_cast<size_t>(steps));
+        for (int k = 0; k < steps; ++k) is_down[static_cast<size_t>(k)] = ankle[leg][static_cast<size_t>(k)].y < low + down_band;
+        const int short_lift = std::max(1, steps / 8);
+        bool any_down = false;
+        for (char d : is_down) any_down = any_down || d;
+        if (any_down) {
+            int start = 0;
+            while (!is_down[static_cast<size_t>(start)]) ++start;   // from a down frame, around the loop
+            for (int i = 0; i < steps;) {
+                const int k = (start + i) % steps;
+                if (is_down[static_cast<size_t>(k)]) { ++i; continue; }
+                int len = 0;
+                while (len < steps && !is_down[static_cast<size_t>((k + len) % steps)]) ++len;
+                if (len < short_lift)
+                    for (int j = 0; j < len; ++j) is_down[static_cast<size_t>((k + j) % steps)] = 1;
+                i += std::max(1, len);
+            }
+        }
+        auto down = [&](int k) { return is_down[static_cast<size_t>((k + steps) % steps)] != 0; };
         for (int k = 0; k < steps; ++k) {
             if (down(k) && !down(k - 1)) info.contact[leg].push_back(dt * static_cast<float>(k));
             // The slide only where the foot is right down (not the end of a swing landing,
@@ -92,7 +112,16 @@ inline LocoClipInfo measure_loco_clip(const Skeleton& sk, const std::vector<Bone
     if (sliding == 0 || info.contact[0].empty() || info.contact[1].empty()) return info;
     slide /= static_cast<float>(sliding);
     info.speed = glm::length(slide);
-    if (info.speed < 0.05f) return info;
+    // Locomotion steps: a real pace, and the feet coming down at different times
+    // (a jump lands both at once; a death slides a little but does not step).
+    if (info.speed < 0.2f) return info;
+    float apart = info.duration;
+    for (float l : info.contact[0])
+        for (float r : info.contact[1]) {
+            float d = std::fmod(std::abs(l - r), info.duration);
+            apart = std::min(apart, std::min(d, info.duration - d));
+        }
+    if (apart < 0.1f * info.duration) return info;
     info.dir = -slide / info.speed;   // the feet slide back: the body goes the other way
     info.valid = true;
     return info;

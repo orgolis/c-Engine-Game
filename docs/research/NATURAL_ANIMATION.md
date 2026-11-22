@@ -208,7 +208,7 @@ item by item, with what was decided.
 | 2D blend spaces, per-bone layer masks | **0.8.61**: Delaunay blend spaces (radial clamp for locomotion, samples at measured velocities), layer and slot masks; inertialization masked to the bones a change touches |
 | Additive layers, montage sections | with the first additive clips / multi-part montages |
 | Posing on the job system | **0.8.58** |
-| Fixed simulation tick; animation on it, drawn in between | needed before deterministic notifies, hit windows and lag compensation; the Leviathan does it in script already |
+| Fixed simulation tick; animation on it, drawn in between | **evaluated, not adopted for animation (0.8.62)**: clip events fire on the time window a frame passes, exact at any frame rate; online play is host-authoritative (no lockstep to keep); scripted encounters that want a fixed clock keep one (the Leviathan's 20 Hz). Animation stays per frame, as in the big engines; physics keeps its fixed step |
 | Look-at / aim chain | **0.8.57**, in the engine as `pose_layers.h` in **0.8.58** |
 | Foot IK, pelvis spring, landing compression | **0.8.58** |
 | Support hand IK (third person) | **0.8.58** |
@@ -226,6 +226,6 @@ item by item, with what was decided.
 | Spring bones, XPBD cloth, strand hair | spring bones with the first asset that has a chain; cloth and hair later |
 | Procedural creature step planner | with the first legged creature |
 | Facial animation | when a character has a face rig |
-| Replicate animation parameters, not poses | with the fixed tick (today scripted bone turns are sent per bone) |
+| Replicate animation parameters, not poses | **0.8.62**: NPCs' look, aim and flinch, scripts' montages and graph parameters; each machine's graph poses (scripted bone turns still go per bone) |
 | GPU: shared bind buffers, previous positions for motion vectors, DQS | with the renderer's motion-vector work |
 | Budgeted animation LOD | the distance tiers stay until scenes have hundreds of characters |

@@ -166,7 +166,11 @@ how its planted feet slide back under the body -- the ground speed it was made
 for and the way its body goes. Its ground under each foot is taken low in the
 foot's heights but not at the lowest one, so a keyed curve that dips under the
 floor for a frame as a foot lands does not hide the stance.
-`GWS_TEST_LOG_ANIM=1` logs each measurement (or why a clip is not taken).
+`GWS_TEST_LOG_ANIM=1` logs each measurement (or why a clip is not taken). A
+clip is locomotion only if it steps: its feet come down at different times (a
+jump lands both at once) at a pace of 0.2 m/s or more; a lift shorter than an
+eighth of the cycle is not a step (a heel rising out of the ground band late
+in the stance and settling again).
 
 Then, moving on the ground at a speed the clip was not made for:
 
@@ -394,9 +398,10 @@ idle, fire, reload and draw clips). Each soldier is an NPC agent with a
   spaces, motion warping, spring bones).
 - Feet are held in the world: a character standing on something that moves
   (a lift, a vehicle) would leave its feet behind until they step.
-- No additive layers yet (a breathing or recoil layer added onto any pose), no
-  montage sections or branching, and a graph's parameters are not sent in
-  online play (each machine runs its own graph from what it sees).
+- No additive layers yet (a breathing or recoil layer added onto any pose), and
+  no montage sections or branching. Online, the host sends parameters (an NPC's
+  look, aim and flinch; scripts' montages and graph parameters), never poses:
+  each machine's graphs pose its characters (docs/systems/ONLINE_PLAY.md).
 - Root motion is not used: characters move by their controller or agent and
   the clip's speed follows.
 - One material per model.

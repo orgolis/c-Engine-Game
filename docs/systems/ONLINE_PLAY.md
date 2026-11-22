@@ -218,6 +218,12 @@ the box.
   and the UI listed in `sync_ui`; unchanged data is left out between full
   snapshots, and a late joiner gets a full one. Other players are drawn with
   the authored character model and get matching hurtboxes.
+- Animation goes by its parameters, not its poses: the host sends what each
+  NPC looks at, whether it aims and when it flinches (a guest runs no AI), and
+  the montages and graph parameters its scripts set; each machine's own
+  animation graphs pose the characters from that (and from the movement and
+  weapon state it already gets). A host older than 0.8.62 sends none of it and
+  a guest older than 0.8.62 ignores it.
 - Co-op has no friendly fire. In a duel the two sides are `team.duelist.host`
   and `team.duelist.guest`. Leaving a hosted session ends it for everyone (no
   host migration). Saving and loading are off during a session, and menus do

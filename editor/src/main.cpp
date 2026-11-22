@@ -11950,6 +11950,16 @@ int main(int argc, char** argv) {
                             staggered = ai.staggered;
                             look_point = ai.look;
                             look_weight = ai.look_weight;
+                            // Online, a client runs no AI: the host sends what each NPC looks at,
+                            // whether it aims and when it flinches (its graph poses it from that).
+                            if (const auto* ra = editor_state.online_game.remote_anim(who->GetId())) {
+                                look_point = ra->look;
+                                look_weight = ra->look_weight;
+                                aiming = aiming || (ra->flags & 1u);
+                                staggered = (ra->flags & 2u) != 0;
+                            } else if (!editor_state.online_game.client()) {
+                                editor_state.online_game.actor_anim(who->GetId(), look_point, look_weight, (aiming ? 1u : 0u) | (staggered ? 2u : 0u));
+                            }
                             if(network_fighter||editor_state.online_game.client()){
                                 auto id=ecs_bridge.ecs_entity_id(who->GetTransform());auto e=static_cast<schizo::ecs::Entity>(id);
                                 if(id!=schizo::editor::kNoEcsEntity&&ecs_bridge.world().valid(e))if(auto* ws=ecs_bridge.world().try_get<schizo::ecs::WeaponState>(e)){aiming=!ws->weapon_id.empty();shots=uint32_t(ws->rounds_fired);reloading=ws->reloading>0;
@@ -14144,6 +14154,7 @@ int main(int argc, char** argv) {
                     const int index = a->find_clip(clip);
                     if (index < 0) return false;
                     a->play_montage(index, slot.empty() ? "upper" : slot, rate > 0.0f ? rate : 1.0f, std::max(0.0f, blend_in), std::max(0.0f, blend_out));
+                    editor_state.online_game.montage(id, clip, slot.empty() ? "upper" : slot, rate > 0.0f ? rate : 1.0f, std::max(0.0f, blend_in), std::max(0.0f, blend_out));
                     return true;
                 };
                 ctx.stop_montage = [&](uint32_t id, const std::string& slot, float blend_out) {
@@ -14162,6 +14173,7 @@ int main(int argc, char** argv) {
                     } else {
                         a->graph().set(p, value);
                     }
+                    editor_state.online_game.anim_param(id, name, value);
                     return true;
                 };
                 ctx.anim_state = [&](uint32_t id, int layer, std::string& out) {
