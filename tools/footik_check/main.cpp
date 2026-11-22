@@ -2,19 +2,23 @@
 // Feet on the ground (engine/renderer/include/foot_placement.h) on a small
 // biped: flat ground, a step up under one foot, a drop under the other, a slope,
 // a placed and turned model, a foot the clip lifts, a landing, the weight going
-// to nothing. Looking, aiming and leaning (pose_layers.h) on a spine-to-head
+// to nothing; feet held where they came down (foot locking) while the body
+// moves on or turns, stepping one at a time. Looking, aiming and leaning (pose_layers.h) on a spine-to-head
 // chain, also one whose joints have turned axes (as a rig made in Blender has).
 // These fail visibly (feet in the ground, knees snapping backwards, a head
 // turned the wrong way) but only in motion -- so they are asserted here.
 #include "foot_placement.h"
 #include "pose_layers.h"
+#include "locomotion_warp.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -295,6 +299,190 @@ int main() {
                           turned ? "turned axes: " : "", most, deg(chest_up(), glm::vec3(0, 1, 0)));
             check(most > 7.0f && most < 13.0f && deg(chest_up(), glm::vec3(0, 1, 0)) < 1.0f, what);
         }
+    }
+    {
+        // Locomotion: a walk (1 s, strides 0.6 m: 1.2 m/s) and a run (0.6 s, 0.8 m: 2.67 m/s),
+        // made in place: a planted foot slides back, the other swings forward, 0.1 m up.
+        Biped b;
+        const FootRig feet = find_foot_rig(b.sk, b.bind);
+        auto make = [&](float cycle, float reach, const char* name, bool keyed_like_blender = false) {
+            auto clip = std::make_shared<AnimationClip>(name, 60.0f);
+            for (int side = 0; side < 2; ++side) {
+                const int thigh = side == 0 ? 2 : 6;
+                BoneAnimation* tr = clip->AddBoneAnimation(static_cast<uint16_t>(thigh));
+                for (int k = 0; k <= 120; ++k) {
+                    const float t = cycle * static_cast<float>(k) / 120.0f;
+                    float phase = std::fmod(static_cast<float>(k) / 120.0f + (side == 0 ? 0.0f : 0.5f), 1.0f);
+                    BoneTransform x = b.bind[static_cast<size_t>(thigh)];
+                    if (phase < 0.5f) x.position.z += reach - 4.0f * reach * phase;                   // planted: back
+                    else { const float w = (phase - 0.5f) * 2.0f;                                     // swinging: forward and up
+                           x.position.z += -reach + 2.0f * reach * w; x.position.y += 0.1f * std::sin(3.14159265f * w); }
+                    if (keyed_like_blender && phase < 0.5f) {
+                        // As a keyed curve does: under the ground for a frame as the foot lands,
+                        // and the heel coming up 2 cm toward the end of the stance.
+                        if (k % 60 == (side == 0 ? 1 : 61) % 60) x.position.y -= 0.011f;
+                        x.position.y += 0.02f * std::max(0.0f, (phase - 0.38f) / 0.12f);
+                    }
+                    tr->AddKeyframe(t, x);
+                }
+            }
+            clip->UpdateDuration();
+            return clip;
+        };
+        const auto walk = make(1.0f, 0.3f, "walk"), run = make(0.6f, 0.4f, "run");
+        const LocoClipInfo wi = measure_loco_clip(b.sk, b.bind, feet, *walk), ri = measure_loco_clip(b.sk, b.bind, feet, *run);
+        char what[200];
+        std::snprintf(what, sizeof what, "a walk measured: %.2f m/s (1.2) toward (%.2f, %.2f) (forward); the left foot down at %.2f s, the right at %.2f (0, 0.5)",
+                      wi.speed, wi.dir.x, wi.dir.y, wi.contact[0].empty() ? -1.0f : wi.contact[0][0], wi.contact[1].empty() ? -1.0f : wi.contact[1][0]);
+        auto near_cycle = [](float a, float b, float cycle) { const float d = std::fmod(std::abs(a - b), cycle); return std::min(d, cycle - d) < 0.04f * cycle + 0.02f; };
+        check(wi.valid && std::abs(wi.speed - 1.2f) < 0.06f && wi.dir.y > 0.99f && wi.contact[0].size() == 1 && wi.contact[1].size() == 1 &&
+                  near_cycle(wi.contact[0][0], 0.0f, 1.0f) && near_cycle(wi.contact[1][0], 0.5f, 1.0f), what);
+        const auto keyed = make(0.6f, 0.4f, "run (keyed)", true);
+        const LocoClipInfo ki = measure_loco_clip(b.sk, b.bind, feet, *keyed);
+        std::snprintf(what, sizeof what, "a run keyed as Blender keys it (a foot a frame under the ground landing, the heel up late) measured: %.2f m/s (2.67)", ki.speed);
+        check(ki.valid && std::abs(ki.speed - 2.6667f) < 0.2f && ki.contact[0].size() == 1 && ki.contact[1].size() == 1, what);
+        std::snprintf(what, sizeof what, "a run measured: %.2f m/s (2.67)", ri.speed);
+        check(ri.valid && std::abs(ri.speed - 2.6667f) < 0.15f, what);
+        const float t_run = loco_synced_time(wi, 0.25f, ri);
+        std::snprintf(what, sizeof what, "walk to run in step: a quarter into the walk (left foot mid-stance) is %.3f s into the run (0.15)", t_run);
+        check(std::abs(t_run - 0.15f) < 0.03f, what);
+        const float t_walk = loco_synced_time(ri, 0.45f, wi);
+        std::snprintf(what, sizeof what, "and back: 0.45 s into the run (right foot mid-stance) is %.3f s into the walk (0.75)", t_walk);
+        check(std::abs(t_walk - 0.75f) < 0.05f, what);
+
+        // Stride warping on the walk's pose 0.1 s in: the left foot 0.18 m ahead (planted), the
+        // right 0.18 behind (lifting); strides 1.2 times as long put them 0.216 from the pelvis.
+        std::vector<BoneTransform> pose = b.bind;
+        walk->SampleLocal(0.1f, true, pose);
+        for (size_t i = 0; i < pose.size(); ++i) b.sk.SetBoneLocalTransform(static_cast<uint16_t>(i), pose[i]);
+        b.sk.UpdateWorldTransforms();
+        const float pz = glm::vec3(b.sk.GetWorldMatrix(1)[3]).z;
+        const float before_l = glm::vec3(b.sk.GetWorldMatrix(4)[3]).z - pz, before_r = glm::vec3(b.sk.GetWorldMatrix(8)[3]).z - pz;
+        const float ly = glm::vec3(b.sk.GetWorldMatrix(4)[3]).y;
+        warp_locomotion(b.sk, feet, 9, glm::vec2(0.0f, 1.0f), 1.2f, 0.0f);
+        const float after_l = glm::vec3(b.sk.GetWorldMatrix(4)[3]).z - pz, after_r = glm::vec3(b.sk.GetWorldMatrix(8)[3]).z - pz;
+        std::snprintf(what, sizeof what, "stride warping x1.2: the feet %.3f / %.3f m from the pelvis become %.3f / %.3f (x1.2), at the same height",
+                      before_l, before_r, after_l, after_r);
+        check(std::abs(after_l - before_l * 1.2f) < 0.005f && std::abs(after_r - before_r * 1.2f) < 0.005f &&
+                  std::abs(glm::vec3(b.sk.GetWorldMatrix(4)[3]).y - ly) < 0.005f, what);
+
+        // A long stride at the end of a step: the feet 0.3 m out, x1.3 -- more than the
+        // legs reach from the hip as it is: the hips come down and the feet get there.
+        pose = b.bind;
+        walk->SampleLocal(0.0f, true, pose);
+        for (size_t i = 0; i < pose.size(); ++i) b.sk.SetBoneLocalTransform(static_cast<uint16_t>(i), pose[i]);
+        b.sk.UpdateWorldTransforms();
+        const glm::vec3 pel0(b.sk.GetWorldMatrix(1)[3]);
+        const glm::vec3 la0(b.sk.GetWorldMatrix(4)[3]), ra0(b.sk.GetWorldMatrix(8)[3]);
+        warp_locomotion(b.sk, feet, 9, glm::vec2(0.0f, 1.0f), 1.3f, 0.0f);
+        const glm::vec3 pel1(b.sk.GetWorldMatrix(1)[3]);
+        const glm::vec3 la1(b.sk.GetWorldMatrix(4)[3]), ra1(b.sk.GetWorldMatrix(8)[3]);
+        const float want_l = pel0.z + (la0.z - pel0.z) * 1.3f, want_r = pel0.z + (ra0.z - pel0.z) * 1.3f;
+        std::snprintf(what, sizeof what, "a stride past the legs' reach: the hips come down %.3f m and the feet get there (%.4f / %.4f m off), on the ground (%.4f)",
+                      pel0.y - pel1.y, std::abs(la1.z - want_l), std::abs(ra1.z - want_r), std::abs(la1.y - la0.y));
+        check(pel0.y - pel1.y > 0.005f && std::abs(la1.z - want_l) < 0.01f && std::abs(ra1.z - want_r) < 0.01f && std::abs(la1.y - la0.y) < 0.01f, what);
+
+        // Orientation warping: the legs turned 30 degrees, the upper body (the spine) not.
+        for (size_t i = 0; i < pose.size(); ++i) b.sk.SetBoneLocalTransform(static_cast<uint16_t>(i), pose[i]);
+        b.sk.UpdateWorldTransforms();
+        const glm::mat3 spine_before(b.sk.GetWorldMatrix(9));
+        const glm::vec3 foot_before = glm::vec3(b.sk.GetWorldMatrix(4)[3]) - glm::vec3(b.sk.GetWorldMatrix(1)[3]);
+        warp_locomotion(b.sk, feet, 9, glm::vec2(0.0f, 1.0f), 1.0f, glm::radians(30.0f));
+        const glm::vec3 foot_after = glm::vec3(b.sk.GetWorldMatrix(4)[3]) - glm::vec3(b.sk.GetWorldMatrix(1)[3]);
+        const float legs_turn = glm::degrees(std::atan2(foot_after.x, foot_after.z) - std::atan2(foot_before.x, foot_before.z));
+        const glm::mat3 spine_after(b.sk.GetWorldMatrix(9));
+        float spine_off = 0.0f;
+        for (int c = 0; c < 3; ++c) spine_off = std::max(spine_off, glm::length(spine_after[c] - spine_before[c]));
+        std::snprintf(what, sizeof what, "orientation warping 30 degrees: the legs turn %.1f degrees, the upper body keeps facing ahead (%.4f)", legs_turn, spine_off);
+        check(std::abs(legs_turn - 30.0f) < 1.5f && spine_off < 1e-3f, what);
+    }
+    {
+        // Foot locking: the clip stands still while the body is carried forward (1 m/s):
+        // both feet stay where they came down; past a third of the leg one steps back
+        // under the body (a little lifted) while the other holds, then the other.
+        Biped b;
+        FootRig rig = find_foot_rig(b.sk, b.bind);
+        const auto flat_ground = field([](float, float) { return 0.0f; });
+        const float dt = 1.0f / 60.0f;
+        auto model_at = [](float z, float yaw_deg) {
+            return glm::rotate(glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, z)), glm::radians(yaw_deg), glm::vec3(0.0f, 1.0f, 0.0f));
+        };
+        b.sample();
+        place_feet(b.sk, rig, model_at(0.0f, 0.0f), flat_ground, 1.0f, dt, true);
+        const glm::vec3 l0 = b.world(model_at(0.0f, 0.0f), 4), r0 = b.world(model_at(0.0f, 0.0f), 8);
+        float held_off = 0.0f, z = 0.0f;
+        for (int i = 0; i < 12; ++i) {   // 0.2 m
+            z += dt;
+            b.sample();
+            place_feet(b.sk, rig, model_at(z, 0.0f), flat_ground, 1.0f, dt, true);
+            held_off = std::max({held_off, glm::length(b.world(model_at(z, 0.0f), 4) - l0), glm::length(b.world(model_at(z, 0.0f), 8) - r0)});
+        }
+        char what[220];
+        std::snprintf(what, sizeof what, "foot locking: the body carried 0.20 m, both feet stay where they came down (%.4f m off; locked %d %d)",
+                      held_off, rig.legs[0].locked, rig.legs[1].locked);
+        check(held_off < 0.003f && rig.legs[0].locked && rig.legs[1].locked, what);
+        // On to 0.5 m: who lets go first, and does the other hold meanwhile?
+        int first = -1, both_free_frames = 0;
+        float step_up = 0.0f, other_off = 0.0f;
+        for (int i = 0; i < 18; ++i) {   // to 0.5 m
+            z += dt;
+            b.sample();
+            place_feet(b.sk, rig, model_at(z, 0.0f), flat_ground, 1.0f, dt, true);
+            if (first < 0 && (!rig.legs[0].locked || !rig.legs[1].locked)) first = rig.legs[0].locked ? 1 : 0;
+            if (!rig.legs[0].locked && !rig.legs[1].locked) ++both_free_frames;
+            if (first >= 0) {
+                step_up = std::max(step_up, b.world(model_at(z, 0.0f), first == 0 ? 4 : 8).y - 0.10f);
+                if (rig.legs[1 - first].locked) other_off = std::max(other_off, glm::length(b.world(model_at(z, 0.0f), first == 0 ? 8 : 4) - (first == 0 ? r0 : l0)));
+            }
+        }
+        std::snprintf(what, sizeof what, "past a third of the leg one foot steps (the %s), %.3f m up on the way, while the other holds (%.4f m off); both free %d frames",
+                      first == 0 ? "left" : first == 1 ? "right" : "none", step_up, other_off, both_free_frames);
+        check(first >= 0 && step_up > 0.01f && step_up < 0.1f && other_off < 0.003f && both_free_frames == 0, what);
+        for (int i = 0; i < 60; ++i) { b.sample(); place_feet(b.sk, rig, model_at(z, 0.0f), flat_ground, 1.0f, dt, true); }
+        const float settle_l = glm::length(b.world(model_at(z, 0.0f), 4) - glm::vec3(model_at(z, 0.0f) * glm::vec4(0.1f, 0.10f, 0.0f, 1.0f)));
+        const float settle_r = glm::length(b.world(model_at(z, 0.0f), 8) - glm::vec3(model_at(z, 0.0f) * glm::vec4(-0.1f, 0.10f, 0.0f, 1.0f)));
+        std::snprintf(what, sizeof what, "then both are back under the body (%.4f / %.4f m from the clip's spots) and held again (%d %d)",
+                      settle_l, settle_r, rig.legs[0].locked, rig.legs[1].locked);
+        check(settle_l < 0.02f && settle_r < 0.02f && rig.legs[0].locked && rig.legs[1].locked, what);
+
+        // Turning in place: a held foot keeps its turn in the world until the body has
+        // turned 35 degrees from it.
+        Biped t;
+        FootRig tr = find_foot_rig(t.sk, t.bind);
+        auto foot_fwd = [&](const glm::mat4& m) {
+            return glm::normalize(glm::vec3(m * t.sk.GetWorldMatrix(4) * glm::vec4(0.0f, 0.0f, 1.0f, 0.0f)));
+        };
+        t.sample();
+        place_feet(t.sk, tr, model_at(0.0f, 0.0f), flat_ground, 1.0f, dt, true);
+        const glm::vec3 f0 = foot_fwd(model_at(0.0f, 0.0f));
+        float yaw = 0.0f, worst = 0.0f;
+        for (int i = 0; i < 15; ++i) {   // 30 degrees
+            yaw += 2.0f;
+            t.sample();
+            place_feet(t.sk, tr, model_at(0.0f, yaw), flat_ground, 1.0f, dt, true);
+            worst = std::max(worst, glm::degrees(std::acos(std::clamp(glm::dot(foot_fwd(model_at(0.0f, yaw)), f0), -1.0f, 1.0f))));
+        }
+        std::snprintf(what, sizeof what, "the body turned 30 degrees in place: a held foot keeps its turn in the world (%.2f degrees off)", worst);
+        check(worst < 1.0f && tr.legs[0].locked, what);
+        bool stepped = false;
+        for (int i = 0; i < 6 && !stepped; ++i) {
+            yaw += 2.0f;
+            t.sample();
+            place_feet(t.sk, tr, model_at(0.0f, yaw), flat_ground, 1.0f, dt, true);
+            stepped = !tr.legs[0].locked || !tr.legs[1].locked;
+        }
+        std::snprintf(what, sizeof what, "turned past 35 degrees, a foot steps round (%s at %.0f degrees)", stepped ? "yes" : "no", yaw);
+        check(stepped && yaw >= 35.0f, what);
+
+        // A foot the clip lifts is not held; nor are feet in the air (weight 0).
+        Biped u;
+        FootRig ur = find_foot_rig(u.sk, u.bind);
+        for (int i = 0; i < 5; ++i) { u.sample(0.06f); place_feet(u.sk, ur, model_at(0.02f * static_cast<float>(i), 0.0f), flat_ground, 1.0f, dt, true); }
+        const bool lifted_free = !ur.legs[0].locked && ur.legs[1].locked;
+        for (int i = 0; i < 3; ++i) { u.sample(); place_feet(u.sk, ur, model_at(0.5f, 0.0f), flat_ground, 0.0f, dt, true); }
+        std::snprintf(what, sizeof what, "a lifted foot is not held (%s), and in the air neither is (%d %d)", lifted_free ? "free" : "held",
+                      ur.legs[0].locked, ur.legs[1].locked);
+        check(lifted_free && !ur.legs[0].locked && !ur.legs[1].locked, what);
     }
     std::printf("%s (%d failure%s)\n", failures ? "FAILED" : "OK", failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;

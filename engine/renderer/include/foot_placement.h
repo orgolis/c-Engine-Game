@@ -10,7 +10,15 @@
 //      spring; a landing compresses the legs on a softer one (an impulse);
 //   3. each leg is bent onto its foot by analytic two-bone IK, the knee keeping
 //      its way;
-//   4. a foot the clip has down is laid on the slope (at most 30 degrees).
+//   4. a foot the clip has down is laid on the slope (at most 30 degrees);
+//   5. foot locking (`lock`): a foot the clip puts down is held where it came
+//      down in the world -- and keeps the turn it had -- while the clip keeps it
+//      down; lifted, or left too far behind (a third of the leg) or turned too
+//      far from (35 degrees) by the body, it lets go and goes back to the clip's
+//      spot on a quick spring, a little lifted if the clip has it down (a
+//      shuffle step). One foot steps at a time; a jump (`weight` under a half)
+//      lets go of both, a teleport snaps. Standing still a moment with a foot
+//      held off its spot, that foot steps back into the clip's stance.
 //
 // Every offset moves on a critically damped spring (exact for any time step),
 // so a kerb or an edge does not snap. Pure math on a Skeleton (no GPU): checked
@@ -52,6 +60,13 @@ struct FootLeg {
     float plant = 0.0f;                    // 1 while the clip has the foot down
     float ground = 0.0f;                   // the ground under it, measured (before the weight)
     glm::vec3 normal{0.0f, 1.0f, 0.0f};    // the ground's normal under it (model space)
+    // Foot locking: held (where in the world, the body's forward then); off the
+    // clip's spot by `slip` (world, horizontal) and turned by `twist` (radians
+    // about up), each with its spring's rate while it goes back.
+    bool locked = false;
+    glm::vec3 lock_at{0.0f}, lock_fwd{0.0f, 0.0f, 1.0f};
+    glm::vec3 slip{0.0f}, slip_v{0.0f};
+    float twist = 0.0f, twist_v = 0.0f;
 };
 struct FootRig {
     FootLeg legs[2];   // left, right
@@ -60,6 +75,9 @@ struct FootRig {
     // A landing's compression: the legs give (an impulse into `land_v`, m/s down
     // negative) and come back on a softer spring than the ground's.
     float land_off = 0.0f, land_v = 0.0f;
+    // Foot locking: how long the body has stood still (where and which way it was).
+    float still = 0.0f;
+    glm::vec3 last_pos{0.0f}, last_fwd{0.0f, 0.0f, 1.0f};
     bool valid() const { return legs[0].ankle >= 0 && legs[1].ankle >= 0; }
 };
 
@@ -115,7 +133,8 @@ inline FootRig find_foot_rig(const Skeleton& sk, const std::vector<BoneTransform
 /// with its world transforms current; `model` places it in the world (the model
 /// faces +Z, +Y up, its ground plane at y 0). `weight` 0..1 (0 in the air or
 /// dead), eased. Safe on any thread if `ground` is.
-inline void place_feet(Skeleton& sk, FootRig& rig, const glm::mat4& model, const FootGroundFn& ground, float weight, float dt) {
+inline void place_feet(Skeleton& sk, FootRig& rig, const glm::mat4& model, const FootGroundFn& ground, float weight, float dt,
+                       bool lock = false) {
     if (!rig.valid() || dt < 0.0f) return;
     const float unit = glm::length(glm::vec3(model[1]));   // model units to metres, along up
     if (unit < 1e-6f) return;
@@ -123,13 +142,80 @@ inline void place_feet(Skeleton& sk, FootRig& rig, const glm::mat4& model, const
     const glm::mat3 to_model = glm::inverse(glm::mat3(model));
     auto pos = [&](int b) { return glm::vec3(sk.GetWorldMatrix(static_cast<uint16_t>(b))[3]); };
     auto parent = [&](int b) { const Bone* bone = b >= 0 ? sk.GetBone(static_cast<uint16_t>(b)) : nullptr; return bone ? bone->parent_id : -1; };
-    glm::vec3 anim_ankle[2];
+    auto flat = [&](const glm::vec3& v) { return v - up_w * glm::dot(v, up_w); };
+    glm::vec3 anim_ankle[2], anim_w[2];
+    for (int k = 0; k < 2; ++k) {
+        anim_ankle[k] = pos(rig.legs[k].ankle);
+        anim_w[k] = glm::vec3(model * glm::vec4(anim_ankle[k], 1.0f));
+        // Planted while the clip has the foot down; lifted, it is mid-step.
+        rig.legs[k].plant = std::clamp(1.0f - (anim_ankle[k].y - rig.legs[k].rest_height) / 0.12f, 0.0f, 1.0f);
+    }
+    // Foot locking: how far the body may leave a held foot (a third of the leg,
+    // in metres) and turn from it.
+    const float leg_m = (glm::length(pos(rig.legs[0].knee) - pos(rig.legs[0].hip)) + glm::length(anim_ankle[0] - pos(rig.legs[0].knee))) * unit;
+    const float max_slip = 0.33f * leg_m, max_turn = glm::radians(35.0f);
+    glm::vec3 fwd_w = flat(glm::vec3(model[2]));
+    fwd_w = glm::length(fwd_w) > 1e-6f ? glm::normalize(fwd_w) : glm::vec3(0.0f, 0.0f, 1.0f);
+    auto turned = [&](const FootLeg& L) {   // the body's turn about up since L locked (radians)
+        return std::atan2(glm::dot(glm::cross(L.lock_fwd, fwd_w), up_w), glm::dot(L.lock_fwd, fwd_w));
+    };
+    const bool can_lock = lock && weight > 0.5f;
+    float over[2] = {0.0f, 0.0f};   // how far past its limits each held foot is (0: within)
     for (int k = 0; k < 2; ++k) {
         FootLeg& L = rig.legs[k];
-        anim_ankle[k] = pos(L.ankle);
-        // Planted while the clip has the foot down; lifted, it is mid-step.
-        L.plant = std::clamp(1.0f - (anim_ankle[k].y - L.rest_height) / 0.12f, 0.0f, 1.0f);
-        const glm::vec3 spot(model * glm::vec4(anim_ankle[k].x, 0.0f, anim_ankle[k].z, 1.0f));
+        if (!L.locked) continue;
+        const glm::vec3 off = flat(L.lock_at - anim_w[k]);
+        over[k] = std::max(glm::length(off) / max_slip, std::abs(turned(L)) / max_turn);
+    }
+    // Standing still (under 5 cm/s and 10 degrees/s) a third of a second with both
+    // feet held: the one furthest off its spot (past 15% of a limit) steps back.
+    const glm::vec3 model_pos(model[3]);
+    const bool still_now = dt > 0.0f && glm::length(flat(model_pos - rig.last_pos)) < 0.05f * dt &&
+                           glm::dot(fwd_w, rig.last_fwd) > std::cos(glm::radians(10.0f) * dt);
+    rig.still = still_now ? rig.still + dt : 0.0f;
+    rig.last_pos = model_pos;
+    rig.last_fwd = fwd_w;
+    int settle = -1;
+    if (rig.still > 0.33f && rig.legs[0].locked && rig.legs[1].locked) {
+        const int far = over[0] >= over[1] ? 0 : 1;
+        if (over[far] > 0.15f) settle = far;
+    }
+    for (int k = 0; k < 2; ++k) {
+        FootLeg& L = rig.legs[k];
+        const FootLeg& other = rig.legs[1 - k];
+        if (L.locked) {
+            const glm::vec3 off = flat(L.lock_at - anim_w[k]);
+            // Let go: lifted, in the air, a teleport; past a limit while the other foot
+            // holds (within its own, or further past it: one foot steps at a time);
+            // twice past a limit regardless.
+            const bool stretched = over[k] >= 1.0f && other.locked && (over[1 - k] < 1.0f || over[k] >= over[1 - k]);
+            const bool teleport = glm::length(off) > 3.0f * leg_m;
+            if (!can_lock || L.plant < 0.7f || teleport || over[k] >= 2.0f || stretched || k == settle) {
+                if (k == settle) rig.still = 0.0f;
+                L.locked = false;
+                L.slip = teleport ? glm::vec3(0.0f) : off;
+                L.twist = teleport ? 0.0f : -turned(L);
+                L.slip_v = glm::vec3(0.0f);
+                L.twist_v = 0.0f;
+            } else {
+                L.slip = off;
+                L.twist = -turned(L);
+            }
+        }
+        if (!L.locked) {
+            // Back to the clip's spot (quick: a step), then held again once it is down there.
+            for (int c = 0; c < 3; ++c) spring_to(L.slip[c], L.slip_v[c], 0.0f, 0.05f, dt);
+            spring_to(L.twist, L.twist_v, 0.0f, 0.05f, dt);
+            if (can_lock && L.plant > 0.9f && glm::length(L.slip) < 0.015f * leg_m && std::abs(L.twist) < glm::radians(2.0f)) {
+                L.locked = true;
+                L.lock_at = anim_w[k] + L.slip;
+                L.lock_fwd = glm::vec3(glm::angleAxis(L.twist, up_w) * fwd_w);   // (so the turn since is -twist)
+            }
+        }
+    }
+    for (int k = 0; k < 2; ++k) {
+        FootLeg& L = rig.legs[k];
+        const glm::vec3 spot = glm::vec3(model * glm::vec4(anim_ankle[k].x, 0.0f, anim_ankle[k].z, 1.0f)) + flat(L.slip);
         float goal = 0.0f;
         glm::vec3 normal(0.0f, 1.0f, 0.0f), hit, nrm;
         if (ground(spot + up_w * (0.6f * unit), -up_w, 1.4f * unit, hit, nrm)) {
@@ -145,9 +231,30 @@ inline void place_feet(Skeleton& sk, FootRig& rig, const glm::mat4& model, const
     spring_to(rig.land_off, rig.land_v, 0.0f, 0.12f, dt);
     rig.land_off = std::max(rig.land_off, -0.35f);
     rig.weight += (weight - rig.weight) * std::clamp(dt * 8.0f, 0.0f, 1.0f);
-    const float pelvis_down = rig.pelvis_off + rig.land_off;
+    // Each foot's target (model): the clip's spot, off it by a hold's slip, a shuffle
+    // step's lift (a foot the clip has down, stepping back from a hold), the ground.
+    glm::vec3 goal_at[2];
+    float reach_drop = 0.0f;
+    for (int k = 0; k < 2; ++k) {
+        const FootLeg& L = rig.legs[k];
+        const glm::vec3 slip_m = to_model * flat(L.slip);
+        const float step_up = L.locked ? 0.0f : std::min(0.08f * leg_m / unit, 0.5f * glm::length(slip_m)) * L.plant;
+        goal_at[k] = anim_ankle[k] + slip_m + glm::vec3(0.0f, L.offset + step_up, 0.0f);
+        // A held foot left behind (or ahead) may be past the leg's reach: the hips
+        // come down as far as it needs (with a little bend left in the knee).
+        if (glm::length(slip_m) > 1e-4f) {
+            const glm::vec3 H = pos(L.hip) + glm::vec3(0.0f, rig.pelvis_off + rig.land_off, 0.0f), K = pos(L.knee);
+            const float reach = 0.985f * (glm::length(K - H) + glm::length(anim_ankle[k] - K));
+            const glm::vec3 to = goal_at[k] - H;
+            const float across = glm::length(glm::vec2(to.x, to.z));
+            if (across < reach && glm::length(to) > reach) reach_drop = std::max(reach_drop, (H.y - goal_at[k].y) - std::sqrt(reach * reach - across * across));
+        }
+    }
+    reach_drop = std::min(reach_drop, 0.15f * leg_m / unit);
+    const float pelvis_down = rig.pelvis_off + rig.land_off - reach_drop;
+    auto held = [&](const FootLeg& L) { return glm::length(L.slip) > 1e-4f || std::abs(L.twist) > 1e-4f; };
     if (std::abs(pelvis_down) < 1e-4f && std::abs(rig.legs[0].offset) < 1e-4f && std::abs(rig.legs[1].offset) < 1e-4f &&
-        rig.weight < 1e-3f)
+        rig.weight < 1e-3f && !held(rig.legs[0]) && !held(rig.legs[1]))
         return;
     auto rot = [](const glm::mat4& m) {
         return glm::normalize(glm::quat_cast(glm::mat3(glm::normalize(glm::vec3(m[0])), glm::normalize(glm::vec3(m[1])),
@@ -168,7 +275,7 @@ inline void place_feet(Skeleton& sk, FootRig& rig, const glm::mat4& model, const
     }
     for (int k = 0; k < 2; ++k) {
         const FootLeg& L = rig.legs[k];
-        const glm::vec3 target = anim_ankle[k] + glm::vec3(0.0f, L.offset, 0.0f);
+        const glm::vec3 target = goal_at[k];
         const glm::vec3 H = pos(L.hip), K = pos(L.knee), A = pos(L.ankle);
         const float lay = L.plant * rig.weight;
         if (glm::length(target - A) < 1e-4f && lay < 1e-3f) continue;
@@ -185,7 +292,8 @@ inline void place_feet(Skeleton& sk, FootRig& rig, const glm::mat4& model, const
         const float angle = glm::angle(align);
         if (angle > glm::radians(30.0f)) align = glm::slerp(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), align, glm::radians(30.0f) / angle);
         align = glm::slerp(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), align, lay);
-        set_local_rot(L.ankle, glm::inverse(rk) * (align * foot));
+        const glm::quat twist = glm::angleAxis(L.twist, glm::vec3(0.0f, 1.0f, 0.0f));   // held: the turn it had
+        set_local_rot(L.ankle, glm::inverse(rk) * (align * twist * foot));
         sk.UpdateWorldTransforms();
     }
 }

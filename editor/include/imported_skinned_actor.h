@@ -30,6 +30,7 @@
 #include "foot_placement.h"
 #include "pose_layers.h"
 #include "ragdoll_rig.h"
+#include "locomotion_warp.h"
 #include "anim_hooks.h"   // inertialization and clip events (no GPU: animhooks_check)
 #include "animation.h"
 
@@ -62,6 +63,10 @@ struct SharedSkinnedAsset {
     /// second of a clip -- a footstep, the jaws closing, a bolt leaving its port.
     using ClipEvent = anim::ClipEvent;
     anim::ClipEvents events;
+    // Each clip measured as locomotion (foot plants, speed, way), once, by the first
+    // actor that asks (on the main thread).
+    std::vector<schizo::renderer::LocoClipInfo> loco;
+    std::vector<char> loco_done;
 };
 
 /// The events of a model's clips, from the text file beside it (the model's path
@@ -355,24 +360,56 @@ public:
     /// After advance(): the feet meet the ground they stand on (foot_placement.h:
     /// the ground under each foot, the pelvis down for the lower one, two-bone IK,
     /// a planted foot laid on the slope; springs on everything). `weight` 0..1 (0
-    /// in the air or dead), eased. Model first (set_model). Any thread if `ground`.
-    void place_feet(const GroundFn& ground, float weight, float dt) {
+    /// in the air or dead), eased. `lock`: a planted foot is held where it came down
+    /// (foot locking). Model first (set_model). Any thread if `ground`.
+    void place_feet(const GroundFn& ground, float weight, float dt, bool lock = true) {
         if (!has_feet() || !skeleton_ || dt < 0.0f) return;
         const glm::mat4 M = model();
-        schizo::renderer::place_feet(*skeleton_, rig_, M, ground, weight, dt);
+        schizo::renderer::place_feet(*skeleton_, rig_, M, ground, weight, dt, lock);
         const float unit = glm::length(glm::vec3(M[1]));
         if (unit > 1e-6f) report_feet(ground, M, glm::vec3(M[1]) / unit, unit, dt);
     }
-    // GWS_TEST_LOG_FEET=1: for one character standing on a slope (the ground under
-    // a foot 6 cm or more off its own), twice a second, each foot's height over the
-    // ground under it against its standing height (0: on it).
+    // GWS_TEST_LOG_FEET=1: for the player's body (else one character standing on a
+    // slope: the ground under a foot 6 cm or more off its own), twice a second, each
+    // foot's height over the ground under it against its standing height (0: on it),
+    // whether it is held (foot locking), how fast the model goes and how fast its
+    // planted feet slide over the ground.
     void report_feet(const GroundFn& ground, const glm::mat4& M, const glm::vec3& up_w, float unit, float dt) {
         static const bool log_feet = std::getenv("GWS_TEST_LOG_FEET") != nullptr;
         if (!log_feet) return;
+        // The character marked to report (set_report_feet: the player's body), else the
+        // first one standing on a slope.
         static std::atomic<const void*> logged{nullptr};
         const bool sloped = std::abs(rig_.legs[0].ground) > 0.06f || std::abs(rig_.legs[1].ground) > 0.06f;
         const void* expected = nullptr;
+        if (report_feet_) logged.store(this);
         if (!(logged.load() == this || (sloped && logged.compare_exchange_strong(expected, this)))) return;
+        // How fast a foot that is down slides over the ground (world, horizontal).
+        for (int k = 0; k < 2; ++k) {
+            const glm::vec3 a(M * skeleton_->GetWorldMatrix(static_cast<uint16_t>(rig_.legs[k].ankle))[3]);
+            const glm::vec3 am(skeleton_->GetWorldMatrix(static_cast<uint16_t>(rig_.legs[k].ankle))[3]);
+            const bool down = rig_.legs[k].plant > 0.95f;
+            if (down && slide_down_[k] && dt > 1e-4f) {
+                const glm::vec3 d = (a - slide_prev_[k]) / dt;
+                slide_sum_ += glm::length(d - up_w * glm::dot(d, up_w));
+                const glm::vec3 dm = (am - slide_prev_model_[k]) / dt;
+                model_sum_ += glm::length(glm::vec2(dm.x, dm.z));
+                ++slide_n_;
+            }
+            slide_prev_[k] = a;
+            slide_prev_model_[k] = am;
+            slide_down_[k] = down;
+        }
+        {   // how fast the model itself goes
+            const glm::vec3 o(M[3]);
+            if (dt > 1e-4f && body_known_) {
+                const glm::vec3 d = (o - body_prev_) / dt;
+                body_sum_ += glm::length(d - up_w * glm::dot(d, up_w));
+                ++body_n_;
+            }
+            body_prev_ = o;
+            body_known_ = true;
+        }
         log_tick_ += dt;
         if (log_tick_ < 0.5f) return;
         log_tick_ = 0.0f;
@@ -382,12 +419,70 @@ public:
             glm::vec3 hit, n;
             gap[k] = ground(a + up_w * (0.6f * unit), -up_w, 2.0f * unit, hit, n) ? glm::dot(a - hit, up_w) / unit - rig_.legs[k].rest_height : 9.0f;
         }
-        spdlog::info("[test] feet: left {:+.3f} m ({}), right {:+.3f} m ({}), pelvis {:+.3f} m, ground under them {:+.3f} / {:+.3f}",
-                     gap[0], rig_.legs[0].plant > 0.5f ? "down" : "lifted", gap[1], rig_.legs[1].plant > 0.5f ? "down" : "lifted",
-                     rig_.pelvis_off, rig_.legs[0].ground, rig_.legs[1].ground);
+        const float slide = slide_n_ > 0 ? slide_sum_ / static_cast<float>(slide_n_) : 0.0f;
+        const float in_model = slide_n_ > 0 ? model_sum_ / static_cast<float>(slide_n_) : 0.0f;
+        const float body = body_n_ > 0 ? body_sum_ / static_cast<float>(body_n_) : 0.0f;
+        body_sum_ = 0.0f;
+        body_n_ = 0;
+        spdlog::info("[test] feet: left {:+.3f} m ({}{}), right {:+.3f} m ({}{}), pelvis {:+.3f} m, ground under them {:+.3f} / {:+.3f}; the model goes {:.2f} m/s, planted feet slide {:.2f} m/s (move {:.2f} m/s in the model)",
+                     gap[0], rig_.legs[0].plant > 0.5f ? "down" : "lifted", rig_.legs[0].locked ? ", held" : "",
+                     gap[1], rig_.legs[1].plant > 0.5f ? "down" : "lifted", rig_.legs[1].locked ? ", held" : "",
+                     rig_.pelvis_off, rig_.legs[0].ground, rig_.legs[1].ground, body, slide, in_model);
+        slide_sum_ = 0.0f;
+        model_sum_ = 0.0f;
+        slide_n_ = 0;
     }
+    /// GWS_TEST_LOG_FEET reports this character's feet.
+    void set_report_feet(bool on) { report_feet_ = on; }
     /// A landing: the pelvis is pushed down (m/s) and springs back.
     void pelvis_impulse(float down_speed) { rig_.land_v -= down_speed; }
+
+    // ---- locomotion (engine/renderer/include/locomotion_warp.h) ---------------------------
+    /// A clip measured as locomotion: where each foot comes down, the ground speed
+    /// it was made for, the way its body goes (model x, z). Measured once per model.
+    const schizo::renderer::LocoClipInfo& loco_info(int clip) {
+        static const schizo::renderer::LocoClipInfo none;
+        if (!shared_ || clip < 0 || static_cast<size_t>(clip) >= clips_.size() || !has_feet()) return none;
+        auto& sa = *shared_;
+        if (sa.loco.size() != clips_.size()) { sa.loco.assign(clips_.size(), {}); sa.loco_done.assign(clips_.size(), 0); }
+        if (!sa.loco_done[static_cast<size_t>(clip)]) {
+            sa.loco_done[static_cast<size_t>(clip)] = 1;
+            sa.loco[static_cast<size_t>(clip)] = schizo::renderer::measure_loco_clip(*skeleton_, bind_, rig_, *clips_[static_cast<size_t>(clip)]);
+            static const bool log_loco = std::getenv("GWS_TEST_LOG_ANIM") != nullptr;
+            const auto& li = sa.loco[static_cast<size_t>(clip)];
+            if (log_loco && !li.valid && li.duration > 0.0f)
+                spdlog::info("[anim] not locomotion '{}': feet down {} / {} times, {} planted frames, ankle heights {:.3f}..{:.3f} / {:.3f}..{:.3f}",
+                             clips_[static_cast<size_t>(clip)]->GetName(), li.contact[0].size(), li.contact[1].size(), li.planted_frames,
+                             li.low[0], li.high[0], li.low[1], li.high[1]);
+            if (log_loco && li.valid)
+                spdlog::info("[anim] locomotion '{}': {:.2f} m/s toward ({:.2f}, {:.2f}), feet down at {} / {} s", clips_[static_cast<size_t>(clip)]->GetName(),
+                             li.speed, li.dir.x, li.dir.y, li.contact[0].empty() ? -1.0f : li.contact[0][0], li.contact[1].empty() ? -1.0f : li.contact[1][0]);
+        }
+        return sa.loco[static_cast<size_t>(clip)];
+    }
+    /// Plays looping locomotion clip `i` in step with the one playing: from the same
+    /// point of the same foot's step (falls back to play() when either cannot say).
+    void play_synced(int i, float blend, float speed) {
+        if (i == base_.clip || base_.clip < 0 || !base_.loop) { play(i, true, blend, speed); return; }
+        const auto& from = loco_info(base_.clip);
+        const auto& to = loco_info(i);
+        if (!from.valid || !to.valid) { play(i, true, blend, speed); return; }
+        const float t = schizo::renderer::loco_synced_time(from, base_.time, to);
+        play(i, true, blend, speed);
+        base_.time = t;
+        base_.fresh = false;   // the step goes on from there: its events before it are not heard again
+    }
+    /// After advance(), before place_feet: the legs turned toward where the body
+    /// really goes (`turn` radians about up, the upper body turned back) and the
+    /// stride scaled (`stride`) along the clip's way `clip_dir` (model x, z). Springs
+    /// ease both (a stop or a turn does not snap the legs).
+    void warp_locomotion(const glm::vec2& clip_dir, float stride, float turn, float dt) {
+        if (!has_feet() || !skeleton_ || dt < 0.0f) return;
+        schizo::renderer::spring_to(loco_warp_.turn, loco_warp_.turn_v, turn, 0.1f, dt);
+        schizo::renderer::spring_to(loco_warp_.stride, loco_warp_.stride_v, stride, 0.1f, dt);
+        if (std::abs(loco_warp_.turn) < 1e-4f && std::abs(loco_warp_.stride - 1.0f) < 1e-3f) return;
+        schizo::renderer::warp_locomotion(*skeleton_, rig_, look_chain_.empty() ? -1 : look_chain_.front(), clip_dir, loco_warp_.stride, loco_warp_.turn);
+    }
 
     // ---- going limp (engine/renderer/include/ragdoll_rig.h) ------------------------------
     /// Whether the rig can become a ragdoll (legs, spine, head and arms found by name).
@@ -676,9 +771,18 @@ private:
     // place_feet: the legs, the pelvis and their springs.
     schizo::renderer::FootRig rig_;
     schizo::renderer::RagdollRig ragdoll_rig_;
+    schizo::renderer::LocoWarpState loco_warp_;
     bool ragdoll_resolved_ = false;
     bool feet_resolved_ = false;
-    float log_tick_ = 0.0f;
+    bool report_feet_ = false;
+    float log_tick_ = 0.0f, slide_sum_ = 0.0f, model_sum_ = 0.0f;
+    glm::vec3 slide_prev_model_[2] = {glm::vec3(0.0f), glm::vec3(0.0f)}, body_prev_{0.0f};
+    float body_sum_ = 0.0f;
+    int body_n_ = 0;
+    bool body_known_ = false;
+    int slide_n_ = 0;
+    glm::vec3 slide_prev_[2] = {glm::vec3(0.0f), glm::vec3(0.0f)};
+    bool slide_down_[2] = {false, false};
     schizo::renderer::LeanState lean_state_;
     schizo::renderer::LookState look_state_;
     // look_at: the chain, and the springs of its yaw, pitch and aim (radians, 0..1).

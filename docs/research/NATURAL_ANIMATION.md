@@ -19,8 +19,10 @@ not more clips.
 | Procedural layers over clips | stiff bodies; a long body turning like a plank | **0.8.57**: the Ender Leviathan (TestGame script) |
 | Aim offset / look-at | a gun pointing level at a target on a hill; dead eyes | **0.8.57**, gameplay characters |
 | Fixed-step logic, interpolated drawing | motion that stutters with the frame rate | **0.8.57**: the Leviathan (20 Hz, drawn in between) |
-| Play-rate matching | feet sliding at speeds the clip was not made for | 0.8.56 (walk, run, back, strafes); limits to tighten |
-| Stride and orientation warping | sliding and crossed legs on diagonals | next |
+| Play-rate matching | feet sliding at speeds the clip was not made for | 0.8.56; **0.8.60** from each clip's measured speed, shared with the stride |
+| Stride and orientation warping | sliding and crossed legs on diagonals | **0.8.60** |
+| Sync markers (foot plants) | a stumble when walk changes to run | **0.8.60**: measured per clip, switches in step |
+| Foot locking | the slide left after rate and stride | **0.8.60**: held per foot, one steps at a time (TestGame running: median 0.27 m/s to 0.00) |
 | Foot IK (foot placement) | feet floating over or sunk into slopes | **0.8.58**: feet, pelvis, slope, landing compression |
 | Lean into acceleration | a body that starts and stops like a statue on rails | **0.8.58** |
 | Support hand IK | the second hand floating beside the gun (18 cm in TestGame) | **0.8.58** |
@@ -125,10 +127,22 @@ the cadence looks wrong). **Stride warping** lengthens or shortens the
 stride instead; **orientation warping** turns the legs toward the way the
 body actually moves on diagonals while the chest keeps facing ahead;
 **distance matching** drives starts and stops by the distance left, not
-time. GWS 0.8.56 matches play rate (clamped to 0.6-1.8, wider than ideal)
-and picks walk-back and strafe clips by direction. Next: narrower rate
-limits with stride warping for the rest, and orientation warping between the
-four directions.
+time. GWS 0.8.56 matched play rate (clamped to 0.6-1.8, wider than ideal)
+and picked walk-back and strafe clips by direction.
+
+**0.8.60** (`engine/renderer/include/locomotion_warp.h`): each locomotion clip
+is measured once -- its foot plants (sync markers) and, from how its planted
+feet slide under an in-place body, its speed and way. The ratio of the real
+speed to that is split between stride (square root, 0.8-1.3; 1.15 sideways)
+and rate (the rest, 0.5-2.5); the legs turn up to 50 degrees toward the real
+way with the upper body turned back; switches start the new clip at the same
+point of the same foot's step. Then **foot locking** (in `foot_placement.h`)
+holds each planted foot in the world for its stance and releases it on
+lift-off, on a stretch past a third of the leg or a 35-degree turn (one foot
+at a time) or after a moment standing still off its spot. In the TestGame
+the player's planted feet went from sliding 2.0 m/s (running at 5 m/s, before
+this round) through 0.27 (warps alone) to 0.00 (median, with the lock).
+Distance matching (starts and stops) waits for start and stop clips.
 
 - Epic Games, "Pose Warping in Unreal Engine": https://dev.epicgames.com/documentation/unreal-engine/pose-warping-in-unreal-engine
 - Epic Games, "Locomotion in Unreal Engine" (distance matching): https://dev.epicgames.com/documentation/unreal-engine/locomotion-in-unreal-engine
@@ -189,7 +203,8 @@ item by item, with what was decided.
 | Dead blending | not needed while inertialization covers the transitions |
 | Hemisphere-safe blending | already so (`glm::slerp`); multi-input nlerp aligned to the first (**0.8.58** in channel sampling) |
 | One graph runtime from `.animgraph`, montages / slots | a release of its own: the gameplay clip choice (`main.cpp`) becomes a compiled graph |
-| Sync groups and markers, 2D blend spaces, per-bone layer masks | next (locomotion round) |
+| Sync groups and markers | **0.8.60**: foot plants measured per clip, in-step switches |
+| 2D blend spaces, per-bone layer masks | with the graph runtime (one clip per way today, legs turned toward the rest) |
 | Posing on the job system | **0.8.58** |
 | Fixed simulation tick; animation on it, drawn in between | needed before deterministic notifies, hit windows and lag compensation; the Leviathan does it in script already |
 | Look-at / aim chain | **0.8.57**, in the engine as `pose_layers.h` in **0.8.58** |
@@ -199,7 +214,9 @@ item by item, with what was decided.
 | Head stabilization | not for third-person characters (the bob is small); first-person view has its own |
 | Breathing / idle noise layers | in the clips (TestGame's soldiers, 0.8.56); an additive layer comes with additive clips |
 | FABRIK, CCD, full-body DLS | with climbing (the first need for multi-contact IK) |
-| Stride / orientation warping, distance matching | next (locomotion round) |
+| Stride / orientation warping | **0.8.60** |
+| Foot locking | **0.8.60** |
+| Distance matching | with start and stop clips |
 | Motion warping | with melee combat's lunges and traversal |
 | Motion matching | not planned: it needs hours of motion capture; the toolkit above serves hand-made clips |
 | Ragdolls (Jolt) | **0.8.59**: twelve bodies by name on any rig, hinged knees and elbows, settle and freeze |

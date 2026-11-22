@@ -9935,7 +9935,8 @@ int main(int argc, char** argv) {
         // What each gameplay-driven character is doing (for its clips).
         struct CharAnim {
             enum : int { Idle, Walk, Run, Crouch, CrouchWalk, Aim, Fire, Reload, Hit, Death, Draw,
-                         WalkBack, StrafeLeft, StrafeRight, Jump, Fall, Land, Melee, MeleeIdle, kStates };
+                         WalkBack, StrafeLeft, StrafeRight, Jump, Fall, Land, Melee, MeleeIdle,
+                         RunBack, StrafeRunLeft, StrafeRunRight, kStates };
             int  clip[kStates];
             CharAnim() { for (int& c : clip) c = -1; }
             // Which way the legs go (0 ahead, 1 back, 2 left, 3 right: kept until
@@ -9960,6 +9961,10 @@ int main(int argc, char** argv) {
             bool hands_busy = false;   // reloading, a blade, dead: the clip's hands
             // Limp: its ragdoll (in the physics world of that serial), how long it
             // has lain still; frozen: the physics let go, the pose kept.
+            // Locomotion warps this frame (stride, turn) along the clip's way.
+            bool warp = false;
+            glm::vec2 warp_dir{0.0f, 1.0f};
+            float warp_stride = 1.0f, warp_turn = 0.0f;
             uint32_t ragdoll = 0;
             uint64_t ragdoll_world = 0;
             float ragdoll_still = 0.0f;
@@ -11657,7 +11662,8 @@ int main(int argc, char** argv) {
                     static const char* states[CharAnim::kStates] = {"idle", "walk", "run", "crouch", "crouch_walk", "aim",
                                                                     "fire", "reload", "hit", "death", "draw",
                                                                     "walk_back", "strafe_left", "strafe_right", "jump", "fall",
-                                                                    "land", "melee", "aim_melee"};
+                                                                    "land", "melee", "aim_melee",
+                                                                    "run_back", "strafe_run_left", "strafe_run_right"};
                     size_t at = 0;
                     while (at < clips.size()) {
                         const size_t endp = clips.find(',', at);
@@ -11744,6 +11750,9 @@ int main(int argc, char** argv) {
                     bool feet = false, lean = false;
                     float feet_weight = 0.0f;
                     glm::vec3 accel{0.0f};
+                    bool warp = false;
+                    glm::vec2 warp_dir{0.0f, 1.0f};
+                    float warp_stride = 1.0f, warp_turn = 0.0f;
                 };
                 // The ground under feet: static bodies only (terrain, buildings), never a
                 // character. Jolt's queries are safe from the posing jobs (nothing steps now).
@@ -11757,8 +11766,9 @@ int main(int argc, char** argv) {
                         normal = h.normal;
                         return true;
                     };
-                // GWS_NO_FOOT_IK=1 / GWS_NO_LEAN=1: without (to compare).
+                // GWS_NO_FOOT_IK=1 / GWS_NO_FOOT_LOCK=1 / GWS_NO_LEAN=1: without (to compare).
                 static const bool no_foot_ik = std::getenv("GWS_NO_FOOT_IK") != nullptr;
+                static const bool no_foot_lock = std::getenv("GWS_NO_FOOT_LOCK") != nullptr;
                 static const bool no_lean = std::getenv("GWS_NO_LEAN") != nullptr;
                 std::vector<PoseJob> pose_jobs;
                 auto advance_clip = [&](const std::shared_ptr<schizo::scene::Entity>& who,
@@ -11790,7 +11800,8 @@ int main(int argc, char** argv) {
                         // In the order of a frame's pose: the clips, then the feet on the
                         // ground, then the body's lean, then where it looks and aims.
                         j.actor->advance(j.step);
-                        if (j.feet) j.actor->place_feet(feet_ground, j.feet_weight, j.look_dt);
+                        if (j.warp) j.actor->warp_locomotion(j.warp_dir, j.warp_stride, j.warp_turn, j.look_dt);
+                        if (j.feet) j.actor->place_feet(feet_ground, j.feet_weight, j.look_dt, !no_foot_lock);
                         if (j.lean) j.actor->lean_into(j.accel, 0.5f, j.look_dt);
                         if (j.look) j.actor->look_at(j.look_point, j.look_weight, j.look_aim, j.look_dt);
                     };
@@ -12008,11 +12019,16 @@ int main(int argc, char** argv) {
                                 legs = moving ? clip_or(C[CharAnim::CrouchWalk], C[CharAnim::Walk]) : clip_or(C[CharAnim::Crouch], C[CharAnim::Idle]);
                                 if (moving) rate = std::clamp(speed / 1.2f, 0.6f, 1.6f);
                             } else if (moving && ca.dir == 1 && C[CharAnim::WalkBack] >= 0) {
-                                legs = C[CharAnim::WalkBack];
-                                rate = std::clamp(speed / 1.4f, 0.6f, 2.0f);
+                                // Back: a backpedal above the run speed (when it has one).
+                                const bool run_way = speed > smc->run_speed && C[CharAnim::RunBack] >= 0;
+                                legs = run_way ? C[CharAnim::RunBack] : C[CharAnim::WalkBack];
+                                rate = std::clamp(speed / (run_way ? 2.6f : 1.4f), 0.6f, 2.0f);
                             } else if (moving && ca.dir >= 2 && C[ca.dir == 2 ? CharAnim::StrafeLeft : CharAnim::StrafeRight] >= 0) {
-                                legs = C[ca.dir == 2 ? CharAnim::StrafeLeft : CharAnim::StrafeRight];
-                                rate = std::clamp(speed / 1.6f, 0.6f, 2.0f);
+                                // Sideways: a side run above the run speed (when it has one).
+                                const int run_side = C[ca.dir == 2 ? CharAnim::StrafeRunLeft : CharAnim::StrafeRunRight];
+                                const bool run_way = speed > smc->run_speed && run_side >= 0;
+                                legs = run_way ? run_side : C[ca.dir == 2 ? CharAnim::StrafeLeft : CharAnim::StrafeRight];
+                                rate = std::clamp(speed / (run_way ? 2.6f : 1.6f), 0.6f, 2.0f);
                             } else if (moving && speed > smc->run_speed && C[CharAnim::Run] >= 0) {
                                 legs = C[CharAnim::Run];
                                 rate = std::clamp(speed / 4.5f, 0.7f, 1.6f);
@@ -12020,6 +12036,42 @@ int main(int argc, char** argv) {
                                 legs = clip_or(C[CharAnim::Walk], C[CharAnim::Idle]);
                                 rate = std::clamp(speed / 1.6f, 0.6f, 1.8f);
                             }
+                            // Locomotion measured: the clip's own speed against how fast it really
+                            // goes, split evenly between a longer (or shorter) stride (0.8 to 1.3) and
+                            // a quicker (or slower) cadence -- a little of each looks natural where a
+                            // lot of either does not -- and the legs turned toward where it really
+                            // goes (up to 50 degrees off the clip's way). GWS_NO_LOCO_WARP=1: off.
+                            static const bool no_loco_warp = std::getenv("GWS_NO_LOCO_WARP") != nullptr;
+                            const bool loco_clip = legs_loop && legs >= 0 && legs != C[CharAnim::Idle] && legs != C[CharAnim::Crouch] && legs != C[CharAnim::Fall];
+                            ca.warp = false;
+                            if (!no_loco_warp && loco_clip && moving && grounded && !ca.airborne) {
+                                const auto& li = actor->loco_info(legs);
+                                if (li.valid && li.speed > 0.1f) {
+                                    const float ratio = speed / li.speed;
+                                    ca.warp = true;
+                                    ca.warp_dir = li.dir;
+                                    // (Sideways a long stride splays the legs: a side step takes more cadence.)
+                                    ca.warp_stride = std::clamp(std::sqrt(ratio), 0.8f, std::abs(li.dir.x) > 0.7f ? 1.15f : 1.3f);
+                                    rate = std::clamp(ratio / ca.warp_stride, 0.5f, 2.5f);
+
+                                    glm::vec3 v = glm::inverse(sk_tf->GetWorldRotation()) * hvel;
+                                    v.y = 0.0f;
+                                    ca.warp_turn = 0.0f;
+                                    if (glm::length(v) > 0.2f) {
+                                        v = glm::normalize(v);
+                                        ca.warp_turn = std::clamp(std::atan2(li.dir.y * v.x - li.dir.x * v.z, li.dir.x * v.x + li.dir.y * v.z),
+                                                                  glm::radians(-50.0f), glm::radians(50.0f));
+                                    }
+                                    if (static const bool log_warp = std::getenv("GWS_TEST_LOG_ANIM") != nullptr; log_warp && is_player && frame_count % 20 == 0)
+                                        spdlog::info("[test] warp: player at {:.2f} m/s (in the model toward {:.2f}, {:.2f}), its clip made for {:.2f} toward {:.2f}, {:.2f}: stride x{:.2f}, rate x{:.2f}, legs turned {:.1f} degrees",
+                                                     speed, v.x, v.z, li.speed, li.dir.x, li.dir.y, ca.warp_stride, rate, glm::degrees(ca.warp_turn));
+                                }
+                            }
+                            // A switch between locomotion clips goes on in step (the same foot's step).
+                            const int playing_now = static_cast<int>(actor->clip_index());
+                            const bool was_loco = playing_now != C[CharAnim::Idle] && playing_now != C[CharAnim::Crouch] && playing_now != C[CharAnim::Fall] &&
+                                                  playing_now != C[CharAnim::Jump] && playing_now != C[CharAnim::Land];
+                            const bool in_step = loco_clip && was_loco && playing_now != legs;
                             // The arms: fire (or swing a blade), reload, hit, or aim while there is a target.
                             int arms = -1;
                             bool arms_loop = true, arms_restart = false;
@@ -12029,7 +12081,8 @@ int main(int argc, char** argv) {
                             else if (hit_now && C[CharAnim::Hit] >= 0) { arms = C[CharAnim::Hit]; arms_loop = false; arms_restart = true; }
                             const int ready = melee ? C[CharAnim::MeleeIdle] : C[CharAnim::Aim];   // what "held up" looks like
                             if (upper) {
-                                actor->play(legs >= 0 ? legs : 0, legs_loop, legs_loop ? 0.2f : 0.1f, rate);
+                                if (in_step) actor->play_synced(legs, 0.2f, rate);
+                                else actor->play(legs >= 0 ? legs : 0, legs_loop, legs_loop ? 0.2f : 0.1f, rate);
                                 if (arms >= 0) actor->play_upper(arms, arms_loop, 0.06f, arms_restart);
                                 else if (!actor->upper_finished() && actor->upper_clip() >= 0 &&
                                          (actor->upper_clip() == C[CharAnim::Fire] || actor->upper_clip() == C[CharAnim::Reload] ||
@@ -12045,6 +12098,7 @@ int main(int argc, char** argv) {
                                 if (arms >= 0) actor->play(arms, false, 0.06f, 1.0f, true);
                                 else if (once_playing) { /* let it finish */ }
                                 else if (aiming && !moving && !ca.airborne && ready >= 0) actor->play(ready, true, 0.15f);
+                                else if (legs >= 0 && in_step) actor->play_synced(legs, 0.2f, rate);
                                 else if (legs >= 0) actor->play(legs, legs_loop, legs_loop ? 0.2f : 0.1f, rate);
                             }
                         }
@@ -12109,11 +12163,18 @@ int main(int argc, char** argv) {
                             PoseJob& job = advance_clip(ent, *actor, adt * smc->speed);
                             job.look_dt = adt;
                             if (actor->has_feet()) {
+                                if (is_player) actor->set_report_feet(true);
                                 job.feet = true;
                                 job.feet_weight = (!no_foot_ik && grounded && !ca.airborne && !dead) ? 1.0f : 0.0f;
                             }
                             job.lean = !no_lean && !dead;
                             job.accel = ca.acc_s;
+                            if (actor->has_feet()) {
+                                job.warp = true;   // (also to ease back when it stops)
+                                job.warp_dir = ca.warp ? ca.warp_dir : glm::vec2(0.0f, 1.0f);
+                                job.warp_stride = ca.warp ? ca.warp_stride : 1.0f;
+                                job.warp_turn = ca.warp ? ca.warp_turn : 0.0f;
+                            }
                             // An aim offset: the spine, chest and head turn to what it looks at
                             // (a rifle held at the chest points there); a spring settles it.
                             if (!ca.look_resolved) {

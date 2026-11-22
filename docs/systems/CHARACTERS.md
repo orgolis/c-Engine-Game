@@ -34,6 +34,8 @@ by part of it (case does not matter): `aim=Aim_Rifle` finds `05_Aim_Rifle`.
 | `run` | moving faster than **Run above** (m/s; default 3.2) |
 | `walk_back` | moving backwards (the way it faces is the model's +Z) |
 | `strafe_left`, `strafe_right` | moving sideways |
+| `run_back` | moving backwards faster than **Run above** (a backpedal; else `walk_back`) |
+| `strafe_run_left`, `strafe_run_right` | moving sideways faster than **Run above** (else the strafes) |
 | `jump` | leaving the ground upwards (once), then `fall` |
 | `fall` | in the air |
 | `land` | back on the ground after a drop (once; not while it walks on) |
@@ -48,7 +50,8 @@ by part of it (case does not matter): `aim=Aim_Rifle` finds `05_Aim_Rifle`.
 | `draw` | drawing a gun |
 
 A state with no clip falls back: no `run` walks, no `crouch_walk` walks, no
-`crouch` stands, no `walk_back` or `strafe_` walks ahead, no `fall` stands.
+`crouch` stands, no `walk_back` or `strafe_` walks ahead, no `run_back` or
+`strafe_run_` takes the walking ones, no `fall` stands.
 
 **Which way.** The legs follow where the character goes relative to where its
 model faces (+Z, as glTF models do): ahead, back, left or right, kept until
@@ -88,11 +91,52 @@ spring from Holden's "Spring-It-On"). It is the same for clips a script plays.
 ## A frame's pose
 
 Each character in Play is posed in this order: its clips (sampled and
-blended, transitions inertialized), then its feet on the ground, then its
-body's lean, then where it looks and aims, then -- once the gun in its hand
-is placed -- its support hand on the gun. The first four touch only its own
-skeleton, so all characters are posed at once on the job system;
+blended, transitions inertialized), then its legs fitted to how it really
+moves (locomotion warping), then its feet on the ground (and held there), then
+its body's lean, then where it looks and aims, then -- once the gun in its
+hand is placed -- its support hand on the gun. All but the last touch only its
+own skeleton, so all characters are posed at once on the job system;
 `GWS_ANIM_SERIAL=1` poses them one after another (to compare).
+
+## Locomotion: the legs fitted to the ground covered
+
+A walk, run, backpedal or strafe clip made in place is measured once, when it
+first plays: where each foot comes down in it (its sync markers), and -- from
+how its planted feet slide back under the body -- the ground speed it was made
+for and the way its body goes. Its ground under each foot is taken low in the
+foot's heights but not at the lowest one, so a keyed curve that dips under the
+floor for a frame as a foot lands does not hide the stance.
+`GWS_TEST_LOG_ANIM=1` logs each measurement (or why a clip is not taken).
+
+Then, moving on the ground at a speed the clip was not made for:
+
+- **Rate and stride share the difference.** A character going 1.6 times the
+  clip's speed takes strides sqrt(1.6) = 1.26 times as long at a cadence 1.26
+  times as quick -- a little of each looks natural where a lot of either does
+  not. The stride stays within 0.8 to 1.3 (1.15 sideways: a long side step
+  splays the legs) and the cadence takes the rest (0.5 to 2.5 times). A
+  longer stride brings the hips down as far as the legs need to reach.
+- **Orientation warping.** Going off the clip's way (forward and a little to
+  the side), the legs turn toward where the body really goes, up to 50
+  degrees, and the upper body turns back so it keeps facing -- and aiming --
+  ahead.
+- **Switches in step.** From walk to run (or to a backpedal, or a strafe) the
+  new clip starts at the same point of the same foot's step as the old one
+  was, not at its start: no stumble.
+
+Both warps ease in and out on springs. `GWS_NO_LOCO_WARP=1` turns them off.
+
+**Foot locking.** A foot the clip puts down is held where it came down in the
+world, keeping the turn it had, for as long as the clip keeps it down: what
+the clip and the warps leave of a slide is gone (the test game's player: a
+median of 0.27 m/s without it, 0.00 with it, running). The foot lets go when
+the clip lifts it, in the air, or when the body has gone a third of a leg from
+it or turned 35 degrees from it -- one foot at a time, the other holding --
+and then steps back to where the clip has it, a little lifted on the way (a
+shuffle when turning on the spot). Standing still a moment with a foot held
+off its spot, that foot steps back into the stance. Where a held foot is past
+the leg's reach the hips come down for it. A teleport lets go at once.
+`GWS_NO_FOOT_LOCK=1` turns it off.
 
 ## Feet on the ground
 
@@ -110,8 +154,9 @@ a kerb does not snap a foot. In the air or dead it eases off.
 A landing compresses the legs: the pelvis dips with the fall's speed (about
 10 cm from a jump) and comes back on a softer spring, the feet staying put.
 
-`GWS_NO_FOOT_IK=1` turns it off; `GWS_TEST_LOG_FEET=1` logs, for a character
-on a slope, each foot's height over the ground under it.
+`GWS_NO_FOOT_IK=1` turns it off; `GWS_TEST_LOG_FEET=1` logs, for the player's
+body (else a character on a slope), each foot's height over the ground under
+it, whether it is held, and how fast its planted feet slide.
 
 ## Leaning
 
@@ -272,9 +317,10 @@ SKINNED_ATTACH=weapon_socket|0,0,0|90,0,180   # held: bone | offset | turn (a gu
 
 TestGame (docs/systems/TEST_GAME.md) uses the military pack in
 `assets/models/military/`: player, rifleman and heavy characters (43 bones,
-28 clips: idle with breathing and weight shifts, walk, run, walk back, strafes,
-crouch, aim, fire, reloads, draw, hit, death, jump, fall, land, a sword's
-ready stance and swing -- made by
+31 clips: idle with breathing and weight shifts, walk (1.2 m/s), run (2.7),
+walk back, strafes, a backpedal and side runs (2.0), crouch, aim, fire,
+reloads, draw, hit, death, jump, fall, land, a sword's ready stance and swing
+-- made by
 `art_source/military_pack/animate_characters.py` in Blender, procedurally) and the eight guns (bolt, magazine, muzzle, grip and trigger bones;
 idle, fire, reload and draw clips). Each soldier is an NPC agent with a
 "Body" (rifleman or heavy, driven by gameplay, upper body from `spine`) and a
@@ -283,8 +329,12 @@ idle, fire, reload and draw clips). Each soldier is an NPC agent with a
 ## Known limits
 
 - A ragdoll is a death's: there is no powered ragdoll for a stumble and no
-  getting up (docs/research/NATURAL_ANIMATION.md has what comes next: stride
-  and orientation warping, sync markers, spring bones).
+  getting up (docs/research/NATURAL_ANIMATION.md has what comes next: blend
+  spaces, motion warping, spring bones).
+- Feet are held in the world: a character standing on something that moves
+  (a lift, a vehicle) would leave its feet behind until they step.
+- Locomotion picks one clip for the way it goes (ahead, back, left, right) and
+  turns the legs toward the rest; there is no 2D blend of directional clips.
 - Root motion is not used: characters move by their controller or agent and
   the clip's speed follows.
 - One material per model.
