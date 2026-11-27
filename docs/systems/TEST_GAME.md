@@ -34,11 +34,10 @@ it in the editor.
   dash, mantle, climb), three weapon slots -- a rifle, a pistol and a sword
   to start (keys 1, 2, 3; the mouse wheel or Q switches too), held by the
   player's own arms in first person -- two
-  frag grenades (G, thrown: aim up to throw far), Firebolt in the first of
-  three ability slots (Z), health potions; mortal, comes back from the last
+  frag grenades (G, thrown: aim up to throw far), health potions; mortal, comes back from the last
   checkpoint. No mana: abilities cost only their cooldowns. The HUD has
   health, the objective and the level at the top; in the lower left corner the
-  ability slots (key, cooldown darkening the slot with the seconds left) and
+  four powers (key, cooldown darkening the slot with the seconds left) and
   the gun (name, rounds, reload, weapon slots, grenades). It shows where a hit
   came from and glows red at low health.
 - **Guns and gear** (`assets/gameplay/arsenal.items`): rifle, pistol,
@@ -49,21 +48,28 @@ it in the editor.
   are in the supply caches. A gun found while all three slots are full goes
   into the bag; Use it in the inventory to swap it with the gun in hand.
 - **Levels and a skill tree**: each kill gives 100 XP (and ammunition); each
-  level gives a skill point. The tree (K) is drawn as a tree of 32 skills
-  growing from Awakening at the bottom into three branches -- Sorcery (Frost
-  Nova, Ice Lance, Lightning, Shock Wave, Venom Rain, Meteor, cooldown and
-  damage passives), Survival (Toughness, Mend, Regeneration, Iron Skin, Second
-  Wind, Battle Cry, Veteran, Undying) and Agility (Fleet Foot, Surge, Leap,
-  Double Jump, Haste, Blink, Quick Hands, Marksman, Deadeye, Swiftness,
-  Windwalker, Gunslinger). A click learns one; skills cost 1 point low in the
-  tree, 2 in the middle, 3 at the top. Thirteen abilities to learn -- four of
-  them movement: Surge (a 12 m dash), Leap, Blink (14 m ahead, there at once),
-  Haste (50% faster for 6 s) -- and passives that raise health, move speed,
-  damage, reload speed, health regeneration, air jumps or shorten cooldowns.
-  Three points to start.
-- **Abilities** (P): the three ability slots and every ability learned. A
-  learned ability goes into a free slot; once all three are full, pick one in
-  the list and click a slot to put it there.
+  level gives skill points. The tree (K) grows from Awakening into three
+  branches -- Elements (below, and the spell passives above them), Survival
+  (Toughness, Mend, Regeneration, Iron Skin, Second Wind, Battle Cry, Veteran,
+  Undying, Bulwark, Renewal) and Arms & Mobility (Fleet Foot, Surge, Leap,
+  Double Jump, Haste, Blink, Overdrive, Quick Hands, Marksman, Deadeye,
+  Gunslinger ...). A click learns one.
+- **Elements** (since engine 0.8.68; `assets/gameplay/elements.items`,
+  `assets/scripts/powers.cpp`): Ember, Storm, Rime and Umbra, each with its own
+  verbs -- statuses its powers put on enemies and on the player (Kindle and its
+  Flashpoint, Blaze, Mend; Charged lightning that leaps, Dazed, Surge; Chill,
+  Frozen and Shatter, Frost Plate; Hex, Unstable and Rupture, Veil, Hunger) --
+  two supers, three grenades, two melees, two class abilities, three aspects
+  and six fragments. Each element opens in four skills (Attunement, Arsenal,
+  Mastery, Apex). The player takes up one element: a grenade on Z, a melee on X,
+  a class ability on C (the element's, or a learned Survival / Arms ability),
+  the super on F (it fills with time, hits and kills); up to two aspects, and as
+  many fragments as the aspects open. A form super (Phoenix Mantle,
+  Thunderhead, Winter's Edge, Eclipse) changes the melee while it lasts.
+- **Powers** (P): the element, its powers, aspects and fragments to pick; the
+  HUD shows the four powers, the super's charge and the statuses on the player.
+  All of it is project data and a project script built from the engine's
+  statuses, perks, zones and cones (docs/systems/STATUSES_AND_PERKS.md).
 - **Inventory** (I): the three weapon slots (click a gun to draw it; Put in
   bag), what is worn (click to take it off) and the bag (pick an item, then
   Use / equip: potions, gear, guns).
