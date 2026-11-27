@@ -195,7 +195,8 @@ typedef struct SchizoScriptApi {
     /* 0.8.68 (query engine.statuses_perks): statuses (`status` blocks in .items):
        put stacks on (by: who put them on, 0 none; returns the stacks it has now),
        count, clear. Perks (`perk` blocks): give, take, ask. An ability by its id
-       into a bar slot (from 0; known from then on), and the ability in a slot. */
+       into a bar slot (from 0; known from then on; "" empties the slot -- 0.8.69),
+       and the ability in a slot. */
     int  (*apply_status)(void* ctx, unsigned e, const char* status, int stacks, unsigned by);
     int  (*status_stacks)(void* ctx, unsigned e, const char* status);
     bool (*clear_status)(void* ctx, unsigned e, const char* status);

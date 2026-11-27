@@ -2734,6 +2734,18 @@ int main() {
               "not unknown ones, not past the slots",
               in && rests && back_in && kept && swap && refused);
         {
+            // Emptied: the slot is empty, what was in it known still, resting with its
+            // cooldown (put back, it brings it); not past the slots.
+            const size_t resting_before = bar.resting_cooldown.size();
+            const bool cleared = ecs::clear_ability_slot(w, me, 0) && bar.slots[0].empty() && bar.cooldown[0] == 0.0f;
+            const auto kn = ecs::known_abilities(bar);
+            const bool still_known = std::find(kn.begin(), kn.end(), "s51_a") != kn.end() &&
+                                     bar.resting_cooldown.size() == resting_before + 1;
+            const bool back = ecs::equip_ability(w, me, "s51_a", 0) && std::fabs(bar.cooldown[0] - 4.0f) < 1e-4f;
+            check("empty a slot: the ability off the bar, known still and cooling down; not past the slots",
+                  cleared && still_known && back && !ecs::clear_ability_slot(w, me, 3));
+        }
+        {
             std::vector<uint8_t> buf;
             ecs::serialize_ability_bar(&bar, buf);
             ecs::AbilityBar back;
@@ -3034,6 +3046,40 @@ int main() {
         check("profile: a skill gone from the game's tree is dropped, the rest applied",
               d.get<ecs::UnlockedSkills>(pd).unlocked.empty() && d.get<ecs::Progression>(pd).level == 3 &&
                   std::abs(d.get<ecs::AttributeSet>(pd).find("Health")->max - 140.0f) < 1e-3f);
+
+        // The ability bar's slot count is the game's (the scene's), not the save's: a game
+        // that went from 3 slots to 4 gets its 4th slot with an old save, and one that
+        // went down to 2 keeps what no longer fits known.
+        {
+            ecs::World s3;
+            const ecs::Entity p3 = make_player(s3, 100.0f);
+            ecs::AbilityBar old_bar;
+            old_bar.max_slots = 3;
+            old_bar.slots = {"pf_bolt", "pf_dash", "pf_heal"};
+            old_bar.known = {"pf_bolt", "pf_dash", "pf_heal", "pf_wall"};
+            s3.add<ecs::AbilityBar>(p3, old_bar);
+            const ecs::Prefab old_save = ecs::Prefab::from_text(ecs::capture_profile(s3, p3).to_text());
+            ecs::World s4;
+            const ecs::Entity p4 = make_player(s4, 100.0f);
+            ecs::AbilityBar four;
+            four.max_slots = 4;
+            s4.add<ecs::AbilityBar>(p4, four);
+            ecs::apply_profile(s4, p4, old_save);
+            const auto& b4 = s4.get<ecs::AbilityBar>(p4);
+            check("profile: an old save's 3-slot bar on a game with 4 slots -- 4 slots, the 3 abilities in theirs",
+                  ecs::ability_slot_count(b4) == 4 && b4.slots.size() == 3 && b4.slots[2] == "pf_heal" && b4.known.size() == 4);
+            ecs::World s2;
+            const ecs::Entity p2 = make_player(s2, 100.0f);
+            ecs::AbilityBar two;
+            two.max_slots = 2;
+            s2.add<ecs::AbilityBar>(p2, two);
+            ecs::apply_profile(s2, p2, old_save);
+            const auto& b2 = s2.get<ecs::AbilityBar>(p2);
+            const auto kn2 = ecs::known_abilities(b2);
+            check("profile: on a game with 2 slots -- 2 slots, the third ability still known",
+                  ecs::ability_slot_count(b2) == 2 && b2.slots.size() == 2 &&
+                      std::find(kn2.begin(), kn2.end(), "pf_heal") != kn2.end());
+        }
     }
 
     // Statuses (gameplay_status.h), ability zones and cones (gameplay_ability_cast.h),
@@ -3204,6 +3250,19 @@ int main() {
             check("ability: a cone (90 degrees, 3 m) reaches the one in front, not the one behind nor beside",
                   f.targets == 1 && cw.get<ecs::AttributeSet>(front).get("Health") == 80.0f &&
                       cw.get<ecs::AttributeSet>(behind).get("Health") == 100.0f && cw.get<ecs::AttributeSet>(side).get("Health") == 100.0f);
+            {
+                // A lunge (a cone with a dash) reaches as far as the dash carries the caster.
+                ecs::register_items_text("ability pw_lunge\n  cooldown 6\n  target cone\n  radius 3\n  angle 90\n  move dash 4\n  damage 20\nend\n");
+                const ecs::Entity near6 = ca({0, 0, -6}, "team.enemy");
+                const ecs::Entity far8 = ca({0, 0, -8}, "team.enemy");
+                const ecs::AbilityFired lf = ecs::ability_detail::fire(cw, p, *ecs::find_ability_def("pw_lunge"), 0, ci, nullptr, nullptr);
+                const ecs::AbilityFired pf = ecs::ability_detail::fire(cw, p, *ecs::find_ability_def("pw_palm"), 0, ci, nullptr, nullptr);
+                check("ability: a lunge (3 m cone, a 4 m dash) reaches one 6 m ahead, not one 8 m; without the dash 6 m is out of reach",
+                      lf.targets == 2 && cw.get<ecs::AttributeSet>(near6).get("Health") == 80.0f &&
+                          cw.get<ecs::AttributeSet>(far8).get("Health") == 100.0f && pf.targets == 1);
+                cw.destroy(near6);
+                cw.destroy(far8);
+            }
             ecs::GameplayEventBus zb;
             const ecs::Entity zf = ca({0, 0, -8}, "team.enemy");
             ecs::ability_detail::fire(cw, p, *ecs::find_ability_def("pw_fire_zone"), 0, ci, nullptr, nullptr);

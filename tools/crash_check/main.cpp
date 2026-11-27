@@ -9,6 +9,10 @@
 //
 // Child mode (`--crash <type> <report_dir>`): installs the handler and triggers
 // the crash — the handler writes the report and terminates the process.
+//
+// Hang mode (`--hang <idle|stall> <report_dir>`): arms the hang watchdog and
+// stops ticking -- `idle` inside hang_waiting_for_events (a minimized window:
+// no report may be written), `stall` without it (a report must be).
 
 #include "diagnostics/crash_handler.h"
 
@@ -23,6 +27,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <thread>
+#include <chrono>
 
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
@@ -62,9 +68,29 @@ static int child_logspam(const std::string& dir, const std::string& tag) {
     return 0;
 }
 
+// ---- child: the hang watchdog, idle or stalled ------------------------------
+static int child_hang(const std::string& mode, const std::string& dir) {
+    gws::diag::CrashConfig cc;
+    cc.app_name    = "crash_check";
+    cc.version     = "test";
+    cc.report_dir  = dir;
+    cc.show_dialog = false;
+    cc.write_minidump = false;
+    gws::diag::install_crash_handler(cc);
+    gws::diag::install_hang_watchdog(1.0);
+    gws::diag::hang_heartbeat();
+    if (mode == "idle") gws::diag::hang_waiting_for_events(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(8000));   // (a report takes ~4 s to write)
+    if (mode == "idle") gws::diag::hang_waiting_for_events(false);
+    gws::diag::hang_heartbeat();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    return 0;
+}
+
 #if defined(_WIN32)
-static void spawn_wait(const std::string& exe, const std::string& type, const std::string& dir) {
-    std::string cmd = "\"" + exe + "\" --crash " + type + " \"" + dir + "\"";
+static void spawn_wait(const std::string& exe, const std::string& type, const std::string& dir,
+                       const char* mode = "--crash") {
+    std::string cmd = "\"" + exe + "\" " + mode + " " + type + " \"" + dir + "\"";
     std::vector<char> buf(cmd.begin(), cmd.end()); buf.push_back('\0');
     STARTUPINFOA si{}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
@@ -100,6 +126,8 @@ int main(int argc, char** argv) {
         return child_crash(argv[2], argv[3]);
     if (argc >= 4 && std::string(argv[1]) == "--logspam")
         return child_logspam(argv[2], argv[3]);
+    if (argc >= 4 && std::string(argv[1]) == "--hang")
+        return child_hang(argv[2], argv[3]);
 
     std::printf("crash_check: crash handler + reporting\n");
     std::error_code ec;
@@ -194,6 +222,23 @@ int main(int argc, char** argv) {
         }
         check("no torn writes across either log", torn == 0);
         check("neither log carries both processes' lines", mixed == 0);
+    }
+#endif
+
+    // ---- 4) the hang watchdog: a wait for the window is not a hang -----------
+#if defined(_WIN32)
+    for (const char* mode : {"idle", "stall"}) {
+        fs::path d = base / (std::string("hang_") + mode);
+        fs::create_directories(d, ec);
+        std::printf("  spawning child (hang %s)...\n", mode);
+        spawn_wait(self, mode, d.string(), "--hang");
+        bool report = false;
+        for (auto& e : fs::directory_iterator(d, ec))
+            if (e.path().filename().string().rfind("hang_report_", 0) == 0) report = true;
+        if (std::string(mode) == "idle")
+            check("hang watchdog: asleep waiting for the window (minimized) -- no hang report", !report);
+        else
+            check("hang watchdog: a real stall of the same length -- a hang report", report);
     }
 #endif
 

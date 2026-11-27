@@ -11488,7 +11488,9 @@ int main(int argc, char** argv) {
                 int fbw = 0, fbh = 0;
                 glfwGetFramebufferSize(glfw_window, &fbw, &fbh);
                 if (fbw == 0 || fbh == 0) {
+                    gws::diag::hang_waiting_for_events(true);   // (the watchdog: idle, not a hang)
                     glfwWaitEvents();   // sleep until restored (no busy spin)
+                    gws::diag::hang_waiting_for_events(false);
                     continue;
                 }
                 if (static_cast<uint32_t>(fbw) != swapchain->get_width() ||

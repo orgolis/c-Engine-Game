@@ -73,6 +73,9 @@ std::string write_report(const std::string& reason);
 // relaxed atomic store.
 void install_hang_watchdog(double seconds = 5.0);
 void hang_heartbeat();
+// Around a wait for the window system (a minimized window sleeping until it is
+// restored): the main thread is idle there, not stuck -- no hang report.
+void hang_waiting_for_events(bool waiting);
 
 // ---- breadcrumbs ----
 // "It freezes when I click" is only useful if something recorded the click.

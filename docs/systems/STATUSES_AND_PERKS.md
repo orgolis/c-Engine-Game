@@ -161,7 +161,7 @@ by an ability's `cost Charge 100`, and drawn by a bar `bind=player.Charge`.
 | Status Stacks | `status_stacks(e, status)` | |
 | Clear Status | `clear_status(e, status)` | |
 | Add Perk / Remove Perk / Has Perk | `add_perk` / `remove_perk` / `has_perk(e, perk)` | |
-| Equip Ability By Id | `equip_ability_id(e, ability, slot)` | an ability into a bar slot (from 0); known from then on |
+| Equip Ability By Id | `equip_ability_id(e, ability, slot)` | an ability into a bar slot (from 0); known from then on. An empty ability (`""`) empties the slot -- what was in it stays known |
 | Ability In Slot | `ability_in_slot(e, slot)` | the ability's id |
 
 A native script asks `get_setting("engine.statuses_perks")` before using them.

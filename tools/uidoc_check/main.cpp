@@ -77,10 +77,17 @@ int main() {
     refresh_ui_bindings(*d, [](const std::string&) { UiValue v; v.found = true; v.value = 1; return v; });
     check("set text: a label keeps it (no longer follows its placeholders)",
           set && dynamic_cast<Label*>(d->ids["ammo"])->text == "empty" && !set_ui_text(*d, "nope", "x"));
-    // Set with placeholders in it: followed, like text written in the file.
+    // Set with placeholders in it: followed, like text written in the file -- and
+    // never shown raw: until the next refresh it keeps what it showed.
     set_ui_text(*d, "ammo", "> {thing.name} <");
+    const bool not_raw = dynamic_cast<Label*>(d->ids["ammo"])->text == "empty";
     refresh_ui_bindings(*d, [](const std::string& s) { UiValue v; v.found = s == "thing.name"; v.text = "Bolt"; return v; });
-    const bool live = dynamic_cast<Label*>(d->ids["ammo"])->text == "> Bolt <";
+    const bool live0 = dynamic_cast<Label*>(d->ids["ammo"])->text == "> Bolt <";
+    set_ui_text(*d, "ammo", "> {thing.name} <");   // again, as a script does every frame
+    const bool same = dynamic_cast<Label*>(d->ids["ammo"])->text == "> Bolt <";
+    check("set text with {placeholders}: never shown raw before the refresh; set again, it stays resolved",
+          not_raw && same);
+    const bool live = live0;
     set_ui_text(*d, "ammo", "plain");
     refresh_ui_bindings(*d, [](const std::string&) { UiValue v; v.found = true; v.text = "X"; return v; });
     check("set text: with {placeholders} it follows them; plain text again stays plain",

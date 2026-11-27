@@ -390,14 +390,16 @@ inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot,
             f.point = in.caster_pos;
             break;
         case AbilityTargeting::Cone: {
-            // Those in front: from the caster, the way it aims (flat).
-            f.point = in.caster_pos + glm::vec3(aim.x, 0.0f, aim.z) * (d.radius * 0.5f);
+            // Those in front: from the caster, the way it aims (flat). A dash makes it a
+            // lunge: it reaches as far as the dash carries the caster, and its radius on.
+            const float reach = d.radius + (d.move == AbilityDef::Move::Dash ? std::max(0.0f, d.move_a) : 0.0f);
+            f.point = in.caster_pos + glm::vec3(aim.x, 0.0f, aim.z) * (reach - d.radius * 0.5f);
             const std::string team = team_of(w, caster);
             w.each<Transform>([&](Entity e, Transform& t) {
                 if (e == caster) return;
                 if (!w.has<CombatActor>(e) && !w.has<AttributeSet>(e)) return;
                 if (!team.empty() && team_of(w, e) == team) return;
-                if (in_cone(w, e, t, in.caster_pos, aim, d.radius, d.angle)) hits.push_back(e);
+                if (in_cone(w, e, t, in.caster_pos, aim, reach, d.angle)) hits.push_back(e);
             });
             break;
         }
@@ -795,6 +797,23 @@ inline bool equip_ability(World& w, Entity e, const std::string& id, int slot) {
         if (it->first == id) { cd = it->second; bar.resting_cooldown.erase(it); break; }
     bar.slots[static_cast<size_t>(slot)] = id;
     bar.cooldown[static_cast<size_t>(slot)] = cd;
+    return true;
+}
+/// Empty a slot (0-based): what was in it stays known, resting with its cooldown.
+/// False when the slot is past the bar's slots or a cast is under way.
+inline bool clear_ability_slot(World& w, Entity e, int slot) {
+    if (!w.has<AbilityBar>(e)) return false;
+    AbilityBar& bar = w.get<AbilityBar>(e);
+    if (slot < 0 || slot >= ability_slot_count(bar) || bar.casting >= 0) return false;
+    if (static_cast<int>(bar.slots.size()) <= slot) return true;   // empty already
+    bar.cooldown.resize(bar.slots.size(), 0.0f);
+    const size_t i = static_cast<size_t>(slot);
+    const std::string out = bar.slots[i];
+    if (out.empty()) return true;
+    if (std::find(bar.known.begin(), bar.known.end(), out) == bar.known.end()) bar.known.push_back(out);
+    if (bar.cooldown[i] > 0.0f) bar.resting_cooldown.push_back({out, bar.cooldown[i]});
+    bar.slots[i].clear();
+    bar.cooldown[i] = 0.0f;
     return true;
 }
 /// Learn a skill (unlock_skill: points, prerequisites, grants, tags) and put

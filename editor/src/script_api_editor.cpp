@@ -672,7 +672,9 @@ bool api_has_perk(void* ctx, uint32_t e, const char* perk) {
 }
 bool api_equip_ability_id(void* ctx, uint32_t e, const char* ability, int slot) {
     ecs::World* w; ecs::Entity ent;
-    if (!ability || !gp_entity(ctx, e, w, ent) || !ecs::find_ability_def(ability)) return false;
+    if (!ability || !gp_entity(ctx, e, w, ent)) return false;
+    if (!*ability) return ecs::clear_ability_slot(*w, ent, slot);   // "": the slot emptied
+    if (!ecs::find_ability_def(ability)) return false;
     if (!w->has<ecs::AbilityBar>(ent)) w->add<ecs::AbilityBar>(ent, ecs::AbilityBar{});
     auto& known = w->get<ecs::AbilityBar>(ent).known;
     if (std::find(known.begin(), known.end(), ability) == known.end()) known.push_back(ability);

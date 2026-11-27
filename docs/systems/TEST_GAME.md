@@ -48,21 +48,19 @@ it in the editor.
   are in the supply caches. A gun found while all three slots are full goes
   into the bag; Use it in the inventory to swap it with the gun in hand.
 - **Levels and a skill tree**: each kill gives 100 XP (and ammunition); each
-  level gives skill points. The tree (K) grows from Awakening into three
-  branches -- Elements (below, and the spell passives above them), Survival
-  (Toughness, Mend, Regeneration, Iron Skin, Second Wind, Battle Cry, Veteran,
-  Undying, Bulwark, Renewal) and Arms & Mobility (Fleet Foot, Surge, Leap,
-  Double Jump, Haste, Blink, Overdrive, Quick Hands, Marksman, Deadeye,
-  Gunslinger ...). A click learns one.
+  level gives two skill points (six to start). The tree (K) is the elements'
+  (since 0.8.69): four branches of 16 skills, each from its Attunement -- on the
+  left the element's other abilities and its Discipline (grenades back sooner)
+  and Strength (melees), on the right its aspects and fragments, at the top its
+  Mastery. A click learns one (`assets/scripts/powers.cpp`).
 - **Elements** (since engine 0.8.68; `assets/gameplay/elements.items`,
   `assets/scripts/powers.cpp`): Ember, Storm, Rime and Umbra, each with its own
   verbs -- statuses its powers put on enemies and on the player (Kindle and its
   Flashpoint, Blaze, Mend; Charged lightning that leaps, Dazed, Surge; Chill,
   Frozen and Shatter, Frost Plate; Hex, Unstable and Rupture, Veil, Hunger) --
   two supers, three grenades, two melees, two class abilities, three aspects
-  and six fragments. Each element opens in four skills (Attunement, Arsenal,
-  Mastery, Apex). The player takes up one element: a grenade on Z, a melee on X,
-  a class ability on C (the element's, or a learned Survival / Arms ability),
+  and six fragments, opened one by one in its branch of the skill tree. The
+  player takes up one element: a grenade on Z, a melee on X, a class ability on C,
   the super on F (it fills with time, hits and kills); up to two aspects, and as
   many fragments as the aspects open. A form super (Phoenix Mantle,
   Thunderhead, Winter's Edge, Eclipse) changes the melee while it lasts.
@@ -114,19 +112,20 @@ Logic scripts in `testgame/`:
   `died` event of the enemy team gives XP and rounds and counts down
   "Enemies left" (creatures and soldiers) on the HUD; at zero it sets the world flag `game.cleared`.
   It also gives the player the `hero` skill tree at the start, opens and
-  closes the inventory (I), the skill tree (K) and the abilities (P) -- Esc
-  closes them too -- and runs their Use, Put in bag, learn (a click on a
-  skill) and equip (a click on a slot) buttons.
+  closes the inventory (I), the skill tree (K) and the powers (P) -- Esc
+  closes them too -- and runs their Use and Put in bag buttons (the skill
+  tree's clicks are powers.cpp's).
 - `Checkpoint.lgraph` (on each checkpoint zone): Save Game "quick" on enter.
 - `Goal.lgraph` (on the beacon zone): the win screen once `game.cleared` is
   set, otherwise "clear every camp first".
 
 Weapons, items and the first abilities are `assets/gameplay/starter.items`;
-the skill tree and the other abilities are `assets/gameplay/hero.items`, the other
+the skill tree is `assets/gameplay/hero.items`, the elements' powers
+`assets/gameplay/elements.items`, the other
 guns, armour and grenades `assets/gameplay/arsenal.items` (open them in the
 Items editor). The player's three weapon slots are its Weapon Loadout
 (Inspector). The inventory, skills, grenade, weapon-slot and ability keys are
-in `input.cfg`; the ability slots are the player's Ability Bar (Slots 3).
+in `input.cfg`; the ability slots are the player's Ability Bar (Slots 4).
 
 ## Keys
 

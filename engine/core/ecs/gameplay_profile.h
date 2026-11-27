@@ -10,7 +10,8 @@
 // keeps its own design (base health, XP curve, growth per level, the skill
 // tree, item definitions) and the profile's facts are rebuilt on top of it --
 // the levels' growth added, each unlocked skill's grants and tags applied, what
-// is worn re-equipped (its modifiers recomputed) -- so a change to the game's
+// is worn re-equipped (its modifiers recomputed), the abilities put back in as
+// many slots as the scene's bar has -- so a change to the game's
 // balance reaches a saved player, and a mode starts at full health. Apply it
 // once, onto a fresh player (applying twice adds the bonuses twice).
 //
@@ -134,7 +135,23 @@ inline void apply_profile(World& w, Entity e, const Prefab& p) {
     }
     // The bag, the abilities in their slots, the guns carried and the one in hand.
     pd::replace(w, e, p, "Inventory");
-    pd::replace(w, e, p, "Ability Bar");
+    // The abilities: the saved ones in their slots, but as many slots as the scene's bar
+    // has -- the game's design, so a game that changes it is not undone by an older save
+    // (what would not fit stays known, to equip).
+    {
+        const AbilityBar* scene_bar = w.try_get<AbilityBar>(e);
+        const bool had_bar = scene_bar != nullptr;
+        const int scene_slots = had_bar ? scene_bar->max_slots : 0;
+        pd::replace(w, e, p, "Ability Bar");
+        if (AbilityBar* b = had_bar ? w.try_get<AbilityBar>(e) : nullptr) {
+            b->max_slots = scene_slots;
+            const size_t n = static_cast<size_t>(ability_slot_count(*b));
+            for (size_t i = n; i < b->slots.size(); ++i)
+                if (!b->slots[i].empty() && std::find(b->known.begin(), b->known.end(), b->slots[i]) == b->known.end())
+                    b->known.push_back(b->slots[i]);
+            if (b->slots.size() > n) b->slots.resize(n);
+        }
+    }
     pd::replace(w, e, p, "Weapon Loadout");
     pd::replace(w, e, p, "Weapon");
     // The perks carried (their bonuses and tags rebuilt; one the game no longer has goes).

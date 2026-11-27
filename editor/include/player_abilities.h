@@ -127,8 +127,14 @@ public:
         // each one went off.
         if (pfx && bar->casting >= 0 && !bar->channelling && bar->casting < static_cast<int>(bar->slots.size()))
             if (const ecs::AbilityDef* d = ecs::find_ability_def(bar->slots[bar->casting])) pfx->ability_windup(*d, ci.origin, dt);
+        static const bool test_log = std::getenv("GWS_TEST_PLAY") != nullptr;
         for (const auto& f : fired) {
             const ecs::AbilityDef* d = ecs::find_ability_def(f.id);
+            if (test_log)
+                spdlog::info("[test] abilities: {} cast from ({:.1f}, {:.1f}, {:.1f}){}", f.id, ci.caster_pos.x, ci.caster_pos.y,
+                             ci.caster_pos.z,
+                             f.launched ? std::string(", in flight")
+                                        : fmt::format(", went off at ({:.1f}, {:.1f}, {:.1f}), reached {}", f.point.x, f.point.y, f.point.z, f.targets));
             if (d && pfx) pfx->ability_fired(*d, f, ci.origin);
             if (f.move != ecs::AbilityDef::Move::None) move_player(play, f, cam_fwd);
         }
@@ -140,7 +146,7 @@ public:
         for (size_t i = 0; i < bar->slots.size(); ++i) {
             const ecs::AbilityDef* d = ecs::find_ability_def(bar->slots[i]);
             Slot& s = hud_.slots[i];
-            s.name = d ? d->name : bar->slots[i] + "?";
+            s.name = d ? d->name : bar->slots[i].empty() ? std::string() : bar->slots[i] + "?";
             s.cooldown = i < bar->cooldown.size() ? bar->cooldown[i] : 0.0f;
             const float cdr = std::clamp(ecs::bonus_stat(w.try_get<ecs::AttributeSet>(e), "CooldownReduction"), 0.0f, 75.0f);
             s.cooldown_total = d ? d->cooldown * (1.0f - cdr / 100.0f) : 0.0f;

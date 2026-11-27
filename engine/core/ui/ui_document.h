@@ -580,26 +580,29 @@ inline void refresh_ui_bindings(UiDocument& doc, const UiLookup& game_lookup, co
 /// A label's or button's text, set by a script: kept as it is -- or, with
 /// {placeholders} in it, followed like text written in the file
 /// ("{ability.firebolt.name}", "{player.Health} HP").
+/// The placeholders are filled in by the next refresh_ui_bindings: until then the
+/// widget keeps what it shows (never the raw "{...}"), and setting the text it
+/// already follows changes nothing -- a script may set it every frame.
 inline bool set_ui_text(UiDocument& doc, const std::string& id, const std::string& text) {
     auto it = doc.ids.find(id);
     if (it == doc.ids.end()) return false;
     const size_t open = text.find('{');
     const bool live = open != std::string::npos && text.find('}', open) != std::string::npos;
-    if (auto* l = dynamic_cast<Label*>(it->second)) {
-        l->text = text;
-        for (size_t i = 0; i < doc.texts.size(); ++i)
-            if (doc.texts[i].label == l) { doc.texts.erase(doc.texts.begin() + static_cast<long>(i)); break; }
-        if (live) doc.texts.push_back({l, nullptr, text});
+    auto* l = dynamic_cast<Label*>(it->second);
+    auto* b = l ? nullptr : dynamic_cast<Button*>(it->second);
+    if (!l && !b) return false;
+    for (size_t i = 0; i < doc.texts.size(); ++i)
+        if ((l && doc.texts[i].label == l) || (b && doc.texts[i].button == b)) {
+            if (live && doc.texts[i].templ == text) return true;   // followed already
+            doc.texts.erase(doc.texts.begin() + static_cast<long>(i));
+            break;
+        }
+    if (live) {
+        doc.texts.push_back({l, b, text});
         return true;
     }
-    if (auto* b = dynamic_cast<Button*>(it->second)) {
-        b->text = text;
-        for (size_t i = 0; i < doc.texts.size(); ++i)
-            if (doc.texts[i].button == b) { doc.texts.erase(doc.texts.begin() + static_cast<long>(i)); break; }
-        if (live) doc.texts.push_back({nullptr, b, text});
-        return true;
-    }
-    return false;
+    (l ? l->text : b->text) = text;
+    return true;
 }
 
 }  // namespace schizo::ui

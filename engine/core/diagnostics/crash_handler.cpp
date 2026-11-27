@@ -435,6 +435,7 @@ void signal_handler(int sig) {
 // ---- hang watchdog ----------------------------------------------------------
 
 std::atomic<uint64_t> g_heartbeat_ns{0};
+std::atomic<bool>     g_waiting_for_events{false};   // hang_waiting_for_events()
 std::atomic<bool>     g_watchdog_stop{false};
 std::unique_ptr<std::thread> g_watchdog_thread;
 #if defined(_WIN32)
@@ -644,6 +645,13 @@ void watchdog_loop(double threshold_s) {
         const double stalled = double(mono_ns() - beat) / 1.0e9;
         if (stalled >= threshold_s && !reported_this_stall) {
             reported_this_stall = true;   // once per stall, not once per check
+            // Asleep in the window system's wait on purpose (minimized): said by the
+            // main loop itself, so it holds in a stripped build whose stack has no names.
+            if (g_waiting_for_events.load(std::memory_order_relaxed)) {
+                spdlog::info("[hang] main loop idle {:.1f}s waiting for the window (minimized) -- not a hang, no report written",
+                             stalled);
+                continue;
+            }
 #if defined(_WIN32)
             if (main_thread_is_parked_on_input()) {
                 // Not a hang: a modal dialog is open, or the window is simply
@@ -763,6 +771,11 @@ void record_frame_ms(double ms) {
 
 void hang_heartbeat() {
     g_heartbeat_ns.store(mono_ns(), std::memory_order_relaxed);
+}
+
+void hang_waiting_for_events(bool waiting) {
+    g_waiting_for_events.store(waiting, std::memory_order_relaxed);
+    if (!waiting) g_heartbeat_ns.store(mono_ns(), std::memory_order_relaxed);   // the wait is not counted as a stall
 }
 
 std::string write_report(const std::string& reason) {

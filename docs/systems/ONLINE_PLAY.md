@@ -217,7 +217,10 @@ leave a mode (the start screen, another mode, closing the game).
 Each mode starts from the player as its scene makes them; the profile is then
 rebuilt on top -- the levels' growth, each skill's bonus, the gear's modifiers --
 so a change to the game's balance reaches saved players, and every mode starts
-at full health. A skill the game no longer has is dropped.
+at full health. A skill the game no longer has is dropped (its points are not
+given back by the engine: the game knows how it hands them out -- a script can
+add them back, `add_skill_points`). The ability bar has as many slots as the
+scene's: a game that changes its slot count is not undone by older saves.
 
 Online, a guest sends their profile when they join; the host gives the guest
 their own progress (not the host's), and the guest keeps what they earn there.

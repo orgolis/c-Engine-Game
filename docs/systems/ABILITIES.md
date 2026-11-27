@@ -65,7 +65,7 @@ Who it reaches:
 | `aimed` | the first one along the crosshair, up to the range; walls stop it |
 | `area` | everyone within the radius of the caster |
 | `area_at_aim` | everyone within the radius of where the crosshair lands (a wall, or the range) |
-| `cone` | everyone in front of the caster within the radius and `angle` degrees wide (a sweep; with `move dash`, a lunge) |
+| `cone` | everyone in front of the caster within the radius and `angle` degrees wide (a sweep; with `move dash`, a lunge: it reaches the dash's length further) |
 
 With a **speed**, an `aimed` or `area_at_aim` ability flies instead of taking
 effect at once: from the caster's hand toward what the crosshair is on,
