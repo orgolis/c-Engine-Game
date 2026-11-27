@@ -69,7 +69,7 @@ struct AttributeSet {
 // A skill's `grant` or an effect on one the entity does not have yet adds it
 // (from 0, room up to +-1000): passives and buffs need no setup.
 inline bool is_bonus_stat(const std::string& n) {
-    return n == "MoveSpeed" || n == "Damage" || n == "CooldownReduction" || n == "ReloadSpeed" ||
+    return n == "MoveSpeed" || n == "Damage" || n == "DamageTaken" || n == "CooldownReduction" || n == "ReloadSpeed" ||
            n == "HealthRegen" || n == "ExtraJumps" || n == "ManaRegen" ||
            n == "WeaponDamage" || n == "AbilityDamage" || n == "WeaponHandling" || n.rfind("resist.", 0) == 0;
 }

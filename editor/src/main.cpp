@@ -3,6 +3,7 @@
 
 #define GLM_ENABLE_EXPERIMENTAL
 #define GLFW_INCLUDE_VULKAN
+#include <map>
 #include <unordered_set>
 #include <GLFW/glfw3.h>
 #include <utility>   // std::as_const: reads must not stamp the entity
@@ -137,6 +138,7 @@
 #include "ecs/gameplay_movement.h" // the player's moves in Play (C4)
 #include "ecs/gameplay_camera.h"   // the player's third-person camera rig
 #include "ecs/gameplay_tags.h"     // surface.climbable
+#include "ecs/gameplay_perks.h"    // statuses, ability zones, perks (0.8.68)
 #include "logic_script_panel.h"  // graph editor for .lgraph logic scripts
 #include "logic_debug.h"          // a breakpoint in a logic script stops the game
 #include "vscript/value.h"       // literals of a logic graph's Inspector fields
@@ -13315,6 +13317,27 @@ int main(int argc, char** argv) {
                     }
                     if (src == "time") { v.found = true; v.value = pm.GetPlaybackTime(); return v; }
                     if (src.rfind("flag.", 0) == 0) { v.found = true; v.value = ecs_bridge.world_flag(src.substr(5)); return v; }
+                    // The game's data by id (0.8.68): ability.<id>.name / .about / .cooldown,
+                    // perk.<id>.name / .about, status.<id>.name / .about.
+                    if (src.rfind("ability.", 0) == 0 || src.rfind("perk.", 0) == 0 || src.rfind("status.", 0) == 0) {
+                        const size_t a = src.find('.'), b = src.rfind('.');
+                        if (b == a) return v;
+                        const std::string kind = src.substr(0, a), id = src.substr(a + 1, b - a - 1), what = src.substr(b + 1);
+                        std::string name, about;
+                        float cooldown = -1.0f;
+                        if (kind == "ability") {
+                            if (const auto* d = schizo::ecs::find_ability_def(id)) { name = d->name; about = d->about; cooldown = d->cooldown; }
+                        } else if (kind == "perk") {
+                            if (const auto* d = schizo::ecs::find_perk_def(id)) { name = d->name; about = d->about; }
+                        } else if (const auto* d = schizo::ecs::find_status_def(id)) { name = d->name; about = d->about; }
+                        if (name.empty() && cooldown < 0.0f) return v;
+                        v.found = true;
+                        if (what == "name") v.text = name;
+                        else if (what == "about") v.text = about.empty() ? std::string(" ") : about;
+                        else if (what == "cooldown" && cooldown >= 0.0f) v.value = cooldown;
+                        else v.found = false;
+                        return v;
+                    }
                     if (src.rfind("player.", 0) != 0) return v;
                     auto* pl = pm.GetPlayerEntity();
                     const uint32_t pid = pl ? ecs_bridge.ecs_entity_id(pl->GetTransform()) : schizo::editor::kNoEcsEntity;
@@ -13409,7 +13432,7 @@ int main(int argc, char** argv) {
                     // A slots grid bound to the player's inventory.
                     std::vector<schizo::ui::UiSlot> out;
                     if (src != "player.inventory" && src != "player.weapons" && src != "player.abilities" &&
-                        src != "player.known_abilities")
+                        src != "player.known_abilities" && src != "player.statuses")
                         return out;
                     auto* pl = pm.GetPlayerEntity();
                     const uint32_t pid = pl ? ecs_bridge.ecs_entity_id(pl->GetTransform()) : schizo::editor::kNoEcsEntity;
@@ -13469,6 +13492,27 @@ int main(int argc, char** argv) {
                                 if (bar->slots[k] == id) { s.detail = "slot " + std::to_string(k + 1); s.marked = true; }
                             out.push_back(std::move(s));
                         }
+                        return out;
+                    }
+                    if (src == "player.statuses") {
+                        // The statuses on the player (0.8.68): each its name, its stacks, its
+                        // time running out darkening the cell, the seconds left over it.
+                        if (const auto* st = gw.try_get<schizo::ecs::Statuses>(pe))
+                            for (const auto& si : st->list) {
+                                const auto* d = schizo::ecs::find_status_def(si.id);
+                                if (!d || si.stacks <= 0) continue;
+                                schizo::ui::UiSlot s;
+                                s.name = d->name;
+                                s.count = d->max_stacks > 1 ? si.stacks : 0;
+                                s.info = d->about;
+                                if (d->duration > 0.0f) {
+                                    s.shade = std::clamp(1.0f - si.remaining / d->duration, 0.0f, 1.0f);
+                                    char b[16];
+                                    std::snprintf(b, sizeof b, si.remaining >= 10.0f ? "%.0f" : "%.1f", std::max(0.0f, si.remaining));
+                                    s.overlay = b;
+                                }
+                                out.push_back(std::move(s));
+                            }
                         return out;
                     }
                     if (src == "player.weapons") {
@@ -14201,6 +14245,66 @@ int main(int argc, char** argv) {
                                 im.caster != static_cast<schizo::ecs::Entity>(pid) && gw.valid(im.caster))
                                 if (const auto* ct2 = gw.try_get<schizo::ecs::Transform>(im.caster))
                                     editor_state.hud_hits.push_back({ct2->position, 0.0f});
+                        }
+                    }
+                    // Statuses on characters (their look), the zones abilities left, and
+                    // what statuses and perks set off since the last frame (0.8.68).
+                    {
+                        auto& gw = ecs_bridge.world();
+                        gw.each<schizo::ecs::Statuses>([&](schizo::ecs::Entity e, schizo::ecs::Statuses& st) {
+                            for (const auto& s : st.list)
+                                if (s.stacks > 0)
+                                    if (const auto* d = schizo::ecs::find_status_def(s.id); d && !d->vfx.empty())
+                                        editor_state.play_effects.status_on(d->vfx, schizo::ecs::status_point(gw, e), delta_time);
+                        });
+                        static float zone_clock = 0.0f;
+                        zone_clock += delta_time;
+                        const bool zone_pulse = zone_clock >= 0.6f;
+                        if (zone_pulse) zone_clock = 0.0f;
+                        gw.each<schizo::ecs::AbilityZones>([&](schizo::ecs::Entity, schizo::ecs::AbilityZones& z) {
+                            for (const auto& zn : z.zones)
+                                if (const auto* d = schizo::ecs::find_ability_def(zn.id)) editor_state.play_effects.zone(*d, zn.pos, delta_time, zone_pulse);
+                        });
+                        auto& vis = schizo::ecs::action_visuals(gw);
+                        for (const auto& b : vis.bursts)
+                            if (const auto* d = schizo::ecs::find_ability_def(b.ability)) editor_state.play_effects.burst(*d, b.at);
+                        for (const auto& c : vis.chains) editor_state.play_effects.chain(c.type, c.from, c.to);
+                        if (std::getenv("GWS_TEST_PLAY") && (!vis.bursts.empty() || !vis.chains.empty()))
+                            spdlog::info("[test] statuses: {} burst(s), {} chain(s) shown", vis.bursts.size(), vis.chains.size());
+                        vis = schizo::ecs::ActionVisuals{};   // shown once
+                        // Test runs: the statuses alive by id (once a second) and the
+                        // player's bar and perks when they change.
+                        static const bool test_log = std::getenv("GWS_TEST_PLAY") != nullptr;
+                        if (test_log) {
+                            static float since = 0.0f;
+                            since += delta_time;
+                            if (since >= 1.0f) {
+                                since = 0.0f;
+                                std::map<std::string, std::pair<int, int>> alive;   // id -> (bearers, stacks)
+                                gw.each<schizo::ecs::Statuses>([&](schizo::ecs::Entity, schizo::ecs::Statuses& st) {
+                                    for (const auto& s : st.list)
+                                        if (s.stacks > 0) { ++alive[s.id].first; alive[s.id].second += s.stacks; }
+                                });
+                                std::string line;
+                                for (const auto& [id, n] : alive)
+                                    line += (line.empty() ? "" : ", ") + id + " on " + std::to_string(n.first) + " (" + std::to_string(n.second) + " stacks)";
+                                if (!line.empty()) spdlog::info("[test] statuses alive: {}", line);
+                            }
+                            if (auto* tp = pm.GetPlayerEntity()) {
+                                const uint32_t tid = ecs_bridge.ecs_entity_id(tp->GetTransform());
+                                const auto te = static_cast<schizo::ecs::Entity>(tid);
+                                if (tid != schizo::editor::kNoEcsEntity && gw.valid(te)) {
+                                    std::string sig;
+                                    if (const auto* bar = gw.try_get<schizo::ecs::AbilityBar>(te))
+                                        for (const auto& id : bar->slots) sig += (sig.empty() ? "bar [" : ", ") + (id.empty() ? std::string("-") : id);
+                                    sig += "]  perks [";
+                                    if (const auto* pk = gw.try_get<schizo::ecs::Perks>(te))
+                                        for (size_t i = 0; i < pk->ids.size(); ++i) sig += (i ? ", " : "") + pk->ids[i];
+                                    sig += "]";
+                                    static std::string last;
+                                    if (sig != last) { last = sig; spdlog::info("[test] powers: {}", sig); }
+                                }
+                            }
                         }
                     }
                     editor_state.shot_effects.update(delta_time);

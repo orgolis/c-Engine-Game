@@ -192,6 +192,18 @@ typedef struct SchizoScriptApi {
     bool (*stop_montage)(void* ctx, unsigned e, const char* slot, float blend_out);
     bool (*set_anim_param)(void* ctx, unsigned e, const char* name, float value);
     int (*anim_state)(void* ctx, unsigned e, int layer, char* out, int out_size);
+    /* 0.8.68 (query engine.statuses_perks): statuses (`status` blocks in .items):
+       put stacks on (by: who put them on, 0 none; returns the stacks it has now),
+       count, clear. Perks (`perk` blocks): give, take, ask. An ability by its id
+       into a bar slot (from 0; known from then on), and the ability in a slot. */
+    int  (*apply_status)(void* ctx, unsigned e, const char* status, int stacks, unsigned by);
+    int  (*status_stacks)(void* ctx, unsigned e, const char* status);
+    bool (*clear_status)(void* ctx, unsigned e, const char* status);
+    bool (*add_perk)(void* ctx, unsigned e, const char* perk);
+    bool (*remove_perk)(void* ctx, unsigned e, const char* perk);
+    bool (*has_perk)(void* ctx, unsigned e, const char* perk);
+    bool (*equip_ability_id)(void* ctx, unsigned e, const char* ability, int slot);
+    int  (*ability_in_slot)(void* ctx, unsigned e, int slot, char* out, int out_size);
 } SchizoScriptApi;
 
 }  // extern "C"

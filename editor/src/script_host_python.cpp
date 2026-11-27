@@ -472,6 +472,35 @@ void build_engine_module(pkpy::VM* vm) {
             return vm->None;
         return VAR(std::string(name));
     });
+    // 0.8.68: statuses, perks, abilities by id.
+    vm->bind(mod, "apply_status(e: int, status: str, stacks: int, by: int) -> int", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        return VAR(static_cast<pkpy::i64>(g_api && g_api->apply_status ? g_api->apply_status(g_api->ctx, earg(vm, args[0]),
+            sarg(vm, args[1]).c_str(), static_cast<int>(CAST(pkpy::i64, args[2])), earg(vm, args[3])) : 0));
+    });
+    vm->bind(mod, "status_stacks(e: int, status: str) -> int", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        return VAR(static_cast<pkpy::i64>(g_api && g_api->status_stacks ? g_api->status_stacks(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str()) : 0));
+    });
+    vm->bind(mod, "clear_status(e: int, status: str) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        return VAR(g_api && g_api->clear_status && g_api->clear_status(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str()));
+    });
+    vm->bind(mod, "add_perk(e: int, perk: str) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        return VAR(g_api && g_api->add_perk && g_api->add_perk(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str()));
+    });
+    vm->bind(mod, "remove_perk(e: int, perk: str) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        return VAR(g_api && g_api->remove_perk && g_api->remove_perk(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str()));
+    });
+    vm->bind(mod, "has_perk(e: int, perk: str) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        return VAR(g_api && g_api->has_perk && g_api->has_perk(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str()));
+    });
+    vm->bind(mod, "equip_ability_id(e: int, ability: str, slot: int) -> bool", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        return VAR(g_api && g_api->equip_ability_id && g_api->equip_ability_id(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(),
+            static_cast<int>(CAST(pkpy::i64, args[2]))));
+    });
+    vm->bind(mod, "ability_in_slot(e: int, slot: int) -> str", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        char id[128] = {0};
+        if (g_api && g_api->ability_in_slot) g_api->ability_in_slot(g_api->ctx, earg(vm, args[0]), static_cast<int>(CAST(pkpy::i64, args[1])), id, sizeof id);
+        return VAR(std::string(id));
+    });
     vm->bind(mod, "bone_position(e: int, bone: str)", [](pkpy::VM* vm, pkpy::ArgsView args) {
         float p[3]{};
         if (!g_api || !g_api->bone_position || !g_api->bone_position(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(), p))

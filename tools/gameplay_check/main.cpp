@@ -5,6 +5,8 @@
 // ============================================================================
 #include "ecs/world.h"
 #include "ecs/gameplay_profile.h"
+#include "ecs/gameplay_perks.h"
+#include "items_templates.h"   // editor/include: the Items editor's templates
 #include "ecs/authorable_components.h"
 #include "ecs/gameplay_attributes.h"
 #include "ecs/gameplay_tags.h"
@@ -3032,6 +3034,302 @@ int main() {
         check("profile: a skill gone from the game's tree is dropped, the rest applied",
               d.get<ecs::UnlockedSkills>(pd).unlocked.empty() && d.get<ecs::Progression>(pd).level == 3 &&
                   std::abs(d.get<ecs::AttributeSet>(pd).find("Health")->max - 140.0f) < 1e-3f);
+    }
+
+    // Statuses (gameplay_status.h), ability zones and cones (gameplay_ability_cast.h),
+    // perks (gameplay_perks.h) -- 0.8.68. The words (labels, attributes) are a game's own.
+    {
+        ecs::register_skill_components();
+        ecs::register_ability_cast_components();
+        ecs::register_perk_components();
+        const char* data =
+            "status pw_burn\n  name Burn\n  labels fire\n  stacks 5\n  duration 4\n  tick 0.5 2 fire\n  at 5 burst pw_flare\n  vfx pw_burn\nend\n"
+            "ability pw_flare\n  target area\n  radius 4\n  damage 50 fire\nend\n"
+            "status pw_chill\n  stacks 3\n  duration 5\n  mod MoveSpeed -10\n  at 3 apply pw_frozen\nend\n"
+            "status pw_frozen\n  duration 2\n  tag status.stunned\n  taken 50\nend\n"
+            "status pw_guard\n  duration 5\n  shield 40\nend\n"
+            "status pw_weak\n  duration 5\n  taken 25\nend\n"
+            "status pw_volatile\n  duration 5\n  hurt 20 damage 30 void\nend\n"
+            "status pw_contagion\n  duration 5\n  death spread pw_weak 1 6\nend\n"
+            "status pw_scald\n  duration 2\n  tick 0.5 25 fire\n  hurt 20 damage 100 void\nend\n"
+            "ability pw_bomb\n  cooldown 10\n  target area\n  radius 5\n  damage 10 fire\n  inflict pw_burn 2\n  labels thrown fire\nend\n"
+            "ability pw_palm\n  cooldown 6\n  target cone\n  radius 3\n  angle 90\n  damage 20\n  labels close\nend\n"
+            "ability pw_rift\n  cooldown 20\n  target self\n  radius 4\n  zone 3 1\n  zone_hits allies\n  inflict pw_guard\nend\n"
+            "ability pw_fire_zone\n  target area_at_aim\n  range 10\n  radius 3\n  damage 4 fire\n  zone 2 0.5\nend\n"
+            "perk pw_hands\n  name Hands\n  labels major\n  mod CooldownReduction 10\n  tag perk.hands\n  when hit label close\n  do apply pw_burn 3\n  about Close hits burn.\nend\n"
+            "perk pw_echo\n  when kill label thrown\n  if target pw_burn\n  do recharge thrown 50\nend\n"
+            "perk pw_edge\n  mod Damage 5\nend\n"
+            "perk pw_meter\n  when kill\n  do add Meter 20\n  when hit ability\n  do add Meter 0.1 per\nend\n";
+        ecs::register_items_text(data);
+        check("statuses and perks: blocks read (a burst at 5 stacks, labels, a perk's bonus, tag and moments)",
+              ecs::find_status_def("pw_burn") && ecs::find_status_def("pw_burn")->triggers.size() == 1 &&
+                  ecs::find_status_def("pw_burn")->has_label("fire") && ecs::find_perk_def("pw_hands") &&
+                  ecs::find_perk_def("pw_hands")->triggers.size() == 1 && ecs::find_perk_def("pw_meter")->triggers.size() == 2 &&
+                  ecs::find_ability_def("pw_palm")->targeting == ecs::AbilityTargeting::Cone &&
+                  ecs::find_ability_def("pw_bomb")->has_label("thrown") &&
+                  ecs::find_ability_def("pw_rift")->zone_hits == ecs::AbilityDef::ZoneHits::Allies);
+        {
+            const std::string again = ecs::items_doc_to_text(ecs::parse_items_doc(data));
+            check("statuses and perks: the Items editor writes their blocks back, and the abilities' new lines",
+                  again.find("status pw_burn\n  name Burn") != std::string::npos && again.find("perk pw_hands\n") != std::string::npos &&
+                      again.find("  inflict pw_burn 2\n") != std::string::npos && again.find("  zone_hits allies\n") != std::string::npos &&
+                      again.find("  target cone\n") != std::string::npos && again.find("  labels thrown fire\n") != std::string::npos &&
+                      ecs::parse_statuses_text(again).size() == ecs::parse_statuses_text(data).size() &&
+                      ecs::parse_perks_text(again).size() == ecs::parse_perks_text(data).size());
+        }
+        ecs::World w;
+        ecs::GameplayEventBus bus;
+        auto actor = [&](glm::vec3 at, const char* team) {
+            const ecs::Entity e = w.create();
+            ecs::Transform tr; tr.position = at;
+            w.add<ecs::Transform>(e, tr);
+            ecs::AttributeSet a; a.define("Health", 1000.0f, 0.0f, 1000.0f);
+            w.add<ecs::AttributeSet>(e, a);
+            ecs::CombatActor ca; ca.hurt_radius = 0.5f; ca.hurt_height = 0.0f;
+            w.add<ecs::CombatActor>(e, ca);
+            ecs::GameplayTags g; g.add(team);
+            w.add<ecs::GameplayTags>(e, g);
+            return e;
+        };
+        auto hp = [&](ecs::Entity e) { return w.get<ecs::AttributeSet>(e).get("Health"); };
+        auto frame = [&](float dt) { ecs::tick_perks_and_statuses(w, dt, &bus); bus.flush(); };
+        const ecs::Entity me = actor({0, 0, 0}, "team.player");
+        const ecs::Entity foe = actor({0, 0, -2}, "team.enemy");
+        const ecs::Entity near_foe = actor({2, 0, -2}, "team.enemy");
+        const ecs::Entity far_foe = actor({0, 0, -30}, "team.enemy");
+
+        ecs::apply_status(w, foe, "pw_burn", 2, me, &bus);
+        ecs::apply_status(w, foe, "pw_burn", 1, me, &bus);
+        frame(0.5f);
+        check("status: stacks add up (3), and burn for 2 a stack every 0.5 s (6), credited to the one who put it on",
+              ecs::status_stacks(w, foe, "pw_burn") == 3 && std::fabs(hp(foe) - 994.0f) < 1e-3f &&
+                  w.get<ecs::DamageLog>(foe).last_by == me && w.get<ecs::DamageLog>(foe).last_source == "status:pw_burn");
+        const float near_before = hp(near_foe), far_before = hp(far_foe);
+        ecs::apply_status(w, foe, "pw_burn", 2, me, &bus);
+        const bool gone = ecs::status_stacks(w, foe, "pw_burn") == 0;
+        frame(0.016f);
+        check("status: at its stack count it goes off -- the burst hurts those around (not one 28 m off) -- and ends",
+              gone && std::fabs(near_before - hp(near_foe) - 50.0f) < 1e-3f && hp(far_foe) == far_before &&
+                  !ecs::action_visuals(w).bursts.empty() && ecs::action_visuals(w).bursts[0].ability == "pw_flare");
+
+        const ecs::Entity ice = actor({10, 0, 0}, "team.enemy");
+        ecs::apply_status(w, ice, "pw_chill", 2, me, &bus);
+        const float slowed = ecs::bonus_stat(w.try_get<ecs::AttributeSet>(ice), "MoveSpeed");
+        ecs::apply_status(w, ice, "pw_chill", 1, me, &bus);
+        frame(0.016f);
+        const bool frozen = ecs::has_status(w, ice, "pw_frozen") && w.get<ecs::GameplayTags>(ice).has("status.stunned") &&
+                            ecs::bonus_stat(w.try_get<ecs::AttributeSet>(ice), "MoveSpeed") == 0.0f;
+        const float ice_before = hp(ice);
+        ecs::apply_damage(w, ice, ecs::DamageInfo{100.0f, "", "Health", me});
+        const bool more = std::fabs(ice_before - hp(ice) - 150.0f) < 1e-3f;
+        for (int i = 0; i < 130; ++i) frame(1.0f / 60.0f);
+        check("status: a slow of 10% a stack (-20) that at 3 becomes another status (stunned, takes 150 for 100); "
+              "ended, no tag, no slow",
+              slowed == -20.0f && frozen && more && !ecs::has_status(w, ice, "pw_frozen") &&
+                  !w.get<ecs::GameplayTags>(ice).has("status.stunned"));
+        {
+            const ecs::Entity c = actor({20, 0, 0}, "team.enemy");
+            w.add<ecs::AbilityBar>(c, ecs::AbilityBar{});
+            w.get<ecs::AbilityBar>(c).slots = {"pw_palm"};
+            const bool before = ecs::ability_slot_ready(w, c, w.get<ecs::AbilityBar>(c), 0);
+            ecs::apply_status(w, c, "pw_frozen", 1, me, &bus);
+            check("status: a stunned one cannot cast", before && !ecs::ability_slot_ready(w, c, w.get<ecs::AbilityBar>(c), 0));
+        }
+        {
+            const ecs::Entity t = actor({30, 0, 0}, "team.player");
+            ecs::apply_status(w, t, "pw_guard", 1, t, &bus);
+            ecs::apply_damage(w, t, ecs::DamageInfo{60.0f, "", "Health", foe});
+            const bool shielded = std::fabs(hp(t) - 980.0f) < 1e-3f && w.get<ecs::AttributeSet>(t).get("Shield") == 0.0f;
+            ecs::apply_status(w, t, "pw_guard", 1, t, &bus);
+            const bool topped = w.get<ecs::AttributeSet>(t).get("Shield") == 40.0f;
+            for (int i = 0; i < 310; ++i) frame(1.0f / 60.0f);
+            const bool expired = w.get<ecs::AttributeSet>(t).get("Shield") == 0.0f;
+            ecs::apply_status(w, t, "pw_weak", 1, foe, &bus);
+            const float b = hp(t);
+            ecs::apply_damage(w, t, ecs::DamageInfo{100.0f, "", "Health", foe});
+            check("status: a shield takes the damage first (60 -> 40 shield + 20 health), tops up, and goes when it ends; "
+                  "weakened, 100 hurts 125",
+                  shielded && topped && expired && std::fabs(b - hp(t) - 125.0f) < 1e-3f);
+        }
+        {
+            const ecs::Entity v = actor({40, 0, 0}, "team.enemy");
+            ecs::apply_status(w, v, "pw_volatile", 1, me, &bus);
+            ecs::apply_damage(w, v, ecs::DamageInfo{10.0f, "", "Health", me});
+            frame(0.016f);
+            frame(0.016f);
+            const float after_small = hp(v);
+            ecs::apply_damage(w, v, ecs::DamageInfo{25.0f, "", "Health", me});
+            for (int i = 0; i < 60; ++i) frame(0.016f);   // (past its 0.5 s pause: its own blast must not set it off again)
+            const bool went = std::fabs(after_small - 25.0f - 30.0f - hp(v)) < 1e-3f;
+            const ecs::Entity host = actor({60, 0, 0}, "team.enemy");
+            const ecs::Entity other = actor({63, 0, 0}, "team.enemy");
+            const ecs::Entity away = actor({80, 0, 0}, "team.enemy");
+            ecs::apply_status(w, host, "pw_contagion", 1, me, &bus);
+            ecs::apply_damage(w, host, ecs::DamageInfo{5000.0f, "", "Health", me});
+            frame(0.016f);
+            frame(0.016f);
+            // Its own ticking (25 a tick, more than its `hurt` 20) must not set it off.
+            const ecs::Entity sc = actor({100, 0, 0}, "team.enemy");
+            ecs::apply_status(w, sc, "pw_scald", 1, me, &bus);
+            for (int i = 0; i < 125; ++i) frame(0.016f);
+            check("status: its own damage over time never sets off its own `hurt` (4 ticks of 25: 100, no blasts)",
+                  std::fabs(hp(sc) - 900.0f) < 1e-3f);
+            check("status: a hit of 20 or more sets off `hurt` once (10 does not, nor its own blast); dying with one "
+                  "spreads its `death` to those near",
+                  went && std::fabs(after_small - 990.0f) < 1e-3f && ecs::has_status(w, other, "pw_weak") &&
+                      !ecs::has_status(w, away, "pw_weak") && !ecs::has_status(w, host, "pw_contagion"));
+        }
+
+        {
+            ecs::World cw;
+            auto ca = [&](glm::vec3 at, const char* team) {
+                const ecs::Entity e = cw.create();
+                ecs::Transform tr; tr.position = at;
+                cw.add<ecs::Transform>(e, tr);
+                ecs::AttributeSet a; a.define("Health", 100.0f, 0.0f, 100.0f);
+                cw.add<ecs::AttributeSet>(e, a);
+                ecs::CombatActor c; c.hurt_radius = 0.4f; c.hurt_height = 0.0f;
+                cw.add<ecs::CombatActor>(e, c);
+                ecs::GameplayTags g; g.add(team);
+                cw.add<ecs::GameplayTags>(e, g);
+                return e;
+            };
+            const ecs::Entity p = ca({0, 0, 0}, "team.player");
+            const ecs::Entity front = ca({0, 0, -2}, "team.enemy");
+            const ecs::Entity behind = ca({0, 0, 2}, "team.enemy");
+            const ecs::Entity side = ca({2.5f, 0, 0}, "team.enemy");
+            ecs::AbilityCastInput ci;
+            ci.origin = {0, 1, 0}; ci.aim = {0, 0, -1}; ci.caster_pos = {0, 0, 0};
+            const ecs::AbilityFired f = ecs::ability_detail::fire(cw, p, *ecs::find_ability_def("pw_palm"), 0, ci, nullptr, nullptr);
+            check("ability: a cone (90 degrees, 3 m) reaches the one in front, not the one behind nor beside",
+                  f.targets == 1 && cw.get<ecs::AttributeSet>(front).get("Health") == 80.0f &&
+                      cw.get<ecs::AttributeSet>(behind).get("Health") == 100.0f && cw.get<ecs::AttributeSet>(side).get("Health") == 100.0f);
+            ecs::GameplayEventBus zb;
+            const ecs::Entity zf = ca({0, 0, -8}, "team.enemy");
+            ecs::ability_detail::fire(cw, p, *ecs::find_ability_def("pw_fire_zone"), 0, ci, nullptr, nullptr);
+            const float after_cast = cw.get<ecs::AttributeSet>(zf).get("Health");
+            for (int i = 0; i < 10; ++i) ecs::tick_perks_and_statuses(cw, 0.25f, &zb);   // (exact steps: 4 pulses in its 2 s)
+            const size_t zone_left = cw.has<ecs::AbilityZones>(p) ? cw.get<ecs::AbilityZones>(p).zones.size() : 0;
+            ecs::ability_detail::fire(cw, p, *ecs::find_ability_def("pw_rift"), 0, ci, nullptr, nullptr);
+            for (int i = 0; i < 65; ++i) ecs::tick_perks_and_statuses(cw, 1.0f / 60.0f, &zb);
+            check("ability: a zone stays and goes off again (4 a pulse for 2 s: 16 more), then ends; an allies' zone shields "
+                  "its own side, not the enemy in it",
+                  std::fabs(after_cast - 96.0f) < 1e-3f && std::fabs(cw.get<ecs::AttributeSet>(zf).get("Health") - 80.0f) < 1e-3f &&
+                      zone_left == 0 && ecs::has_status(cw, p, "pw_guard") && !ecs::has_status(cw, front, "pw_guard"));
+        }
+
+        {
+            ecs::World kw;
+            ecs::GameplayEventBus kb;
+            const ecs::Entity p = kw.create();
+            kw.add<ecs::Transform>(p, ecs::Transform{});
+            ecs::AttributeSet a;
+            a.define("Health", 100.0f, 0.0f, 100.0f);
+            a.define("Meter", 0.0f, 0.0f, 100.0f);   // a game's own attribute (a charge, a rage, a super)
+            kw.add<ecs::AttributeSet>(p, a);
+            ecs::GameplayTags g; g.add("team.player");
+            kw.add<ecs::GameplayTags>(p, g);
+            kw.add<ecs::CombatActor>(p, ecs::CombatActor{});
+            kw.add<ecs::AbilityBar>(p, ecs::AbilityBar{});
+            kw.get<ecs::AbilityBar>(p).slots = {"pw_bomb", "pw_palm", "pw_rift"};
+            const bool given = ecs::add_perk(kw, p, "pw_hands") && ecs::add_perk(kw, p, "pw_echo") && ecs::add_perk(kw, p, "pw_edge") &&
+                               ecs::add_perk(kw, p, "pw_meter") && !ecs::add_perk(kw, p, "pw_edge") && !ecs::add_perk(kw, p, "nope");
+            ecs::tick_perks_and_statuses(kw, 1.0f / 60.0f, &kb);
+            const ecs::AttributeSet& at = kw.get<ecs::AttributeSet>(p);
+            const bool bonuses = ecs::bonus_stat(&at, "CooldownReduction") == 10.0f && ecs::bonus_stat(&at, "Damage") == 5.0f &&
+                                 kw.get<ecs::GameplayTags>(p).has("perk.hands");
+            ecs::remove_perk(kw, p, "pw_edge");
+            ecs::tick_perks_and_statuses(kw, 1.0f / 60.0f, &kb);
+            check("perks: given (once each, known ones only), their bonuses and tags on the carrier; one taken away takes its bonus",
+                  given && bonuses && ecs::bonus_stat(kw.try_get<ecs::AttributeSet>(p), "Damage") == 0.0f);
+
+            const ecs::Entity t = kw.create();
+            ecs::Transform tt; tt.position = {0, 0, -2};
+            kw.add<ecs::Transform>(t, tt);
+            ecs::AttributeSet ta; ta.define("Health", 30.0f, 0.0f, 30.0f);
+            kw.add<ecs::AttributeSet>(t, ta);
+            ecs::CombatActor tca; tca.hurt_radius = 0.5f; tca.hurt_height = 0.0f;
+            kw.add<ecs::CombatActor>(t, tca);
+            ecs::GameplayTags tg; tg.add("team.enemy");
+            kw.add<ecs::GameplayTags>(t, tg);
+            ecs::AbilityCastInput ci;
+            ci.caster_pos = {0, 0, 0}; ci.origin = {0, 1, 0}; ci.aim = {0, 0, -1};
+            ci.pressed = 1;
+            ecs::step_ability_bar(kw, p, kw.get<ecs::AbilityBar>(p), ci, nullptr, &kb, 0.016f);   // the palm: 20
+            kb.flush();
+            ecs::tick_perks_and_statuses(kw, 0.016f, &kb);
+            const int burned = ecs::status_stacks(kw, t, "pw_burn");
+            const float meter_hit = kw.get<ecs::AttributeSet>(p).get("Meter");
+            ci.pressed = 0;
+            ecs::step_ability_bar(kw, p, kw.get<ecs::AbilityBar>(p), ci, nullptr, &kb, 0.016f);   // the bomb: the kill
+            const float bomb_cd = kw.get<ecs::AbilityBar>(p).cooldown[0];
+            std::vector<ecs::LifeEvent> life;
+            ecs::Rng rng(1);
+            kw.add<ecs::Mortal>(t, ecs::Mortal{});
+            ecs::tick_life(kw, 0.016f, &kb, rng, life);
+            kb.flush();
+            ecs::tick_perks_and_statuses(kw, 0.016f, &kb);
+            const float bomb_cd_after = kw.get<ecs::AbilityBar>(p).cooldown[0];
+            check("perks: a close hit sets 3 burn (the `hit label close` moment); a kill with a thrown ability on a burning foe "
+                  "gives back half its cooldown",
+                  burned == 3 && kw.get<ecs::AttributeSet>(t).get("Health") <= 0.0f && bomb_cd > 0.0f &&
+                      std::fabs(bomb_cd_after - (bomb_cd - 9.0f * 0.5f)) < 0.05f);
+            check("perks: `add` fills a game's own attribute -- 0.1 a point of damage dealt (20: 2), 20 a kill (and 0.1 x 10)",
+                  std::fabs(meter_hit - 2.0f) < 1e-3f && std::fabs(kw.get<ecs::AttributeSet>(p).get("Meter") - 23.0f) < 1e-3f);
+
+            const ecs::Prefab saved = ecs::Prefab::from_text(ecs::capture_profile(kw, p).to_text());
+            ecs::World nw;
+            const ecs::Entity np = nw.create();
+            nw.add<ecs::Transform>(np, ecs::Transform{});
+            ecs::AttributeSet na; na.define("Health", 100.0f, 0.0f, 100.0f);
+            nw.add<ecs::AttributeSet>(np, na);
+            ecs::apply_profile(nw, np, saved);
+            check("profile: the perks carried come along to the next mode, their bonuses rebuilt",
+                  nw.has<ecs::Perks>(np) && nw.get<ecs::Perks>(np).ids.size() == 3 &&
+                      ecs::bonus_stat(nw.try_get<ecs::AttributeSet>(np), "CooldownReduction") == 10.0f &&
+                      nw.get<ecs::GameplayTags>(np).has("perk.hands"));
+        }
+    }
+
+    // The Items editor's templates: each reads as what it says, whole -- every
+    // block it holds is read, and every status or ability its blocks name is in it.
+    {
+        bool all = true;
+        std::string bad;
+        for (const auto& t : schizo::editor::items_templates()) {
+            const std::string text = schizo::editor::items_template_text(t, "tpl_x");
+            size_t blocks = 0;
+            for (size_t at = text.find("\nend\n"); at != std::string::npos; at = text.find("\nend\n", at + 1)) ++blocks;
+            const ecs::ItemsDoc doc = ecs::parse_items_doc(text);
+            const auto abilities = ecs::parse_abilities_text(text);
+            const auto statuses = ecs::parse_statuses_text(text);
+            const auto perks = ecs::parse_perks_text(text);
+            bool ok = doc.entries.size() == blocks && abilities.size() + statuses.size() + perks.size() == blocks &&
+                      text.find("{id}") == std::string::npos;
+            auto here = [&](const std::string& id) {
+                for (const auto& a : abilities) if (a.id == id) return true;
+                for (const auto& st : statuses) if (st.id == id) return true;
+                return false;
+            };
+            for (const auto& a : abilities) {
+                for (const auto& st : a.inflict) ok = ok && here(st.id);
+                for (const auto& st : a.self_statuses) ok = ok && here(st.id);
+            }
+            for (const auto& st : statuses)
+                for (const auto& tr : st.triggers)
+                    if (tr.action.kind != ecs::TriggerAction::Kind::Clear && !tr.action.id.empty()) ok = ok && here(tr.action.id);
+            for (const auto& pk : perks) {
+                ok = ok && !pk.about.empty();
+                for (const auto& tr : pk.triggers) {
+                    ok = ok && !tr.actions.empty();
+                    for (const auto& ac : tr.actions)
+                        if (ac.kind == ecs::TriggerAction::Kind::Apply || ac.kind == ecs::TriggerAction::Kind::Self) ok = ok && here(ac.id);
+                }
+            }
+            if (!ok) { all = false; bad += std::string(" ") + t.title; }
+        }
+        if (!all) std::cout << "    templates that do not read whole:" << bad << "\n";
+        check("templates: every ability, status and perk template reads whole (its blocks, and what they name is in it)", all);
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }

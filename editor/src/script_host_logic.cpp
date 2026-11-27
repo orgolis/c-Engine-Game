@@ -193,6 +193,35 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
     }, {"Entity", "Known", "Slot", "Equipped"}).tip("Puts one of the abilities the entity knows (its place in the known list -- "
                                                     "a grid bound to player.known_abilities -- from 0) into an ability slot "
                                                     "(from 0). Already in another slot: they change places.");
+    // 0.8.68: statuses and perks (.items `status` / `perk` blocks), abilities by id.
+    r.fn("gameplay.apply_status", G, "Apply Status", [s](EntityId e, std::string status, int64_t stacks, EntityId by) {
+        return int64_t(API && API->apply_status ? API->apply_status(API->ctx, e.id, status.c_str(), int(stacks), by.id) : 0);
+    }, {"Entity", "Status", "Stacks", "By", "Now"}).tip("Puts stacks of a status (a `status` block) on the entity; By: who put "
+                                                       "it on (0: no one). Now: the stacks it has after (0: refused).");
+    r.pure("gameplay.status_stacks", G, "Status Stacks", [s](EntityId e, std::string status) {
+        return int64_t(API && API->status_stacks ? API->status_stacks(API->ctx, e.id, status.c_str()) : 0);
+    }, {"Entity", "Status", "Stacks"});
+    r.fn("gameplay.clear_status", G, "Clear Status", [s](EntityId e, std::string status) {
+        return API && API->clear_status && API->clear_status(API->ctx, e.id, status.c_str());
+    }, {"Entity", "Status", "Had It"});
+    r.fn("gameplay.add_perk", G, "Add Perk", [s](EntityId e, std::string perk) {
+        return API && API->add_perk && API->add_perk(API->ctx, e.id, perk.c_str());
+    }, {"Entity", "Perk", "Added"}).tip("Gives the entity a perk (a `perk` block): its bonuses, tags and rules, until it is taken away.");
+    r.fn("gameplay.remove_perk", G, "Remove Perk", [s](EntityId e, std::string perk) {
+        return API && API->remove_perk && API->remove_perk(API->ctx, e.id, perk.c_str());
+    }, {"Entity", "Perk", "Removed"});
+    r.pure("gameplay.has_perk", G, "Has Perk", [s](EntityId e, std::string perk) {
+        return API && API->has_perk && API->has_perk(API->ctx, e.id, perk.c_str());
+    }, {"Entity", "Perk", "Has It"});
+    r.fn("gameplay.equip_ability_id", G, "Equip Ability By Id", [s](EntityId e, std::string ability, int64_t slot) {
+        return API && API->equip_ability_id && API->equip_ability_id(API->ctx, e.id, ability.c_str(), int(slot));
+    }, {"Entity", "Ability", "Slot", "Equipped"}).tip("Puts an ability (by its id) into an ability slot (from 0); the entity knows "
+                                                      "it from then on. Already in another slot: they change places.");
+    r.pure("gameplay.ability_in_slot", G, "Ability In Slot", [s](EntityId e, int64_t slot) {
+        char id[128] = {0};
+        if (API && API->ability_in_slot) API->ability_in_slot(API->ctx, e.id, int(slot), id, sizeof id);
+        return std::string(id);
+    }, {"Entity", "Slot", "Ability"});
     r.pure("gameplay.skill_points", G, "Skill Points", [s](EntityId e) {
         return int64_t(API && API->skill_points ? API->skill_points(API->ctx, e.id) : 0);
     }, {"Entity", "Points"});

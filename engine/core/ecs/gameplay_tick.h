@@ -21,6 +21,7 @@
 #include "gameplay_effects.h"
 #include "gameplay_events.h"
 #include "gameplay_npc.h"
+#include "gameplay_perks.h"
 #include "gameplay_progression.h"
 #include "gameplay_state_machine.h"
 #include "gameplay_stealth.h"
@@ -42,6 +43,7 @@ inline void tick_all_gameplay(World& w,
                               float& combat_accum,
                               float dt) {
     tick_effects(w, dt);                    // active effects: periodic ticks + expiry
+    tick_perks_and_statuses(w, dt, &bus);   // statuses, ability zones, perks (0.8.68)
     tick_abilities(w, dt);                  // ability cooldowns
     tick_regen(w, dt);                      // G3: resource regeneration
     tick_state_machines(w, &bus, dt);       // G1: FSM start/age/timeout -> events

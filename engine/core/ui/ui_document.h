@@ -577,19 +577,26 @@ inline void refresh_ui_bindings(UiDocument& doc, const UiLookup& game_lookup, co
 
 /// Set a widget's text (a label's or a button's). A label set this way stops
 /// following its {placeholders}. False when there is no such widget.
+/// A label's or button's text, set by a script: kept as it is -- or, with
+/// {placeholders} in it, followed like text written in the file
+/// ("{ability.firebolt.name}", "{player.Health} HP").
 inline bool set_ui_text(UiDocument& doc, const std::string& id, const std::string& text) {
     auto it = doc.ids.find(id);
     if (it == doc.ids.end()) return false;
+    const size_t open = text.find('{');
+    const bool live = open != std::string::npos && text.find('}', open) != std::string::npos;
     if (auto* l = dynamic_cast<Label*>(it->second)) {
         l->text = text;
         for (size_t i = 0; i < doc.texts.size(); ++i)
             if (doc.texts[i].label == l) { doc.texts.erase(doc.texts.begin() + static_cast<long>(i)); break; }
+        if (live) doc.texts.push_back({l, nullptr, text});
         return true;
     }
     if (auto* b = dynamic_cast<Button*>(it->second)) {
         b->text = text;
         for (size_t i = 0; i < doc.texts.size(); ++i)
             if (doc.texts[i].button == b) { doc.texts.erase(doc.texts.begin() + static_cast<long>(i)); break; }
+        if (live) doc.texts.push_back({nullptr, b, text});
         return true;
     }
     return false;

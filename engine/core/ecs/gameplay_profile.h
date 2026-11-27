@@ -23,6 +23,7 @@
 #include "gameplay_attributes.h"
 #include "gameplay_inventory.h"
 #include "gameplay_loadout.h"
+#include "gameplay_perks.h"
 #include "gameplay_progression.h"
 #include "gameplay_skills.h"
 #include "gameplay_weapons.h"
@@ -37,7 +38,7 @@ namespace schizo::ecs {
 /// The authorable components a profile keeps (their registry names).
 inline const std::vector<std::string>& profile_component_names() {
     static const std::vector<std::string> names = {"Progression", "Unlocked Skills", "Ability Bar", "Inventory",
-                                                   "Equipment",   "Weapon Loadout",  "Weapon"};
+                                                   "Equipment",   "Weapon Loadout",  "Weapon",    "Perks"};
     return names;
 }
 
@@ -136,6 +137,13 @@ inline void apply_profile(World& w, Entity e, const Prefab& p) {
     pd::replace(w, e, p, "Ability Bar");
     pd::replace(w, e, p, "Weapon Loadout");
     pd::replace(w, e, p, "Weapon");
+    // The perks carried (their bonuses and tags rebuilt; one the game no longer has goes).
+    pd::replace(w, e, p, "Perks");
+    if (Perks* pk = w.try_get<Perks>(e)) {
+        pk->ids.erase(std::remove_if(pk->ids.begin(), pk->ids.end(), [](const std::string& id) { return !find_perk_def(id); }),
+                      pk->ids.end());
+        sync_perks(w, e);
+    }
     if (WeaponState* ws = w.try_get<WeaponState>(e)) {
         ws->cooldown = 0.0f;
         ws->reloading = 0.0f;

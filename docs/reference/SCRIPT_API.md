@@ -6,7 +6,7 @@ One shared C table is exposed identically to all three scripting backends (Pytho
 so every verb below is callable from any of them. The table is the contract: its layout is
 static_asserted, and adding a verb once exposes it everywhere.
 
-**108 verbs** exposed.
+**116 verbs** exposed.
 
 | signature | notes |
 |---|---|
@@ -118,4 +118,12 @@ static_asserted, and adding a verb once exposes it everywhere.
 | `bool (*stop_montage)(void* ctx, unsigned e, const char* slot, float blend_out)` |  |
 | `bool (*set_anim_param)(void* ctx, unsigned e, const char* name, float value)` |  |
 | `int (*anim_state)(void* ctx, unsigned e, int layer, char* out, int out_size)` |  |
+| `int  (*apply_status)(void* ctx, unsigned e, const char* status, int stacks, unsigned by)` |  |
+| `int  (*status_stacks)(void* ctx, unsigned e, const char* status)` |  |
+| `bool (*clear_status)(void* ctx, unsigned e, const char* status)` |  |
+| `bool (*add_perk)(void* ctx, unsigned e, const char* perk)` |  |
+| `bool (*remove_perk)(void* ctx, unsigned e, const char* perk)` |  |
+| `bool (*has_perk)(void* ctx, unsigned e, const char* perk)` |  |
+| `bool (*equip_ability_id)(void* ctx, unsigned e, const char* ability, int slot)` |  |
+| `int  (*ability_in_slot)(void* ctx, unsigned e, int slot, char* out, int out_size)` |  |
 

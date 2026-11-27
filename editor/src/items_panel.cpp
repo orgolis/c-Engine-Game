@@ -1,4 +1,5 @@
 #include "items_panel.h"
+#include "items_templates.h"
 
 #include <imgui.h>
 
@@ -51,6 +52,63 @@ bool input_id(const char* label, std::string& s) {
     if (!input_str(label, s)) return false;
     for (char& c : s) if (std::isspace(static_cast<unsigned char>(c))) c = '_';
     return true;
+}
+
+// A multi-line text field on a std::string (it grows as it is typed into).
+bool input_multiline(const char* label, std::string& s, const ImVec2& size) {
+    auto grow = [](ImGuiInputTextCallbackData* data) -> int {
+        if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+            auto* str = static_cast<std::string*>(data->UserData);
+            str->resize(static_cast<size_t>(data->BufTextLen));
+            data->Buf = str->data();
+        }
+        return 0;
+    };
+    return ImGui::InputTextMultiline(label, s.data(), s.capacity() + 1, size, ImGuiInputTextFlags_CallbackResize, grow, &s);
+}
+
+/// The kind of block a kept entry is (its first word): skill, status, perk, effect.
+std::string block_kind(const ecs::ItemsDoc::Entry& e) {
+    std::istringstream ls(e.text);
+    std::string k;
+    ls >> k;
+    return k;
+}
+
+/// What the engine reads from a kept block, in a line or two (or what is wrong).
+std::string block_summary(const std::string& kind, const std::string& text) {
+    std::string out;
+    if (kind == "status") {
+        const auto v = ecs::parse_statuses_text(text);
+        if (v.empty()) return "It does not read as a status (it needs `status <id>` ... `end`).";
+        const auto& d = v[0];
+        char dur[32], b[256];
+        if (d.duration > 0.0f) std::snprintf(dur, sizeof dur, "%.1f s", d.duration);
+        else std::snprintf(dur, sizeof dur, "until cleared");
+        std::snprintf(b, sizeof b, "%s: up to %d stack%s, %s, %zu bonus(es), %zu tag(s), %zu moment(s)%s%s.", d.name.c_str(),
+                      d.max_stacks, d.max_stacks == 1 ? "" : "s", dur, d.mods.size(), d.tags.size(), d.triggers.size(),
+                      d.tick_period > 0.0f ? ", ticks" : "", d.shield > 0.0f ? ", a shield" : "");
+        out = b;
+        for (const auto& t : d.triggers) {
+            const char* w = t.when == ecs::StatusTrigger::When::Stacks ? "at stacks" : t.when == ecs::StatusTrigger::When::Hurt ? "when hit"
+                          : t.when == ecs::StatusTrigger::When::Death ? "on death" : "when it ends";
+            out += std::string("\n  ") + w + ": " + ecs::trigger_action_text(t.action);
+        }
+    } else if (kind == "perk") {
+        const auto v = ecs::parse_perks_text(text);
+        if (v.empty()) return "It does not read as a perk (it needs `perk <id>` ... `end`).";
+        const auto& d = v[0];
+        out = d.name + ": " + std::to_string(d.mods.size()) + " bonus(es), " + std::to_string(d.tags.size()) + " tag(s)";
+        for (const auto& t : d.triggers) {
+            out += "\n  when " + t.event;
+            for (const auto& f : t.filters) out += " " + f;
+            if (!t.if_kind.empty()) out += ", if " + t.if_kind + " " + (t.if_what.empty() ? std::to_string(t.if_value) : t.if_what);
+            out += ":";
+            for (const auto& a : t.actions) out += " [" + ecs::trigger_action_text(a) + "]";
+            if (t.actions.empty()) out += " (no `do` line: it does nothing)";
+        }
+    }
+    return out;
 }
 
 std::string unique_id(const ecs::ItemsDoc& d, const std::string& base) {
@@ -274,8 +332,13 @@ void draw_ability(ecs::AbilityDef& a) {
     input_str("about", a.about, "what it does, in a sentence");
     ImGui::SetItemTooltip("Shown with it: a HUD slot's or an abilities screen's {grid.info}.");
     int tg = static_cast<int>(a.targeting);
-    const char* tgs[] = {"the caster", "the one aimed at", "everyone around the caster", "everyone around the aimed point"};
-    if (ImGui::Combo("reaches", &tg, tgs, 4)) a.targeting = static_cast<ecs::AbilityTargeting>(tg);
+    const char* tgs[] = {"the caster", "the one aimed at", "everyone around the caster", "everyone around the aimed point",
+                         "those in front (a cone)"};
+    if (ImGui::Combo("reaches", &tg, tgs, 5)) a.targeting = static_cast<ecs::AbilityTargeting>(tg);
+    if (a.targeting == ecs::AbilityTargeting::Cone) {
+        ImGui::DragFloat("reach", &a.radius, 0.05f, 0.1f, 100.0f, "%.2f m");
+        ImGui::DragFloat("angle", &a.angle, 0.5f, 5.0f, 360.0f, "%.0f deg");
+    }
     if (a.targeting == ecs::AbilityTargeting::Aimed || a.targeting == ecs::AbilityTargeting::AreaAtAim)
         ImGui::DragFloat("range", &a.range, 0.2f, 0.1f, 10000.0f, "%.1f m");
     if (a.targeting == ecs::AbilityTargeting::AreaAroundSelf || a.targeting == ecs::AbilityTargeting::AreaAtAim)
@@ -307,6 +370,43 @@ void draw_ability(ecs::AbilityDef& a) {
     }
     draw_effects("To each one reached", a.target_effects, "Add effect##t");
     draw_effects("To the caster", a.self_effects, "Add effect##s");
+    // Statuses (gameplay_status.h): on each one reached, on the caster.
+    auto statuses = [](const char* title, std::vector<ecs::AbilityDef::StatusPut>& list, const char* add) {
+        if (!ImGui::TreeNodeEx(title, ImGuiTreeNodeFlags_DefaultOpen)) return;
+        int remove = -1;
+        for (size_t i = 0; i < list.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::SetNextItemWidth(180.0f);
+            input_id("##status", list[i].id);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90.0f);
+            ImGui::DragInt("stacks", &list[i].stacks, 0.1f, 1, 100);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+            if (!list[i].id.empty() && !ecs::find_status_def(list[i].id)) ImGui::TextDisabled("  (no status with this id is loaded yet)");
+            ImGui::PopID();
+        }
+        if (remove >= 0) list.erase(list.begin() + remove);
+        if (ImGui::SmallButton(add)) list.push_back({"status_id", 1});
+        ImGui::TreePop();
+    };
+    statuses("Statuses on each one reached", a.inflict, "Add status##i");
+    statuses("Statuses on the caster", a.self_statuses, "Add status##c");
+    if (a.targeting != ecs::AbilityTargeting::Aimed && ImGui::TreeNodeEx("Stays a while (a zone)")) {
+        ImGui::DragFloat("stays", &a.zone_time, 0.05f, 0.0f, 600.0f, a.zone_time > 0.0f ? "%.2f s" : "no");
+        ImGui::SetItemTooltip("Above 0: its area stays this long and goes off again every pulse (damage, effects, statuses).");
+        if (a.zone_time > 0.0f) {
+            ImGui::DragFloat("pulse every", &a.zone_period, 0.01f, 0.1f, 60.0f, "%.2f s");
+            int zh = static_cast<int>(a.zone_hits);
+            const char* zhs[] = {"enemies", "the caster's side", "everyone"};
+            if (ImGui::Combo("works on", &zh, zhs, 3)) a.zone_hits = static_cast<ecs::AbilityDef::ZoneHits>(zh);
+            if (a.targeting == ecs::AbilityTargeting::Self || a.targeting == ecs::AbilityTargeting::Cone)
+                ImGui::DragFloat("zone radius", &a.radius, 0.05f, 0.1f, 1000.0f, "%.2f m");
+        }
+        ImGui::TreePop();
+    }
+    draw_tag_list("Labels", a.labels);
+    ImGui::SetItemTooltip("Free words the game's own rules look for: a perk's `when hit label <word>`, `recharge <word>`.");
     draw_tag_list("Needs tags", a.require_tags);
     draw_tag_list("Blocked by tags", a.block_tags);
     if (a.targeting == ecs::AbilityTargeting::Aimed || a.targeting == ecs::AbilityTargeting::AreaAtAim)
@@ -358,6 +458,39 @@ void draw_items_panel(bool& open, ItemsPanelState& st, DocumentFile* doc) {
         d.entries.push_back(e);
         st.selected = static_cast<int>(d.entries.size()) - 1;
     }
+    ImGui::SameLine();
+    if (ImGui::Button("+ Ability")) {
+        ecs::ItemsDoc::Entry e;
+        e.kind = ecs::ItemsDoc::Kind::Ability;
+        e.ability.id = unique_id(d, "new_ability");
+        e.ability.name = "New Ability";
+        d.entries.push_back(e);
+        st.selected = static_cast<int>(d.entries.size()) - 1;
+    }
+    if (ImGui::Button("+ From template...")) ImGui::OpenPopup("##templates");
+    ImGui::SetItemTooltip("Abilities, statuses and perks to start from: they go into this file to rename and tune.");
+    if (ImGui::BeginPopup("##templates")) {
+        const char* last_group = "";
+        for (const auto& t : items_templates()) {
+            if (std::strcmp(last_group, t.group) != 0) {
+                if (*last_group) ImGui::Separator();
+                ImGui::TextDisabled("%s", t.group);
+                last_group = t.group;
+            }
+            if (ImGui::MenuItem(t.title)) {
+                std::string base = t.title;
+                std::transform(base.begin(), base.end(), base.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::isalnum(c) ? std::tolower(c) : '_');
+                });
+                const std::string id = unique_id(d, base);
+                const ecs::ItemsDoc added = ecs::parse_items_doc(items_template_text(t, id));
+                for (const auto& e : added.entries) d.entries.push_back(e);
+                st.selected = static_cast<int>(d.entries.size() - added.entries.size());
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", t.about);
+        }
+        ImGui::EndPopup();
+    }
     const bool has_sel = !d.entries.empty();
     ImGui::BeginDisabled(!has_sel);
     if (ImGui::Button("Duplicate") && has_sel) {
@@ -398,7 +531,7 @@ void draw_items_panel(bool& open, ItemsPanelState& st, DocumentFile* doc) {
         const bool clash = id_clashes(d, i);
         if (clash) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.4f, 1.0f));
         const std::string row = std::string(e.is_weapon() ? "[weapon] " : e.is_ability() ? "[ability] "
-                                            : e.kind == ecs::ItemsDoc::Kind::Text ? "[skill] " : "") + label;
+                                            : e.kind == ecs::ItemsDoc::Kind::Text ? "[" + block_kind(e) + "] " : "") + label;
         if (ImGui::Selectable(row.c_str(), st.selected == static_cast<int>(i))) st.selected = static_cast<int>(i);
         if (clash) ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s%s", e.id().c_str(), clash ? "  (id empty or used twice)" : "");
@@ -418,9 +551,22 @@ void draw_items_panel(bool& open, ItemsPanelState& st, DocumentFile* doc) {
         if (e.is_weapon())       draw_weapon(e.weapon, d);
         else if (e.is_ability()) draw_ability(e.ability);
         else if (e.kind == ecs::ItemsDoc::Kind::Text) {
-            ImGui::TextWrapped("A skill (skill tree node). This editor keeps it as written; edit it in the file:");
-            ImGui::Separator();
-            ImGui::TextUnformatted(e.text.c_str());
+            // Kept as written (a skill, a status, a perk, an effect): edited as text here.
+            const std::string kind = block_kind(e);
+            ImGui::TextWrapped("A %s, kept as written. Its words are in docs/systems/STATUSES_AND_PERKS.md "
+                               "(statuses, perks), GAMEPLAY_DATA.md (skills) and VFX.md (effects).", kind.c_str());
+            if (input_multiline("##text", e.text, ImVec2(-1.0f, ImGui::GetTextLineHeight() * 18.0f))) {
+                std::istringstream ls(e.text);
+                std::string k;
+                ls >> k >> e.text_id;   // its id follows the first line
+                if (!e.text.empty() && e.text.back() != '\n') e.text += "\n";
+            }
+            const std::string summary = block_summary(kind, e.text);
+            if (!summary.empty()) {
+                ImGui::Separator();
+                ImGui::TextDisabled("Reads as:");
+                ImGui::TextWrapped("%s", summary.c_str());
+            }
         }
         else                     draw_item(e.item, d);
         ImGui::PopItemWidth();

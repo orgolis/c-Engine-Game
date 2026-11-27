@@ -269,6 +269,17 @@ struct ScriptApi {
     bool (*set_anim_param)(void* ctx, uint32_t e, const char* name, float value) = nullptr;
     // The state a layer of its graph is in (its name into out); -1 without a graph.
     int (*anim_state)(void* ctx, uint32_t e, int layer, char* out, int out_size) = nullptr;
+    // 0.8.68: statuses (gameplay_status.h) and perks (gameplay_perks.h) by id; an
+    // ability by its id into a bar slot, and the ability in a slot. Query
+    // engine.statuses_perks first.
+    int  (*apply_status)(void* ctx, uint32_t e, const char* status, int stacks, uint32_t by) = nullptr;
+    int  (*status_stacks)(void* ctx, uint32_t e, const char* status) = nullptr;
+    bool (*clear_status)(void* ctx, uint32_t e, const char* status) = nullptr;
+    bool (*add_perk)(void* ctx, uint32_t e, const char* perk) = nullptr;
+    bool (*remove_perk)(void* ctx, uint32_t e, const char* perk) = nullptr;
+    bool (*has_perk)(void* ctx, uint32_t e, const char* perk) = nullptr;
+    bool (*equip_ability_id)(void* ctx, uint32_t e, const char* ability, int slot) = nullptr;
+    int  (*ability_in_slot)(void* ctx, uint32_t e, int slot, char* out, int out_size) = nullptr;
 };
 
 }  // namespace schizo::editor

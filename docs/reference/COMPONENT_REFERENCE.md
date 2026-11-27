@@ -7,7 +7,7 @@ gives it inspector UI, `.gameplay` sidecar persistence and replication at the sa
 derived from that same registration, so it cannot describe a component the engine does not have,
 and it cannot miss one the engine does.
 
-**42 components** are registered.
+**49 components** are registered.
 
 ## Contents
 
@@ -37,6 +37,13 @@ and it cannot miss one the engine does.
 - [Save Id](#save-id)
 - [World Flags](#world-flags)
 - [Weapon](#weapon)
+- [Movement](#movement)
+- [Move Animation](#move-animation)
+- [Camera Rig](#camera-rig)
+- [Ability Bar](#ability-bar)
+- [Perks](#perks)
+- [Weapon Loadout](#weapon-loadout)
+- [Mortal](#mortal)
 - [Vehicle](#vehicle)
 - [Race Progress](#race-progress)
 - [Building](#building)
@@ -151,7 +158,7 @@ reflection support for containers.
 
 ## Skill Tree
 
-`schizo::ecs::SkillTree` — 24 bytes
+`schizo::ecs::SkillTree` — 56 bytes
 
 _Custom serialization._ Holds dynamic contents rather than a fixed set of reflected fields,
 so its layout is defined by its own serializer. Field-level documentation for these needs
@@ -263,7 +270,63 @@ reflection support for containers.
 
 ## Weapon
 
-`schizo::ecs::WeaponState` — 48 bytes
+`schizo::ecs::WeaponState` — 80 bytes
+
+_Custom serialization._ Holds dynamic contents rather than a fixed set of reflected fields,
+so its layout is defined by its own serializer. Field-level documentation for these needs
+reflection support for containers.
+
+## Movement
+
+`schizo::ecs::Movement` — 292 bytes
+
+_Custom serialization._ Holds dynamic contents rather than a fixed set of reflected fields,
+so its layout is defined by its own serializer. Field-level documentation for these needs
+reflection support for containers.
+
+## Move Animation
+
+`schizo::ecs::MoveAnimation` — 44 bytes
+
+_Custom serialization._ Holds dynamic contents rather than a fixed set of reflected fields,
+so its layout is defined by its own serializer. Field-level documentation for these needs
+reflection support for containers.
+
+## Camera Rig
+
+`schizo::ecs::CameraRig` — 52 bytes
+
+_Custom serialization._ Holds dynamic contents rather than a fixed set of reflected fields,
+so its layout is defined by its own serializer. Field-level documentation for these needs
+reflection support for containers.
+
+## Ability Bar
+
+`schizo::ecs::AbilityBar` — 128 bytes
+
+_Custom serialization._ Holds dynamic contents rather than a fixed set of reflected fields,
+so its layout is defined by its own serializer. Field-level documentation for these needs
+reflection support for containers.
+
+## Perks
+
+`schizo::ecs::Perks` — 128 bytes
+
+_Custom serialization._ Holds dynamic contents rather than a fixed set of reflected fields,
+so its layout is defined by its own serializer. Field-level documentation for these needs
+reflection support for containers.
+
+## Weapon Loadout
+
+`schizo::ecs::WeaponLoadout` — 40 bytes
+
+_Custom serialization._ Holds dynamic contents rather than a fixed set of reflected fields,
+so its layout is defined by its own serializer. Field-level documentation for these needs
+reflection support for containers.
+
+## Mortal
+
+`schizo::ecs::Mortal` — 80 bytes
 
 _Custom serialization._ Holds dynamic contents rather than a fixed set of reflected fields,
 so its layout is defined by its own serializer. Field-level documentation for these needs
@@ -399,4 +462,4 @@ reflection support for containers.
 
 ---
 
-_2 components document their fields through reflection; 40 use custom serialization._
+_2 components document their fields through reflection; 47 use custom serialization._

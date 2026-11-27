@@ -7,8 +7,10 @@ bonuses a skill gives for good.
 ## Making an ability
 
 Abilities are data, written next to items and weapons in a `.items` file.
-Open the file (double-click it in the Asset Browser) and press **+ Ability**,
-or write it by hand:
+Open the file (double-click it in the Asset Browser) and press **+ Ability**
+(or **+ From template...**: a bolt, a thrown blast, a lingering field, a close
+strike, a dash, a self buff, a healing area, a beam, a pulse), or write it by
+hand:
 
 ```
 ability firebolt
@@ -31,6 +33,10 @@ ability firebolt
   speed 40              # aimed / area_at_aim: it flies at this speed and takes effect where it lands
   arc 9.8               # a flying one falls on the way (something thrown)
   move blink 14         # moves the caster (below)
+  inflict burning 2     # a status on each one reached (docs/systems/STATUSES_AND_PERKS.md)
+  self_status focused   # a status on the caster
+  zone 5 0.5            # its area stays 5 s, going off again every 0.5 s (zone_hits allies: on its own side)
+  labels fire thrown    # free words a game's perks and rules look for
   about A ball of fire at what you aim at.   # what it does, shown with it
 end
 ```
@@ -59,6 +65,7 @@ Who it reaches:
 | `aimed` | the first one along the crosshair, up to the range; walls stop it |
 | `area` | everyone within the radius of the caster |
 | `area_at_aim` | everyone within the radius of where the crosshair lands (a wall, or the range) |
+| `cone` | everyone in front of the caster within the radius and `angle` degrees wide (a sweep; with `move dash`, a lunge) |
 
 With a **speed**, an `aimed` or `area_at_aim` ability flies instead of taking
 effect at once: from the caster's hand toward what the crosshair is on,
@@ -164,6 +171,15 @@ now bright; a click on one is the button `learn_<skill id>`
 (docs/systems/GAME_UI.md). A screen of buttons works too:
 `text="{skill.frost}" enabled=skill.frost.can`. The tree, what is learned and
 the points are saved with the game.
+
+## Statuses, zones and perks
+
+Abilities can put **statuses** on who they reach (`inflict`) or on the caster
+(`self_status`) -- a burn that stacks and flares up, a slow that becomes a
+freeze, a shield, a stun -- leave their area behind as a **zone**, and carry
+**labels** that a character's **perks** look for ("when a `close` ability hits,
+set them burning"). All of it is data a game arranges as its own system:
+docs/systems/STATUSES_AND_PERKS.md.
 
 ## For effects, sounds and scripts
 

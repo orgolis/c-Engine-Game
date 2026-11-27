@@ -45,6 +45,10 @@ out of trees, rocks and walls and on the ground.
   wall (a box collider taller than a step) and an agent's width round it left
   out -- paths go round buildings and through their doorways, not through
   their walls.
+- **Statuses** (docs/systems/STATUSES_AND_PERKS.md): `status.stunned` -- it
+  does nothing (no moving, turning or attacking); `status.disarmed` -- it
+  does not attack; a player with
+  `status.hidden` is not seen or hunted. `MoveSpeed` (a slow) changes its pace.
 
 Paths are not asked for every frame by everyone at once: agents' route
 requests are spread over frames and a failed one waits before it tries again;

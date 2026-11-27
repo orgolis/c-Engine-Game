@@ -36,6 +36,7 @@
 #include "gameplay_items.h"
 #include "gameplay_weapons.h"
 #include "gameplay_ability_cast.h"
+#include "gameplay_perks.h"   // status and perk blocks
 #include "gameplay_skills.h"
 #include "vfx/effects.h"   // effect blocks: what guns and abilities look like
 
@@ -94,7 +95,7 @@ inline std::vector<ItemDef> parse_items_text(const std::string& text) {
         if (key.empty() || key[0] == '#') continue;
 
         if (key == "item")      { flush(); ls >> cur.id; have = true; }
-        else if (key == "weapon" || key == "ability" || key == "skill") { flush(); }   // not an item block
+        else if (key == "weapon" || key == "ability" || key == "skill" || key == "status" || key == "perk") { flush(); }   // not an item block
         else if (!have)         { continue; }
         else if (key == "end")  { flush(); }
         else if (key == "name")      { std::string rest; std::getline(ls, rest); cur.name = detail::trim(rest); }
@@ -145,7 +146,7 @@ inline std::vector<WeaponDef> parse_weapons_text(const std::string& text) {
         std::string key;
         if (!(ls >> key) || key[0] == '#') continue;
         if (key == "weapon")        { flush(); ls >> cur.id; cur.name = cur.id; have = true; }
-        else if (key == "item" || key == "ability" || key == "skill") { flush(); }   // not a weapon block
+        else if (key == "item" || key == "ability" || key == "skill" || key == "status" || key == "perk") { flush(); }   // not a weapon block
         else if (!have)             { continue; }
         else if (key == "end")      { flush(); }
         else if (key == "name")     { std::string rest; std::getline(ls, rest); cur.name = detail::trim(rest); }
@@ -219,7 +220,7 @@ inline std::vector<std::pair<std::string, SkillNode>> parse_skills_text(const st
         std::string key;
         if (!(ls >> key) || key[0] == '#') continue;
         if (key == "skill") { flush(); ls >> cur.id; cur.name = cur.id; have = true; }
-        else if (key == "item" || key == "weapon" || key == "ability") { flush(); }
+        else if (key == "item" || key == "weapon" || key == "ability" || key == "status" || key == "perk") { flush(); }
         else if (!have) { continue; }
         else if (key == "end") { flush(); }
         else if (key == "name") { std::string r; std::getline(ls, r); cur.name = detail::trim(r); }
@@ -244,6 +245,8 @@ inline int register_items_text(const std::string& text) {
     for (const auto& d : parse_abilities_text(text)) { register_ability_def(d); ++n; }
     for (const auto& [tree, node] : parse_skills_text(text)) { register_skill_def(tree, node); ++n; }
     for (const auto& d : schizo::vfx::parse_effects_text(text)) { schizo::vfx::register_effect(d); ++n; }
+    for (const auto& d : parse_statuses_text(text)) { register_status_def(d); ++n; }
+    for (const auto& d : parse_perks_text(text)) { register_perk_def(d); ++n; }
     return n;
 }
 
@@ -307,7 +310,7 @@ inline ItemsDoc parse_items_doc(const std::string& text) {
     auto flush = [&] {
         if (!in_block) return;
         in_block = false;
-        if (block_key == "skill" || block_key == "effect") {   // kept as written
+        if (block_key == "skill" || block_key == "effect" || block_key == "status" || block_key == "perk") {   // kept as written
             ItemsDoc::Entry e;
             e.kind = ItemsDoc::Kind::Text;
             e.text = block;
@@ -328,7 +331,8 @@ inline ItemsDoc parse_items_doc(const std::string& text) {
         std::istringstream ls(line);
         std::string key;
         ls >> key;
-        if (key == "item" || key == "weapon" || key == "ability" || key == "skill" || (key == "effect" && !in_block)) {
+        if (key == "item" || key == "weapon" || key == "ability" || key == "skill" || key == "status" || key == "perk" ||
+            (key == "effect" && !in_block)) {
             flush();
             block_key = key;
             in_header = false;
@@ -469,6 +473,17 @@ inline std::string ability_def_text(const AbilityDef& a) {
         s += std::string("  move ") + (a.move == AbilityDef::Move::Blink ? "blink" : a.move == AbilityDef::Move::Dash ? "dash" : "leap") +
              " " + num(a.move_a);
         if (a.move == AbilityDef::Move::Leap) s += " " + num(a.move_b);
+        s += "\n";
+    }
+    for (const auto& p : a.inflict) s += "  inflict " + p.id + (p.stacks != 1 ? " " + std::to_string(p.stacks) : "") + "\n";
+    for (const auto& p : a.self_statuses) s += "  self_status " + p.id + (p.stacks != 1 ? " " + std::to_string(p.stacks) : "") + "\n";
+    if (a.targeting == AbilityTargeting::Cone && a.angle != def.angle) s += "  angle " + num(a.angle) + "\n";
+    if (a.zone_time > 0.0f) s += "  zone " + num(a.zone_time) + " " + num(a.zone_period) + "\n";
+    if (a.zone_time > 0.0f && a.zone_hits != AbilityDef::ZoneHits::Enemies)
+        s += std::string("  zone_hits ") + (a.zone_hits == AbilityDef::ZoneHits::Allies ? "allies" : "all") + "\n";
+    if (!a.labels.empty()) {
+        s += "  labels";
+        for (const auto& l : a.labels) s += " " + l;
         s += "\n";
     }
     if (!a.about.empty()) s += "  about " + a.about + "\n";

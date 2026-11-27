@@ -124,7 +124,7 @@ public:
         std::vector<std::shared_ptr<schizo::scene::Entity>> player_targets;
         if(bridge)for(const auto& object:scene->GetEntities())if(object&&object->IsActive()){
             auto id=bridge->ecs_entity_id(object->GetTransform());auto e=static_cast<schizo::ecs::Entity>(id);
-            if(id!=kNoEcsEntity&&bridge->world().valid(e))if(auto* tags=bridge->world().try_get<schizo::ecs::GameplayTags>(e);tags&&tags->has("team.player")&&!dead(*bridge,object->GetTransform()))player_targets.push_back(object);
+            if(id!=kNoEcsEntity&&bridge->world().valid(e))if(auto* tags=bridge->world().try_get<schizo::ecs::GameplayTags>(e);tags&&tags->has("team.player")&&!tags->has("status.hidden")&&!dead(*bridge,object->GetTransform()))player_targets.push_back(object);
         }
         for (const auto& ent : scene->GetEntities()) {
             if (!ent || !ent->IsActive()) continue;
@@ -225,7 +225,16 @@ public:
             // Knocked down (knock_down): it neither attacks nor aims until it is up.
             const bool down = st.down > 0.0f;
             if (down) { st.down -= dt; st.windup = 0.0f; }
-            const bool in_range = !down && visible && ag->attack_range > 0.0f && range_xz <= ag->attack_range && clear_line;
+            // Status tags (gameplay_status.h): status.stunned -- it does nothing;
+            // status.disarmed -- it does not attack.
+            bool stunned = false, disarmed = false;
+            if (bridge && me != schizo::ecs::null_entity)
+                if (const auto* tg = bridge->world().try_get<schizo::ecs::GameplayTags>(me)) {
+                    stunned = tg->has("status.stunned");
+                    disarmed = tg->has("status.disarmed");
+                }
+            if (stunned || disarmed) st.windup = 0.0f;
+            const bool in_range = !down && !stunned && !disarmed && visible && ag->attack_range > 0.0f && range_xz <= ag->attack_range && clear_line;
             st.cooldown = std::max(0.0f, st.cooldown - dt);
             const glm::vec3 target_vel = st.prev_target_known && dt > 0.0f ? (target_pos - st.prev_target) / dt : glm::vec3(0.0f);
             st.prev_target = target_pos;
@@ -356,7 +365,7 @@ public:
             }
             if (attacking && def) hold = true;   // a wind-up is stood still for: it can be seen coming
             if (st.stagger > 0.0f) { st.stagger -= dt; hold = true; }
-            if (down) hold = true;
+            if (down || stunned) hold = true;
             if (st.mode == Mode::Chase && !in_range) ++chasing_;   // closing in (or going to where it was seen)
 
             // --- move along the navmesh, round what is in the way ------------
@@ -384,7 +393,7 @@ public:
                 const float l = glm::length(d);
                 if (l > 1e-3f && l < 1.4f) vel += d / l * (1.4f - l) * 2.5f;
             }
-            if (down) vel = glm::vec3(0.0f);   // (lying where the blast left it)
+            if (down || stunned) vel = glm::vec3(0.0f);   // (lying where the blast left it; held)
             const float vlen = glm::length(vel);
             if (has_world && vlen > 0.05f) vel = avoid(*world, st, pos, vel, vlen);
             glm::vec3 next = pos + vel * dt;
@@ -415,8 +424,8 @@ public:
                 tf->SetLocalPosition(tf->GetLocalPosition() + (next - pos));
                 ++active_;
             }
-            // Face the target while fighting, else the way it walks.
-            {
+            // Face the target while fighting, else the way it walks (a stunned one stays as it is).
+            if (!stunned) {
                 glm::vec3 look = (visible && (in_range || attacking || hold)) ? (target_pos - pos) : vel;
                 if (st.mode == Mode::Search && glm::length(vel) < 0.1f) look = fwd;
                 look.y = 0.0f;

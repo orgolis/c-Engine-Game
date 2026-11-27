@@ -45,7 +45,8 @@ button id=quit    anchor=center x=0 y=170 w=400 h=66 text="Quit" size=28
   `player.equipped.<slot>` (what is worn there), `player.weapon_slot.<n>`
   (the gun in weapon slot n, from 1), `player.weapon_slots`, `skill.<id>` ("Learned",
   "Learn (1 pt)" or "Locked"),
-  `flag.<key>`, `time`. Example: `text="{player.ammo} / {player.reserve}"`.
+  `flag.<key>`, `time`, and the game's data by id: `ability.<id>.name` / `.about` / `.cooldown`,
+  `perk.<id>.name` / `.about`, `status.<id>.name` / `.about`. Example: `text="{player.ammo} / {player.reserve}"`.
 - **Enabled by a value:** `enabled=<value>` on a button greys it out (and it
   cannot be clicked) while the value is 0 -- `enabled=skill.<id>.can` (1 when
   that skill can be learned now), `enabled=bag.count` (an item is picked),
@@ -66,7 +67,7 @@ Logic scripts (category UI and Game):
 |---|---|
 | **Show UI** (File) | shows a document, e.g. `ui/pause.ui` |
 | **Hide UI** (File) | |
-| **Set UI Text** (File, Id, Text) | a label's or button's text |
+| **Set UI Text** (File, Id, Text) | a label's or button's text; with `{placeholders}` in it, it follows them like text in the file |
 | **Is UI Shown** (File) | |
 | **On UI Button** (Button = id) | runs when that button is clicked -- or a cell of the slots grid with that id (Index: the cell) |
 | **Selected Slot** (File, Id) | the picked cell of a slots grid (-1: none) |
@@ -151,6 +152,11 @@ shows each slot's key too. `{player.weapon}`, `{player.ammo}`,
 `{player.reserve}` and a bar bound to `player.reload` (the reload's progress)
 make an ammunition box; a HUD that binds `player.ammo` or `player.abilities`
 replaces the built-in ammunition box or ability bar.
+
+A grid bound to `player.statuses` shows the statuses on the player
+(docs/systems/STATUSES_AND_PERKS.md): each its name, its stacks, its time
+running out darkening the cell with the seconds over it; `{<grid>.info}` is the
+picked one's `about`. A bar bound to `player.Shield` shows a status's shield.
 
 ## The combat HUD
 

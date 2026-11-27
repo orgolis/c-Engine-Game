@@ -7,6 +7,7 @@
 #include "play_ui.h"             // the project's UI documents in Play
 #include "play_settings.h"       // controls and settings
 #include "ecs/gameplay_ability_cast.h"   // learn_skill, set_skill_tree
+#include "ecs/gameplay_perks.h"         // statuses and perks by id (0.8.68)
 #include "biome_water.h"
 #include "command_palette.h"
 #include "editor_extensions.h"
@@ -585,6 +586,9 @@ int api_get_setting(void*, const char* name, char* out, int size) {
     // 0.8.61: animation graphs (states, blend spaces, layers), montages, parameters.
     if (name && std::strcmp(name, "engine.animation_graph") == 0)
         return copy_out("1", out, size);
+    // 0.8.68: statuses, perks, abilities by id.
+    if (name && std::strcmp(name, "engine.statuses_perks") == 0)
+        return copy_out("1", out, size);
     return copy_out(name ? schizo::editor::play_settings().get(name) : std::string(), out, size);
 }
 int api_next_setting(void*, const char* name, char* out, int size) {
@@ -633,6 +637,54 @@ bool api_equip_weapon(void* ctx, uint32_t e, const char* weapon, int slot) {
 void api_set_weapon_slots(void* ctx, uint32_t e, int count) {
     ecs::World* w; ecs::Entity ent;
     if (gp_entity(ctx, e, w, ent)) ecs::set_weapon_slots(*w, ent, count);
+}
+// ---- statuses, perks, abilities by id (0.8.68) ----
+int api_apply_status(void* ctx, uint32_t e, const char* status, int stacks, uint32_t by) {
+    ecs::World* w; ecs::Entity ent;
+    if (!status || !gp_entity(ctx, e, w, ent)) return 0;
+    ecs::World* bw; ecs::Entity bent = ecs::null_entity;
+    if (by && !gp_entity(ctx, by, bw, bent)) bent = ecs::null_entity;
+    return ecs::apply_status(*w, ent, status, stacks, bent, &C(ctx)->bridge->events());
+}
+int api_status_stacks(void* ctx, uint32_t e, const char* status) {
+    ecs::World* w; ecs::Entity ent;
+    return status && gp_entity(ctx, e, w, ent) ? ecs::status_stacks(*w, ent, status) : 0;
+}
+bool api_clear_status(void* ctx, uint32_t e, const char* status) {
+    ecs::World* w; ecs::Entity ent;
+    return status && gp_entity(ctx, e, w, ent) && ecs::clear_status(*w, ent, status);
+}
+bool api_add_perk(void* ctx, uint32_t e, const char* perk) {
+    ecs::World* w; ecs::Entity ent;
+    if (!perk || !gp_entity(ctx, e, w, ent) || !ecs::add_perk(*w, ent, perk)) return false;
+    ecs::sync_perks(*w, ent);   // its bonuses at once, for whatever reads them next
+    return true;
+}
+bool api_remove_perk(void* ctx, uint32_t e, const char* perk) {
+    ecs::World* w; ecs::Entity ent;
+    if (!perk || !gp_entity(ctx, e, w, ent) || !ecs::remove_perk(*w, ent, perk)) return false;
+    ecs::sync_perks(*w, ent);
+    return true;
+}
+bool api_has_perk(void* ctx, uint32_t e, const char* perk) {
+    ecs::World* w; ecs::Entity ent;
+    return perk && gp_entity(ctx, e, w, ent) && ecs::has_perk(*w, ent, perk);
+}
+bool api_equip_ability_id(void* ctx, uint32_t e, const char* ability, int slot) {
+    ecs::World* w; ecs::Entity ent;
+    if (!ability || !gp_entity(ctx, e, w, ent) || !ecs::find_ability_def(ability)) return false;
+    if (!w->has<ecs::AbilityBar>(ent)) w->add<ecs::AbilityBar>(ent, ecs::AbilityBar{});
+    auto& known = w->get<ecs::AbilityBar>(ent).known;
+    if (std::find(known.begin(), known.end(), ability) == known.end()) known.push_back(ability);
+    return ecs::equip_ability(*w, ent, ability, slot);
+}
+int api_ability_in_slot(void* ctx, uint32_t e, int slot, char* out, int out_size) {
+    if (out && out_size > 0) out[0] = 0;
+    ecs::World* w; ecs::Entity ent;
+    if (!gp_entity(ctx, e, w, ent)) return 0;
+    const auto* bar = w->try_get<ecs::AbilityBar>(ent);
+    if (!bar || slot < 0 || slot >= static_cast<int>(bar->slots.size())) return 0;
+    return copy_out(bar->slots[static_cast<size_t>(slot)], out, out_size);
 }
 bool api_equip_ability(void* ctx, uint32_t e, int known_index, int slot) {
     ecs::World* w; ecs::Entity ent;
@@ -986,6 +1038,14 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.set_weapon_slots   = &api_set_weapon_slots;
     api.weapon_in_slot     = &api_weapon_in_slot;
     api.equip_ability      = &api_equip_ability;
+    api.apply_status       = &api_apply_status;
+    api.status_stacks      = &api_status_stacks;
+    api.clear_status       = &api_clear_status;
+    api.add_perk           = &api_add_perk;
+    api.remove_perk        = &api_remove_perk;
+    api.has_perk           = &api_has_perk;
+    api.equip_ability_id   = &api_equip_ability_id;
+    api.ability_in_slot    = &api_ability_in_slot;
     api.distance           = &api_distance;
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;

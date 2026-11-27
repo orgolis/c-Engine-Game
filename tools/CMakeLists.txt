@@ -718,6 +718,7 @@ endif()
 # reflection-driven read/write that the editor inspector uses).
 add_executable(gameplay_check gameplay_check/main.cpp)
 target_link_libraries(gameplay_check PRIVATE gws_ecs gws_reflection)
+target_include_directories(gameplay_check PRIVATE ../editor/include)   # items_templates.h (pure)
 target_compile_features(gameplay_check PRIVATE cxx_std_20)
 if(MINGW)
     target_link_options(gameplay_check PRIVATE -static -static-libgcc -static-libstdc++)

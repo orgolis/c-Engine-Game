@@ -178,6 +178,59 @@ public:
                          std::max(1.2f, d.radius / 2.0f));
     }
 
+    // ---- statuses, zones, bursts, chains (0.8.68) -------------------------------------------
+    /// A status on someone this frame: its look (its `vfx`: the effect <vfx> or <vfx>_on)
+    /// streamed around them.
+    void status_on(const std::string& vfx, const glm::vec3& at, float dt) {
+        if (vfx.empty()) return;
+        if (const auto* e = schizo::vfx::find_effect_of({vfx, vfx + "_on"}))
+            fx_.stream(*e, at - glm::vec3(0.0f, 0.45f, 0.0f), at + glm::vec3(0.0f, 0.45f, 0.0f), dt);
+    }
+    /// A zone an ability left: its own <vfx>_zone streamed over it, else its area
+    /// effect every so often (`pulse`).
+    void zone(const schizo::ecs::AbilityDef& d, const glm::vec3& at, float dt, bool pulse) {
+        const float scale = std::max(0.3f, d.radius / 3.0f);
+        if (!d.vfx.empty())
+            if (const auto* e = schizo::vfx::find_effect_of({d.vfx + "_zone"})) {
+                fx_.stream(*e, at, at + glm::vec3(0.0f, 0.2f, 0.0f), dt, scale);
+                return;
+            }
+        if (!pulse) return;
+        if (const auto* e = effect(d, "area")) {
+            schizo::vfx::EffectSpawn s;
+            s.pos = at + glm::vec3(0.0f, 0.15f, 0.0f);
+            s.dir = glm::vec3(0.0f, 1.0f, 0.0f);
+            s.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+            s.scale = scale;
+            fx_.burst(*e, s);
+        }
+    }
+    /// An ability set off around a point by a status or a perk (`burst`).
+    void burst(const schizo::ecs::AbilityDef& d, const glm::vec3& at) {
+        if (const auto* e = effect(d, "area")) {
+            schizo::vfx::EffectSpawn s;
+            s.pos = at;
+            s.dir = glm::vec3(0.0f, 1.0f, 0.0f);
+            s.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+            s.scale = std::max(0.3f, d.radius / 3.0f);
+            fx_.burst(*e, s);
+        }
+    }
+    /// Damage leaping from one to the next (`chain`): a beam of its damage type.
+    void chain(const std::string& type, const glm::vec3& from, const glm::vec3& to) {
+        const glm::vec3 path = to - from;
+        const float len = glm::length(path);
+        if (len < 0.1f) return;
+        const std::string el = schizo::vfx::effect_element(type, false);
+        if (const auto* e = schizo::vfx::find_effect_of({type + "_chain", el + "_beam", "magic_beam"})) {
+            schizo::vfx::EffectSpawn b;
+            b.pos = from;
+            b.dir = path / len;
+            b.reach = len;
+            fx_.burst(*e, b);
+        }
+    }
+
     // ---- the frame -------------------------------------------------------------------------
     void update(float dt) { fx_.update(dt); }
     /// Append this frame's billboards (camera-facing, farthest first).

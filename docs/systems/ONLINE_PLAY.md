@@ -207,8 +207,9 @@ the box.
 
 What a player earns stays with them from one mode to the next -- a co-op
 expedition, then the raid, then the expedition again: their level, XP and
-skill points, the skills they unlocked, the abilities in their slots, their bag,
-what they wear and the guns they carry. It is stored on their own computer
+skill points, the skills they unlocked, the abilities in their slots, their
+perks (docs/systems/STATUSES_AND_PERKS.md), their bag, what they wear and the
+guns they carry. It is stored on their own computer
 (`saves/profile.sav` in the project; an exported game: the player's own folder,
 `<config>/games/<project>/saves/`), saved every 15 seconds and whenever they
 leave a mode (the start screen, another mode, closing the game).

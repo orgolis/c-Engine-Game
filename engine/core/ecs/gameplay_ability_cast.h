@@ -28,6 +28,13 @@
 // ability.hit, ability.interrupted, ability.end) carrying the ability id; the
 // AbilityFired list says where each one went off -- the hooks for effects,
 // sounds and scripts. Checked by tools/gameplay_check.
+//
+// Since 0.8.68: an ability puts statuses on who it reaches (`inflict burning 2`)
+// or on its caster (`self_status hasted`) -- gameplay_status.h; `target cone`
+// reaches those in front within `radius` and `angle`; `zone 6 1` leaves its
+// area behind for 6 s, going off again every second (`zone_hits allies`: on the
+// caster's side instead); `labels` are free words a game's rules look for
+// (gameplay_perks.h).
 
 #include "world.h"
 #include "gameplay_abilities.h"
@@ -39,6 +46,7 @@
 #include "gameplay_tags.h"
 #include "gameplay_weapons.h"   // hitscan_target, WorldRayFn
 #include "gameplay_skills.h"    // learning a skill grants abilities
+#include "gameplay_status.h"    // what abilities put on who they reach
 #include "authorable_components.h"
 
 #include <glm/glm.hpp>
@@ -53,7 +61,7 @@
 
 namespace schizo::ecs {
 
-enum class AbilityTargeting : uint8_t { Self, Aimed, AreaAroundSelf, AreaAtAim };
+enum class AbilityTargeting : uint8_t { Self, Aimed, AreaAroundSelf, AreaAtAim, Cone };
 
 inline const char* ability_targeting_name(AbilityTargeting t) {
     switch (t) {
@@ -61,6 +69,7 @@ inline const char* ability_targeting_name(AbilityTargeting t) {
         case AbilityTargeting::Aimed:          return "aimed";
         case AbilityTargeting::AreaAroundSelf: return "area";
         case AbilityTargeting::AreaAtAim:      return "area_at_aim";
+        case AbilityTargeting::Cone:           return "cone";
     }
     return "self";
 }
@@ -68,6 +77,7 @@ inline AbilityTargeting parse_ability_targeting(const std::string& s) {
     if (s == "aimed")       return AbilityTargeting::Aimed;
     if (s == "area")        return AbilityTargeting::AreaAroundSelf;
     if (s == "area_at_aim") return AbilityTargeting::AreaAtAim;
+    if (s == "cone")        return AbilityTargeting::Cone;
     return AbilityTargeting::Self;
 }
 
@@ -120,6 +130,17 @@ struct AbilityDef {
     enum class Move : uint8_t { None, Blink, Dash, Leap };
     Move        move = Move::None;
     float       move_a = 0.0f, move_b = 0.0f;
+    // Elemental powers (0.8.68).
+    struct StatusPut { std::string id; int stacks = 1; };
+    std::vector<StatusPut> inflict;        // on each one reached
+    std::vector<StatusPut> self_statuses;  // on the caster
+    float       angle = 90.0f;             // cone: how wide (degrees)
+    float       zone_time = 0.0f;          // > 0: its area stays this long, going off every zone_period
+    float       zone_period = 1.0f;
+    enum class ZoneHits : uint8_t { Enemies, Allies, All };
+    ZoneHits    zone_hits = ZoneHits::Enemies;
+    std::vector<std::string> labels;       // free words the game's rules can look for
+    bool has_label(const std::string& l) const { return std::find(labels.begin(), labels.end(), l) != labels.end(); }
 };
 
 inline std::vector<AbilityDef>& ability_def_registry() { static std::vector<AbilityDef> r; return r; }
@@ -210,6 +231,7 @@ inline bool tags_allow(World& w, Entity caster, const AbilityDef& d) {
 }
 /// The entity's team: its first `team.*` tag ("" when none).
 inline std::string team_of(World& w, Entity e) {
+    if (!w.valid(e)) return {};
     if (const GameplayTags* t = w.try_get<GameplayTags>(e))
         for (const auto& s : t->tags)
             if (s.rfind("team.", 0) == 0) return s;
@@ -225,6 +247,57 @@ inline bool in_area(World& w, Entity e, const Transform& t, const glm::vec3& cen
     const auto delta = point - centre;
     return glm::dot(delta, delta) <= radius * radius;
 }
+/// On the caster's side: the caster, and those of its team.
+inline bool ally_of(World& w, Entity caster, Entity e) {
+    if (e == caster) return true;
+    const std::string team = team_of(w, caster);
+    return !team.empty() && team_of(w, e) == team;
+}
+/// In a cone from `from` along `dir`: within `reach` and half `angle` of it.
+inline bool in_cone(World& w, Entity e, const Transform& t, const glm::vec3& from, const glm::vec3& dir, float reach, float angle) {
+    if (!in_area(w, e, t, from, reach)) return false;
+    glm::vec3 point = t.position;
+    if (const auto* ca = w.try_get<CombatActor>(e)) point = combat_hurtbox(*ca, t.position).center;
+    glm::vec3 to = point - from;
+    to.y = 0.0f;
+    glm::vec3 fwd(dir.x, 0.0f, dir.z);
+    if (glm::length(to) < 0.8f) return true;   // close enough to touch
+    if (glm::length(fwd) < 1e-4f) return true;
+    return glm::dot(glm::normalize(to), glm::normalize(fwd)) >= std::cos(glm::radians(angle * 0.5f));
+}
+/// What an ability does to one it reached: damage, effects, statuses.
+inline float affect(World& w, Entity caster, const AbilityDef& d, Entity e, float dmg, GameplayEventBus* bus) {
+    float dealt = 0.0f;
+    if (d.damage > 0.0f) {
+        DamageInfo di{dmg, d.damage_type, "Health", caster};
+        di.source = d.id;
+        dealt = apply_damage(w, e, di);
+    }
+    const Entity owner = damage_owner(w, e);
+    if (owner != null_entity) {
+        for (const auto& fx : d.target_effects) apply_effect(w, owner, to_gameplay_effect(fx, d.id));
+        for (const auto& st : d.inflict) apply_status(w, owner, st.id, st.stacks, caster, bus);
+    }
+    publish(bus, "ability.hit", caster, e, dealt, d.id);
+    return dealt;
+}
+}  // namespace ability_detail
+
+/// An ability's area left behind (`zone`): it goes off again every period.
+struct AbilityZone {
+    std::string id;
+    glm::vec3   pos{0.0f};
+    float       remaining = 0.0f, timer = 0.0f;
+};
+struct AbilityZones { std::vector<AbilityZone> zones; };
+
+namespace ability_detail {
+inline void leave_zone(World& w, Entity caster, const AbilityDef& d, const glm::vec3& at) {
+    if (d.zone_time <= 0.0f) return;
+    if (!w.has<AbilityZones>(caster)) w.add<AbilityZones>(caster, AbilityZones{});
+    w.get<AbilityZones>(caster).zones.push_back({d.id, at, d.zone_time, 0.0f});
+}
+
 /// The nearest hurtbox along a ray that is not the caster's nor its team's.
 inline Entity target_along(World& w, Entity caster, const glm::vec3& origin, const glm::vec3& dir, float max_t, float& out_t) {
     const std::string team = team_of(w, caster);
@@ -246,7 +319,7 @@ inline int reach_targets(World& w, Entity caster, const AbilityDef& d, const glm
     std::vector<Entity> hits;
     if (d.targeting == AbilityTargeting::Aimed) {
         if (hit != null_entity) hits.push_back(hit);
-    } else if (d.targeting == AbilityTargeting::AreaAtAim || d.targeting == AbilityTargeting::AreaAroundSelf) {
+    } else if (d.targeting != AbilityTargeting::Self) {
         const std::string team = team_of(w, caster);
         w.each<Transform>([&](Entity e, Transform& t) {
             if (e == caster) return;
@@ -257,12 +330,8 @@ inline int reach_targets(World& w, Entity caster, const AbilityDef& d, const glm
     }
     if (d.targeting != AbilityTargeting::Aimed) unique_damage_owners(w, hits);
     const float dmg = d.damage * damage_bonus(w.try_get<AttributeSet>(caster), "AbilityDamage");
-    for (Entity e : hits) {
-        float dealt = 0.0f;
-        if (d.damage > 0.0f) dealt = apply_damage(w, e, DamageInfo{dmg, d.damage_type,"Health",caster});
-        for (const auto& fx : d.target_effects) if (const Entity owner = damage_owner(w, e); owner != null_entity) apply_effect(w, owner, to_gameplay_effect(fx, d.id));
-        publish(bus, "ability.hit", caster, e, dealt, d.id);
-    }
+    for (Entity e : hits) affect(w, caster, d, e, dmg, bus);
+    if (d.targeting != AbilityTargeting::Aimed) leave_zone(w, caster, d, centre);
     return static_cast<int>(hits.size());
 }
 
@@ -303,6 +372,7 @@ inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot,
         if (!w.has<AbilityShots>(caster)) w.add<AbilityShots>(caster, AbilityShots{});
         w.get<AbilityShots>(caster).shots.push_back(s);
         for (const auto& e : d.self_effects) apply_effect(w, caster, to_gameplay_effect(e, d.name));
+        for (const auto& st : d.self_statuses) apply_status(w, caster, st.id, st.stacks, caster, bus);
         f.point = in.origin;
         f.launched = true;
         publish(bus, "ability.fire", caster, null_entity, 0.0f, d.id);
@@ -319,6 +389,18 @@ inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot,
         case AbilityTargeting::Self:
             f.point = in.caster_pos;
             break;
+        case AbilityTargeting::Cone: {
+            // Those in front: from the caster, the way it aims (flat).
+            f.point = in.caster_pos + glm::vec3(aim.x, 0.0f, aim.z) * (d.radius * 0.5f);
+            const std::string team = team_of(w, caster);
+            w.each<Transform>([&](Entity e, Transform& t) {
+                if (e == caster) return;
+                if (!w.has<CombatActor>(e) && !w.has<AttributeSet>(e)) return;
+                if (!team.empty() && team_of(w, e) == team) return;
+                if (in_cone(w, e, t, in.caster_pos, aim, d.radius, d.angle)) hits.push_back(e);
+            });
+            break;
+        }
         case AbilityTargeting::Aimed: {
             float t = 0.0f;
             const Entity hit = target_along(w, caster, in.origin, aim, wall ? wall_t : d.range, t);
@@ -348,17 +430,17 @@ inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot,
         }
     }
     for (const auto& e : d.self_effects) apply_effect(w, caster, to_gameplay_effect(e, d.name));
+    for (const auto& st : d.self_statuses) apply_status(w, caster, st.id, st.stacks, caster, bus);
     f.move = d.move;
     f.move_a = d.move_a;
     f.move_b = d.move_b;
     if (d.targeting != AbilityTargeting::Aimed) unique_damage_owners(w, hits);
     const float dmg = d.damage * damage_bonus(w.try_get<AttributeSet>(caster), "AbilityDamage");
-    for (Entity e : hits) {
-        float dealt = 0.0f;
-        if (d.damage > 0.0f) dealt = apply_damage(w, e, DamageInfo{dmg, d.damage_type,"Health",caster});
-        for (const auto& fx : d.target_effects) if (const Entity owner = damage_owner(w, e); owner != null_entity) apply_effect(w, owner, to_gameplay_effect(fx, d.id));
-        publish(bus, "ability.hit", caster, e, dealt, d.id);
-    }
+    for (Entity e : hits) affect(w, caster, d, e, dmg, bus);
+    // An area (or the caster's own place) stays: a zone.
+    if (d.targeting == AbilityTargeting::AreaAtAim || d.targeting == AbilityTargeting::AreaAroundSelf ||
+        d.targeting == AbilityTargeting::Self)
+        leave_zone(w, caster, d, f.point);
     f.targets = static_cast<int>(hits.size());
     publish(bus, "ability.fire", caster, null_entity, static_cast<float>(f.targets), d.id);
     return f;
@@ -408,6 +490,54 @@ inline void tick_ability_shots(World& w, float dt, const WorldRayFn* world, Game
         }
         if (w.valid(caster) && w.has<AbilityShots>(caster)) {
             auto& now = w.get<AbilityShots>(caster).shots;   // launched while this ran
+            keep.insert(keep.end(), now.begin(), now.end());
+            now = std::move(keep);
+        }
+    }
+}
+
+/// The zones abilities left (`zone`): each goes off again every period until its
+/// time is up -- on the caster's enemies (damage, effects, statuses), or with
+/// `zone_hits allies` on its side (effects and statuses: a rift that heals).
+inline void tick_ability_zones(World& w, float dt, GameplayEventBus* bus) {
+    std::vector<Entity> casters;
+    w.each<AbilityZones>([&](Entity e, AbilityZones& z) { if (!z.zones.empty()) casters.push_back(e); });
+    for (Entity caster : casters) {
+        if (!w.valid(caster) || !w.has<AbilityZones>(caster)) continue;
+        std::vector<AbilityZone> zones = std::move(w.get<AbilityZones>(caster).zones);
+        std::vector<AbilityZone> keep;
+        for (AbilityZone& z : zones) {
+            const AbilityDef* d = find_ability_def(z.id);
+            if (!d) continue;
+            z.timer += dt;
+            z.remaining -= dt;
+            const float period = std::max(0.1f, d->zone_period);
+            while (z.timer >= period) {
+                z.timer -= period;
+                std::vector<Entity> in;
+                w.each<Transform>([&](Entity e, Transform& t) {
+                    if (!w.has<CombatActor>(e) && !w.has<AttributeSet>(e)) return;
+                    if (w.has<DamageReceiver>(e)) return;   // its owner counts once
+                    const bool ally = ability_detail::ally_of(w, caster, e);
+                    if (d->zone_hits == AbilityDef::ZoneHits::Enemies && ally) return;
+                    if (d->zone_hits == AbilityDef::ZoneHits::Allies && !ally) return;
+                    if (ability_detail::in_area(w, e, t, z.pos, d->radius)) in.push_back(e);
+                });
+                const float dmg = d->damage * damage_bonus(w.try_get<AttributeSet>(caster), "AbilityDamage");
+                for (Entity e : in) {
+                    if (!w.valid(e)) continue;
+                    if (ability_detail::ally_of(w, caster, e)) {
+                        for (const auto& fx : d->target_effects) apply_effect(w, e, to_gameplay_effect(fx, d->id));
+                        for (const auto& st : d->inflict) apply_status(w, e, st.id, st.stacks, caster, bus);
+                    } else {
+                        ability_detail::affect(w, caster, *d, e, dmg, bus);
+                    }
+                }
+            }
+            if (z.remaining > 0.0f) keep.push_back(z);
+        }
+        if (w.valid(caster) && w.has<AbilityZones>(caster)) {
+            auto& now = w.get<AbilityZones>(caster).zones;   // left while this ran
             keep.insert(keep.end(), now.begin(), now.end());
             now = std::move(keep);
         }
@@ -539,6 +669,13 @@ inline int step_ability_bar(World& w, Entity caster, AbilityBar& bar, const Abil
 //     vfx fireball_burst    # its effects: fireball_burst_cast, _trail, _hit ... (vfx/effects.h)
 //     speed 40              # aimed / area_at_aim: it flies (m/s) and takes effect where it lands
 //     arc 9.8               # a flying one falls (thrown things)
+//     inflict burning 2     # a status on each one reached (gameplay_status.h), stacks
+//     self_status hasted    # one on the caster
+//     target cone           # those in front within `radius`, `angle` wide:
+//     angle 100
+//     zone 6 1              # its area stays 6 s, going off every 1 s
+//     zone_hits allies      # ...on the caster's side instead (enemies | allies | all)
+//     labels fire thrown    # free words the game's rules can look for (perks)
 //   end
 inline std::vector<AbilityDef> parse_abilities_text(const std::string& text) {
     std::vector<AbilityDef> out;
@@ -558,7 +695,7 @@ inline std::vector<AbilityDef> parse_abilities_text(const std::string& text) {
         std::string key;
         if (!(ls >> key) || key[0] == '#') continue;
         if (key == "ability")       { flush(); ls >> cur.id; cur.name = cur.id; have = true; }
-        else if (key == "item" || key == "weapon") { flush(); }
+        else if (key == "item" || key == "weapon" || key == "skill" || key == "status" || key == "perk") { flush(); }
         else if (!have)             { continue; }
         else if (key == "end")      { flush(); }
         else if (key == "name")     { cur.name = rest_of(ls); }
@@ -583,6 +720,17 @@ inline std::vector<AbilityDef> parse_abilities_text(const std::string& text) {
         else if (key == "spread")   { ls >> cur.spread; }
         else if (key == "knockdown") { ls >> cur.knockdown; }
         else if (key == "about")    { cur.about = rest_of(ls); }
+        else if (key == "inflict" || key == "self_status") {
+            AbilityDef::StatusPut p; ls >> p.id; if (!(ls >> p.stacks)) p.stacks = 1;
+            if (!p.id.empty()) (key == "inflict" ? cur.inflict : cur.self_statuses).push_back(p);
+        }
+        else if (key == "angle")    { ls >> cur.angle; }
+        else if (key == "zone")     { ls >> cur.zone_time; float p; if (ls >> p) cur.zone_period = p; }
+        else if (key == "zone_hits") {
+            std::string v; ls >> v;
+            cur.zone_hits = v == "allies" ? AbilityDef::ZoneHits::Allies : v == "all" ? AbilityDef::ZoneHits::All : AbilityDef::ZoneHits::Enemies;
+        }
+        else if (key == "labels" || key == "label") { for (std::string w; ls >> w;) { if (w[0] == '#') break; cur.labels.push_back(w); } }
         else if (key == "move")     {
             std::string k;
             ls >> k >> cur.move_a;
