@@ -3263,6 +3263,51 @@ int main() {
                 cw.destroy(near6);
                 cw.destroy(far8);
             }
+            {
+                // Explosions (0.8.70): an area's damage falls off to its edge; its force
+                // and shake are queued for the host; explode() hurts everyone near, less
+                // the farther; a zone with a pull pulls on every pulse.
+                ecs::register_items_text(
+                    "ability pw_bomb2\n  target area\n  radius 4\n  damage 40\n  falloff 0.25\n  force 12\n  shake 0.5\nend\n"
+                    "ability pw_well\n  target area\n  radius 3\n  damage 1\n  zone 2 1\n  force -6\nend\n");
+                const glm::vec3 o(100, 0, 100);
+                const ecs::Entity close = ca(o + glm::vec3(0, 0, -0.5f), "team.enemy");
+                const ecs::Entity edge = ca(o + glm::vec3(3.5f, 0, 0), "team.enemy");
+                ecs::AbilityCastInput bi;
+                bi.origin = o + glm::vec3(0, 1, 0); bi.aim = {0, 0, -1}; bi.caster_pos = o;
+                ecs::explosions(cw).list.clear();
+                ecs::ability_detail::fire(cw, p, *ecs::find_ability_def("pw_bomb2"), 0, bi, nullptr, nullptr);
+                const auto& xq = ecs::explosions(cw).list;
+                check("explosion: falloff 0.25 -- 40 near the centre (36.25 at 0.5 m), 13.75 at 3.5 m of 4; its force and "
+                      "shake queued for the host",
+                      std::abs(cw.get<ecs::AttributeSet>(close).get("Health") - 63.75f) < 1e-3f &&
+                          std::abs(cw.get<ecs::AttributeSet>(edge).get("Health") - 86.25f) < 1e-3f && xq.size() == 1 &&
+                          std::abs(xq[0].force - 12.0f) < 1e-4f && std::abs(xq[0].shake - 0.5f) < 1e-4f && xq[0].effect.empty() &&
+                          glm::length(xq[0].at - o) < 1e-4f);
+                const glm::vec3 b(200, 0, 200);
+                const ecs::Entity mine = ca(b, "team.enemy");
+                const ecs::Entity half = ca(b + glm::vec3(2, 0, 0), "team.player");
+                const ecs::Entity safe = ca(b + glm::vec3(6, 0, 0), "team.enemy");
+                ecs::explosions(cw).list.clear();
+                const int hurt = ecs::explode(cw, b, 4.0f, 50.0f, 15.0f, "", p);
+                const auto& xe = ecs::explosions(cw).list;
+                check("explode(): everyone within it, either side (50 at the centre, 31.25 at 2 m of 4), none past it; "
+                      "queued with the built-in effect",
+                      hurt == 2 && std::abs(cw.get<ecs::AttributeSet>(mine).get("Health") - 50.0f) < 1e-3f &&
+                          std::abs(cw.get<ecs::AttributeSet>(half).get("Health") - 68.75f) < 1e-3f &&
+                          cw.get<ecs::AttributeSet>(safe).get("Health") == 100.0f && xe.size() == 1 && xe[0].effect == "explosion" &&
+                          std::abs(xe[0].force - 15.0f) < 1e-4f && xe[0].shake > 0.0f);
+                ecs::explosions(cw).list.clear();
+                ecs::GameplayEventBus wb;
+                bi.caster_pos = bi.origin = glm::vec3(300, 0, 300);
+                ecs::ability_detail::fire(cw, p, *ecs::find_ability_def("pw_well"), 0, bi, nullptr, nullptr);
+                for (int i = 0; i < 9; ++i) ecs::tick_perks_and_statuses(cw, 0.25f, &wb);   // 2.25 s: two pulses
+                int pulls = 0;
+                for (const auto& x : ecs::explosions(cw).list) pulls += x.force < 0.0f;
+                check("a zone with force -6: a pull as it goes off and on each pulse", pulls == 3);
+                for (ecs::Entity e : {close, edge, mine, half, safe}) cw.destroy(e);
+                ecs::explosions(cw).list.clear();
+            }
             ecs::GameplayEventBus zb;
             const ecs::Entity zf = ca({0, 0, -8}, "team.enemy");
             ecs::ability_detail::fire(cw, p, *ecs::find_ability_def("pw_fire_zone"), 0, ci, nullptr, nullptr);

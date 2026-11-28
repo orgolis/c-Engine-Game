@@ -30,6 +30,14 @@ inline const std::vector<ItemsTemplate>& items_templates() {
         {"Ability", "Thrown blast", "Thrown in an arc; goes off where it lands.",
          "ability {id}\n  name Thrown Blast\n  cooldown 8\n  target area_at_aim\n  range 30\n  radius 4\n  damage 60 explosive\n"
          "  speed 18\n  arc 9.8\n  labels thrown\n  about Thrown: 60 damage to everyone within 4 m of where it lands.\nend\n"},
+        {"Ability", "Explosive grenade", "Thrown; a real explosion where it lands -- less at its edge, throws, shakes.",
+         "ability {id}\n  name Explosive Grenade\n  cooldown 10\n  target area_at_aim\n  range 30\n  radius 5\n  damage 80 explosive\n"
+         "  speed 18\n  arc 9.8\n  falloff 0.25\n  force 12\n  shake 0.5\n  labels thrown\n"
+         "  about Thrown: an explosion -- 80 damage at its centre, a quarter of it 5 m out; it throws things and shakes.\nend\n"},
+        {"Ability", "Vortex", "Thrown; a field that pulls things in while it hurts.",
+         "ability {id}\n  name Vortex\n  cooldown 14\n  target area_at_aim\n  range 25\n  radius 4\n  damage 8 magic\n"
+         "  speed 18\n  arc 9.8\n  zone 4 0.5\n  force -6\n  labels thrown\n"
+         "  about Where it lands, for 4 s: things are pulled in, and 8 damage every 0.5 s.\nend\n"},
         {"Ability", "Lingering field", "Thrown; leaves an area that keeps hurting.",
          "ability {id}\n  name Lingering Field\n  cooldown 12\n  target area_at_aim\n  range 25\n  radius 4\n  damage 6 fire\n"
          "  speed 20\n  arc 9.8\n  zone 5 0.5\n  labels thrown\n  about Where it lands, 6 fire damage every 0.5 s for 5 s.\nend\n"},

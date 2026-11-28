@@ -261,6 +261,81 @@ int main() {
                 v.size() == 16 && glow == 1 && smoke == 2 && soft == 1);
     }
 
+    // Spheres, explosions: born on a sphere, out and in, colours through their keys,
+    // eased growth, flat on the ground, the new shapes (0.8.70).
+    {
+        const auto defs = parse_effects_text(
+            "effect t_ball\n"
+            "  layer out  count 40 life 1 speed 2 sphere 1.5 size 0.01\n"
+            "  layer in   count 20 life 1 speed 3 sphere 2 dir in size 0.01\n"
+            "  layer heat count 1 life 1 size 1 9 ease out color 8 8 8 1 to 4 2 0 1 to 0 0 0 0 shape fire\n"
+            "  layer flat count 1 life 1 size 2 shape ring flat\n"
+            "  layer orbs count 1 life 1 size 1 shape orb\n"
+            "  layer bub  count 1 life 1 size 1 shape shell\n"
+            "end\n");
+        const EffectLayer& heat = defs[0].layers[2];
+        REQUIRE("sphere, dir in, three colour keys, ease, flat and the new shapes parse",
+                defs.size() == 1 && near(defs[0].layers[0].sphere, 1.5f) && defs[0].layers[1].dir == EffectLayer::Dir::In &&
+                heat.color_mids == 1 && near(heat.color_mid[0].r, 4.0f) && near(heat.color_end.a, 0.0f) &&
+                heat.ease == EffectLayer::Ease::Out && heat.shape == kShapeFire && defs[0].layers[3].flat &&
+                defs[0].layers[3].shape == kShapeRing && defs[0].layers[4].shape == kShapeOrb && defs[0].layers[5].shape == kShapeShell);
+
+        // Positions and motion: one layer at a time (centre of each quad).
+        auto centres = [](const EffectParticles& fx, const glm::vec3& cam) {
+            std::vector<BillboardVertex> q;
+            fx.build(cam, q);
+            std::vector<glm::vec3> c;
+            for (size_t i = 0; i + 3 < q.size(); i += 4) c.push_back(0.25f * (q[i].pos + q[i + 1].pos + q[i + 2].pos + q[i + 3].pos));
+            return c;
+        };
+        const glm::vec3 o(3, 1, -2);
+        auto only = [&](int layer) {
+            EffectDef d = defs[0];
+            d.layers = {defs[0].layers[static_cast<size_t>(layer)]};
+            return d;
+        };
+        EffectSpawn at;
+        at.pos = o;
+        EffectParticles out;
+        out.burst(only(0), at);
+        const auto b0 = centres(out, glm::vec3(0, 50, 0));
+        bool on_sphere = b0.size() == 40;
+        glm::vec3 mean(0.0f);
+        for (const auto& c : b0) { on_sphere = on_sphere && near(glm::length(c - o), 1.5f, 1e-3f); mean += c - o; }
+        out.update(0.25f);
+        const auto b1 = centres(out, glm::vec3(0, 50, 0));
+        bool moved_out = b1.size() == 40;
+        for (const auto& c : b1) moved_out = moved_out && near(glm::length(c - o), 2.0f, 1e-2f);
+        REQUIRE("a sphere burst: all on it, evenly (they balance round the point), moving straight out",
+                on_sphere && glm::length(mean / 40.0f) < 0.1f && moved_out);
+        EffectParticles in;
+        in.burst(only(1), at);
+        in.update(0.25f);
+        const auto ci = centres(in, glm::vec3(0, 50, 0));
+        bool moved_in = ci.size() == 20;
+        for (const auto& c : ci) moved_in = moved_in && near(glm::length(c - o), 1.25f, 1e-2f);
+        REQUIRE("dir in: from the sphere towards the point", moved_in);
+
+        EffectParticles h;
+        h.burst(only(2), at);
+        h.update(0.5f);   // half its life: the middle colour, past most of its growth
+        std::vector<BillboardVertex> hq;
+        h.build(o + glm::vec3(0, 0, 20), hq);
+        const float w = hq.size() == 4 ? glm::length(hq[1].pos - hq[0].pos) : 0.0f;
+        REQUIRE("colours pass through their keys; ease out grows fast, then slow (size 1 -> 9: 8 at half its life)",
+                hq.size() == 4 && near(hq[0].color.r, 4.0f, 1e-3f) && near(hq[0].color.g, 2.0f, 1e-3f) &&
+                near(w, 1.0f + 8.0f * 0.875f, 1e-2f) && static_cast<int>(hq[0].extra.x + 0.5f) == kShapeFire);
+
+        EffectParticles f;
+        at.normal = glm::vec3(0, 1, 0);
+        f.burst(only(3), at);
+        std::vector<BillboardVertex> fq;
+        f.build(o + glm::vec3(5, 3, 7), fq);   // seen from anywhere it lies on the ground
+        bool level = fq.size() == 4;
+        for (const auto& v : fq) level = level && near(v.pos.y, o.y + 0.04f, 1e-3f);
+        REQUIRE("flat: on the surface (level on the ground), not facing the eye", level);
+    }
+
     std::printf("vfx_check: ALL OK (%d checks)\n", g_checks);
     return 0;
 }

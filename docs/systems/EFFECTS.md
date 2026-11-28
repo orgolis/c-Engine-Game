@@ -25,19 +25,22 @@ end
 | `path N` | N a metre along a line to the effect's reach (a beam) |
 | `life a [b]` | seconds, random between a and b |
 | `speed a [b]` | metres a second |
-| `dir along / back / normal / up / any` | which way: along the shot or flight (default), back, off the surface hit, up, every way |
+| `dir along / back / normal / up / any / out / in` | which way: along the shot or flight (default), back, off the surface hit, up, every way, away from the effect's point, towards it |
 | `spread deg` | a cone round that way (180: every way) |
 | `size a [b]` | width at birth, at death |
-| `color r g b a`, `to r g b a` | at birth (above 1 glows, and blooms) and at death (default: the same, clear) |
+| `color r g b a`, `to r g b a` | at birth (above 1 glows, and blooms) and at death (default: the same, clear); up to three `to`s: the colours it passes through, evenly over its life -- white-hot, orange, smoke, gone |
 | `add` / `blend` | adds light (fire, sparks: the default) or covers what is behind (smoke, dust, blood) |
 | `gravity g` | falls (below 0: rises) |
 | `drag d` | slows by this share a second |
 | `streak k` | stretched along its motion, length speed x k (sparks, tracers) |
 | `jitter r` | born up to r metres from the point |
 | `ring r` | born on a level ring of radius r, moving outward (a nova) |
+| `sphere r` | born on a sphere of radius r, moving outward (`dir in`: inward, an implosion); a burst spreads evenly over it |
+| `ease out / in` | how its size grows: fast, then slow (a fireball, a shockwave), or slow, then fast (default: evenly) |
+| `flat` | lies flat on the surface it came off (the ground) instead of facing the eye: a shockwave ring on the ground, a scorch |
 | `delay s` | starts s seconds later (a blast's smoke after its flash) |
 | `reach` | lives until it has travelled to the effect's reach (a tracer round) |
-| `shape glow / smoke / soft` | how it is drawn: a hot core, a ragged puff, a soft disc (default: light-adding ones glow, covering ones are smoke, streaked ones soft) |
+| `shape glow / smoke / soft / orb / shell / fire / ring` | how it is drawn: a hot core, a ragged puff, a soft disc, a lit ball (an orb, a sun; covering: a solid sphere lit from above), a hollow sphere bright at its rim (a shockwave, a bubble, a shield), a turbulent flame (hot tongues, darker edges), a thin ring (with `flat`: a shockwave on the ground) -- default: light-adding ones glow, covering ones are smoke, streaked ones soft |
 
 Once in a block, `light r g b intensity range life` lights the surroundings
 for `life` seconds, fading -- a muzzle flash, a blast. In a stream (a flying
@@ -49,6 +52,22 @@ eye, so nothing fills the screen, and softly where they meet the scene, so
 smoke and dust have no hard line where they sink into the ground. Smoke is
 drawn as ragged, turned puffs that merge into a cloud; colours above 1 glow
 and bloom.
+
+## Spheres and explosions
+
+A sphere of light that swells and fades -- `layer core count 1 life 0.5 size 2 7
+ease out color 5 3 1.2 1 to 3 1.1 0.2 0.8 to 0.5 0.1 0.02 0 shape orb` -- a
+shockwave bubble -- `shape shell` with `ease out` -- and particles born on a
+sphere (`sphere 0.4 dir out`) or drawn into it (`sphere 3 dir in`: a charge, a
+singularity) make round things look round. A fireball that turns to smoke is
+one covering layer passing through its colours: `color 5 2.8 0.9 0.95 to 2.4
+0.7 0.12 0.9 to 0.16 0.11 0.08 0.75 to 0.13 0.12 0.11 0 blend shape fire`.
+
+The built-in `explosion` (and `explosive_hit`) puts it together: a white flash
+ball, a fireball core, burning puffs turning into a smoke column, a shockwave
+bubble and a ring along the ground, sparks, debris and a dust wave, and a
+flash of light. An ability's `force`, `falloff` and `shake` and a script's
+Explode make it one (docs/systems/ABILITIES.md).
 
 ## Which effect, when
 

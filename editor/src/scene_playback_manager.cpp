@@ -1107,6 +1107,25 @@ uint32_t ScenePlaybackManager::BodyForEntity(uint32_t entity_id) const {
     return it != entity_bodies_.end() ? it->second : 0xFFFFFFFFu;
 }
 
+int ScenePlaybackManager::PushBodies(const glm::vec3& at, float radius, float force) {
+    if (!physics_world_ || !scene_ || force == 0.0f || radius <= 0.0f) return 0;
+    int moved = 0;
+    for (uint32_t eid : dynamic_entities_) {
+        auto it = entity_bodies_.find(eid);
+        auto ent = scene_->GetEntityById(eid);
+        if (it == entity_bodies_.end() || !ent || !ent->GetTransform()) continue;
+        const glm::vec3 off = ent->GetTransform()->GetWorldPosition() - at;
+        const float d = glm::length(off);
+        if (d >= radius) continue;
+        glm::vec3 dir = d > 1e-3f ? off / d : glm::vec3(0.0f, 1.0f, 0.0f);
+        if (force > 0.0f) dir = glm::normalize(dir + glm::vec3(0.0f, 0.5f, 0.0f));   // (thrown up a little, not along the ground)
+        const glm::vec3 dv = dir * (force * (1.0f - d / radius));
+        physics_world_->set_linear_velocity(it->second, physics_world_->get_linear_velocity(it->second) + dv);
+        ++moved;
+    }
+    return moved;
+}
+
 uint32_t ScenePlaybackManager::EntityForBody(uint32_t body_id) const {
     for (const auto& [eid, bid] : entity_bodies_)
         if (bid == body_id) return eid;

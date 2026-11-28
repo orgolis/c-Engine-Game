@@ -64,6 +64,11 @@ it in the editor.
   the super on F (it fills with time, hits and kills); up to two aspects, and as
   many fragments as the aspects open. A form super (Phoenix Mantle,
   Thunderhead, Winter's Edge, Eclipse) changes the melee while it lasts.
+  Every power has its own look (`assets/gameplay/ability_effects.items`, since
+  0.8.70): explosions that throw and shake (Incendiary, Cinderfall, Rift
+  Charge, Glacial Tomb), a solar burst around the player (Sunspark), chain
+  lightning (Arc Bolt), a slow orb (Ball Lightning), an eruption at the aim
+  (Ice Spike), pulls (Vortex, Void Grasp, Event Horizon).
 - **Powers** (P): the element, its powers, aspects and fragments to pick; the
   HUD shows the four powers, the super's charge and the statuses on the player.
   All of it is project data and a project script built from the engine's

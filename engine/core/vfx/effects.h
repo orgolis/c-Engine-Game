@@ -24,20 +24,31 @@
 //   path N            N a metre along the line to `reach` (beams)
 //   life a [b]        seconds, random between a and b
 //   speed a [b]       metres a second
-//   dir along|back|normal|up|any   which way they go (default along)
+//   dir along|back|normal|up|any|out|in   which way they go (default along);
+//                     out / in: away from / towards the effect's point
 //   spread deg        cone around that way (180: every way)
 //   size a [b]        width at birth, at death
-//   color r g b a     at birth (above 1 glows); `to r g b a` at death (default: the same, clear)
+//   color r g b a     at birth (above 1 glows); `to r g b a` at death (default: the same,
+//                     clear) -- up to three `to`s: the colours it passes through, evenly
+//                     over its life (white-hot, orange, red, gone)
 //   add | blend       add light (default) or cover what is behind (smoke, dust)
 //   gravity g         metres a second squared down (below 0 rises)
 //   drag d            slows by this share a second
 //   streak k          stretched along their motion: length = speed x k (sparks, tracers)
 //   jitter r          born up to r metres from the point
 //   ring r            born on a level ring of radius r, moving outward (novas)
+//   sphere r          born on a sphere of radius r, moving outward (`dir in`: inward)
+//                     -- a burst spreads evenly over it
+//   ease out|in       how its size grows: fast then slow (a fireball, a shockwave), or
+//                     slow then fast (default: evenly)
+//   flat              drawn flat on the surface (the effect's normal: the ground)
+//                     instead of facing the eye -- a shockwave on the ground
 //   delay s           starts s seconds later (a blast's smoke after its flash)
 //   reach             lives until it has travelled to the effect's reach (tracers)
-//   shape glow|smoke|soft  how one is drawn: a hot core, a ragged puff, a soft
-//                     disc (default: covering ones smoke, light-adding ones glow,
+//   shape glow|smoke|soft|orb|shell|fire|ring  how one is drawn: a hot core, a
+//                     ragged puff, a soft disc, a lit ball, a hollow sphere bright at its
+//                     rim (a shockwave, a bubble, a shield), a turbulent flame, a thin
+//                     ring (default: covering ones smoke, light-adding ones glow,
 //                     streaked ones soft)
 //
 // And, once in a block:
@@ -82,15 +93,34 @@ struct EffectLayer {
     float per_metre = 0.0f;          // along a beam
     float life_min = 0.3f, life_max = 0.3f;
     float speed_min = 0.0f, speed_max = 0.0f;
-    enum class Dir : uint8_t { Along, Back, Normal, Up, Any } dir = Dir::Along;
+    enum class Dir : uint8_t { Along, Back, Normal, Up, Any, Out, In } dir = Dir::Along;
     float spread_deg = 0.0f;
     float size_start = 0.2f, size_end = 0.2f;
     glm::vec4 color_start{1.0f}, color_end{1.0f, 1.0f, 1.0f, 0.0f};
+    glm::vec4 color_mid[2]{glm::vec4(1.0f), glm::vec4(1.0f)};   // `to`s between start and end
+    int   color_mids = 0;
     bool  blend = false;             // covers (alpha) rather than adds light
     float gravity = 0.0f, drag = 0.0f, streak = 0.0f, jitter = 0.0f, ring = 0.0f, delay = 0.0f;
+    float sphere = 0.0f;             // born on a sphere of this radius
+    enum class Ease : uint8_t { Linear, Out, In } ease = Ease::Linear;   // the size's growth
+    bool  flat = false;              // on the surface (the effect's normal), not facing the eye
     bool  reach = false;
-    int   shape = -1;                // -1 by its kind; else 0 soft disc, 1 glow, 2 smoke
+    int   shape = -1;                // -1 by its kind; else 0 soft disc, 1 glow, 2 smoke, 3 orb, 4 shell, 5 fire, 6 ring
 };
+
+/// The shapes a particle is drawn as (the particle shader's kinds).
+enum EffectShape : int { kShapeSoft = 0, kShapeGlow, kShapeSmoke, kShapeOrb, kShapeShell, kShapeFire, kShapeRing };
+inline int effect_shape_named(const std::string& s) {
+    static const char* names[] = {"soft", "glow", "smoke", "orb", "shell", "fire", "ring"};
+    for (int i = 0; i < 7; ++i) if (s == names[i]) return i;
+    return -1;
+}
+/// The size's growth over a life (0..1 in, 0..1 out).
+inline float effect_ease(EffectLayer::Ease e, float t) {
+    if (e == EffectLayer::Ease::Out) { const float u = 1.0f - t; return 1.0f - u * u * u; }
+    if (e == EffectLayer::Ease::In) return t * t;
+    return t;
+}
 
 /// Light an effect gives its surroundings: a muzzle flash, a blast, a fireball.
 struct EffectLight {
@@ -149,7 +179,12 @@ inline EffectLayer parse_effect_layer(std::istringstream& ls) {
         else if (k == "spread")  { num(L.spread_deg); }
         else if (k == "size")    { pair(L.size_start, L.size_end); }
         else if (k == "color")   { for (int c = 0; c < 4; ++c) num(L.color_start[c]); }
-        else if (k == "to")      { for (int c = 0; c < 4; ++c) num(L.color_end[c]); to_set = true; }
+        else if (k == "to")      {
+            // Each `to` past the first pushes the one before it into the middle.
+            if (to_set && L.color_mids < 2) L.color_mid[L.color_mids++] = L.color_end;
+            for (int c = 0; c < 4; ++c) num(L.color_end[c]);
+            to_set = true;
+        }
         else if (k == "add")     { L.blend = false; }
         else if (k == "blend")   { L.blend = true; }
         else if (k == "gravity") { num(L.gravity); }
@@ -157,16 +192,23 @@ inline EffectLayer parse_effect_layer(std::istringstream& ls) {
         else if (k == "streak")  { num(L.streak); }
         else if (k == "jitter")  { num(L.jitter); }
         else if (k == "ring")    { num(L.ring); }
+        else if (k == "sphere")  { num(L.sphere); }
+        else if (k == "flat")    { L.flat = true; }
+        else if (k == "ease" && i < tok.size()) {
+            const std::string e = tok[i++];
+            L.ease = e == "out" ? EffectLayer::Ease::Out : e == "in" ? EffectLayer::Ease::In : EffectLayer::Ease::Linear;
+        }
         else if (k == "delay")   { num(L.delay); }
         else if (k == "reach")   { L.reach = true; }
         else if (k == "shape" && i < tok.size()) {
             const std::string s = tok[i++];
-            L.shape = s == "glow" ? 1 : s == "smoke" ? 2 : s == "soft" ? 0 : -1;
+            L.shape = effect_shape_named(s);
         }
         else if (k == "dir" && i < tok.size()) {
             const std::string d = tok[i++];
             L.dir = d == "back" ? EffectLayer::Dir::Back : d == "normal" ? EffectLayer::Dir::Normal
-                  : d == "up" ? EffectLayer::Dir::Up : d == "any" ? EffectLayer::Dir::Any : EffectLayer::Dir::Along;
+                  : d == "up" ? EffectLayer::Dir::Up : d == "any" ? EffectLayer::Dir::Any
+                  : d == "out" ? EffectLayer::Dir::Out : d == "in" ? EffectLayer::Dir::In : EffectLayer::Dir::Along;
         }
     }
     if (!to_set) L.color_end = glm::vec4(glm::vec3(L.color_start), 0.0f);
@@ -389,17 +431,35 @@ effect explosive_beam
   layer streak path 4 life 0.08 0.12 size 0.15 0.05 color 4 2.4 0.8 1 to 2 0.6 0.1 0
 end
 effect explosive_hit
-  light 1 0.55 0.25 80 18 0.35
-  layer flash  count 4 life 0.08 0.14 size 3 1 color 8 4.5 1.5 1 to 4 1.2 0.2 0 jitter 0.3
-  layer fire   count 50 life 0.3 0.7 speed 3 9 dir any size 0.9 0.2 color 5 2 0.4 1 to 1.2 0.25 0.05 0 drag 3.5 gravity -2.5 jitter 0.2
-  layer debris count 30 life 0.6 1.3 speed 5 14 dir up spread 70 size 0.1 0.06 color 0.15 0.13 0.1 1 to 0.15 0.13 0.1 0.8 blend gravity 14 drag 0.6 shape soft
-  layer sparks count 34 life 0.5 1.1 speed 6 16 dir any size 0.05 0.02 color 5 2.8 0.9 1 to 2 0.6 0.1 0 streak 0.025 gravity 9 drag 0.8
-  layer smoke  count 38 life 1.6 3.2 speed 0.6 2.6 dir any size 1.2 3.8 color 0.14 0.13 0.12 0.45 to 0.24 0.23 0.22 0 blend gravity -1.2 drag 2.2 delay 0.06 jitter 0.6
-  layer dust   count 30 life 0.9 1.6 speed 6 9 size 0.7 2 color 0.42 0.38 0.32 0.4 to 0.45 0.42 0.38 0 blend ring 0.5 drag 3.5
+  light 1 0.5 0.2 90 20 0.5
+  layer flash    count 1 life 0.08 size 3 6 ease out color 9 7 5 1 to 4 2 0.6 0 shape orb
+  layer core     count 1 life 0.5 size 2 7 ease out color 5 3 1.2 1 to 3 1.1 0.2 0.8 to 0.5 0.1 0.02 0 shape orb
+  layer fireball count 14 life 0.9 1.7 speed 1.5 4 dir out sphere 0.4 size 1.8 4.4 ease out color 5 2.8 0.9 0.95 to 2.4 0.7 0.12 0.9 to 0.16 0.11 0.08 0.75 to 0.13 0.12 0.11 0 blend shape fire drag 3 gravity -1.8
+  layer shock    count 1 life 0.35 size 1 10 ease out color 2.4 2 1.6 0.7 to 1 0.8 0.6 0 shape shell
+  layer ground   count 1 life 0.6 size 1 12 ease out color 4 2.4 1.1 1 to 1.2 0.5 0.2 0 shape ring flat
+  layer sparks   count 40 life 0.5 1.2 speed 7 19 dir any size 0.06 0.02 color 6 3 1 1 to 2 0.6 0.1 0 streak 0.03 gravity 9 drag 0.8
+  layer debris   count 26 life 0.7 1.5 speed 5 14 dir up spread 70 size 0.12 0.07 color 0.12 0.1 0.08 1 to 0.12 0.1 0.08 0.8 blend gravity 14 drag 0.5 shape soft
+  layer smoke    count 18 life 2.2 4.2 speed 0.8 2.2 dir out sphere 0.8 size 1.8 5.5 ease out color 0.12 0.1 0.09 0.7 to 0.2 0.18 0.17 0 blend gravity -1.5 drag 1.8 delay 0.18 shape smoke
+  layer dust     count 24 life 0.6 1.1 speed 4 7 size 0.5 1.4 color 0.3 0.27 0.22 0.35 to 0.32 0.3 0.26 0 blend ring 0.6 drag 4
 end
 effect explosive_area
-  layer flash  count 3 life 0.08 0.14 size 3 1 color 8 4.5 1.5 1 to 4 1.2 0.2 0
-  layer fire   count 40 life 0.3 0.6 speed 6 9 size 0.8 0.2 color 5 2 0.4 1 to 1.2 0.25 0.05 0 ring 0.6 drag 3.5
+  light 1 0.5 0.2 60 16 0.4
+  layer flash    count 1 life 0.08 size 3 6 ease out color 9 7 5 1 to 4 2 0.6 0 shape orb
+  layer fire     count 36 life 0.5 0.9 speed 6 9 size 1 2.2 ease out color 5 2.8 0.9 0.95 to 2.4 0.7 0.12 0.8 to 0.15 0.12 0.1 0 blend ring 0.6 drag 3.5 shape fire
+  layer shock    count 1 life 0.35 size 1 10 ease out color 2.4 2 1.6 0.7 to 1 0.8 0.6 0 shape shell
+  layer ground   count 1 life 0.6 size 1 12 ease out color 4 2.4 1.1 1 to 1.2 0.5 0.2 0 shape ring flat
+end
+effect explosion
+  light 1 0.5 0.2 90 20 0.5
+  layer flash    count 1 life 0.08 size 3 6 ease out color 9 7 5 1 to 4 2 0.6 0 shape orb
+  layer core     count 1 life 0.5 size 2 7 ease out color 5 3 1.2 1 to 3 1.1 0.2 0.8 to 0.5 0.1 0.02 0 shape orb
+  layer fireball count 14 life 0.9 1.7 speed 1.5 4 dir out sphere 0.4 size 1.8 4.4 ease out color 5 2.8 0.9 0.95 to 2.4 0.7 0.12 0.9 to 0.16 0.11 0.08 0.75 to 0.13 0.12 0.11 0 blend shape fire drag 3 gravity -1.8
+  layer shock    count 1 life 0.35 size 1 10 ease out color 2.4 2 1.6 0.7 to 1 0.8 0.6 0 shape shell
+  layer ground   count 1 life 0.6 size 1 12 ease out color 4 2.4 1.1 1 to 1.2 0.5 0.2 0 shape ring flat
+  layer sparks   count 40 life 0.5 1.2 speed 7 19 dir any size 0.06 0.02 color 6 3 1 1 to 2 0.6 0.1 0 streak 0.03 gravity 9 drag 0.8
+  layer debris   count 26 life 0.7 1.5 speed 5 14 dir up spread 70 size 0.12 0.07 color 0.12 0.1 0.08 1 to 0.12 0.1 0.08 0.8 blend gravity 14 drag 0.5 shape soft
+  layer smoke    count 18 life 2.2 4.2 speed 0.8 2.2 dir out sphere 0.8 size 1.8 5.5 ease out color 0.12 0.1 0.09 0.7 to 0.2 0.18 0.17 0 blend gravity -1.5 drag 1.8 delay 0.18 shape smoke
+  layer dust     count 24 life 0.6 1.1 speed 4 7 size 0.5 1.4 color 0.3 0.27 0.22 0.35 to 0.32 0.3 0.26 0 blend ring 0.6 drag 4
 end
 
 effect magic_windup
@@ -547,8 +607,8 @@ public:
         for (const auto& [dist2, i] : order_) {
             const P& p = ps_[i];
             const float t = std::clamp(p.age / std::max(1e-4f, p.life), 0.0f, 1.0f);
-            const float size = (p.size0 + (p.size1 - p.size0) * t) * 0.5f;
-            glm::vec4 c = p.c0 + (p.c1 - p.c0) * t;
+            const float size = (p.size0 + (p.size1 - p.size0) * effect_ease(p.ease, t)) * 0.5f;
+            glm::vec4 c = colour_at(p, t);
             // Fade out right in front of the eye: a particle a hand's width away
             // would fill the screen (a trail leaving the hand, muzzle smoke).
             c.a = std::max(0.0f, c.a) * std::clamp((std::sqrt(dist2) - 0.25f) / 0.5f, 0.0f, 1.0f);
@@ -559,7 +619,15 @@ public:
             view = vd > 1e-5f ? view / vd : glm::vec3(0.0f, 0.0f, 1.0f);
             glm::vec3 r, u;
             const float sp = glm::length(p.vel);
-            if (p.streak > 0.0f && sp > 1e-3f) {
+            if (p.flat) {
+                // On the surface it came off (the ground), turned by its seed.
+                const glm::vec3 n = glm::length(p.normal) > 1e-4f ? glm::normalize(p.normal) : glm::vec3(0.0f, 1.0f, 0.0f);
+                const glm::vec3 ref = std::fabs(n.y) < 0.9f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+                const glm::vec3 x = glm::normalize(glm::cross(ref, n)), y = glm::cross(n, x);
+                const float a = p.seed * 6.2831853f;
+                r = (x * std::cos(a) + y * std::sin(a)) * size;
+                u = (y * std::cos(a) - x * std::sin(a)) * size;
+            } else if (p.streak > 0.0f && sp > 1e-3f) {
                 // Stretched along the motion as it is seen: a spark, a tracer.
                 glm::vec3 axis = p.vel / sp;
                 axis -= view * glm::dot(axis, view);
@@ -576,6 +644,14 @@ public:
                 face(view, size, r, u);
             }
             const glm::vec2 ex(p.shape, p.seed);
+            const glm::vec3 lift = p.flat ? glm::normalize(p.normal) * 0.04f : glm::vec3(0.0f);   // (just off the ground)
+            if (p.flat) {
+                out.push_back({p.pos + lift - r - u, {0, 0}, c, ex});
+                out.push_back({p.pos + lift + r - u, {1, 0}, c, ex});
+                out.push_back({p.pos + lift + r + u, {1, 1}, c, ex});
+                out.push_back({p.pos + lift - r + u, {0, 1}, c, ex});
+                continue;
+            }
             out.push_back({p.pos - r - u, {0, 0}, c, ex});
             out.push_back({p.pos + r - u, {1, 0}, c, ex});
             out.push_back({p.pos + r + u, {1, 1}, c, ex});
@@ -609,10 +685,19 @@ private:
     struct P {
         glm::vec3 pos, vel;
         float age = 0.0f, life = 1.0f, size0 = 0.1f, size1 = 0.1f, gravity = 0.0f, drag = 0.0f, streak = 0.0f;
-        glm::vec4 c0, c1;
-        bool blend = false;
+        glm::vec4 c[4];                  // its colours over its life, evenly
+        int   nc = 2;
+        bool blend = false, flat = false;
+        EffectLayer::Ease ease = EffectLayer::Ease::Linear;
+        glm::vec3 normal{0.0f, 1.0f, 0.0f};
         float shape = 0.0f, seed = 0.0f;
     };
+    static glm::vec4 colour_at(const P& p, float t) {
+        const float s = t * static_cast<float>(p.nc - 1);
+        const int i = std::min(p.nc - 2, static_cast<int>(s));
+        const float f = s - static_cast<float>(i);
+        return p.c[i] + (p.c[i + 1] - p.c[i]) * f;
+    }
     struct Pending { EffectLayer layer; EffectSpawn at; float wait; };
     struct Lit { glm::vec3 pos; EffectLight def; float age, life; };
 
@@ -645,6 +730,7 @@ private:
         return glm::normalize(a * c + (x * std::cos(phi) + y * std::sin(phi)) * s);
     }
     void spawn_layer(const EffectLayer& L, const EffectSpawn& at) {
+        spin_ = range(0.0f, 6.2831853f);   // each burst's sphere turned its own way
         if (L.per_metre > 0.0f && at.reach > 0.0f) {
             const int n = std::min(400, static_cast<int>(L.per_metre * at.reach) + 1);
             for (int i = 0; i < n; ++i) {
@@ -665,10 +751,13 @@ private:
             case EffectLayer::Dir::Back:   base = -at.dir; break;
             case EffectLayer::Dir::Normal: base = at.normal; break;
             case EffectLayer::Dir::Up:     base = glm::vec3(0.0f, 1.0f, 0.0f); break;
-            case EffectLayer::Dir::Any:    base = any_dir(); break;
+            case EffectLayer::Dir::Any:
+            case EffectLayer::Dir::Out:
+            case EffectLayer::Dir::In:     base = any_dir(); break;
             default:                       base = at.dir; break;
         }
-        glm::vec3 dir = L.dir == EffectLayer::Dir::Any ? base : cone(base, L.spread_deg);
+        glm::vec3 dir = L.dir == EffectLayer::Dir::Any || L.dir == EffectLayer::Dir::Out || L.dir == EffectLayer::Dir::In
+                            ? base : cone(base, L.spread_deg);
         if (L.ring > 0.0f) {
             // On a level ring around the point, moving out from it.
             const float a = ring_at >= 0.0f ? ring_at * 6.2831853f + range(-0.1f, 0.1f) : range(0.0f, 6.2831853f);
@@ -677,15 +766,44 @@ private:
             dir = L.dir == EffectLayer::Dir::Up ? cone(glm::vec3(0.0f, 1.0f, 0.0f), L.spread_deg)
                                                 : glm::normalize(out + glm::vec3(0.0f, range(0.0f, 0.15f), 0.0f));
         }
+        if (L.sphere > 0.0f) {
+            // On a sphere around the point: a burst evenly over it (a golden spiral,
+            // turned at random), a stream anywhere on it.
+            glm::vec3 o;
+            if (ring_at >= 0.0f) {
+                const float n = static_cast<float>(std::max(1, L.count));
+                const float y = 1.0f - 2.0f * (ring_at * n + 0.5f) / n;
+                const float rr = std::sqrt(std::max(0.0f, 1.0f - y * y));
+                const float a = ring_at * n * 2.3999632f + spin_;
+                o = glm::vec3(rr * std::cos(a), y, rr * std::sin(a));
+            } else {
+                o = any_dir();
+            }
+            p.pos += o * (L.sphere * k);
+            if (L.dir != EffectLayer::Dir::In && L.dir != EffectLayer::Dir::Out && L.dir != EffectLayer::Dir::Up)
+                dir = o;   // (outward, unless it says which way)
+        }
         if (L.jitter > 0.0f) p.pos += any_dir() * (L.jitter * k * std::cbrt(rnd()));
+        if (L.dir == EffectLayer::Dir::Out || L.dir == EffectLayer::Dir::In) {
+            // Away from the point, or towards it -- from wherever it was born.
+            const glm::vec3 off = p.pos - at.pos;
+            const float ol = glm::length(off);
+            const glm::vec3 radial = ol > 1e-4f ? off / ol : dir;
+            dir = L.dir == EffectLayer::Dir::Out ? radial : -radial;
+        }
         const float speed = range(L.speed_min, L.speed_max) * k;
         p.vel = dir * speed;
         p.life = L.reach ? (speed > 1e-3f ? std::max(0.01f, at.reach / speed) : 0.0f) : range(L.life_min, L.life_max);
         if (p.life <= 0.0f) return;
         p.size0 = L.size_start * ks;
         p.size1 = L.size_end * ks;
-        p.c0 = L.color_start;
-        p.c1 = L.color_end;
+        p.nc = 2 + std::min(2, L.color_mids);
+        p.c[0] = L.color_start;
+        for (int m = 0; m < p.nc - 2; ++m) p.c[1 + m] = L.color_mid[m];
+        p.c[p.nc - 1] = L.color_end;
+        p.ease = L.ease;
+        p.flat = L.flat;
+        p.normal = at.normal;
         p.gravity = L.gravity;
         p.drag = L.drag;
         p.streak = L.streak;
@@ -701,6 +819,7 @@ private:
     std::vector<Lit> lights_;
     mutable std::vector<std::pair<float, uint32_t>> order_;
     uint32_t rng_ = 0x9E3779B9u;
+    float spin_ = 0.0f;
 };
 
 }  // namespace schizo::vfx

@@ -222,6 +222,15 @@ void register_engine_logic_nodes(schizo::vs::Registry& r, LogicApiSlot* s) {
         if (API && API->ability_in_slot) API->ability_in_slot(API->ctx, e.id, int(slot), id, sizeof id);
         return std::string(id);
     }, {"Entity", "Slot", "Ability"});
+    r.fn("gameplay.explode", G, "Explode", [s](glm::vec3 at, double radius, double damage, double force, std::string effect, EntityId by) {
+        const float p[3] = {at.x, at.y, at.z};
+        return int64_t(API && API->explode ? API->explode(API->ctx, p, float(radius), float(damage), float(force), effect.c_str(), by.id) : 0);
+    }, {"Position", "Radius", "Damage", "Force", "Effect", "By", "Hurt"}).tip(
+        "An explosion: damage to everyone within the radius (a quarter of it at the edge), things thrown at Force m/s, "
+        "people near it knocked down, the camera shaken, Effect shown (empty: the built-in explosion).");
+    r.fn("gameplay.shake_camera", G, "Shake Camera", [s](double strength) {
+        if (API && API->shake_camera) API->shake_camera(API->ctx, float(strength));
+    }, {"Strength"}).tip("Shakes the Play camera (0..1, added to what shakes it now); it settles by itself.");
     r.pure("gameplay.skill_points", G, "Skill Points", [s](EntityId e) {
         return int64_t(API && API->skill_points ? API->skill_points(API->ctx, e.id) : 0);
     }, {"Entity", "Points"});

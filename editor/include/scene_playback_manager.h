@@ -112,6 +112,10 @@ public:
     schizo::physics::PhysicsWorld* GetPhysicsWorld() { return physics_world_.get(); }
     /// Jolt BodyId for an entity's rigid body (0xFFFFFFFF if none).
     uint32_t BodyForEntity(uint32_t entity_id) const;
+    // An explosion's push on the dynamic bodies within `radius` of `at`: `force`
+    // m/s at its centre, none at its edge -- away and a little up, or (below 0)
+    // towards it. Returns how many it moved.
+    int PushBodies(const glm::vec3& at, float radius, float force);
     /// Reverse lookup: which entity owns this body (0 if none).
     uint32_t EntityForBody(uint32_t body_id) const;
     /// Create a live rigid body for an entity spawned DURING play from its

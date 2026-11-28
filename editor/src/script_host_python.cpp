@@ -501,6 +501,16 @@ void build_engine_module(pkpy::VM* vm) {
         if (g_api && g_api->ability_in_slot) g_api->ability_in_slot(g_api->ctx, earg(vm, args[0]), static_cast<int>(CAST(pkpy::i64, args[1])), id, sizeof id);
         return VAR(std::string(id));
     });
+    vm->bind(mod, "explode(x: float, y: float, z: float, radius: float, damage: float, force: float, effect: str = '', by: int = 0) -> int",
+             [](pkpy::VM* vm, pkpy::ArgsView args) {
+        const float p[3] = {farg(vm, args[0]), farg(vm, args[1]), farg(vm, args[2])};
+        if (!g_api || !g_api->explode) return VAR(0);
+        return VAR(g_api->explode(g_api->ctx, p, farg(vm, args[3]), farg(vm, args[4]), farg(vm, args[5]), sarg(vm, args[6]).c_str(), earg(vm, args[7])));
+    });
+    vm->bind(mod, "shake_camera(strength: float) -> None", [](pkpy::VM* vm, pkpy::ArgsView args) {
+        if (g_api && g_api->shake_camera) g_api->shake_camera(g_api->ctx, farg(vm, args[0]));
+        return vm->None;
+    });
     vm->bind(mod, "bone_position(e: int, bone: str)", [](pkpy::VM* vm, pkpy::ArgsView args) {
         float p[3]{};
         if (!g_api || !g_api->bone_position || !g_api->bone_position(g_api->ctx, earg(vm, args[0]), sarg(vm, args[1]).c_str(), p))

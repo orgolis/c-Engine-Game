@@ -589,6 +589,9 @@ int api_get_setting(void*, const char* name, char* out, int size) {
     // 0.8.68: statuses, perks, abilities by id.
     if (name && std::strcmp(name, "engine.statuses_perks") == 0)
         return copy_out("1", out, size);
+    // 0.8.70: explode, shake_camera.
+    if (name && std::strcmp(name, "engine.explosions") == 0)
+        return copy_out("1", out, size);
     return copy_out(name ? schizo::editor::play_settings().get(name) : std::string(), out, size);
 }
 int api_next_setting(void*, const char* name, char* out, int size) {
@@ -680,6 +683,17 @@ bool api_equip_ability_id(void* ctx, uint32_t e, const char* ability, int slot) 
     if (std::find(known.begin(), known.end(), ability) == known.end()) known.push_back(ability);
     return ecs::equip_ability(*w, ent, ability, slot);
 }
+// ---- explosions (0.8.70) ----
+int api_explode(void* ctx, const float pos[3], float radius, float damage, float force, const char* effect, uint32_t by) {
+    auto* c = C(ctx);
+    if (!pos || !c->bridge) return 0;
+    ecs::World* bw = nullptr; ecs::Entity bent = ecs::null_entity;
+    if (by && !gp_entity(ctx, by, bw, bent)) bent = ecs::null_entity;
+    return ecs::explode(c->bridge->world(), glm::vec3(pos[0], pos[1], pos[2]), radius, damage, force, effect ? effect : "", bent,
+                        &c->bridge->events());
+}
+void api_shake_camera(void*, float strength) { schizo::editor::add_camera_shake(strength); }
+
 int api_ability_in_slot(void* ctx, uint32_t e, int slot, char* out, int out_size) {
     if (out && out_size > 0) out[0] = 0;
     ecs::World* w; ecs::Entity ent;
@@ -1048,6 +1062,8 @@ void bind_editor_script_api(ScriptApi& api, EditorScriptCtx* ctx) {
     api.has_perk           = &api_has_perk;
     api.equip_ability_id   = &api_equip_ability_id;
     api.ability_in_slot    = &api_ability_in_slot;
+    api.explode            = &api_explode;
+    api.shake_camera       = &api_shake_camera;
     api.distance           = &api_distance;
     api.translate          = &api_translate;
     api.get_forward        = &api_get_forward;

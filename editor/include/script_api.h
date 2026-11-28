@@ -280,6 +280,13 @@ struct ScriptApi {
     bool (*has_perk)(void* ctx, uint32_t e, const char* perk) = nullptr;
     bool (*equip_ability_id)(void* ctx, uint32_t e, const char* ability, int slot) = nullptr;
     int  (*ability_in_slot)(void* ctx, uint32_t e, int slot, char* out, int out_size) = nullptr;
+    // 0.8.70: an explosion anywhere -- damage to everyone within the radius (all of
+    // it at the centre, a quarter at the edge, as `by`'s), things thrown at `force`
+    // m/s, people near its centre knocked down, the camera shaken, `effect` shown
+    // ("": the built-in explosion); returns how many it hurt. And a camera shake
+    // (0..1, added to what shakes it now). Query engine.explosions first.
+    int  (*explode)(void* ctx, const float pos[3], float radius, float damage, float force, const char* effect, uint32_t by) = nullptr;
+    void (*shake_camera)(void* ctx, float strength) = nullptr;
 };
 
 }  // namespace schizo::editor

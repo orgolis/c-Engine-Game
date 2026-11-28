@@ -13651,12 +13651,14 @@ int main(int argc, char** argv) {
                             const float tdy = comma == std::string::npos ? 0.0f : static_cast<float>(std::atof(arg.c_str() + comma + 1));
                             pm.OnMouseDelta(tdx, tdy);
                         } else if (what == "fx") {
-                            // fx:<effect>[~<metres>] -- that effect, in front of the camera
-                            // (default 5 m), facing it: an effect seen at a known moment.
+                            // fx:<effect>[~<metres>[~ground]] -- that effect, in front of the camera
+                            // (default 5 m), facing it: an effect seen at a known moment; `ground`:
+                            // set down on the ground there, as a blast that landed.
                             if (auto* pc2 = pm.GetPlaybackCamera()) {
                                 const size_t tl = arg.find('~');
                                 const std::string name = arg.substr(0, tl);
                                 const float fx_dist = tl == std::string::npos ? 5.0f : static_cast<float>(std::atof(arg.c_str() + tl + 1));
+                                const bool on_ground = arg.find("~ground") != std::string::npos;
                                 if (const auto* d = schizo::vfx::find_effect(name)) {
                                     const glm::vec3 cp = pc2->GetTransform()->GetWorldPosition();
                                     const glm::vec3 cf = pc2->GetTransform()->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f);
@@ -13665,6 +13667,11 @@ int main(int argc, char** argv) {
                                     at.dir = cf;
                                     at.normal = -cf;
                                     at.reach = 40.0f;
+                                    if (on_ground)
+                                        if (auto* gpw = pm.GetPhysicsWorld()) {
+                                            const auto gh = gpw->raycast(at.pos + glm::vec3(0.0f, 20.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f), 60.0f);
+                                            if (gh.hit) { at.pos.y += 20.0f - gh.distance; at.normal = glm::vec3(0.0f, 1.0f, 0.0f); }
+                                        }
                                     editor_state.play_effects.particles().burst(*d, at);
                                 }
                             }
@@ -14274,6 +14281,54 @@ int main(int argc, char** argv) {
                         if (std::getenv("GWS_TEST_PLAY") && (!vis.bursts.empty() || !vis.chains.empty()))
                             spdlog::info("[test] statuses: {} burst(s), {} chain(s) shown", vis.bursts.size(), vis.chains.size());
                         vis = schizo::ecs::ActionVisuals{};   // shown once
+                        // Explosions (0.8.70): what has a body thrown (or pulled), people near
+                        // the centre knocked down, the player thrown unless it set it off, the
+                        // camera shaken by how near it is, a script's blast shown.
+                        {
+                            auto& xs = schizo::ecs::explosions(gw).list;
+                            auto* xpm = editor_state.scene_playback_manager.get();
+                            auto* xcam = xpm ? xpm->GetPlaybackCamera() : nullptr;
+                            auto* xpl = xpm ? xpm->GetPlayerEntity() : nullptr;
+                            const uint32_t xpid = xpl ? ecs_bridge.ecs_entity_id(xpl->GetTransform()) : schizo::editor::kNoEcsEntity;
+                            for (const auto& x : xs) {
+                                const int moved = xpm ? xpm->PushBodies(x.at, x.radius, x.force) : 0;
+                                bool thrown = false;
+                                if (x.force > 0.0f) {
+                                    const float knock = x.radius * std::clamp(x.force / 20.0f, 0.0f, 1.0f);
+                                    if (knock > 0.5f)
+                                        editor_state.blasts.push_back({x.at, knock, std::clamp(x.force / 12.0f, 0.5f, 2.0f), static_cast<uint64_t>(frame_count)});
+                                    if (xpl && xpid != schizo::editor::kNoEcsEntity && x.by != static_cast<schizo::ecs::Entity>(xpid)) {
+                                        const glm::vec3 off = xpl->GetTransform()->GetWorldPosition() - x.at;
+                                        const float d = glm::length(off);
+                                        if (d < x.radius) {
+                                            const glm::vec3 dir = glm::normalize((d > 1e-3f ? off / d : glm::vec3(0.0f)) + glm::vec3(0.0f, 0.6f, 0.0f));
+                                            xpm->LaunchPlayer(xpm->GetPlayerMovementState().velocity + dir * (x.force * 0.7f * (1.0f - d / x.radius)));
+                                            thrown = true;
+                                        }
+                                    }
+                                }
+                                if (x.shake > 0.0f && xcam) {
+                                    const float d = glm::length(xcam->GetTransform()->GetWorldPosition() - x.at);
+                                    const float felt = x.radius * 4.0f + 10.0f;   // full within it, nothing past this
+                                    schizo::editor::add_camera_shake(x.shake * (1.0f - std::clamp((d - x.radius) / (felt - x.radius), 0.0f, 1.0f)));
+                                }
+                                if (!x.effect.empty())
+                                    if (const auto* xfx = schizo::vfx::find_effect_of({x.effect, "explosion"})) {
+                                        schizo::vfx::EffectSpawn xs_at;
+                                        xs_at.pos = x.at;
+                                        xs_at.dir = xs_at.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+                                        xs_at.scale = std::max(0.3f, x.radius / 3.0f);
+                                        editor_state.play_effects.particles().burst(*xfx, xs_at);
+                                    }
+                                if (std::getenv("GWS_TEST_PLAY"))
+                                    spdlog::info("[test] explosion at ({:.1f}, {:.1f}, {:.1f}) radius {:.1f} force {:.1f}: {} bodies thrown{}, shake now {:.2f}",
+                                                 x.at.x, x.at.y, x.at.z, x.radius, x.force, moved, thrown ? ", the player thrown" : "",
+                                                 schizo::editor::play_camera_shake());
+                            }
+                            xs.clear();
+                            float& shake = schizo::editor::play_camera_shake();
+                            shake = std::max(0.0f, shake - delta_time * 1.4f);
+                        }
                         // Test runs: the statuses alive by id (once a second) and the
                         // player's bar and perks when they change.
                         static const bool test_log = std::getenv("GWS_TEST_PLAY") != nullptr;
@@ -15977,6 +16032,20 @@ int main(int argc, char** argv) {
                         cam.position = camera_transform->GetWorldPosition();
                         glm::vec3 cam_forward = camera_transform->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f);
                         glm::vec3 cam_up = camera_transform->GetWorldRotation() * glm::vec3(0.0f, 1.0f, 0.0f);
+                        // Camera shake (explosions, Shake Camera): turned and moved by the
+                        // square of how hard it shakes, smoothly -- the view only, never the aim.
+                        if (const float shake = schizo::editor::play_camera_shake(); shake > 0.0f) {
+                            const float a = shake * shake;
+                            const float t = static_cast<float>(glfwGetTime());
+                            auto wob = [t](float k) { return std::sin(t * 31.0f + k) * 0.6f + std::sin(t * 19.0f + k * 2.3f) * 0.4f; };
+                            const glm::vec3 cam_right = glm::normalize(glm::cross(cam_forward, cam_up));
+                            const glm::quat q = glm::angleAxis(glm::radians(2.4f * a * wob(1.0f)), cam_right) *
+                                                glm::angleAxis(glm::radians(2.4f * a * wob(4.0f)), cam_up) *
+                                                glm::angleAxis(glm::radians(1.6f * a * wob(7.0f)), cam_forward);
+                            cam_forward = q * cam_forward;
+                            cam_up = q * cam_up;
+                            cam.position += (cam_right * wob(9.0f) + cam_up * wob(11.0f)) * (0.05f * a);
+                        }
                         cam.view = glm::lookAt(cam.position, cam.position + cam_forward, cam_up);
 
                         // If the playback camera entity (or any ancestor / direct

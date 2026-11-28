@@ -4,7 +4,7 @@
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec2 in_uv;
 layout(location = 2) in vec4 in_color;
-layout(location = 3) in vec2 in_extra;   // x: shape (0 soft, 1 glow, 2 smoke), y: a per-particle seed
+layout(location = 3) in vec2 in_extra;   // x: shape (0 soft, 1 glow, 2 smoke, 3 orb, 4 shell, 5 fire, 6 ring), y: a per-particle seed
 
 layout(push_constant) uniform Push { mat4 view_proj; vec4 params; } pc;
 

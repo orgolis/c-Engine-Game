@@ -25,6 +25,9 @@ ability firebolt
   radius 3              # area and area_at_aim
   damage 35 fire        # to each one it reaches, with its damage type
   knockdown 7           # a blast: characters it leaves standing within 7 m are knocked down (they get up again)
+  falloff 0.3           # an area's damage at its edge: 30% of what it does at the centre
+  force 14              # an explosion: throws things (below)
+  shake 0.6             # ... and shakes the camera of those near it (0..1)
   effect Speed -2 3     # to each one reached: attribute, amount, seconds (none: at once)
   self Mana 5           # to the caster, the same way
   require state.armed   # the caster needs this tag
@@ -74,6 +77,24 @@ caster's own side) or where it meets the world; an area one goes off there,
 or where its flight ends. Flying things can be side-stepped.
 
 Nothing an ability does reaches the caster's own side (the same `team.*` tag).
+
+**Explosions.** `falloff` makes an area's damage fall off from its centre to
+its edge (`falloff 0.25`: a quarter at the edge). `force` throws what has a
+body away from where it goes off -- props and crates, the dead, the player
+(not the one who set it off) -- at that speed (m/s) at its centre, none at its
+edge; people near its centre are knocked down (within its whole radius at
+force 20, less below), and a `zone` with a force throws again on every pulse.
+Below 0 it pulls in instead (a vortex). `shake` shakes the camera of those
+near it, fully within its radius and less out to four times as far. Its look
+is its effects: the built-in `explosive_hit` / `explosion` is a fireball, a
+shockwave, smoke, debris and dust (docs/systems/EFFECTS.md).
+
+Scripts and logic graphs set one off anywhere -- a barrel, a mine, a charge:
+**Explode** / `explode(position, radius, damage, force, effect, by)` hurts
+everyone within the radius (a quarter at its edge, as `by`'s), throws, knocks
+down, shakes and shows `effect` (none: the built-in `explosion`); **Shake
+Camera** / `shake_camera(strength)` shakes the camera alone. A native script
+asks `get_setting("engine.explosions")` first.
 
 The cost is paid when the ability goes off, not when the cast starts, and a
 cast that is broken costs nothing and starts no cooldown.

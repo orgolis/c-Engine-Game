@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include <sstream>
 #include <string>
 
@@ -33,6 +34,14 @@ struct PlayMessage {
     double      until = 0.0;   // play time
 };
 inline PlayMessage& play_message() { static PlayMessage m; return m; }
+
+/// How hard the Play camera shakes now (0..1, "trauma"): explosions and Shake
+/// Camera add to it, it settles by itself; the view turns and moves by its square.
+inline float& play_camera_shake() { static float t = 0.0f; return t; }
+inline void add_camera_shake(float amount) {
+    float& t = play_camera_shake();
+    t = std::min(1.0f, t + std::max(0.0f, amount));
+}
 
 /// Where saves go when not the project's saves/ folder: an exported game sets
 /// its per-player folder (<config>/games/<project>/saves).

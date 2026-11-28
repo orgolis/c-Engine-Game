@@ -205,6 +205,14 @@ typedef struct SchizoScriptApi {
     bool (*has_perk)(void* ctx, unsigned e, const char* perk);
     bool (*equip_ability_id)(void* ctx, unsigned e, const char* ability, int slot);
     int  (*ability_in_slot)(void* ctx, unsigned e, int slot, char* out, int out_size);
+    /* 0.8.70 (query get_setting "engine.explosions" first): an explosion anywhere --
+       damage to everyone within the radius (all of it at the centre, a quarter at the
+       edge, as `by`'s: its kill), things thrown at `force` m/s at the centre, people
+       near it knocked down, the camera shaken, `effect` shown ("": the built-in
+       explosion); returns how many it hurt. A camera shake: 0..1, added to what
+       shakes it now, settling by itself. */
+    int  (*explode)(void* ctx, const float pos[3], float radius, float damage, float force, const char* effect, unsigned by);
+    void (*shake_camera)(void* ctx, float strength);
 } SchizoScriptApi;
 
 }  // extern "C"

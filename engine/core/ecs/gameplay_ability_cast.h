@@ -122,6 +122,10 @@ struct AbilityDef {
     float       arc = 0.0f;                // a flying one falls by this (m/s^2): thrown things
     float       spread = 0.0f;             // aimed: degrees it may go off its aim (a cone; 0: dead on)
     float       knockdown = 0.0f;          // > 0: characters it leaves alive within this (m) are knocked down (a blast)
+    // Explosions (0.8.70): how the blast falls off, throws and shakes.
+    float       falloff = 1.0f;            // an area's damage at its edge, as a share of the centre's (1: the same all over)
+    float       force = 0.0f;              // m/s it throws things at its centre (none at its edge); below 0 pulls in
+    float       shake = 0.0f;              // 0..1: how hard the camera shakes near it
     std::string about;                     // what it does, in a sentence
     // Moves the caster as it goes off (the player): `move blink 10` -- there at
     // once, up to 10 m along the aim, stopping short of walls; `move dash 12`
@@ -283,6 +287,21 @@ inline float affect(World& w, Entity caster, const AbilityDef& d, Entity e, floa
 }
 }  // namespace ability_detail
 
+/// A blast the host shows and feels: it throws what has a body (props, the dead,
+/// the player -- not the one who set it off), knocks people near its centre down,
+/// shakes the camera and, from a script, shows its effect. Queued in the world's
+/// context as each goes off; the host takes them every frame (Play: main.cpp).
+struct Explosion {
+    glm::vec3   at{0.0f};
+    float       radius = 3.0f;
+    float       force = 0.0f;              // m/s at the centre, none at the edge; below 0 pulls in
+    float       shake = 0.0f;              // 0..1
+    std::string effect;                    // an effect to show there ("" for an ability: it has its own)
+    Entity      by = null_entity;
+};
+struct Explosions { std::vector<Explosion> list; };
+inline Explosions& explosions(World& w) { return w.registry().ctx().emplace<Explosions>(); }
+
 /// An ability's area left behind (`zone`): it goes off again every period.
 struct AbilityZone {
     std::string id;
@@ -313,6 +332,14 @@ inline Entity target_along(World& w, Entity caster, const glm::vec3& origin, con
     out_t = best_t;
     return best;
 }
+/// An area's damage on `e`: all of it at the centre, `falloff` of it at the edge.
+inline float falloff_at(World& w, const AbilityDef& d, Entity e, const glm::vec3& centre) {
+    if (d.falloff >= 1.0f || d.targeting == AbilityTargeting::Aimed || d.radius <= 0.0f) return 1.0f;
+    const Transform* t = w.try_get<Transform>(e);
+    if (!t) return 1.0f;
+    const float k = std::clamp(glm::length(t->position - centre) / d.radius, 0.0f, 1.0f);
+    return 1.0f - (1.0f - std::clamp(d.falloff, 0.0f, 1.0f)) * k;
+}
 /// Apply the ability to who it reached: `hit` (aimed), or everyone around
 /// `centre` (areas). Returns how many.
 inline int reach_targets(World& w, Entity caster, const AbilityDef& d, const glm::vec3& centre, Entity hit, GameplayEventBus* bus) {
@@ -330,8 +357,9 @@ inline int reach_targets(World& w, Entity caster, const AbilityDef& d, const glm
     }
     if (d.targeting != AbilityTargeting::Aimed) unique_damage_owners(w, hits);
     const float dmg = d.damage * damage_bonus(w.try_get<AttributeSet>(caster), "AbilityDamage");
-    for (Entity e : hits) affect(w, caster, d, e, dmg, bus);
+    for (Entity e : hits) affect(w, caster, d, e, dmg * falloff_at(w, d, e, centre), bus);
     if (d.targeting != AbilityTargeting::Aimed) leave_zone(w, caster, d, centre);
+    if (d.force != 0.0f || d.shake > 0.0f) explosions(w).list.push_back({centre, d.radius, d.force, d.shake, {}, caster});
     return static_cast<int>(hits.size());
 }
 
@@ -438,7 +466,9 @@ inline AbilityFired fire(World& w, Entity caster, const AbilityDef& d, int slot,
     f.move_b = d.move_b;
     if (d.targeting != AbilityTargeting::Aimed) unique_damage_owners(w, hits);
     const float dmg = d.damage * damage_bonus(w.try_get<AttributeSet>(caster), "AbilityDamage");
-    for (Entity e : hits) affect(w, caster, d, e, dmg, bus);
+    const glm::vec3 blast_at = d.targeting == AbilityTargeting::Aimed || d.targeting == AbilityTargeting::Cone ? f.point : centre;
+    for (Entity e : hits) affect(w, caster, d, e, dmg * falloff_at(w, d, e, blast_at), bus);
+    if (d.force != 0.0f || d.shake > 0.0f) explosions(w).list.push_back({blast_at, d.radius, d.force, d.shake, {}, caster});
     // An area (or the caster's own place) stays: a zone.
     if (d.targeting == AbilityTargeting::AreaAtAim || d.targeting == AbilityTargeting::AreaAroundSelf ||
         d.targeting == AbilityTargeting::Self)
@@ -532,9 +562,10 @@ inline void tick_ability_zones(World& w, float dt, GameplayEventBus* bus) {
                         for (const auto& fx : d->target_effects) apply_effect(w, e, to_gameplay_effect(fx, d->id));
                         for (const auto& st : d->inflict) apply_status(w, e, st.id, st.stacks, caster, bus);
                     } else {
-                        ability_detail::affect(w, caster, *d, e, dmg, bus);
+                        ability_detail::affect(w, caster, *d, e, dmg * ability_detail::falloff_at(w, *d, e, z.pos), bus);
                     }
                 }
+                if (d->force != 0.0f) explosions(w).list.push_back({z.pos, d->radius, d->force, 0.0f, {}, caster});   // (each pulse throws / pulls)
             }
             if (z.remaining > 0.0f) keep.push_back(z);
         }
@@ -678,6 +709,10 @@ inline int step_ability_bar(World& w, Entity caster, AbilityBar& bar, const Abil
 //     zone 6 1              # its area stays 6 s, going off every 1 s
 //     zone_hits allies      # ...on the caster's side instead (enemies | allies | all)
 //     labels fire thrown    # free words the game's rules can look for (perks)
+//     falloff 0.3           # an area's damage at its edge: 30% of the centre's
+//     force 12              # throws things (props, the dead, the player) at 12 m/s at
+//                           # its centre, knocks people near it down; below 0 pulls in
+//     shake 0.6             # shakes the camera of those near it (0..1)
 //   end
 inline std::vector<AbilityDef> parse_abilities_text(const std::string& text) {
     std::vector<AbilityDef> out;
@@ -721,6 +756,9 @@ inline std::vector<AbilityDef> parse_abilities_text(const std::string& text) {
         else if (key == "arc")      { ls >> cur.arc; }
         else if (key == "spread")   { ls >> cur.spread; }
         else if (key == "knockdown") { ls >> cur.knockdown; }
+        else if (key == "falloff")  { ls >> cur.falloff; }
+        else if (key == "force")    { ls >> cur.force; }
+        else if (key == "shake")    { ls >> cur.shake; }
         else if (key == "about")    { cur.about = rest_of(ls); }
         else if (key == "inflict" || key == "self_status") {
             AbilityDef::StatusPut p; ls >> p.id; if (!(ls >> p.stacks)) p.stacks = 1;
@@ -743,6 +781,36 @@ inline std::vector<AbilityDef> parse_abilities_text(const std::string& text) {
     }
     flush();
     return out;
+}
+
+// ---- explosions -----------------------------------------------------------------
+/// A blast anywhere (a barrel, a mine, a charge a script sets off): `damage`
+/// to everyone within `radius` -- all of it at the centre, `falloff` of it at
+/// the edge -- as `by`'s (its kill), of the type "explosive"; then thrown,
+/// knocked down and shaken (Explosion), with `effect` shown there ("": the
+/// built-in "explosion"). Returns how many it hurt.
+inline int explode(World& w, const glm::vec3& at, float radius, float damage, float force, const std::string& effect,
+                   Entity by = null_entity, GameplayEventBus* bus = nullptr, float falloff = 0.25f) {
+    radius = std::max(0.1f, radius);
+    std::vector<Entity> hits;
+    w.each<Transform>([&](Entity e, Transform& t) {
+        if (!w.has<CombatActor>(e) && !w.has<AttributeSet>(e)) return;
+        if (ability_detail::in_area(w, e, t, at, radius)) hits.push_back(e);
+    });
+    unique_damage_owners(w, hits);
+    int hurt = 0;
+    for (Entity e : hits) {
+        if (damage <= 0.0f || !w.valid(e)) continue;
+        const Transform* t = w.try_get<Transform>(e);
+        const float k = t ? std::clamp(glm::length(t->position - at) / radius, 0.0f, 1.0f) : 0.0f;
+        DamageInfo di{damage * (1.0f - (1.0f - std::clamp(falloff, 0.0f, 1.0f)) * k), "explosive", "Health", by};
+        di.source = "explosion";
+        if (apply_damage(w, e, di) > 0.0f) ++hurt;
+    }
+    explosions(w).list.push_back({at, radius, force, std::clamp(0.25f + radius / 16.0f, 0.3f, 1.0f),
+                                  effect.empty() ? std::string("explosion") : effect, by});
+    ability_detail::publish(bus, "explosion", by, null_entity, damage, effect);
+    return hurt;
 }
 
 // ---- skills that grant abilities -------------------------------------------------

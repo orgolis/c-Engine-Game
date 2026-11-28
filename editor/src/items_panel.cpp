@@ -366,6 +366,15 @@ void draw_ability(ecs::AbilityDef& a) {
     if (ImGui::TreeNodeEx("What it does", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::DragFloat("damage", &a.damage, 0.2f, 0.0f, 100000.0f, "%.1f");
         input_id("damage type", a.damage_type);
+        if (a.targeting == ecs::AbilityTargeting::AreaAroundSelf || a.targeting == ecs::AbilityTargeting::AreaAtAim) {
+            ImGui::DragFloat("damage at its edge", &a.falloff, 0.01f, 0.0f, 1.0f, a.falloff < 1.0f ? "%.2f of it" : "all of it");
+            ImGui::SetItemTooltip("An explosion's falloff: the share of its damage that reaches the edge of its area (all of it at the centre).");
+        }
+        ImGui::DragFloat("force", &a.force, 0.1f, -100.0f, 100.0f, a.force != 0.0f ? "%.1f m/s" : "none");
+        ImGui::SetItemTooltip("An explosion: throws what has a body (props, the dead, the player) at this speed at its centre and "
+                              "knocks people near it down. Below 0 pulls in (a vortex).");
+        ImGui::DragFloat("camera shake", &a.shake, 0.01f, 0.0f, 1.0f, a.shake > 0.0f ? "%.2f" : "none");
+        ImGui::SetItemTooltip("Shakes the camera of those near it (0..1).");
         ImGui::TreePop();
     }
     draw_effects("To each one reached", a.target_effects, "Add effect##t");
