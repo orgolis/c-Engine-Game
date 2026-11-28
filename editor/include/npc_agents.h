@@ -31,6 +31,15 @@
 //   and something thrown or spat flies (tick_ability_shots). Without one, the
 //   AbilitySet slot `ability_index` is used at once, as before.
 //
+// MELEE (0.9.1). An agent with a Melee Fighter (a moveset, or a weapon with
+//   one) fights with its moves instead: it closes to its first swing's reach,
+//   circles while it waits, then presses a combo (now and then a heavy) --
+//   sooner and longer the higher its aggression; a swing coming at it it
+//   guards or sidesteps, as often as its defense says. They take turns: one
+//   swings at a target while the others round it, waiting. Its presses go to the
+//   melee (melee_input, stepped by melee_play.h); while a move or a reaction
+//   plays, the move carries and turns it, not the agent.
+//
 // MOVEMENT. Paths come from the baked navmesh. The physics world keeps it out
 //   of things the navmesh does not know -- it steers round trees and rocks
 //   ahead of it and slides along what it touches -- and on the ground. Agents
@@ -44,6 +53,7 @@
 #include "ai/path_follow.h"
 #include "ecs/gameplay_abilities.h"     // try_activate_ability (the AbilitySet path)
 #include "ecs/gameplay_ability_cast.h"  // AbilityDef: an agent's attack as data
+#include "ecs/gameplay_melee.h"        // a melee fighter's presses
 #include "ecs/gameplay_stealth.h"       // can_see: one perception rule, not two
 #include "ecs/gameplay_tags.h"          // state.dead
 #include "ecs/gameplay_weapons.h"       // WorldRayFn
@@ -99,9 +109,23 @@ public:
         attacked_ = 0;
         alerted_  = 0;
         sources_.clear();
+        melee_in_.clear();
         const std::vector<glm::vec3> noises = std::move(noises_);
         noises_.clear();
         if (!scene || nav.empty() || dt <= 0.0f) return;
+        // Melee fighters take turns: who is swinging at whom (its attack, or its charge) now.
+        std::unordered_map<schizo::ecs::Entity, int> swinging_at;
+        if (bridge)
+            for (const auto& [aid, a] : agents_) {
+                if (a->m_target == schizo::ecs::null_entity || a->m_self == schizo::ecs::null_entity) continue;
+                const auto* f = bridge->world().valid(a->m_self) ? bridge->world().try_get<schizo::ecs::MeleeFighter>(a->m_self) : nullptr;
+                const auto* ms = f ? schizo::ecs::find_moveset(f->moveset) : nullptr;
+                if (!f || !ms || f->move < 0 || f->move >= static_cast<int>(ms->moves.size())) continue;
+                const bool attacking = (f->act == schizo::ecs::MeleeFighter::Act::Move &&
+                                        ms->moves[static_cast<size_t>(f->move)].kind == schizo::ecs::MeleeMove::Kind::Attack) ||
+                                       f->act == schizo::ecs::MeleeFighter::Act::Charging;
+                if (attacking || a->m_combo > 0) ++swinging_at[a->m_target];
+            }
         const bool has_world = world && *world;
 
         // Everyone's position first: separation, and calling the others in.
@@ -186,6 +210,17 @@ public:
                     }
                 }
             }
+            schizo::ecs::MeleeFighter* mf = nullptr;
+            const schizo::ecs::MovesetDef* mset = nullptr;
+            if (bridge && me != schizo::ecs::null_entity)
+                if ((mf = bridge->world().try_get<schizo::ecs::MeleeFighter>(me))) {
+                    std::string msid = mf->moveset;
+                    if (!mf->weapon.empty())
+                        if (const auto* mwd = schizo::ecs::find_weapon(mf->weapon); mwd && !mwd->moveset.empty()) msid = mwd->moveset;
+                    mset = schizo::ecs::find_moveset(msid);
+                }
+            const bool melee_ai = mf && mset;
+            const bool melee_busy = melee_ai && (mf->act == schizo::ecs::MeleeFighter::Act::Move || mf->act == schizo::ecs::MeleeFighter::Act::Charging);
             bool noise = false;
             if (has_target)
                 for (const auto& n : noises) noise = noise || glm::length(n - pos) <= ag->hearing_range;
@@ -201,7 +236,7 @@ public:
             } else {
                 st.since_seen += dt;
             }
-            if (hurt) {
+            if (hurt && !melee_ai) {   // (a melee fighter's poise says whether it staggers)
                 st.stagger = 0.22f;
                 if (has_target) {
                     glm::vec3 away = pos - target_pos; away.y = 0.0f;
@@ -240,7 +275,85 @@ public:
             st.prev_target = target_pos;
             st.prev_target_known = has_target;
             bool attacking = false;
-            if (def && bridge && me != schizo::ecs::null_entity) {
+            const float melee_reach = melee_ai ? first_reach(*mset) : 0.0f;
+            if (melee_ai) {
+                schizo::ecs::World& mw = bridge->world();
+                schizo::ecs::MeleeInput mi;
+                schizo::ecs::Entity tid = schizo::ecs::null_entity;
+                if (target_ent)
+                    if (const uint32_t t = bridge->ecs_entity_id(target_ent->GetTransform()); t != kNoEcsEntity) tid = static_cast<schizo::ecs::Entity>(t);
+                if (visible && mw.valid(tid)) mi.target = tid;
+                st.m_self = me;
+                st.m_target = mi.target;
+                st.m_think = std::max(0.0f, st.m_think - dt);
+                st.m_react = std::max(0.0f, st.m_react - dt);
+                st.m_guard = std::max(0.0f, st.m_guard - dt);
+                st.m_gap = std::max(0.0f, st.m_gap - dt);
+                const bool able = !down && !stunned && !disarmed && visible && mi.target != schizo::ecs::null_entity;
+                const auto* sa = mw.try_get<schizo::ecs::AttributeSet>(me);
+                const auto* sat = sa ? sa->find("Stamina") : nullptr;
+                const float stamina = sat ? sat->current : 1e9f;
+                glm::vec3 to_t = target_pos - pos;
+                to_t.y = 0.0f;
+                const glm::vec3 dir_t = glm::length(to_t) > 1e-3f ? glm::normalize(to_t) : fwd;
+                // A swing coming at it: guard it or step out of its way (now and then).
+                if (able && !melee_busy && st.m_react <= 0.0f) {
+                    const auto* of = mw.try_get<schizo::ecs::MeleeFighter>(tid);
+                    const schizo::ecs::MovesetDef* oms = of ? schizo::ecs::find_moveset(of->moveset) : nullptr;
+                    if (of && oms && of->act == schizo::ecs::MeleeFighter::Act::Move && of->move >= 0 &&
+                        of->move < static_cast<int>(oms->moves.size())) {
+                        const auto& om = oms->moves[static_cast<size_t>(of->move)];
+                        if (om.kind == schizo::ecs::MeleeMove::Kind::Attack && !om.hits.empty() && of->t < om.hits.front().from &&
+                            range_xz < std::max(om.reach, 2.0f) + 1.2f) {
+                            st.m_react = 1.0f;   // (once a swing)
+                            if (rnd01(id * 131u + st.m_count++) < mf->defense) {
+                                const bool can_guard = mset->find(schizo::ecs::MeleeMove::Kind::Guard, "") >= 0 && stamina > 15.0f;
+                                if (can_guard && rnd01(id * 977u + st.m_count++) < 0.55f) {
+                                    st.m_guard = 0.8f;
+                                } else {
+                                    mi.dodge = true;
+                                    mi.moving = true;
+                                    const float side = rnd01(id * 53u + st.m_count++) < 0.5f ? 1.0f : -1.0f;
+                                    mi.move_dir = glm::normalize(glm::vec3(dir_t.z * side, 0.0f, -dir_t.x * side) - dir_t * 0.4f);
+                                    st.m_combo = 0;
+                                }
+                            }
+                        }
+                    }
+                }
+                mi.guard = st.m_guard > 0.0f && able;
+                // Its attack: in reach and facing it, the pause over -- a combo of presses,
+                // each as the swing before has struck (it chains at the cancel point).
+                const float facing = glm::dot(glm::normalize(glm::vec3(fwd.x, 0.0f, fwd.z) + glm::vec3(1e-5f)), dir_t);
+                if (able && !mi.dodge && !mi.guard) {
+                    const bool in_swing = melee_busy && mf->move >= 0 && mf->move < static_cast<int>(mset->moves.size()) &&
+                                          mset->moves[static_cast<size_t>(mf->move)].kind == schizo::ecs::MeleeMove::Kind::Attack;
+                    if (st.m_combo > 0 && in_swing && st.m_gap <= 0.0f) {
+                        const auto& cm = mset->moves[static_cast<size_t>(mf->move)];
+                        if (cm.hits.empty() || mf->t >= cm.hits.front().from) {
+                            mi.light = true;
+                            --st.m_combo;
+                            st.m_gap = 0.25f;
+                        }
+                    } else if (!melee_busy && st.m_combo > 0 && st.m_gap <= 0.0f) {
+                        st.m_combo = 0;   // the chain ended (it was not taken): a pause
+                        st.m_think = (0.4f + rnd01(id * 17u + st.m_count++) * 1.0f) * (1.6f - std::clamp(mf->aggression, 0.0f, 1.0f));
+                    } else if (!melee_busy && st.m_combo == 0 && st.m_think <= 0.0f && range_xz <= melee_reach + 0.35f &&
+                               swinging_at[mi.target] == 0 &&   // (another is at it: wait a turn)
+                               facing > 0.82f && stamina > 8.0f) {
+                        const float a = std::clamp(mf->aggression, 0.0f, 1.0f);
+                        const bool heavy = rnd01(id * 29u + st.m_count++) < 0.22f;
+                        if (heavy) { mi.heavy = true; st.m_combo = 0; }
+                        else { mi.light = true; st.m_combo = static_cast<int>(rnd01(id * 41u + st.m_count++) * (1.0f + 2.5f * a)); }
+                        st.m_gap = 0.3f;
+                        st.m_think = heavy ? (0.6f + rnd01(id * 7u + st.m_count++)) * (1.6f - a) : 0.0f;
+                        ++st.shots;
+                        ++attacked_;
+                    }
+                }
+                attacking = melee_busy;
+                melee_in_[me] = mi;
+            } else if (def && bridge && me != schizo::ecs::null_entity) {
                 glm::vec3 hand = eye + fwd * 0.45f;
                 // A gun in its hands: the shot leaves from the gun's muzzle.
                 if (muzzle_of) {
@@ -290,7 +403,7 @@ public:
                 }
             }
 
-            st.aiming = visible && (in_range || attacking);
+            st.aiming = !melee_ai && visible && (in_range || attacking);
             // Where its eyes (and its gun, when it aims) go: at the target it sees,
             // to where it last saw one while it hunts, nowhere in particular on patrol.
             if (visible) { st.look = target_pos + glm::vec3(0.0f, 0.4f, 0.0f); st.look_weight = 1.0f; }
@@ -310,7 +423,21 @@ public:
                         glm::vec3 to = target_pos - pos; to.y = 0.0f;
                         const float d = glm::length(to);
                         const glm::vec3 dir = d > 1e-3f ? to / d : fwd;
-                        if (keep <= 0.0f) {
+                        if (melee_ai) {
+                            if (d > melee_reach * 0.9f || st.m_think <= 0.0f) {
+                                goal = target_pos;                   // close in (or step in to strike)
+                                if (d <= melee_reach * 0.7f) hold = true;
+                            } else if (d < 0.9f) {
+                                goal = pos - dir * 2.0f;             // too close: a step back
+                                speed *= 0.5f;
+                            } else {
+                                st.strafe_timer -= dt;               // waiting: round it
+                                if (st.strafe_timer <= 0.0f) { st.strafe = -st.strafe; st.strafe_timer = 1.0f + rnd01(id + st.m_count) * 1.5f; }
+                                goal = pos + glm::vec3(dir.z * st.strafe, 0.0f, -dir.x * st.strafe) * 3.0f;
+                                speed *= 0.4f;
+                            }
+                            if (st.m_guard > 0.0f) speed *= 0.5f;
+                        } else if (keep <= 0.0f) {
                             goal = target_pos;                       // melee: close in
                             if (in_range && d <= ag->attack_range * 0.8f) hold = true;
                         } else if (d < keep * 0.7f) {
@@ -365,6 +492,7 @@ public:
             }
             if (attacking && def) hold = true;   // a wind-up is stood still for: it can be seen coming
             if (st.stagger > 0.0f) { st.stagger -= dt; hold = true; }
+            if (melee_busy) hold = true;   // its move carries it
             if (down || stunned) hold = true;
             if (st.mode == Mode::Chase && !in_range) ++chasing_;   // closing in (or going to where it was seen)
 
@@ -393,7 +521,7 @@ public:
                 const float l = glm::length(d);
                 if (l > 1e-3f && l < 1.4f) vel += d / l * (1.4f - l) * 2.5f;
             }
-            if (down || stunned) vel = glm::vec3(0.0f);   // (lying where the blast left it; held)
+            if (down || stunned || melee_busy) vel = glm::vec3(0.0f);   // (lying where the blast left it; held; a move)
             const float vlen = glm::length(vel);
             if (has_world && vlen > 0.05f) vel = avoid(*world, st, pos, vel, vlen);
             glm::vec3 next = pos + vel * dt;
@@ -425,8 +553,8 @@ public:
                 ++active_;
             }
             // Face the target while fighting, else the way it walks (a stunned one stays as it is).
-            if (!stunned) {
-                glm::vec3 look = (visible && (in_range || attacking || hold)) ? (target_pos - pos) : vel;
+            if (!stunned && !melee_busy) {
+                glm::vec3 look = (visible && (in_range || attacking || hold || (melee_ai && dist < 10.0f))) ? (target_pos - pos) : vel;
                 if (st.mode == Mode::Search && glm::length(vel) < 0.1f) look = fwd;
                 look.y = 0.0f;
                 if (glm::dot(look, look) > 1e-4f) {
@@ -495,12 +623,21 @@ public:
     /// its hand.
     std::function<bool(uint32_t entity_id, glm::vec3& at)> muzzle_of;
 
+    /// What a melee fighter presses this frame (taken once: melee_play.h steps it).
+    schizo::ecs::MeleeInput melee_input(schizo::ecs::Entity e) {
+        auto it = melee_in_.find(e);
+        if (it == melee_in_.end()) return {};
+        schizo::ecs::MeleeInput in = it->second;
+        it->second.light = it->second.heavy = it->second.dodge = it->second.parry = false;
+        return in;
+    }
+
     /// An agent's mode (Patrol when it is not an agent).
     Mode mode_of(uint32_t id) const {
         auto it = agents_.find(id);
         return it == agents_.end() ? Mode::Patrol : it->second->mode;
     }
-    void   clear() { agents_.clear(); noises_.clear(); sources_.clear(); chasing_ = active_ = attacked_ = alerted_ = 0; }
+    void   clear() { agents_.clear(); noises_.clear(); sources_.clear(); melee_in_.clear(); chasing_ = active_ = attacked_ = alerted_ = 0; }
 
     /// Re-express every agent's cached world-space state after a floating-origin
     /// rebase.
@@ -557,6 +694,12 @@ private:
         uint32_t  shots = 0;
         glm::vec3 look{0.0f};
         float     look_weight = 0.0f;
+        // A melee fighter: its pause before the next attack, the presses left in its
+        // combo, the gap before the next, a guard held, a reaction's cooldown.
+        float     m_think = 0.5f, m_gap = 0.0f, m_guard = 0.0f, m_react = 0.0f;
+        int       m_combo = 0;
+        schizo::ecs::Entity m_self = schizo::ecs::null_entity, m_target = schizo::ecs::null_entity;
+        uint32_t  m_count = 0;
     };
 
     Agent& state(uint32_t id, const glm::vec3& pos, float patrol_radius) {
@@ -579,6 +722,11 @@ private:
         const float rr = r * (0.4f + 0.6f * rnd01(id * 31u + static_cast<uint32_t>(a.patrol_leg) * 613u));
         a.patrol_goal = a.spawn + glm::vec3(std::cos(ang), 0.0f, std::sin(ang)) * rr;
         a.last_goal = glm::vec3(1e9f);   // force a re-path to the new leg
+    }
+    /// How far its first light swing reaches (its moveset's), for closing in.
+    static float first_reach(const schizo::ecs::MovesetDef& ms) {
+        const int i = ms.find(schizo::ecs::MeleeMove::Kind::Attack, "light");
+        return i >= 0 ? std::max(1.0f, ms.moves[static_cast<size_t>(i)].reach) : 2.0f;
     }
     static float rnd01(uint32_t h) {
         h ^= h >> 16; h *= 0x7FEB352Du; h ^= h >> 15; h *= 0x846CA68Bu; h ^= h >> 16;
@@ -624,6 +772,7 @@ private:
 
     std::unordered_map<uint32_t, std::unique_ptr<Agent>> agents_;
     std::vector<glm::vec3> noises_, sources_;
+    std::unordered_map<schizo::ecs::Entity, schizo::ecs::MeleeInput> melee_in_;
     size_t chasing_ = 0, active_ = 0, attacked_ = 0, alerted_ = 0;
 };
 

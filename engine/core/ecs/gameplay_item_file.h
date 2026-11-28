@@ -37,6 +37,7 @@
 #include "gameplay_weapons.h"
 #include "gameplay_ability_cast.h"
 #include "gameplay_perks.h"   // status and perk blocks
+#include "gameplay_melee.h"   // moveset blocks
 #include "gameplay_skills.h"
 #include "vfx/effects.h"   // effect blocks: what guns and abilities look like
 
@@ -186,6 +187,16 @@ inline std::vector<WeaponDef> parse_weapons_text(const std::string& text) {
             float r, a;
             if (ls >> r) { cur.melee_reach = r; if (ls >> a) cur.melee_arc = a; }
         }
+        else if (key == "moveset")  { ls >> cur.moveset; }
+        else if (key == "blade")    {
+            // blade x y z  x y z (hilt, tip), or blade from to (along the model's +Y)
+            float v[6] = {0, 0, 0, 0, 0, 0};
+            int n = 0;
+            while (n < 6 && (ls >> v[n])) ++n;
+            if (n >= 6) { cur.blade_hilt = glm::vec3(v[0], v[1], v[2]); cur.blade_tip = glm::vec3(v[3], v[4], v[5]); }
+            else if (n >= 2) { cur.blade_hilt = glm::vec3(0, v[0], 0); cur.blade_tip = glm::vec3(0, v[1], 0); }
+        }
+        else if (key == "camera")   { ls >> cur.camera; }
     }
     flush();
     return out;
@@ -247,6 +258,7 @@ inline int register_items_text(const std::string& text) {
     for (const auto& d : schizo::vfx::parse_effects_text(text)) { schizo::vfx::register_effect(d); ++n; }
     for (const auto& d : parse_statuses_text(text)) { register_status_def(d); ++n; }
     for (const auto& d : parse_perks_text(text)) { register_perk_def(d); ++n; }
+    for (const auto& d : parse_movesets_text(text)) { register_moveset(d); ++n; }
     return n;
 }
 
@@ -310,7 +322,8 @@ inline ItemsDoc parse_items_doc(const std::string& text) {
     auto flush = [&] {
         if (!in_block) return;
         in_block = false;
-        if (block_key == "skill" || block_key == "effect" || block_key == "status" || block_key == "perk") {   // kept as written
+        if (block_key == "skill" || block_key == "effect" || block_key == "status" || block_key == "perk" ||
+            block_key == "moveset") {   // kept as written
             ItemsDoc::Entry e;
             e.kind = ItemsDoc::Kind::Text;
             e.text = block;
@@ -331,8 +344,9 @@ inline ItemsDoc parse_items_doc(const std::string& text) {
         std::istringstream ls(line);
         std::string key;
         ls >> key;
+        // (Inside a block, `effect` is an ability's line and `moveset` a weapon's.)
         if (key == "item" || key == "weapon" || key == "ability" || key == "skill" || key == "status" || key == "perk" ||
-            (key == "effect" && !in_block)) {
+            ((key == "moveset" || key == "effect") && !in_block)) {
             flush();
             block_key = key;
             in_header = false;
@@ -404,6 +418,11 @@ inline std::string weapon_def_text(const WeaponDef& w) {
     s += "  damage " + num(w.damage) + (w.damage_type.empty() ? "" : " " + w.damage_type) + "\n";
     s += "  rpm " + num(w.rpm) + "\n";
     if (w.melee) s += "  melee " + num(w.melee_reach) + " " + num(w.melee_arc) + "\n";
+    if (!w.moveset.empty()) s += "  moveset " + w.moveset + "\n";
+    if (w.melee && (w.blade_hilt != glm::vec3(0, .1f, 0) || w.blade_tip != glm::vec3(0, 1, 0)))
+        s += "  blade " + num(w.blade_hilt.x) + " " + num(w.blade_hilt.y) + " " + num(w.blade_hilt.z) + "  " + num(w.blade_tip.x) +
+             " " + num(w.blade_tip.y) + " " + num(w.blade_tip.z) + "\n";
+    if (!w.camera.empty()) s += "  camera " + w.camera + "\n";
     else s += "  magazine " + std::to_string(w.mag_size) + "\n";
     if (w.draw_time != def.draw_time) s += "  draw " + num(w.draw_time) + "\n";
     if (w.reload_time != def.reload_time) s += "  reload " + num(w.reload_time) + "\n";

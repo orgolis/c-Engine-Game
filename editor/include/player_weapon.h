@@ -212,6 +212,9 @@ private:
 class PlayerWeapon {
 public:
     std::function<void(const std::string&,const glm::vec3&,const glm::vec3&,uint32_t)> network_input;
+    /// Blades with a moveset are swung by their moves (melee_play.h). Off (an online
+    /// client, whose hits are the host's to decide): the single networked swing.
+    bool use_movesets = true;
     struct Input {
         bool fire_pressed = false, fire_held = false, aim_held = false, reload_pressed = false;
         int  cycle = 0;         // +1 next gun, -1 previous
@@ -261,6 +264,13 @@ public:
         auto* ws = w.try_get<ecs::WeaponState>(e);
         const ecs::WeaponDef* wd = ws ? ecs::find_weapon(ws->weapon_id) : nullptr;
         if (!ws || !wd) return;
+        // A blade with a moveset is swung by melee_play.h (its presses, its moves): in hand, no gun.
+        if (!wd->moveset.empty() && use_movesets) {
+            lunge_left_ = 0.0f;
+            hud_.name = wd->name.c_str();
+            hud_.weapon_id = wd->id;
+            return;
+        }
 
         if (auto* inv = w.try_get<ecs::Inventory>(e)) ecs::sync_ammo_with_inventory(*ws, *inv);
         ws->aiming = in.aim_held;

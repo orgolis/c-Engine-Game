@@ -74,7 +74,8 @@ It has these **companion** plans (all current):
 `WORLDS_AND_WATER.md` (world presets, rivers and lakes, `gws world`) · `FOLIAGE.md` ·
 `CHARACTERS.md` (rigged characters, clips from gameplay, held guns, the first-person gun) ·
 `ONLINE_PLAY.md` (hosted co-op, raids and duels over the network) · `SCRIPTED_ENCOUNTERS.md` (bosses: script verbs for clips, bones, effects, darkness, multipart damage) ·
-`ABILITIES.md` (abilities, skill trees) · `STATUSES_AND_PERKS.md` (statuses, zones, perks: the parts of a game's own rules of play)
+`ABILITIES.md` (abilities, skill trees) · `STATUSES_AND_PERKS.md` (statuses, zones, perks: the parts of a game's own rules of play) ·
+`MELEE.md` (movesets: chains, charged heavies, rolls, guards, parries, ripostes; root motion, lock-on, the orbit camera)
 
 ### `references/` — quick-reference cheat sheets
 One `*-QUICK-REFERENCE.md` per system (deferred rendering, graphics, lighting, material,

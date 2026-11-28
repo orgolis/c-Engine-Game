@@ -296,6 +296,8 @@ bool ScenePlaybackManager::StartPlayback(std::shared_ptr<schizo::scene::Scene> s
     BuildPhysicsWorld();
 
     is_playing_ = true;
+    fp_cam_known_ = rig_was_third_ = orbit_active_ = false;
+    face_on_ = look_on_ = false;
     is_paused_ = false;
     is_cursor_captured_ = true;  // Host will hide+lock the OS cursor
     is_input_focused_ = false;   // Host enables this only for the focused scene surface
@@ -420,15 +422,23 @@ void ScenePlaybackManager::UpdateCamera() {
         // Without a Camera Rig, playback observes the camera transform; it does
         // not impose a camera mode or a hard-coded gameplay offset. With one
         // (third person), the camera goes behind and beside the player, looking
-        // the way it looks, kept in front of walls.
-        if (rig_set_ && camera_rig_.third_person && player_entity_ && physics_world_) {
+        // the way it looks, kept in front of walls. Back out of third person (a
+        // gun drawn after a blade), the camera goes back to its place on the player.
+        if (!fp_cam_known_) { fp_cam_local_ = camera_transform->GetLocalPosition(); fp_cam_known_ = true; }
+        const bool third = rig_set_ && camera_rig_.third_person && player_entity_ && physics_world_;
+        if (!third && rig_was_third_) camera_transform->SetLocalPosition(fp_cam_local_);
+        rig_was_third_ = third;
+        if (orbit_active_ && third)
+            camera_transform->SetWorldRotation(glm::angleAxis(orbit_yaw_, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                                               glm::angleAxis(orbit_pitch_, glm::vec3(1.0f, 0.0f, 0.0f)));
+        if (third) {
             auto pt = player_entity_->GetTransform();
             const glm::vec3 centre = player_char_id_ != 0xFFFFFFFFu
                                          ? physics_world_->character_position(player_char_id_)
                                          : pt->GetWorldPosition();
             const glm::vec3 pivot = centre + glm::vec3(0.0f, camera_rig_.height, 0.0f);
             const glm::vec3 view = glm::normalize(camera_transform->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f));
-            glm::vec3 right = pt->GetRight();
+            glm::vec3 right = orbit_active_ ? glm::vec3(std::cos(orbit_yaw_), 0.0f, -std::sin(orbit_yaw_)) : pt->GetRight();
             right.y = 0.0f;
             right = glm::length(right) > 1e-4f ? glm::normalize(right) : glm::vec3(1.0f, 0.0f, 0.0f);
             physics::PhysicsWorld& pw = *physics_world_;
@@ -454,6 +464,46 @@ void ScenePlaybackManager::UpdateMouseLook() {
     // through OnMouseDelta() — ImGui's NoMouse flag zeros io.MousePos so we
     // cannot read it here. Yaw is applied to the player body; pitch is applied
     // to the one player camera for up/down look.
+    // Orbit: the mouse turns the camera round the player, not the player (it is
+    // turned toward where it goes in DriveMovement); a lock-on keeps its target in view.
+    const bool orbit = rig_set_ && camera_rig_.third_person && camera_rig_.orbit && playback_camera_ && physics_world_;
+    if (orbit != orbit_active_) {
+        if (orbit) {
+            const glm::vec3 f = player_transform->GetForward();
+            orbit_yaw_ = std::atan2(-f.x, -f.z);
+            orbit_pitch_ = glm::clamp(glm::eulerAngles(playback_camera_->GetTransform()->GetLocalRotation()).x, -1.3f, 1.2f);
+        } else if (playback_camera_) {
+            // Back to the mouse turning the player: it faces where the camera looked.
+            player_transform->SetWorldRotation(glm::angleAxis(orbit_yaw_, glm::vec3(0.0f, 1.0f, 0.0f)));
+            playback_camera_->GetTransform()->SetLocalRotation(glm::quat(glm::vec3(orbit_pitch_, 0.0f, 0.0f)));
+        }
+        orbit_active_ = orbit;
+    }
+    if (orbit_active_) {
+        const float sens = 0.0025f * look_scale_;
+        if (HasInputFocus()) {
+            orbit_yaw_ -= mouse_delta_x_ * sens;
+            orbit_pitch_ = glm::clamp(orbit_pitch_ - mouse_delta_y_ * sens * (look_invert_ ? -1.0f : 1.0f), -1.3f, 1.2f);
+        }
+        if (look_on_) {
+            const glm::vec3 eye = player_transform->GetWorldPosition() + glm::vec3(0.0f, camera_rig_.height, 0.0f);
+            const glm::vec3 to = look_point_ - eye;
+            const float flat = std::sqrt(to.x * to.x + to.z * to.z);
+            if (flat > 0.4f) {
+                float d = std::atan2(-to.x, -to.z) - orbit_yaw_;
+                while (d > 3.14159265f) d -= 6.2831853f;
+                while (d < -3.14159265f) d += 6.2831853f;
+                const float dt = std::clamp(last_dt_, 0.0f, 0.1f);
+                orbit_yaw_ += d * (1.0f - std::exp(-9.0f * dt));
+                // A little down at it, never steeply (a target close by is not looked down on).
+                const float want_pitch = glm::clamp(std::atan2(to.y, std::max(flat, 4.0f)) - 0.12f, -0.4f, 0.25f);
+                orbit_pitch_ += (want_pitch - orbit_pitch_) * (1.0f - std::exp(-5.0f * dt));
+            }
+        }
+        mouse_delta_x_ = 0.0f;
+        mouse_delta_y_ = 0.0f;
+        return;
+    }
     if (HasInputFocus()) {
         const float MOUSE_SENSITIVITY = 0.0025f * look_scale_;  // radians per pixel, times the player's setting
 
@@ -597,6 +647,22 @@ void ScenePlaybackManager::DriveMovement(float delta_time) {
     }
     in.forward = pt->GetForward();
     in.right = pt->GetRight();
+    if (orbit_active_) {   // the camera's way, not the player's
+        in.forward = glm::vec3(-std::sin(orbit_yaw_), 0.0f, -std::cos(orbit_yaw_));
+        in.right = glm::vec3(std::cos(orbit_yaw_), 0.0f, -std::sin(orbit_yaw_));
+    }
+    move_intent_ = in.forward * in.move.y + in.right * in.move.x;
+    move_intent_.y = 0.0f;
+    if (glm::length(move_intent_) > 1.0f) move_intent_ = glm::normalize(move_intent_);
+    const bool in_melee_move = melee_move_;
+    // Melee: a move's clip carries the player; a drawn blade's dash key is its dodge.
+    if (melee_drawn_) in.dash_pressed = false;
+    if (melee_move_) {
+        in.move = glm::vec2(0.0f);
+        in.sprint = false;
+        in.jump_pressed = false;
+        in.dash_pressed = false;
+    }
 
     auto ray = [this, &pw](const glm::vec3& o, const glm::vec3& d, float max_d) {
         ecs::MoveHit h;
@@ -624,11 +690,40 @@ void ScenePlaybackManager::DriveMovement(float delta_time) {
         ms.walk_speed *= k; ms.sprint_speed *= k; ms.crouch_speed *= k; ms.swim_speed *= k;
         ms.air_jumps = std::max(0, ms.air_jumps + extra_jumps_);
     }
-    const ecs::MoveResult res = ecs::step_movement(player_movement_, in, body, ray, delta_time);
+    ecs::MoveResult res = ecs::step_movement(player_movement_, in, body, ray, delta_time);
     player_movement_.settings = base_settings;
+    if (melee_move_ && delta_time > 1e-5f) {
+        // The clip's root motion along the ground (gravity, a slope, a wall still the world's).
+        res.velocity.x = melee_delta_.x / delta_time;
+        res.velocity.z = melee_delta_.z / delta_time;
+        player_movement_.state.velocity.x = res.velocity.x;
+        player_movement_.state.velocity.z = res.velocity.z;
+    }
+    melee_move_ = false;
+    melee_delta_ = glm::vec3(0.0f);
     if (std::abs(res.height - body.height) > 1e-3f)
         pw.set_character_height(id, std::max(0.05f, res.height - 2.0f * player_radius_));
     pw.update_character(id, res.velocity, delta_time);
+
+    // The turn: toward what it is locked on to; else, orbiting, toward where it goes.
+    // (In a melee move its clip and its tracking turn it: the host.)
+    if (!in_melee_move) {
+        glm::vec3 want(0.0f);
+        float rate = camera_rig_.turn_rate;
+        if (face_on_) { want = face_dir_; rate = face_rate_; }
+        else if (orbit_active_ && glm::length(move_intent_) > 0.1f) want = move_intent_;
+        want.y = 0.0f;
+        glm::vec3 fwd = pt->GetForward();
+        fwd.y = 0.0f;
+        if (glm::length(want) > 1e-3f && glm::length(fwd) > 1e-3f) {
+            want = glm::normalize(want);
+            fwd = glm::normalize(fwd);
+            const float ang = std::atan2(fwd.z * want.x - fwd.x * want.z, glm::dot(fwd, want));
+            const float step = glm::radians(std::max(1.0f, rate)) * delta_time;
+            pt->Rotate(glm::vec3(0.0f, 1.0f, 0.0f), std::clamp(ang, -step, step));
+        }
+    }
+    face_on_ = false;
 
     if (player_controller_) {   // keep the older controller's view in step (panel, stats)
         player_controller_->SetPosition(center);

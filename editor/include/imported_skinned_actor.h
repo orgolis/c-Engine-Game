@@ -35,6 +35,7 @@
 #include "spring_bones.h"
 #include "anim_hooks.h"   // inertialization and clip events (no GPU: animhooks_check)
 #include "animation.h"
+#include "clip_library.h"   // clip libraries (model@name.glb) and root motion
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -76,6 +77,36 @@ struct SharedSkinnedAsset {
     // Spring chains (`<model>.springs` beside the model): secondary motion.
     schizo::renderer::SpringFile springs;
 };
+
+/// Clip libraries: `<model>@<anything>.glb` (or .gltf) beside a model adds its
+/// clips -- made on the same rig, bones matched by name -- to the model's own, in
+/// file-name order, one of a name already there replacing it. Clips made once
+/// (a sword's moves) play on every character built on the rig.
+inline int add_clip_libraries(gws::renderer::gpu::LoadedSkinnedModel& m, const std::string& model_path) {
+    namespace fs = std::filesystem;
+    if (!m.skeleton) return 0;
+    const fs::path mp(model_path);
+    const std::string prefix = mp.stem().string() + "@";
+    std::vector<fs::path> libs;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(mp.parent_path().empty() ? fs::path(".") : mp.parent_path(), ec)) {
+        const std::string fn = e.path().filename().string(), ext = e.path().extension().string();
+        if (fn.rfind(prefix, 0) == 0 && (ext == ".glb" || ext == ".gltf")) libs.push_back(e.path());
+    }
+    std::sort(libs.begin(), libs.end());
+    int total = 0;
+    for (const auto& lib : libs) {
+        const auto lm = gws::renderer::gpu::load_skinned_gltf(lib.string());
+        if (!lm.valid || !lm.skeleton) {
+            spdlog::warn("[skinned-gltf] clip library '{}' not read: {}", lib.string(), lm.error);
+            continue;
+        }
+        const int n = schizo::renderer::merge_clips(m.animations, *m.skeleton, *lm.skeleton, lm.animations);
+        total += n;
+        spdlog::info("[skinned-gltf] '{}': {} clip(s) from its library '{}'", mp.filename().string(), n, lib.filename().string());
+    }
+    return total;
+}
 
 /// The events of a model's clips, from the text file beside it (the model's path
 /// with `.events` for its extension). A line is `clip seconds name [param]`
@@ -214,6 +245,7 @@ public:
             graph_.update(dt, graph_src_);
             if (dt > 0.0f)
                 for (const auto& a : graph_.active()) fire_window(a.clip, a.was, a.now, a.loop);
+            gather_root_motion();
             for (const auto& c : graph_.take_changes()) transition(c.blend, c.mask);
             pose(dt);
             return;
@@ -502,10 +534,28 @@ public:
     void set_graph_tag(const void* t) { graph_def_tag_ = t; }
     /// A one-shot over the graph's layers on slot `slot`'s bones (a shot, a reload,
     /// a hit) -- without a graph, the clip plays on the whole body (play()).
-    void play_montage(int clip, const std::string& slot, float rate = 1.0f, float blend_in = 0.1f, float blend_out = 0.2f, bool loop = false) {
+    /// `root_motion`: the clip's root bone carries the character -- its travel is
+    /// taken out of the pose (the body stays over the character) and handed over by
+    /// take_root_motion() for the host to move the character by.
+    void play_montage(int clip, const std::string& slot, float rate = 1.0f, float blend_in = 0.1f, float blend_out = 0.2f, bool loop = false,
+                      bool root_motion = false) {
         if (clip < 0 || static_cast<size_t>(clip) >= clips_.size()) return;
         if (!graph_.ready()) { play(clip, loop, blend_in, rate, true); return; }
-        graph_.play_montage(graph_.def().slot(slot), clip, rate, blend_in, blend_out, loop);
+        const int si = graph_.def().slot(slot);
+        graph_.play_montage(si, clip, rate, blend_in, blend_out, loop);
+        rm_slot_ = root_motion ? si : -1;
+        rm_clip_ = root_motion ? clip : -1;
+        rm_inplace_ = glm::vec3(0.0f);
+    }
+    /// The root motion since the last call: how far (model space, metres) and the
+    /// clip time it covered. Zero when no root-motion montage plays.
+    glm::vec3 take_root_motion() { const glm::vec3 d = rm_delta_; rm_delta_ = glm::vec3(0.0f); return d; }
+    /// The montage time of a slot's clip now (seconds; -1 none playing there).
+    float montage_time(const std::string& slot) const {
+        if (!graph_.ready()) return -1.0f;
+        const int si = graph_.def().slot(slot);
+        for (const auto& a : graph_.active()) if (a.slot == si && a.slot >= 0) return a.now;
+        return -1.0f;
     }
     void stop_montage(const std::string& slot, float blend_out = -1.0f) {
         if (graph_.ready()) graph_.stop_montage(graph_.def().slot(slot), blend_out);
@@ -515,6 +565,27 @@ public:
         static const schizo::renderer::animgraph::SyncMarkers none;
         if (!shared_ || clip < 0 || static_cast<size_t>(clip) >= shared_->sync.size()) return none;
         return shared_->sync[static_cast<size_t>(clip)];
+    }
+
+    // Root motion: from the root-motion montage (its slot and clip) this frame -- its
+    // travel added up for take_root_motion(), and its travel since it began (weighted)
+    // kept out of the pose.
+    void gather_root_motion() {
+        rm_root_ = -1;
+        if (rm_clip_ < 0 || static_cast<size_t>(rm_clip_) >= clips_.size()) { rm_inplace_ = glm::vec3(0.0f); return; }
+        const int root = find_bone("root") >= 0 ? find_bone("root") : 0;
+        const auto& clip = *clips_[static_cast<size_t>(rm_clip_)];
+        bool live = false;
+        for (const auto& a : graph_.active()) {
+            if (a.slot != rm_slot_ || a.clip != rm_clip_) continue;
+            live = true;
+            const glm::vec3 d = schizo::renderer::root_travel(clip, static_cast<uint16_t>(root), a.fresh ? 0.0f : a.was, a.now, a.loop);
+            rm_delta_ += glm::vec3(d.x, 0.0f, d.z) * a.weight;
+            const glm::vec3 since = schizo::renderer::root_travel(clip, static_cast<uint16_t>(root), 0.0f, a.now, a.loop);
+            rm_inplace_ = glm::vec3(since.x, 0.0f, since.z) * a.weight;
+            rm_root_ = root;
+        }
+        if (!live) { rm_clip_ = rm_slot_ = -1; rm_inplace_ = glm::vec3(0.0f); }
     }
 
     // ---- locomotion (engine/renderer/include/locomotion_warp.h) ---------------------------
@@ -755,6 +826,12 @@ private:
         using schizo::renderer::BoneTransform;
         if (graph_.ready()) {
             graph_.evaluate(graph_src_, pose_a_);
+            // Root motion: the montage's travel since it began is the character's, not the
+            // pose's -- the root kept where the clip started (as much as the montage shows).
+            if (rm_root_ >= 0 && static_cast<size_t>(rm_root_) < pose_a_.size()) {
+                pose_a_[static_cast<size_t>(rm_root_)].position.x -= rm_inplace_.x;
+                pose_a_[static_cast<size_t>(rm_root_)].position.z -= rm_inplace_.z;
+            }
         } else {
             sample(base_, pose_a_);
             if (upper_.clip >= 0 && upper_w_ > 0.0f && !upper_mask_.empty()) {
@@ -849,6 +926,7 @@ private:
             sa->mr     = upload(lm0.metallic_roughness, false);
             sa->normal = upload(lm0.normal, false);
             sa->emissive = upload(lm0.emissive, true);
+            add_clip_libraries(sa->model, gltf_path);
             load_clip_events(*sa, gltf_path, sa->model.animations);
             load_springs(*sa, gltf_path);
             it = cache.emplace(gltf_path, std::move(sa)).first;
@@ -928,6 +1006,8 @@ private:
     struct InertReq { float half; std::vector<uint8_t> mask; };
     std::vector<InertReq> inert_reqs_;
     schizo::renderer::animgraph::GraphInstance graph_;
+    int rm_slot_ = -1, rm_clip_ = -1, rm_root_ = -1;   // the root-motion montage, its root bone this frame
+    glm::vec3 rm_delta_{0.0f}, rm_inplace_{0.0f};
     schizo::renderer::SpringBones springs_;
     bool springs_ready_ = false;
     GraphClips graph_src_;

@@ -6,6 +6,7 @@
 #include "ecs/world.h"
 #include "ecs/gameplay_profile.h"
 #include "ecs/gameplay_perks.h"
+#include "ecs/gameplay_melee.h"
 #include "items_templates.h"   // editor/include: the Items editor's templates
 #include "ecs/authorable_components.h"
 #include "ecs/gameplay_attributes.h"
@@ -2829,6 +2830,18 @@ int main() {
                   back[0].view_offset == wd->view_offset && back[0].view_angles == wd->view_angles && back[0].hold == "melee" &&
                   back[0].grip_rot == wd->grip_rot);
         }
+        // 0.9.1: a blade fought with moves -- its moveset, its edge (hilt to tip), the view it asks for.
+        ecs::register_items_text("weapon s91_blade\n  name Blade\n  damage 30\n  melee 2.4 110\n  moveset s91_moves\n"
+                                 "  blade 0 0.12 0.02  0 0.82 0.178\n  camera orbit\nend\n");
+        if (const ecs::WeaponDef* bd = ecs::find_weapon("s91_blade")) {
+            const auto back = ecs::parse_weapons_text(ecs::weapon_def_text(*bd));
+            check("weapon data: moveset, blade (hilt, tip) and camera read and written back",
+                  bd->moveset == "s91_moves" && bd->blade_hilt == glm::vec3(0, 0.12f, 0.02f) && bd->blade_tip == glm::vec3(0, 0.82f, 0.178f) &&
+                      bd->camera == "orbit" && back.size() == 1 && back[0].moveset == "s91_moves" && back[0].blade_hilt == bd->blade_hilt &&
+                      back[0].blade_tip == bd->blade_tip && back[0].camera == "orbit");
+        } else {
+            check("weapon data: moveset, blade (hilt, tip) and camera read and written back", false);
+        }
         ecs::World w;
         const ecs::Entity me = w.create();
         w.add<ecs::Transform>(me, ecs::Transform{});
@@ -3408,7 +3421,10 @@ int main() {
             const auto abilities = ecs::parse_abilities_text(text);
             const auto statuses = ecs::parse_statuses_text(text);
             const auto perks = ecs::parse_perks_text(text);
-            bool ok = doc.entries.size() == blocks && abilities.size() + statuses.size() + perks.size() == blocks &&
+            const auto movesets = ecs::parse_movesets_text(text);
+            size_t weapons = 0;
+            for (const auto& e : doc.entries) weapons += e.kind == ecs::ItemsDoc::Kind::Weapon ? 1 : 0;
+            bool ok = doc.entries.size() == blocks && abilities.size() + statuses.size() + perks.size() + movesets.size() + weapons == blocks &&
                       text.find("{id}") == std::string::npos;
             auto here = [&](const std::string& id) {
                 for (const auto& a : abilities) if (a.id == id) return true;
@@ -3430,10 +3446,277 @@ int main() {
                         if (ac.kind == ecs::TriggerAction::Kind::Apply || ac.kind == ecs::TriggerAction::Kind::Self) ok = ok && here(ac.id);
                 }
             }
+            // A moveset names its moves' clips and its release; a weapon, its moveset (in it).
+            for (const auto& m : movesets) {
+                ok = ok && !m.stance.empty() && !m.moves.empty();
+                for (const auto& mv : m.moves) {
+                    ok = ok && !mv.clip.empty();
+                    if (!mv.charge_release.empty()) {
+                        bool found = false;
+                        for (const auto& o : m.moves) found = found || (o.kind == ecs::MeleeMove::Kind::Attack && o.id == mv.charge_release);
+                        ok = ok && found;
+                    }
+                }
+            }
+            for (const auto& e : doc.entries)
+                if (e.kind == ecs::ItemsDoc::Kind::Weapon && !e.weapon.moveset.empty()) {
+                    bool found = false;
+                    for (const auto& m : movesets) found = found || m.id == e.weapon.moveset;
+                    ok = ok && found;
+                }
             if (!ok) { all = false; bad += std::string(" ") + t.title; }
         }
         if (!all) std::cout << "    templates that do not read whole:" << bad << "\n";
-        check("templates: every ability, status and perk template reads whole (its blocks, and what they name is in it)", all);
+        check("templates: every ability, status, perk and melee template reads whole (its blocks, and what they name is in it)", all);
+    }
+
+    // Melee (0.9.1, gameplay_melee.h): a moveset's chain, buffered presses taken at
+    // the cancel point, hits in their windows (an arc without a blade, the blade swept
+    // when there is one), a dodge's i-frames, a guard and its break, a parry and the
+    // riposte, poise into a stagger, a charged heavy, stamina.
+    {
+        ecs::register_melee_components();
+        ecs::register_items_text(
+            "moveset t_sword\n"
+            "  stance T_Idle\n"
+            "  stamina_regen 50\n"
+            "  stamina_delay 0.5\n"
+            "  attack light1\n"
+            "    input light\n    clip T_L1\n    hit 0.20 0.30\n    cancel 0.40\n    finish 0.60\n    damage 1\n    stamina 10\n    poise 30\n"
+            "  attack light2\n"
+            "    input light\n    after light1\n    clip T_L2\n    hit 0.20 0.30\n    cancel 0.40\n    finish 0.60\n    damage 1.2\n    stamina 10\n    poise 30\n"
+            "  attack heavy1\n"
+            "    input heavy\n    clip T_H\n    charge T_H_Hold 1.0 1.6\n    hit 0.30 0.40\n    finish 0.80\n    damage 2\n    stamina 20\n    poise 60\n    hyperarmor 0.1 0.4\n"
+            "  attack riposte\n"
+            "    input riposte\n    clip T_Rip\n    hit 0.30 0.40\n    finish 1.0\n    damage 4\n"
+            "  dodge roll\n    clip T_Roll\n    iframes 0.05 0.35\n    finish 0.6\n    stamina 15\n"
+            "  dodge backstep\n    clip T_Back\n    iframes 0.02 0.2\n    finish 0.4\n    stamina 8\n"
+            "  guard\n    clip T_Guard\n    absorb 0.8\n    stability 50\n    angle 170\n"
+            "  parry\n    clip T_Parry\n    window 0.0 0.25\n    finish 0.5\n    stamina 5\n"
+            "  react stagger T_Stag 0.6\n"
+            "  react guard_hit T_GHit 0.3\n"
+            "  react guard_break T_GBreak 1.0\n"
+            "  react parried T_Parried 1.2\n"
+            "  react riposted T_Ripd 1.5\n"
+            "end\n");
+        const ecs::MovesetDef* ms = ecs::find_moveset("t_sword");
+        check("moveset: parsed -- 4 attacks, 2 dodges, a guard, a parry, 5 reactions; a chain, a charge, windows",
+              ms && ms->moves.size() == 13 && ms->find(ecs::MeleeMove::Kind::Attack, "light", "light1") == 1 &&
+                  ms->moves[2].charge_max == 1.0f && ms->moves[2].charge_damage == 1.6f && ms->moves[4].iframes.on(0.2f) &&
+                  ms->find(ecs::MeleeMove::Kind::React, "parried") >= 0);
+
+        ecs::World w;
+        ecs::GameplayEventBus bus;
+        auto fighter = [&](glm::vec3 at, float yaw_deg, const char* team) {
+            const ecs::Entity e = w.create();
+            ecs::Transform t;
+            t.position = at;
+            t.rotation = glm::angleAxis(glm::radians(yaw_deg), glm::vec3(0, 1, 0));
+            w.add<ecs::Transform>(e, t);
+            ecs::AttributeSet a;
+            a.define("Health", 200.0f, 0.0f, 200.0f);
+            a.define("Stamina", 100.0f, 0.0f, 100.0f);
+            w.add<ecs::AttributeSet>(e, a);
+            ecs::CombatActor ca;
+            ca.hurt_radius = 0.4f; ca.hurt_height = 1.0f; ca.poise = ca.max_poise = 50.0f;
+            w.add<ecs::CombatActor>(e, ca);
+            ecs::GameplayTags g; g.add(team);
+            w.add<ecs::GameplayTags>(e, g);
+            ecs::MeleeFighter f;
+            f.moveset = "t_sword";
+            f.damage = 20.0f;
+            w.add<ecs::MeleeFighter>(e, f);
+            return e;
+        };
+        const float dt = 1.0f / 60.0f;
+        auto step = [&](ecs::Entity e, const ecs::MeleeInput& in, int frames = 1) {
+            for (int i = 0; i < frames; ++i) ecs::step_melee(w, e, w.get<ecs::MeleeFighter>(e), in, dt, &bus);
+        };
+        auto idle = [&](ecs::Entity e, int frames) { step(e, ecs::MeleeInput{}, frames); };
+        auto hp = [&](ecs::Entity e) { return w.get<ecs::AttributeSet>(e).get("Health"); };
+        auto stam = [&](ecs::Entity e) { return w.get<ecs::AttributeSet>(e).get("Stamina"); };
+        ecs::MeleeInput press_l; press_l.light = true;
+
+        // A faces +Z, B 1.5 m in front of it, facing back (-Z: yaw 180).
+        const ecs::Entity A = fighter({0, 0, 0}, 0.0f, "team.player");
+        const ecs::Entity B = fighter({0, 0, 1.5f}, 180.0f, "team.enemy");
+        idle(B, 1);
+        step(A, press_l);
+        const bool started = w.get<ecs::MeleeFighter>(A).clip == "T_L1" && w.get<ecs::MeleeFighter>(A).clip_fresh &&
+                             std::abs(stam(A) - 90.0f) < 1e-3f;
+        idle(A, 14);        // t ~0.25: in the hit window, an arc in front (no blade)
+        const float hp1 = hp(B);
+        step(A, press_l);   // pressed again during the swing: it waits for light1's cancel point
+        idle(A, 3);         // still in the window: once per swing
+        const bool once = hp(B) == hp1;
+        idle(A, 7);         // t ~0.42: past the cancel point -- light2
+        check("melee: a press starts its attack (its clip, stamina spent); without a blade it reaches in an arc in "
+              "its hit window, once; a press made early waits for the cancel point, then the chain's next",
+              started && std::abs(hp1 - 180.0f) < 1e-3f && once && w.get<ecs::MeleeFighter>(A).clip == "T_L2");
+        idle(A, 40);
+        const bool rested = w.get<ecs::MeleeFighter>(A).act == ecs::MeleeFighter::Act::Ready &&
+                            w.get<ecs::MeleeFighter>(A).clip == "T_Idle";
+        check("melee: the chain's second hits harder (x1.2: 24), poise 2 x 30 of 50 breaks into a stagger; then back "
+              "to its stance", std::abs(hp(B) - 156.0f) < 1e-3f && rested && ecs::melee_move_id(w, B) == "stagger");
+        idle(B, 60);
+
+        // I-frames: B rolls into A's swing.
+        ecs::MeleeInput roll; roll.dodge = true; roll.moving = true; roll.move_dir = {1, 0, 0};
+        step(A, press_l);
+        step(B, roll);
+        const glm::vec3 roll_way = w.get<ecs::MeleeFighter>(B).turn_to;   // (the host turns it there at once)
+        const float hp2 = hp(B);
+        for (int i = 0; i < 20; ++i) { idle(A, 1); idle(B, 1); }
+        check("melee: a roll's invulnerable frames -- the swing goes through (no damage); standing still it is a backstep",
+              hp(B) == hp2 && w.get<ecs::MeleeFighter>(B).clip == "T_Roll");
+        check("melee: a roll goes the way it is pushed (+X), said once (turn_to; gone the next frame)",
+              glm::length(roll_way - glm::vec3(1, 0, 0)) < 1e-4f && glm::length(w.get<ecs::MeleeFighter>(B).turn_to) < 1e-6f);
+        idle(A, 60); idle(B, 60);
+        {
+            // An NPC's fighter as saved: its weapon and how it fights come back.
+            ecs::MeleeFighter mf;
+            mf.weapon = "t_blade"; mf.aggression = 0.9f; mf.defense = 0.1f; mf.moveset = "t_sword";
+            std::vector<uint8_t> bytes;
+            ecs::serialize_melee_fighter(&mf, bytes);
+            ecs::MeleeFighter back;
+            ecs::deserialize_melee_fighter(&back, bytes.data(), bytes.size());
+            check("melee: a Melee Fighter saved and read back (moveset, weapon, aggression, defense)",
+                  back.moveset == "t_sword" && back.weapon == "t_blade" && std::abs(back.aggression - 0.9f) < 1e-6f &&
+                      std::abs(back.defense - 0.1f) < 1e-6f);
+        }
+        {
+            // A heavy whose charge comes from holding into its wind-up; a roll's attack.
+            ecs::register_items_text(
+                "moveset t_combo\n  stance T_Idle\n"
+                "  attack heavy1\n    input heavy\n    clip T_H\n    charge T_H_Hold 1.0 1.5 heavy_rel 0.25\n    hit 0.40 0.50\n"
+                "    finish 0.9\n    damage 2\n    stamina 20\n"
+                "  attack heavy_rel\n    input charged\n    clip T_H_Rel\n    hit 0.10 0.20\n    finish 0.5\n    damage 2\n    stamina 20\n"
+                "  attack roll_light\n    input roll_light\n    clip T_RollAtk\n    hit 0.1 0.2\n    finish 0.5\n"
+                "  attack light1\n    input light\n    clip T_L1\n    hit 0.2 0.3\n    finish 0.6\n"
+                "  dodge roll\n    clip T_Roll\n    iframes 0.05 0.3\n    cancel 0.3\n    finish 0.5\n    stamina 10\n"
+                "end\n");
+            const ecs::Entity C = fighter({20, 0, 0}, 0.0f, "team.player");
+            w.get<ecs::MeleeFighter>(C).moveset = "t_combo";
+            idle(C, 1);
+            const ecs::MovesetDef* cms = ecs::find_moveset("t_combo");
+            ecs::MeleeInput tap; tap.heavy = true; tap.heavy_held = true;
+            step(C, tap);
+            idle(C, 20);   // let go at once: t ~0.33, past the charge point
+            const auto& cf = w.get<ecs::MeleeFighter>(C);
+            const bool tapped = cf.act == ecs::MeleeFighter::Act::Move && cf.clip == "T_H";
+            idle(C, 60);
+            ecs::MeleeInput hold; hold.heavy_held = true;
+            step(C, tap);
+            step(C, hold, 20);   // held past 0.25 s into the wind-up
+            const bool charging = cf.act == ecs::MeleeFighter::Act::Charging && cf.clip == "T_H_Hold";
+            step(C, hold, 20);
+            idle(C, 1);          // let go: the release
+            const bool released = cf.act == ecs::MeleeFighter::Act::Move && cf.clip == "T_H_Rel";
+            check("melee: a heavy tapped swings as it is; held into its wind-up (0.25 s) it charges, let go its release",
+                  cms && std::abs(cms->moves[0].charge_from - 0.25f) < 1e-6f && cms->moves[0].charge_release == "heavy_rel" && tapped &&
+                      charging && released);
+            idle(C, 60);
+            ecs::MeleeInput roll2; roll2.dodge = true; roll2.moving = true; roll2.move_dir = {0, 0, 1};
+            step(C, roll2);
+            idle(C, 5);
+            step(C, press_l);    // pressed in the roll: taken at its cancel point
+            idle(C, 20);
+            check("melee: a light press during a roll is the roll's attack (at the roll's cancel point)", cf.clip == "T_RollAtk");
+            // A weapon after the moveset naming it: its `moveset` line names it, it does not replace it.
+            ecs::register_items_text("moveset t_late\n  stance T_Late\n  attack a\n    clip T_A\nend\n"
+                                     "weapon t_late_blade\n  name Late Blade\n  damage 10\n  melee 2 90\n  moveset t_late\nend\n");
+            const ecs::MovesetDef* late = ecs::find_moveset("t_late");
+            check("moveset: a weapon's `moveset` line (after the block) names it, does not empty it",
+                  late && late->stance == "T_Late" && late->moves.size() == 1 && ecs::find_weapon("t_late_blade") &&
+                      ecs::find_weapon("t_late_blade")->moveset == "t_late");
+        }
+
+        // A guard: B guards; A's hit is blocked (80% stopped), stamina spent.
+        ecs::MeleeInput guard; guard.guard = true;
+        step(B, guard);
+        const float hp3 = hp(B), st3 = stam(B);
+        step(A, press_l);
+        for (int i = 0; i < 20; ++i) { idle(A, 1); step(B, guard); }
+        check("melee: a guard from the front -- 20% of the hit gets through (4), stamina spent, a guard_hit",
+              std::abs(hp(B) - (hp3 - 4.0f)) < 1e-3f && stam(B) < st3);
+        // Its stamina gone: the guard breaks, and B is open to a riposte.
+        w.get<ecs::AttributeSet>(B).find("Stamina")->current = 1.0f;
+        idle(A, 60);
+        for (int i = 0; i < 3; ++i) step(B, guard);
+        step(A, press_l);
+        for (int i = 0; i < 20; ++i) { idle(A, 1); step(B, guard); }
+        const bool broken = ecs::melee_move_id(w, B) == "guard_break" && w.get<ecs::MeleeFighter>(B).vulnerable > 0.0f;
+        idle(A, 30);
+        const float hp4 = hp(B);
+        step(A, press_l);   // a light press near one open: the riposte
+        const bool riposting = ecs::melee_move_id(w, A) == "riposte" && ecs::melee_move_id(w, B) == "riposted";
+        idle(A, 30);
+        check("melee: out of stamina the guard breaks (open to a riposte); a light press near it is the riposte -- "
+              "both their clips, x4 damage (80)", broken && riposting && std::abs(hp(B) - (hp4 - 80.0f)) < 1e-3f);
+        idle(A, 120); idle(B, 120);
+
+        // A parry: B parries as A's swing lands -- A is thrown open, no damage.
+        w.get<ecs::AttributeSet>(B).find("Stamina")->current = 100.0f;
+        const float hp5 = hp(B);
+        step(A, press_l);
+        idle(A, 10);
+        ecs::MeleeInput parry; parry.parry = true;
+        step(B, parry);
+        for (int i = 0; i < 10; ++i) { idle(A, 1); idle(B, 1); }
+        check("melee: a parry in its window -- no damage, the attacker parried (open to a riposte)",
+              hp(B) == hp5 && ecs::melee_move_id(w, A) == "parried" && w.get<ecs::MeleeFighter>(A).vulnerable > 0.0f);
+        idle(A, 120); idle(B, 120);
+
+        // A charged heavy: held half its time (x1.3), with hyperarmor.
+        ecs::MeleeInput hold; hold.heavy = true; hold.heavy_held = true;
+        ecs::MeleeInput held; held.heavy_held = true;
+        w.get<ecs::CombatActor>(B).poise = 50.0f;
+        const float hp6 = hp(B);
+        step(A, hold);
+        const bool charging = w.get<ecs::MeleeFighter>(A).act == ecs::MeleeFighter::Act::Charging &&
+                              w.get<ecs::MeleeFighter>(A).clip == "T_H_Hold";
+        step(A, held, 29);   // 0.5 s held
+        idle(A, 1);           // let go: the swing
+        idle(A, 22);          // into its hit window
+        check("melee: a heavy held charges (its hold clip), let go it swings -- 20 x 2 x 1.3 = 52",
+              charging && std::abs(hp(B) - (hp6 - 52.0f)) < 0.2f);
+        idle(A, 120); idle(B, 120);
+
+        // Stamina: none left, no attack; back after its pause.
+        w.get<ecs::AttributeSet>(A).find("Stamina")->current = 0.0f;
+        w.get<ecs::MeleeFighter>(A).since_spent = 0.0f;
+        step(A, press_l);
+        const bool refused = ecs::melee_move_id(w, A).empty();
+        idle(A, 60);
+        check("melee: no stamina, no attack; it comes back after its pause (50 a second)", refused && stam(A) > 20.0f);
+
+        // The blade swept: a segment passing through C's hurtbox in the window.
+        const ecs::Entity C = fighter({5, 0, 6}, 180.0f, "team.enemy");
+        const ecs::Entity D = fighter({5, 0, 5}, 0.0f, "team.player");
+        const float hpc = hp(C);
+        step(D, press_l);
+        for (int i = 0; i < 20; ++i) {
+            auto& fd = w.get<ecs::MeleeFighter>(D);
+            const float s = static_cast<float>(i) / 19.0f;   // the blade swings from the left to the right, in front
+            fd.blade = true;
+            fd.blade_a = glm::vec3(5, 1, 5.2f);
+            fd.blade_b = glm::vec3(5 - 1.2f + 2.4f * s, 1, 6.0f);
+            idle(D, 1);
+        }
+        const float hp_swept = hp(C);
+        const ecs::Entity E = fighter({9, 0, 10}, 180.0f, "team.enemy");
+        const ecs::Entity F = fighter({9, 0, 9}, 0.0f, "team.player");
+        const float hpe = hp(E);
+        step(F, press_l);
+        for (int i = 0; i < 20; ++i) {
+            auto& ff = w.get<ecs::MeleeFighter>(F);
+            ff.blade = true;   // held back, away from E the whole swing
+            ff.blade_a = glm::vec3(9, 1, 8.8f);
+            ff.blade_b = glm::vec3(9, 1, 8.0f);
+            idle(F, 1);
+        }
+        check("melee: with a blade, what it sweeps through is hit (20); a blade that never reaches does not hit, "
+              "however near in front", std::abs(hp_swept - (hpc - 20.0f)) < 1e-3f && hp(E) == hpe);
     }
 
     if (g_fail == 0) { std::cout << "gameplay_check: ALL OK\n"; return 0; }

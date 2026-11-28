@@ -5,6 +5,7 @@
 #include "ecs/gameplay_movement.h"
 #include "ecs/gameplay_camera.h"
 #include "ecs/gameplay_ability_cast.h"
+#include "ecs/gameplay_melee.h"        // Melee Fighter
 #include "ecs/authorable_components.h"
 #include "ecs/gameplay_attributes.h"   // custom drawer for the data-driven AttributeSet
 #include "ecs/gameplay_tags.h"         // custom drawer for data-driven GameplayTags
@@ -664,6 +665,46 @@ bool draw_camera_rig(void* comp) {
     f("wall clearance", &r.collision_radius, 0.01f, 0.0f, 2.0f, "%.2f m");
     f("closest", &r.min_distance, 0.01f, 0.0f, 10.0f, "%.2f m");
     f("return speed", &r.return_speed, 0.05f, 0.1f, 100.0f, "%.1f m/s");
+    if (ImGui::Checkbox("orbit", &r.orbit)) changed = true;
+    ImGui::SetItemTooltip("The mouse turns the camera round the player, not the player; the player turns toward\n"
+                          "where it goes (locked on: toward its target). A held weapon or a tag can ask for it too.");
+    if (r.orbit) f("turn rate", &r.turn_rate, 5.0f, 30.0f, 3600.0f, "%.0f deg/s");
+    return changed;
+}
+
+// Melee Fighter (0.9.1): moves from a moveset (gameplay_melee.h).
+bool draw_melee_fighter(void* comp) {
+    auto& m = *static_cast<ecs::MeleeFighter*>(comp);
+    bool changed = false;
+    auto text = [&](const char* label, std::string& s) {
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "%s", s.c_str());
+        if (ImGui::InputText(label, buf, sizeof buf)) { s = buf; changed = true; }
+    };
+    const ecs::WeaponDef* wd = m.weapon.empty() ? nullptr : ecs::find_weapon(m.weapon);
+    if (ImGui::BeginCombo("weapon", wd ? wd->name.c_str() : (m.weapon.empty() ? "(none: its own moveset)" : m.weapon.c_str()))) {
+        if (ImGui::Selectable("(none: its own moveset)", m.weapon.empty())) { m.weapon.clear(); changed = true; }
+        for (const auto& d : ecs::weapon_registry())
+            if (!d.moveset.empty() && ImGui::Selectable(d.name.c_str(), d.id == m.weapon)) { m.weapon = d.id; changed = true; }
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("A weapon with a moveset (an NPC's): its moves, damage and blade. The player's\n"
+                          "comes from the weapon in its hand instead.");
+    if (!wd) {
+        text("moveset", m.moveset);
+        if (!m.moveset.empty() && !ecs::find_moveset(m.moveset)) ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "no moveset '%s' in the project's .items", m.moveset.c_str());
+        if (ImGui::DragFloat("damage", &m.damage, 0.5f, 0.0f, 100000.0f, "%.1f")) changed = true;
+        text("damage type", m.damage_type);
+    }
+    if (ImGui::DragFloat("blade radius", &m.blade_radius, 0.005f, 0.0f, 2.0f, "%.3f m")) changed = true;
+    ImGui::SeparatorText("as an NPC");
+    if (ImGui::SliderFloat("aggression", &m.aggression, 0.0f, 1.0f, "%.2f")) changed = true;
+    ImGui::SetItemTooltip("How soon it attacks once in reach, and how long its combos run.");
+    if (ImGui::SliderFloat("defense", &m.defense, 0.0f, 1.0f, "%.2f")) changed = true;
+    ImGui::SetItemTooltip("How often it guards or dodges a swing it sees coming.");
+    if (const ecs::MovesetDef* ms = ecs::find_moveset(wd ? wd->moveset : m.moveset))
+        ImGui::TextDisabled("%s: %d moves%s", ms->name.empty() ? ms->id.c_str() : ms->name.c_str(), static_cast<int>(ms->moves.size()),
+                            m.act == ecs::MeleeFighter::Act::Move ? " (in a move)" : "");
     return changed;
 }
 
@@ -961,6 +1002,8 @@ bool draw_ecs_component_inspector(EcsSceneBridge& bridge, schizo::scene::Transfo
                         if (draw_ability_bar(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Camera Rig") == 0) {
                         if (draw_camera_rig(comp)) changed = true;
+                    } else if (std::strcmp(ct.name, "Melee Fighter") == 0) {
+                        if (draw_melee_fighter(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Move Animation") == 0) {
                         if (draw_move_animation(comp)) changed = true;
                     } else if (std::strcmp(ct.name, "Vehicle") == 0) {

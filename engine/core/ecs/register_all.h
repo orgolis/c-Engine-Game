@@ -35,6 +35,7 @@
 #include "gameplay_movement.h"
 #include "gameplay_camera.h"
 #include "gameplay_ability_cast.h"
+#include "gameplay_melee.h"
 #include "gameplay_perks.h"
 #include "gameplay_life.h"
 #include "gameplay_vehicles.h"
@@ -66,6 +67,7 @@ inline void register_all_components() {
     register_movement_components();      // Movement, Move Animation (C4)
     register_camera_components();        // Camera Rig (C4)
     register_ability_cast_components();  // Ability Bar (C5)
+    register_melee_components();         // Melee Fighter (0.9.1)
     register_perk_components();          // Perks (0.8.68)
     register_loadout_components();       // Weapon Loadout (the guns carried)
     register_life_components();          // Mortal (D0)

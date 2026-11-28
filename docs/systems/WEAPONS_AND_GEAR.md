@@ -46,6 +46,10 @@ reload is `reload_<weapon id>=...`.
 
 ### Melee weapons
 
+(A blade fought with moves -- chains, a charged heavy, a roll, a guard, a
+parry -- has a `moveset`: docs/systems/MELEE.md. What follows is the single
+swing of a blade without one.)
+
 ```
 weapon sword
   name Sword

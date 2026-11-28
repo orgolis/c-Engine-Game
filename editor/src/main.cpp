@@ -129,6 +129,8 @@
 #include "biome_water.h"          // the water a biome map treats as wet
 #include "world_preset.h"         // a whole landscape from one choice
 #include "player_weapon.h"        // the player's gun in Play: input, recoil, aim, tracers, impacts
+#include "melee_play.h"           // blades in Play: movesets on bodies, root motion, hit-stop, lock-on (0.9.1)
+#include "play_camera_mode.h"     // which camera the player gets: its rig, its weapon's, a tag's
 #include "player_abilities.h"     // the player's abilities in Play: keys 1..8, hotbar (C5)
 #include "player_templates.h"     // Create > Player templates (C6)
 #include "play_save.h"            // F6 / F9 and scripts save and load in Play (C6)
@@ -526,6 +528,8 @@ struct EditorState {
     // pointers + dt/time are refreshed every frame.
     schizo::editor::ScriptSystem    script_system;
     schizo::editor::PlayerWeapon    player_weapon;   // the player's gun in Play (C3)
+    schizo::editor::MeleePlay       melee_play;      // blades in Play (0.9.1)
+    schizo::ecs::CameraRig          play_rig_scratch;   // the camera a weapon or a tag asked for
     schizo::editor::PlayerAbilities player_abilities; // the player's ability bar in Play (C5)
     // Player templates waiting for the bridge to mirror their new entity.
     std::vector<std::pair<uint32_t, schizo::editor::PlayerTemplate>> pending_player_templates;
@@ -734,6 +738,7 @@ static void EndPlayMode(EditorState& st, const std::shared_ptr<schizo::scene::Sc
 
     st.scene_playback_manager->StopPlayback();
     schizo::editor::play_ui().reset();
+    st.melee_play.reset();
     st.scene_playback_manager->SetGamePaused(false);
     st.scene_playback_manager->SetUiHasInput(false);
     // What Play hid comes back, what it made goes, the gameplay values are
@@ -6722,6 +6727,26 @@ static void DrawPickupLabels(EditorState& st, ImDrawList* dl, ImVec2 image_min, 
     const float vw = image_max.x - image_min.x, vh = image_max.y - image_min.y;
     if (vw < 50.0f || vh < 50.0f) return;
     // The camera as the renderer has it this frame (see the frame's CameraData).
+    if (glm::vec3 lock_at; st.ecs_bridge && st.melee_play.lock_point(st.ecs_bridge->world(), lock_at)) {
+        // Melee: what the player is locked on to -- a ring on it.
+        const glm::vec3 le = cam_e->GetTransform()->GetWorldPosition();
+        const glm::quat lr = cam_e->GetTransform()->GetWorldRotation();
+        const glm::mat4 lview = glm::lookAt(le, le + lr * glm::vec3(0.0f, 0.0f, -1.0f), lr * glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::mat4 lproj = glm::perspective(glm::radians(schizo::editor::play_settings().fov > 0.0f ? schizo::editor::play_settings().fov : 45.0f),
+                                           vw / vh, 0.1f, 1000.0f);
+        if (auto lcc = cam_e->GetComponent<schizo::scene::CameraComponent>(); lcc && !(schizo::editor::play_settings().fov > 0.0f))
+            lproj = lcc->GetProjectionMatrix(vw / vh);
+        lproj[1][1] *= -1.0f;
+        const glm::vec4 c = lproj * lview * glm::vec4(lock_at, 1.0f);
+        if (c.w > 0.05f) {
+            const glm::vec3 ndc = glm::vec3(c) / c.w;
+            const ImVec2 p(image_min.x + (ndc.x * 0.5f + 0.5f) * vw, image_min.y + (ndc.y * 0.5f + 0.5f) * vh);
+            const float r = 7.0f * k;
+            dl->AddCircle(p, r + 1.5f, schizo::editor::hud32(0, 0, 0, 150), 20, 3.5f);
+            dl->AddCircle(p, r, schizo::editor::hud32(255, 245, 225, 235), 20, 2.0f);
+            dl->AddCircleFilled(p, 2.0f * k, schizo::editor::hud32(255, 245, 225, 235));
+        }
+    }
     const glm::vec3 eye = cam_e->GetTransform()->GetWorldPosition();
     const glm::quat er = cam_e->GetTransform()->GetWorldRotation();
     const glm::mat4 view = glm::lookAt(eye, eye + er * glm::vec3(0.0f, 0.0f, -1.0f), er * glm::vec3(0.0f, 1.0f, 0.0f));
@@ -10014,6 +10039,10 @@ int main(int argc, char** argv) {
             int  idle = -1, fire = -1, reload = -1, draw = -1;
         };
         std::unordered_map<std::string, ViewModel> viewmodels;
+        // The weapon in the player's hand seen from outside (a third-person camera), one
+        // actor per model file.
+        std::unordered_map<std::string, std::unique_ptr<schizo::editor::ImportedSkinnedActor>> held_models;
+        std::unordered_set<std::string> held_tried;
         struct {
             std::string weapon;
             bool reloading = false;
@@ -11677,9 +11706,12 @@ int main(int argc, char** argv) {
                 bool sk_first_person = true;
                 if (sk_player) {
                     const uint32_t pid = ecs_bridge.ecs_entity_id(sk_player->GetTransform());
-                    if (pid != schizo::editor::kNoEcsEntity)
-                        if (const auto* rig = ecs_bridge.world().try_get<schizo::ecs::CameraRig>(static_cast<schizo::ecs::Entity>(pid)))
+                    if (pid != schizo::editor::kNoEcsEntity) {
+                        static schizo::ecs::CameraRig sk_rig_scratch;
+                        if (const auto* rig = schizo::editor::play_camera_rig(ecs_bridge.world(), static_cast<schizo::ecs::Entity>(pid),
+                                                                              editor_state.player_weapon.hud().weapon_id, sk_rig_scratch))
                             sk_first_person = !rig->third_person;
+                    }
                 }
                 // GWS_TEST_PLAY_CAMERA: the game drawn from a fixed camera outside the
                 // player -- the player's own body is seen there, animated.
@@ -11845,6 +11877,10 @@ int main(int argc, char** argv) {
                 static const bool no_springs = std::getenv("GWS_NO_SPRINGS") != nullptr;
                 static const bool no_lean = std::getenv("GWS_NO_LEAN") != nullptr;
                 std::vector<PoseJob> pose_jobs;
+                // Melee fighters' bodies: their blades and root motion read once they are posed.
+                struct MeleeBody { schizo::ecs::Entity e; schizo::editor::ImportedSkinnedActor* actor; uint32_t who; bool player; };
+                std::vector<MeleeBody> melee_after;
+                schizo::editor::ImportedSkinnedActor* player_body = nullptr;   // (the weapon in its hand, seen from outside)
                 auto advance_clip = [&](const std::shared_ptr<schizo::scene::Entity>& who,
                                         schizo::editor::ImportedSkinnedActor& a, float step) -> PoseJob& {
                     pose_jobs.push_back(PoseJob{who, &a, step});
@@ -11906,6 +11942,7 @@ int main(int argc, char** argv) {
                     CharAnim& ca = char_anim[ent->GetId()];
                     const bool is_player = is_player_part(ent.get());
                     if (is_player && !attached && fp_src_path.empty()) { fp_src_path = smc->gltf_path; fp_src_clips = smc->clips; }
+                    if (is_player && !attached && !player_body && smc->drive_from_gameplay) player_body = actor;
 
                     if (attached) {
                         // Held: drawn at the parent's bone.
@@ -11975,6 +12012,11 @@ int main(int argc, char** argv) {
                                 if (const auto* qa = std::as_const(*q).GetNpcAgentComponent(); qa && qa->enabled) { who = q; break; }
                             }
                         const bool dead = schizo::editor::EditorNpcAgents::dead(ecs_bridge, who->GetTransform());
+                        // Melee (0.9.1): whose fighter this body shows (its moves play on it).
+                        schizo::ecs::Entity melee_e = schizo::ecs::null_entity;
+                        if (const uint32_t mid = ecs_bridge.ecs_entity_id(who->GetTransform()); mid != schizo::editor::kNoEcsEntity)
+                            melee_e = static_cast<schizo::ecs::Entity>(mid);
+                        const bool melee_fighter = editor_state.melee_play.fighting(ecs_bridge.world(), melee_e);
                         bool aiming = false, staggered = false;
                         uint32_t shots = ca.shots;
                         bool reloading = false, crouched = false, melee = false;
@@ -12195,8 +12237,11 @@ int main(int argc, char** argv) {
                             }
                             // The arms: a shot (or a swing), a reload, a hit -- one-shots on the upper slot.
                             const char* arms_slot = gdef.slot("upper") >= 0 ? "upper" : "full";
+                            const bool melee_body = editor_state.melee_play.drive_body(ecs_bridge.world(), melee_e, *actor, ent->GetId(), dead);
                             if (dead) {
                                 if (!ca.dead) actor->stop_montage(arms_slot, 0.1f);
+                            } else if (melee_body) {
+                                // its moves play on it (melee_play.h): no shots, swings or flinches of its own
                             } else {
                                 int arms = -1;
                                 if (ca.fired_now && melee && C[CharAnim::Melee] >= 0) arms = C[CharAnim::Melee];
@@ -12509,8 +12554,10 @@ int main(int argc, char** argv) {
                             schizo::editor::anim::decay(off, ca.acc_s, 0.1f, sdt);
                             ca.vel_s = hvel + off;
                         }
+                        if (melee_fighter && !dead) melee_after.push_back({melee_e, actor, who->GetId(), is_player});
                         if (const float adt = ca.limp ? -1.0f : anim_dt(ent->GetId(), *actor, sk_tf->GetWorldPosition(), is_player); adt >= 0.0f) {
-                            PoseJob& job = advance_clip(ent, *actor, adt * smc->speed);
+                            // (held still a moment by a blade's hit: hit-stop)
+                            PoseJob& job = advance_clip(ent, *actor, adt * smc->speed * (melee_fighter ? editor_state.melee_play.time_scale(melee_e) : 1.0f));
                             job.look_dt = adt;
                             if (actor->has_feet()) {
                                 if (is_player) actor->set_report_feet(true);
@@ -12574,6 +12621,32 @@ int main(int argc, char** argv) {
                     actor->set_model(sk_tf->GetWorldMatrix());
                 }
                 flush_poses();
+                }
+
+                // ---- melee: what the posed bodies did (0.9.1) ----------------------
+                // Each fighter's blade where its hand holds it now, and its root motion: the
+                // player's goes to its movement (as it steps), an NPC's moves it here (not
+                // through walls); an NPC turns as its move says (the player in its step).
+                for (const auto& mb : melee_after) {
+                    auto& mw = ecs_bridge.world();
+                    editor_state.melee_play.after_pose(mw, mb.e, *mb.actor);
+                    if (mb.player) continue;
+                    auto who_ent = sk_scene->GetEntityById(mb.who);
+                    auto* wt = who_ent ? who_ent->GetTransform() : nullptr;
+                    if (!wt) continue;
+                    glm::vec3 d = editor_state.melee_play.take_root_motion(mb.e);
+                    d.y = 0.0f;
+                    if (const float dlen = glm::length(d); dlen > 1e-5f) {
+                        if (feet_pw) {
+                            const glm::vec3 from = wt->GetWorldPosition() + glm::vec3(0.0f, 0.6f, 0.0f);
+                            const auto h = feet_pw->raycast_static(from, d / dlen, dlen + 0.35f);
+                            if (h.hit && std::fabs(h.normal.y) < 0.7f) d *= std::max(0.0f, h.distance - 0.35f) / dlen;
+                        }
+                        wt->SetLocalPosition(wt->GetLocalPosition() + d);
+                    }
+                    const glm::vec3 nf = wt->GetWorldRotation() * glm::vec3(0.0f, 0.0f, 1.0f);
+                    const float turn = editor_state.melee_play.turn_of(mw, mb.e, nf, static_cast<float>(delta_time), true);
+                    if (std::fabs(turn) > 1e-5f) wt->SetWorldRotation(glm::angleAxis(turn, glm::vec3(0.0f, 1.0f, 0.0f)) * wt->GetWorldRotation());
                 }
 
                 // ---- the support hand on the gun (third person) ---------------------
@@ -12652,11 +12725,34 @@ int main(int argc, char** argv) {
                     return false;
                 };
 
+                // ---- the weapon in the player's hand, seen from outside (0.9.1) -------
+                // With a third-person camera the weapon in hand (its `model`) is drawn at the
+                // body's grip bone, held as its `grip` says -- where a blade's edge is swung.
+                if (const schizo::ecs::WeaponDef* hwd = (sk_playing && !sk_first_person && player_body && !pw_hud.weapon_id.empty())
+                                                            ? schizo::ecs::find_weapon(pw_hud.weapon_id) : nullptr;
+                    hwd && !hwd->model.empty()) {
+                    auto& held = held_models[hwd->model];
+                    if (!held && held_tried.insert(hwd->model).second) {
+                        std::string err;
+                        held = schizo::editor::ImportedSkinnedActor::create(&device, mat_layout, mat_pool, &texture_manager, hwd->model,
+                                                                            glm::vec3(0.0f), &err);
+                        if (!held) spdlog::error("[held] '{}' failed to load: {}", hwd->model, err);
+                    }
+                    const int gb = player_body->find_bone(hwd->grip_bone.empty() ? std::string("weapon_socket") : hwd->grip_bone);
+                    if (held && gb >= 0) {
+                        held->set_model(player_body->bone_world(gb) * glm::translate(glm::mat4(1.0f), hwd->grip_pos) *
+                                        glm::mat4_cast(glm::quat(glm::radians(hwd->grip_rot))));
+                        held->refresh_pose();
+                        extra_skinned.push_back(held.get());
+                    }
+                }
+
                 // ---- the gun in the player's hands, in first person ---------------
                 editor_state.player_weapon.clear_view_muzzle();
                 vm_drawn = nullptr;
                 vm_follow = nullptr;
-                const schizo::ecs::WeaponDef* vwd = (sk_playing && sk_first_person && pw_hud.armed && !pw_hud.weapon_id.empty())
+                const schizo::ecs::WeaponDef* vwd = (sk_playing && sk_first_person && (pw_hud.armed || editor_state.melee_play.player_drawn()) &&
+                                                     !pw_hud.weapon_id.empty())
                                                         ? schizo::ecs::find_weapon(pw_hud.weapon_id) : nullptr;
                 const auto* vcam = sk_playing ? sk_pm->GetPlaybackCamera() : nullptr;
                 if (vwd && !vwd->model.empty() && vcam && vcam->GetTransform()) {
@@ -13938,13 +14034,30 @@ int main(int argc, char** argv) {
                     }
                 }
                 pm.SetPlayerMovementSettings(ms);
-                // The Camera Rig on the player, if it has one (third person).
+                // The player's camera: its Camera Rig, unless what it holds or a tag asks
+                // for another (play_camera_mode.h).
                 const schizo::ecs::CameraRig* rig = nullptr;
                 if (auto* pl = pm.GetPlayerEntity()) {
                     const uint32_t pid = ecs_bridge.ecs_entity_id(pl->GetTransform());
                     const auto pe = static_cast<schizo::ecs::Entity>(pid);
-                    if (pid != schizo::editor::kNoEcsEntity && ecs_bridge.world().valid(pe))
-                        rig = ecs_bridge.world().try_get<schizo::ecs::CameraRig>(pe);
+                    if (pid != schizo::editor::kNoEcsEntity && ecs_bridge.world().valid(pe)) {
+                        rig = schizo::editor::play_camera_rig(ecs_bridge.world(), pe, editor_state.player_weapon.hud().weapon_id,
+                                                              editor_state.play_rig_scratch);
+                        // Melee: a move's root motion carries the player (the controls do not), a
+                        // drawn blade's dash key is its dodge, a lock-on turns it and the camera.
+                        auto& mp = editor_state.melee_play;
+                        auto& mw = ecs_bridge.world();
+                        pm.SetMeleeDrawn(mp.player_drawn());
+                        const bool in_move = mp.player_in_move(mw);
+                        pm.SetMeleeMove(in_move, mp.take_player_root_motion());
+                        glm::vec3 lock_at(0.0f);
+                        if (mp.lock_point(mw, lock_at)) {
+                            pm.SetCameraLook(true, lock_at);
+                            if (!in_move) pm.SetFaceOverride(true, lock_at - pl->GetTransform()->GetWorldPosition(), 540.0f);
+                        } else {
+                            pm.SetCameraLook(false);
+                        }
+                    }
                 }
                 // GWS_TEST_RIG=1 (with GWS_TEST_PLAY): a third-person rig on the
                 // player, aiming for a while -- for a screenshot.
@@ -14213,6 +14326,66 @@ int main(int argc, char** argv) {
                         editor_state.player_abilities.update(delta_time, pm, ecs_bridge, ct->GetWorldPosition(),
                                                              ct->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f), ain,
                                                              editor_state.shot_effects, &editor_state.play_effects);
+                        // Blades (0.9.1): the player's presses with a moveset weapon drawn, every
+                        // fighter's frame (NPCs' presses from their AI), the player's turn, and what
+                        // the blades did -- sparks, blood, a shake, where a hit came from.
+                        if (auto* mpl = pm.GetPlayerEntity()) {
+                            auto& mw = ecs_bridge.world();
+                            auto& mp = editor_state.melee_play;
+                            const uint32_t mpid = ecs_bridge.ecs_entity_id(mpl->GetTransform());
+                            const auto mpe = mpid != schizo::editor::kNoEcsEntity ? static_cast<schizo::ecs::Entity>(mpid) : schizo::ecs::null_entity;
+                            // (An online client swings the single networked way: its hits are the host's.)
+                            editor_state.player_weapon.use_movesets = !editor_state.online_game.client();
+                            const bool drawn = mp.arm_player(mw, mpe, editor_state.player_weapon.use_movesets
+                                                                          ? editor_state.player_weapon.hud().weapon_id : std::string());
+                            mp.update_lock(mw, drawn && focus && acts.pressed("lock_on"), ct->GetWorldPosition(),
+                                           ct->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f));
+                            const auto& mst = pm.GetPlayerMovementState();
+                            const schizo::ecs::MeleeInput pin = mp.player_input(focus && drawn ? &acts : nullptr, pm.GetMoveIntent(), mst.sprinting, !mst.grounded);
+                            mp.step(mw, &ecs_bridge.events(), static_cast<float>(delta_time), pin,
+                                    [&](schizo::ecs::Entity e) { return editor_state.npc_agents.melee_input(e); });
+                            if (drawn) {
+                                const float turn = mp.turn_of(mw, mpe, mpl->GetTransform()->GetForward(), static_cast<float>(delta_time), pm.OrbitActive());
+                                if (std::fabs(turn) > 1e-5f) mpl->GetTransform()->Rotate(glm::vec3(0.0f, 1.0f, 0.0f), turn);
+                            }
+                            static const bool log_melee = std::getenv("GWS_TEST_PLAY") != nullptr;
+                            // Automated runs: the player's blade and camera, twice a second.
+                            if (static int melee_frames = 0; log_melee && ++melee_frames % 30 == 0) {
+                                const auto* mf = mw.valid(mpe) ? mw.try_get<schizo::ecs::MeleeFighter>(mpe) : nullptr;
+                                const glm::vec3 pp = mpl->GetTransform()->GetWorldPosition(), cp = ct->GetWorldPosition();
+                                const glm::vec3 pf = mpl->GetTransform()->GetForward(), cf = ct->GetWorldRotation() * glm::vec3(0.0f, 0.0f, -1.0f);
+                                spdlog::info("[test] melee: player at ({:.1f}, {:.1f}, {:.1f}) facing ({:.2f}, {:.2f}), camera {:.1f} m off looking ({:.2f}, {:.2f}, {:.2f}); "
+                                             "drawn {} orbit {} locked {} move {} act {} clip '{}' t {:.2f} stamina {:.0f} health {:.0f}",
+                                             pp.x, pp.y, pp.z, pf.x, pf.z, glm::length(cp - pp), cf.x, cf.y, cf.z, drawn, pm.OrbitActive(),
+                                             mp.lock_target() != schizo::ecs::null_entity ? static_cast<int>(static_cast<uint32_t>(mp.lock_target())) : -1,
+                                             mp.player_in_move(mw), mf ? static_cast<int>(mf->act) : -1, mf ? mf->clip : std::string("-"), mf ? mf->t : 0.0f,
+                                             [&] { const auto* a = mw.try_get<schizo::ecs::AttributeSet>(mpe); return a ? a->get("Stamina", -1.0f) : -1.0f; }(),
+                                             [&] { const auto* a = mw.try_get<schizo::ecs::AttributeSet>(mpe); return a ? a->get("Health", -1.0f) : -1.0f; }());
+                            }
+                            for (const auto& h : mp.take_feedback()) {
+                                using K = schizo::ecs::MeleeHitInfo::Kind;
+                                static const char* kind_names[] = {"hit", "riposte", "blocked", "guard broken", "parried", "dodged"};
+                                if (log_melee)
+                                    spdlog::info("[test] melee: {} -> {}: {} ({:.0f} damage, poise {:.0f}) at ({:.2f}, {:.2f}, {:.2f})",
+                                                 static_cast<uint32_t>(h.attacker), static_cast<uint32_t>(h.target), kind_names[static_cast<int>(h.kind)],
+                                                 h.dealt, h.poise, h.at.x, h.at.y, h.at.z);
+                                if (h.kind == K::Dodged) continue;
+                                const auto* at_t = mw.valid(h.attacker) ? mw.try_get<schizo::ecs::Transform>(h.attacker) : nullptr;
+                                const auto* tg_t = mw.valid(h.target) ? mw.try_get<schizo::ecs::Transform>(h.target) : nullptr;
+                                glm::vec3 dir = at_t && tg_t ? tg_t->position - at_t->position : glm::vec3(0.0f, 0.0f, 1.0f);
+                                dir.y = 0.0f;
+                                dir = (glm::length(dir) > 1e-4f ? glm::normalize(dir) : glm::vec3(0.0f, 0.0f, 1.0f)) + glm::vec3(0.0f, 0.35f, 0.0f);
+                                const char* fx = h.kind == K::Riposte ? "riposte" : h.kind == K::Parried ? "parry"
+                                               : (h.kind == K::Blocked || h.kind == K::GuardBroken) ? "block" : "hit";
+                                editor_state.play_effects.melee(fx, mp.weapon_of(mw, h.attacker), h.at, h.kind == K::Parried ? -dir : dir);
+                                if (h.attacker == mpe || h.target == mpe) {
+                                    const float shake = h.kind == K::Riposte ? 0.6f : h.kind == K::GuardBroken ? 0.45f : h.kind == K::Parried ? 0.35f
+                                                      : h.kind == K::Blocked ? 0.15f : (h.poise >= 40.0f ? 0.4f : 0.25f);
+                                    schizo::editor::add_camera_shake(h.target == mpe ? shake * 1.2f : shake);
+                                }
+                                if (h.target == mpe && at_t && h.kind != K::Parried) editor_state.hud_hits.push_back({at_t->position, 0.0f});
+                            }
+                        }
                         // The player's movement bonuses (MoveSpeed, ExtraJumps: passives, buffs).
                         if (auto* mpl = pm.GetPlayerEntity()) {
                             const uint32_t mid = ecs_bridge.ecs_entity_id(mpl->GetTransform());
@@ -17985,6 +18158,7 @@ int main(int argc, char** argv) {
             for (auto& s : flicker.slots) flicker.free_slot(device, s);
         }
         viewmodels.clear();
+        held_models.clear();
         fp_body.actor.reset();
         skinned_actors.clear();
         schizo::editor::clear_skinned_asset_cache();

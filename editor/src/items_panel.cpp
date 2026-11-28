@@ -274,6 +274,42 @@ void draw_weapon(ecs::WeaponDef& w, const ecs::ItemsDoc& d) {
         ImGui::DragFloat("time to aim", &w.ads_time, 0.005f, 0.0f, 2.0f, "%.3f s");
         ImGui::TreePop();
     }
+    if (ImGui::TreeNodeEx("Blade (melee)", w.melee || !w.moveset.empty() ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
+        ImGui::Checkbox("a blade (melee)", &w.melee);
+        ImGui::SetItemTooltip("Swung, not fired: without a moveset, one swing at all in front within its reach and arc.");
+        if (w.melee) {
+            ImGui::DragFloat("reach", &w.melee_reach, 0.02f, 0.1f, 20.0f, "%.2f m");
+            ImGui::DragFloat("arc", &w.melee_arc, 1.0f, 1.0f, 360.0f, "%.0f deg");
+        }
+        // Its moves: a `moveset` block (this file's or another's).
+        std::vector<std::string> sets;
+        for (const auto& e : d.entries)
+            if (e.kind == ecs::ItemsDoc::Kind::Text)
+                for (const auto& m : ecs::parse_movesets_text(e.text)) sets.push_back(m.id);
+        for (const auto& m : ecs::moveset_registry())
+            if (std::find(sets.begin(), sets.end(), m.id) == sets.end()) sets.push_back(m.id);
+        const char* none = "(none: one swing)";
+        if (ImGui::BeginCombo("moveset", w.moveset.empty() ? none : w.moveset.c_str())) {
+            if (ImGui::Selectable(none, w.moveset.empty())) w.moveset.clear();
+            for (const auto& id : sets)
+                if (ImGui::Selectable(id.c_str(), id == w.moveset)) w.moveset = id;
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Its moves (a `moveset` block in an .items file: attacks that chain, a charged heavy, a roll,\n"
+                              "a guard, a parry, the reactions). Held, fire is the light attack, aim the heavy.");
+        if (sets.empty()) ImGui::TextDisabled("No movesets yet: + Moveset adds one to this file.");
+        if (!w.moveset.empty()) {
+            ImGui::DragFloat3("edge from (hilt)", &w.blade_hilt.x, 0.005f, -10.0f, 10.0f, "%.3f");
+            ImGui::DragFloat3("edge to (tip)", &w.blade_tip.x, 0.005f, -10.0f, 10.0f, "%.3f");
+            ImGui::SetItemTooltip("Where its edge runs, in the weapon model's own space: what it sweeps through is hit.");
+        }
+        int cam = w.camera == "first" ? 1 : w.camera == "third" ? 2 : w.camera == "orbit" ? 3 : 0;
+        const char* cams[] = {"as it is (a moveset: orbit)", "first person", "third person (over the shoulder)", "orbit (third person)"};
+        if (ImGui::Combo("camera while held", &cam, cams, 4)) w.camera = cam == 1 ? "first" : cam == 2 ? "third" : cam == 3 ? "orbit" : "";
+        ImGui::SetItemTooltip("The view while it is in hand. Orbit: the mouse turns the camera round the player, who\n"
+                              "turns to where it goes -- the camera of a game fought with a blade.");
+        ImGui::TreePop();
+    }
     if (ImGui::TreeNodeEx("Effects", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("muzzle flash", &w.muzzle_flash);
         ImGui::DragInt("tracer every", &w.tracer_every, 0.05f, 0, 100);

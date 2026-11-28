@@ -222,6 +222,23 @@ public:
     /// An ability's movement: a dash along `dir`, a throw (a leap).
     void DashPlayer(const glm::vec3& dir, float distance, float time = 0.22f) { schizo::ecs::start_dash(player_movement_, dir, distance, time); }
     void LaunchPlayer(const glm::vec3& velocity) { schizo::ecs::launch(player_movement_, velocity); }
+    // Melee (0.9.1). While a move plays its clip carries the player: `delta` (world, this
+    // frame's root motion) moves it, the controls do not (until the next call says so).
+    // With a melee weapon drawn the dash key is the dodge's, not the movement's.
+    void SetMeleeMove(bool on, const glm::vec3& delta) { melee_move_ = on; melee_delta_ = delta; }
+    void SetMeleeDrawn(bool drawn) { melee_drawn_ = drawn; }
+    /// This frame, the player turns toward `dir` (world, flat) at `rate_deg` a second
+    /// instead of the way it goes or looks -- a lock-on. Set each frame (it lapses).
+    void SetFaceOverride(bool on, const glm::vec3& dir = glm::vec3(0.0f), float rate_deg = 720.0f) {
+        face_on_ = on; face_dir_ = dir; face_rate_ = rate_deg;
+    }
+    /// An orbiting camera keeps `point` in view (a lock-on's target). Set each frame.
+    void SetCameraLook(bool on, const glm::vec3& point = glm::vec3(0.0f)) { look_on_ = on; look_point_ = point; }
+    /// The camera goes round the player (a Camera Rig with `orbit` in use).
+    bool OrbitActive() const { return orbit_active_; }
+    /// Where the controls push the player this frame (world, flat, up to 1; zero: not
+    /// pushed) -- a dodge's way, a swing's.
+    glm::vec3 GetMoveIntent() const { return move_intent_; }
     const schizo::ecs::MovementState& GetPlayerMovementState() const { return player_movement_.state; }
     const schizo::ecs::MovementSettings& GetPlayerMovementSettings() const { return player_movement_.settings; }
     /// Whether a scene entity's surface can be climbed (the host answers from
@@ -296,6 +313,15 @@ private:
     // simulated transform is written back each step. The player is a Jolt
     // CharacterVirtual (`player_char_id_`), not a rigid body.
     std::unique_ptr<schizo::physics::PhysicsWorld> physics_world_;
+    bool      melee_move_ = false, melee_drawn_ = false;   // SetMeleeMove / SetMeleeDrawn
+    glm::vec3 melee_delta_{0.0f};
+    bool      face_on_ = false, look_on_ = false;           // SetFaceOverride / SetCameraLook
+    glm::vec3 face_dir_{0.0f}, look_point_{0.0f}, move_intent_{0.0f};
+    float     face_rate_ = 720.0f;
+    bool      orbit_active_ = false;                        // an orbiting rig: the camera's own yaw and pitch
+    float     orbit_yaw_ = 0.0f, orbit_pitch_ = 0.0f;
+    glm::vec3 fp_cam_local_{0.0f};                          // the camera's place on the player as authored
+    bool      fp_cam_known_ = false, rig_was_third_ = false;
     std::unordered_map<uint32_t, uint32_t> entity_bodies_;   // entity id -> BodyId
     std::vector<uint32_t>                  dynamic_entities_; // entity ids w/ dynamic body
     std::vector<uint32_t>                  remote_player_bodies_; // ghost kinematic capsules (BodyIds)

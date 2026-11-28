@@ -87,6 +87,12 @@ struct WeaponDef {
     bool        melee = false;
     float       melee_reach = 2.2f;
     float       melee_arc = 100.0f;
+    // 0.9.1: a melee weapon's moves (a `moveset` block: gameplay_melee.h), its edge --
+    // from the hilt to the tip, in the weapon model's own space -- and the view it asks
+    // for while held ("first", "third", "" no preference).
+    std::string moveset;
+    glm::vec3   blade_hilt = glm::vec3(0.0f, 0.1f, 0.0f), blade_tip = glm::vec3(0.0f, 1.0f, 0.0f);
+    std::string camera;
 };
 
 inline std::vector<WeaponDef>& weapon_registry() { static std::vector<WeaponDef> r; return r; }

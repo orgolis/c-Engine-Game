@@ -1,7 +1,7 @@
 #pragma once
 
 // ============================================================================
-// Items editor templates -- starting points for abilities, statuses and perks.
+// Items editor templates -- starting points for abilities, statuses, perks and movesets.
 // ============================================================================
 //
 // Each template is the text of one or more .items blocks with {id} where the
@@ -15,7 +15,7 @@
 namespace schizo::editor {
 
 struct ItemsTemplate {
-    const char* group;   // Ability | Status | Perk
+    const char* group;   // Ability | Status | Perk | Melee
     const char* title;
     const char* about;
     const char* text;    // {id} is replaced
@@ -103,6 +103,15 @@ inline const std::vector<ItemsTemplate>& items_templates() {
          "perk {id}\n  name Last Stand\n  when hurt\n  if health_below 30\n  every 20\n  do self {id}_shield\n"
          "  about Below 30% health, a 60-point shield (once in 20 s).\nend\n\n"
          "status {id}_shield\n  name Last Stand\n  labels buff\n  duration 6\n  shield 60\nend\n"},
+        // ---- melee (0.9.1) --------------------------------------------------------------------
+        // The clip names are the ones the engine's sample sword clips use (a model's
+        // `<model>@melee.glb` library): a model with its own clips names those instead.
+        {"Melee", "Blade moveset", "Two lights that chain, a heavy that charges when held, a roll and its attack, a guard, a parry and a riposte, and the reactions -- the times in its clips' seconds.",
+         "moveset {id}\n  name Blade Moves\n  stance Sword_Idle\n  stamina_regen 45\n  stamina_delay 0.45\n  attack light1\n    input light\n    clip Sword_Light_1\n    rate 1.15\n    hit 0.17 0.36\n    cancel 0.42\n    finish 0.62\n    stamina 14\n    poise 22\n    track 420\n  attack light2\n    input light\n    after light1\n    clip Sword_Light_2\n    rate 1.15\n    hit 0.16 0.35\n    cancel 0.42\n    finish 0.62\n    damage 1.05\n    stamina 14\n    poise 22\n    track 420\n  attack heavy1\n    input heavy\n    clip Sword_Heavy\n    charge Sword_Heavy_Hold 1.0 1.6 heavy_release 0.30\n    hit 0.44 0.68\n    cancel 0.80\n    finish 0.98\n    damage 1.7\n    stamina 26\n    poise 55\n    hyperarmor 0.20 0.66\n  attack heavy_release\n    input charged\n    clip Sword_Heavy_Release\n    hit 0.12 0.38\n    finish 0.70\n    damage 1.7\n    stamina 26\n    poise 60\n  attack roll_light\n    input roll_light\n    clip Sword_Roll_Attack\n    hit 0.16 0.40\n    finish 0.70\n    damage 1.1\n    stamina 16\n  attack riposte\n    input riposte\n    clip Sword_Riposte\n    hit 0.26 0.42\n    finish 1.30\n    damage 3.2\n    poise 0\n  dodge roll\n    clip Roll\n    iframes 0.04 0.44\n    cancel 0.52\n    finish 0.64\n    stamina 18\n  dodge backstep\n    clip Backstep\n    iframes 0.03 0.24\n    finish 0.40\n    stamina 10\n  guard\n    clip Sword_Guard\n    absorb 0.85\n    stability 45\n    angle 150\n  parry\n    clip Parry\n    window 0.06 0.26\n    finish 0.50\n    stamina 12\n  react stagger Stagger_Light\n  react stagger_heavy Stagger_Heavy\n  react guard_hit Guard_Hit\n  react guard_break Guard_Break\n  react parried Parried\n  react riposted Riposted\nend\n"},
+        {"Melee", "Sword with moves", "A blade fought with a moveset (and the moveset): fire is the light attack, aim the heavy; seen in orbiting third person while held.",
+         "weapon {id}\n  name Sword\n  fire semi\n  damage 40 physical\n  melee 2.4 110\n  range 2.4\n  hold melee\n  moveset {id}_moves\n"
+         "  camera orbit\n  about A blade: light and heavy swings that chain, a roll, a guard, a parry.\nend\n\n"
+         "moveset {id}_moves\n  name Blade Moves\n  stance Sword_Idle\n  stamina_regen 45\n  stamina_delay 0.45\n  attack light1\n    input light\n    clip Sword_Light_1\n    rate 1.15\n    hit 0.17 0.36\n    cancel 0.42\n    finish 0.62\n    stamina 14\n    poise 22\n    track 420\n  attack light2\n    input light\n    after light1\n    clip Sword_Light_2\n    rate 1.15\n    hit 0.16 0.35\n    cancel 0.42\n    finish 0.62\n    damage 1.05\n    stamina 14\n    poise 22\n    track 420\n  attack heavy1\n    input heavy\n    clip Sword_Heavy\n    charge Sword_Heavy_Hold 1.0 1.6 heavy_release 0.30\n    hit 0.44 0.68\n    cancel 0.80\n    finish 0.98\n    damage 1.7\n    stamina 26\n    poise 55\n    hyperarmor 0.20 0.66\n  attack heavy_release\n    input charged\n    clip Sword_Heavy_Release\n    hit 0.12 0.38\n    finish 0.70\n    damage 1.7\n    stamina 26\n    poise 60\n  attack roll_light\n    input roll_light\n    clip Sword_Roll_Attack\n    hit 0.16 0.40\n    finish 0.70\n    damage 1.1\n    stamina 16\n  attack riposte\n    input riposte\n    clip Sword_Riposte\n    hit 0.26 0.42\n    finish 1.30\n    damage 3.2\n    poise 0\n  dodge roll\n    clip Roll\n    iframes 0.04 0.44\n    cancel 0.52\n    finish 0.64\n    stamina 18\n  dodge backstep\n    clip Backstep\n    iframes 0.03 0.24\n    finish 0.40\n    stamina 10\n  guard\n    clip Sword_Guard\n    absorb 0.85\n    stability 45\n    angle 150\n  parry\n    clip Parry\n    window 0.06 0.26\n    finish 0.50\n    stamina 12\n  react stagger Stagger_Light\n  react stagger_heavy Stagger_Heavy\n  react guard_hit Guard_Hit\n  react guard_break Guard_Break\n  react parried Parried\n  react riposted Riposted\nend\n"},
     };
     return t;
 }

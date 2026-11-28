@@ -7,7 +7,7 @@ gives it inspector UI, `.gameplay` sidecar persistence and replication at the sa
 derived from that same registration, so it cannot describe a component the engine does not have,
 and it cannot miss one the engine does.
 
-**49 components** are registered.
+**50 components** are registered.
 
 ## Contents
 
@@ -41,6 +41,7 @@ and it cannot miss one the engine does.
 - [Move Animation](#move-animation)
 - [Camera Rig](#camera-rig)
 - [Ability Bar](#ability-bar)
+- [Melee Fighter](#melee-fighter)
 - [Perks](#perks)
 - [Weapon Loadout](#weapon-loadout)
 - [Mortal](#mortal)
@@ -294,7 +295,7 @@ reflection support for containers.
 
 ## Camera Rig
 
-`schizo::ecs::CameraRig` — 52 bytes
+`schizo::ecs::CameraRig` — 60 bytes
 
 _Custom serialization._ Holds dynamic contents rather than a fixed set of reflected fields,
 so its layout is defined by its own serializer. Field-level documentation for these needs
@@ -303,6 +304,14 @@ reflection support for containers.
 ## Ability Bar
 
 `schizo::ecs::AbilityBar` — 128 bytes
+
+_Custom serialization._ Holds dynamic contents rather than a fixed set of reflected fields,
+so its layout is defined by its own serializer. Field-level documentation for these needs
+reflection support for containers.
+
+## Melee Fighter
+
+`schizo::ecs::MeleeFighter` — 328 bytes
 
 _Custom serialization._ Holds dynamic contents rather than a fixed set of reflected fields,
 so its layout is defined by its own serializer. Field-level documentation for these needs
@@ -462,4 +471,4 @@ reflection support for containers.
 
 ---
 
-_2 components document their fields through reflection; 47 use custom serialization._
+_2 components document their fields through reflection; 48 use custom serialization._

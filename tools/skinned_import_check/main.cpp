@@ -10,6 +10,7 @@
 //   With a path, the rig is written there and kept (so the editor can Import
 //   it). Without, it goes to a temp file and is deleted after the check.
 // ============================================================================
+#include "clip_library.h"
 #include "vulkan/skinned_gltf_loader.h"
 
 #include <glm/glm.hpp>
@@ -286,6 +287,52 @@ int main(int argc, char** argv) {
         glm::quat q = tb ? tb->local_transform.rotation : glm::quat(1,0,0,0);
         check("tip animated to 90deg about X at t=1",
               approx(q.w, 0.70710678f) && approx(q.x, 0.70710678f));
+    }
+
+    // Clip libraries and root motion (clip_library.h, 0.9.1): clips made on a rig
+    // with its bones in another order play on the model by bone NAME; a clip's root
+    // travel over a stretch of time, wrapping round a loop.
+    {
+        using namespace schizo::renderer;
+        Skeleton model, lib;
+        model.AddBone("root");
+        model.AddBone("pelvis", "root");
+        model.AddBone("hand", "pelvis");
+        lib.AddBone("root");
+        lib.AddBone("hand", "root");     // (another order, one bone fewer...)
+        lib.AddBone("tail", "root");     // (...and one the model lacks)
+        auto c = std::make_shared<AnimationClip>("Swing");
+        auto* rb = c->AddBoneAnimation(lib.GetBone("root")->id);
+        BoneTransform k0, k1;
+        k1.position = glm::vec3(0.0f, 0.0f, 2.0f);   // the root carried 2 m forward over a second
+        rb->AddKeyframe(0.0f, k0);
+        rb->AddKeyframe(1.0f, k1);
+        auto* hb = c->AddBoneAnimation(lib.GetBone("hand")->id);
+        BoneTransform h0, h1;
+        h1.rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
+        hb->AddKeyframe(0.0f, h0);
+        hb->AddKeyframe(1.0f, h1);
+        c->AddBoneAnimation(lib.GetBone("tail")->id)->AddKeyframe(0.0f, h1);
+        c->UpdateDuration();
+        std::vector<std::shared_ptr<AnimationClip>> clips;
+        clips.push_back(std::make_shared<AnimationClip>("Swing"));   // an older one of the name: replaced
+        clips.push_back(std::make_shared<AnimationClip>("Idle"));
+        const int added = merge_clips(clips, model, lib, {c});
+        const auto& sw = clips[0];
+        std::vector<BoneTransform> pose(3);
+        sw->SampleLocal(1.0f, false, pose);
+        const uint16_t hand = model.GetBone("hand")->id;
+        check("clip library: a clip made on a rig in another order plays on the model by bone name (the hand turned "
+              "90, the root moved), a bone the model lacks left out, one of the same name replaced",
+              added == 1 && clips.size() == 2 && sw->GetBoneAnimations().size() == 2 && approx(pose[hand].rotation.x, 0.70710678f) &&
+                  approx(pose[model.GetBone("root")->id].position.z, 2.0f));
+        const uint16_t root = model.GetBone("root")->id;
+        const glm::vec3 half = root_travel(*sw, root, 0.25f, 0.75f, false);
+        const glm::vec3 held = root_travel(*sw, root, 0.9f, 1.4f, false);
+        const glm::vec3 wrap = root_travel(*sw, root, 0.9f, 1.1f, true);
+        check("root motion: 1 m between 0.25 and 0.75 s; a once clip held at its end (0.2 m from 0.9); a loop wrapping "
+              "round adds the lap (0.2 + 0.2 m)",
+              approx(half.z, 1.0f) && approx(held.z, 0.2f) && approx(wrap.z, 0.4f));
     }
 
     if (!keep) {

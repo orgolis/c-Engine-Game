@@ -110,6 +110,9 @@ public:
         add("aim", kMouseButton + 1, "Aim");
         add("reload", 'R', "Reload");
         add("interact", 'E', "Use / pick up");
+        add("guard", 342, "Guard (hold)");           // Left Alt
+        add("parry", 'F', "Parry");
+        add("lock_on", kMouseButton + 2, "Lock on");  // the middle button
         for (int i = 1; i <= 8; ++i)
             b_.push_back({"ability_" + std::to_string(i), '0' + i, "Ability " + std::to_string(i)});
         add("next_weapon", kMouseWheelDown, "Next weapon");

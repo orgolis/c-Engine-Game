@@ -62,6 +62,8 @@
 // Names the engine looks up (each falls back to the built-in one):
 //   guns      <weapon>_muzzle, <weapon>_tracer, <weapon>_impact, <weapon>_hit
 //             then muzzle, tracer, impact, impact_actor
+//   melee     <weapon>_melee_hit, _melee_block, _melee_parry, _melee_riposte,
+//             then melee_hit, melee_block, melee_parry, melee_riposte
 //   abilities <vfx>_<stage>, then <element>_<stage>; stages windup (while it
 //             is cast), cast (it goes off), trail (in flight), beam (aimed,
 //             instant), hit (where it lands), area (around the caster), self;
@@ -292,6 +294,31 @@ effect impact_actor
   layer burst  count 1 life 0.05 size 0.24 0.1 color 3 0.6 0.4 1 to 1 0.1 0.1 0
   layer spray  count 14 life 0.25 0.55 speed 1.5 4.5 dir normal spread 55 size 0.05 0.025 color 0.45 0.04 0.03 0.95 to 0.3 0.02 0.02 0.6 blend gravity 9.8 drag 0.8 shape soft
   layer mist   count 6 life 0.35 0.7 speed 0.3 1.1 dir normal spread 60 size 0.12 0.5 color 0.5 0.06 0.05 0.35 to 0.4 0.05 0.05 0 blend drag 3 jitter 0.04
+end
+
+effect melee_hit
+  light 1 0.4 0.3 2 2.5 0.05
+  layer cut    count 1 life 0.06 size 0.5 0.06 color 4 3.4 3 1 to 2 0.6 0.4 0 streak 0.05
+  layer spray  count 18 life 0.25 0.6 speed 2 6 dir normal spread 50 size 0.05 0.02 color 0.5 0.03 0.02 0.95 to 0.3 0.02 0.02 0.5 blend gravity 9.8 drag 0.8 shape soft
+  layer drops  count 8 life 0.4 0.8 speed 1 3 dir any size 0.04 0.03 color 0.42 0.02 0.02 0.9 to 0.3 0.01 0.01 0.6 blend gravity 9.8 shape soft
+  layer mist   count 5 life 0.3 0.6 speed 0.3 1 dir normal spread 60 size 0.15 0.5 color 0.45 0.05 0.04 0.3 to 0.4 0.05 0.05 0 blend drag 3 jitter 0.04
+end
+effect melee_block
+  light 1 0.75 0.45 10 4 0.06
+  layer flash  count 1 life 0.05 size 0.45 0.15 color 8 6 3.5 1 to 3 1.6 0.6 0
+  layer sparks count 26 life 0.15 0.45 speed 4 11 dir any size 0.025 0.01 color 6 4 1.6 1 to 2.5 0.8 0.15 0 streak 0.035 gravity 9.8 drag 1.2
+end
+effect melee_parry
+  light 0.7 0.85 1 30 7 0.12
+  layer flash  count 1 life 0.08 size 1.1 0.3 color 7 8 10 1 to 2 2.6 4 0 shape glow
+  layer ring   count 1 life 0.22 size 0.2 1.6 color 4 5 7 1 to 1 1.4 2.4 0 shape ring ease out
+  layer sparks count 40 life 0.2 0.6 speed 5 14 dir any size 0.03 0.012 color 7 6 4 1 to 3 2 0.8 0 streak 0.04 gravity 7 drag 1.5
+end
+effect melee_riposte
+  light 1 0.35 0.25 8 4 0.12
+  layer cut    count 2 life 0.1 size 0.9 0.1 color 5 3.6 3 1 to 2 0.5 0.3 0 streak 0.06
+  layer spray  count 40 life 0.35 0.8 speed 2.5 8 dir normal spread 60 size 0.07 0.025 color 0.5 0.03 0.02 0.95 to 0.3 0.02 0.02 0.5 blend gravity 9.8 drag 0.7 shape soft
+  layer mist   count 12 life 0.5 1 speed 0.5 1.6 dir any size 0.2 0.8 color 0.45 0.05 0.04 0.35 to 0.4 0.05 0.05 0 blend drag 2.5 jitter 0.06
 end
 
 effect fire_windup

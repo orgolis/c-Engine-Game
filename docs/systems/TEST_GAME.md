@@ -33,7 +33,12 @@ it in the editor.
   its shadow), the gun in hand seen and animated, the full movement set (sprint, crouch, slide,
   dash, mantle, climb), three weapon slots -- a rifle, a pistol and a sword
   to start (keys 1, 2, 3; the mouse wheel or Q switches too), held by the
-  player's own arms in first person -- two
+  player's own arms in first person. The sword is fought with moves
+  (0.9.1, docs/systems/MELEE.md): drawn, the camera orbits in third person;
+  light attacks chain (three), the heavy charges when held, V rolls the way
+  you are pushed (standing: a backstep), Left Alt guards, T parries, the
+  middle mouse button locks on; a stamina bar under the health. Guns go back
+  to first person; a super's form is seen in third person while it lasts -- two
   frag grenades (G, thrown: aim up to throw far), health potions; mortal, comes back from the last
   checkpoint. No mana: abilities cost only their cooldowns. The HUD has
   health, the objective and the level at the top; in the lower left corner the
@@ -82,7 +87,11 @@ it in the editor.
   heavy gunners -- rigged, animated models with guns in their hands -- who
   patrol, aim, shoot (rifle shots and machine-gun bursts that spread at range)
   from cover distance, stagger when hit and fall when killed. Their guns and
-  attacks are `assets/gameplay/soldiers.items`.
+  attacks are `assets/gameplay/soldiers.items`. At two outposts (the first by
+  the river, and one to the south-west: five in all) **swordsmen** fight with
+  the sword's moves (a Melee Fighter with `weapon soldier_sword`, its clips
+  from `rifleman@melee.glb`): they close in, circle, swing in combos, guard
+  and sidestep, and take turns.
 - **Creature camps** (docs/systems/CREATURES_AI.md): creatures wander about
   their camp, see the player only with a clear line (not through hills or
   trees), hear it close by and hear gunfire, and call their camp in. They
@@ -134,8 +143,10 @@ in `input.cfg`; the ability slots are the player's Ability Bar (Slots 4).
 
 ## Keys
 
-WASD move, Shift sprint, Space jump / mantle, Ctrl crouch / slide, V dash,
-left mouse fire, right mouse aim, R reload, 1 / 2 / 3 weapon slots, mouse
+WASD move, Shift sprint, Space jump / mantle, Ctrl crouch / slide, V dash
+(with the sword: roll), left mouse fire (sword: light attack), right mouse aim
+(sword: heavy, held to charge), Left Alt guard, T parry, middle mouse lock on,
+R reload, 1 / 2 / 3 weapon slots, mouse
 wheel / Q switch gun, G grenade, Z / X / C abilities, E open / pick up,
 I inventory, K skill tree, P abilities, Esc menu, F6 save, F9 load, Shift+F1 free the
 mouse. All but Esc can be rebound in Settings. Controls a player saved
@@ -146,8 +157,9 @@ before (Settings) keep their keys: Reset controls there gives these.
 - Creatures are capsules (the soldiers are rigged models); they steer round
   trees but can still get stuck in a dense thicket.
 - No inverse kinematics: a soldier's support hand follows its clip, not the gun.
-- A claw lands at the end of its wind-up if the player is still in reach;
-  there is no blocking or dodging animation.
+- A creature's claw lands at the end of its wind-up if the player is still in
+  reach (the creatures have no moves); the swordsmen at two camps fight with the
+  sword's moves -- they guard, sidestep and take turns.
 - Trees are grown from flat leaf and needle cards without textures: they have
   trunks, branches and crowns, but up close they are not photographic. An
   imported tree model (a foliage layer of kind Model) looks as good as the

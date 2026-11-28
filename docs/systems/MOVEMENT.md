@@ -56,6 +56,12 @@ the aim button with a weapon brings it in over the shoulder (*aim distance*,
 front of it at once; when the wall is gone it eases back out. Untick *third
 person* to keep the component but use the placed camera.
 
+Tick *orbit* for the camera of a game fought with a blade: the mouse turns the
+camera round the player (not the player), and the player turns toward where
+it goes at *turn rate* -- locked on, toward its target. The weapon in hand or a
+tag on the player can ask for first person, third person or orbit for as long
+as it lasts (docs/systems/MELEE.md, "The camera").
+
 ## Animation for each move
 
 If the player (or its rigged model) has **Move Animation**, the model plays a

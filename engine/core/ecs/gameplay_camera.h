@@ -8,6 +8,9 @@
 // person, usually). With one, the camera sits behind and beside the player,
 // looking the way the player looks; aiming brings it in over the shoulder;
 // walls between the player and the camera pull it in (and it eases back out).
+// With `orbit` (0.9.1) the mouse turns the camera round the player instead of
+// turning the player, and the player turns toward where it goes (a lock-on:
+// toward what it is locked on to) -- the camera of a game fought with a blade.
 //
 // `place_camera_rig` is pure: it sees the world through a ray callback.
 // Checked by tools/movement_check.
@@ -36,6 +39,8 @@ struct CameraRig {
     float collision_radius = 0.25f;  // kept clear of walls
     float min_distance     = 0.35f;
     float return_speed     = 5.0f;   // m/s back out once a wall is gone
+    bool  orbit            = false;  // the camera goes round the player; the player turns to where it goes
+    float turn_rate        = 720.0f; // orbit: degrees a second the player turns
 
     // Runtime (not saved)
     float cur_distance = -1.0f;
@@ -83,7 +88,8 @@ inline void serialize_camera_rig(const void* obj, std::vector<uint8_t>& out) {
     const auto& r = *static_cast<const CameraRig*>(obj);
     detail::put_i32(out, 1);
     const float f[] = {r.third_person ? 1.0f : 0.0f, r.distance, r.height, r.shoulder, r.aim_distance,
-                       r.aim_shoulder, r.aim_time, r.collision_radius, r.min_distance, r.return_speed};
+                       r.aim_shoulder, r.aim_time, r.collision_radius, r.min_distance, r.return_speed,
+                       r.orbit ? 1.0f : 0.0f, r.turn_rate};
     detail::put_i32(out, static_cast<int32_t>(sizeof f / sizeof f[0]));
     for (float v : f) detail::put_f32(out, v);
 }
@@ -94,12 +100,14 @@ inline void deserialize_camera_rig(void* obj, const uint8_t* data, size_t n) {
     int32_t ver = 0, count = 0;
     if (!detail::get_i32(p, e, ver) || ver < 1 || !detail::get_i32(p, e, count)) return;
     float* fields[] = {nullptr, &r.distance, &r.height, &r.shoulder, &r.aim_distance,
-                       &r.aim_shoulder, &r.aim_time, &r.collision_radius, &r.min_distance, &r.return_speed};
+                       &r.aim_shoulder, &r.aim_time, &r.collision_radius, &r.min_distance, &r.return_speed,
+                       nullptr, &r.turn_rate};
     for (int i = 0; i < count; ++i) {
         float v = 0.0f;
         if (!detail::get_f32(p, e, v)) return;
         if (i >= static_cast<int>(sizeof fields / sizeof fields[0])) continue;
         if (i == 0) r.third_person = v > 0.5f;
+        else if (i == 10) r.orbit = v > 0.5f;
         else *fields[i] = v;
     }
 }

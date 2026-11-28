@@ -110,6 +110,20 @@ public:
         }
     }
 
+    // ---- melee -----------------------------------------------------------------------------
+    /// A blade met someone at `at`, swung along `dir`: `kind` is hit, block, parry or
+    /// riposte -- <weapon>_melee_<kind>, else melee_<kind> (a riposte: else melee_hit).
+    void melee(const std::string& kind, const std::string& weapon, const glm::vec3& at, const glm::vec3& dir) {
+        using schizo::vfx::find_effect_of;
+        schizo::vfx::EffectSpawn s;
+        s.pos = at;
+        s.dir = glm::length(dir) > 1e-5f ? glm::normalize(dir) : glm::vec3(0.0f, 1.0f, 0.0f);
+        s.normal = s.dir;
+        const std::string own = weapon.empty() ? std::string() : weapon + "_melee_" + kind;
+        const auto* e = find_effect_of({own.empty() ? "melee_" + kind : own, "melee_" + kind, std::string("melee_hit")});
+        if (e) fx_.burst(*e, s);
+    }
+
     // ---- abilities -------------------------------------------------------------------------
     /// While one is being cast: its wind-up around `at` (a hand, a creature).
     void ability_windup(const schizo::ecs::AbilityDef& d, const glm::vec3& at, float dt) {

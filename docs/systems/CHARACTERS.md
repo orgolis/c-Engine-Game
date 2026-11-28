@@ -332,6 +332,26 @@ a point of the model, as modelled, carried by a bone as it is posed now (the
 middle of a hit region, the tip of a jaw) -- probe `engine.animation_events`
 (docs/systems/SCRIPTED_ENCOUNTERS.md).
 
+## Clip libraries
+
+A model can take clips from other files: `<model>@<anything>.glb` next to
+`<model>.glb` (`player@melee.glb` beside `player.glb`) adds its clips to the
+model's, by bone name -- the library's own mesh is not used, and a bone it has
+that the model lacks is left out. Several libraries can sit beside one model;
+models that share a rig can share a library (a copy beside each). The log says
+what each added: `'player.glb': 20 clip(s) from its library 'player@melee.glb'`
+(0: the bone names do not match). This is how a moveset's clips
+(docs/systems/MELEE.md) reach characters made before them.
+
+## Root motion
+
+A clip played as a montage with root motion (a melee move does) moves the
+character by its root bone -- the bone with no parent: its travel along the
+ground each frame is taken out of the pose (the body stays over the character)
+and handed to whoever moves the character (`take_root_motion()`, in the
+model's space). A looping clip's wrap is followed. The player's movement takes
+it along the ground with the world's collisions; an NPC is moved by it.
+
 ## Something held
 
 A child with a Skinned Mesh and **Held at parent bone** set (a bone of the
@@ -426,7 +446,9 @@ reloads, draw, hit, death, jump, fall, land, a sword's ready stance and swing
 `art_source/military_pack/animate_characters.py` in Blender, procedurally) and the eight guns (bolt, magazine, muzzle, grip and trigger bones;
 idle, fire, reload and draw clips). Each soldier is an NPC agent with a
 "Body" (rifleman or heavy, driven by gameplay, upper body from `spine`) and a
-"Gun" held at the body's `weapon_socket`.
+"Gun" held at the body's `weapon_socket`. The sword's moves (0.9.1) are a clip
+library, `player@melee.glb` (a copy beside rifleman.glb for the swordsmen), made by
+`art_source/military_pack/melee_motion.py` from the key poses in `melee_clips.py`.
 
 ## Known limits
 
